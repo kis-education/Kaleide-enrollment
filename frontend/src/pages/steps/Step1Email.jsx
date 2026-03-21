@@ -110,7 +110,7 @@ export default function Step1Email({ onNext }) {
       <div className="d-flex justify-content-end mt-3">
         <button
           className="btn-primary-kis"
-          onClick={onNext}
+          onClick={() => onNext('email', { primary_email: email, verified: true })}
           disabled={!verified}
         >
           {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />

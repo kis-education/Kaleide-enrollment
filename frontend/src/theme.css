@@ -35,20 +35,21 @@ body {
 
 /* Branded header */
 .kis-header {
-  background: var(--teal);
-  color: #fff;
+  background: #ffffff;
+  color: var(--teal-dk);
   padding: 14px 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  box-shadow: 0 2px 8px rgba(0,161,154,0.15);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
 }
 .kis-header .brand {
   display: flex;
   align-items: center;
   gap: 12px;
   text-decoration: none;
-  color: #fff;
+  color: var(--teal-dk);
 }
 .kis-header .brand img {
   width: 36px;
@@ -59,10 +60,11 @@ body {
   font-weight: 700;
   font-size: 1.05rem;
   line-height: 1.2;
+  color: var(--teal-dk);
 }
 .kis-header .brand-sub {
   font-size: 0.75rem;
-  opacity: 0.85;
+  color: var(--muted);
   font-weight: 400;
 }
 
@@ -73,8 +75,8 @@ body {
 }
 .lang-toggle button {
   background: transparent;
-  border: 1px solid rgba(255,255,255,0.5);
-  color: #fff;
+  border: 1px solid var(--teal);
+  color: var(--teal-dk);
   padding: 4px 10px;
   border-radius: 4px;
   font-size: 0.8rem;
@@ -84,14 +86,14 @@ body {
 }
 .lang-toggle button.active,
 .lang-toggle button:hover {
-  background: rgba(255,255,255,0.2);
-  border-color: #fff;
+  background: var(--teal-lt);
+  border-color: var(--teal-dk);
 }
 
 /* Wizard progress stepper */
 .wizard-progress {
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  background: var(--teal);
+  border-bottom: none;
   padding: 16px 24px;
   overflow-x: auto;
 }
@@ -106,15 +108,15 @@ body {
   align-items: center;
   gap: 8px;
   font-size: 0.82rem;
-  color: var(--muted);
+  color: rgba(255,255,255,0.65);
   font-weight: 500;
 }
 .wizard-step .step-num {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: var(--border);
-  color: var(--muted);
+  background: rgba(255,255,255,0.2);
+  color: rgba(255,255,255,0.7);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -123,26 +125,26 @@ body {
   flex-shrink: 0;
 }
 .wizard-step.completed .step-num {
-  background: var(--teal);
-  color: #fff;
+  background: rgba(255,255,255,0.85);
+  color: var(--teal-dk);
 }
 .wizard-step.active .step-num {
-  background: var(--teal);
-  color: #fff;
-  box-shadow: 0 0 0 3px var(--teal-lt);
+  background: #fff;
+  color: var(--teal-dk);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.3);
 }
 .wizard-step.active {
-  color: var(--teal-dk);
+  color: #fff;
   font-weight: 700;
 }
 .wizard-step .step-connector {
   width: 32px;
   height: 2px;
-  background: var(--border);
+  background: rgba(255,255,255,0.25);
   margin: 0 4px;
 }
 .wizard-step.completed .step-connector {
-  background: var(--teal);
+  background: rgba(255,255,255,0.65);
 }
 
 /* Wizard layout */
