@@ -1068,10 +1068,10 @@ function buildInternalEmail_(subject, bodyHtml) {
     + '<tr><td align="center">'
     + '<table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.07)">'
     // Header
-    + '<tr><td style="background:#00a19a;padding:24px 32px;">'
+    + '<tr><td style="background:#ffffff;padding:20px 32px;border-bottom:3px solid #00a19a;">'
     + '<table><tr>'
-    + '<td><img src="' + LOGO_URL + '" width="36" height="36" alt="KIS" style="border-radius:6px;vertical-align:middle;margin-right:12px"></td>'
-    + '<td style="color:#fff;font-size:1.15em;font-weight:700;vertical-align:middle">Kaleide International School</td>'
+    + '<td><img src="' + LOGO_URL + '" width="36" height="36" alt="KIS" style="border-radius:8px;vertical-align:middle;margin-right:12px;background:#e6f6f5;padding:4px"></td>'
+    + '<td style="color:#007d77;font-size:1.15em;font-weight:700;vertical-align:middle">Kaleide International School</td>'
     + '</tr></table>'
     + '</td></tr>'
     // Body

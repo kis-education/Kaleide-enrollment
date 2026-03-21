@@ -12,6 +12,7 @@
   "landing.resume_subtitle": "We will send a magic link to your email.",
   "landing.resume_btn": "Send link",
   "landing.magic_link_sent": "Link sent! Check your inbox.",
+  "landing.resume_error": "We couldn't load your application. The link may have expired — enter your email below to receive a new one.",
 
   "step.email":      "Email Verification",
   "step.guardians":  "Guardians",

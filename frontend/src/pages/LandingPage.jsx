@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
 import { useWizard } from '../context/WizardContext';
@@ -12,6 +12,8 @@ const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favico
 export default function LandingPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const resumeError = searchParams.get('resume_error') === '1';
   const { setApplicationId, setResumeToken, updateStep } = useWizard();
 
   const [starting, setStarting]           = useState(false);
@@ -82,6 +84,13 @@ export default function LandingPage() {
         </div>
         <LangToggle />
       </header>
+
+      {resumeError && (
+        <div style={{ background: '#fff3ec', borderBottom: '2px solid #f37021', padding: '14px 24px', display: 'flex', alignItems: 'center', gap: 10, color: '#18222e' }}>
+          <i className="bi bi-exclamation-triangle-fill" style={{ color: '#f37021', fontSize: '1.1em' }} />
+          <span>{t('landing.resume_error')}</span>
+        </div>
+      )}
 
       {/* Hero */}
       <div className="landing-hero">

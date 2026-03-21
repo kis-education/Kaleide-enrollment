@@ -12,6 +12,7 @@
   "landing.resume_subtitle": "Te enviaremos un enlace mágico a tu correo.",
   "landing.resume_btn": "Enviar enlace",
   "landing.magic_link_sent": "¡Enlace enviado! Revisa tu bandeja de entrada.",
+  "landing.resume_error": "No hemos podido cargar tu solicitud. El enlace puede haber caducado — introduce tu correo a continuación para recibir uno nuevo.",
 
   "step.email":      "Verificación de correo",
   "step.guardians":  "Tutores",
