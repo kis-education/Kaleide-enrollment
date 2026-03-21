@@ -1188,7 +1188,23 @@ function appsheetRequest_(table, action, rows, selector) {
   const body = { Action: action, Properties: { Locale: 'en-US' } };
 
   if (rows && rows.length > 0) body.Rows = rows;
-  if (selector)                body.Properties = { ...body.Properties, ...selector };
+  if (selector) {
+    if (selector.Filter) {
+      // Convert our SQL-like Filter to AppSheet FILTER() formula syntax.
+      // "column_name" = "value"  →  [column_name] = "value"
+      // &&  →  AND,   ||  →  OR,   true/false  →  TRUE/FALSE
+      const expr = selector.Filter
+        .replace(/"(\w+)"\s*(=|!=|<=|>=|<|>)/g, '[$1] $2')
+        .replace(/&&/g, 'AND')
+        .replace(/\|\|/g, 'OR')
+        .replace(/\btrue\b/g, 'TRUE')
+        .replace(/\bfalse\b/g, 'FALSE');
+      body.Properties.Selector = 'FILTER("' + table + '", ' + expr + ')';
+      Logger.log('[appsheetRequest] Selector: ' + body.Properties.Selector.substring(0, 120));
+    } else {
+      body.Properties = { ...body.Properties, ...selector };
+    }
+  }
 
   const t0 = Date.now();
   const response = UrlFetchApp.fetch(url, {
