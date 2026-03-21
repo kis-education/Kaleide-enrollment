@@ -1,0 +1,15 @@
+{
+  "timeZone": "Atlantic/Canary",
+  "runtimeVersion": "V8",
+  "webapp": {
+    "access": "ANYONE_ANONYMOUS",
+    "executeAs": "USER_DEPLOYING"
+  },
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/script.external_request",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/cache",
+    "https://www.googleapis.com/auth/script.scriptapp"
+  ]
+}
