@@ -39,6 +39,9 @@ jobs:
           VITE_GAS_ENDPOINT: ${{ secrets.GAS_ENDPOINT }}
           VITE_RECAPTCHA_SITE_KEY: ${{ secrets.RECAPTCHA_SITE_KEY }}
 
+      - name: Verify dist contents
+        run: ls -la frontend/dist/
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
