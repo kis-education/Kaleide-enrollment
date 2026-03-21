@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../context/WizardContext';
+import * as log from '../logger';
 import { gasCall } from '../api';
 import LangToggle from '../components/LangToggle';
 import WizardProgress from '../components/WizardProgress';
@@ -31,27 +32,43 @@ export default function WizardPage() {
   const { message: toastMsg, showToast } = useToast();
 
   const handleNext = async (stepKey, data) => {
-    // Auto-save to backend
+    log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
     if (applicationId && stepKey) {
       try {
+        log.info(`WizardPage: auto-saving step "${stepKey}" for application ${applicationId}`);
         await gasCall('saveStep', { application_id: applicationId, step: stepKey, payload: data });
-      } catch (_) { /* non-blocking */ }
+        log.success(`WizardPage: saveStep "${stepKey}" OK`);
+      } catch (err) {
+        log.warn(`WizardPage: saveStep "${stepKey}" failed (non-blocking)`, { message: err.message });
+      }
+    } else {
+      log.warn('WizardPage: skipping saveStep', { applicationId, stepKey });
     }
-    setCurrentStep(s => Math.min(s + 1, STEP_COMPONENTS.length - 1));
+    const nextStep = Math.min(currentStep + 1, STEP_COMPONENTS.length - 1);
+    log.info(`WizardPage: advancing to step ${nextStep}`);
+    setCurrentStep(nextStep);
     window.scrollTo(0, 0);
   };
 
   const handleBack = () => {
-    setCurrentStep(s => Math.max(s - 1, 0));
+    const prevStep = Math.max(currentStep - 1, 0);
+    log.info(`WizardPage: going back to step ${prevStep}`);
+    setCurrentStep(prevStep);
     window.scrollTo(0, 0);
   };
 
   const handleSaveLater = async () => {
-    if (!applicationId) return;
+    if (!applicationId) {
+      log.warn('WizardPage: Save Later clicked but no applicationId in context');
+      return;
+    }
+    log.info('WizardPage: sending magic link for Save & Continue Later', { applicationId });
     try {
       await gasCall('sendMagicLink', { application_id: applicationId });
+      log.success('WizardPage: magic link sent');
       showToast(t('wizard.save_later_sent'));
-    } catch (_) {
+    } catch (err) {
+      log.error('WizardPage: sendMagicLink failed', { message: err.message });
       showToast(t('wizard.save_later_error'));
     }
   };

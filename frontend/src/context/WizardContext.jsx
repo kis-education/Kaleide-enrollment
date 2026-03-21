@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback } from 'react';
+import * as log from '../logger';
 
 const WizardContext = createContext(null);
 
@@ -28,10 +29,21 @@ export function WizardProvider({ children }) {
   const [stepData,      setStepData]      = useState(initialStepData);
 
   const updateStep = useCallback((stepKey, data) => {
+    log.info(`WizardContext: updateStep "${stepKey}"`, { recordCount: Array.isArray(data) ? data.length : typeof data });
     setStepData(prev => ({ ...prev, [stepKey]: data }));
   }, []);
 
   const hydrateFromResume = useCallback((appData) => {
+    log.info('WizardContext: hydrateFromResume start', {
+      application_id:  appData.application?.application_id,
+      email_confirmed: appData.application?.email_confirmed,
+      submitted_at:    appData.application?.submitted_at,
+      guardians:       (appData.guardians  || []).length,
+      applicants:      (appData.applicants || []).length,
+      documents:       (appData.documents  || []).length,
+      responses:       (appData.responses  || []).length,
+    });
+
     setApplicationId(appData.application.application_id);
     setResumeToken(appData.application.resume_token);
     setStepData(prev => ({
@@ -43,15 +55,29 @@ export function WizardProvider({ children }) {
       guardians:  appData.guardians  || [],
       applicants: appData.applicants || [],
     }));
+
     // Determine current step from application state
     const submitted = appData.application.submitted_at;
-    if (submitted) { setCurrentStep(6); return; }
+    if (submitted) {
+      log.info('WizardContext: resuming to step 6 (already submitted)');
+      setCurrentStep(6); return;
+    }
     const verified = appData.application.email_confirmed;
-    if (!verified) { setCurrentStep(0); return; }
+    if (!verified) {
+      log.info('WizardContext: resuming to step 0 (email not verified)');
+      setCurrentStep(0); return;
+    }
     const hasGuardians  = (appData.guardians  || []).length > 0;
     const hasApplicants = (appData.applicants || []).length > 0;
-    if (!hasGuardians)  { setCurrentStep(1); return; }
-    if (!hasApplicants) { setCurrentStep(2); return; }
+    if (!hasGuardians)  {
+      log.info('WizardContext: resuming to step 1 (no guardians)');
+      setCurrentStep(1); return;
+    }
+    if (!hasApplicants) {
+      log.info('WizardContext: resuming to step 2 (no applicants)');
+      setCurrentStep(2); return;
+    }
+    log.info('WizardContext: resuming to step 3 (has guardians + applicants)');
     setCurrentStep(3);
   }, []);
 

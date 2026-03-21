@@ -57,6 +57,7 @@ const T = {
  * @returns {TextOutput}
  */
 function doGet(e) {
+  Logger.log('[doGet] Health check called');
   const out = ContentService.createTextOutput(
     JSON.stringify({ status: 'ok', ts: new Date().toISOString() })
   ).setMimeType(ContentService.MimeType.JSON);
@@ -70,15 +71,25 @@ function doGet(e) {
  * @returns {TextOutput}
  */
 function doPost(e) {
+  const t0 = Date.now();
   try {
-    const payload = JSON.parse(e.postData.contents);
-
-    // Honeypot guard — bots fill hidden fields, humans don't
-    if (payload._hp && payload._hp !== '') {
-      return jsonResponse_({ ok: false, error: 'Forbidden' }, 403);
+    let payload;
+    try {
+      payload = JSON.parse(e.postData.contents);
+    } catch (parseErr) {
+      Logger.log('[doPost] Failed to parse request body: ' + parseErr.message);
+      return jsonResponse_({ ok: false, error: 'Invalid request body' }, 400);
     }
 
     const action = payload.action;
+    Logger.log('[doPost] Incoming action: ' + action + ' | _hp present: ' + (payload._hp !== undefined));
+
+    // Honeypot guard — bots fill hidden fields, humans don't
+    if (payload._hp && payload._hp !== '') {
+      Logger.log('[doPost] HONEYPOT triggered — rejecting request for action: ' + action);
+      return jsonResponse_({ ok: false, error: 'Forbidden' }, 403);
+    }
+
     let result;
 
     switch (action) {
@@ -94,13 +105,17 @@ function doPost(e) {
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
       case 'verifyRecaptcha':      result = verifyRecaptcha_(payload);      break;
       default:
+        Logger.log('[doPost] Unknown action: ' + action);
         return jsonResponse_({ ok: false, error: 'Unknown action: ' + action }, 400);
     }
 
+    const elapsed = Date.now() - t0;
+    Logger.log('[doPost] Action "' + action + '" completed successfully in ' + elapsed + 'ms');
     return jsonResponse_({ ok: true, ...result });
 
   } catch (err) {
-    Logger.log('doPost error: ' + err.message + '\n' + err.stack);
+    const elapsed = Date.now() - t0;
+    Logger.log('[doPost] Unhandled error after ' + elapsed + 'ms: ' + err.message + '\n' + err.stack);
     return jsonResponse_({ ok: false, error: err.message }, 500);
   }
 }
@@ -113,16 +128,22 @@ function doPost(e) {
  * @returns {{ application_id: string, resume_token: string }}
  */
 function initApplication_(p) {
+  Logger.log('[initApplication] Start — email: ' + p.primary_email + ' | lang: ' + (p.preferred_language || 'es'));
+
   const applicationId = generateUuid_();
   const resumeToken   = generateUuid_();
   const now           = new Date().toISOString();
+  Logger.log('[initApplication] Generated IDs — application_id: ' + applicationId + ' | resume_token: ' + resumeToken);
 
   // Look up DRAFT status type id
+  Logger.log('[initApplication] Looking up DRAFT status type for school: ' + SCHOOL_ID);
   const statusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
     Filter: '"status_code" = "DRAFT" && "school_id" = "' + SCHOOL_ID + '"'
   });
   const draftTypeId = (statusTypes && statusTypes[0]) ? statusTypes[0].status_type_id : null;
+  Logger.log('[initApplication] DRAFT status_type_id: ' + draftTypeId + (draftTypeId ? '' : ' (WARNING: not found — status will be null)'));
 
+  Logger.log('[initApplication] Adding application row to AppSheet');
   appsheetRequest_(T.APPLICATIONS, 'Add', [{
     application_id:     applicationId,
     school_id:          SCHOOL_ID,
@@ -134,13 +155,20 @@ function initApplication_(p) {
     created_at:         now,
     updated_at:         now,
   }]);
+  Logger.log('[initApplication] Application row added OK');
 
+  Logger.log('[initApplication] Sending magic link email to: ' + p.primary_email);
   sendMagicLinkEmail_(p.primary_email, resumeToken, p.preferred_language || 'es');
+  Logger.log('[initApplication] Magic link email sent OK');
+
+  Logger.log('[initApplication] Sending internal notification email');
   sendInternalEmail_(
     '[KIS Admissions] New application started',
     buildApplicationInitiatedBody_(applicationId, p.primary_email, now)
   );
+  Logger.log('[initApplication] Internal notification sent OK');
 
+  Logger.log('[initApplication] Complete — application_id: ' + applicationId);
   return { application_id: applicationId, resume_token: resumeToken };
 }
 
@@ -149,23 +177,33 @@ function initApplication_(p) {
  * @param {Object} p - { application_id } or { primary_email }
  */
 function sendMagicLink_(p) {
+  Logger.log('[sendMagicLink] Start — lookup by: ' + (p.application_id ? 'application_id=' + p.application_id : 'primary_email=' + p.primary_email));
+
   let app;
   if (p.application_id) {
     const rows = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
       Filter: '"application_id" = "' + p.application_id + '"'
     });
     app = rows && rows[0];
+    Logger.log('[sendMagicLink] Lookup by application_id — found: ' + (app ? 'yes' : 'no'));
   } else if (p.primary_email) {
     const rows = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
       Filter: '"primary_email" = "' + p.primary_email + '"'
     });
+    Logger.log('[sendMagicLink] Lookup by email — total rows found: ' + (rows ? rows.length : 0));
     // Send to most recent application
     app = rows && rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+    Logger.log('[sendMagicLink] Most recent application: ' + (app ? app.application_id : 'none'));
   }
 
-  if (!app) throw new Error('Application not found');
+  if (!app) {
+    Logger.log('[sendMagicLink] ERROR — application not found');
+    throw new Error('Application not found');
+  }
 
+  Logger.log('[sendMagicLink] Sending magic link email to: ' + app.primary_email + ' | lang: ' + (app.preferred_language || 'es'));
   sendMagicLinkEmail_(app.primary_email, app.resume_token, app.preferred_language || 'es');
+  Logger.log('[sendMagicLink] Email sent OK');
   return { sent: true };
 }
 
@@ -175,46 +213,58 @@ function sendMagicLink_(p) {
  * @returns {Object} Full application state including all child records
  */
 function resumeApplication_(p) {
+  Logger.log('[resumeApplication] Start — resume_token: ' + p.resume_token);
+
   const apps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
     Filter: '"resume_token" = "' + p.resume_token + '"'
   });
-  if (!apps || !apps.length) throw new Error('Invalid or expired resume token');
+  Logger.log('[resumeApplication] Token lookup — rows found: ' + (apps ? apps.length : 0));
+
+  if (!apps || !apps.length) {
+    Logger.log('[resumeApplication] ERROR — invalid or expired token');
+    throw new Error('Invalid or expired resume token');
+  }
 
   const app = apps[0];
   const id  = app.application_id;
+  Logger.log('[resumeApplication] Application found — id: ' + id + ' | email_confirmed: ' + app.email_confirmed + ' | submitted_at: ' + (app.submitted_at || 'null'));
 
+  Logger.log('[resumeApplication] Fetching child records for application_id: ' + id);
   const [guardians, applicants, documents, responses] = [
     appsheetRequest_(T.GUARDIANS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [],
     appsheetRequest_(T.APPLICANTS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [],
     appsheetRequest_(T.DOCUMENTS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [],
     appsheetRequest_(T.QB_RESPONSES, 'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [],
   ];
+  Logger.log('[resumeApplication] Child records — guardians: ' + guardians.length + ' | applicants: ' + applicants.length + ' | documents: ' + documents.length + ' | responses: ' + responses.length);
 
   // Enrich guardians with contacts
   const guardianIds = guardians.map(g => g.guardian_id);
-  const contacts = guardianIds.length
-    ? appsheetRequest_(T.GUARDIAN_CONTACTS, 'Find', [], {
-        Filter: guardianIds.map(gid => '"guardian_id" = "' + gid + '"').join(' || ')
-      }) || []
-    : [];
+  let contacts = [];
+  if (guardianIds.length) {
+    Logger.log('[resumeApplication] Fetching guardian contacts for ' + guardianIds.length + ' guardian(s)');
+    contacts = appsheetRequest_(T.GUARDIAN_CONTACTS, 'Find', [], {
+      Filter: guardianIds.map(gid => '"guardian_id" = "' + gid + '"').join(' || ')
+    }) || [];
+    Logger.log('[resumeApplication] Guardian contacts found: ' + contacts.length);
+  }
 
   // Enrich applicants with health + previous schools
   const applicantIds = applicants.map(a => a.applicant_id);
-  const [prevSchools, allergies, dietary, medical] = applicantIds.length ? [
-    appsheetRequest_(T.PREV_SCHOOLS, 'Find', [], {
-      Filter: applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ')
-    }) || [],
-    appsheetRequest_(T.ALLERGIES, 'Find', [], {
-      Filter: applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ')
-    }) || [],
-    appsheetRequest_(T.DIETARY, 'Find', [], {
-      Filter: applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ')
-    }) || [],
-    appsheetRequest_(T.MEDICAL, 'Find', [], {
-      Filter: applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ')
-    }) || [],
-  ] : [[], [], [], []];
+  let prevSchools = [], allergies = [], dietary = [], medical = [];
+  if (applicantIds.length) {
+    Logger.log('[resumeApplication] Fetching health/school data for ' + applicantIds.length + ' applicant(s)');
+    const applicantFilter = applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ');
+    [prevSchools, allergies, dietary, medical] = [
+      appsheetRequest_(T.PREV_SCHOOLS, 'Find', [], { Filter: applicantFilter }) || [],
+      appsheetRequest_(T.ALLERGIES, 'Find', [], { Filter: applicantFilter }) || [],
+      appsheetRequest_(T.DIETARY, 'Find', [], { Filter: applicantFilter }) || [],
+      appsheetRequest_(T.MEDICAL, 'Find', [], { Filter: applicantFilter }) || [],
+    ];
+    Logger.log('[resumeApplication] Applicant enrichment — prevSchools: ' + prevSchools.length + ' | allergies: ' + allergies.length + ' | dietary: ' + dietary.length + ' | medical: ' + medical.length);
+  }
 
+  Logger.log('[resumeApplication] Complete — returning full application state');
   return {
     application: app,
     guardians: guardians.map(g => ({
@@ -239,9 +289,14 @@ function resumeApplication_(p) {
  */
 function saveStep_(p) {
   const { application_id, step, payload } = p;
-  if (!application_id || !step || !payload) throw new Error('Missing required fields');
+  Logger.log('[saveStep] Start — application_id: ' + application_id + ' | step: ' + step + ' | payload type: ' + (Array.isArray(payload) ? 'array[' + payload.length + ']' : typeof payload));
 
-  // Update application updated_at timestamp
+  if (!application_id || !step || !payload) {
+    Logger.log('[saveStep] ERROR — missing required fields (application_id: ' + !!application_id + ', step: ' + !!step + ', payload: ' + !!payload + ')');
+    throw new Error('Missing required fields');
+  }
+
+  Logger.log('[saveStep] Updating application updated_at timestamp');
   appsheetRequest_(T.APPLICATIONS, 'Edit', [{
     application_id,
     updated_at: new Date().toISOString(),
@@ -249,21 +304,26 @@ function saveStep_(p) {
 
   switch (step) {
     case 'guardians':
+      Logger.log('[saveStep] Routing to saveGuardians_ — count: ' + (Array.isArray(payload) ? payload.length : 'n/a'));
       saveGuardians_(application_id, payload);
       break;
     case 'applicants':
+      Logger.log('[saveStep] Routing to saveApplicants_ — count: ' + (Array.isArray(payload) ? payload.length : 'n/a'));
       saveApplicants_(application_id, payload);
       break;
     case 'health':
+      Logger.log('[saveStep] Routing to saveHealth_ — count: ' + (Array.isArray(payload) ? payload.length : 'n/a'));
       saveHealth_(application_id, payload);
       break;
     case 'documents':
-      // Documents are saved individually via uploadDocument_
+      Logger.log('[saveStep] Step "documents" — individual documents saved via uploadDocument_, skipping batch save');
       break;
     default:
+      Logger.log('[saveStep] ERROR — unknown step: ' + step);
       throw new Error('Unknown step: ' + step);
   }
 
+  Logger.log('[saveStep] Complete — step "' + step + '" saved OK');
   return { saved: true, step };
 }
 
@@ -273,32 +333,47 @@ function saveStep_(p) {
  */
 function submitApplication_(p) {
   const { application_id } = p;
-  if (!application_id) throw new Error('Missing application_id');
+  Logger.log('[submitApplication] Start — application_id: ' + application_id);
+
+  if (!application_id) {
+    Logger.log('[submitApplication] ERROR — missing application_id');
+    throw new Error('Missing application_id');
+  }
 
   const now = new Date().toISOString();
 
   // Look up SUBMITTED status type id
+  Logger.log('[submitApplication] Looking up SUBMITTED status type');
   const statusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
     Filter: '"status_code" = "SUBMITTED" && "school_id" = "' + SCHOOL_ID + '"'
   });
   const submittedTypeId = (statusTypes && statusTypes[0]) ? statusTypes[0].status_type_id : null;
+  Logger.log('[submitApplication] SUBMITTED status_type_id: ' + submittedTypeId + (submittedTypeId ? '' : ' (WARNING: not found)'));
 
   // Get current status for log
+  Logger.log('[submitApplication] Fetching current application record');
   const apps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
     Filter: '"application_id" = "' + application_id + '"'
   });
   const app = apps && apps[0];
-  if (!app) throw new Error('Application not found');
+  if (!app) {
+    Logger.log('[submitApplication] ERROR — application not found: ' + application_id);
+    throw new Error('Application not found');
+  }
+  Logger.log('[submitApplication] Found application — current status_type_id: ' + app.status_type_id);
 
   // Stamp submitted_at and update status
+  Logger.log('[submitApplication] Stamping submitted_at and updating status');
   appsheetRequest_(T.APPLICATIONS, 'Edit', [{
     application_id,
     status_type_id: submittedTypeId,
     submitted_at:   now,
     updated_at:     now,
   }]);
+  Logger.log('[submitApplication] Application record updated OK');
 
   // Write status log entry
+  Logger.log('[submitApplication] Writing status log entry (DRAFT → SUBMITTED)');
   appsheetRequest_(T.STATUS_LOG, 'Add', [{
     log_id:               generateUuid_(),
     application_id,
@@ -308,9 +383,11 @@ function submitApplication_(p) {
     changed_at:           now,
     reason:               'Application submitted by family',
   }]);
+  Logger.log('[submitApplication] Status log entry written OK');
 
   // Log GDPR consent
   if (p.consents) {
+    Logger.log('[submitApplication] Writing ' + p.consents.length + ' consent record(s)');
     const consentRows = p.consents.map(c => ({
       consent_id:        generateUuid_(),
       application_id,
@@ -319,29 +396,43 @@ function submitApplication_(p) {
       consent_timestamp: now,
       language:          p.language || 'es',
     }));
-    if (consentRows.length) appsheetRequest_(T.CONSENTS, 'Add', consentRows);
+    if (consentRows.length) {
+      appsheetRequest_(T.CONSENTS, 'Add', consentRows);
+      Logger.log('[submitApplication] Consent records written OK');
+    }
+  } else {
+    Logger.log('[submitApplication] No consent records provided');
   }
 
   // Fetch guardians and applicants for email summaries
+  Logger.log('[submitApplication] Fetching guardians and applicants for email');
   const guardians  = appsheetRequest_(T.GUARDIANS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
   const applicants = appsheetRequest_(T.APPLICANTS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
+  Logger.log('[submitApplication] Found ' + guardians.length + ' guardian(s), ' + applicants.length + ' applicant(s) for email summary');
 
   const guardianIds = guardians.map(g => g.guardian_id);
-  const contacts = guardianIds.length
-    ? appsheetRequest_(T.GUARDIAN_CONTACTS, 'Find', [], {
-        Filter: guardianIds.map(gid => '"guardian_id" = "' + gid + '"').join(' || ')
-      }) || []
-    : [];
+  let contacts = [];
+  if (guardianIds.length) {
+    contacts = appsheetRequest_(T.GUARDIAN_CONTACTS, 'Find', [], {
+      Filter: guardianIds.map(gid => '"guardian_id" = "' + gid + '"').join(' || ')
+    }) || [];
+    Logger.log('[submitApplication] Found ' + contacts.length + ' guardian contact(s)');
+  }
 
   // Send family confirmation (bilingual)
+  Logger.log('[submitApplication] Sending family confirmation email to: ' + app.primary_email);
   sendFamilyConfirmationEmail_(app.primary_email, application_id, applicants, app.preferred_language || 'es');
+  Logger.log('[submitApplication] Family confirmation email sent OK');
 
   // Send internal notification
+  Logger.log('[submitApplication] Sending internal submission notification');
   sendInternalEmail_(
     '[KIS Admissions] Application submitted \u2014 action required',
     buildApplicationSubmittedBody_(application_id, now, guardians, contacts, applicants)
   );
+  Logger.log('[submitApplication] Internal notification sent OK');
 
+  Logger.log('[submitApplication] Complete — application ' + application_id + ' submitted successfully');
   return { submitted: true, application_id };
 }
 
@@ -351,13 +442,21 @@ function submitApplication_(p) {
  */
 function sendVerificationCode_(p) {
   const { application_id, primary_email } = p;
-  if (!application_id || !primary_email) throw new Error('Missing application_id or primary_email');
+  Logger.log('[sendVerificationCode] Start — application_id: ' + application_id + ' | email: ' + primary_email);
+
+  if (!application_id || !primary_email) {
+    Logger.log('[sendVerificationCode] ERROR — missing application_id or primary_email');
+    throw new Error('Missing application_id or primary_email');
+  }
 
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   const cache = CacheService.getScriptCache();
   cache.put('verify_' + application_id, code, 600); // 10 min TTL
+  Logger.log('[sendVerificationCode] Code generated and stored in cache (TTL 600s) for application_id: ' + application_id);
 
   const lang = p.preferred_language || 'es';
+  Logger.log('[sendVerificationCode] Sending verification email in lang: ' + lang + ' to: ' + primary_email);
+
   const subject = lang === 'en'
     ? 'Your Kaleide verification code'
     : 'Tu c\u00f3digo de verificaci\u00f3n de Kaleide';
@@ -371,6 +470,7 @@ function sendVerificationCode_(p) {
     name: 'Kaleide International School',
   });
 
+  Logger.log('[sendVerificationCode] Verification email sent OK to: ' + primary_email);
   return { sent: true };
 }
 
@@ -380,16 +480,30 @@ function sendVerificationCode_(p) {
  */
 function verifyEmail_(p) {
   const { application_id, code } = p;
-  if (!application_id || !code) throw new Error('Missing application_id or code');
+  Logger.log('[verifyEmail] Start — application_id: ' + application_id + ' | code length: ' + (code ? code.toString().length : 0));
+
+  if (!application_id || !code) {
+    Logger.log('[verifyEmail] ERROR — missing application_id or code');
+    throw new Error('Missing application_id or code');
+  }
 
   const cache    = CacheService.getScriptCache();
   const stored   = cache.get('verify_' + application_id);
+  Logger.log('[verifyEmail] Cache lookup — stored code present: ' + (stored ? 'yes' : 'no (expired or not found)'));
 
-  if (!stored) throw new Error('Verification code expired or not found');
-  if (stored !== code.toString()) throw new Error('Invalid verification code');
+  if (!stored) {
+    Logger.log('[verifyEmail] ERROR — code expired or not found for application_id: ' + application_id);
+    throw new Error('Verification code expired or not found');
+  }
+  if (stored !== code.toString()) {
+    Logger.log('[verifyEmail] ERROR — code mismatch for application_id: ' + application_id);
+    throw new Error('Invalid verification code');
+  }
 
+  Logger.log('[verifyEmail] Code matched — removing from cache');
   cache.remove('verify_' + application_id);
 
+  Logger.log('[verifyEmail] Marking email_confirmed=true in AppSheet');
   appsheetRequest_(T.APPLICATIONS, 'Edit', [{
     application_id,
     email_confirmed:    true,
@@ -397,6 +511,7 @@ function verifyEmail_(p) {
     updated_at:         new Date().toISOString(),
   }]);
 
+  Logger.log('[verifyEmail] Complete — email confirmed OK for application_id: ' + application_id);
   return { verified: true };
 }
 
@@ -407,46 +522,71 @@ function verifyEmail_(p) {
  */
 function fetchQuestions_(p) {
   const { context_designation, language } = p;
-  if (!context_designation) throw new Error('Missing context_designation');
+  Logger.log('[fetchQuestions] Start — context: ' + context_designation + ' | lang: ' + (language || 'es'));
+
+  if (!context_designation) {
+    Logger.log('[fetchQuestions] ERROR — missing context_designation');
+    throw new Error('Missing context_designation');
+  }
 
   const lang = language || 'es';
 
   // Find matching context
+  Logger.log('[fetchQuestions] Looking up context: ' + context_designation + ' for school: ' + SCHOOL_ID);
   const contexts = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
     Filter: '"designation" = "' + context_designation + '" && "school_id" = "' + SCHOOL_ID + '" && "is_active" = true'
   });
-  if (!contexts || !contexts.length) throw new Error('Context not found: ' + context_designation);
+  if (!contexts || !contexts.length) {
+    Logger.log('[fetchQuestions] ERROR — context not found: ' + context_designation);
+    throw new Error('Context not found: ' + context_designation);
+  }
   const context = contexts[0];
+  Logger.log('[fetchQuestions] Context found — context_id: ' + context.context_id);
 
   // Find active question sets for this context
+  Logger.log('[fetchQuestions] Fetching active question sets for context_id: ' + context.context_id);
   const sets = appsheetRequest_(T.QB_SETS, 'Find', [], {
     Filter: '"context_id" = "' + context.context_id + '" && "is_active" = true'
   });
-  if (!sets || !sets.length) return { sets: [] };
+  if (!sets || !sets.length) {
+    Logger.log('[fetchQuestions] No active question sets found — returning empty');
+    return { sets: [] };
+  }
+  Logger.log('[fetchQuestions] Found ' + sets.length + ' question set(s)');
 
   const setIds       = sets.map(s => s.set_id);
   const setIdFilter  = setIds.map(id => '"set_id" = "' + id + '"').join(' || ');
 
+  Logger.log('[fetchQuestions] Fetching set items for ' + setIds.length + ' set(s)');
   const setItems = appsheetRequest_(T.QB_SET_ITEMS, 'Find', [], { Filter: setIdFilter }) || [];
   const questionIds  = [...new Set(setItems.map(i => i.question_id))];
+  Logger.log('[fetchQuestions] Set items: ' + setItems.length + ' | unique question IDs: ' + questionIds.length);
 
-  if (!questionIds.length) return { sets };
+  if (!questionIds.length) {
+    Logger.log('[fetchQuestions] No questions in sets — returning sets without items');
+    return { sets };
+  }
 
   const qIdFilter = questionIds.map(id => '"question_id" = "' + id + '"').join(' || ');
 
+  Logger.log('[fetchQuestions] Fetching questions, translations, options, and conditions');
   const [questions, allTranslations, allOptions, allConditions] = [
     appsheetRequest_(T.QB_QUESTIONS, 'Find', [], { Filter: qIdFilter }) || [],
     appsheetRequest_(T.QB_TRANSLATIONS, 'Find', [], { Filter: qIdFilter }) || [],
     appsheetRequest_(T.QB_OPTIONS, 'Find', [], { Filter: qIdFilter }) || [],
     appsheetRequest_(T.QB_CONDITIONS, 'Find', [], { Filter: qIdFilter }) || [],
   ];
+  Logger.log('[fetchQuestions] Fetched — questions: ' + questions.length + ' | translations: ' + allTranslations.length + ' | options: ' + allOptions.length + ' | conditions: ' + allConditions.length);
 
   const optionIds = allOptions.map(o => o.option_id);
-  const allOptionTranslations = optionIds.length
-    ? appsheetRequest_(T.QB_OPT_TRANS, 'Find', [], {
-        Filter: optionIds.map(id => '"option_id" = "' + id + '"').join(' || ')
-      }) || []
-    : [];
+  let allOptionTranslations = [];
+  if (optionIds.length) {
+    Logger.log('[fetchQuestions] Fetching option translations for ' + optionIds.length + ' option(s)');
+    allOptionTranslations = appsheetRequest_(T.QB_OPT_TRANS, 'Find', [], {
+      Filter: optionIds.map(id => '"option_id" = "' + id + '"').join(' || ')
+    }) || [];
+    Logger.log('[fetchQuestions] Option translations: ' + allOptionTranslations.length);
+  }
 
   // Build enriched question objects
   const enrichedQuestions = questions.map(q => {
@@ -466,8 +606,8 @@ function fetchQuestions_(p) {
 
     return {
       ...q,
-      question_text:   translation?.question_text   || '',
-      help_text:       translation?.help_text        || '',
+      question_text:    translation?.question_text    || '',
+      help_text:        translation?.help_text        || '',
       placeholder_text: translation?.placeholder_text || '',
       options,
       conditions,
@@ -487,6 +627,7 @@ function fetchQuestions_(p) {
       .map(i => ({ ...i, question: questionMap[i.question_id] })),
   }));
 
+  Logger.log('[fetchQuestions] Complete — returning ' + enrichedSets.length + ' enriched set(s) with ' + enrichedQuestions.length + ' question(s)');
   return { context, sets: enrichedSets };
 }
 
@@ -496,7 +637,12 @@ function fetchQuestions_(p) {
  */
 function saveResponses_(p) {
   const { application_id, respondent_id, respondent_type_category_id, responses } = p;
-  if (!responses || !responses.length) return { saved: 0 };
+  Logger.log('[saveResponses] Start — application_id: ' + application_id + ' | respondent_id: ' + respondent_id + ' | responses: ' + (responses ? responses.length : 0));
+
+  if (!responses || !responses.length) {
+    Logger.log('[saveResponses] No responses to save — returning 0');
+    return { saved: 0 };
+  }
 
   const now  = new Date().toISOString();
   const rows = responses.map(r => ({
@@ -513,7 +659,9 @@ function saveResponses_(p) {
     responded_at:                 now,
   }));
 
+  Logger.log('[saveResponses] Writing ' + rows.length + ' response row(s) to AppSheet');
   appsheetRequest_(T.QB_RESPONSES, 'Add', rows);
+  Logger.log('[saveResponses] Complete — ' + rows.length + ' responses saved OK');
   return { saved: rows.length };
 }
 
@@ -524,17 +672,30 @@ function saveResponses_(p) {
  */
 function uploadDocument_(p) {
   const { application_id, base64, mimeType, filename, document_type } = p;
-  if (!base64 || !application_id) throw new Error('Missing base64 or application_id');
+  const approxSizeKb = Math.round((base64 ? base64.length * 0.75 / 1024 : 0));
+  Logger.log('[uploadDocument] Start — application_id: ' + application_id + ' | filename: ' + filename + ' | mimeType: ' + mimeType + ' | document_type: ' + document_type + ' | approx size: ' + approxSizeKb + 'KB');
 
+  if (!base64 || !application_id) {
+    Logger.log('[uploadDocument] ERROR — missing base64 or application_id');
+    throw new Error('Missing base64 or application_id');
+  }
+
+  Logger.log('[uploadDocument] Decoding base64 and creating blob');
   const blob   = Utilities.newBlob(Utilities.base64Decode(base64), mimeType, filename);
+
+  Logger.log('[uploadDocument] Getting/creating Drive folder: ' + DRIVE_FOLDER_NAME);
   const folder = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
+
+  Logger.log('[uploadDocument] Uploading file to Drive');
   const file   = folder.createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
   const driveUrl   = file.getUrl();
   const documentId = generateUuid_();
   const now        = new Date().toISOString();
+  Logger.log('[uploadDocument] File uploaded to Drive — url: ' + driveUrl + ' | document_id: ' + documentId);
 
+  Logger.log('[uploadDocument] Writing document record to AppSheet');
   appsheetRequest_(T.DOCUMENTS, 'Add', [{
     document_id:     documentId,
     application_id,
@@ -544,6 +705,7 @@ function uploadDocument_(p) {
     uploaded_by:     'applicant',
   }]);
 
+  Logger.log('[uploadDocument] Complete — document_id: ' + documentId);
   return { document_id: documentId, drive_url: driveUrl };
 }
 
@@ -554,9 +716,17 @@ function uploadDocument_(p) {
  */
 function verifyRecaptcha_(p) {
   const { token } = p;
-  if (!token) throw new Error('Missing reCAPTCHA token');
+  Logger.log('[verifyRecaptcha] Start — token length: ' + (token ? token.length : 0));
+
+  if (!token) {
+    Logger.log('[verifyRecaptcha] ERROR — missing token');
+    throw new Error('Missing reCAPTCHA token');
+  }
 
   const secret   = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
+  Logger.log('[verifyRecaptcha] RECAPTCHA_SECRET configured: ' + (secret ? 'yes' : 'NO — missing!'));
+
+  Logger.log('[verifyRecaptcha] Calling Google siteverify API');
   const response = UrlFetchApp.fetch('https://www.google.com/recaptcha/api/siteverify', {
     method:  'post',
     payload: { secret, response: token },
@@ -564,10 +734,13 @@ function verifyRecaptcha_(p) {
   });
 
   const result = JSON.parse(response.getContentText());
+  const pass   = result.success === true && (result.score || 0) >= 0.5;
+  Logger.log('[verifyRecaptcha] Result — success: ' + result.success + ' | score: ' + result.score + ' | pass: ' + pass + (result['error-codes'] ? ' | errors: ' + result['error-codes'].join(',') : ''));
+
   return {
     success: result.success === true,
     score:   result.score || 0,
-    pass:    result.success === true && (result.score || 0) >= 0.5,
+    pass,
   };
 }
 
@@ -579,10 +752,17 @@ function verifyRecaptcha_(p) {
  * @param {Array}  guardians - array of guardian objects with optional contacts array
  */
 function saveGuardians_(applicationId, guardians) {
-  if (!Array.isArray(guardians)) return;
+  if (!Array.isArray(guardians)) {
+    Logger.log('[saveGuardians] WARNING — payload is not an array, skipping');
+    return;
+  }
+  Logger.log('[saveGuardians] Processing ' + guardians.length + ' guardian(s) for application_id: ' + applicationId);
 
   guardians.forEach((g, idx) => {
+    const isNew      = !g.guardian_id;
     const guardianId = g.guardian_id || generateUuid_();
+    Logger.log('[saveGuardians] Guardian ' + (idx + 1) + '/' + guardians.length + ' — id: ' + guardianId + ' | action: ' + (isNew ? 'Add' : 'Edit') + ' | name: ' + (g.first_name || '') + ' ' + (g.last_name || ''));
+
     const guardianRow = {
       guardian_id:          guardianId,
       application_id:       applicationId,
@@ -616,7 +796,7 @@ function saveGuardians_(applicationId, guardians) {
 
     // Upsert contacts
     if (Array.isArray(g.contacts)) {
-      const newContacts = g.contacts.filter(c => !c.contact_id).map(c => ({
+      const newContacts      = g.contacts.filter(c => !c.contact_id).map(c => ({
         contact_id:   generateUuid_(),
         guardian_id:  guardianId,
         contact_type: c.contact_type,
@@ -628,10 +808,13 @@ function saveGuardians_(applicationId, guardians) {
       }));
       const existingContacts = g.contacts.filter(c => c.contact_id);
 
-      if (newContacts.length) appsheetRequest_(T.GUARDIAN_CONTACTS, 'Add', newContacts);
+      Logger.log('[saveGuardians] Guardian ' + (idx + 1) + ' contacts — new: ' + newContacts.length + ' | existing (edit): ' + existingContacts.length);
+      if (newContacts.length)      appsheetRequest_(T.GUARDIAN_CONTACTS, 'Add',  newContacts);
       if (existingContacts.length) appsheetRequest_(T.GUARDIAN_CONTACTS, 'Edit', existingContacts);
     }
   });
+
+  Logger.log('[saveGuardians] All guardians processed OK');
 }
 
 /**
@@ -640,10 +823,17 @@ function saveGuardians_(applicationId, guardians) {
  * @param {Array}  applicants
  */
 function saveApplicants_(applicationId, applicants) {
-  if (!Array.isArray(applicants)) return;
+  if (!Array.isArray(applicants)) {
+    Logger.log('[saveApplicants] WARNING — payload is not an array, skipping');
+    return;
+  }
+  Logger.log('[saveApplicants] Processing ' + applicants.length + ' applicant(s) for application_id: ' + applicationId);
 
   applicants.forEach((a, idx) => {
+    const isNew       = !a.applicant_id;
     const applicantId = a.applicant_id || generateUuid_();
+    Logger.log('[saveApplicants] Applicant ' + (idx + 1) + '/' + applicants.length + ' — id: ' + applicantId + ' | action: ' + (isNew ? 'Add' : 'Edit') + ' | name: ' + (a.first_name || '') + ' ' + (a.last_name || ''));
+
     const applicantRow = {
       applicant_id:               applicantId,
       application_id:             applicationId,
@@ -696,7 +886,8 @@ function saveApplicants_(applicationId, applicants) {
         language_of_instruction:     s.language_of_instruction || null,
       }));
       const existingSchools = a.previous_schools.filter(s => s.previous_school_id);
-      if (newSchools.length) appsheetRequest_(T.PREV_SCHOOLS, 'Add', newSchools);
+      Logger.log('[saveApplicants] Applicant ' + (idx + 1) + ' schools — new: ' + newSchools.length + ' | existing (edit): ' + existingSchools.length);
+      if (newSchools.length)      appsheetRequest_(T.PREV_SCHOOLS, 'Add',  newSchools);
       if (existingSchools.length) appsheetRequest_(T.PREV_SCHOOLS, 'Edit', existingSchools);
     }
 
@@ -710,9 +901,12 @@ function saveApplicants_(applicationId, applicants) {
         is_custodial:          r.is_custodial || false,
         is_pick_up_authorized: r.is_pick_up_authorized || false,
       }));
+      Logger.log('[saveApplicants] Applicant ' + (idx + 1) + ' relations — new: ' + newRelations.length);
       if (newRelations.length) appsheetRequest_(T.GUARDIAN_APPLICANT, 'Add', newRelations);
     }
   });
+
+  Logger.log('[saveApplicants] All applicants processed OK');
 }
 
 /**
@@ -721,11 +915,19 @@ function saveApplicants_(applicationId, applicants) {
  * @param {Array}  healthData - [{ applicant_id, allergies, dietary, medical }]
  */
 function saveHealth_(applicationId, healthData) {
-  if (!Array.isArray(healthData)) return;
+  if (!Array.isArray(healthData)) {
+    Logger.log('[saveHealth] WARNING — payload is not an array, skipping');
+    return;
+  }
+  Logger.log('[saveHealth] Processing health data for ' + healthData.length + ' applicant record(s), application_id: ' + applicationId);
 
-  healthData.forEach(h => {
+  healthData.forEach((h, idx) => {
     const { applicant_id } = h;
-    if (!applicant_id) return;
+    if (!applicant_id) {
+      Logger.log('[saveHealth] WARNING — record ' + (idx + 1) + ' missing applicant_id, skipping');
+      return;
+    }
+    Logger.log('[saveHealth] Applicant ' + (idx + 1) + ' (' + applicant_id + ') — allergies: ' + (h.allergies ? h.allergies.length : 0) + ' | dietary: ' + (h.dietary ? h.dietary.length : 0) + ' | medical: ' + (h.medical ? h.medical.length : 0));
 
     if (Array.isArray(h.allergies)) {
       const rows = h.allergies.filter(x => !x.record_id).map(x => ({
@@ -734,7 +936,10 @@ function saveHealth_(applicationId, healthData) {
         food_allergy_id: x.food_allergy_id || null,
         observations:    x.observations || null,
       }));
-      if (rows.length) appsheetRequest_(T.ALLERGIES, 'Add', rows);
+      if (rows.length) {
+        Logger.log('[saveHealth] Adding ' + rows.length + ' allergy record(s) for applicant: ' + applicant_id);
+        appsheetRequest_(T.ALLERGIES, 'Add', rows);
+      }
     }
 
     if (Array.isArray(h.dietary)) {
@@ -744,7 +949,10 @@ function saveHealth_(applicationId, healthData) {
         diet_id:      x.diet_id || null,
         observations: x.observations || null,
       }));
-      if (rows.length) appsheetRequest_(T.DIETARY, 'Add', rows);
+      if (rows.length) {
+        Logger.log('[saveHealth] Adding ' + rows.length + ' dietary record(s) for applicant: ' + applicant_id);
+        appsheetRequest_(T.DIETARY, 'Add', rows);
+      }
     }
 
     if (Array.isArray(h.medical)) {
@@ -754,9 +962,14 @@ function saveHealth_(applicationId, healthData) {
         medical_condition_id: x.medical_condition_id || null,
         observations:         x.observations || null,
       }));
-      if (rows.length) appsheetRequest_(T.MEDICAL, 'Add', rows);
+      if (rows.length) {
+        Logger.log('[saveHealth] Adding ' + rows.length + ' medical record(s) for applicant: ' + applicant_id);
+        appsheetRequest_(T.MEDICAL, 'Add', rows);
+      }
     }
   });
+
+  Logger.log('[saveHealth] All health records processed OK');
 }
 
 // ─── Email helpers ────────────────────────────────────────────────────────────
@@ -767,10 +980,12 @@ function saveHealth_(applicationId, healthData) {
  * @param {string} bodyHtml - inner HTML content (no shell)
  */
 function sendInternalEmail_(subject, bodyHtml) {
+  Logger.log('[sendInternalEmail] Sending to: ' + ADMISSIONS_EMAIL + ' | subject: ' + subject);
   GmailApp.sendEmail(ADMISSIONS_EMAIL, subject, '', {
     htmlBody: buildInternalEmail_(subject, bodyHtml),
     name: 'KIS Admissions System',
   });
+  Logger.log('[sendInternalEmail] Sent OK');
 }
 
 /**
@@ -781,6 +996,8 @@ function sendInternalEmail_(subject, bodyHtml) {
  */
 function sendMagicLinkEmail_(email, resumeToken, lang) {
   const resumeUrl = RESUME_BASE_URL + resumeToken;
+  Logger.log('[sendMagicLinkEmail] Sending to: ' + email + ' | lang: ' + lang + ' | resume_url: ' + resumeUrl);
+
   const isEn = lang === 'en';
 
   const subject = isEn
@@ -801,6 +1018,7 @@ function sendMagicLinkEmail_(email, resumeToken, lang) {
     htmlBody: buildFamilyEmail_(subject, body),
     name: 'Kaleide International School',
   });
+  Logger.log('[sendMagicLinkEmail] Sent OK to: ' + email);
 }
 
 /**
@@ -808,6 +1026,7 @@ function sendMagicLinkEmail_(email, resumeToken, lang) {
  */
 function sendFamilyConfirmationEmail_(email, applicationId, applicants, lang) {
   const names = applicants.map(a => (a.first_name || '') + ' ' + (a.last_name || '')).join(', ');
+  Logger.log('[sendFamilyConfirmationEmail] Sending to: ' + email + ' | applicants: ' + names + ' | lang: ' + lang);
 
   const body =
     '<h2 style="color:#00a19a;">Thank you / Gracias</h2>' +
@@ -823,6 +1042,7 @@ function sendFamilyConfirmationEmail_(email, applicationId, applicants, lang) {
     htmlBody: buildFamilyEmail_('Enrollment application received', body),
     name: 'Kaleide International School',
   });
+  Logger.log('[sendFamilyConfirmationEmail] Sent OK to: ' + email);
 }
 
 // ─── Email builders ───────────────────────────────────────────────────────────
@@ -955,7 +1175,14 @@ function appsheetRequest_(table, action, rows, selector) {
   const appId  = props.getProperty('APPSHEET_APP_ID');
   const apiKey = props.getProperty('APPSHEET_ACCESS_KEY');
 
-  if (!appId || !apiKey) throw new Error('AppSheet credentials not configured in Script Properties');
+  if (!appId || !apiKey) {
+    Logger.log('[appsheetRequest] ERROR — AppSheet credentials not set in Script Properties (APPSHEET_APP_ID: ' + !!appId + ', APPSHEET_ACCESS_KEY: ' + !!apiKey + ')');
+    throw new Error('AppSheet credentials not configured in Script Properties');
+  }
+
+  const rowCount = rows ? rows.length : 0;
+  const filterSnippet = selector && selector.Filter ? selector.Filter.substring(0, 80) : '';
+  Logger.log('[appsheetRequest] → ' + action + ' ' + table + (rowCount > 0 ? ' [' + rowCount + ' row(s)]' : '') + (filterSnippet ? ' | Filter: ' + filterSnippet : ''));
 
   const url  = APPSHEET_BASE_URL + appId + '/tables/' + encodeURIComponent(table) + '/Action';
   const body = { Action: action, Properties: { Locale: 'en-US' } };
@@ -963,6 +1190,7 @@ function appsheetRequest_(table, action, rows, selector) {
   if (rows && rows.length > 0) body.Rows = rows;
   if (selector)                body.Properties = { ...body.Properties, ...selector };
 
+  const t0 = Date.now();
   const response = UrlFetchApp.fetch(url, {
     method:             'post',
     contentType:        'application/json',
@@ -972,18 +1200,27 @@ function appsheetRequest_(table, action, rows, selector) {
   });
 
   const statusCode = response.getResponseCode();
+  const elapsed    = Date.now() - t0;
   const text       = response.getContentText();
 
   if (statusCode < 200 || statusCode >= 300) {
+    Logger.log('[appsheetRequest] ERROR — HTTP ' + statusCode + ' on ' + table + '/' + action + ' (' + elapsed + 'ms) | response: ' + text.substring(0, 200));
     throw new Error('AppSheet API error ' + statusCode + ' on ' + table + '/' + action + ': ' + text);
   }
 
+  let parsed;
   try {
-    const parsed = JSON.parse(text);
-    return parsed.Rows || parsed.rows || parsed || null;
+    parsed = JSON.parse(text);
   } catch (_) {
+    Logger.log('[appsheetRequest] WARNING — could not parse JSON response for ' + table + '/' + action + ' (' + elapsed + 'ms)');
     return null;
   }
+
+  const resultRows = parsed.Rows || parsed.rows || parsed || null;
+  const resultCount = Array.isArray(resultRows) ? resultRows.length : (resultRows ? 1 : 0);
+  Logger.log('[appsheetRequest] ← HTTP ' + statusCode + ' ' + table + '/' + action + ' (' + elapsed + 'ms) | rows returned: ' + resultCount);
+
+  return resultRows;
 }
 
 // ─── Utility helpers ──────────────────────────────────────────────────────────
@@ -1022,9 +1259,17 @@ function formatTimestamp_(isoString) {
  * @returns {Folder}
  */
 function getOrCreateDriveFolder_(name) {
+  Logger.log('[getOrCreateDriveFolder] Looking for folder: ' + name);
   const folders = DriveApp.getFoldersByName(name);
-  if (folders.hasNext()) return folders.next();
-  return DriveApp.createFolder(name);
+  if (folders.hasNext()) {
+    const folder = folders.next();
+    Logger.log('[getOrCreateDriveFolder] Existing folder found: ' + folder.getId());
+    return folder;
+  }
+  Logger.log('[getOrCreateDriveFolder] Folder not found — creating new folder: ' + name);
+  const newFolder = DriveApp.createFolder(name);
+  Logger.log('[getOrCreateDriveFolder] Created folder: ' + newFolder.getId());
+  return newFolder;
 }
 
 /**
