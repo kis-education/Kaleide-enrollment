@@ -37,8 +37,9 @@ export function WizardProvider({ children }) {
     setStepData(prev => ({
       ...prev,
       email: {
-        primary_email: appData.application.primary_email || '',
-        verified: appData.application.email_confirmed || false,
+        primary_email:      appData.application.primary_email      || '',
+        verified:           appData.application.email_confirmed    || false,
+        desired_start_date: appData.application.desired_start_date || '',
       },
       persons:   appData.persons   || [],
       relations: appData.relations || [],

@@ -28,6 +28,7 @@
   "step1.resend_prompt": "¿No lo has recibido?",
   "step1.resend_link": "Reenviar código",
   "step1.verified": "Correo verificado: {{email}}",
+  "step1.start_date_title": "¿Cuándo le gustaría que su hijo/a comenzase?",
 
   "step2.subtitle": "Añade todos los tutores y los alumnos que deseas matricular.",
   "step3.subtitle": "Indica el vínculo entre cada tutor y cada alumno.",

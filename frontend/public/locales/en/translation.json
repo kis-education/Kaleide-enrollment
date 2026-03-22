@@ -28,6 +28,7 @@
   "step1.resend_prompt": "Didn't receive it?",
   "step1.resend_link": "Resend code",
   "step1.verified": "Email verified: {{email}}",
+  "step1.start_date_title": "When would you like your child to start?",
 
   "step2.subtitle": "Add all guardians and the children you wish to enrol.",
   "step3.subtitle": "Specify the relationship between each guardian and each student.",

@@ -3,12 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 
-const CURRENT_YEAR = new Date().getFullYear();
-const SCHOOL_YEARS = Array.from({ length: 5 }, (_, i) => {
-  const y = CURRENT_YEAR + i;
-  return { value: String(y), label: `${y}/${String(y + 1).slice(-2)}` };
-});
-
 const emptyPerson = (type) => ({
   _uid:                        Date.now() + Math.random(),
   person_type_id:              type,
@@ -22,19 +16,12 @@ const emptyPerson = (type) => ({
   id_type_id:                  '',     // UI-only flat field → transformed on save
   id_number:                   '',     // UI-only flat field → transformed on save
   // Guardian-specific
-  profession:                  '',
-  employer:                    '',
   is_primary_contact:          false,
   is_emergency_contact:        false,
   emails:                      [],
   phones:                      [],
   // Applicant-specific
-  _school_year:                String(CURRENT_YEAR),
-  _start_type:                 'september',
-  desired_start_date:          '',
   desired_education_level_id:  '',
-  has_adaptation_needs:        false,
-  adaptation_notes:            '',
   is_sibling:                  false,
   is_alumni_family:            false,
   is_transfer:                 false,
@@ -158,20 +145,6 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
     }
   };
 
-  const handleStartType = (type) => {
-    const year      = person._school_year || String(CURRENT_YEAR);
-    const startDate = type === 'september' ? `${year}-09-01` : '';
-    onChange({ ...person, _start_type: type, desired_start_date: startDate });
-  };
-
-  const handleSchoolYear = (year) => {
-    if (person._start_type === 'september') {
-      onChange({ ...person, _school_year: year, desired_start_date: `${year}-09-01` });
-    } else {
-      onChange({ ...person, _school_year: year });
-    }
-  };
-
   const updateSchool = (i, val) => {
     const ps = [...(person.previous_schools || [])];
     ps[i] = val;
@@ -252,14 +225,6 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
       {/* Guardian-specific fields */}
       {isGuardian && (
         <div className="row g-3 mt-1">
-          <div className="col-md-4">
-            <label className="form-label">{t('field.profession')}</label>
-            <input className="form-control" value={person.profession} onChange={e => u('profession', e.target.value)} />
-          </div>
-          <div className="col-md-6">
-            <label className="form-label">{t('field.employer')}</label>
-            <input className="form-control" value={person.employer} onChange={e => u('employer', e.target.value)} />
-          </div>
           <div className="col-12 d-flex gap-4">
             <div className="form-check">
               <input type="checkbox" className="form-check-input" id={`primary_${idx}`}
@@ -275,74 +240,21 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         </div>
       )}
 
-      {/* Applicant enrolment details */}
-      {isApplicant && (
-        <div className="mt-3 p-3 rounded" style={{ background: 'var(--teal-lt)' }}>
-          <h6 style={{ color: 'var(--teal-dk)', marginBottom: 12 }}>{t('applicant.enrolment')}</h6>
-          <div className="row g-3">
-            <div className="col-md-4">
-              <label className="form-label">{t('field.school_year')}</label>
-              <select className="form-select" value={person._school_year} onChange={e => handleSchoolYear(e.target.value)}>
-                {SCHOOL_YEARS.map(y => <option key={y.value} value={y.value}>{y.label}</option>)}
-              </select>
-            </div>
-            <div className="col-md-8">
-              <label className="form-label">{t('field.start_type')}</label>
-              <div className="d-flex gap-3">
-                <div className="form-check">
-                  <input type="radio" className="form-check-input" name={`startType_${idx}`} id={`sep_${idx}`}
-                    checked={person._start_type === 'september'} onChange={() => handleStartType('september')} />
-                  <label className="form-check-label" htmlFor={`sep_${idx}`}>{t('start.september')}</label>
-                </div>
-                <div className="form-check">
-                  <input type="radio" className="form-check-input" name={`startType_${idx}`} id={`mid_${idx}`}
-                    checked={person._start_type === 'midterm'} onChange={() => handleStartType('midterm')} />
-                  <label className="form-check-label" htmlFor={`mid_${idx}`}>{t('start.midterm')}</label>
-                </div>
-              </div>
-            </div>
-            {person._start_type === 'midterm' && (
-              <div className="col-md-4">
-                <label className="form-label">{t('field.start_date')}</label>
-                <input type="date" className="form-control"
-                  value={person.desired_start_date}
-                  onChange={e => u('desired_start_date', e.target.value)} />
-                <div className="disclaimer-box mt-2">
-                  {t('start.disclaimer_en')}
-                  <hr style={{ margin: '6px 0' }} />
-                  {t('start.disclaimer_es')}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Applicant flags */}
       {isApplicant && (
-        <>
-          <div className="mt-3 d-flex flex-wrap gap-3">
-            {[
-              ['has_adaptation_needs', 'applicant.has_adaptation'],
-              ['is_sibling',           'applicant.is_sibling'],
-              ['is_alumni_family',     'applicant.is_alumni'],
-              ['is_transfer',          'applicant.is_transfer'],
-            ].map(([field, labelKey]) => (
-              <div className="form-check" key={field}>
-                <input type="checkbox" className="form-check-input" id={`${field}_${idx}`}
-                  checked={!!person[field]} onChange={e => u(field, e.target.checked)} />
-                <label className="form-check-label" htmlFor={`${field}_${idx}`}>{t(labelKey)}</label>
-              </div>
-            ))}
-          </div>
-          {person.has_adaptation_needs && (
-            <div className="mt-2">
-              <label className="form-label">{t('field.adaptation_notes')}</label>
-              <textarea className="form-control" rows={2} value={person.adaptation_notes}
-                onChange={e => u('adaptation_notes', e.target.value)} />
+        <div className="mt-3 d-flex flex-wrap gap-3">
+          {[
+            ['is_sibling',       'applicant.is_sibling'],
+            ['is_alumni_family', 'applicant.is_alumni'],
+            ['is_transfer',      'applicant.is_transfer'],
+          ].map(([field, labelKey]) => (
+            <div className="form-check" key={field}>
+              <input type="checkbox" className="form-check-input" id={`${field}_${idx}`}
+                checked={!!person[field]} onChange={e => u(field, e.target.checked)} />
+              <label className="form-check-label" htmlFor={`${field}_${idx}`}>{t(labelKey)}</label>
             </div>
-          )}
-        </>
+          ))}
+        </div>
       )}
 
       {/* Emails */}
@@ -487,8 +399,6 @@ function transformPersonForSave(person) {
 
   // Clean UI-only fields
   delete out._uid;
-  delete out._school_year;
-  delete out._start_type;
   delete out._sameAddress;
 
   return out;
