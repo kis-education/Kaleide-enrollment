@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
+import { CONSENT_TEXTS } from '../../consentTexts';
 
 const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
@@ -36,8 +37,9 @@ function loadRecaptcha(siteKey) {
 }
 
 export default function Step7Review({ onBack }) {
-  const { t }        = useTranslation();
+  const { t, i18n }  = useTranslation();
   const navigate     = useNavigate();
+  const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
   const { applicationId, stepData } = useWizard();
 
   const { email, guardians, applicants, health, documents } = stepData;
@@ -72,10 +74,10 @@ export default function Step7Review({ onBack }) {
       await gasCall('submitApplication', {
         application_id: applicationId,
         esignature:     esig,
-        language:       t('lang_code'),
+        language:       lang,
         consents: [
-          { type: 'gdpr',  accepted: consentGdpr  },
-          { type: 'legal', accepted: consentLegal },
+          { type: 'gdpr',  accepted: consentGdpr,  consent_text_shown: CONSENT_TEXTS.gdpr[lang]  },
+          { type: 'legal', accepted: consentLegal, consent_text_shown: CONSENT_TEXTS.legal[lang] },
         ],
       });
 
@@ -145,10 +147,10 @@ export default function Step7Review({ onBack }) {
 
         <div className="consent-block">
           <p className="consent-text">
-            <strong>EN:</strong> {t('consent.gdpr_en')}
+            <strong>EN:</strong> {CONSENT_TEXTS.gdpr.en}
           </p>
           <p className="consent-text">
-            <strong>ES:</strong> {t('consent.gdpr_es')}
+            <strong>ES:</strong> {CONSENT_TEXTS.gdpr.es}
           </p>
           <div className="form-check">
             <input type="checkbox" className="form-check-input" id="consent_gdpr"
@@ -161,10 +163,10 @@ export default function Step7Review({ onBack }) {
 
         <div className="consent-block">
           <p className="consent-text">
-            <strong>EN:</strong> {t('consent.legal_en')}
+            <strong>EN:</strong> {CONSENT_TEXTS.legal.en}
           </p>
           <p className="consent-text">
-            <strong>ES:</strong> {t('consent.legal_es')}
+            <strong>ES:</strong> {CONSENT_TEXTS.legal.es}
           </p>
           <div className="form-check">
             <input type="checkbox" className="form-check-input" id="consent_legal"

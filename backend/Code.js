@@ -23,6 +23,19 @@ const RESUME_BASE_URL    = 'https://admissions.kaleide.org/resume/';
 const LOGO_URL           = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 const APPSHEET_BASE_URL  = 'https://api.appsheet.com/api/v2/apps/';
 
+// Consent statement texts — canonical wording used for GDPR audit trail.
+// The React frontend (frontend/src/consentTexts.js) defines the same strings — keep in sync.
+const CONSENT_TEXTS = {
+  gdpr: {
+    en: "I consent to the collection and processing of my personal data in accordance with Kaleide International School's Privacy Policy and applicable data protection legislation (GDPR).",
+    es: "Consiento la recogida y el tratamiento de mis datos personales de acuerdo con la Política de Privacidad de Kaleide International School y la legislación de protección de datos aplicable (RGPD).",
+  },
+  legal: {
+    en: "I confirm that the information provided in this application is accurate and complete to the best of my knowledge.",
+    es: "Confirmo que la información proporcionada en esta solicitud es exacta y completa según mi leal saber y entender.",
+  },
+};
+
 // AppSheet table names matching the enr* / qb* schema
 const T = {
   APPLICATIONS:       'enrApplications',
@@ -309,15 +322,19 @@ function submitApplication_(p) {
     reason:               'Application submitted by family',
   }]);
 
+  const lang = p.language || 'es';
+
   // Log GDPR consent
+  let consentRows = [];
   if (p.consents) {
-    const consentRows = p.consents.map(c => ({
-      consent_id:        generateUuid_(),
+    consentRows = p.consents.map(c => ({
+      consent_id:         generateUuid_(),
       application_id,
-      consent_type:      c.type,
-      consented:         c.accepted,
-      consent_timestamp: now,
-      language:          p.language || 'es',
+      consent_type:       c.type,
+      consent_text_shown: c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
+      consented:          c.accepted,
+      consent_timestamp:  now,
+      language:           lang,
     }));
     if (consentRows.length) appsheetRequest_(T.CONSENTS, 'Add', consentRows);
   }
@@ -332,6 +349,21 @@ function submitApplication_(p) {
         Filter: guardianIds.map(gid => '"guardian_id" = "' + gid + '"').join(' || ')
       }) || []
     : [];
+
+  // Generate signed consent PDF and record in enrApplicationDocuments
+  try {
+    const pdfUrl = generateConsentPdf_(application_id, app, guardians, contacts, applicants, consentRows, p.esignature || '', now);
+    appsheetRequest_(T.DOCUMENTS, 'Add', [{
+      document_id:   generateUuid_(),
+      application_id,
+      document_type: 'signed_consent_record',
+      drive_url:     pdfUrl,
+      uploaded_at:   now,
+      uploaded_by:   'system',
+    }]);
+  } catch (pdfErr) {
+    Logger.log('PDF generation error (non-fatal): ' + pdfErr.message);
+  }
 
   // Send family confirmation (bilingual)
   sendFamilyConfirmationEmail_(app.primary_email, application_id, applicants, app.preferred_language || 'es');
@@ -984,6 +1016,107 @@ function appsheetRequest_(table, action, rows, selector) {
   } catch (_) {
     return null;
   }
+}
+
+// ─── PDF generation ───────────────────────────────────────────────────────────
+
+/**
+ * Generates a PDF summary of a submitted application containing all guardian and
+ * applicant details, full consent statement texts, consent decisions, and e-signature.
+ * Saves the PDF to the "KIS Admissions Documents" Drive folder.
+ *
+ * @param {string} applicationId
+ * @param {Object} app           - Application row
+ * @param {Array}  guardians     - Guardian rows
+ * @param {Array}  contacts      - Guardian contact rows
+ * @param {Array}  applicants    - Applicant rows
+ * @param {Array}  consentRows   - Consent rows as written to enrConsentsLog
+ * @param {string} esignature    - Typed e-signature name
+ * @param {string} submittedAt   - ISO submission timestamp
+ * @returns {string} Drive URL of the generated PDF
+ */
+function generateConsentPdf_(applicationId, app, guardians, contacts, applicants, consentRows, esignature, submittedAt) {
+  const docTitle = 'Signed Consent Record — ' + applicationId;
+  const doc  = DocumentApp.create(docTitle);
+  const body = doc.getBody();
+  const nl   = () => body.appendParagraph('');
+
+  // ── Title ──────────────────────────────────────────────────────────────────
+  body.appendParagraph('Kaleide International School — Signed Consent Record')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING1);
+  body.appendParagraph('Application ID: ' + applicationId);
+  body.appendParagraph('Submitted: ' + formatTimestamp_(submittedAt));
+  nl();
+
+  // ── Guardians ──────────────────────────────────────────────────────────────
+  body.appendParagraph('Guardians / Tutores')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+
+  guardians.forEach((g, i) => {
+    const gContacts = contacts.filter(c => c.guardian_id === g.guardian_id);
+    const emails    = gContacts.filter(c => c.contact_type === 'email').map(c => c.value).join(', ');
+    const phones    = gContacts.filter(c => c.contact_type === 'phone').map(c =>
+      c.value + (c.is_whatsapp ? ' (WhatsApp)' : '') + (c.is_telegram ? ' (Telegram)' : '')
+    ).join(', ');
+
+    body.appendParagraph((i + 1) + '. ' + (g.first_name || '') + ' ' + (g.last_name || ''))
+      .setBold(true);
+    if (emails) body.appendParagraph('   Email: ' + emails);
+    if (phones) body.appendParagraph('   Phone: ' + phones);
+    if (g.address_line_1) body.appendParagraph('   Address: ' + [g.address_line_1, g.address_line_2, g.city, g.province, g.country_id, g.zip].filter(Boolean).join(', '));
+    nl();
+  });
+
+  // ── Applicants ─────────────────────────────────────────────────────────────
+  body.appendParagraph('Applicants / Alumnos')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+
+  applicants.forEach((a, i) => {
+    body.appendParagraph((i + 1) + '. ' + (a.first_name || '') + ' ' + (a.last_name || ''))
+      .setBold(true);
+    if (a.date_of_birth)       body.appendParagraph('   Date of birth: ' + a.date_of_birth);
+    if (a.desired_start_date)  body.appendParagraph('   Desired start date: ' + a.desired_start_date);
+    nl();
+  });
+
+  // ── Consents ───────────────────────────────────────────────────────────────
+  body.appendParagraph('Consents / Consentimientos')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+
+  consentRows.forEach(c => {
+    body.appendParagraph('Consent type: ' + (c.consent_type || ''))
+      .setBold(true);
+    if (c.consent_text_shown) {
+      body.appendParagraph('Statement shown to family:');
+      body.appendParagraph(c.consent_text_shown)
+        .setItalic(true);
+    }
+    body.appendParagraph('Decision: ' + (c.consented ? 'Accepted / Aceptado' : 'Declined / Rechazado'));
+    body.appendParagraph('Consent timestamp: ' + formatTimestamp_(c.consent_timestamp));
+    if (c.ip_address) body.appendParagraph('IP address: ' + c.ip_address);
+    nl();
+  });
+
+  // ── E-signature ────────────────────────────────────────────────────────────
+  body.appendParagraph('Electronic Signature / Firma Electrónica')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Typed name: ' + (esignature || '(not provided)'));
+  body.appendParagraph('Submission timestamp: ' + formatTimestamp_(submittedAt));
+
+  doc.saveAndClose();
+
+  // Export Google Doc as PDF, save to Drive, remove intermediate Doc
+  const docFile = DriveApp.getFileById(doc.getId());
+  const pdfBlob = docFile.getAs('application/pdf');
+  pdfBlob.setName('consent_record_' + applicationId + '.pdf');
+
+  const folder  = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
+  const pdfFile = folder.createFile(pdfBlob);
+  pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  docFile.setTrashed(true);
+
+  return pdfFile.getUrl();
 }
 
 // ─── Utility helpers ──────────────────────────────────────────────────────────
