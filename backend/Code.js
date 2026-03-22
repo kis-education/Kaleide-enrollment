@@ -837,10 +837,11 @@ function verifyRecaptcha_(p) {
 function savePersons_(applicationId, persons) {
   if (!Array.isArray(persons)) return;
 
-  const personAddressIds = {}; // person_id → address_id, for address copy resolution
+  const personAddressIds = {}; // person_id/uid → address_id, for address copy resolution
 
   persons.forEach((person, idx) => {
     const personId    = person.person_id || generateUuid_();
+    const personUid   = person._uid;
     const now         = new Date().toISOString();
     const isGuardian  = person.person_type_id === 'guardian';
     const isApplicant = person.person_type_id === 'applicant';
@@ -862,7 +863,10 @@ function savePersons_(applicationId, persons) {
     if (person.person_id) {
       appsheetRequest_(T.PERSONS, 'Edit', [personRow]);
     } else {
-      appsheetRequest_(T.PERSONS, 'Add', [personRow]);
+      const addResult = appsheetRequest_(T.PERSONS, 'Add', [personRow]);
+      if (!addResult || (Array.isArray(addResult) && addResult.length === 0)) {
+        throw new Error('AppSheet rejected Add for ' + personRow.person_type_id + ' person — check table validation rules, required fields, or security filters in AppSheet');
+      }
     }
 
     // ── Nationalities ─────────────────────────────────────────────────────────
@@ -903,8 +907,9 @@ function savePersons_(applicationId, persons) {
 
     // ── Address ───────────────────────────────────────────────────────────────
     let addressId = null;
-    if (person.copy_address_from_person_id && personAddressIds[person.copy_address_from_person_id]) {
-      addressId = personAddressIds[person.copy_address_from_person_id];
+    const copyFrom = person.copy_address_from_person_id;
+    if (copyFrom && (personAddressIds[copyFrom] || personAddressIds[String(copyFrom)])) {
+      addressId = personAddressIds[copyFrom] || personAddressIds[String(copyFrom)];
     } else if (person.address && hasAddressData_(person.address)) {
       const newAddressId = generateUuid_();
       appsheetRequest_(T.ADDRESSES, 'Add', [{
@@ -930,6 +935,7 @@ function savePersons_(applicationId, persons) {
       }]);
     }
     personAddressIds[personId] = addressId;
+    if (personUid) personAddressIds[String(personUid)] = addressId; // also key by _uid for copy resolution
 
     // ── Emails ────────────────────────────────────────────────────────────────
     if (Array.isArray(person.emails)) {
