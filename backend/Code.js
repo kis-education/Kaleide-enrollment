@@ -1751,17 +1751,30 @@ function hasAddressData_(addr) {
  */
 /**
  * Normalises any date string to ISO YYYY-MM-DD.
- * AppSheet returns dates as M/D/YYYY; the frontend always expects ISO format.
+ * Always checks for ISO format first (safe, format-independent).
+ * Falls back to JavaScript Date parsing for other formats — reliable for
+ * unambiguous strings (e.g. M/D/YYYY when day > 12) but ambiguous for
+ * dates like 1/3/2026 where locale determines whether that is Jan 3 or Mar 1.
+ *
+ * IMPORTANT: configure AppSheet locale to use YYYY-MM-DD date format so the
+ * ISO check always fires and locale ambiguity never arises.
+ *
  * Returns null for falsy input.
  */
 function normalizeDate_(dateStr) {
   if (!dateStr) return null;
+  // Already ISO — format-independent, always safe
   if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 10);
-  const parts = dateStr.split('/');
-  if (parts.length === 3) {
-    const [m, d, y] = parts;
-    return y + '-' + m.padStart(2, '0') + '-' + d.padStart(2, '0');
+  // Attempt generic parse via Date object (handles most formats V8 knows about)
+  const d = new Date(dateStr);
+  if (!isNaN(d.getTime())) {
+    const y   = d.getFullYear();
+    const m   = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
   }
+  // Unknown format — return as-is and log so we know to handle it
+  Logger.log('normalizeDate_: unrecognised format "' + dateStr + '"');
   return dateStr;
 }
 
