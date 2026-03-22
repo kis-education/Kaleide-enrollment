@@ -863,10 +863,7 @@ function savePersons_(applicationId, persons) {
     if (person.person_id) {
       appsheetRequest_(T.PERSONS, 'Edit', [personRow]);
     } else {
-      const addResult = appsheetRequest_(T.PERSONS, 'Add', [personRow]);
-      if (!addResult || (Array.isArray(addResult) && addResult.length === 0)) {
-        throw new Error('AppSheet rejected Add for ' + personRow.person_type_id + ' person — check table validation rules, required fields, or security filters in AppSheet');
-      }
+      appsheetRequest_(T.PERSONS, 'Add', [personRow]);
     }
 
     // ── Nationalities ─────────────────────────────────────────────────────────
@@ -1415,22 +1412,21 @@ function appsheetRequest_(table, action, rows, selector) {
   const statusCode = response.getResponseCode();
   const text       = response.getContentText();
 
-  Logger.log('AppSheet ' + action + ' ' + table + ' → HTTP ' + statusCode + ' | ' + text.slice(0, 400));
+  Logger.log('AppSheet ' + action + ' ' + table + ' → HTTP ' + statusCode + ' | ' + text.slice(0, 600));
 
   if (statusCode < 200 || statusCode >= 300) {
-    throw new Error('AppSheet API error ' + statusCode + ' on ' + table + '/' + action + ': ' + text);
+    throw new Error('AppSheet HTTP ' + statusCode + ' on ' + table + '/' + action + ': ' + text.slice(0, 300));
   }
 
   try {
     const parsed = JSON.parse(text);
-    // AppSheet sometimes returns HTTP 200 with an error payload
     if (parsed && typeof parsed.error === 'string') {
       throw new Error('AppSheet error on ' + table + '/' + action + ': ' + parsed.error);
     }
     const resultRows = parsed.Rows || parsed.rows || null;
-    // Warn if an Add/Edit returned no rows — indicates a silent rejection
-    if ((action === 'Add' || action === 'Edit') && rows && rows.length > 0 && resultRows && resultRows.length === 0) {
-      Logger.log('AppSheet warning: ' + action + ' on ' + table + ' sent ' + rows.length + ' row(s) but got 0 back — possible validation failure');
+    if ((action === 'Add' || action === 'Edit') && rows && rows.length > 0 && resultRows !== null && resultRows.length === 0) {
+      // Throw so the error surfaces in the DEV LOG with the full AppSheet response
+      throw new Error('AppSheet silently rejected ' + action + ' on ' + table + ' (0 rows returned). Response: ' + text.slice(0, 400));
     }
     return resultRows || parsed || null;
   } catch (e) {
