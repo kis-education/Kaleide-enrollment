@@ -64,6 +64,7 @@ const T = {
   PERSON_ALLERGIES:     'enrPersonFoodAllergies',
   PERSON_DIETARY:       'enrPersonDietaryRequirements',
   DOCUMENTS:            'enrApplicationDocuments',
+  INTERVIEWS:           'enrInterviews',
   QB_CONTEXTS:          'qbContexts',
   QB_SETS:              'qbQuestionSets',
   QB_SET_ITEMS:         'qbQuestionSetItems',
@@ -79,6 +80,21 @@ const T = {
   SMS_RELATIONAL_RECORDS: 'relationalRecords',
   SMS_PERSON_CATEGORIES:  'personCategoriesLog',
 };
+
+/**
+ * Returns the authenticated staff email for the current GAS execution context.
+ * Used to populate changed_by, reviewed_by, and interviewer_id fields.
+ * Returns null when the script runs in an unauthenticated context (e.g. public web app).
+ * @returns {string|null}
+ */
+function getStaffEmail_() {
+  try {
+    const email = Session.getActiveUser().getEmail();
+    return email || null;
+  } catch (_) {
+    return null;
+  }
+}
 
 // ─── Entry points ─────────────────────────────────────────────────────────────
 
@@ -217,13 +233,15 @@ function resumeApplication_(p) {
   const app = apps[0];
   const id  = app.application_id;
 
-  const persons   = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
-  const relations = appsheetRequest_(T.RELATIONS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
-  const documents = appsheetRequest_(T.DOCUMENTS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
-  const responses = appsheetRequest_(T.QB_RESPONSES,  'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [];
+  const persons    = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const relations  = appsheetRequest_(T.RELATIONS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const documents  = appsheetRequest_(T.DOCUMENTS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const responses  = appsheetRequest_(T.QB_RESPONSES,  'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [];
+  // interview_type is a plain enum string; interviewer_id is a plain email string — no FK resolution
+  const interviews = appsheetRequest_(T.INTERVIEWS,    'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
 
   if (!persons.length) {
-    return { application: app, persons: [], relations, documents, responses };
+    return { application: app, persons: [], relations, documents, responses, interviews };
   }
 
   const personIds = persons.map(per => per.person_id);
@@ -286,7 +304,7 @@ function resumeApplication_(p) {
     };
   });
 
-  return { application: app, persons: enrichedPersons, relations, documents, responses };
+  return { application: app, persons: enrichedPersons, relations, documents, responses, interviews };
 }
 
 /**
@@ -297,11 +315,16 @@ function saveStep_(p) {
   const { application_id, step, payload } = p;
   if (!application_id || !step || !payload) throw new Error('Missing required fields');
 
-  // Update application record — include application-level fields when saving the application step
+  // Update application record — include step-specific application-level fields
   const appRow = { application_id, updated_at: new Date().toISOString() };
   if (step === 'application') {
     appRow.desired_start_date = payload.desired_start_date || null;
     appRow.source             = payload.source             || 'enrollment_site';
+  }
+  if (step === 'review') {
+    // reviewed_by is always the authenticated staff email — never a client-supplied value
+    appRow.reviewed_by   = getStaffEmail_();
+    appRow.review_notes  = payload.review_notes || null;
   }
   appsheetRequest_(T.APPLICATIONS, 'Edit', [appRow]);
 
@@ -309,6 +332,37 @@ function saveStep_(p) {
     case 'application':
       // Application-level fields already written above
       break;
+    case 'review': {
+      // Log the status transition when a status_code is supplied
+      if (payload.status_code) {
+        const newStatusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
+          Filter: '"status_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '"'
+        });
+        const newStatusTypeId = newStatusTypes && newStatusTypes[0]
+          ? newStatusTypes[0].status_type_id : null;
+        if (newStatusTypeId) {
+          const currentApps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
+            Filter: '"application_id" = "' + application_id + '"'
+          });
+          const currentApp = currentApps && currentApps[0];
+          appsheetRequest_(T.STATUS_LOG, 'Add', [{
+            log_id:              generateUuid_(),
+            application_id,
+            from_status_type_id: currentApp ? currentApp.status_type_id : null,
+            to_status_type_id:   newStatusTypeId,
+            changed_by:          getStaffEmail_(),
+            changed_at:          new Date().toISOString(),
+            reason:              payload.reason || null,
+          }]);
+          appsheetRequest_(T.APPLICATIONS, 'Edit', [{
+            application_id,
+            status_type_id: newStatusTypeId,
+            updated_at:     new Date().toISOString(),
+          }]);
+        }
+      }
+      break;
+    }
     case 'persons':
       savePersons_(application_id, payload);
       break;
@@ -317,6 +371,9 @@ function saveStep_(p) {
       break;
     case 'health':
       saveHealth_(application_id, payload);
+      break;
+    case 'interviews':
+      saveInterviews_(application_id, payload);
       break;
     case 'documents':
       // Documents are saved individually via uploadDocument_
@@ -365,7 +422,7 @@ function submitApplication_(p) {
     application_id,
     from_status_type_id:  app.status_type_id,
     to_status_type_id:    submittedTypeId,
-    changed_by:           'applicant',
+    changed_by:           getStaffEmail_() || 'applicant',
     changed_at:           now,
     reason:               'Application submitted by family',
   }]);
@@ -759,7 +816,7 @@ function savePersons_(applicationId, persons) {
       const newLangs = person.languages.filter(x => !x.record_id).map(x => ({
         record_id:         generateUuid_(),
         person_id:         personId,
-        language_id:       x.language_id,
+        language_id:       x.language_id,   // plain free text — no FK/Ref resolution; languages lookup not yet live
         is_mother_tongue:  x.is_mother_tongue || false,
       }));
       if (newLangs.length) appsheetRequest_(T.PERSON_LANGUAGES, 'Add', newLangs);
@@ -923,6 +980,50 @@ function saveHealth_(applicationId, healthData) {
       if (rows.length) appsheetRequest_(T.PERSON_MEDICAL, 'Add', rows);
     }
   });
+}
+
+/**
+ * Upserts interview records for an application.
+ * interview_type must be one of: family_interview | child_observation | follow_up
+ * interviewer_id is a plain email string — written directly, no FK resolution.
+ * @param {string} applicationId
+ * @param {Array}  interviews - array of interview objects
+ */
+function saveInterviews_(applicationId, interviews) {
+  if (!Array.isArray(interviews)) return;
+
+  const staffEmail = getStaffEmail_();
+  const now        = new Date().toISOString();
+
+  const VALID_TYPES = ['family_interview', 'child_observation', 'follow_up'];
+
+  const newInterviews = interviews.filter(i => !i.interview_id).map(i => ({
+    interview_id:   generateUuid_(),
+    application_id: applicationId,
+    interview_type: VALID_TYPES.includes(i.interview_type) ? i.interview_type : null,
+    interview_date: i.interview_date  || null,
+    interviewer_id: i.interviewer_id  || staffEmail,  // plain email — no FK resolution
+    format:         i.format          || null,
+    risk_rating:    i.risk_rating     || null,
+    notes:          i.notes           || null,
+    flags:          i.flags           || null,
+    created_at:     now,
+  }));
+
+  const existingInterviews = interviews.filter(i => i.interview_id).map(i => ({
+    interview_id:   i.interview_id,
+    application_id: applicationId,
+    interview_type: VALID_TYPES.includes(i.interview_type) ? i.interview_type : null,
+    interview_date: i.interview_date  || null,
+    interviewer_id: i.interviewer_id  || staffEmail,  // plain email — no FK resolution
+    format:         i.format          || null,
+    risk_rating:    i.risk_rating     || null,
+    notes:          i.notes           || null,
+    flags:          i.flags           || null,
+  }));
+
+  if (newInterviews.length)      appsheetRequest_(T.INTERVIEWS, 'Add',  newInterviews);
+  if (existingInterviews.length) appsheetRequest_(T.INTERVIEWS, 'Edit', existingInterviews);
 }
 
 // ─── Email helpers ────────────────────────────────────────────────────────────
@@ -1466,6 +1567,25 @@ function promoteApplication_(p) {
     if (categoryLogs.length) {
       appsheetRequest_(T.SMS_PERSON_CATEGORIES, 'Add', categoryLogs);
     }
+  }
+
+  // Log promotion as a status transition
+  const promotedStatusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
+    Filter: '"status_code" = "PROMOTED" && "school_id" = "' + SCHOOL_ID + '"'
+  });
+  const promotedTypeId = promotedStatusTypes && promotedStatusTypes[0]
+    ? promotedStatusTypes[0].status_type_id : null;
+  if (promotedTypeId) {
+    appsheetRequest_(T.STATUS_LOG, 'Add', [{
+      log_id:              generateUuid_(),
+      application_id,
+      from_status_type_id: appRow.status_type_id || null,
+      to_status_type_id:   promotedTypeId,
+      changed_by:          getStaffEmail_(),
+      changed_at:          now,
+      reason:              'Application promoted to SMS',
+    }]);
+    appsheetRequest_(T.APPLICATIONS, 'Edit', [{ application_id, status_type_id: promotedTypeId, updated_at: now }]);
   }
 
   // Stamp promoted_at on the application
