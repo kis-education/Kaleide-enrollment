@@ -117,12 +117,12 @@ function ApplicantHealthSection({ applicant, health, onChange, allergiesOpts, di
 export default function Step4Health({ onNext, onBack }) {
   const { t } = useTranslation();
   const { stepData, updateStep } = useWizard();
-  const applicants = stepData.applicants || [];
+  const applicants = (stepData.persons || []).filter(p => p.person_type_id === 'applicant');
 
   const [healthData, setHealthData] = useState(() =>
     applicants.map(a => {
-      const existing = (stepData.health || []).find(h => h.applicant_id === a.applicant_id);
-      return existing || { applicant_id: a.applicant_id || a._uid, allergies: [], dietary: [], medical: [] };
+      const existing = (stepData.health || []).find(h => h.person_id === (a.person_id || a._uid));
+      return existing || { person_id: a.person_id || a._uid, allergies: [], dietary: [], medical: [] };
     })
   );
 
@@ -176,7 +176,7 @@ export default function Step4Health({ onNext, onBack }) {
 
       {applicants.map((a, i) => (
         <ApplicantHealthSection
-          key={a.applicant_id || a._uid || i}
+          key={a.person_id || a._uid || i}
           applicant={a}
           health={healthData[i] || { allergies: [], dietary: [], medical: [] }}
           onChange={val => updateHealth(i, val)}

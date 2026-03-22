@@ -3,22 +3,22 @@ import { createContext, useContext, useState, useCallback } from 'react';
 const WizardContext = createContext(null);
 
 export const STEPS = [
-  { key: 'email',       labelKey: 'step.email'       },
-  { key: 'guardians',   labelKey: 'step.guardians'   },
-  { key: 'applicants',  labelKey: 'step.applicants'  },
-  { key: 'health',      labelKey: 'step.health'      },
-  { key: 'questions',   labelKey: 'step.questions'   },
-  { key: 'documents',   labelKey: 'step.documents'   },
-  { key: 'review',      labelKey: 'step.review'      },
+  { key: 'email',     labelKey: 'step.email'     },
+  { key: 'persons',   labelKey: 'step.persons'   },
+  { key: 'relations', labelKey: 'step.relations' },
+  { key: 'health',    labelKey: 'step.health'    },
+  { key: 'questions', labelKey: 'step.questions' },
+  { key: 'documents', labelKey: 'step.documents' },
+  { key: 'review',    labelKey: 'step.review'    },
 ];
 
 const initialStepData = {
-  email:      { primary_email: '', verified: false },
-  guardians:  [],
-  applicants: [],
-  health:     [],
-  questions:  [],
-  documents:  [],
+  email:     { primary_email: '', verified: false },
+  persons:   [],
+  relations: [],
+  health:    [],
+  questions: [],
+  documents: [],
 };
 
 export function WizardProvider({ children }) {
@@ -40,18 +40,21 @@ export function WizardProvider({ children }) {
         primary_email: appData.application.primary_email || '',
         verified: appData.application.email_confirmed || false,
       },
-      guardians:  appData.guardians  || [],
-      applicants: appData.applicants || [],
+      persons:   appData.persons   || [],
+      relations: appData.relations || [],
     }));
     // Determine current step from application state
     const submitted = appData.application.submitted_at;
     if (submitted) { setCurrentStep(6); return; }
     const verified = appData.application.email_confirmed;
     if (!verified) { setCurrentStep(0); return; }
-    const hasGuardians  = (appData.guardians  || []).length > 0;
-    const hasApplicants = (appData.applicants || []).length > 0;
-    if (!hasGuardians)  { setCurrentStep(1); return; }
-    if (!hasApplicants) { setCurrentStep(2); return; }
+    const persons = appData.persons || [];
+    const hasGuardians  = persons.some(p => p.person_type_id === 'guardian');
+    const hasApplicants = persons.some(p => p.person_type_id === 'applicant');
+    if (!hasGuardians)              { setCurrentStep(1); return; }
+    if (!hasApplicants)             { setCurrentStep(1); return; }
+    const hasRelations = (appData.relations || []).length > 0;
+    if (!hasRelations)              { setCurrentStep(2); return; }
     setCurrentStep(3);
   }, []);
 

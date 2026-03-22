@@ -97,8 +97,9 @@ export default function Step5Questions({ onNext, onBack }) {
   const [err,      setErr]      = useState('');
   const [responses, setResponses] = useState(stepData.questions || {});
 
-  const applicants = stepData.applicants || [];
-  const guardians  = stepData.guardians  || [];
+  const persons    = stepData.persons || [];
+  const applicants = persons.filter(p => p.person_type_id === 'applicant');
+  const guardians  = persons.filter(p => p.person_type_id === 'guardian');
 
   useEffect(() => {
     gasCall('fetchQuestions', { context_designation: 'Enrollment', language: i18n.language })
@@ -166,7 +167,7 @@ export default function Step5Questions({ onNext, onBack }) {
             if (isParticipantQ) {
               return applicants.map((a, ai) => {
                 if (!meetsConditions(q, a)) return null;
-                const key = `${q.question_id}__${a.applicant_id || a._uid}`;
+                const key = `${q.question_id}__${a.person_id || a._uid}`;
                 const name = [a.first_name, a.last_name].filter(Boolean).join(' ') || `Applicant ${ai + 1}`;
                 return (
                   <div key={key} className="mb-4">
@@ -181,7 +182,7 @@ export default function Step5Questions({ onNext, onBack }) {
 
             if (isClientQ) {
               return guardians.map((g, gi) => {
-                const key = `${q.question_id}__${g.guardian_id || g._uid}`;
+                const key = `${q.question_id}__${g.person_id || g._uid}`;
                 const name = [g.first_name, g.last_name].filter(Boolean).join(' ') || `Guardian ${gi + 1}`;
                 return (
                   <div key={key} className="mb-4">

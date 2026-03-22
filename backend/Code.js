@@ -38,32 +38,40 @@ const CONSENT_TEXTS = {
 
 // AppSheet table names matching the enr* / qb* schema
 const T = {
-  APPLICATIONS:       'enrApplications',
-  STATUS_LOG:         'enrStatusLog',
-  STATUS_TYPES:       'enrStatusTypes',
-  CONSENTS:           'enrConsentsLog',
-  ADDRESSES:          'enrAddresses',
-  GUARDIANS:          'enrGuardians',
-  APPLICANTS:         'enrApplicants',
-  GUARDIAN_APPLICANT: 'enrGuardianApplicantRelations',
-  GUARDIAN_CONTACTS:  'enrGuardianContacts',
-  PREV_SCHOOLS:       'enrPreviousSchools',
-  MEDICAL:            'enrApplicantMedicalConditions',
-  ALLERGIES:          'enrApplicantFoodAllergies',
-  DIETARY:            'enrApplicantDietaryRequirements',
-  DOCUMENTS:          'enrApplicationDocuments',
-  QB_CONTEXTS:        'qbContexts',
-  QB_SETS:            'qbQuestionSets',
-  QB_SET_ITEMS:       'qbQuestionSetItems',
-  QB_QUESTIONS:       'qbQuestions',
-  QB_TRANSLATIONS:    'qbQuestionTranslations',
-  QB_OPTIONS:         'qbAnswerOptions',
-  QB_OPT_TRANS:       'qbAnswerOptionTranslations',
-  QB_CONDITIONS:      'qbQuestionConditions',
-  QB_RESPONSES:       'qbResponses',
+  APPLICATIONS:         'enrApplications',
+  STATUS_LOG:           'enrStatusLog',
+  STATUS_TYPES:         'enrStatusTypes',
+  CONSENTS:             'enrConsentsLog',
+  PERSONS:              'enrPersons',
+  PERSON_GUARDIAN_DET:  'enrPersonGuardianDetails',
+  PERSON_APPLICANT_DET: 'enrPersonApplicantDetails',
+  PERSON_NATIONALITIES: 'enrPersonNationalities',
+  PERSON_IDS:           'enrPersonIDs',
+  PERSON_LANGUAGES:     'enrPersonLanguages',
+  ADDRESSES:            'enrAddresses',
+  PERSON_ADDRESSES:     'enrPersonAddresses',
+  EMAILS:               'enrEmails',
+  PERSON_EMAILS:        'enrPersonEmails',
+  PHONES:               'enrPhones',
+  PERSON_PHONES:        'enrPersonPhones',
+  RELATIONS:            'enrRelations',
+  PREV_SCHOOLS:         'enrPreviousSchools',
+  PERSON_MEDICAL:       'enrPersonMedicalConditions',
+  PERSON_ALLERGIES:     'enrPersonFoodAllergies',
+  PERSON_DIETARY:       'enrPersonDietaryRequirements',
+  DOCUMENTS:            'enrApplicationDocuments',
+  QB_CONTEXTS:          'qbContexts',
+  QB_SETS:              'qbQuestionSets',
+  QB_SET_ITEMS:         'qbQuestionSetItems',
+  QB_QUESTIONS:         'qbQuestions',
+  QB_TRANSLATIONS:      'qbQuestionTranslations',
+  QB_OPTIONS:           'qbAnswerOptions',
+  QB_OPT_TRANS:         'qbAnswerOptionTranslations',
+  QB_CONDITIONS:        'qbQuestionConditions',
+  QB_RESPONSES:         'qbResponses',
   // Main SMS tables (used during application promotion)
-  SMS_ADDRESSES:      'addresses_S',
-  SMS_ADDRESS_LOG:    'addressLog',
+  SMS_ADDRESSES:        'addresses_S',
+  SMS_ADDRESS_LOG:      'addressLog',
 };
 
 // ─── Entry points ─────────────────────────────────────────────────────────────
@@ -201,69 +209,80 @@ function resumeApplication_(p) {
   const app = apps[0];
   const id  = app.application_id;
 
-  const [guardians, applicants, documents, responses] = [
-    appsheetRequest_(T.GUARDIANS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [],
-    appsheetRequest_(T.APPLICANTS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [],
-    appsheetRequest_(T.DOCUMENTS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [],
-    appsheetRequest_(T.QB_RESPONSES, 'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [],
-  ];
+  const persons   = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const relations = appsheetRequest_(T.RELATIONS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const documents = appsheetRequest_(T.DOCUMENTS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const responses = appsheetRequest_(T.QB_RESPONSES,  'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [];
 
-  // Enrich guardians with contacts
-  const guardianIds = guardians.map(g => g.guardian_id);
-  const contacts = guardianIds.length
-    ? appsheetRequest_(T.GUARDIAN_CONTACTS, 'Find', [], {
-        Filter: guardianIds.map(gid => '"guardian_id" = "' + gid + '"').join(' || ')
-      }) || []
-    : [];
-
-  // Enrich applicants with health + previous schools
-  const applicantIds = applicants.map(a => a.applicant_id);
-  const [prevSchools, allergies, dietary, medical] = applicantIds.length ? [
-    appsheetRequest_(T.PREV_SCHOOLS, 'Find', [], {
-      Filter: applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ')
-    }) || [],
-    appsheetRequest_(T.ALLERGIES, 'Find', [], {
-      Filter: applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ')
-    }) || [],
-    appsheetRequest_(T.DIETARY, 'Find', [], {
-      Filter: applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ')
-    }) || [],
-    appsheetRequest_(T.MEDICAL, 'Find', [], {
-      Filter: applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ')
-    }) || [],
-  ] : [[], [], [], []];
-
-  // Fetch enrAddresses records and nest under guardians / applicants
-  const allAddressIds = [
-    ...guardians.map(g => g.address_id),
-    ...applicants.map(a => a.address_id),
-  ].filter(Boolean);
-  const addressMap = {};
-  if (allAddressIds.length) {
-    const addressRows = appsheetRequest_(T.ADDRESSES, 'Find', [], {
-      Filter: allAddressIds.map(aid => '"address_id" = "' + aid + '"').join(' || ')
-    }) || [];
-    addressRows.forEach(row => { addressMap[row.address_id] = row; });
+  if (!persons.length) {
+    return { application: app, persons: [], relations, documents, responses };
   }
 
-  return {
-    application: app,
-    guardians: guardians.map(g => ({
-      ...g,
-      contacts: contacts.filter(c => c.guardian_id === g.guardian_id),
-      address:  g.address_id ? (addressMap[g.address_id] || null) : null,
-    })),
-    applicants: applicants.map(a => ({
-      ...a,
-      previous_schools: prevSchools.filter(s => s.applicant_id === a.applicant_id),
-      allergies:         allergies.filter(x => x.applicant_id === a.applicant_id),
-      dietary:           dietary.filter(x => x.applicant_id === a.applicant_id),
-      medical:           medical.filter(x => x.applicant_id === a.applicant_id),
-      address:           a.address_id ? (addressMap[a.address_id] || null) : null,
-    })),
-    documents,
-    responses,
-  };
+  const personIds = persons.map(per => per.person_id);
+  const pidFilter = personIds.map(pid => '"person_id" = "' + pid + '"').join(' || ');
+
+  const guardianDetails   = appsheetRequest_(T.PERSON_GUARDIAN_DET,  'Find', [], { Filter: pidFilter }) || [];
+  const applicantDetails  = appsheetRequest_(T.PERSON_APPLICANT_DET, 'Find', [], { Filter: pidFilter }) || [];
+  const nationalities     = appsheetRequest_(T.PERSON_NATIONALITIES, 'Find', [], { Filter: pidFilter }) || [];
+  const personIds_        = appsheetRequest_(T.PERSON_IDS,           'Find', [], { Filter: pidFilter }) || [];
+  const languages         = appsheetRequest_(T.PERSON_LANGUAGES,     'Find', [], { Filter: pidFilter }) || [];
+  const personAddrJoins   = appsheetRequest_(T.PERSON_ADDRESSES,     'Find', [], { Filter: pidFilter }) || [];
+  const personEmailJoins  = appsheetRequest_(T.PERSON_EMAILS,        'Find', [], { Filter: pidFilter }) || [];
+  const personPhoneJoins  = appsheetRequest_(T.PERSON_PHONES,        'Find', [], { Filter: pidFilter }) || [];
+  const prevSchools       = appsheetRequest_(T.PREV_SCHOOLS,         'Find', [], { Filter: pidFilter }) || [];
+  const medical           = appsheetRequest_(T.PERSON_MEDICAL,       'Find', [], { Filter: pidFilter }) || [];
+  const allergies         = appsheetRequest_(T.PERSON_ALLERGIES,     'Find', [], { Filter: pidFilter }) || [];
+  const dietary           = appsheetRequest_(T.PERSON_DIETARY,       'Find', [], { Filter: pidFilter }) || [];
+
+  // Batch-fetch address / email / phone value rows
+  const addrIds  = personAddrJoins.map(r => r.address_id).filter(Boolean);
+  const emailIds = personEmailJoins.map(r => r.email_id).filter(Boolean);
+  const phoneIds = personPhoneJoins.map(r => r.phone_id).filter(Boolean);
+
+  const addressMap = {};
+  if (addrIds.length) {
+    (appsheetRequest_(T.ADDRESSES, 'Find', [], {
+      Filter: addrIds.map(x => '"address_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { addressMap[r.address_id] = r; });
+  }
+
+  const emailMap = {};
+  if (emailIds.length) {
+    (appsheetRequest_(T.EMAILS, 'Find', [], {
+      Filter: emailIds.map(x => '"email_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { emailMap[r.email_id] = r; });
+  }
+
+  const phoneMap = {};
+  if (phoneIds.length) {
+    (appsheetRequest_(T.PHONES, 'Find', [], {
+      Filter: phoneIds.map(x => '"phone_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { phoneMap[r.phone_id] = r; });
+  }
+
+  const enrichedPersons = persons.map(person => {
+    const pid      = person.person_id;
+    const addrJoin = personAddrJoins.find(r => r.person_id === pid && r.is_primary)
+                  || personAddrJoins.find(r => r.person_id === pid)
+                  || null;
+    return {
+      ...person,
+      guardian_details:  guardianDetails.find(d => d.person_id === pid)  || null,
+      applicant_details: applicantDetails.find(d => d.person_id === pid) || null,
+      nationalities:     nationalities.filter(n => n.person_id === pid),
+      ids:               personIds_.filter(x => x.person_id === pid),
+      languages:         languages.filter(x => x.person_id === pid),
+      address:           addrJoin ? (addressMap[addrJoin.address_id] || null) : null,
+      emails:            personEmailJoins.filter(r => r.person_id === pid).map(r => ({ ...r, ...(emailMap[r.email_id] || {}) })),
+      phones:            personPhoneJoins.filter(r => r.person_id === pid).map(r => ({ ...r, ...(phoneMap[r.phone_id] || {}) })),
+      previous_schools:  prevSchools.filter(s => s.person_id === pid),
+      medical:           medical.filter(x => x.person_id === pid),
+      allergies:         allergies.filter(x => x.person_id === pid),
+      dietary:           dietary.filter(x => x.person_id === pid),
+    };
+  });
+
+  return { application: app, persons: enrichedPersons, relations, documents, responses };
 }
 
 /**
@@ -281,11 +300,11 @@ function saveStep_(p) {
   }]);
 
   switch (step) {
-    case 'guardians':
-      saveGuardians_(application_id, payload);
+    case 'persons':
+      savePersons_(application_id, payload);
       break;
-    case 'applicants':
-      saveApplicants_(application_id, payload);
+    case 'relations':
+      saveRelations_(application_id, payload);
       break;
     case 'health':
       saveHealth_(application_id, payload);
@@ -359,20 +378,47 @@ function submitApplication_(p) {
     if (consentRows.length) appsheetRequest_(T.CONSENTS, 'Add', consentRows);
   }
 
-  // Fetch guardians and applicants for email summaries
-  const guardians  = appsheetRequest_(T.GUARDIANS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
-  const applicants = appsheetRequest_(T.APPLICANTS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
+  // Fetch persons for email summaries and PDF
+  const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
+  const guardians  = allPersons.filter(per => per.person_type_id === 'guardian');
+  const applicants = allPersons.filter(per => per.person_type_id === 'applicant');
 
-  const guardianIds = guardians.map(g => g.guardian_id);
-  const contacts = guardianIds.length
-    ? appsheetRequest_(T.GUARDIAN_CONTACTS, 'Find', [], {
-        Filter: guardianIds.map(gid => '"guardian_id" = "' + gid + '"').join(' || ')
+  // Enrich guardians with emails and phones for notifications
+  const gPersonIds = guardians.map(g => g.person_id);
+  const gEmailJoins = gPersonIds.length
+    ? appsheetRequest_(T.PERSON_EMAILS, 'Find', [], {
+        Filter: gPersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
+      }) || []
+    : [];
+  const gPhoneJoins = gPersonIds.length
+    ? appsheetRequest_(T.PERSON_PHONES, 'Find', [], {
+        Filter: gPersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
       }) || []
     : [];
 
+  const gEmailIds = gEmailJoins.map(r => r.email_id).filter(Boolean);
+  const gPhoneIds = gPhoneJoins.map(r => r.phone_id).filter(Boolean);
+  const gEmailMap = {};
+  if (gEmailIds.length) {
+    (appsheetRequest_(T.EMAILS, 'Find', [], {
+      Filter: gEmailIds.map(x => '"email_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { gEmailMap[r.email_id] = r; });
+  }
+  const gPhoneMap = {};
+  if (gPhoneIds.length) {
+    (appsheetRequest_(T.PHONES, 'Find', [], {
+      Filter: gPhoneIds.map(x => '"phone_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { gPhoneMap[r.phone_id] = r; });
+  }
+  const enrichedGuardians = guardians.map(g => ({
+    ...g,
+    emails: gEmailJoins.filter(r => r.person_id === g.person_id).map(r => ({ ...r, ...(gEmailMap[r.email_id] || {}) })),
+    phones: gPhoneJoins.filter(r => r.person_id === g.person_id).map(r => ({ ...r, ...(gPhoneMap[r.phone_id] || {}) })),
+  }));
+
   // Generate signed consent PDF and record in enrApplicationDocuments
   try {
-    const pdfUrl = generateConsentPdf_(application_id, app, guardians, contacts, applicants, consentRows, p.esignature || '', now);
+    const pdfUrl = generateConsentPdf_(application_id, app, enrichedGuardians, applicants, consentRows, p.esignature || '', now);
     appsheetRequest_(T.DOCUMENTS, 'Add', [{
       document_id:   generateUuid_(),
       application_id,
@@ -391,7 +437,7 @@ function submitApplication_(p) {
   // Send internal notification
   sendInternalEmail_(
     '[KIS Admissions] Application submitted \u2014 action required',
-    buildApplicationSubmittedBody_(application_id, now, guardians, contacts, applicants)
+    buildApplicationSubmittedBody_(application_id, now, enrichedGuardians, applicants)
   );
 
   return { submitted: true, application_id };
@@ -626,163 +672,185 @@ function verifyRecaptcha_(p) {
 // ─── Step save helpers ────────────────────────────────────────────────────────
 
 /**
- * Upserts guardians and their contacts for an application.
- * Address data is written to enrAddresses; guardians reference it via address_id.
- * Pass `same_address_as_primary: true` on a guardian to reuse the first guardian's address.
+ * Upserts persons (guardians and applicants) for an application.
+ * Each person may have: nationalities, ids, languages, address, emails, phones.
+ * Pass `copy_address_from_person_id` to reuse another person's address.
+ * Previous schools are written for applicant-type persons.
  * @param {string} applicationId
- * @param {Array}  guardians - array of guardian objects with optional contacts array and address object
+ * @param {Array}  persons - array of person objects
  */
-function saveGuardians_(applicationId, guardians) {
-  if (!Array.isArray(guardians)) return;
+function savePersons_(applicationId, persons) {
+  if (!Array.isArray(persons)) return;
 
-  let primaryAddressId = null; // address_id of the first guardian, for same-address reuse
+  const personAddressIds = {}; // person_id → address_id, for address copy resolution
 
-  guardians.forEach((g, idx) => {
-    const guardianId = g.guardian_id || generateUuid_();
-    const now = new Date().toISOString();
+  persons.forEach((person, idx) => {
+    const personId    = person.person_id || generateUuid_();
+    const now         = new Date().toISOString();
+    const isGuardian  = person.person_type_id === 'guardian';
+    const isApplicant = person.person_type_id === 'applicant';
 
-    // ── Resolve address ────────────────────────────────────────────────────────
-    let addressId = null;
-    if (g.same_address_as_primary && primaryAddressId) {
-      addressId = primaryAddressId;
-    } else if (g.address && hasAddressData_(g.address)) {
-      const newAddressId = generateUuid_();
-      appsheetRequest_(T.ADDRESSES, 'Add', [{
-        address_id:     newAddressId,
-        application_id: applicationId,
-        address_line_1: g.address.address_line_1 || null,
-        address_line_2: g.address.address_line_2 || null,
-        city:           g.address.city           || null,
-        province:       g.address.province       || null,
-        country_id:     g.address.country_id     || null,
-        zip:            g.address.zip            || null,
-        created_at:     now,
-      }]);
-      addressId = newAddressId;
-    }
-
-    if (idx === 0) primaryAddressId = addressId;
-
-    const guardianRow = {
-      guardian_id:          guardianId,
-      application_id:       applicationId,
-      guardian_order:       idx + 1,
-      first_name:           g.first_name           || null,
-      middle_name:          g.middle_name           || null,
-      last_name:            g.last_name             || null,
-      date_of_birth:        g.date_of_birth         || null,
-      place_of_birth:       g.place_of_birth        || null,
-      nationality_id:       g.nationality_id        || null,
-      id_type_id:           g.id_type_id            || null,
-      id_number:            g.id_number             || null,
-      profession:           g.profession            || null,
-      employer:             g.employer              || null,
-      address_id:           addressId,
-      is_primary_contact:   g.is_primary_contact    || false,
-      is_emergency_contact: g.is_emergency_contact  || false,
-      created_at:           g.created_at            || now,
+    // ── Core person row ───────────────────────────────────────────────────────
+    const personRow = {
+      person_id:      personId,
+      application_id: applicationId,
+      person_type_id: person.person_type_id || 'guardian',
+      person_order:   idx + 1,
+      first_name:     person.first_name     || null,
+      middle_name:    person.middle_name    || null,
+      last_name:      person.last_name      || null,
+      date_of_birth:  person.date_of_birth  || null,
+      place_of_birth: person.place_of_birth || null,
+      gender:         person.gender         || null,
+      created_at:     person.created_at     || now,
     };
-
-    if (g.guardian_id) {
-      appsheetRequest_(T.GUARDIANS, 'Edit', [guardianRow]);
+    if (person.person_id) {
+      appsheetRequest_(T.PERSONS, 'Edit', [personRow]);
     } else {
-      appsheetRequest_(T.GUARDIANS, 'Add', [guardianRow]);
+      appsheetRequest_(T.PERSONS, 'Add', [personRow]);
     }
 
-    // Upsert contacts
-    if (Array.isArray(g.contacts)) {
-      const newContacts = g.contacts.filter(c => !c.contact_id).map(c => ({
-        contact_id:   generateUuid_(),
-        guardian_id:  guardianId,
-        contact_type: c.contact_type,
-        value:        c.value,
-        is_default:   c.is_default   || false,
-        is_emergency: c.is_emergency || false,
-        is_whatsapp:  c.is_whatsapp  || false,
-        is_telegram:  c.is_telegram  || false,
+    // ── Guardian details ──────────────────────────────────────────────────────
+    if (isGuardian) {
+      const detRow = {
+        person_id:            personId,
+        profession:           person.profession           || null,
+        employer:             person.employer             || null,
+        is_primary_contact:   person.is_primary_contact  || false,
+        is_emergency_contact: person.is_emergency_contact || false,
+      };
+      appsheetRequest_(T.PERSON_GUARDIAN_DET, person.person_id ? 'Edit' : 'Add', [detRow]);
+    }
+
+    // ── Applicant details ─────────────────────────────────────────────────────
+    if (isApplicant) {
+      const detRow = {
+        person_id:                  personId,
+        desired_education_level_id: person.desired_education_level_id || null,
+        desired_start_date:         person.desired_start_date         || null,
+        has_adaptation_needs:       person.has_adaptation_needs       || false,
+        adaptation_notes:           person.adaptation_notes           || null,
+        is_sibling:                 person.is_sibling                 || false,
+        is_alumni_family:           person.is_alumni_family           || false,
+        is_transfer:                person.is_transfer                || false,
+      };
+      appsheetRequest_(T.PERSON_APPLICANT_DET, person.person_id ? 'Edit' : 'Add', [detRow]);
+    }
+
+    // ── Nationalities ─────────────────────────────────────────────────────────
+    if (Array.isArray(person.nationalities)) {
+      const newNats = person.nationalities.filter(n => !n.record_id).map(n => ({
+        record_id:  generateUuid_(),
+        person_id:  personId,
+        country_id: n.country_id,
+        is_primary: n.is_primary || false,
       }));
-      const existingContacts = g.contacts.filter(c => c.contact_id);
-      if (newContacts.length)      appsheetRequest_(T.GUARDIAN_CONTACTS, 'Add',  newContacts);
-      if (existingContacts.length) appsheetRequest_(T.GUARDIAN_CONTACTS, 'Edit', existingContacts);
+      if (newNats.length) appsheetRequest_(T.PERSON_NATIONALITIES, 'Add', newNats);
     }
-  });
-}
 
-/**
- * Upserts applicants and their sub-records.
- * Address data is written to enrAddresses; applicants reference it via address_id.
- * Pass `copy_address_from_guardian_id` to reuse the referenced guardian's address_id.
- * Pass an `address` object to create a new enrAddresses record.
- * @param {string} applicationId
- * @param {Array}  applicants
- */
-function saveApplicants_(applicationId, applicants) {
-  if (!Array.isArray(applicants)) return;
+    // ── IDs ───────────────────────────────────────────────────────────────────
+    if (Array.isArray(person.ids)) {
+      const newIds = person.ids.filter(x => !x.record_id).map(x => ({
+        record_id:  generateUuid_(),
+        person_id:  personId,
+        id_type_id: x.id_type_id,
+        id_number:  x.id_number,
+        issued_by:  x.issued_by  || null,
+        issued_at:  x.issued_at  || null,
+        expires_at: x.expires_at || null,
+      }));
+      if (newIds.length) appsheetRequest_(T.PERSON_IDS, 'Add', newIds);
+    }
 
-  applicants.forEach((a, idx) => {
-    const applicantId = a.applicant_id || generateUuid_();
-    const now = new Date().toISOString();
+    // ── Languages ─────────────────────────────────────────────────────────────
+    if (Array.isArray(person.languages)) {
+      const newLangs = person.languages.filter(x => !x.record_id).map(x => ({
+        record_id:         generateUuid_(),
+        person_id:         personId,
+        language_id:       x.language_id,
+        is_mother_tongue:  x.is_mother_tongue || false,
+      }));
+      if (newLangs.length) appsheetRequest_(T.PERSON_LANGUAGES, 'Add', newLangs);
+    }
 
-    // ── Resolve address ────────────────────────────────────────────────────────
+    // ── Address ───────────────────────────────────────────────────────────────
     let addressId = null;
-    if (a.copy_address_from_guardian_id) {
-      const guardianRows = appsheetRequest_(T.GUARDIANS, 'Find', [], {
-        Filter: '"guardian_id" = "' + a.copy_address_from_guardian_id + '"',
-      });
-      addressId = (guardianRows && guardianRows[0]) ? (guardianRows[0].address_id || null) : null;
-    } else if (a.address && hasAddressData_(a.address)) {
+    if (person.copy_address_from_person_id && personAddressIds[person.copy_address_from_person_id]) {
+      addressId = personAddressIds[person.copy_address_from_person_id];
+    } else if (person.address && hasAddressData_(person.address)) {
       const newAddressId = generateUuid_();
       appsheetRequest_(T.ADDRESSES, 'Add', [{
         address_id:     newAddressId,
         application_id: applicationId,
-        address_line_1: a.address.address_line_1 || null,
-        address_line_2: a.address.address_line_2 || null,
-        city:           a.address.city           || null,
-        province:       a.address.province       || null,
-        country_id:     a.address.country_id     || null,
-        zip:            a.address.zip            || null,
+        address_line_1: person.address.address_line_1 || null,
+        address_line_2: person.address.address_line_2 || null,
+        city:           person.address.city           || null,
+        province:       person.address.province       || null,
+        country_id:     person.address.country_id     || null,
+        zip:            person.address.zip            || null,
         created_at:     now,
       }]);
       addressId = newAddressId;
     }
+    if (addressId && !person.person_id) {
+      appsheetRequest_(T.PERSON_ADDRESSES, 'Add', [{
+        record_id:  generateUuid_(),
+        person_id:  personId,
+        address_id: addressId,
+        label:      'home',
+        is_primary: true,
+      }]);
+    }
+    personAddressIds[personId] = addressId;
 
-    const applicantRow = {
-      applicant_id:               applicantId,
-      application_id:             applicationId,
-      applicant_order:            idx + 1,
-      first_name:                 a.first_name                 || null,
-      middle_name:                a.middle_name                || null,
-      last_name:                  a.last_name                  || null,
-      date_of_birth:              a.date_of_birth              || null,
-      place_of_birth:             a.place_of_birth             || null,
-      nationality_id:             a.nationality_id             || null,
-      id_type_id:                 a.id_type_id                 || null,
-      id_number:                  a.id_number                  || null,
-      gender:                     a.gender                     || null,
-      mother_tongue_language:     a.mother_tongue_language     || null,
-      other_languages:            a.other_languages            || null,
-      desired_education_level_id: a.desired_education_level_id || null,
-      desired_start_date:         a.desired_start_date         || null,
-      address_id:                 addressId,
-      has_adaptation_needs:       a.has_adaptation_needs       || false,
-      adaptation_notes:           a.adaptation_notes           || null,
-      is_sibling:                 a.is_sibling                 || false,
-      is_alumni_family:           a.is_alumni_family           || false,
-      is_transfer:                a.is_transfer                || false,
-      created_at:                 a.created_at                 || now,
-    };
-
-    if (a.applicant_id) {
-      appsheetRequest_(T.APPLICANTS, 'Edit', [applicantRow]);
-    } else {
-      appsheetRequest_(T.APPLICANTS, 'Add', [applicantRow]);
+    // ── Emails ────────────────────────────────────────────────────────────────
+    if (Array.isArray(person.emails)) {
+      person.emails.filter(e => !e.email_id).forEach(e => {
+        const emailId = generateUuid_();
+        appsheetRequest_(T.EMAILS, 'Add', [{
+          email_id:       emailId,
+          application_id: applicationId,
+          email_address:  e.email_address,
+          created_at:     now,
+        }]);
+        appsheetRequest_(T.PERSON_EMAILS, 'Add', [{
+          record_id:     generateUuid_(),
+          person_id:     personId,
+          email_id:      emailId,
+          email_type_id: e.email_type_id || null,
+          is_default:    e.is_default    || false,
+        }]);
+      });
     }
 
-    // Previous schools
-    if (Array.isArray(a.previous_schools)) {
-      const newSchools = a.previous_schools.filter(s => !s.previous_school_id).map(s => ({
+    // ── Phones ────────────────────────────────────────────────────────────────
+    if (Array.isArray(person.phones)) {
+      person.phones.filter(ph => !ph.phone_id).forEach(ph => {
+        const phoneId = generateUuid_();
+        appsheetRequest_(T.PHONES, 'Add', [{
+          phone_id:       phoneId,
+          application_id: applicationId,
+          phone_number:   ph.phone_number,
+          is_whatsapp:    ph.is_whatsapp || false,
+          is_telegram:    ph.is_telegram || false,
+          created_at:     now,
+        }]);
+        appsheetRequest_(T.PERSON_PHONES, 'Add', [{
+          record_id:     generateUuid_(),
+          person_id:     personId,
+          phone_id:      phoneId,
+          phone_type_id: ph.phone_type_id || null,
+          is_default:    ph.is_default    || false,
+          is_emergency:  ph.is_emergency  || false,
+        }]);
+      });
+    }
+
+    // ── Previous schools (applicants only) ────────────────────────────────────
+    if (isApplicant && Array.isArray(person.previous_schools)) {
+      const newSchools = person.previous_schools.filter(s => !s.previous_school_id).map(s => ({
         previous_school_id:          generateUuid_(),
-        applicant_id:                applicantId,
+        person_id:                   personId,
         school_name:                 s.school_name || null,
         city:                        s.city || null,
         country_id:                  s.country_id || null,
@@ -791,66 +859,75 @@ function saveApplicants_(applicationId, applicants) {
         education_level_description: s.education_level_description || null,
         language_of_instruction:     s.language_of_instruction || null,
       }));
-      const existingSchools = a.previous_schools.filter(s => s.previous_school_id);
-      if (newSchools.length) appsheetRequest_(T.PREV_SCHOOLS, 'Add', newSchools);
+      const existingSchools = person.previous_schools.filter(s => s.previous_school_id);
+      if (newSchools.length)      appsheetRequest_(T.PREV_SCHOOLS, 'Add',  newSchools);
       if (existingSchools.length) appsheetRequest_(T.PREV_SCHOOLS, 'Edit', existingSchools);
-    }
-
-    // Guardian–applicant relations
-    if (Array.isArray(a.relations)) {
-      const newRelations = a.relations.filter(r => !r.relation_id).map(r => ({
-        relation_id:           generateUuid_(),
-        guardian_id:           r.guardian_id,
-        applicant_id:          applicantId,
-        relation_type_id:      r.relation_type_id || null,
-        is_custodial:          r.is_custodial || false,
-        is_pick_up_authorized: r.is_pick_up_authorized || false,
-      }));
-      if (newRelations.length) appsheetRequest_(T.GUARDIAN_APPLICANT, 'Add', newRelations);
     }
   });
 }
 
 /**
- * Upserts health records for each applicant.
+ * Upserts guardian-applicant relations for an application.
  * @param {string} applicationId
- * @param {Array}  healthData - [{ applicant_id, allergies, dietary, medical }]
+ * @param {Array}  relations - [{ guardian_person_id, applicant_person_id, relation_type_id, is_custodial, is_pick_up_authorized }]
+ */
+function saveRelations_(applicationId, relations) {
+  if (!Array.isArray(relations)) return;
+
+  const newRelations = relations.filter(r => !r.relation_id).map(r => ({
+    relation_id:           generateUuid_(),
+    application_id:        applicationId,
+    guardian_person_id:    r.guardian_person_id,
+    applicant_person_id:   r.applicant_person_id,
+    relation_type_id:      r.relation_type_id      || null,
+    is_custodial:          r.is_custodial          || false,
+    is_pick_up_authorized: r.is_pick_up_authorized || false,
+  }));
+  const existingRelations = relations.filter(r => r.relation_id);
+  if (newRelations.length)      appsheetRequest_(T.RELATIONS, 'Add',  newRelations);
+  if (existingRelations.length) appsheetRequest_(T.RELATIONS, 'Edit', existingRelations);
+}
+
+/**
+ * Upserts health records for each person.
+ * @param {string} applicationId
+ * @param {Array}  healthData - [{ person_id, allergies, dietary, medical }]
  */
 function saveHealth_(applicationId, healthData) {
   if (!Array.isArray(healthData)) return;
 
   healthData.forEach(h => {
-    const { applicant_id } = h;
-    if (!applicant_id) return;
+    const { person_id } = h;
+    if (!person_id) return;
 
     if (Array.isArray(h.allergies)) {
       const rows = h.allergies.filter(x => !x.record_id).map(x => ({
         record_id:       generateUuid_(),
-        applicant_id,
+        person_id,
         food_allergy_id: x.food_allergy_id || null,
         observations:    x.observations || null,
       }));
-      if (rows.length) appsheetRequest_(T.ALLERGIES, 'Add', rows);
+      if (rows.length) appsheetRequest_(T.PERSON_ALLERGIES, 'Add', rows);
     }
 
     if (Array.isArray(h.dietary)) {
       const rows = h.dietary.filter(x => !x.record_id).map(x => ({
         record_id:    generateUuid_(),
-        applicant_id,
+        person_id,
         diet_id:      x.diet_id || null,
         observations: x.observations || null,
       }));
-      if (rows.length) appsheetRequest_(T.DIETARY, 'Add', rows);
+      if (rows.length) appsheetRequest_(T.PERSON_DIETARY, 'Add', rows);
     }
 
     if (Array.isArray(h.medical)) {
       const rows = h.medical.filter(x => !x.record_id).map(x => ({
         record_id:            generateUuid_(),
-        applicant_id,
+        person_id,
         medical_condition_id: x.medical_condition_id || null,
         observations:         x.observations || null,
       }));
-      if (rows.length) appsheetRequest_(T.MEDICAL, 'Add', rows);
+      if (rows.length) appsheetRequest_(T.PERSON_MEDICAL, 'Add', rows);
     }
   });
 }
@@ -988,17 +1065,18 @@ function buildApplicationInitiatedBody_(applicationId, primaryEmail, timestamp) 
 
 /**
  * Builds the HTML body for "Application Submitted" internal notification.
+ * Guardians are enriched persons (with .emails and .phones arrays).
+ * Applicants are plain person rows (desired_start_date comes from applicant_details if nested).
  */
-function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, contacts, applicants) {
+function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, applicants) {
   const ts = formatTimestamp_(timestamp);
 
   let guardianRows = '';
   guardians.forEach((g, i) => {
-    const gContacts = contacts.filter(c => c.guardian_id === g.guardian_id);
-    const emails    = gContacts.filter(c => c.contact_type === 'email').map(c => c.value).join(', ');
-    const phones    = gContacts.filter(c => c.contact_type === 'phone').map(c =>
-      c.value + (c.is_whatsapp ? ' \uD83D\uDCAC' : '') + (c.is_telegram ? ' \u2708\uFE0F' : '')
-    ).join(', ');
+    const emails = (g.emails || []).map(e => e.email_address).filter(Boolean).join(', ');
+    const phones = (g.phones || []).map(ph =>
+      (ph.phone_number || '') + (ph.is_whatsapp ? ' \uD83D\uDCAC' : '') + (ph.is_telegram ? ' \u2708\uFE0F' : '')
+    ).filter(Boolean).join(', ');
 
     guardianRows +=
       '<tr><td><strong>' + (g.first_name || '') + ' ' + (g.last_name || '') + '</strong>'
@@ -1010,10 +1088,11 @@ function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, con
 
   let applicantRows = '';
   applicants.forEach(a => {
+    const startDate = (a.applicant_details && a.applicant_details.desired_start_date) || a.desired_start_date || '\u2014';
     applicantRows +=
       '<tr><td><strong>' + (a.first_name || '') + ' ' + (a.last_name || '') + '</strong></td>'
       + '<td>' + (a.date_of_birth || '\u2014') + '</td>'
-      + '<td>' + (a.desired_start_date || '\u2014') + '</td></tr>';
+      + '<td>' + startDate + '</td></tr>';
   });
 
   return '<h2 style="color:#00a19a;margin-top:0">Application Submitted \u2014 Action Required</h2>'
@@ -1085,21 +1164,20 @@ function appsheetRequest_(table, action, rows, selector) {
 // ─── PDF generation ───────────────────────────────────────────────────────────
 
 /**
- * Generates a PDF summary of a submitted application containing all guardian and
- * applicant details, full consent statement texts, consent decisions, and e-signature.
- * Saves the PDF to the "KIS Admissions Documents" Drive folder.
+ * Generates a PDF summary of a submitted application.
+ * Guardians are enriched person objects (with .emails and .phones arrays).
+ * Applicants are plain person rows.
  *
  * @param {string} applicationId
  * @param {Object} app           - Application row
- * @param {Array}  guardians     - Guardian rows
- * @param {Array}  contacts      - Guardian contact rows
- * @param {Array}  applicants    - Applicant rows
+ * @param {Array}  guardians     - Enriched guardian person rows (.emails, .phones, .address)
+ * @param {Array}  applicants    - Applicant person rows
  * @param {Array}  consentRows   - Consent rows as written to enrConsentsLog
  * @param {string} esignature    - Typed e-signature name
  * @param {string} submittedAt   - ISO submission timestamp
  * @returns {string} Drive URL of the generated PDF
  */
-function generateConsentPdf_(applicationId, app, guardians, contacts, applicants, consentRows, esignature, submittedAt) {
+function generateConsentPdf_(applicationId, app, guardians, applicants, consentRows, esignature, submittedAt) {
   const docTitle = 'Signed Consent Record — ' + applicationId;
   const doc  = DocumentApp.create(docTitle);
   const body = doc.getBody();
@@ -1117,11 +1195,10 @@ function generateConsentPdf_(applicationId, app, guardians, contacts, applicants
     .setHeading(DocumentApp.ParagraphHeading.HEADING2);
 
   guardians.forEach((g, i) => {
-    const gContacts = contacts.filter(c => c.guardian_id === g.guardian_id);
-    const emails    = gContacts.filter(c => c.contact_type === 'email').map(c => c.value).join(', ');
-    const phones    = gContacts.filter(c => c.contact_type === 'phone').map(c =>
-      c.value + (c.is_whatsapp ? ' (WhatsApp)' : '') + (c.is_telegram ? ' (Telegram)' : '')
-    ).join(', ');
+    const emails = (g.emails || []).map(e => e.email_address).filter(Boolean).join(', ');
+    const phones = (g.phones || []).map(ph =>
+      (ph.phone_number || '') + (ph.is_whatsapp ? ' (WhatsApp)' : '') + (ph.is_telegram ? ' (Telegram)' : '')
+    ).filter(Boolean).join(', ');
 
     body.appendParagraph((i + 1) + '. ' + (g.first_name || '') + ' ' + (g.last_name || ''))
       .setBold(true);
@@ -1139,10 +1216,11 @@ function generateConsentPdf_(applicationId, app, guardians, contacts, applicants
     .setHeading(DocumentApp.ParagraphHeading.HEADING2);
 
   applicants.forEach((a, i) => {
+    const startDate = (a.applicant_details && a.applicant_details.desired_start_date) || a.desired_start_date || null;
     body.appendParagraph((i + 1) + '. ' + (a.first_name || '') + ' ' + (a.last_name || ''))
       .setBold(true);
-    if (a.date_of_birth)       body.appendParagraph('   Date of birth: ' + a.date_of_birth);
-    if (a.desired_start_date)  body.appendParagraph('   Desired start date: ' + a.desired_start_date);
+    if (a.date_of_birth) body.appendParagraph('   Date of birth: ' + a.date_of_birth);
+    if (startDate)       body.appendParagraph('   Desired start date: ' + startDate);
     nl();
   });
 
@@ -1190,56 +1268,55 @@ function generateConsentPdf_(applicationId, app, guardians, contacts, applicants
 
 /**
  * Promotes a submitted application into the main SMS.
- * For each guardian and applicant that has an address_id, fetches the enrAddresses
- * record and creates an addresses_S entry plus an addressLog entry in the main SMS.
- * @param {Object} p - { application_id, guardian_personal_ids, applicant_personal_ids }
- *   guardian_personal_ids: { [guardian_id]: personal_id } map of promoted guardian personal IDs
- *   applicant_personal_ids: { [applicant_id]: personal_id } map of promoted applicant personal IDs
+ * For each person with a mapping in person_personal_ids, resolves their primary address
+ * from enrPersonAddresses → enrAddresses and creates an addresses_S + addressLog entry.
+ * @param {Object} p - { application_id, person_personal_ids }
+ *   person_personal_ids: { [person_id]: personal_id } map of promoted personal IDs
  */
 function promoteApplication_(p) {
-  const { application_id, guardian_personal_ids = {}, applicant_personal_ids = {} } = p;
+  const { application_id, person_personal_ids = {} } = p;
   if (!application_id) throw new Error('Missing application_id');
 
   const now = new Date().toISOString();
 
-  const guardians  = appsheetRequest_(T.GUARDIANS,  'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
-  const applicants = appsheetRequest_(T.APPLICANTS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
+  const personIds = Object.keys(person_personal_ids);
+  if (!personIds.length) return { promoted_addresses: 0 };
 
-  // Collect unique address_ids with their associated personal_id mappings
-  const addressEntries = [];
+  // Find primary address for each person
+  const addrJoins = appsheetRequest_(T.PERSON_ADDRESSES, 'Find', [], {
+    Filter: personIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
+  }) || [];
 
-  guardians.forEach(g => {
-    if (g.address_id && guardian_personal_ids[g.guardian_id]) {
-      addressEntries.push({ address_id: g.address_id, personal_id: guardian_personal_ids[g.guardian_id] });
+  // Pick primary (or first) address join per person
+  const personAddrMap = {};
+  addrJoins.forEach(j => {
+    if (!personAddrMap[j.person_id] || j.is_primary) {
+      personAddrMap[j.person_id] = j.address_id;
     }
   });
-  applicants.forEach(a => {
-    if (a.address_id && applicant_personal_ids[a.applicant_id]) {
-      addressEntries.push({ address_id: a.address_id, personal_id: applicant_personal_ids[a.applicant_id] });
-    }
-  });
 
-  if (!addressEntries.length) return { promoted_addresses: 0 };
+  const uniqueAddrIds = [...new Set(Object.values(personAddrMap))];
+  if (!uniqueAddrIds.length) return { promoted_addresses: 0 };
 
-  // Fetch enrAddresses records
-  const addressIds = [...new Set(addressEntries.map(e => e.address_id))];
   const addressRows = appsheetRequest_(T.ADDRESSES, 'Find', [], {
-    Filter: addressIds.map(id => '"address_id" = "' + id + '"').join(' || ')
+    Filter: uniqueAddrIds.map(id => '"address_id" = "' + id + '"').join(' || ')
   }) || [];
   const addressMap = {};
   addressRows.forEach(row => { addressMap[row.address_id] = row; });
 
-  const smsAddresses = [];
-  const smsAddressLogs = [];
+  const smsAddresses    = [];
+  const smsAddressLogs  = [];
 
-  addressEntries.forEach(({ address_id, personal_id }) => {
-    const addr = addressMap[address_id];
+  personIds.forEach(personId => {
+    const personalId = person_personal_ids[personId];
+    const addrId     = personAddrMap[personId];
+    const addr       = addrId ? addressMap[addrId] : null;
     if (!addr) return;
 
     const smsAddressId = generateUuid_();
     smsAddresses.push({
       address_id:     smsAddressId,
-      personal_id,
+      personal_id:    personalId,
       address_line_1: addr.address_line_1 || null,
       address_line_2: addr.address_line_2 || null,
       city:           addr.city           || null,
@@ -1248,10 +1325,9 @@ function promoteApplication_(p) {
       zip:            addr.zip            || null,
       created_at:     now,
     });
-
     smsAddressLogs.push({
       log_id:     generateUuid_(),
-      personal_id,
+      personal_id: personalId,
       address_id: smsAddressId,
       active:     true,
       default:    true,
@@ -1259,8 +1335,15 @@ function promoteApplication_(p) {
     });
   });
 
-  if (smsAddresses.length)    appsheetRequest_(T.SMS_ADDRESSES,   'Add', smsAddresses);
-  if (smsAddressLogs.length)  appsheetRequest_(T.SMS_ADDRESS_LOG, 'Add', smsAddressLogs);
+  if (smsAddresses.length)   appsheetRequest_(T.SMS_ADDRESSES,   'Add', smsAddresses);
+  if (smsAddressLogs.length) appsheetRequest_(T.SMS_ADDRESS_LOG, 'Add', smsAddressLogs);
+
+  // Stamp promoted_at on the application
+  appsheetRequest_(T.APPLICATIONS, 'Edit', [{
+    application_id,
+    promoted_at: now,
+    updated_at:  now,
+  }]);
 
   return { promoted_addresses: smsAddresses.length };
 }

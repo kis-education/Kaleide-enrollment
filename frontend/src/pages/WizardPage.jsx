@@ -6,8 +6,8 @@ import WizardProgress from '../components/WizardProgress';
 import { Toast, useToast } from '../components/Toast';
 
 import Step1Email     from './steps/Step1Email';
-import Step2Guardians from './steps/Step2Guardians';
-import Step3Applicants from './steps/Step3Applicants';
+import Step2Persons   from './steps/Step2Persons';
+import Step3Relations from './steps/Step3Relations';
 import Step4Health    from './steps/Step4Health';
 import Step5Questions from './steps/Step5Questions';
 import Step6Documents from './steps/Step6Documents';
@@ -17,8 +17,8 @@ const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favico
 
 const STEP_COMPONENTS = [
   Step1Email,
-  Step2Guardians,
-  Step3Applicants,
+  Step2Persons,
+  Step3Relations,
   Step4Health,
   Step5Questions,
   Step6Documents,
