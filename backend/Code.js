@@ -19,7 +19,7 @@ const CORS_ORIGIN        = 'https://admissions.kaleide.org';
 const DRIVE_FOLDER_NAME  = 'KIS Admissions Documents';
 const SCHOOL_ID          = 'KIS';
 const ADMISSIONS_EMAIL   = 'admissions@kaleide.org';
-const RESUME_BASE_URL    = 'https://admissions.kaleide.org/resume/';
+const RESUME_BASE_URL    = 'https://admissions.kaleide.org/#/resume/';
 const LOGO_URL           = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 const APPSHEET_BASE_URL  = 'https://api.appsheet.com/api/v2/apps/';
 
