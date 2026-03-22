@@ -851,7 +851,6 @@ function savePersons_(applicationId, persons) {
       person_id:      personId,
       application_id: applicationId,
       person_type_id: person.person_type_id || 'guardian',
-      person_order:   idx + 1,
       first_name:     person.first_name     || null,
       middle_name:    person.middle_name    || null,
       last_name:      person.last_name      || null,
