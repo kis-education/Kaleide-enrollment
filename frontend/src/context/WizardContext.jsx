@@ -49,11 +49,13 @@ export function WizardProvider({ children }) {
     // Determine deepest incomplete step
     const submitted = appData.application.submitted_at;
     if (submitted) { setCurrentStep(6); return; }
-    const desiredStartDate = appData.application.desired_start_date;
-    if (!desiredStartDate)          { setCurrentStep(0); return; }
     const persons = appData.persons || [];
     const hasGuardians  = persons.some(p => p.person_type_id === 'guardian');
     const hasApplicants = persons.some(p => p.person_type_id === 'applicant');
+    // No persons yet → always start at step 0 (start date), even if AppSheet set a default date
+    if (!hasGuardians && !hasApplicants) { setCurrentStep(0); return; }
+    const desiredStartDate = appData.application.desired_start_date;
+    if (!desiredStartDate)          { setCurrentStep(0); return; }
     if (!hasGuardians || !hasApplicants) { setCurrentStep(1); return; }
     const hasRelations = (appData.relations || []).length > 0;
     if (!hasRelations)              { setCurrentStep(2); return; }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
@@ -16,6 +16,7 @@ import Step6Documents from './steps/Step6Documents';
 import Step7Review    from './steps/Step7Review';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
+const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
 const STEP_COMPONENTS = [
   Step1Email,
@@ -32,6 +33,15 @@ export default function WizardPage() {
   const { applicationId, currentStep, setCurrentStep, stepData } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving, setSaving] = useState(false);
+
+  // Load reCAPTCHA v3 script eagerly so the badge is visible throughout the wizard
+  useEffect(() => {
+    if (!RECAPTCHA_SITE_KEY || document.querySelector('#recaptcha-script')) return;
+    const s = document.createElement('script');
+    s.id = 'recaptcha-script';
+    s.src = `https://www.google.com/recaptcha/api.js?render=${RECAPTCHA_SITE_KEY}`;
+    document.head.appendChild(s);
+  }, []);
 
   const handleNext = async (stepKey, data) => {
     setSaving(true);
