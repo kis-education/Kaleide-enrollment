@@ -79,6 +79,10 @@ const T = {
   SMS_ADDRESS_LOG:        'addressLog',
   SMS_RELATIONAL_RECORDS: 'relationalRecords',
   SMS_PERSON_CATEGORIES:  'personCategoriesLog',
+  // Lookup / reference tables
+  LOOKUP_ALLERGIES: 'foodAllergies',
+  LOOKUP_DIETARY:   'dietaryRequirements',
+  LOOKUP_MEDICAL:   'medicalConditions',
 };
 
 /**
@@ -141,6 +145,7 @@ function doPost(e) {
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
       case 'verifyRecaptcha':      result = verifyRecaptcha_(payload);      break;
       case 'promoteApplication': result = promoteApplication_(payload); break;
+      case 'fetchLookups':       result = fetchLookups_(payload);       break;
       default:
         return jsonResponse_({ ok: false, error: 'Unknown action: ' + action }, 400);
     }
@@ -665,6 +670,22 @@ function fetchQuestions_(p) {
   }));
 
   return { context, sets: enrichedSets };
+}
+
+/**
+ * Fetches lookup options for health fields (allergies, dietary, medical).
+ * @returns {{ allergies: Array, dietary: Array, medical: Array }}
+ */
+function fetchLookups_() {
+  const allergies = appsheetRequest_(T.LOOKUP_ALLERGIES, 'Find', [], {}) || [];
+  const dietary   = appsheetRequest_(T.LOOKUP_DIETARY,   'Find', [], {}) || [];
+  const medical   = appsheetRequest_(T.LOOKUP_MEDICAL,   'Find', [], {}) || [];
+
+  return {
+    allergies: allergies.map(r => ({ id: r.row_id, label: r.food_allergy_designation })),
+    dietary:   dietary.map(r =>   ({ id: r.row_id, label: r.diet_designation         })),
+    medical:   medical.map(r =>   ({ id: r.row_id, label: r.medical_condition_designation })),
+  };
 }
 
 /**

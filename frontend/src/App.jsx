@@ -2,6 +2,7 @@ import { Routes, Route, useLocation } from 'react-router-dom'
 import { Suspense, useEffect } from 'react'
 import { WizardProvider } from './context/WizardContext'
 import LandingPage      from './pages/LandingPage'
+import ConsentPage      from './pages/ConsentPage'
 import WizardPage       from './pages/WizardPage'
 import ResumePage       from './pages/ResumePage'
 import ConfirmationPage from './pages/ConfirmationPage'
@@ -30,6 +31,7 @@ function App() {
         <RouteLogger />
         <Routes>
           <Route path="/"                element={<LandingPage />}      />
+          <Route path="/consent"         element={<ConsentPage />}      />
           <Route path="/apply"           element={<WizardPage />}       />
           <Route path="/resume/:token"   element={<ResumePage />}       />
           <Route path="/confirmation"    element={<ConfirmationPage />} />

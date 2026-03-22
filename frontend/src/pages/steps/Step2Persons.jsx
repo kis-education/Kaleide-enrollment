@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
+import { COUNTRIES } from '../../constants/countries';
 
 const emptyPerson = (type) => ({
   _uid:                        Date.now() + Math.random(),
@@ -150,7 +151,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
     u('previous_schools', ps);
   };
 
-  const canCopyAddress = !isFirst && !!firstPersonId;
+  const canCopyAddress = (isApplicant || !isFirst) && !!firstPersonId;
   const typeLabel = isGuardian
     ? t('guardian.title', { n: idx + 1 })
     : t('applicant.title', { n: idx + 1 });
@@ -194,7 +195,10 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         </div>
         <div className="col-md-3">
           <label className="form-label">{t('field.nationality')}</label>
-          <input className="form-control" value={person.nationality} onChange={e => u('nationality', e.target.value)} placeholder={t('placeholder.country_code')} />
+          <select className="form-select" value={person.nationality} onChange={e => u('nationality', e.target.value)}>
+            <option value="">{t('placeholder.select')}</option>
+            {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
         </div>
         <div className="col-md-3">
           <label className="form-label">{t('field.place_of_birth')}</label>

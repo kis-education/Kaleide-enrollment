@@ -2,9 +2,7 @@ import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
-import { useWizard } from '../context/WizardContext';
 import LangToggle from '../components/LangToggle';
-import HoneypotField from '../components/HoneypotField';
 import { Toast, useToast } from '../components/Toast';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
@@ -14,11 +12,6 @@ export default function LandingPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const resumeError = searchParams.get('resume_error') === '1';
-  const { setApplicationId, setResumeToken, updateStep } = useWizard();
-
-  const [starting, setStarting]           = useState(false);
-  const [startEmail, setStartEmail]       = useState('');
-  const [startEmailErr, setStartEmailErr] = useState('');
 
   const [resumeEmail, setResumeEmail]     = useState('');
   const [resumeErr, setResumeErr]         = useState('');
@@ -27,30 +20,6 @@ export default function LandingPage() {
   const { message: toastMsg, showToast } = useToast();
 
   const validateEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
-
-  const handleStart = async (e) => {
-    e.preventDefault();
-    if (!validateEmail(startEmail)) {
-      setStartEmailErr(t('error.invalid_email'));
-      return;
-    }
-    setStartEmailErr('');
-    setStarting(true);
-    try {
-      const data = await gasCall('initApplication', {
-        primary_email:      startEmail,
-        preferred_language: navigator.language?.startsWith('en') ? 'en' : 'es',
-      });
-      setApplicationId(data.application_id);
-      setResumeToken(data.resume_token);
-      updateStep('email', { primary_email: startEmail, verified: false });
-      navigate('/apply');
-    } catch (err) {
-      setStartEmailErr(err.message);
-    } finally {
-      setStarting(false);
-    }
-  };
 
   const handleResume = async (e) => {
     e.preventDefault();
@@ -102,28 +71,9 @@ export default function LandingPage() {
         <div className="kis-card" style={{ maxWidth: 460, margin: '0 auto 28px' }}>
           <h2 style={{ marginBottom: 4 }}>{t('landing.start_title')}</h2>
           <p className="section-subtitle">{t('landing.start_subtitle')}</p>
-          <form onSubmit={handleStart} noValidate>
-            <HoneypotField />
-            <div className="mb-3">
-              <label className="form-label fw-semibold">{t('field.primary_email')}</label>
-              <input
-                type="email"
-                className={`form-control ${startEmailErr ? 'is-invalid' : ''}`}
-                value={startEmail}
-                onChange={e => { setStartEmail(e.target.value); setStartEmailErr(''); }}
-                onBlur={() => { if (startEmail && !validateEmail(startEmail)) setStartEmailErr(t('error.invalid_email')); }}
-                placeholder="your@email.com"
-                required
-              />
-              {startEmailErr && <div className="field-error">{startEmailErr}</div>}
-            </div>
-            <button type="submit" className="btn-primary-kis w-100" disabled={starting}>
-              {starting
-                ? <><span className="spinner-border spinner-border-sm me-2" />  {t('landing.starting')}</>
-                : <>{t('landing.start_btn')} <i className="bi bi-arrow-right" /></>
-              }
-            </button>
-          </form>
+          <button className="btn-primary-kis w-100" onClick={() => navigate('/consent')}>
+            {t('landing.start_btn')} <i className="bi bi-arrow-right ms-1" />
+          </button>
         </div>
 
         {/* Resume application */}

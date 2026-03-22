@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
@@ -30,8 +31,10 @@ export default function WizardPage() {
   const { t }                           = useTranslation();
   const { applicationId, currentStep, setCurrentStep, stepData } = useWizard();
   const { message: toastMsg, showToast } = useToast();
+  const [saving, setSaving] = useState(false);
 
   const handleNext = async (stepKey, data) => {
+    setSaving(true);
     log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
     if (applicationId && stepKey) {
       try {
@@ -44,6 +47,7 @@ export default function WizardPage() {
     } else {
       log.warn('WizardPage: skipping saveStep', { applicationId, stepKey });
     }
+    setSaving(false);
     const nextStep = Math.min(currentStep + 1, STEP_COMPONENTS.length - 1);
     log.info(`WizardPage: advancing to step ${nextStep}`);
     setCurrentStep(nextStep);
@@ -88,6 +92,18 @@ export default function WizardPage() {
         </div>
         <LangToggle />
       </header>
+
+      {/* Saving indicator */}
+      {saving && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
+          background: 'var(--teal)', color: '#fff',
+          textAlign: 'center', padding: '10px', fontSize: '0.9rem',
+        }}>
+          <span className="spinner-border spinner-border-sm me-2" />
+          {t('wizard.saving')}
+        </div>
+      )}
 
       {/* Progress */}
       <WizardProgress currentStep={currentStep} />

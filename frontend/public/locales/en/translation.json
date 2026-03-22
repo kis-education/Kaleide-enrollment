@@ -66,6 +66,7 @@
   "wizard.save_later": "Save & continue later",
   "wizard.save_later_sent": "Link sent to your email.",
   "wizard.save_later_error": "Could not send link. Try again.",
+  "wizard.saving": "Saving…",
 
   "resume.loading": "Loading your application…",
 
@@ -186,6 +187,9 @@
   "review.email": "Email",
   "review.verified": "Verified",
 
+  "consent.page_title": "Data Protection & Application",
+  "consent.page_subtitle": "Before we begin, please read and accept our data protection terms.",
+  "consent.start_btn": "Start Application",
   "consent.gdpr_en": "I consent to the collection and processing of my personal data in accordance with Kaleide International School's Privacy Policy and applicable data protection legislation (GDPR).",
   "consent.gdpr_es": "Consiento la recogida y el tratamiento de mis datos personales de acuerdo con la Política de Privacidad de Kaleide International School y la legislación de protección de datos aplicable (RGPD).",
   "consent.gdpr_accept": "I accept the data protection terms / Acepto los términos de protección de datos",

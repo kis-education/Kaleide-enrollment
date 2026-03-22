@@ -131,30 +131,14 @@ export default function Step4Health({ onNext, onBack }) {
   const [medicalOpts,   setMedicalOpts]   = useState([]);
 
   useEffect(() => {
-    gasCall('saveStep', { application_id: null, step: 'lookup', payload: {} })
+    gasCall('fetchLookups', {})
+      .then(data => {
+        if (data.allergies) setAllergiesOpts(data.allergies);
+        if (data.dietary)   setDietaryOpts(data.dietary);
+        if (data.medical)   setMedicalOpts(data.medical);
+      })
       .catch(() => {});
-    // Placeholder: in production these come from AppSheet lookup tables via a dedicated action
-    setAllergiesOpts([
-      { id: 'peanut',   label: t('allergy.peanut') },
-      { id: 'dairy',    label: t('allergy.dairy')  },
-      { id: 'egg',      label: t('allergy.egg')    },
-      { id: 'gluten',   label: t('allergy.gluten') },
-      { id: 'shellfish',label: t('allergy.shellfish') },
-      { id: 'tree_nuts',label: t('allergy.tree_nuts') },
-    ]);
-    setDietaryOpts([
-      { id: 'vegetarian', label: t('dietary.vegetarian') },
-      { id: 'vegan',      label: t('dietary.vegan')      },
-      { id: 'halal',      label: t('dietary.halal')      },
-      { id: 'kosher',     label: t('dietary.kosher')     },
-    ]);
-    setMedicalOpts([
-      { id: 'asthma',   label: t('medical.asthma')   },
-      { id: 'diabetes', label: t('medical.diabetes') },
-      { id: 'epilepsy', label: t('medical.epilepsy') },
-      { id: 'adhd',     label: t('medical.adhd')     },
-    ]);
-  }, [t]);
+  }, []);
 
   const updateHealth = (i, val) => {
     const next = [...healthData];

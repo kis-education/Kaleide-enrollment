@@ -1,0 +1,116 @@
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { gasCall } from '../api';
+import { useWizard } from '../context/WizardContext';
+import LangToggle from '../components/LangToggle';
+import HoneypotField from '../components/HoneypotField';
+import { CONSENT_TEXTS } from '../consentTexts';
+
+const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
+
+export default function ConsentPage() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { setApplicationId, setResumeToken, updateStep } = useWizard();
+
+  const [email,       setEmail]       = useState('');
+  const [emailErr,    setEmailErr]    = useState('');
+  const [consent,     setConsent]     = useState(false);
+  const [submitting,  setSubmitting]  = useState(false);
+  const [err,         setErr]         = useState('');
+
+  const validateEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!validateEmail(email)) { setEmailErr(t('error.invalid_email')); return; }
+    if (!consent) { setErr(t('error.consent_required')); return; }
+
+    setEmailErr('');
+    setErr('');
+    setSubmitting(true);
+
+    try {
+      const data = await gasCall('initApplication', {
+        primary_email:      email,
+        preferred_language: navigator.language?.startsWith('en') ? 'en' : 'es',
+      });
+      setApplicationId(data.application_id);
+      setResumeToken(data.resume_token);
+      updateStep('email', { primary_email: email, verified: false });
+      navigate('/apply');
+    } catch (e) {
+      setErr(e.message);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="wizard-layout">
+      <header className="kis-header">
+        <div className="brand">
+          <img src={LOGO} alt="KIS" />
+          <div>
+            <div className="brand-name">Kaleide International School</div>
+            <div className="brand-sub">{t('landing.header_sub')}</div>
+          </div>
+        </div>
+        <LangToggle />
+      </header>
+
+      <div className="landing-hero">
+        <img src={LOGO} alt="KIS" className="landing-logo" />
+        <h1 className="landing-title">{t('consent.page_title')}</h1>
+        <p className="landing-subtitle">{t('consent.page_subtitle')}</p>
+
+        <div className="kis-card" style={{ maxWidth: 560, margin: '0 auto', textAlign: 'left' }}>
+          <form onSubmit={handleSubmit} noValidate>
+            <HoneypotField />
+
+            {/* GDPR consent block */}
+            <div className="consent-block mb-4">
+              <p className="consent-text"><strong>EN:</strong> {CONSENT_TEXTS.gdpr.en}</p>
+              <p className="consent-text"><strong>ES:</strong> {CONSENT_TEXTS.gdpr.es}</p>
+              <div className="form-check mt-3">
+                <input
+                  type="checkbox"
+                  className="form-check-input"
+                  id="consent_gdpr"
+                  checked={consent}
+                  onChange={e => { setConsent(e.target.checked); setErr(''); }}
+                />
+                <label className="form-check-label fw-semibold" htmlFor="consent_gdpr">
+                  {t('consent.gdpr_accept')}
+                </label>
+              </div>
+            </div>
+
+            {/* Email */}
+            <div className="mb-3">
+              <label className="form-label fw-semibold">{t('field.primary_email')}</label>
+              <input
+                type="email"
+                className={`form-control ${emailErr ? 'is-invalid' : ''}`}
+                value={email}
+                onChange={e => { setEmail(e.target.value); setEmailErr(''); }}
+                placeholder="your@email.com"
+                required
+              />
+              {emailErr && <div className="field-error">{emailErr}</div>}
+            </div>
+
+            {err && <div className="field-error mb-3">{err}</div>}
+
+            <button type="submit" className="btn-primary-kis w-100" disabled={submitting}>
+              {submitting
+                ? <><span className="spinner-border spinner-border-sm me-2" />{t('landing.starting')}</>
+                : <>{t('consent.start_btn')} <i className="bi bi-arrow-right ms-1" /></>
+              }
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
