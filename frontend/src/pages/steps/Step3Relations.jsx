@@ -1,0 +1,149 @@
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useWizard } from '../../context/WizardContext';
+
+const RELATION_TYPES = ['parent', 'step_parent', 'legal_guardian', 'grandparent', 'other'];
+
+function buildInitialRelations(persons, existingRelations) {
+  const guardians  = persons.filter(p => p.person_type_id === 'guardian');
+  const applicants = persons.filter(p => p.person_type_id === 'applicant');
+
+  return guardians.flatMap(g => {
+    const gId = g.person_id || g._uid;
+    return applicants.map(a => {
+      const aId = a.person_id || a._uid;
+      const existing = (existingRelations || []).find(
+        r => r.guardian_person_id === gId && r.applicant_person_id === aId
+      );
+      return existing || {
+        _uid:                  `${gId}__${aId}`,
+        guardian_person_id:    gId,
+        applicant_person_id:   aId,
+        relation_type_id:      '',
+        is_custodial:          false,
+        is_pick_up_authorized: false,
+      };
+    });
+  });
+}
+
+export default function Step3Relations({ onNext, onBack }) {
+  const { t } = useTranslation();
+  const { stepData, updateStep } = useWizard();
+
+  const persons   = stepData.persons   || [];
+  const guardians  = persons.filter(p => p.person_type_id === 'guardian');
+  const applicants = persons.filter(p => p.person_type_id === 'applicant');
+
+  const [relations, setRelations] = useState(() =>
+    buildInitialRelations(persons, stepData.relations)
+  );
+
+  const updateRelation = (idx, updates) => {
+    setRelations(prev => prev.map((r, i) => i === idx ? { ...r, ...updates } : r));
+  };
+
+  const handleNext = () => {
+    updateStep('relations', relations);
+    onNext('relations', relations);
+  };
+
+  if (!guardians.length || !applicants.length) {
+    return (
+      <>
+        <div className="mb-2">
+          <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.relations')}</h2>
+        </div>
+        <div className="kis-card">
+          <p style={{ color: 'var(--muted)' }}>{t('step4.no_applicants')}</p>
+        </div>
+        <div className="d-flex justify-content-between mt-4">
+          <button className="btn-secondary-kis" onClick={onBack}>
+            <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
+          </button>
+          <button className="btn-primary-kis" onClick={handleNext}>
+            {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="mb-2">
+        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.relations')}</h2>
+        <p style={{ color: 'var(--muted)' }}>{t('step3.subtitle')}</p>
+      </div>
+
+      {guardians.map((g, gi) => {
+        const gId = g.person_id || g._uid;
+        const gName = [g.first_name, g.last_name].filter(Boolean).join(' ') || t('guardian.title', { n: gi + 1 });
+
+        return (
+          <div key={gId} className="dynamic-section">
+            <div className="dynamic-section-title">{gName}</div>
+
+            {applicants.map((a, ai) => {
+              const aId   = a.person_id || a._uid;
+              const aName = [a.first_name, a.last_name].filter(Boolean).join(' ') || t('applicant.title', { n: ai + 1 });
+              const relIdx = relations.findIndex(
+                r => r.guardian_person_id === gId && r.applicant_person_id === aId
+              );
+              const rel = relIdx >= 0 ? relations[relIdx] : null;
+              if (!rel) return null;
+
+              return (
+                <div key={aId} className="border rounded p-3 mb-3" style={{ background: 'var(--bg)' }}>
+                  <div className="fw-semibold mb-2" style={{ color: 'var(--teal-dk)' }}>{aName}</div>
+                  <div className="row g-3">
+                    <div className="col-md-5">
+                      <label className="form-label small">{t('relation.type')}</label>
+                      <select className="form-select form-select-sm"
+                        value={rel.relation_type_id}
+                        onChange={e => updateRelation(relIdx, { relation_type_id: e.target.value })}>
+                        <option value="">{t('relation.none')}</option>
+                        {RELATION_TYPES.map(rt => (
+                          <option key={rt} value={rt}>{rt.replace('_', ' ')}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="col-auto d-flex align-items-end gap-3">
+                      <div className="form-check mb-0">
+                        <input type="checkbox" className="form-check-input"
+                          id={`custodial_${gi}_${ai}`}
+                          checked={rel.is_custodial}
+                          onChange={e => updateRelation(relIdx, { is_custodial: e.target.checked })} />
+                        <label className="form-check-label small" htmlFor={`custodial_${gi}_${ai}`}>
+                          {t('relation.is_custodial')}
+                        </label>
+                      </div>
+                      <div className="form-check mb-0">
+                        <input type="checkbox" className="form-check-input"
+                          id={`pickup_${gi}_${ai}`}
+                          checked={rel.is_pick_up_authorized}
+                          onChange={e => updateRelation(relIdx, { is_pick_up_authorized: e.target.checked })} />
+                        <label className="form-check-label small" htmlFor={`pickup_${gi}_${ai}`}>
+                          {t('relation.is_pickup')}
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+
+      <div className="d-flex justify-content-between mt-4">
+        <button className="btn-secondary-kis" onClick={onBack}>
+          <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
+        </button>
+        <button className="btn-primary-kis" onClick={handleNext}>
+          {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
+        </button>
+      </div>
+    </>
+  );
+}

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
+import AddressForm, { emptyAddress } from '../../components/AddressForm';
 
 const CURRENT_YEAR = new Date().getFullYear();
 const SCHOOL_YEARS = Array.from({ length: 5 }, (_, i) => {
@@ -25,13 +26,7 @@ const emptyApplicant = () => ({
   desired_start_date:        '',
   _school_year:              String(CURRENT_YEAR),
   _start_type:               'september',
-  address_same_as_guardian_id: '',
-  address_line_1:            '',
-  address_line_2:            '',
-  city:                      '',
-  province:                  '',
-  country_id:                '',
-  zip:                       '',
+  address:                   emptyAddress(),
   has_adaptation_needs:      false,
   adaptation_notes:          '',
   is_sibling:                false,
@@ -92,20 +87,18 @@ function ApplicantSection({ applicant, idx, isFirst, onChange, onRemove, guardia
   const u = (f, v) => onChange({ ...applicant, [f]: v });
 
   const handleSameAddress = (checked) => {
-    if (checked && guardian1) {
+    if (checked && guardian1?.guardian_id) {
       onChange({
         ...applicant,
-        _sameAddress:              true,
-        address_same_as_guardian_id: guardian1.guardian_id || '',
-        address_line_1:            guardian1.address_line_1,
-        address_line_2:            guardian1.address_line_2,
-        city:                      guardian1.city,
-        province:                  guardian1.province,
-        country_id:                guardian1.country_id,
-        zip:                       guardian1.zip,
+        _sameAddress:                true,
+        copy_address_from_guardian_id: guardian1.guardian_id,
       });
     } else {
-      onChange({ ...applicant, _sameAddress: false, address_same_as_guardian_id: '' });
+      onChange({
+        ...applicant,
+        _sameAddress:                false,
+        copy_address_from_guardian_id: null,
+      });
     }
   };
 
@@ -133,6 +126,8 @@ function ApplicantSection({ applicant, idx, isFirst, onChange, onRemove, guardia
     ps.splice(i, 1);
     u('previous_schools', ps);
   };
+
+  const canCopyAddress = !!(guardian1?.guardian_id);
 
   return (
     <div className="dynamic-section">
@@ -269,28 +264,24 @@ function ApplicantSection({ applicant, idx, isFirst, onChange, onRemove, guardia
         <div className="d-flex align-items-center gap-3 mb-2">
           <h6 className="mb-0" style={{ color: 'var(--muted)' }}>{t('field.address')}</h6>
           <div className="form-check mb-0">
-            <input type="checkbox" className="form-check-input" id={`appSameAddr_${idx}`}
+            <input
+              type="checkbox" className="form-check-input"
+              id={`appSameAddr_${idx}`}
               checked={applicant._sameAddress || false}
-              onChange={e => handleSameAddress(e.target.checked)} />
+              disabled={!canCopyAddress}
+              onChange={e => handleSameAddress(e.target.checked)}
+            />
             <label className="form-check-label small" htmlFor={`appSameAddr_${idx}`}>
               {t('guardian.same_as_1')}
             </label>
           </div>
         </div>
-        <div className="row g-3">
-          <div className="col-12">
-            <input className="form-control" placeholder={t('field.address_line_1')} value={applicant.address_line_1} disabled={applicant._sameAddress} onChange={e => u('address_line_1', e.target.value)} />
-          </div>
-          <div className="col-md-5">
-            <input className="form-control" placeholder={t('field.city')} value={applicant.city} disabled={applicant._sameAddress} onChange={e => u('city', e.target.value)} />
-          </div>
-          <div className="col-md-4">
-            <input className="form-control" placeholder={t('field.country')} value={applicant.country_id} disabled={applicant._sameAddress} onChange={e => u('country_id', e.target.value)} />
-          </div>
-          <div className="col-md-3">
-            <input className="form-control" placeholder={t('field.zip')} value={applicant.zip} disabled={applicant._sameAddress} onChange={e => u('zip', e.target.value)} />
-          </div>
-        </div>
+        {!applicant._sameAddress && (
+          <AddressForm
+            address={applicant.address || emptyAddress()}
+            onChange={addr => u('address', addr)}
+          />
+        )}
       </div>
 
       {/* Previous schools */}

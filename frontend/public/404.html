@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Kaleide International School — Admissions</title>
+    <script>
+      // GitHub Pages SPA redirect
+      // Encodes the full path as a query string so GitHub Pages serves index.html,
+      // which then restores the original URL before React Router takes over.
+      var l = window.location;
+      l.replace(
+        l.protocol + '//' + l.host + '/?p=' +
+        encodeURIComponent(l.pathname + l.search) +
+        l.hash
+      );
+    </script>
+  </head>
+  <body></body>
+</html>

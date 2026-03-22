@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
+import AddressForm, { emptyAddress } from '../../components/AddressForm';
 
 const emptyGuardian = () => ({
   _uid:                 Date.now() + Math.random(),
@@ -14,12 +15,7 @@ const emptyGuardian = () => ({
   id_number:            '',
   profession:           '',
   employer:             '',
-  address_line_1:       '',
-  address_line_2:       '',
-  city:                 '',
-  province:             '',
-  country_id:           '',
-  zip:                  '',
+  address:              emptyAddress(),
   is_primary_contact:   false,
   is_emergency_contact: false,
   contacts:             [],
@@ -92,25 +88,16 @@ function ContactRow({ contact, onChange, onRemove, idx }) {
   );
 }
 
-function GuardianSection({ guardian, idx, isFirst, onChange, onRemove, guardian1 }) {
+function GuardianSection({ guardian, idx, isFirst, onChange, onRemove }) {
   const { t } = useTranslation();
 
   const update = (field, val) => onChange({ ...guardian, [field]: val });
 
   const handleSameAddress = (checked) => {
-    if (checked && guardian1) {
-      onChange({
-        ...guardian,
-        _sameAddress:   true,
-        address_line_1: guardian1.address_line_1,
-        address_line_2: guardian1.address_line_2,
-        city:           guardian1.city,
-        province:       guardian1.province,
-        country_id:     guardian1.country_id,
-        zip:            guardian1.zip,
-      });
+    if (checked) {
+      onChange({ ...guardian, _sameAddress: true, same_address_as_primary: true });
     } else {
-      onChange({ ...guardian, _sameAddress: false });
+      onChange({ ...guardian, _sameAddress: false, same_address_as_primary: false });
     }
   };
 
@@ -203,32 +190,12 @@ function GuardianSection({ guardian, idx, isFirst, onChange, onRemove, guardian1
             </div>
           )}
         </div>
-        <div className="row g-3">
-          <div className="col-12">
-            <label className="form-label">{t('field.address_line_1')}</label>
-            <input className="form-control" value={guardian.address_line_1} disabled={guardian._sameAddress} onChange={e => update('address_line_1', e.target.value)} />
-          </div>
-          <div className="col-12">
-            <label className="form-label">{t('field.address_line_2')}</label>
-            <input className="form-control" value={guardian.address_line_2} disabled={guardian._sameAddress} onChange={e => update('address_line_2', e.target.value)} />
-          </div>
-          <div className="col-md-4">
-            <label className="form-label">{t('field.city')}</label>
-            <input className="form-control" value={guardian.city} disabled={guardian._sameAddress} onChange={e => update('city', e.target.value)} />
-          </div>
-          <div className="col-md-3">
-            <label className="form-label">{t('field.province')}</label>
-            <input className="form-control" value={guardian.province} disabled={guardian._sameAddress} onChange={e => update('province', e.target.value)} />
-          </div>
-          <div className="col-md-3">
-            <label className="form-label">{t('field.country')}</label>
-            <input className="form-control" value={guardian.country_id} disabled={guardian._sameAddress} onChange={e => update('country_id', e.target.value)} placeholder={t('placeholder.country_code')} />
-          </div>
-          <div className="col-md-2">
-            <label className="form-label">{t('field.zip')}</label>
-            <input className="form-control" value={guardian.zip} disabled={guardian._sameAddress} onChange={e => update('zip', e.target.value)} />
-          </div>
-        </div>
+        {!guardian._sameAddress && (
+          <AddressForm
+            address={guardian.address || emptyAddress()}
+            onChange={addr => update('address', addr)}
+          />
+        )}
       </div>
 
       {/* Roles */}
@@ -311,7 +278,6 @@ export default function Step2Guardians({ onNext, onBack }) {
           isFirst={i === 0}
           onChange={val => updateGuardian(i, val)}
           onRemove={() => removeGuardian(i)}
-          guardian1={guardians[0]}
         />
       ))}
 

@@ -77,12 +77,27 @@ function QuestionField({ question, value, onChange }) {
   );
 }
 
-function meetsConditions(question, applicant) {
+/**
+ * Evaluates whether a question's display conditions are met.
+ * @param {Object} question   - Question object with .conditions array
+ * @param {Object} person     - The person this question is shown for (applicant or guardian)
+ * @param {Object} responses  - Current responses map { `${qid}__${personKey}`: value }
+ * @param {string} personKey  - person.person_id or person._uid used as the response key suffix
+ */
+function meetsConditions(question, person, responses, personKey) {
   if (!question.conditions?.length) return true;
   return question.conditions.every(c => {
-    if (c.condition_operator === 'age_gte' && applicant?.date_of_birth) {
-      const age = (Date.now() - new Date(applicant.date_of_birth)) / (365.25 * 24 * 3600 * 1000);
+    if (c.condition_operator === 'age_gte' && person?.date_of_birth) {
+      const age = (Date.now() - new Date(person.date_of_birth)) / (365.25 * 24 * 3600 * 1000);
       return age >= parseFloat(c.condition_value || 0);
+    }
+    // eq condition: condition_value format is "question_id:expected_value"
+    if (c.condition_operator === 'eq' && c.condition_value) {
+      const [refQid, expectedVal] = c.condition_value.split(':');
+      const responseKey = `${refQid}__${personKey}`;
+      const actual = responses && responses[responseKey];
+      // Compare as string; booleans stored as true/false
+      return String(actual) === expectedVal || actual === (expectedVal === 'true');
     }
     return true;
   });
@@ -97,8 +112,9 @@ export default function Step5Questions({ onNext, onBack }) {
   const [err,      setErr]      = useState('');
   const [responses, setResponses] = useState(stepData.questions || {});
 
-  const applicants = stepData.applicants || [];
-  const guardians  = stepData.guardians  || [];
+  const persons    = stepData.persons || [];
+  const applicants = persons.filter(p => p.person_type_id === 'applicant');
+  const guardians  = persons.filter(p => p.person_type_id === 'guardian');
 
   useEffect(() => {
     gasCall('fetchQuestions', { context_designation: 'Enrollment', language: i18n.language })
@@ -165,8 +181,9 @@ export default function Step5Questions({ onNext, onBack }) {
 
             if (isParticipantQ) {
               return applicants.map((a, ai) => {
-                if (!meetsConditions(q, a)) return null;
-                const key = `${q.question_id}__${a.applicant_id || a._uid}`;
+                const personKey = a.person_id || a._uid;
+                if (!meetsConditions(q, a, responses, personKey)) return null;
+                const key = `${q.question_id}__${personKey}`;
                 const name = [a.first_name, a.last_name].filter(Boolean).join(' ') || `Applicant ${ai + 1}`;
                 return (
                   <div key={key} className="mb-4">
@@ -181,7 +198,7 @@ export default function Step5Questions({ onNext, onBack }) {
 
             if (isClientQ) {
               return guardians.map((g, gi) => {
-                const key = `${q.question_id}__${g.guardian_id || g._uid}`;
+                const key = `${q.question_id}__${g.person_id || g._uid}`;
                 const name = [g.first_name, g.last_name].filter(Boolean).join(' ') || `Guardian ${gi + 1}`;
                 return (
                   <div key={key} className="mb-4">

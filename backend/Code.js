@@ -19,35 +19,82 @@ const CORS_ORIGIN        = 'https://admissions.kaleide.org';
 const DRIVE_FOLDER_NAME  = 'KIS Admissions Documents';
 const SCHOOL_ID          = 'KIS';
 const ADMISSIONS_EMAIL   = 'admissions@kaleide.org';
-const RESUME_BASE_URL    = 'https://admissions.kaleide.org/#/resume/';
+const RESUME_BASE_URL    = 'https://admissions.kaleide.org/resume/';
 const LOGO_URL           = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 const APPSHEET_BASE_URL  = 'https://api.appsheet.com/api/v2/apps/';
 
+// Consent statement texts — canonical wording used for GDPR audit trail.
+// The React frontend (frontend/src/consentTexts.js) defines the same strings — keep in sync.
+const CONSENT_TEXTS = {
+  gdpr: {
+    en: "I consent to the collection and processing of my personal data in accordance with Kaleide International School's Privacy Policy and applicable data protection legislation (GDPR).",
+    es: "Consiento la recogida y el tratamiento de mis datos personales de acuerdo con la Política de Privacidad de Kaleide International School y la legislación de protección de datos aplicable (RGPD).",
+  },
+  legal: {
+    en: "I confirm that the information provided in this application is accurate and complete to the best of my knowledge.",
+    es: "Confirmo que la información proporcionada en esta solicitud es exacta y completa según mi leal saber y entender.",
+  },
+};
+
+// Stable question UUIDs for enrollment question bank — never regenerate
+const QB_PROFESSION_ID       = 'a1b2c3d4-0020-0000-0000-000000000000';
+const QB_EMPLOYER_ID         = 'a1b2c3d4-0021-0000-0000-000000000000';
+const QB_HAS_ADAPTATION_ID   = 'a1b2c3d4-0022-0000-0000-000000000000';
+const QB_ADAPTATION_NOTES_ID = 'a1b2c3d4-0023-0000-0000-000000000000';
+
 // AppSheet table names matching the enr* / qb* schema
 const T = {
-  APPLICATIONS:       'enrApplications',
-  STATUS_LOG:         'enrStatusLog',
-  STATUS_TYPES:       'enrStatusTypes',
-  CONSENTS:           'enrConsentsLog',
-  GUARDIANS:          'enrGuardians',
-  APPLICANTS:         'enrApplicants',
-  GUARDIAN_APPLICANT: 'enrGuardianApplicantRelations',
-  GUARDIAN_CONTACTS:  'enrGuardianContacts',
-  PREV_SCHOOLS:       'enrPreviousSchools',
-  MEDICAL:            'enrApplicantMedicalConditions',
-  ALLERGIES:          'enrApplicantFoodAllergies',
-  DIETARY:            'enrApplicantDietaryRequirements',
-  DOCUMENTS:          'enrApplicationDocuments',
-  QB_CONTEXTS:        'qbContexts',
-  QB_SETS:            'qbQuestionSets',
-  QB_SET_ITEMS:       'qbQuestionSetItems',
-  QB_QUESTIONS:       'qbQuestions',
-  QB_TRANSLATIONS:    'qbQuestionTranslations',
-  QB_OPTIONS:         'qbAnswerOptions',
-  QB_OPT_TRANS:       'qbAnswerOptionTranslations',
-  QB_CONDITIONS:      'qbQuestionConditions',
-  QB_RESPONSES:       'qbResponses',
+  APPLICATIONS:         'enrApplications',
+  STATUS_LOG:           'enrStatusLog',
+  STATUS_TYPES:         'enrStatusTypes',
+  CONSENTS:             'enrConsentsLog',
+  PERSONS:              'enrPersons',
+  PERSON_NATIONALITIES: 'enrPersonNationalities',
+  PERSON_IDS:           'enrPersonIDs',
+  PERSON_LANGUAGES:     'enrPersonLanguages',
+  ADDRESSES:            'enrAddresses',
+  PERSON_ADDRESSES:     'enrPersonAddresses',
+  EMAILS:               'enrEmails',
+  PERSON_EMAILS:        'enrPersonEmails',
+  PHONES:               'enrPhones',
+  PERSON_PHONES:        'enrPersonPhones',
+  RELATIONS:            'enrRelations',
+  PREV_SCHOOLS:         'enrPreviousSchools',
+  PERSON_MEDICAL:       'enrPersonMedicalConditions',
+  PERSON_ALLERGIES:     'enrPersonFoodAllergies',
+  PERSON_DIETARY:       'enrPersonDietaryRequirements',
+  DOCUMENTS:            'enrApplicationDocuments',
+  INTERVIEWS:           'enrInterviews',
+  QB_CONTEXTS:          'qbContexts',
+  QB_SETS:              'qbQuestionSets',
+  QB_SET_ITEMS:         'qbQuestionSetItems',
+  QB_QUESTIONS:         'qbQuestions',
+  QB_TRANSLATIONS:      'qbQuestionTranslations',
+  QB_OPTIONS:           'qbAnswerOptions',
+  QB_OPT_TRANS:         'qbAnswerOptionTranslations',
+  QB_CONDITIONS:        'qbQuestionConditions',
+  QB_RESPONSES:         'qbResponses',
+  // Main SMS tables (used during application promotion)
+  SMS_ADDRESSES:          'addresses_S',
+  SMS_ADDRESS_LOG:        'addressLog',
+  SMS_RELATIONAL_RECORDS: 'relationalRecords',
+  SMS_PERSON_CATEGORIES:  'personCategoriesLog',
 };
+
+/**
+ * Returns the authenticated staff email for the current GAS execution context.
+ * Used to populate changed_by, reviewed_by, and interviewer_id fields.
+ * Returns null when the script runs in an unauthenticated context (e.g. public web app).
+ * @returns {string|null}
+ */
+function getStaffEmail_() {
+  try {
+    const email = Session.getActiveUser().getEmail();
+    return email || null;
+  } catch (_) {
+    return null;
+  }
+}
 
 // ─── Entry points ─────────────────────────────────────────────────────────────
 
@@ -57,7 +104,6 @@ const T = {
  * @returns {TextOutput}
  */
 function doGet(e) {
-  Logger.log('[doGet] Health check called');
   const out = ContentService.createTextOutput(
     JSON.stringify({ status: 'ok', ts: new Date().toISOString() })
   ).setMimeType(ContentService.MimeType.JSON);
@@ -71,25 +117,15 @@ function doGet(e) {
  * @returns {TextOutput}
  */
 function doPost(e) {
-  const t0 = Date.now();
   try {
-    let payload;
-    try {
-      payload = JSON.parse(e.postData.contents);
-    } catch (parseErr) {
-      Logger.log('[doPost] Failed to parse request body: ' + parseErr.message);
-      return jsonResponse_({ ok: false, error: 'Invalid request body' }, 400);
-    }
-
-    const action = payload.action;
-    Logger.log('[doPost] Incoming action: ' + action + ' | _hp present: ' + (payload._hp !== undefined));
+    const payload = JSON.parse(e.postData.contents);
 
     // Honeypot guard — bots fill hidden fields, humans don't
     if (payload._hp && payload._hp !== '') {
-      Logger.log('[doPost] HONEYPOT triggered — rejecting request for action: ' + action);
       return jsonResponse_({ ok: false, error: 'Forbidden' }, 403);
     }
 
+    const action = payload.action;
     let result;
 
     switch (action) {
@@ -104,18 +140,15 @@ function doPost(e) {
       case 'saveResponses':        result = saveResponses_(payload);        break;
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
       case 'verifyRecaptcha':      result = verifyRecaptcha_(payload);      break;
+      case 'promoteApplication': result = promoteApplication_(payload); break;
       default:
-        Logger.log('[doPost] Unknown action: ' + action);
         return jsonResponse_({ ok: false, error: 'Unknown action: ' + action }, 400);
     }
 
-    const elapsed = Date.now() - t0;
-    Logger.log('[doPost] Action "' + action + '" completed successfully in ' + elapsed + 'ms');
     return jsonResponse_({ ok: true, ...result });
 
   } catch (err) {
-    const elapsed = Date.now() - t0;
-    Logger.log('[doPost] Unhandled error after ' + elapsed + 'ms: ' + err.message + '\n' + err.stack);
+    Logger.log('doPost error: ' + err.message + '\n' + err.stack);
     return jsonResponse_({ ok: false, error: err.message }, 500);
   }
 }
@@ -128,22 +161,16 @@ function doPost(e) {
  * @returns {{ application_id: string, resume_token: string }}
  */
 function initApplication_(p) {
-  Logger.log('[initApplication] Start — email: ' + p.primary_email + ' | lang: ' + (p.preferred_language || 'es'));
-
   const applicationId = generateUuid_();
   const resumeToken   = generateUuid_();
   const now           = new Date().toISOString();
-  Logger.log('[initApplication] Generated IDs — application_id: ' + applicationId + ' | resume_token: ' + resumeToken);
 
   // Look up DRAFT status type id
-  Logger.log('[initApplication] Looking up DRAFT status type for school: ' + SCHOOL_ID);
   const statusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
     Filter: '"status_code" = "DRAFT" && "school_id" = "' + SCHOOL_ID + '"'
   });
   const draftTypeId = (statusTypes && statusTypes[0]) ? statusTypes[0].status_type_id : null;
-  Logger.log('[initApplication] DRAFT status_type_id: ' + draftTypeId + (draftTypeId ? '' : ' (WARNING: not found — status will be null)'));
 
-  Logger.log('[initApplication] Adding application row to AppSheet');
   appsheetRequest_(T.APPLICATIONS, 'Add', [{
     application_id:     applicationId,
     school_id:          SCHOOL_ID,
@@ -152,23 +179,18 @@ function initApplication_(p) {
     primary_email:      p.primary_email,
     preferred_language: p.preferred_language || 'es',
     email_confirmed:    false,
+    desired_start_date: p.desired_start_date || null,
+    source:             p.source || 'enrollment_site',
     created_at:         now,
     updated_at:         now,
   }]);
-  Logger.log('[initApplication] Application row added OK');
 
-  Logger.log('[initApplication] Sending magic link email to: ' + p.primary_email);
   sendMagicLinkEmail_(p.primary_email, resumeToken, p.preferred_language || 'es');
-  Logger.log('[initApplication] Magic link email sent OK');
-
-  Logger.log('[initApplication] Sending internal notification email');
   sendInternalEmail_(
     '[KIS Admissions] New application started',
     buildApplicationInitiatedBody_(applicationId, p.primary_email, now)
   );
-  Logger.log('[initApplication] Internal notification sent OK');
 
-  Logger.log('[initApplication] Complete — application_id: ' + applicationId);
   return { application_id: applicationId, resume_token: resumeToken };
 }
 
@@ -177,33 +199,23 @@ function initApplication_(p) {
  * @param {Object} p - { application_id } or { primary_email }
  */
 function sendMagicLink_(p) {
-  Logger.log('[sendMagicLink] Start — lookup by: ' + (p.application_id ? 'application_id=' + p.application_id : 'primary_email=' + p.primary_email));
-
   let app;
   if (p.application_id) {
     const rows = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
       Filter: '"application_id" = "' + p.application_id + '"'
     });
     app = rows && rows[0];
-    Logger.log('[sendMagicLink] Lookup by application_id — found: ' + (app ? 'yes' : 'no'));
   } else if (p.primary_email) {
     const rows = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
       Filter: '"primary_email" = "' + p.primary_email + '"'
     });
-    Logger.log('[sendMagicLink] Lookup by email — total rows found: ' + (rows ? rows.length : 0));
     // Send to most recent application
     app = rows && rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
-    Logger.log('[sendMagicLink] Most recent application: ' + (app ? app.application_id : 'none'));
   }
 
-  if (!app) {
-    Logger.log('[sendMagicLink] ERROR — application not found');
-    throw new Error('Application not found');
-  }
+  if (!app) throw new Error('Application not found');
 
-  Logger.log('[sendMagicLink] Sending magic link email to: ' + app.primary_email + ' | lang: ' + (app.preferred_language || 'es'));
   sendMagicLinkEmail_(app.primary_email, app.resume_token, app.preferred_language || 'es');
-  Logger.log('[sendMagicLink] Email sent OK');
   return { sent: true };
 }
 
@@ -213,74 +225,86 @@ function sendMagicLink_(p) {
  * @returns {Object} Full application state including all child records
  */
 function resumeApplication_(p) {
-  Logger.log('[resumeApplication] Start — resume_token: ' + p.resume_token);
-
   const apps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
     Filter: '"resume_token" = "' + p.resume_token + '"'
   });
-  Logger.log('[resumeApplication] Token lookup — rows found: ' + (apps ? apps.length : 0));
-
-  if (!apps || !apps.length) {
-    Logger.log('[resumeApplication] ERROR — invalid or expired token');
-    throw new Error('Invalid or expired resume token');
-  }
+  if (!apps || !apps.length) throw new Error('Invalid or expired resume token');
 
   const app = apps[0];
   const id  = app.application_id;
-  Logger.log('[resumeApplication] Application found — id: ' + id + ' | email_confirmed: ' + app.email_confirmed + ' | submitted_at: ' + (app.submitted_at || 'null'));
 
-  Logger.log('[resumeApplication] Fetching child records for application_id: ' + id);
-  const [guardians, applicants, documents, responses] = [
-    appsheetRequest_(T.GUARDIANS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [],
-    appsheetRequest_(T.APPLICANTS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [],
-    appsheetRequest_(T.DOCUMENTS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [],
-    appsheetRequest_(T.QB_RESPONSES, 'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [],
-  ];
-  Logger.log('[resumeApplication] Child records — guardians: ' + guardians.length + ' | applicants: ' + applicants.length + ' | documents: ' + documents.length + ' | responses: ' + responses.length);
+  const persons    = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const relations  = appsheetRequest_(T.RELATIONS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const documents  = appsheetRequest_(T.DOCUMENTS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const responses  = appsheetRequest_(T.QB_RESPONSES,  'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [];
+  // interview_type is a plain enum string; interviewer_id is a plain email string — no FK resolution
+  const interviews = appsheetRequest_(T.INTERVIEWS,    'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
 
-  // Enrich guardians with contacts
-  const guardianIds = guardians.map(g => g.guardian_id);
-  let contacts = [];
-  if (guardianIds.length) {
-    Logger.log('[resumeApplication] Fetching guardian contacts for ' + guardianIds.length + ' guardian(s)');
-    contacts = appsheetRequest_(T.GUARDIAN_CONTACTS, 'Find', [], {
-      Filter: guardianIds.map(gid => '"guardian_id" = "' + gid + '"').join(' || ')
-    }) || [];
-    Logger.log('[resumeApplication] Guardian contacts found: ' + contacts.length);
+  if (!persons.length) {
+    return { application: app, persons: [], relations, documents, responses, interviews };
   }
 
-  // Enrich applicants with health + previous schools
-  const applicantIds = applicants.map(a => a.applicant_id);
-  let prevSchools = [], allergies = [], dietary = [], medical = [];
-  if (applicantIds.length) {
-    Logger.log('[resumeApplication] Fetching health/school data for ' + applicantIds.length + ' applicant(s)');
-    const applicantFilter = applicantIds.map(aid => '"applicant_id" = "' + aid + '"').join(' || ');
-    [prevSchools, allergies, dietary, medical] = [
-      appsheetRequest_(T.PREV_SCHOOLS, 'Find', [], { Filter: applicantFilter }) || [],
-      appsheetRequest_(T.ALLERGIES, 'Find', [], { Filter: applicantFilter }) || [],
-      appsheetRequest_(T.DIETARY, 'Find', [], { Filter: applicantFilter }) || [],
-      appsheetRequest_(T.MEDICAL, 'Find', [], { Filter: applicantFilter }) || [],
-    ];
-    Logger.log('[resumeApplication] Applicant enrichment — prevSchools: ' + prevSchools.length + ' | allergies: ' + allergies.length + ' | dietary: ' + dietary.length + ' | medical: ' + medical.length);
+  const personIds = persons.map(per => per.person_id);
+  const pidFilter = personIds.map(pid => '"person_id" = "' + pid + '"').join(' || ');
+
+  const nationalities     = appsheetRequest_(T.PERSON_NATIONALITIES, 'Find', [], { Filter: pidFilter }) || [];
+  const personIds_        = appsheetRequest_(T.PERSON_IDS,           'Find', [], { Filter: pidFilter }) || [];
+  const languages         = appsheetRequest_(T.PERSON_LANGUAGES,     'Find', [], { Filter: pidFilter }) || [];
+  const personAddrJoins   = appsheetRequest_(T.PERSON_ADDRESSES,     'Find', [], { Filter: pidFilter }) || [];
+  const personEmailJoins  = appsheetRequest_(T.PERSON_EMAILS,        'Find', [], { Filter: pidFilter }) || [];
+  const personPhoneJoins  = appsheetRequest_(T.PERSON_PHONES,        'Find', [], { Filter: pidFilter }) || [];
+  const prevSchools       = appsheetRequest_(T.PREV_SCHOOLS,         'Find', [], { Filter: pidFilter }) || [];
+  const medical           = appsheetRequest_(T.PERSON_MEDICAL,       'Find', [], { Filter: pidFilter }) || [];
+  const allergies         = appsheetRequest_(T.PERSON_ALLERGIES,     'Find', [], { Filter: pidFilter }) || [];
+  const dietary           = appsheetRequest_(T.PERSON_DIETARY,       'Find', [], { Filter: pidFilter }) || [];
+
+  // Batch-fetch address / email / phone value rows
+  const addrIds  = personAddrJoins.map(r => r.address_id).filter(Boolean);
+  const emailIds = personEmailJoins.map(r => r.email_id).filter(Boolean);
+  const phoneIds = personPhoneJoins.map(r => r.phone_id).filter(Boolean);
+
+  const addressMap = {};
+  if (addrIds.length) {
+    (appsheetRequest_(T.ADDRESSES, 'Find', [], {
+      Filter: addrIds.map(x => '"address_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { addressMap[r.address_id] = r; });
   }
 
-  Logger.log('[resumeApplication] Complete — returning full application state');
-  return {
-    application: app,
-    guardians: guardians.map(g => ({
-      ...g,
-      contacts: contacts.filter(c => c.guardian_id === g.guardian_id),
-    })),
-    applicants: applicants.map(a => ({
-      ...a,
-      previous_schools: prevSchools.filter(s => s.applicant_id === a.applicant_id),
-      allergies:         allergies.filter(x => x.applicant_id === a.applicant_id),
-      dietary:           dietary.filter(x => x.applicant_id === a.applicant_id),
-      medical:           medical.filter(x => x.applicant_id === a.applicant_id),
-    })),
-    documents,
-    responses,
-  };
+  const emailMap = {};
+  if (emailIds.length) {
+    (appsheetRequest_(T.EMAILS, 'Find', [], {
+      Filter: emailIds.map(x => '"email_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { emailMap[r.email_id] = r; });
+  }
+
+  const phoneMap = {};
+  if (phoneIds.length) {
+    (appsheetRequest_(T.PHONES, 'Find', [], {
+      Filter: phoneIds.map(x => '"phone_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { phoneMap[r.phone_id] = r; });
+  }
+
+  const enrichedPersons = persons.map(person => {
+    const pid      = person.person_id;
+    const addrJoin = personAddrJoins.find(r => r.person_id === pid && r.is_primary)
+                  || personAddrJoins.find(r => r.person_id === pid)
+                  || null;
+    return {
+      ...person,
+      nationalities:     nationalities.filter(n => n.person_id === pid),
+      ids:               personIds_.filter(x => x.person_id === pid),
+      languages:         languages.filter(x => x.person_id === pid),
+      address:           addrJoin ? (addressMap[addrJoin.address_id] || null) : null,
+      emails:            personEmailJoins.filter(r => r.person_id === pid).map(r => ({ ...r, ...(emailMap[r.email_id] || {}) })),
+      phones:            personPhoneJoins.filter(r => r.person_id === pid).map(r => ({ ...r, ...(phoneMap[r.phone_id] || {}) })),
+      previous_schools:  prevSchools.filter(s => s.person_id === pid),
+      medical:           medical.filter(x => x.person_id === pid),
+      allergies:         allergies.filter(x => x.person_id === pid),
+      dietary:           dietary.filter(x => x.person_id === pid),
+    };
+  });
+
+  return { application: app, persons: enrichedPersons, relations, documents, responses, interviews };
 }
 
 /**
@@ -289,41 +313,75 @@ function resumeApplication_(p) {
  */
 function saveStep_(p) {
   const { application_id, step, payload } = p;
-  Logger.log('[saveStep] Start — application_id: ' + application_id + ' | step: ' + step + ' | payload type: ' + (Array.isArray(payload) ? 'array[' + payload.length + ']' : typeof payload));
+  if (!application_id || !step || !payload) throw new Error('Missing required fields');
 
-  if (!application_id || !step || !payload) {
-    Logger.log('[saveStep] ERROR — missing required fields (application_id: ' + !!application_id + ', step: ' + !!step + ', payload: ' + !!payload + ')');
-    throw new Error('Missing required fields');
+  // Update application record — include step-specific application-level fields
+  const appRow = { application_id, updated_at: new Date().toISOString() };
+  if (step === 'application') {
+    appRow.desired_start_date = payload.desired_start_date || null;
+    appRow.source             = payload.source             || 'enrollment_site';
   }
-
-  Logger.log('[saveStep] Updating application updated_at timestamp');
-  appsheetRequest_(T.APPLICATIONS, 'Edit', [{
-    application_id,
-    updated_at: new Date().toISOString(),
-  }]);
+  if (step === 'review') {
+    // reviewed_by is always the authenticated staff email — never a client-supplied value
+    appRow.reviewed_by   = getStaffEmail_();
+    appRow.review_notes  = payload.review_notes || null;
+  }
+  appsheetRequest_(T.APPLICATIONS, 'Edit', [appRow]);
 
   switch (step) {
-    case 'guardians':
-      Logger.log('[saveStep] Routing to saveGuardians_ — count: ' + (Array.isArray(payload) ? payload.length : 'n/a'));
-      saveGuardians_(application_id, payload);
+    case 'application':
+      // Application-level fields already written above
       break;
-    case 'applicants':
-      Logger.log('[saveStep] Routing to saveApplicants_ — count: ' + (Array.isArray(payload) ? payload.length : 'n/a'));
-      saveApplicants_(application_id, payload);
+    case 'review': {
+      // Log the status transition when a status_code is supplied
+      if (payload.status_code) {
+        const newStatusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
+          Filter: '"status_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '"'
+        });
+        const newStatusTypeId = newStatusTypes && newStatusTypes[0]
+          ? newStatusTypes[0].status_type_id : null;
+        if (newStatusTypeId) {
+          const currentApps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
+            Filter: '"application_id" = "' + application_id + '"'
+          });
+          const currentApp = currentApps && currentApps[0];
+          appsheetRequest_(T.STATUS_LOG, 'Add', [{
+            log_id:              generateUuid_(),
+            application_id,
+            from_status_type_id: currentApp ? currentApp.status_type_id : null,
+            to_status_type_id:   newStatusTypeId,
+            changed_by:          getStaffEmail_(),
+            changed_at:          new Date().toISOString(),
+            reason:              payload.reason || null,
+          }]);
+          appsheetRequest_(T.APPLICATIONS, 'Edit', [{
+            application_id,
+            status_type_id: newStatusTypeId,
+            updated_at:     new Date().toISOString(),
+          }]);
+        }
+      }
+      break;
+    }
+    case 'persons':
+      savePersons_(application_id, payload);
+      break;
+    case 'relations':
+      saveRelations_(application_id, payload);
       break;
     case 'health':
-      Logger.log('[saveStep] Routing to saveHealth_ — count: ' + (Array.isArray(payload) ? payload.length : 'n/a'));
       saveHealth_(application_id, payload);
       break;
+    case 'interviews':
+      saveInterviews_(application_id, payload);
+      break;
     case 'documents':
-      Logger.log('[saveStep] Step "documents" — individual documents saved via uploadDocument_, skipping batch save');
+      // Documents are saved individually via uploadDocument_
       break;
     default:
-      Logger.log('[saveStep] ERROR — unknown step: ' + step);
       throw new Error('Unknown step: ' + step);
   }
 
-  Logger.log('[saveStep] Complete — step "' + step + '" saved OK');
   return { saved: true, step };
 }
 
@@ -333,106 +391,131 @@ function saveStep_(p) {
  */
 function submitApplication_(p) {
   const { application_id } = p;
-  Logger.log('[submitApplication] Start — application_id: ' + application_id);
-
-  if (!application_id) {
-    Logger.log('[submitApplication] ERROR — missing application_id');
-    throw new Error('Missing application_id');
-  }
+  if (!application_id) throw new Error('Missing application_id');
 
   const now = new Date().toISOString();
 
   // Look up SUBMITTED status type id
-  Logger.log('[submitApplication] Looking up SUBMITTED status type');
   const statusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
     Filter: '"status_code" = "SUBMITTED" && "school_id" = "' + SCHOOL_ID + '"'
   });
   const submittedTypeId = (statusTypes && statusTypes[0]) ? statusTypes[0].status_type_id : null;
-  Logger.log('[submitApplication] SUBMITTED status_type_id: ' + submittedTypeId + (submittedTypeId ? '' : ' (WARNING: not found)'));
 
   // Get current status for log
-  Logger.log('[submitApplication] Fetching current application record');
   const apps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
     Filter: '"application_id" = "' + application_id + '"'
   });
   const app = apps && apps[0];
-  if (!app) {
-    Logger.log('[submitApplication] ERROR — application not found: ' + application_id);
-    throw new Error('Application not found');
-  }
-  Logger.log('[submitApplication] Found application — current status_type_id: ' + app.status_type_id);
+  if (!app) throw new Error('Application not found');
 
   // Stamp submitted_at and update status
-  Logger.log('[submitApplication] Stamping submitted_at and updating status');
   appsheetRequest_(T.APPLICATIONS, 'Edit', [{
     application_id,
     status_type_id: submittedTypeId,
     submitted_at:   now,
     updated_at:     now,
   }]);
-  Logger.log('[submitApplication] Application record updated OK');
 
   // Write status log entry
-  Logger.log('[submitApplication] Writing status log entry (DRAFT → SUBMITTED)');
   appsheetRequest_(T.STATUS_LOG, 'Add', [{
     log_id:               generateUuid_(),
     application_id,
     from_status_type_id:  app.status_type_id,
     to_status_type_id:    submittedTypeId,
-    changed_by:           'applicant',
+    changed_by:           getStaffEmail_() || 'applicant',
     changed_at:           now,
     reason:               'Application submitted by family',
   }]);
-  Logger.log('[submitApplication] Status log entry written OK');
+
+  const lang = p.language || 'es';
 
   // Log GDPR consent
+  let consentRows = [];
   if (p.consents) {
-    Logger.log('[submitApplication] Writing ' + p.consents.length + ' consent record(s)');
-    const consentRows = p.consents.map(c => ({
-      consent_id:        generateUuid_(),
+    consentRows = p.consents.map(c => ({
+      consent_id:         generateUuid_(),
       application_id,
-      consent_type:      c.type,
-      consented:         c.accepted,
-      consent_timestamp: now,
-      language:          p.language || 'es',
+      consent_type:       c.type,
+      consent_text_shown: c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
+      consented:          c.accepted,
+      consent_timestamp:  now,
+      language:           lang,
     }));
-    if (consentRows.length) {
-      appsheetRequest_(T.CONSENTS, 'Add', consentRows);
-      Logger.log('[submitApplication] Consent records written OK');
-    }
-  } else {
-    Logger.log('[submitApplication] No consent records provided');
+    if (consentRows.length) appsheetRequest_(T.CONSENTS, 'Add', consentRows);
   }
 
-  // Fetch guardians and applicants for email summaries
-  Logger.log('[submitApplication] Fetching guardians and applicants for email');
-  const guardians  = appsheetRequest_(T.GUARDIANS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
-  const applicants = appsheetRequest_(T.APPLICANTS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
-  Logger.log('[submitApplication] Found ' + guardians.length + ' guardian(s), ' + applicants.length + ' applicant(s) for email summary');
+  // Fetch persons for email summaries and PDF
+  const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
+  const guardians  = allPersons.filter(per => per.person_type_id === 'guardian');
+  const applicants = allPersons.filter(per => per.person_type_id === 'applicant');
 
-  const guardianIds = guardians.map(g => g.guardian_id);
-  let contacts = [];
-  if (guardianIds.length) {
-    contacts = appsheetRequest_(T.GUARDIAN_CONTACTS, 'Find', [], {
-      Filter: guardianIds.map(gid => '"guardian_id" = "' + gid + '"').join(' || ')
-    }) || [];
-    Logger.log('[submitApplication] Found ' + contacts.length + ' guardian contact(s)');
+  // Enrich guardians with emails and phones for notifications
+  const gPersonIds = guardians.map(g => g.person_id);
+  const gEmailJoins = gPersonIds.length
+    ? appsheetRequest_(T.PERSON_EMAILS, 'Find', [], {
+        Filter: gPersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
+      }) || []
+    : [];
+  const gPhoneJoins = gPersonIds.length
+    ? appsheetRequest_(T.PERSON_PHONES, 'Find', [], {
+        Filter: gPersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
+      }) || []
+    : [];
+
+  const gEmailIds = gEmailJoins.map(r => r.email_id).filter(Boolean);
+  const gPhoneIds = gPhoneJoins.map(r => r.phone_id).filter(Boolean);
+  const gEmailMap = {};
+  if (gEmailIds.length) {
+    (appsheetRequest_(T.EMAILS, 'Find', [], {
+      Filter: gEmailIds.map(x => '"email_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { gEmailMap[r.email_id] = r; });
+  }
+  const gPhoneMap = {};
+  if (gPhoneIds.length) {
+    (appsheetRequest_(T.PHONES, 'Find', [], {
+      Filter: gPhoneIds.map(x => '"phone_id" = "' + x + '"').join(' || ')
+    }) || []).forEach(r => { gPhoneMap[r.phone_id] = r; });
+  }
+  const enrichedGuardians = guardians.map(g => ({
+    ...g,
+    emails: gEmailJoins.filter(r => r.person_id === g.person_id).map(r => ({ ...r, ...(gEmailMap[r.email_id] || {}) })),
+    phones: gPhoneJoins.filter(r => r.person_id === g.person_id).map(r => ({ ...r, ...(gPhoneMap[r.phone_id] || {}) })),
+  }));
+
+  // Fetch QB responses for enrollment-specific questions (profession, employer, adaptation)
+  const enrQbIds = [QB_PROFESSION_ID, QB_EMPLOYER_ID, QB_HAS_ADAPTATION_ID, QB_ADAPTATION_NOTES_ID];
+  const qbResRows = appsheetRequest_(T.QB_RESPONSES, 'Find', [], {
+    Filter: '"respondent_id" = "' + application_id + '" && (' +
+      enrQbIds.map(id => '"question_id" = "' + id + '"').join(' || ') + ')'
+  }) || [];
+  // Map question_id → last response_text (aggregates multiple if more than one respondent)
+  const qbResponseMap = {};
+  qbResRows.forEach(r => { qbResponseMap[r.question_id] = r.response_text; });
+
+  // Generate signed consent PDF and record in enrApplicationDocuments
+  try {
+    const pdfUrl = generateConsentPdf_(application_id, app, enrichedGuardians, applicants, consentRows, p.esignature || '', now, qbResponseMap);
+    appsheetRequest_(T.DOCUMENTS, 'Add', [{
+      document_id:   generateUuid_(),
+      application_id,
+      document_type: 'signed_consent_record',
+      drive_url:     pdfUrl,
+      uploaded_at:   now,
+      uploaded_by:   'system',
+    }]);
+  } catch (pdfErr) {
+    Logger.log('PDF generation error (non-fatal): ' + pdfErr.message);
   }
 
   // Send family confirmation (bilingual)
-  Logger.log('[submitApplication] Sending family confirmation email to: ' + app.primary_email);
   sendFamilyConfirmationEmail_(app.primary_email, application_id, applicants, app.preferred_language || 'es');
-  Logger.log('[submitApplication] Family confirmation email sent OK');
 
   // Send internal notification
-  Logger.log('[submitApplication] Sending internal submission notification');
   sendInternalEmail_(
     '[KIS Admissions] Application submitted \u2014 action required',
-    buildApplicationSubmittedBody_(application_id, now, guardians, contacts, applicants)
+    buildApplicationSubmittedBody_(application_id, now, enrichedGuardians, applicants, app, qbResponseMap)
   );
-  Logger.log('[submitApplication] Internal notification sent OK');
 
-  Logger.log('[submitApplication] Complete — application ' + application_id + ' submitted successfully');
   return { submitted: true, application_id };
 }
 
@@ -442,21 +525,13 @@ function submitApplication_(p) {
  */
 function sendVerificationCode_(p) {
   const { application_id, primary_email } = p;
-  Logger.log('[sendVerificationCode] Start — application_id: ' + application_id + ' | email: ' + primary_email);
-
-  if (!application_id || !primary_email) {
-    Logger.log('[sendVerificationCode] ERROR — missing application_id or primary_email');
-    throw new Error('Missing application_id or primary_email');
-  }
+  if (!application_id || !primary_email) throw new Error('Missing application_id or primary_email');
 
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   const cache = CacheService.getScriptCache();
   cache.put('verify_' + application_id, code, 600); // 10 min TTL
-  Logger.log('[sendVerificationCode] Code generated and stored in cache (TTL 600s) for application_id: ' + application_id);
 
   const lang = p.preferred_language || 'es';
-  Logger.log('[sendVerificationCode] Sending verification email in lang: ' + lang + ' to: ' + primary_email);
-
   const subject = lang === 'en'
     ? 'Your Kaleide verification code'
     : 'Tu c\u00f3digo de verificaci\u00f3n de Kaleide';
@@ -470,7 +545,6 @@ function sendVerificationCode_(p) {
     name: 'Kaleide International School',
   });
 
-  Logger.log('[sendVerificationCode] Verification email sent OK to: ' + primary_email);
   return { sent: true };
 }
 
@@ -480,30 +554,16 @@ function sendVerificationCode_(p) {
  */
 function verifyEmail_(p) {
   const { application_id, code } = p;
-  Logger.log('[verifyEmail] Start — application_id: ' + application_id + ' | code length: ' + (code ? code.toString().length : 0));
-
-  if (!application_id || !code) {
-    Logger.log('[verifyEmail] ERROR — missing application_id or code');
-    throw new Error('Missing application_id or code');
-  }
+  if (!application_id || !code) throw new Error('Missing application_id or code');
 
   const cache    = CacheService.getScriptCache();
   const stored   = cache.get('verify_' + application_id);
-  Logger.log('[verifyEmail] Cache lookup — stored code present: ' + (stored ? 'yes' : 'no (expired or not found)'));
 
-  if (!stored) {
-    Logger.log('[verifyEmail] ERROR — code expired or not found for application_id: ' + application_id);
-    throw new Error('Verification code expired or not found');
-  }
-  if (stored !== code.toString()) {
-    Logger.log('[verifyEmail] ERROR — code mismatch for application_id: ' + application_id);
-    throw new Error('Invalid verification code');
-  }
+  if (!stored) throw new Error('Verification code expired or not found');
+  if (stored !== code.toString()) throw new Error('Invalid verification code');
 
-  Logger.log('[verifyEmail] Code matched — removing from cache');
   cache.remove('verify_' + application_id);
 
-  Logger.log('[verifyEmail] Marking email_confirmed=true in AppSheet');
   appsheetRequest_(T.APPLICATIONS, 'Edit', [{
     application_id,
     email_confirmed:    true,
@@ -511,7 +571,6 @@ function verifyEmail_(p) {
     updated_at:         new Date().toISOString(),
   }]);
 
-  Logger.log('[verifyEmail] Complete — email confirmed OK for application_id: ' + application_id);
   return { verified: true };
 }
 
@@ -522,71 +581,46 @@ function verifyEmail_(p) {
  */
 function fetchQuestions_(p) {
   const { context_designation, language } = p;
-  Logger.log('[fetchQuestions] Start — context: ' + context_designation + ' | lang: ' + (language || 'es'));
-
-  if (!context_designation) {
-    Logger.log('[fetchQuestions] ERROR — missing context_designation');
-    throw new Error('Missing context_designation');
-  }
+  if (!context_designation) throw new Error('Missing context_designation');
 
   const lang = language || 'es';
 
   // Find matching context
-  Logger.log('[fetchQuestions] Looking up context: ' + context_designation + ' for school: ' + SCHOOL_ID);
   const contexts = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
     Filter: '"designation" = "' + context_designation + '" && "school_id" = "' + SCHOOL_ID + '" && "is_active" = true'
   });
-  if (!contexts || !contexts.length) {
-    Logger.log('[fetchQuestions] ERROR — context not found: ' + context_designation);
-    throw new Error('Context not found: ' + context_designation);
-  }
+  if (!contexts || !contexts.length) throw new Error('Context not found: ' + context_designation);
   const context = contexts[0];
-  Logger.log('[fetchQuestions] Context found — context_id: ' + context.context_id);
 
   // Find active question sets for this context
-  Logger.log('[fetchQuestions] Fetching active question sets for context_id: ' + context.context_id);
   const sets = appsheetRequest_(T.QB_SETS, 'Find', [], {
     Filter: '"context_id" = "' + context.context_id + '" && "is_active" = true'
   });
-  if (!sets || !sets.length) {
-    Logger.log('[fetchQuestions] No active question sets found — returning empty');
-    return { sets: [] };
-  }
-  Logger.log('[fetchQuestions] Found ' + sets.length + ' question set(s)');
+  if (!sets || !sets.length) return { sets: [] };
 
   const setIds       = sets.map(s => s.set_id);
   const setIdFilter  = setIds.map(id => '"set_id" = "' + id + '"').join(' || ');
 
-  Logger.log('[fetchQuestions] Fetching set items for ' + setIds.length + ' set(s)');
   const setItems = appsheetRequest_(T.QB_SET_ITEMS, 'Find', [], { Filter: setIdFilter }) || [];
   const questionIds  = [...new Set(setItems.map(i => i.question_id))];
-  Logger.log('[fetchQuestions] Set items: ' + setItems.length + ' | unique question IDs: ' + questionIds.length);
 
-  if (!questionIds.length) {
-    Logger.log('[fetchQuestions] No questions in sets — returning sets without items');
-    return { sets };
-  }
+  if (!questionIds.length) return { sets };
 
   const qIdFilter = questionIds.map(id => '"question_id" = "' + id + '"').join(' || ');
 
-  Logger.log('[fetchQuestions] Fetching questions, translations, options, and conditions');
   const [questions, allTranslations, allOptions, allConditions] = [
     appsheetRequest_(T.QB_QUESTIONS, 'Find', [], { Filter: qIdFilter }) || [],
     appsheetRequest_(T.QB_TRANSLATIONS, 'Find', [], { Filter: qIdFilter }) || [],
     appsheetRequest_(T.QB_OPTIONS, 'Find', [], { Filter: qIdFilter }) || [],
     appsheetRequest_(T.QB_CONDITIONS, 'Find', [], { Filter: qIdFilter }) || [],
   ];
-  Logger.log('[fetchQuestions] Fetched — questions: ' + questions.length + ' | translations: ' + allTranslations.length + ' | options: ' + allOptions.length + ' | conditions: ' + allConditions.length);
 
   const optionIds = allOptions.map(o => o.option_id);
-  let allOptionTranslations = [];
-  if (optionIds.length) {
-    Logger.log('[fetchQuestions] Fetching option translations for ' + optionIds.length + ' option(s)');
-    allOptionTranslations = appsheetRequest_(T.QB_OPT_TRANS, 'Find', [], {
-      Filter: optionIds.map(id => '"option_id" = "' + id + '"').join(' || ')
-    }) || [];
-    Logger.log('[fetchQuestions] Option translations: ' + allOptionTranslations.length);
-  }
+  const allOptionTranslations = optionIds.length
+    ? appsheetRequest_(T.QB_OPT_TRANS, 'Find', [], {
+        Filter: optionIds.map(id => '"option_id" = "' + id + '"').join(' || ')
+      }) || []
+    : [];
 
   // Build enriched question objects
   const enrichedQuestions = questions.map(q => {
@@ -606,8 +640,8 @@ function fetchQuestions_(p) {
 
     return {
       ...q,
-      question_text:    translation?.question_text    || '',
-      help_text:        translation?.help_text        || '',
+      question_text:   translation?.question_text   || '',
+      help_text:       translation?.help_text        || '',
       placeholder_text: translation?.placeholder_text || '',
       options,
       conditions,
@@ -627,7 +661,6 @@ function fetchQuestions_(p) {
       .map(i => ({ ...i, question: questionMap[i.question_id] })),
   }));
 
-  Logger.log('[fetchQuestions] Complete — returning ' + enrichedSets.length + ' enriched set(s) with ' + enrichedQuestions.length + ' question(s)');
   return { context, sets: enrichedSets };
 }
 
@@ -637,12 +670,7 @@ function fetchQuestions_(p) {
  */
 function saveResponses_(p) {
   const { application_id, respondent_id, respondent_type_category_id, responses } = p;
-  Logger.log('[saveResponses] Start — application_id: ' + application_id + ' | respondent_id: ' + respondent_id + ' | responses: ' + (responses ? responses.length : 0));
-
-  if (!responses || !responses.length) {
-    Logger.log('[saveResponses] No responses to save — returning 0');
-    return { saved: 0 };
-  }
+  if (!responses || !responses.length) return { saved: 0 };
 
   const now  = new Date().toISOString();
   const rows = responses.map(r => ({
@@ -659,9 +687,7 @@ function saveResponses_(p) {
     responded_at:                 now,
   }));
 
-  Logger.log('[saveResponses] Writing ' + rows.length + ' response row(s) to AppSheet');
   appsheetRequest_(T.QB_RESPONSES, 'Add', rows);
-  Logger.log('[saveResponses] Complete — ' + rows.length + ' responses saved OK');
   return { saved: rows.length };
 }
 
@@ -672,30 +698,17 @@ function saveResponses_(p) {
  */
 function uploadDocument_(p) {
   const { application_id, base64, mimeType, filename, document_type } = p;
-  const approxSizeKb = Math.round((base64 ? base64.length * 0.75 / 1024 : 0));
-  Logger.log('[uploadDocument] Start — application_id: ' + application_id + ' | filename: ' + filename + ' | mimeType: ' + mimeType + ' | document_type: ' + document_type + ' | approx size: ' + approxSizeKb + 'KB');
+  if (!base64 || !application_id) throw new Error('Missing base64 or application_id');
 
-  if (!base64 || !application_id) {
-    Logger.log('[uploadDocument] ERROR — missing base64 or application_id');
-    throw new Error('Missing base64 or application_id');
-  }
-
-  Logger.log('[uploadDocument] Decoding base64 and creating blob');
   const blob   = Utilities.newBlob(Utilities.base64Decode(base64), mimeType, filename);
-
-  Logger.log('[uploadDocument] Getting/creating Drive folder: ' + DRIVE_FOLDER_NAME);
   const folder = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
-
-  Logger.log('[uploadDocument] Uploading file to Drive');
   const file   = folder.createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
   const driveUrl   = file.getUrl();
   const documentId = generateUuid_();
   const now        = new Date().toISOString();
-  Logger.log('[uploadDocument] File uploaded to Drive — url: ' + driveUrl + ' | document_id: ' + documentId);
 
-  Logger.log('[uploadDocument] Writing document record to AppSheet');
   appsheetRequest_(T.DOCUMENTS, 'Add', [{
     document_id:     documentId,
     application_id,
@@ -705,7 +718,6 @@ function uploadDocument_(p) {
     uploaded_by:     'applicant',
   }]);
 
-  Logger.log('[uploadDocument] Complete — document_id: ' + documentId);
   return { document_id: documentId, drive_url: driveUrl };
 }
 
@@ -716,17 +728,9 @@ function uploadDocument_(p) {
  */
 function verifyRecaptcha_(p) {
   const { token } = p;
-  Logger.log('[verifyRecaptcha] Start — token length: ' + (token ? token.length : 0));
-
-  if (!token) {
-    Logger.log('[verifyRecaptcha] ERROR — missing token');
-    throw new Error('Missing reCAPTCHA token');
-  }
+  if (!token) throw new Error('Missing reCAPTCHA token');
 
   const secret   = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
-  Logger.log('[verifyRecaptcha] RECAPTCHA_SECRET configured: ' + (secret ? 'yes' : 'NO — missing!'));
-
-  Logger.log('[verifyRecaptcha] Calling Google siteverify API');
   const response = UrlFetchApp.fetch('https://www.google.com/recaptcha/api/siteverify', {
     method:  'post',
     payload: { secret, response: token },
@@ -734,149 +738,169 @@ function verifyRecaptcha_(p) {
   });
 
   const result = JSON.parse(response.getContentText());
-  const pass   = result.success === true && (result.score || 0) >= 0.5;
-  Logger.log('[verifyRecaptcha] Result — success: ' + result.success + ' | score: ' + result.score + ' | pass: ' + pass + (result['error-codes'] ? ' | errors: ' + result['error-codes'].join(',') : ''));
-
   return {
     success: result.success === true,
     score:   result.score || 0,
-    pass,
+    pass:    result.success === true && (result.score || 0) >= 0.5,
   };
 }
 
 // ─── Step save helpers ────────────────────────────────────────────────────────
 
 /**
- * Upserts guardians and their contacts for an application.
+ * Upserts persons (guardians and applicants) for an application.
+ * Each person may have: nationalities, ids, languages, address, emails, phones.
+ * Pass `copy_address_from_person_id` to reuse another person's address.
+ * Previous schools are written for applicant-type persons.
  * @param {string} applicationId
- * @param {Array}  guardians - array of guardian objects with optional contacts array
+ * @param {Array}  persons - array of person objects
  */
-function saveGuardians_(applicationId, guardians) {
-  if (!Array.isArray(guardians)) {
-    Logger.log('[saveGuardians] WARNING — payload is not an array, skipping');
-    return;
-  }
-  Logger.log('[saveGuardians] Processing ' + guardians.length + ' guardian(s) for application_id: ' + applicationId);
+function savePersons_(applicationId, persons) {
+  if (!Array.isArray(persons)) return;
 
-  guardians.forEach((g, idx) => {
-    const isNew      = !g.guardian_id;
-    const guardianId = g.guardian_id || generateUuid_();
-    Logger.log('[saveGuardians] Guardian ' + (idx + 1) + '/' + guardians.length + ' — id: ' + guardianId + ' | action: ' + (isNew ? 'Add' : 'Edit') + ' | name: ' + (g.first_name || '') + ' ' + (g.last_name || ''));
+  const personAddressIds = {}; // person_id → address_id, for address copy resolution
 
-    const guardianRow = {
-      guardian_id:          guardianId,
-      application_id:       applicationId,
-      guardian_order:       idx + 1,
-      first_name:           g.first_name || null,
-      middle_name:          g.middle_name || null,
-      last_name:            g.last_name || null,
-      date_of_birth:        g.date_of_birth || null,
-      place_of_birth:       g.place_of_birth || null,
-      nationality_id:       g.nationality_id || null,
-      id_type_id:           g.id_type_id || null,
-      id_number:            g.id_number || null,
-      profession:           g.profession || null,
-      employer:             g.employer || null,
-      address_line_1:       g.address_line_1 || null,
-      address_line_2:       g.address_line_2 || null,
-      city:                 g.city || null,
-      province:             g.province || null,
-      country_id:           g.country_id || null,
-      zip:                  g.zip || null,
-      is_primary_contact:   g.is_primary_contact || false,
-      is_emergency_contact: g.is_emergency_contact || false,
-      created_at:           g.created_at || new Date().toISOString(),
+  persons.forEach((person, idx) => {
+    const personId    = person.person_id || generateUuid_();
+    const now         = new Date().toISOString();
+    const isGuardian  = person.person_type_id === 'guardian';
+    const isApplicant = person.person_type_id === 'applicant';
+
+    // ── Core person row ───────────────────────────────────────────────────────
+    const personRow = {
+      person_id:      personId,
+      application_id: applicationId,
+      person_type_id: person.person_type_id || 'guardian',
+      person_order:   idx + 1,
+      first_name:     person.first_name     || null,
+      middle_name:    person.middle_name    || null,
+      last_name:      person.last_name      || null,
+      date_of_birth:  person.date_of_birth  || null,
+      place_of_birth: person.place_of_birth || null,
+      gender:         person.gender         || null,
+      created_at:     person.created_at     || now,
     };
-
-    if (g.guardian_id) {
-      appsheetRequest_(T.GUARDIANS, 'Edit', [guardianRow]);
+    if (person.person_id) {
+      appsheetRequest_(T.PERSONS, 'Edit', [personRow]);
     } else {
-      appsheetRequest_(T.GUARDIANS, 'Add', [guardianRow]);
+      appsheetRequest_(T.PERSONS, 'Add', [personRow]);
     }
 
-    // Upsert contacts
-    if (Array.isArray(g.contacts)) {
-      const newContacts      = g.contacts.filter(c => !c.contact_id).map(c => ({
-        contact_id:   generateUuid_(),
-        guardian_id:  guardianId,
-        contact_type: c.contact_type,
-        value:        c.value,
-        is_default:   c.is_default || false,
-        is_emergency: c.is_emergency || false,
-        is_whatsapp:  c.is_whatsapp || false,
-        is_telegram:  c.is_telegram || false,
+    // ── Nationalities ─────────────────────────────────────────────────────────
+    if (Array.isArray(person.nationalities)) {
+      const newNats = person.nationalities.filter(n => !n.record_id).map(n => ({
+        record_id:  generateUuid_(),
+        person_id:  personId,
+        country_id: n.country_id,
+        is_primary: n.is_primary || false,
       }));
-      const existingContacts = g.contacts.filter(c => c.contact_id);
-
-      Logger.log('[saveGuardians] Guardian ' + (idx + 1) + ' contacts — new: ' + newContacts.length + ' | existing (edit): ' + existingContacts.length);
-      if (newContacts.length)      appsheetRequest_(T.GUARDIAN_CONTACTS, 'Add',  newContacts);
-      if (existingContacts.length) appsheetRequest_(T.GUARDIAN_CONTACTS, 'Edit', existingContacts);
-    }
-  });
-
-  Logger.log('[saveGuardians] All guardians processed OK');
-}
-
-/**
- * Upserts applicants and their sub-records.
- * @param {string} applicationId
- * @param {Array}  applicants
- */
-function saveApplicants_(applicationId, applicants) {
-  if (!Array.isArray(applicants)) {
-    Logger.log('[saveApplicants] WARNING — payload is not an array, skipping');
-    return;
-  }
-  Logger.log('[saveApplicants] Processing ' + applicants.length + ' applicant(s) for application_id: ' + applicationId);
-
-  applicants.forEach((a, idx) => {
-    const isNew       = !a.applicant_id;
-    const applicantId = a.applicant_id || generateUuid_();
-    Logger.log('[saveApplicants] Applicant ' + (idx + 1) + '/' + applicants.length + ' — id: ' + applicantId + ' | action: ' + (isNew ? 'Add' : 'Edit') + ' | name: ' + (a.first_name || '') + ' ' + (a.last_name || ''));
-
-    const applicantRow = {
-      applicant_id:               applicantId,
-      application_id:             applicationId,
-      applicant_order:            idx + 1,
-      first_name:                 a.first_name || null,
-      middle_name:                a.middle_name || null,
-      last_name:                  a.last_name || null,
-      date_of_birth:              a.date_of_birth || null,
-      place_of_birth:             a.place_of_birth || null,
-      nationality_id:             a.nationality_id || null,
-      id_type_id:                 a.id_type_id || null,
-      id_number:                  a.id_number || null,
-      gender:                     a.gender || null,
-      mother_tongue_language:     a.mother_tongue_language || null,
-      other_languages:            a.other_languages || null,
-      desired_education_level_id: a.desired_education_level_id || null,
-      desired_start_date:         a.desired_start_date || null,
-      address_same_as_guardian_id: a.address_same_as_guardian_id || null,
-      address_line_1:             a.address_line_1 || null,
-      address_line_2:             a.address_line_2 || null,
-      city:                       a.city || null,
-      province:                   a.province || null,
-      country_id:                 a.country_id || null,
-      zip:                        a.zip || null,
-      has_adaptation_needs:       a.has_adaptation_needs || false,
-      adaptation_notes:           a.adaptation_notes || null,
-      is_sibling:                 a.is_sibling || false,
-      is_alumni_family:           a.is_alumni_family || false,
-      is_transfer:                a.is_transfer || false,
-      created_at:                 a.created_at || new Date().toISOString(),
-    };
-
-    if (a.applicant_id) {
-      appsheetRequest_(T.APPLICANTS, 'Edit', [applicantRow]);
-    } else {
-      appsheetRequest_(T.APPLICANTS, 'Add', [applicantRow]);
+      if (newNats.length) appsheetRequest_(T.PERSON_NATIONALITIES, 'Add', newNats);
     }
 
-    // Previous schools
-    if (Array.isArray(a.previous_schools)) {
-      const newSchools = a.previous_schools.filter(s => !s.previous_school_id).map(s => ({
+    // ── IDs ───────────────────────────────────────────────────────────────────
+    if (Array.isArray(person.ids)) {
+      const newIds = person.ids.filter(x => !x.record_id).map(x => ({
+        record_id:  generateUuid_(),
+        person_id:  personId,
+        id_type_id: x.id_type_id,
+        id_number:  x.id_number,
+        issued_by:  x.issued_by  || null,
+        issued_at:  x.issued_at  || null,
+        expires_at: x.expires_at || null,
+      }));
+      if (newIds.length) appsheetRequest_(T.PERSON_IDS, 'Add', newIds);
+    }
+
+    // ── Languages ─────────────────────────────────────────────────────────────
+    if (Array.isArray(person.languages)) {
+      const newLangs = person.languages.filter(x => !x.record_id).map(x => ({
+        record_id:         generateUuid_(),
+        person_id:         personId,
+        language_id:       x.language_id,   // plain free text — no FK/Ref resolution; languages lookup not yet live
+        is_mother_tongue:  x.is_mother_tongue || false,
+      }));
+      if (newLangs.length) appsheetRequest_(T.PERSON_LANGUAGES, 'Add', newLangs);
+    }
+
+    // ── Address ───────────────────────────────────────────────────────────────
+    let addressId = null;
+    if (person.copy_address_from_person_id && personAddressIds[person.copy_address_from_person_id]) {
+      addressId = personAddressIds[person.copy_address_from_person_id];
+    } else if (person.address && hasAddressData_(person.address)) {
+      const newAddressId = generateUuid_();
+      appsheetRequest_(T.ADDRESSES, 'Add', [{
+        address_id:     newAddressId,
+        application_id: applicationId,
+        address_line_1: person.address.address_line_1 || null,
+        address_line_2: person.address.address_line_2 || null,
+        city:           person.address.city           || null,
+        province:       person.address.province       || null,
+        country_id:     person.address.country_id     || null,
+        zip:            person.address.zip            || null,
+        created_at:     now,
+      }]);
+      addressId = newAddressId;
+    }
+    if (addressId && !person.person_id) {
+      appsheetRequest_(T.PERSON_ADDRESSES, 'Add', [{
+        record_id:  generateUuid_(),
+        person_id:  personId,
+        address_id: addressId,
+        label:      'home',
+        is_primary: true,
+      }]);
+    }
+    personAddressIds[personId] = addressId;
+
+    // ── Emails ────────────────────────────────────────────────────────────────
+    if (Array.isArray(person.emails)) {
+      person.emails.filter(e => !e.email_id).forEach(e => {
+        const emailId = generateUuid_();
+        appsheetRequest_(T.EMAILS, 'Add', [{
+          email_id:       emailId,
+          application_id: applicationId,
+          email_address:  e.email_address,
+          created_at:     now,
+        }]);
+        appsheetRequest_(T.PERSON_EMAILS, 'Add', [{
+          record_id:     generateUuid_(),
+          person_id:     personId,
+          email_id:      emailId,
+          email_type_id: e.email_type_id || null,
+          is_default:    e.is_default    || false,
+          is_emergency:  e.is_emergency  || false,
+        }]);
+      });
+    }
+
+    // ── Phones ────────────────────────────────────────────────────────────────
+    if (Array.isArray(person.phones)) {
+      person.phones.filter(ph => !ph.phone_id).forEach(ph => {
+        const phoneId = generateUuid_();
+        appsheetRequest_(T.PHONES, 'Add', [{
+          phone_id:       phoneId,
+          application_id: applicationId,
+          phone_number:   ph.phone_number,
+          is_whatsapp:    ph.is_whatsapp || false,
+          is_telegram:    ph.is_telegram || false,
+          created_at:     now,
+        }]);
+        appsheetRequest_(T.PERSON_PHONES, 'Add', [{
+          record_id:     generateUuid_(),
+          person_id:     personId,
+          phone_id:      phoneId,
+          phone_type_id: ph.phone_type_id || null,
+          is_default:    ph.is_default    || false,
+          is_emergency:  ph.is_emergency  || false,
+        }]);
+      });
+    }
+
+    // ── Previous schools (applicants only) ────────────────────────────────────
+    if (isApplicant && Array.isArray(person.previous_schools)) {
+      const newSchools = person.previous_schools.filter(s => !s.previous_school_id).map(s => ({
         previous_school_id:          generateUuid_(),
-        applicant_id:                applicantId,
+        person_id:                   personId,
         school_name:                 s.school_name || null,
         city:                        s.city || null,
         country_id:                  s.country_id || null,
@@ -885,91 +909,121 @@ function saveApplicants_(applicationId, applicants) {
         education_level_description: s.education_level_description || null,
         language_of_instruction:     s.language_of_instruction || null,
       }));
-      const existingSchools = a.previous_schools.filter(s => s.previous_school_id);
-      Logger.log('[saveApplicants] Applicant ' + (idx + 1) + ' schools — new: ' + newSchools.length + ' | existing (edit): ' + existingSchools.length);
+      const existingSchools = person.previous_schools.filter(s => s.previous_school_id);
       if (newSchools.length)      appsheetRequest_(T.PREV_SCHOOLS, 'Add',  newSchools);
       if (existingSchools.length) appsheetRequest_(T.PREV_SCHOOLS, 'Edit', existingSchools);
     }
-
-    // Guardian–applicant relations
-    if (Array.isArray(a.relations)) {
-      const newRelations = a.relations.filter(r => !r.relation_id).map(r => ({
-        relation_id:           generateUuid_(),
-        guardian_id:           r.guardian_id,
-        applicant_id:          applicantId,
-        relation_type_id:      r.relation_type_id || null,
-        is_custodial:          r.is_custodial || false,
-        is_pick_up_authorized: r.is_pick_up_authorized || false,
-      }));
-      Logger.log('[saveApplicants] Applicant ' + (idx + 1) + ' relations — new: ' + newRelations.length);
-      if (newRelations.length) appsheetRequest_(T.GUARDIAN_APPLICANT, 'Add', newRelations);
-    }
   });
-
-  Logger.log('[saveApplicants] All applicants processed OK');
 }
 
 /**
- * Upserts health records for each applicant.
+ * Upserts guardian-applicant relations for an application.
  * @param {string} applicationId
- * @param {Array}  healthData - [{ applicant_id, allergies, dietary, medical }]
+ * @param {Array}  relations - [{ guardian_person_id, applicant_person_id, relation_type_id, is_custodial, is_pick_up_authorized }]
+ */
+function saveRelations_(applicationId, relations) {
+  if (!Array.isArray(relations)) return;
+
+  const newRelations = relations.filter(r => !r.relation_id).map(r => ({
+    relation_id:           generateUuid_(),
+    application_id:        applicationId,
+    guardian_person_id:    r.guardian_person_id,
+    applicant_person_id:   r.applicant_person_id,
+    relation_type_id:      r.relation_type_id      || null,
+    is_custodial:          r.is_custodial          || false,
+    is_pick_up_authorized: r.is_pick_up_authorized || false,
+  }));
+  const existingRelations = relations.filter(r => r.relation_id);
+  if (newRelations.length)      appsheetRequest_(T.RELATIONS, 'Add',  newRelations);
+  if (existingRelations.length) appsheetRequest_(T.RELATIONS, 'Edit', existingRelations);
+}
+
+/**
+ * Upserts health records for each person.
+ * @param {string} applicationId
+ * @param {Array}  healthData - [{ person_id, allergies, dietary, medical }]
  */
 function saveHealth_(applicationId, healthData) {
-  if (!Array.isArray(healthData)) {
-    Logger.log('[saveHealth] WARNING — payload is not an array, skipping');
-    return;
-  }
-  Logger.log('[saveHealth] Processing health data for ' + healthData.length + ' applicant record(s), application_id: ' + applicationId);
+  if (!Array.isArray(healthData)) return;
 
-  healthData.forEach((h, idx) => {
-    const { applicant_id } = h;
-    if (!applicant_id) {
-      Logger.log('[saveHealth] WARNING — record ' + (idx + 1) + ' missing applicant_id, skipping');
-      return;
-    }
-    Logger.log('[saveHealth] Applicant ' + (idx + 1) + ' (' + applicant_id + ') — allergies: ' + (h.allergies ? h.allergies.length : 0) + ' | dietary: ' + (h.dietary ? h.dietary.length : 0) + ' | medical: ' + (h.medical ? h.medical.length : 0));
+  healthData.forEach(h => {
+    const { person_id } = h;
+    if (!person_id) return;
 
     if (Array.isArray(h.allergies)) {
       const rows = h.allergies.filter(x => !x.record_id).map(x => ({
         record_id:       generateUuid_(),
-        applicant_id,
+        person_id,
         food_allergy_id: x.food_allergy_id || null,
         observations:    x.observations || null,
       }));
-      if (rows.length) {
-        Logger.log('[saveHealth] Adding ' + rows.length + ' allergy record(s) for applicant: ' + applicant_id);
-        appsheetRequest_(T.ALLERGIES, 'Add', rows);
-      }
+      if (rows.length) appsheetRequest_(T.PERSON_ALLERGIES, 'Add', rows);
     }
 
     if (Array.isArray(h.dietary)) {
       const rows = h.dietary.filter(x => !x.record_id).map(x => ({
         record_id:    generateUuid_(),
-        applicant_id,
+        person_id,
         diet_id:      x.diet_id || null,
         observations: x.observations || null,
       }));
-      if (rows.length) {
-        Logger.log('[saveHealth] Adding ' + rows.length + ' dietary record(s) for applicant: ' + applicant_id);
-        appsheetRequest_(T.DIETARY, 'Add', rows);
-      }
+      if (rows.length) appsheetRequest_(T.PERSON_DIETARY, 'Add', rows);
     }
 
     if (Array.isArray(h.medical)) {
       const rows = h.medical.filter(x => !x.record_id).map(x => ({
         record_id:            generateUuid_(),
-        applicant_id,
+        person_id,
         medical_condition_id: x.medical_condition_id || null,
         observations:         x.observations || null,
       }));
-      if (rows.length) {
-        Logger.log('[saveHealth] Adding ' + rows.length + ' medical record(s) for applicant: ' + applicant_id);
-        appsheetRequest_(T.MEDICAL, 'Add', rows);
-      }
+      if (rows.length) appsheetRequest_(T.PERSON_MEDICAL, 'Add', rows);
     }
   });
+}
 
-  Logger.log('[saveHealth] All health records processed OK');
+/**
+ * Upserts interview records for an application.
+ * interview_type must be one of: family_interview | child_observation | follow_up
+ * interviewer_id is a plain email string — written directly, no FK resolution.
+ * @param {string} applicationId
+ * @param {Array}  interviews - array of interview objects
+ */
+function saveInterviews_(applicationId, interviews) {
+  if (!Array.isArray(interviews)) return;
+
+  const staffEmail = getStaffEmail_();
+  const now        = new Date().toISOString();
+
+  const VALID_TYPES = ['family_interview', 'child_observation', 'follow_up'];
+
+  const newInterviews = interviews.filter(i => !i.interview_id).map(i => ({
+    interview_id:   generateUuid_(),
+    application_id: applicationId,
+    interview_type: VALID_TYPES.includes(i.interview_type) ? i.interview_type : null,
+    interview_date: i.interview_date  || null,
+    interviewer_id: i.interviewer_id  || staffEmail,  // plain email — no FK resolution
+    format:         i.format          || null,
+    risk_rating:    i.risk_rating     || null,
+    notes:          i.notes           || null,
+    flags:          i.flags           || null,
+    created_at:     now,
+  }));
+
+  const existingInterviews = interviews.filter(i => i.interview_id).map(i => ({
+    interview_id:   i.interview_id,
+    application_id: applicationId,
+    interview_type: VALID_TYPES.includes(i.interview_type) ? i.interview_type : null,
+    interview_date: i.interview_date  || null,
+    interviewer_id: i.interviewer_id  || staffEmail,  // plain email — no FK resolution
+    format:         i.format          || null,
+    risk_rating:    i.risk_rating     || null,
+    notes:          i.notes           || null,
+    flags:          i.flags           || null,
+  }));
+
+  if (newInterviews.length)      appsheetRequest_(T.INTERVIEWS, 'Add',  newInterviews);
+  if (existingInterviews.length) appsheetRequest_(T.INTERVIEWS, 'Edit', existingInterviews);
 }
 
 // ─── Email helpers ────────────────────────────────────────────────────────────
@@ -980,12 +1034,10 @@ function saveHealth_(applicationId, healthData) {
  * @param {string} bodyHtml - inner HTML content (no shell)
  */
 function sendInternalEmail_(subject, bodyHtml) {
-  Logger.log('[sendInternalEmail] Sending to: ' + ADMISSIONS_EMAIL + ' | subject: ' + subject);
   GmailApp.sendEmail(ADMISSIONS_EMAIL, subject, '', {
     htmlBody: buildInternalEmail_(subject, bodyHtml),
     name: 'KIS Admissions System',
   });
-  Logger.log('[sendInternalEmail] Sent OK');
 }
 
 /**
@@ -996,8 +1048,6 @@ function sendInternalEmail_(subject, bodyHtml) {
  */
 function sendMagicLinkEmail_(email, resumeToken, lang) {
   const resumeUrl = RESUME_BASE_URL + resumeToken;
-  Logger.log('[sendMagicLinkEmail] Sending to: ' + email + ' | lang: ' + lang + ' | resume_url: ' + resumeUrl);
-
   const isEn = lang === 'en';
 
   const subject = isEn
@@ -1018,7 +1068,6 @@ function sendMagicLinkEmail_(email, resumeToken, lang) {
     htmlBody: buildFamilyEmail_(subject, body),
     name: 'Kaleide International School',
   });
-  Logger.log('[sendMagicLinkEmail] Sent OK to: ' + email);
 }
 
 /**
@@ -1026,7 +1075,6 @@ function sendMagicLinkEmail_(email, resumeToken, lang) {
  */
 function sendFamilyConfirmationEmail_(email, applicationId, applicants, lang) {
   const names = applicants.map(a => (a.first_name || '') + ' ' + (a.last_name || '')).join(', ');
-  Logger.log('[sendFamilyConfirmationEmail] Sending to: ' + email + ' | applicants: ' + names + ' | lang: ' + lang);
 
   const body =
     '<h2 style="color:#00a19a;">Thank you / Gracias</h2>' +
@@ -1042,7 +1090,6 @@ function sendFamilyConfirmationEmail_(email, applicationId, applicants, lang) {
     htmlBody: buildFamilyEmail_('Enrollment application received', body),
     name: 'Kaleide International School',
   });
-  Logger.log('[sendFamilyConfirmationEmail] Sent OK to: ' + email);
 }
 
 // ─── Email builders ───────────────────────────────────────────────────────────
@@ -1068,10 +1115,10 @@ function buildInternalEmail_(subject, bodyHtml) {
     + '<tr><td align="center">'
     + '<table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.07)">'
     // Header
-    + '<tr><td style="background:#ffffff;padding:20px 32px;border-bottom:3px solid #00a19a;">'
+    + '<tr><td style="background:#00a19a;padding:24px 32px;">'
     + '<table><tr>'
-    + '<td><img src="' + LOGO_URL + '" width="36" height="36" alt="KIS" style="border-radius:8px;vertical-align:middle;margin-right:12px;background:#e6f6f5;padding:4px"></td>'
-    + '<td style="color:#007d77;font-size:1.15em;font-weight:700;vertical-align:middle">Kaleide International School</td>'
+    + '<td><img src="' + LOGO_URL + '" width="36" height="36" alt="KIS" style="border-radius:6px;vertical-align:middle;margin-right:12px"></td>'
+    + '<td style="color:#fff;font-size:1.15em;font-weight:700;vertical-align:middle">Kaleide International School</td>'
     + '</tr></table>'
     + '</td></tr>'
     // Body
@@ -1112,17 +1159,30 @@ function buildApplicationInitiatedBody_(applicationId, primaryEmail, timestamp) 
 
 /**
  * Builds the HTML body for "Application Submitted" internal notification.
+ * Guardians are enriched persons (with .emails and .phones arrays).
+ * desired_start_date is read from the application row.
+ * profession/employer/adaptation are read from qbResponseMap keyed by stable question UUID.
+ * @param {string} applicationId
+ * @param {string} timestamp
+ * @param {Array}  guardians
+ * @param {Array}  applicants
+ * @param {Object} app           - Application row (has desired_start_date, source)
+ * @param {Object} qbResponseMap - { [question_id]: response_text }
  */
-function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, contacts, applicants) {
-  const ts = formatTimestamp_(timestamp);
+function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, applicants, app, qbResponseMap) {
+  const ts              = formatTimestamp_(timestamp);
+  const qbMap           = qbResponseMap || {};
+  const desiredStartDate = (app && app.desired_start_date) || '\u2014';
 
   let guardianRows = '';
   guardians.forEach((g, i) => {
-    const gContacts = contacts.filter(c => c.guardian_id === g.guardian_id);
-    const emails    = gContacts.filter(c => c.contact_type === 'email').map(c => c.value).join(', ');
-    const phones    = gContacts.filter(c => c.contact_type === 'phone').map(c =>
-      c.value + (c.is_whatsapp ? ' \uD83D\uDCAC' : '') + (c.is_telegram ? ' \u2708\uFE0F' : '')
-    ).join(', ');
+    const emails = (g.emails || []).map(e =>
+      (e.email_address || '') + (e.is_emergency ? ' <span style="background:#fff3ec;color:#c05800;padding:1px 5px;border-radius:3px;font-size:0.75em">Emergency</span>' : '')
+    ).filter(e => e.trim()).join(', ');
+    const phones = (g.phones || []).map(ph =>
+      (ph.phone_number || '') + (ph.is_whatsapp ? ' \uD83D\uDCAC' : '') + (ph.is_telegram ? ' \u2708\uFE0F' : '')
+      + (ph.is_emergency ? ' <span style="background:#fff3ec;color:#c05800;padding:1px 5px;border-radius:3px;font-size:0.75em">Emergency</span>' : '')
+    ).filter(Boolean).join(', ');
 
     guardianRows +=
       '<tr><td><strong>' + (g.first_name || '') + ' ' + (g.last_name || '') + '</strong>'
@@ -1136,14 +1196,15 @@ function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, con
   applicants.forEach(a => {
     applicantRows +=
       '<tr><td><strong>' + (a.first_name || '') + ' ' + (a.last_name || '') + '</strong></td>'
-      + '<td>' + (a.date_of_birth || '\u2014') + '</td>'
-      + '<td>' + (a.desired_start_date || '\u2014') + '</td></tr>';
+      + '<td>' + (a.date_of_birth || '\u2014') + '</td></tr>';
   });
 
   return '<h2 style="color:#00a19a;margin-top:0">Application Submitted \u2014 Action Required</h2>'
     + '<table style="margin-bottom:24px"><thead><tr><th colspan="2">Application Details</th></tr></thead><tbody>'
     + '<tr><td><strong>Application ID</strong></td><td style="font-family:monospace">' + applicationId + '</td></tr>'
     + '<tr><td><strong>Submitted At</strong></td><td>' + ts + '</td></tr>'
+    + '<tr><td><strong>Desired Start Date</strong></td><td>' + desiredStartDate + '</td></tr>'
+    + '<tr><td><strong>Source</strong></td><td>' + ((app && app.source) || '\u2014') + '</td></tr>'
     + '<tr><td><strong>Status</strong></td><td><span style="background:#fff3ec;color:#c05800;padding:2px 8px;border-radius:4px;font-size:0.9em">SUBMITTED</span></td></tr>'
     + '</tbody></table>'
 
@@ -1151,9 +1212,25 @@ function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, con
     + '<table style="margin-bottom:24px"><thead><tr><th>Name</th><th>Email</th><th>Phone</th></tr></thead><tbody>'
     + guardianRows + '</tbody></table>'
 
+    + (qbMap[QB_PROFESSION_ID] || qbMap[QB_EMPLOYER_ID]
+      ? '<h3 style="color:#6b7c93;font-size:0.9em;text-transform:uppercase;letter-spacing:0.05em">Guardian Details (from questions)</h3>'
+        + '<table style="margin-bottom:24px"><thead><tr><th>Question</th><th>Response</th></tr></thead><tbody>'
+        + (qbMap[QB_PROFESSION_ID] ? '<tr><td>Profession</td><td>' + qbMap[QB_PROFESSION_ID] + '</td></tr>' : '')
+        + (qbMap[QB_EMPLOYER_ID]   ? '<tr><td>Employer</td><td>'   + qbMap[QB_EMPLOYER_ID]   + '</td></tr>' : '')
+        + '</tbody></table>'
+      : '')
+
     + '<h3 style="color:#6b7c93;font-size:0.9em;text-transform:uppercase;letter-spacing:0.05em">Applicants</h3>'
-    + '<table style="margin-bottom:24px"><thead><tr><th>Name</th><th>Date of Birth</th><th>Desired Start Date</th></tr></thead><tbody>'
+    + '<table style="margin-bottom:24px"><thead><tr><th>Name</th><th>Date of Birth</th></tr></thead><tbody>'
     + applicantRows + '</tbody></table>'
+
+    + (qbMap[QB_HAS_ADAPTATION_ID] || qbMap[QB_ADAPTATION_NOTES_ID]
+      ? '<h3 style="color:#6b7c93;font-size:0.9em;text-transform:uppercase;letter-spacing:0.05em">Applicant Details (from questions)</h3>'
+        + '<table style="margin-bottom:24px"><thead><tr><th>Question</th><th>Response</th></tr></thead><tbody>'
+        + (qbMap[QB_HAS_ADAPTATION_ID]   ? '<tr><td>Adaptation needs</td><td>' + qbMap[QB_HAS_ADAPTATION_ID]   + '</td></tr>' : '')
+        + (qbMap[QB_ADAPTATION_NOTES_ID] ? '<tr><td>Adaptation notes</td><td>' + qbMap[QB_ADAPTATION_NOTES_ID] + '</td></tr>' : '')
+        + '</tbody></table>'
+      : '')
 
     + '<p style="background:#fff3ec;border-left:4px solid #f37021;padding:12px 16px;border-radius:0 6px 6px 0;color:#18222e">'
     + '<strong>Next step:</strong> Please review the application in the SMS and update the status accordingly.'
@@ -1175,38 +1252,14 @@ function appsheetRequest_(table, action, rows, selector) {
   const appId  = props.getProperty('APPSHEET_APP_ID');
   const apiKey = props.getProperty('APPSHEET_ACCESS_KEY');
 
-  if (!appId || !apiKey) {
-    Logger.log('[appsheetRequest] ERROR — AppSheet credentials not set in Script Properties (APPSHEET_APP_ID: ' + !!appId + ', APPSHEET_ACCESS_KEY: ' + !!apiKey + ')');
-    throw new Error('AppSheet credentials not configured in Script Properties');
-  }
-
-  const rowCount = rows ? rows.length : 0;
-  const filterSnippet = selector && selector.Filter ? selector.Filter.substring(0, 80) : '';
-  Logger.log('[appsheetRequest] → ' + action + ' ' + table + (rowCount > 0 ? ' [' + rowCount + ' row(s)]' : '') + (filterSnippet ? ' | Filter: ' + filterSnippet : ''));
+  if (!appId || !apiKey) throw new Error('AppSheet credentials not configured in Script Properties');
 
   const url  = APPSHEET_BASE_URL + appId + '/tables/' + encodeURIComponent(table) + '/Action';
   const body = { Action: action, Properties: { Locale: 'en-US' } };
 
   if (rows && rows.length > 0) body.Rows = rows;
-  if (selector) {
-    if (selector.Filter) {
-      // Convert our SQL-like Filter to AppSheet FILTER() formula syntax.
-      // "column_name" = "value"  →  [column_name] = "value"
-      // &&  →  AND,   ||  →  OR,   true/false  →  TRUE/FALSE
-      const expr = selector.Filter
-        .replace(/"(\w+)"\s*(=|!=|<=|>=|<|>)/g, '[$1] $2')
-        .replace(/&&/g, 'AND')
-        .replace(/\|\|/g, 'OR')
-        .replace(/\btrue\b/g, 'TRUE')
-        .replace(/\bfalse\b/g, 'FALSE');
-      body.Properties.Selector = 'FILTER("' + table + '", ' + expr + ')';
-      Logger.log('[appsheetRequest] Selector: ' + body.Properties.Selector.substring(0, 120));
-    } else {
-      body.Properties = { ...body.Properties, ...selector };
-    }
-  }
+  if (selector)                body.Properties = { ...body.Properties, ...selector };
 
-  const t0 = Date.now();
   const response = UrlFetchApp.fetch(url, {
     method:             'post',
     contentType:        'application/json',
@@ -1216,30 +1269,349 @@ function appsheetRequest_(table, action, rows, selector) {
   });
 
   const statusCode = response.getResponseCode();
-  const elapsed    = Date.now() - t0;
   const text       = response.getContentText();
 
   if (statusCode < 200 || statusCode >= 300) {
-    Logger.log('[appsheetRequest] ERROR — HTTP ' + statusCode + ' on ' + table + '/' + action + ' (' + elapsed + 'ms) | response: ' + text.substring(0, 200));
     throw new Error('AppSheet API error ' + statusCode + ' on ' + table + '/' + action + ': ' + text);
   }
 
-  let parsed;
   try {
-    parsed = JSON.parse(text);
+    const parsed = JSON.parse(text);
+    return parsed.Rows || parsed.rows || parsed || null;
   } catch (_) {
-    Logger.log('[appsheetRequest] WARNING — could not parse JSON response for ' + table + '/' + action + ' (' + elapsed + 'ms)');
     return null;
   }
+}
 
-  const resultRows = parsed.Rows || parsed.rows || parsed || null;
-  const resultCount = Array.isArray(resultRows) ? resultRows.length : (resultRows ? 1 : 0);
-  Logger.log('[appsheetRequest] ← HTTP ' + statusCode + ' ' + table + '/' + action + ' (' + elapsed + 'ms) | rows returned: ' + resultCount);
+// ─── PDF generation ───────────────────────────────────────────────────────────
 
-  return resultRows;
+/**
+ * Generates a PDF summary of a submitted application.
+ * Guardians are enriched person objects (with .emails and .phones arrays).
+ * Applicants are plain person rows.
+ * desired_start_date is read from app.desired_start_date (application level).
+ * Profession/employer and adaptation data are read from qbResponseMap.
+ *
+ * @param {string} applicationId
+ * @param {Object} app           - Application row (has desired_start_date, source)
+ * @param {Array}  guardians     - Enriched guardian person rows (.emails, .phones, .address)
+ * @param {Array}  applicants    - Applicant person rows
+ * @param {Array}  consentRows   - Consent rows as written to enrConsentsLog
+ * @param {string} esignature    - Typed e-signature name
+ * @param {string} submittedAt   - ISO submission timestamp
+ * @param {Object} qbResponseMap - { [question_id]: response_text }
+ * @returns {string} Drive URL of the generated PDF
+ */
+function generateConsentPdf_(applicationId, app, guardians, applicants, consentRows, esignature, submittedAt, qbResponseMap) {
+  const qbMap = qbResponseMap || {};
+  const docTitle = 'Signed Consent Record — ' + applicationId;
+  const doc  = DocumentApp.create(docTitle);
+  const body = doc.getBody();
+  const nl   = () => body.appendParagraph('');
+
+  // ── Title ──────────────────────────────────────────────────────────────────
+  body.appendParagraph('Kaleide International School — Signed Consent Record')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING1);
+  body.appendParagraph('Application ID: ' + applicationId);
+  body.appendParagraph('Submitted: ' + formatTimestamp_(submittedAt));
+  nl();
+
+  // ── Application details ────────────────────────────────────────────────────
+  body.appendParagraph('Application Details')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  if (app && app.desired_start_date) body.appendParagraph('Desired start date: ' + app.desired_start_date);
+  if (app && app.source)             body.appendParagraph('Source: ' + app.source);
+  nl();
+
+  // ── Guardians ──────────────────────────────────────────────────────────────
+  body.appendParagraph('Guardians / Tutores')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+
+  guardians.forEach((g, i) => {
+    const emails = (g.emails || []).map(e =>
+      (e.email_address || '') + (e.is_emergency ? ' [Emergency]' : '')
+    ).filter(e => e.trim()).join(', ');
+    const phones = (g.phones || []).map(ph =>
+      (ph.phone_number || '') + (ph.is_whatsapp ? ' (WhatsApp)' : '') + (ph.is_telegram ? ' (Telegram)' : '')
+      + (ph.is_emergency ? ' [Emergency]' : '')
+    ).filter(Boolean).join(', ');
+
+    body.appendParagraph((i + 1) + '. ' + (g.first_name || '') + ' ' + (g.last_name || ''))
+      .setBold(true);
+    if (emails) body.appendParagraph('   Email: ' + emails);
+    if (phones) body.appendParagraph('   Phone: ' + phones);
+    const gAddr = g.address;
+    if (gAddr && gAddr.address_line_1) {
+      body.appendParagraph('   Address: ' + [gAddr.address_line_1, gAddr.address_line_2, gAddr.city, gAddr.province, gAddr.country_id, gAddr.zip].filter(Boolean).join(', '));
+    }
+    nl();
+  });
+
+  if (qbMap[QB_PROFESSION_ID] || qbMap[QB_EMPLOYER_ID]) {
+    body.appendParagraph('Guardian Additional Details (from questions)')
+      .setItalic(true);
+    if (qbMap[QB_PROFESSION_ID]) body.appendParagraph('   Profession: ' + qbMap[QB_PROFESSION_ID]);
+    if (qbMap[QB_EMPLOYER_ID])   body.appendParagraph('   Employer: '   + qbMap[QB_EMPLOYER_ID]);
+    nl();
+  }
+
+  // ── Applicants ─────────────────────────────────────────────────────────────
+  body.appendParagraph('Applicants / Alumnos')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+
+  applicants.forEach((a, i) => {
+    body.appendParagraph((i + 1) + '. ' + (a.first_name || '') + ' ' + (a.last_name || ''))
+      .setBold(true);
+    if (a.date_of_birth) body.appendParagraph('   Date of birth: ' + a.date_of_birth);
+    nl();
+  });
+
+  if (qbMap[QB_HAS_ADAPTATION_ID] || qbMap[QB_ADAPTATION_NOTES_ID]) {
+    body.appendParagraph('Applicant Additional Details (from questions)')
+      .setItalic(true);
+    if (qbMap[QB_HAS_ADAPTATION_ID])   body.appendParagraph('   Adaptation needs: ' + qbMap[QB_HAS_ADAPTATION_ID]);
+    if (qbMap[QB_ADAPTATION_NOTES_ID]) body.appendParagraph('   Adaptation notes: ' + qbMap[QB_ADAPTATION_NOTES_ID]);
+    nl();
+  }
+
+  // ── Consents ───────────────────────────────────────────────────────────────
+  body.appendParagraph('Consents / Consentimientos')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+
+  consentRows.forEach(c => {
+    body.appendParagraph('Consent type: ' + (c.consent_type || ''))
+      .setBold(true);
+    if (c.consent_text_shown) {
+      body.appendParagraph('Statement shown to family:');
+      body.appendParagraph(c.consent_text_shown)
+        .setItalic(true);
+    }
+    body.appendParagraph('Decision: ' + (c.consented ? 'Accepted / Aceptado' : 'Declined / Rechazado'));
+    body.appendParagraph('Consent timestamp: ' + formatTimestamp_(c.consent_timestamp));
+    if (c.ip_address) body.appendParagraph('IP address: ' + c.ip_address);
+    nl();
+  });
+
+  // ── E-signature ────────────────────────────────────────────────────────────
+  body.appendParagraph('Electronic Signature / Firma Electrónica')
+    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Typed name: ' + (esignature || '(not provided)'));
+  body.appendParagraph('Submission timestamp: ' + formatTimestamp_(submittedAt));
+
+  doc.saveAndClose();
+
+  // Export Google Doc as PDF, save to Drive, remove intermediate Doc
+  const docFile = DriveApp.getFileById(doc.getId());
+  const pdfBlob = docFile.getAs('application/pdf');
+  pdfBlob.setName('consent_record_' + applicationId + '.pdf');
+
+  const folder  = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
+  const pdfFile = folder.createFile(pdfBlob);
+  pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  docFile.setTrashed(true);
+
+  return pdfFile.getUrl();
+}
+
+// ─── Promotion logic ──────────────────────────────────────────────────────────
+
+/**
+ * Promotes a submitted application into the main SMS.
+ * Checks application.source to determine promotion scope:
+ *   - enrollment_site: promote all persons (guardians + applicants) to SMS
+ *   - families_app: skip guardian promotion (they already exist); only promote
+ *     the applicant(s) and create relationalRecords linking them to existing
+ *     guardian personal_ids.
+ *
+ * For each promoted person, copies their primary address to addresses_S + addressLog.
+ * Stores desired_start_date as a note on personCategoriesLog for each applicant.
+ *
+ * @param {Object} p - { application_id, person_personal_ids }
+ *   person_personal_ids: { [enr_person_id]: sms_personal_id }
+ *     For enrollment_site: include all persons.
+ *     For families_app: include guardian existing personal_ids AND new applicant personal_ids.
+ */
+function promoteApplication_(p) {
+  const { application_id, person_personal_ids = {} } = p;
+  if (!application_id) throw new Error('Missing application_id');
+
+  const now = new Date().toISOString();
+
+  // Fetch application to determine source and desired_start_date
+  const apps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
+    Filter: '"application_id" = "' + application_id + '"'
+  });
+  const appRow = apps && apps[0];
+  if (!appRow) throw new Error('Application not found');
+
+  const source           = appRow.source || 'enrollment_site';
+  const desiredStartDate = appRow.desired_start_date || null;
+
+  const allPersonIds = Object.keys(person_personal_ids);
+  if (!allPersonIds.length) return { promoted_addresses: 0 };
+
+  // Fetch persons to distinguish guardians from applicants
+  const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
+    Filter: allPersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
+  }) || [];
+
+  const guardianPersonIds  = allPersons.filter(p => p.person_type_id === 'guardian').map(p => p.person_id);
+  const applicantPersonIds = allPersons.filter(p => p.person_type_id === 'applicant').map(p => p.person_id);
+
+  // Determine which persons to promote addresses for
+  const promotePersonIds = source === 'families_app'
+    ? applicantPersonIds   // guardians already in SMS
+    : allPersonIds;        // promote everyone
+
+  // Find primary address for each person to promote
+  const addrJoins = promotePersonIds.length
+    ? appsheetRequest_(T.PERSON_ADDRESSES, 'Find', [], {
+        Filter: promotePersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
+      }) || []
+    : [];
+
+  const personAddrMap = {};
+  addrJoins.forEach(j => {
+    if (!personAddrMap[j.person_id] || j.is_primary) {
+      personAddrMap[j.person_id] = j.address_id;
+    }
+  });
+
+  const uniqueAddrIds = [...new Set(Object.values(personAddrMap))];
+  const addressMap    = {};
+  if (uniqueAddrIds.length) {
+    (appsheetRequest_(T.ADDRESSES, 'Find', [], {
+      Filter: uniqueAddrIds.map(id => '"address_id" = "' + id + '"').join(' || ')
+    }) || []).forEach(row => { addressMap[row.address_id] = row; });
+  }
+
+  const smsAddresses   = [];
+  const smsAddressLogs = [];
+
+  promotePersonIds.forEach(personId => {
+    const personalId = person_personal_ids[personId];
+    const addrId     = personAddrMap[personId];
+    const addr       = addrId ? addressMap[addrId] : null;
+    if (!addr) return;
+
+    const smsAddressId = generateUuid_();
+    smsAddresses.push({
+      address_id:     smsAddressId,
+      personal_id:    personalId,
+      school_id:      SCHOOL_ID,
+      address_1:      addr.address_line_1 || null,
+      address_2:      addr.address_line_2 || null,
+      city_id:        addr.city           || null,
+      province_id:    addr.province       || null,
+      country_id:     addr.country_id     || null,
+      zip:            addr.zip            || null,
+    });
+    smsAddressLogs.push({
+      address_log_id: generateUuid_(),
+      school_id:      SCHOOL_ID,
+      personal_id:    personalId,
+      address_id:     smsAddressId,
+      active:         true,
+      default:        true,
+    });
+  });
+
+  if (smsAddresses.length)   appsheetRequest_(T.SMS_ADDRESSES,   'Add', smsAddresses);
+  if (smsAddressLogs.length) appsheetRequest_(T.SMS_ADDRESS_LOG, 'Add', smsAddressLogs);
+
+  // For families_app: create relationalRecords linking new applicants to existing guardians
+  const relationalRecords = [];
+  if (source === 'families_app' && applicantPersonIds.length && guardianPersonIds.length) {
+    // Fetch enrRelations to get guardian ↔ applicant relationships
+    const relations = appsheetRequest_(T.RELATIONS, 'Find', [], {
+      Filter: '"application_id" = "' + application_id + '"'
+    }) || [];
+
+    relations.forEach(rel => {
+      const guardianPersonalId  = person_personal_ids[rel.guardian_person_id];
+      const applicantPersonalId = person_personal_ids[rel.applicant_person_id];
+      if (!guardianPersonalId || !applicantPersonalId) return;
+      relationalRecords.push({
+        record_id:             generateUuid_(),
+        school_id:             SCHOOL_ID,
+        participant_id:        applicantPersonalId,
+        relative_id:           guardianPersonalId,
+        relation_id:           rel.relation_type_id || null,
+        is_custodial:          rel.is_custodial          || false,
+        is_pick_up_authorized: rel.is_pick_up_authorized || false,
+        is_school_rep:         false,
+        is_active:             true,
+      });
+    });
+    if (relationalRecords.length) {
+      appsheetRequest_(T.SMS_RELATIONAL_RECORDS, 'Add', relationalRecords);
+    }
+  }
+
+  // Store desired_start_date for admissions team on personCategoriesLog for each applicant
+  const categoryLogs = [];
+  if (desiredStartDate) {
+    applicantPersonIds.forEach(personId => {
+      const personalId = person_personal_ids[personId];
+      if (!personalId) return;
+      categoryLogs.push({
+        person_category_log_id: generateUuid_(),
+        school_id:              SCHOOL_ID,
+        personal_id:            personalId,
+        person_category_id:     'applicant',
+        status_date:            desiredStartDate,
+        last_known_status:      'desired_start: ' + desiredStartDate,
+      });
+    });
+    if (categoryLogs.length) {
+      appsheetRequest_(T.SMS_PERSON_CATEGORIES, 'Add', categoryLogs);
+    }
+  }
+
+  // Log promotion as a status transition
+  const promotedStatusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
+    Filter: '"status_code" = "PROMOTED" && "school_id" = "' + SCHOOL_ID + '"'
+  });
+  const promotedTypeId = promotedStatusTypes && promotedStatusTypes[0]
+    ? promotedStatusTypes[0].status_type_id : null;
+  if (promotedTypeId) {
+    appsheetRequest_(T.STATUS_LOG, 'Add', [{
+      log_id:              generateUuid_(),
+      application_id,
+      from_status_type_id: appRow.status_type_id || null,
+      to_status_type_id:   promotedTypeId,
+      changed_by:          getStaffEmail_(),
+      changed_at:          now,
+      reason:              'Application promoted to SMS',
+    }]);
+    appsheetRequest_(T.APPLICATIONS, 'Edit', [{ application_id, status_type_id: promotedTypeId, updated_at: now }]);
+  }
+
+  // Stamp promoted_at on the application
+  appsheetRequest_(T.APPLICATIONS, 'Edit', [{
+    application_id,
+    promoted_at: now,
+    updated_at:  now,
+  }]);
+
+  return {
+    promoted_addresses:   smsAddresses.length,
+    relational_records:   relationalRecords.length,
+    category_log_entries: categoryLogs.length,
+  };
 }
 
 // ─── Utility helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the address object contains at least one meaningful field.
+ * @param {Object} addr
+ * @returns {boolean}
+ */
+function hasAddressData_(addr) {
+  return !!(addr && (addr.address_line_1 || addr.city || addr.country_id || addr.zip));
+}
 
 /**
  * Generates a UUID v4 string.
@@ -1275,17 +1647,9 @@ function formatTimestamp_(isoString) {
  * @returns {Folder}
  */
 function getOrCreateDriveFolder_(name) {
-  Logger.log('[getOrCreateDriveFolder] Looking for folder: ' + name);
   const folders = DriveApp.getFoldersByName(name);
-  if (folders.hasNext()) {
-    const folder = folders.next();
-    Logger.log('[getOrCreateDriveFolder] Existing folder found: ' + folder.getId());
-    return folder;
-  }
-  Logger.log('[getOrCreateDriveFolder] Folder not found — creating new folder: ' + name);
-  const newFolder = DriveApp.createFolder(name);
-  Logger.log('[getOrCreateDriveFolder] Created folder: ' + newFolder.getId());
-  return newFolder;
+  if (folders.hasNext()) return folders.next();
+  return DriveApp.createFolder(name);
 }
 
 /**

@@ -15,8 +15,8 @@
   "landing.resume_error": "No hemos podido cargar tu solicitud. El enlace puede haber caducado — introduce tu correo a continuación para recibir uno nuevo.",
 
   "step.email":      "Verificación de correo",
-  "step.guardians":  "Tutores",
-  "step.applicants": "Alumnos",
+  "step.persons":    "Tutores y Alumnos",
+  "step.relations":  "Vínculos familiares",
   "step.health":     "Salud",
   "step.questions":  "Preguntas",
   "step.documents":  "Documentos",
@@ -29,11 +29,25 @@
   "step1.resend_prompt": "¿No lo has recibido?",
   "step1.resend_link": "Reenviar código",
   "step1.verified": "Correo verificado: {{email}}",
+  "step1.start_date_title": "¿Cuándo le gustaría que su hijo/a comenzase?",
 
-  "step2.subtitle": "Añade todos los tutores o responsables legales asociados a esta solicitud.",
-  "step3.subtitle": "Añade a cada alumno que deseas matricular.",
+  "step2.subtitle": "Añade todos los tutores y los alumnos que deseas matricular.",
+  "step3.subtitle": "Indica el vínculo entre cada tutor y cada alumno.",
   "step4.subtitle": "Proporciona información de salud para cada alumno.",
-  "step4.no_applicants": "Por favor, completa primero el paso de Alumnos.",
+  "step4.no_applicants": "Por favor, completa primero el paso de Tutores y Alumnos.",
+
+  "person.guardians_section": "Tutores",
+  "person.applicants_section": "Alumnos",
+  "person.add_guardian": "Añadir otro tutor",
+  "person.add_applicant": "Añadir otro alumno",
+  "person.same_address_as_first": "Mismo domicilio que el Tutor 1",
+
+  "relation.title": "Tutores y Alumnos",
+  "relation.subtitle": "Selecciona el vínculo entre cada tutor y cada alumno.",
+  "relation.type": "Relación",
+  "relation.is_custodial": "Tutor legal",
+  "relation.is_pickup": "Autorizado para recoger",
+  "relation.none": "(sin especificar)",
   "step5.subtitle": "Por favor, responde las siguientes preguntas.",
   "step5.no_questions": "No se encontraron preguntas para este contexto.",
   "step6.subtitle": "Por favor, sube los documentos requeridos. Se aceptan PDF, JPG y PNG (máx. 10 MB).",
@@ -87,6 +101,8 @@
 
   "contact.phone": "Teléfono",
   "contact.email": "Correo electrónico",
+  "contact.is_default": "Predeterminado",
+  "contact.is_emergency": "Emergencia",
 
   "field.primary_email": "Correo electrónico",
   "field.first_name": "Nombre",

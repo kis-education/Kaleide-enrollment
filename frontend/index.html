@@ -16,6 +16,16 @@
     />
   </head>
   <body>
+    <script>
+      // GitHub Pages SPA redirect restore — must run before React mounts
+      (function () {
+        var q = window.location.search;
+        if (q && q.indexOf('?p=') === 0) {
+          var path = decodeURIComponent(q.slice(3));
+          window.history.replaceState(null, null, path);
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
