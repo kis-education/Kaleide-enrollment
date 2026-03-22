@@ -274,6 +274,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
       {/* Emails */}
       <div className="mt-3">
         <h6 style={{ color: 'var(--muted)' }}>{t('contact.email')}</h6>
+        <p className="form-text mb-2" style={{ fontSize: '0.8rem' }}>{t('contact.emergency_note')}</p>
         {canUseAppEmail && (
           <button className="add-btn mb-2" onClick={() => u('emails', [{
             ...emptyEmail(), email_address: primaryEmail, email_type_id: 'personal', is_default: true,
