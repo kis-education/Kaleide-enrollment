@@ -167,6 +167,14 @@ function doPost(e) {
  * @returns {{ application_id: string, resume_token: string }}
  */
 function initApplication_(p) {
+  // Verify reCAPTCHA before writing anything to the database
+  const secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
+  if (secret) {
+    if (!p.recaptcha_token) throw new Error('Missing reCAPTCHA token');
+    const rcResult = verifyRecaptcha_({ token: p.recaptcha_token });
+    if (!rcResult.pass) throw new Error('reCAPTCHA verification failed');
+  }
+
   const applicationId = generateUuid_();
   const resumeToken   = generateUuid_();
   const now           = new Date().toISOString();

@@ -42,9 +42,16 @@ export default function ConsentPage() {
     setSubmitting(true);
 
     try {
+      let recaptcha_token = null;
+      if (RECAPTCHA_SITE_KEY && window.grecaptcha) {
+        await new Promise(resolve => window.grecaptcha.ready(resolve));
+        recaptcha_token = await window.grecaptcha.execute(RECAPTCHA_SITE_KEY, { action: 'init_application' });
+      }
+
       const data = await gasCall('initApplication', {
         primary_email:      email,
         preferred_language: navigator.language?.startsWith('en') ? 'en' : 'es',
+        recaptcha_token,
       });
       setApplicationId(data.application_id);
       setResumeToken(data.resume_token);
