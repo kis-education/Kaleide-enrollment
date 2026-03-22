@@ -14,7 +14,7 @@
   "landing.magic_link_sent": "Link sent! Check your inbox.",
   "landing.resume_error": "We couldn't load your application. The link may have expired — enter your email below to receive a new one.",
 
-  "step.email":      "Email Verification",
+  "step.email":      "Start Date",
   "step.persons":    "Guardians & Students",
   "step.relations":  "Family Relationships",
   "step.health":     "Health",
