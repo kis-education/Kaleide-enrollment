@@ -1749,31 +1749,39 @@ function hasAddressData_(addr) {
  * Generates a UUID v4 string.
  * @returns {string}
  */
+
+// Change this constant when you change the Google Sheet regional settings.
+// 'ES' = Spain / European = D/M/YYYY
+// 'US' = United States    = M/D/YYYY
+var APPSHEET_DATE_LOCALE = 'ES';
+
 /**
  * Normalises any date string to ISO YYYY-MM-DD.
- * Always checks for ISO format first (safe, format-independent).
- * Falls back to JavaScript Date parsing for other formats — reliable for
- * unambiguous strings (e.g. M/D/YYYY when day > 12) but ambiguous for
- * dates like 1/3/2026 where locale determines whether that is Jan 3 or Mar 1.
  *
- * IMPORTANT: configure AppSheet locale to use YYYY-MM-DD date format so the
- * ISO check always fires and locale ambiguity never arises.
+ * Explicit format detection — does NOT rely on locale-dependent Date() parsing:
+ *   1. YYYY-MM-DD       → already ISO, return as-is
+ *   2. slash-separated  → detect D/M/YYYY vs M/D/YYYY:
+ *      - first segment > 12  → must be a day  → D/M/YYYY
+ *      - second segment > 12 → must be a day  → M/D/YYYY
+ *      - both ≤ 12           → ambiguous, resolved by APPSHEET_DATE_LOCALE
  *
  * Returns null for falsy input.
  */
 function normalizeDate_(dateStr) {
   if (!dateStr) return null;
-  // Already ISO — format-independent, always safe
   if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 10);
-  // Attempt generic parse via Date object (handles most formats V8 knows about)
-  const d = new Date(dateStr);
-  if (!isNaN(d.getTime())) {
-    const y   = d.getFullYear();
-    const m   = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return y + '-' + m + '-' + day;
+  var parts = dateStr.split('/');
+  if (parts.length === 3) {
+    var a = parseInt(parts[0], 10);
+    var b = parseInt(parts[1], 10);
+    var y = parts[2];
+    var day, mon;
+    if (a > 12)                            { day = a; mon = b; }   // unambiguously D/M
+    else if (b > 12)                       { mon = a; day = b; }   // unambiguously M/D
+    else if (APPSHEET_DATE_LOCALE === 'ES'){ day = a; mon = b; }   // ambiguous → ES
+    else                                   { mon = a; day = b; }   // ambiguous → US
+    return y + '-' + String(mon).padStart(2, '0') + '-' + String(day).padStart(2, '0');
   }
-  // Unknown format — return as-is and log so we know to handle it
   Logger.log('normalizeDate_: unrecognised format "' + dateStr + '"');
   return dateStr;
 }
