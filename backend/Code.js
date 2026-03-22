@@ -271,6 +271,9 @@ function resumeApplication_(p) {
   // interview_type is a plain enum string; interviewer_id is a plain email string — no FK resolution
   const interviews = appsheetRequest_(T.INTERVIEWS,    'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
 
+  // Normalise date fields to ISO format before sending to the frontend
+  app.desired_start_date = normalizeDate_(app.desired_start_date);
+
   if (!persons.length) {
     return { application: app, persons: [], relations, documents, responses, interviews };
   }
@@ -322,6 +325,7 @@ function resumeApplication_(p) {
                   || null;
     return {
       ...person,
+      date_of_birth:     normalizeDate_(person.date_of_birth),
       nationalities:     nationalities.filter(n => n.person_id === pid),
       ids:               personIds_.filter(x => x.person_id === pid),
       languages:         languages.filter(x => x.person_id === pid),
@@ -1745,6 +1749,22 @@ function hasAddressData_(addr) {
  * Generates a UUID v4 string.
  * @returns {string}
  */
+/**
+ * Normalises any date string to ISO YYYY-MM-DD.
+ * AppSheet returns dates as M/D/YYYY; the frontend always expects ISO format.
+ * Returns null for falsy input.
+ */
+function normalizeDate_(dateStr) {
+  if (!dateStr) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 10);
+  const parts = dateStr.split('/');
+  if (parts.length === 3) {
+    const [m, d, y] = parts;
+    return y + '-' + m.padStart(2, '0') + '-' + d.padStart(2, '0');
+  }
+  return dateStr;
+}
+
 function generateUuid_() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = Math.random() * 16 | 0;
