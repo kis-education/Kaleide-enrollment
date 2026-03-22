@@ -1330,14 +1330,26 @@ function appsheetRequest_(table, action, rows, selector) {
   const statusCode = response.getResponseCode();
   const text       = response.getContentText();
 
+  Logger.log('AppSheet ' + action + ' ' + table + ' → HTTP ' + statusCode + ' | ' + text.slice(0, 400));
+
   if (statusCode < 200 || statusCode >= 300) {
     throw new Error('AppSheet API error ' + statusCode + ' on ' + table + '/' + action + ': ' + text);
   }
 
   try {
     const parsed = JSON.parse(text);
-    return parsed.Rows || parsed.rows || parsed || null;
-  } catch (_) {
+    // AppSheet sometimes returns HTTP 200 with an error payload
+    if (parsed && typeof parsed.error === 'string') {
+      throw new Error('AppSheet error on ' + table + '/' + action + ': ' + parsed.error);
+    }
+    const resultRows = parsed.Rows || parsed.rows || null;
+    // Warn if an Add/Edit returned no rows — indicates a silent rejection
+    if ((action === 'Add' || action === 'Edit') && rows && rows.length > 0 && resultRows && resultRows.length === 0) {
+      Logger.log('AppSheet warning: ' + action + ' on ' + table + ' sent ' + rows.length + ' row(s) but got 0 back — possible validation failure');
+    }
+    return resultRows || parsed || null;
+  } catch (e) {
+    if (e.message.startsWith('AppSheet')) throw e;
     return null;
   }
 }
