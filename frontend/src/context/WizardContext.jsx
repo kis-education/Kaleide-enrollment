@@ -34,26 +34,27 @@ export function WizardProvider({ children }) {
   const hydrateFromResume = useCallback((appData) => {
     setApplicationId(appData.application.application_id);
     setResumeToken(appData.application.resume_token);
+    // The magic link token itself proves email ownership — treat as verified regardless
+    // of the email_confirmed DB flag (which may lag or not have been written yet).
     setStepData(prev => ({
       ...prev,
       email: {
         primary_email:      appData.application.primary_email      || '',
-        verified:           appData.application.email_confirmed    || false,
+        verified:           true,
         desired_start_date: appData.application.desired_start_date || '',
       },
       persons:   appData.persons   || [],
       relations: appData.relations || [],
     }));
-    // Determine current step from application state
+    // Determine deepest incomplete step
     const submitted = appData.application.submitted_at;
     if (submitted) { setCurrentStep(6); return; }
-    const verified = appData.application.email_confirmed;
-    if (!verified) { setCurrentStep(0); return; }
+    const desiredStartDate = appData.application.desired_start_date;
+    if (!desiredStartDate)          { setCurrentStep(0); return; }
     const persons = appData.persons || [];
     const hasGuardians  = persons.some(p => p.person_type_id === 'guardian');
     const hasApplicants = persons.some(p => p.person_type_id === 'applicant');
-    if (!hasGuardians)              { setCurrentStep(1); return; }
-    if (!hasApplicants)             { setCurrentStep(1); return; }
+    if (!hasGuardians || !hasApplicants) { setCurrentStep(1); return; }
     const hasRelations = (appData.relations || []).length > 0;
     if (!hasRelations)              { setCurrentStep(2); return; }
     setCurrentStep(3);
