@@ -693,10 +693,11 @@ function fetchQuestions_(p) {
 function fetchLookups_() {
   const safe = (fn) => { try { return fn() || []; } catch (e) { Logger.log('fetchLookups_ error: ' + e.message); return []; } };
 
-  const allergies     = safe(() => appsheetRequest_(T.LOOKUP_ALLERGIES,      'Find', [], {}));
-  const dietary       = safe(() => appsheetRequest_(T.LOOKUP_DIETARY,        'Find', [], {}));
-  const medical       = safe(() => appsheetRequest_(T.LOOKUP_MEDICAL,        'Find', [], {}));
-  const relationTypes = safe(() => appsheetRequest_(T.LOOKUP_RELATION_TYPES, 'Find', [], {}));
+  // Filter: 'true' → FILTER("table", TRUE) — explicitly requests all rows
+  const allergies     = safe(() => appsheetRequest_(T.LOOKUP_ALLERGIES,      'Find', [], { Filter: 'true' }));
+  const dietary       = safe(() => appsheetRequest_(T.LOOKUP_DIETARY,        'Find', [], { Filter: 'true' }));
+  const medical       = safe(() => appsheetRequest_(T.LOOKUP_MEDICAL,        'Find', [], { Filter: 'true' }));
+  const relationTypes = safe(() => appsheetRequest_(T.LOOKUP_RELATION_TYPES, 'Find', [], { Filter: 'true' }));
 
   Logger.log('fetchLookups_ relationTypes raw: ' + JSON.stringify(relationTypes));
 
