@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { subscribe, entries as initialEntries, clear } from '../logger';
+import pkg from '../../package.json';
 
 const LEVEL_STYLE = {
   info:    { bg: '#e8f4fd', color: '#0c5464', dot: '#1a9abf' },
@@ -55,7 +56,7 @@ export default function DevLogger() {
           <span style={{ color: '#2f9e44', marginRight: 6 }}>●</span>
           DEV LOG
           <span style={{ marginLeft: 8, color: '#6b7c93', fontSize: '0.7rem' }}>
-            ({entries.length})
+            v{pkg.version} ({entries.length})
           </span>
         </span>
         <span>{open ? '▼' : '▲'}</span>
