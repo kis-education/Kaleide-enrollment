@@ -80,9 +80,10 @@ const T = {
   SMS_RELATIONAL_RECORDS: 'relationalRecords',
   SMS_PERSON_CATEGORIES:  'personCategoriesLog',
   // Lookup / reference tables
-  LOOKUP_ALLERGIES: 'foodAllergies',
-  LOOKUP_DIETARY:   'dietaryRequirements',
-  LOOKUP_MEDICAL:   'medicalConditions',
+  LOOKUP_ALLERGIES:       'foodAllergies',
+  LOOKUP_DIETARY:         'dietaryRequirements',
+  LOOKUP_MEDICAL:         'medicalConditions',
+  LOOKUP_RELATION_TYPES:  'relationTypes',
 };
 
 /**
@@ -190,7 +191,20 @@ function initApplication_(p) {
     updated_at:         now,
   }]);
 
-  sendMagicLinkEmail_(p.primary_email, resumeToken, p.preferred_language || 'es');
+  // Record GDPR consent
+  const lang = p.preferred_language || 'es';
+  const gdprText = CONSENT_TEXTS.gdpr.en + '\n\n' + CONSENT_TEXTS.gdpr.es;
+  appsheetRequest_(T.CONSENTS, 'Add', [{
+    consent_id:         generateUuid_(),
+    application_id:     applicationId,
+    consent_type:       'gdpr_data_processing',
+    consent_text_shown: gdprText,
+    consented:          true,
+    consent_timestamp:  now,
+    language:           lang,
+  }]);
+
+  sendMagicLinkEmail_(p.primary_email, resumeToken, lang);
   sendInternalEmail_(
     '[KIS Admissions] New application started',
     buildApplicationInitiatedBody_(applicationId, p.primary_email, now)
@@ -677,14 +691,16 @@ function fetchQuestions_(p) {
  * @returns {{ allergies: Array, dietary: Array, medical: Array }}
  */
 function fetchLookups_() {
-  const allergies = appsheetRequest_(T.LOOKUP_ALLERGIES, 'Find', [], {}) || [];
-  const dietary   = appsheetRequest_(T.LOOKUP_DIETARY,   'Find', [], {}) || [];
-  const medical   = appsheetRequest_(T.LOOKUP_MEDICAL,   'Find', [], {}) || [];
+  const allergies     = appsheetRequest_(T.LOOKUP_ALLERGIES,      'Find', [], {}) || [];
+  const dietary       = appsheetRequest_(T.LOOKUP_DIETARY,        'Find', [], {}) || [];
+  const medical       = appsheetRequest_(T.LOOKUP_MEDICAL,        'Find', [], {}) || [];
+  const relationTypes = appsheetRequest_(T.LOOKUP_RELATION_TYPES, 'Find', [], {}) || [];
 
   return {
-    allergies: allergies.map(r => ({ id: r.row_id, label: r.food_allergy_designation })),
-    dietary:   dietary.map(r =>   ({ id: r.row_id, label: r.diet_designation         })),
-    medical:   medical.map(r =>   ({ id: r.row_id, label: r.medical_condition_designation })),
+    allergies:     allergies.map(r =>     ({ id: r.row_id, label: r.food_allergy_designation })),
+    dietary:       dietary.map(r =>       ({ id: r.row_id, label: r.diet_designation         })),
+    medical:       medical.map(r =>       ({ id: r.row_id, label: r.medical_condition_designation })),
+    relationTypes: relationTypes.map(r => ({ id: r.row_id })),
   };
 }
 

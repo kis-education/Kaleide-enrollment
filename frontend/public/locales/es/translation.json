@@ -74,6 +74,7 @@
   "wizard.save_later_sent": "Enlace enviado a tu correo.",
   "wizard.save_later_error": "No se pudo enviar el enlace. Inténtalo de nuevo.",
   "wizard.saving": "Guardando…",
+  "wizard.save_failed": "No se ha podido guardar tu progreso — comprueba tu conexión.",
 
   "resume.loading": "Cargando tu solicitud…",
 
@@ -159,7 +160,8 @@
 
   "gender.m": "Masculino",
   "gender.f": "Femenino",
-  "gender.x": "No binario / Otro",
+  "gender.nonbinary": "No binario",
+  "gender.prefer_not_to_say": "Prefiero no decirlo",
 
   "start.september": "Incorporación en septiembre",
   "start.midterm": "Incorporación a mitad de curso",

@@ -227,14 +227,21 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         <div className="col-md-3">
           <label className="form-label">{t('field.date_of_birth')}{isApplicant && ' *'}</label>
           <input type="date" className="form-control" value={person.date_of_birth} onChange={e => u('date_of_birth', e.target.value)} />
+          {isApplicant && person.date_of_birth && (() => {
+            const ms = Date.now() - new Date(person.date_of_birth);
+            const yrs = Math.floor(ms / (365.25 * 24 * 3600 * 1000));
+            const mos = Math.floor((ms % (365.25 * 24 * 3600 * 1000)) / (30.44 * 24 * 3600 * 1000));
+            return <div className="form-text">{yrs}y {mos}m</div>;
+          })()}
         </div>
         <div className="col-md-3">
           <label className="form-label">{t('field.gender')}</label>
           <select className="form-select" value={person.gender} onChange={e => u('gender', e.target.value)}>
             <option value="">{t('placeholder.select')}</option>
-            <option value="M">{t('gender.m')}</option>
-            <option value="F">{t('gender.f')}</option>
-            <option value="X">{t('gender.x')}</option>
+            <option value="Male">{t('gender.m')}</option>
+            <option value="Female">{t('gender.f')}</option>
+            <option value="Non-binary">{t('gender.nonbinary')}</option>
+            <option value="Prefer-not-to-say">{t('gender.prefer_not_to_say')}</option>
           </select>
         </div>
         <div className="col-md-3">
@@ -427,6 +434,11 @@ export default function Step2Persons({ onNext, onBack }) {
     setPersons(next);
   };
 
+  const handleBack = () => {
+    updateStep('persons', persons.map(transformPersonForSave));
+    onBack();
+  };
+
   const handleNext = () => {
     if (!guardians[0]?.first_name || !guardians[0]?.last_name) {
       setErr(t('error.guardian_required'));
@@ -500,7 +512,7 @@ export default function Step2Persons({ onNext, onBack }) {
       {err && <div className="field-error mt-2">{err}</div>}
 
       <div className="d-flex justify-content-between mt-4">
-        <button className="btn-secondary-kis" onClick={onBack}>
+        <button className="btn-secondary-kis" onClick={handleBack}>
           <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
         </button>
         <button className="btn-primary-kis" onClick={handleNext}>

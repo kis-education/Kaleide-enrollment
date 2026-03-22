@@ -109,7 +109,6 @@ export default function Step5Questions({ onNext, onBack }) {
 
   const [sets,     setSets]     = useState([]);
   const [loading,  setLoading]  = useState(true);
-  const [err,      setErr]      = useState('');
   const [responses, setResponses] = useState(stepData.questions || {});
 
   const persons    = stepData.persons || [];
@@ -124,6 +123,11 @@ export default function Step5Questions({ onNext, onBack }) {
   }, [i18n.language]); // eslint-disable-line
 
   const setResponse = (key, val) => setResponses(prev => ({ ...prev, [key]: val }));
+
+  const handleBack = () => {
+    updateStep('questions', responses);
+    onBack();
+  };
 
   const handleNext = async () => {
     // Batch-save all responses
@@ -155,7 +159,7 @@ export default function Step5Questions({ onNext, onBack }) {
         <p style={{ color: 'var(--muted)' }}>{t('step5.no_questions')}</p>
       </div>
       <div className="d-flex justify-content-between mt-4">
-        <button className="btn-secondary-kis" onClick={onBack}><i className="bi bi-arrow-left me-1" />{t('nav.back')}</button>
+        <button className="btn-secondary-kis" onClick={handleBack}><i className="bi bi-arrow-left me-1" />{t('nav.back')}</button>
         <button className="btn-primary-kis" onClick={() => { updateStep('questions', {}); onNext('questions', {}); }}>{t('nav.continue')}<i className="bi bi-arrow-right ms-1" /></button>
       </div>
     </>
@@ -222,7 +226,7 @@ export default function Step5Questions({ onNext, onBack }) {
       ))}
 
       <div className="d-flex justify-content-between mt-4">
-        <button className="btn-secondary-kis" onClick={onBack}>
+        <button className="btn-secondary-kis" onClick={handleBack}>
           <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
         </button>
         <button className="btn-primary-kis" onClick={handleNext}>

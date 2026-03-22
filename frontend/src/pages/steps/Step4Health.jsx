@@ -3,30 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
 
-// Fallback data shown when AppSheet lookup tables are empty.
-// Seed the foodAllergies / dietaryRequirements / medicalConditions tables in AppSheet
-// to replace these with your own entries.
-const FALLBACK_ALLERGIES = [
-  { id: 'nuts',      label: 'Nuts / Frutos secos'   },
-  { id: 'gluten',    label: 'Gluten / Gluten'        },
-  { id: 'lactose',   label: 'Lactose / Lactosa'      },
-  { id: 'egg',       label: 'Egg / Huevo'            },
-  { id: 'shellfish', label: 'Shellfish / Marisco'    },
-  { id: 'soya',      label: 'Soya / Soja'            },
-];
-const FALLBACK_DIETARY = [
-  { id: 'vegetarian', label: 'Vegetarian / Vegetariano' },
-  { id: 'vegan',      label: 'Vegan / Vegano'           },
-  { id: 'halal',      label: 'Halal / Halal'            },
-  { id: 'kosher',     label: 'Kosher / Kosher'          },
-];
-const FALLBACK_MEDICAL = [
-  { id: 'asthma',   label: 'Asthma / Asma'      },
-  { id: 'diabetes', label: 'Diabetes / Diabetes' },
-  { id: 'epilepsy', label: 'Epilepsy / Epilepsia'},
-  { id: 'adhd',     label: 'ADHD / TDAH'         },
-];
-
 function TagSelect({ options, selected, onChange, placeholder }) {
   const [input, setInput] = useState('');
   const filtered = options.filter(o =>
@@ -157,21 +133,22 @@ export default function Step4Health({ onNext, onBack }) {
   useEffect(() => {
     gasCall('fetchLookups', {})
       .then(data => {
-        setAllergiesOpts(data.allergies?.length ? data.allergies : FALLBACK_ALLERGIES);
-        setDietaryOpts(data.dietary?.length   ? data.dietary   : FALLBACK_DIETARY);
-        setMedicalOpts(data.medical?.length   ? data.medical   : FALLBACK_MEDICAL);
+        setAllergiesOpts(data.allergies || []);
+        setDietaryOpts(data.dietary   || []);
+        setMedicalOpts(data.medical   || []);
       })
-      .catch(() => {
-        setAllergiesOpts(FALLBACK_ALLERGIES);
-        setDietaryOpts(FALLBACK_DIETARY);
-        setMedicalOpts(FALLBACK_MEDICAL);
-      });
+      .catch(() => {});
   }, []);
 
   const updateHealth = (i, val) => {
     const next = [...healthData];
     next[i] = val;
     setHealthData(next);
+  };
+
+  const handleBack = () => {
+    updateStep('health', healthData);
+    onBack();
   };
 
   const handleNext = () => {
@@ -205,7 +182,7 @@ export default function Step4Health({ onNext, onBack }) {
       )}
 
       <div className="d-flex justify-content-between mt-4">
-        <button className="btn-secondary-kis" onClick={onBack}>
+        <button className="btn-secondary-kis" onClick={handleBack}>
           <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
         </button>
         <button className="btn-primary-kis" onClick={handleNext}>

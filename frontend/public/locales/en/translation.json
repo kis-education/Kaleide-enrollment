@@ -74,6 +74,7 @@
   "wizard.save_later_sent": "Link sent to your email.",
   "wizard.save_later_error": "Could not send link. Try again.",
   "wizard.saving": "Saving…",
+  "wizard.save_failed": "Your progress could not be saved — please check your connection.",
 
   "resume.loading": "Loading your application…",
 
@@ -159,7 +160,8 @@
 
   "gender.m": "Male",
   "gender.f": "Female",
-  "gender.x": "Non-binary / Other",
+  "gender.nonbinary": "Non-binary",
+  "gender.prefer_not_to_say": "Prefer not to say",
 
   "start.september": "September start",
   "start.midterm": "Mid-term start",

@@ -105,6 +105,11 @@ export default function Step6Documents({ onNext, onBack }) {
     });
   };
 
+  const handleBack = () => {
+    updateStep('documents', documents);
+    onBack();
+  };
+
   const handleNext = () => {
     updateStep('documents', documents);
     onNext('documents', documents);
@@ -130,7 +135,7 @@ export default function Step6Documents({ onNext, onBack }) {
       </div>
 
       <div className="d-flex justify-content-between mt-4">
-        <button className="btn-secondary-kis" onClick={onBack}>
+        <button className="btn-secondary-kis" onClick={handleBack}>
           <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
         </button>
         <button className="btn-primary-kis" onClick={handleNext}>

@@ -43,6 +43,7 @@ export default function WizardPage() {
         log.success(`WizardPage: saveStep "${stepKey}" OK`);
       } catch (err) {
         log.warn(`WizardPage: saveStep "${stepKey}" failed (non-blocking)`, { message: err.message });
+        showToast(t('wizard.save_failed'));
       }
     } else {
       log.warn('WizardPage: skipping saveStep', { applicationId, stepKey });

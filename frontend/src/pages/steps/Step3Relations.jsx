@@ -1,8 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
-
-const RELATION_TYPES = ['parent', 'step_parent', 'legal_guardian', 'grandparent', 'other'];
+import { gasCall } from '../../api';
 
 function buildInitialRelations(persons, existingRelations) {
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
@@ -35,12 +34,24 @@ export default function Step3Relations({ onNext, onBack }) {
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
 
-  const [relations, setRelations] = useState(() =>
+  const [relations,     setRelations]     = useState(() =>
     buildInitialRelations(persons, stepData.relations)
   );
+  const [relationTypes, setRelationTypes] = useState([]);
+
+  useEffect(() => {
+    gasCall('fetchLookups', {})
+      .then(data => { if (data.relationTypes?.length) setRelationTypes(data.relationTypes); })
+      .catch(() => {});
+  }, []);
 
   const updateRelation = (idx, updates) => {
     setRelations(prev => prev.map((r, i) => i === idx ? { ...r, ...updates } : r));
+  };
+
+  const handleBack = () => {
+    updateStep('relations', relations);
+    onBack();
   };
 
   const handleNext = () => {
@@ -58,7 +69,7 @@ export default function Step3Relations({ onNext, onBack }) {
           <p style={{ color: 'var(--muted)' }}>{t('step4.no_applicants')}</p>
         </div>
         <div className="d-flex justify-content-between mt-4">
-          <button className="btn-secondary-kis" onClick={onBack}>
+          <button className="btn-secondary-kis" onClick={handleBack}>
             <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
           </button>
           <button className="btn-primary-kis" onClick={handleNext}>
@@ -98,9 +109,9 @@ export default function Step3Relations({ onNext, onBack }) {
                 onChange={e => updateRelation(relIdx, { relation_type_id: e.target.value })}
               >
                 <option value="">{t('relation.none')}</option>
-                {RELATION_TYPES.map(rt => (
-                  <option key={rt} value={rt}>
-                    {t(`relation.${rt}`, { defaultValue: rt.replace(/_/g, ' ') })}
+                {relationTypes.map(rt => (
+                  <option key={rt.id} value={rt.id}>
+                    {t(`relation.${rt.id}`, { defaultValue: rt.id.replace(/_/g, ' ') })}
                   </option>
                 ))}
               </select>
@@ -133,7 +144,7 @@ export default function Step3Relations({ onNext, onBack }) {
       })}
 
       <div className="d-flex justify-content-between mt-4">
-        <button className="btn-secondary-kis" onClick={onBack}>
+        <button className="btn-secondary-kis" onClick={handleBack}>
           <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
         </button>
         <button className="btn-primary-kis" onClick={handleNext}>
