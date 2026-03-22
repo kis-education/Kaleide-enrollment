@@ -31,7 +31,7 @@ export default function Step3Relations({ onNext, onBack }) {
   const { t } = useTranslation();
   const { stepData, updateStep } = useWizard();
 
-  const persons   = stepData.persons   || [];
+  const persons    = stepData.persons || [];
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
 
@@ -76,62 +76,58 @@ export default function Step3Relations({ onNext, onBack }) {
         <p style={{ color: 'var(--muted)' }}>{t('step3.subtitle')}</p>
       </div>
 
-      {guardians.map((g, gi) => {
-        const gId = g.person_id || g._uid;
-        const gName = [g.first_name, g.last_name].filter(Boolean).join(' ') || t('guardian.title', { n: gi + 1 });
+      {relations.map((rel, relIdx) => {
+        const g = persons.find(p => (p.person_id || p._uid) === rel.guardian_person_id);
+        const a = persons.find(p => (p.person_id || p._uid) === rel.applicant_person_id);
+        if (!g || !a) return null;
+
+        const gName = [g.first_name, g.last_name].filter(Boolean).join(' ')
+          || t('guardian.title', { n: relIdx + 1 });
+        const aName = [a.first_name, a.last_name].filter(Boolean).join(' ')
+          || t('applicant.title', { n: relIdx + 1 });
 
         return (
-          <div key={gId} className="dynamic-section">
-            <div className="dynamic-section-title">{gName}</div>
+          <div key={rel._uid || relIdx} className="kis-card mb-3">
+            <div className="d-flex align-items-center gap-2 flex-wrap">
+              <strong style={{ color: 'var(--teal-dk)' }}>{gName}</strong>
+              <span style={{ color: 'var(--muted)' }}>{t('relation.is_of')}</span>
+              <select
+                className="form-select form-select-sm"
+                style={{ width: 'auto', minWidth: 170 }}
+                value={rel.relation_type_id}
+                onChange={e => updateRelation(relIdx, { relation_type_id: e.target.value })}
+              >
+                <option value="">{t('relation.none')}</option>
+                {RELATION_TYPES.map(rt => (
+                  <option key={rt} value={rt}>
+                    {t(`relation.${rt}`, { defaultValue: rt.replace(/_/g, ' ') })}
+                  </option>
+                ))}
+              </select>
+              <span style={{ color: 'var(--muted)' }}>{t('relation.of')}</span>
+              <strong style={{ color: 'var(--teal-dk)' }}>{aName}</strong>
+            </div>
 
-            {applicants.map((a, ai) => {
-              const aId   = a.person_id || a._uid;
-              const aName = [a.first_name, a.last_name].filter(Boolean).join(' ') || t('applicant.title', { n: ai + 1 });
-              const relIdx = relations.findIndex(
-                r => r.guardian_person_id === gId && r.applicant_person_id === aId
-              );
-              const rel = relIdx >= 0 ? relations[relIdx] : null;
-              if (!rel) return null;
-
-              return (
-                <div key={aId} className="border rounded p-3 mb-3" style={{ background: 'var(--bg)' }}>
-                  <div className="fw-semibold mb-2" style={{ color: 'var(--teal-dk)' }}>{aName}</div>
-                  <div className="row g-3">
-                    <div className="col-md-5">
-                      <label className="form-label small">{t('relation.type')}</label>
-                      <select className="form-select form-select-sm"
-                        value={rel.relation_type_id}
-                        onChange={e => updateRelation(relIdx, { relation_type_id: e.target.value })}>
-                        <option value="">{t('relation.none')}</option>
-                        {RELATION_TYPES.map(rt => (
-                          <option key={rt} value={rt}>{rt.replace('_', ' ')}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="col-auto d-flex align-items-end gap-3">
-                      <div className="form-check mb-0">
-                        <input type="checkbox" className="form-check-input"
-                          id={`custodial_${gi}_${ai}`}
-                          checked={rel.is_custodial}
-                          onChange={e => updateRelation(relIdx, { is_custodial: e.target.checked })} />
-                        <label className="form-check-label small" htmlFor={`custodial_${gi}_${ai}`}>
-                          {t('relation.is_custodial')}
-                        </label>
-                      </div>
-                      <div className="form-check mb-0">
-                        <input type="checkbox" className="form-check-input"
-                          id={`pickup_${gi}_${ai}`}
-                          checked={rel.is_pick_up_authorized}
-                          onChange={e => updateRelation(relIdx, { is_pick_up_authorized: e.target.checked })} />
-                        <label className="form-check-label small" htmlFor={`pickup_${gi}_${ai}`}>
-                          {t('relation.is_pickup')}
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+            <div className="d-flex gap-4 mt-3">
+              <div className="form-check mb-0">
+                <input type="checkbox" className="form-check-input"
+                  id={`custodial_${relIdx}`}
+                  checked={rel.is_custodial}
+                  onChange={e => updateRelation(relIdx, { is_custodial: e.target.checked })} />
+                <label className="form-check-label small" htmlFor={`custodial_${relIdx}`}>
+                  {t('relation.is_custodial')}
+                </label>
+              </div>
+              <div className="form-check mb-0">
+                <input type="checkbox" className="form-check-input"
+                  id={`pickup_${relIdx}`}
+                  checked={rel.is_pick_up_authorized}
+                  onChange={e => updateRelation(relIdx, { is_pick_up_authorized: e.target.checked })} />
+                <label className="form-check-label small" htmlFor={`pickup_${relIdx}`}>
+                  {t('relation.is_pickup')}
+                </label>
+              </div>
+            </div>
           </div>
         );
       })}

@@ -93,15 +93,19 @@ export default function WizardPage() {
         <LangToggle />
       </header>
 
-      {/* Saving indicator */}
+      {/* Saving overlay */}
       {saving && (
         <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
-          background: 'var(--teal)', color: '#fff',
-          textAlign: 'center', padding: '10px', fontSize: '0.9rem',
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(248,249,250,0.88)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          backdropFilter: 'blur(3px)',
         }}>
-          <span className="spinner-border spinner-border-sm me-2" />
-          {t('wizard.saving')}
+          <div className="spinner-border" role="status"
+            style={{ color: 'var(--teal)', width: '3rem', height: '3rem' }} />
+          <p style={{ marginTop: 16, color: 'var(--teal-dk)', fontWeight: 600, fontSize: '1rem' }}>
+            {t('wizard.saving')}
+          </p>
         </div>
       )}
 

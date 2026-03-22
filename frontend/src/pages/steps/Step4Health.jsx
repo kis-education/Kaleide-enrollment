@@ -3,6 +3,30 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
 
+// Fallback data shown when AppSheet lookup tables are empty.
+// Seed the foodAllergies / dietaryRequirements / medicalConditions tables in AppSheet
+// to replace these with your own entries.
+const FALLBACK_ALLERGIES = [
+  { id: 'nuts',      label: 'Nuts / Frutos secos'   },
+  { id: 'gluten',    label: 'Gluten / Gluten'        },
+  { id: 'lactose',   label: 'Lactose / Lactosa'      },
+  { id: 'egg',       label: 'Egg / Huevo'            },
+  { id: 'shellfish', label: 'Shellfish / Marisco'    },
+  { id: 'soya',      label: 'Soya / Soja'            },
+];
+const FALLBACK_DIETARY = [
+  { id: 'vegetarian', label: 'Vegetarian / Vegetariano' },
+  { id: 'vegan',      label: 'Vegan / Vegano'           },
+  { id: 'halal',      label: 'Halal / Halal'            },
+  { id: 'kosher',     label: 'Kosher / Kosher'          },
+];
+const FALLBACK_MEDICAL = [
+  { id: 'asthma',   label: 'Asthma / Asma'      },
+  { id: 'diabetes', label: 'Diabetes / Diabetes' },
+  { id: 'epilepsy', label: 'Epilepsy / Epilepsia'},
+  { id: 'adhd',     label: 'ADHD / TDAH'         },
+];
+
 function TagSelect({ options, selected, onChange, placeholder }) {
   const [input, setInput] = useState('');
   const filtered = options.filter(o =>
@@ -133,11 +157,15 @@ export default function Step4Health({ onNext, onBack }) {
   useEffect(() => {
     gasCall('fetchLookups', {})
       .then(data => {
-        if (data.allergies) setAllergiesOpts(data.allergies);
-        if (data.dietary)   setDietaryOpts(data.dietary);
-        if (data.medical)   setMedicalOpts(data.medical);
+        setAllergiesOpts(data.allergies?.length ? data.allergies : FALLBACK_ALLERGIES);
+        setDietaryOpts(data.dietary?.length   ? data.dietary   : FALLBACK_DIETARY);
+        setMedicalOpts(data.medical?.length   ? data.medical   : FALLBACK_MEDICAL);
       })
-      .catch(() => {});
+      .catch(() => {
+        setAllergiesOpts(FALLBACK_ALLERGIES);
+        setDietaryOpts(FALLBACK_DIETARY);
+        setMedicalOpts(FALLBACK_MEDICAL);
+      });
   }, []);
 
   const updateHealth = (i, val) => {

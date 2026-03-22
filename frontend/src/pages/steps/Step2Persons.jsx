@@ -4,6 +4,9 @@ import { useWizard } from '../../context/WizardContext';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
 
+const EMAIL_TYPES = ['personal', 'work', 'emergency'];
+const PHONE_TYPES = ['mobile', 'home', 'work'];
+
 const emptyPerson = (type) => ({
   _uid:                        Date.now() + Math.random(),
   person_type_id:              type,
@@ -13,55 +16,70 @@ const emptyPerson = (type) => ({
   date_of_birth:               '',
   place_of_birth:              '',
   gender:                      '',
-  nationality:                 '',     // UI-only flat field → transformed on save
-  id_type_id:                  '',     // UI-only flat field → transformed on save
-  id_number:                   '',     // UI-only flat field → transformed on save
-  // Guardian-specific
+  nationality:                 '',
+  id_type_id:                  '',
+  id_number:                   '',
   emails:                      [],
   phones:                      [],
-  // Applicant-specific
   previous_schools:            [],
-  // Address
   address:                     emptyAddress(),
   _sameAddress:                false,
   copy_address_from_person_id: null,
 });
 
-const emptyEmail = () => ({ _uid: Date.now() + Math.random(), email_address: '', is_default: false, is_emergency: false });
-const emptyPhone = () => ({ _uid: Date.now() + Math.random(), phone_number: '', is_default: false, is_emergency: false, is_whatsapp: false, is_telegram: false });
-const emptySchool = () => ({
-  _uid:                        Date.now() + Math.random(),
-  school_name:                 '',
-  city:                        '',
-  country_id:                  '',
-  from_year:                   '',
-  to_year:                     '',
-  education_level_description: '',
-  language_of_instruction:     '',
+const emptyEmail = () => ({
+  _uid: Date.now() + Math.random(),
+  email_address: '',
+  email_type_id: '',
+  is_default: false,
+  is_emergency: false,
 });
 
-function PhoneRow({ phone, onChange, onRemove, idx }) {
+const emptyPhone = () => ({
+  _uid: Date.now() + Math.random(),
+  phone_number: '',
+  phone_type_id: '',
+  is_default: false,
+  is_emergency: false,
+  is_whatsapp: false,
+  is_telegram: false,
+});
+
+const emptySchool = () => ({
+  _uid: Date.now() + Math.random(),
+  school_name: '',
+  city: '',
+  country_id: '',
+  from_year: '',
+  to_year: '',
+  education_level_description: '',
+  language_of_instruction: '',
+});
+
+function PhoneRow({ phone, idx, onChange, onRemove }) {
   const { t } = useTranslation();
   const u = (f, v) => onChange({ ...phone, [f]: v });
   return (
     <div className="border rounded p-2 mb-2" style={{ background: 'var(--bg)' }}>
       <div className="row g-2 align-items-center">
+        <div className="col-auto" style={{ minWidth: 140 }}>
+          <select className="form-select form-select-sm" value={phone.phone_type_id || ''}
+            onChange={e => u('phone_type_id', e.target.value)}>
+            <option value="">{t('placeholder.select')}</option>
+            {PHONE_TYPES.map(pt => <option key={pt} value={pt}>{t(`phone_type.${pt}`)}</option>)}
+          </select>
+        </div>
         <div className="col">
           <input type="tel" className="form-control form-control-sm"
             placeholder="+34 600 000 000"
             value={phone.phone_number}
             onChange={e => u('phone_number', e.target.value)} />
         </div>
-        <div className="col-auto">
+        <div className="col-auto d-flex gap-2 flex-wrap">
           <div className="form-check form-check-inline mb-0">
             <input type="checkbox" className="form-check-input" id={`def_ph_${idx}`}
               checked={phone.is_default} onChange={e => u('is_default', e.target.checked)} />
             <label className="form-check-label small" htmlFor={`def_ph_${idx}`}>{t('contact.is_default')}</label>
-          </div>
-          <div className="form-check form-check-inline mb-0">
-            <input type="checkbox" className="form-check-input" id={`emg_ph_${idx}`}
-              checked={phone.is_emergency} onChange={e => u('is_emergency', e.target.checked)} />
-            <label className="form-check-label small" htmlFor={`emg_ph_${idx}`}>{t('contact.is_emergency')}</label>
           </div>
           <div className="form-check form-check-inline mb-0">
             <input type="checkbox" className="form-check-input" id={`wa_${idx}`}
@@ -96,24 +114,27 @@ function PreviousSchoolRow({ school, onChange, onRemove }) {
           <input className="form-control form-control-sm" placeholder={t('field.city')}
             value={school.city} onChange={e => u('city', e.target.value)} />
         </div>
-        <div className="col-md-2">
-          <input className="form-control form-control-sm" placeholder={t('field.country')}
-            value={school.country_id} onChange={e => u('country_id', e.target.value)} />
+        <div className="col-md-4">
+          <select className="form-select form-select-sm" value={school.country_id}
+            onChange={e => u('country_id', e.target.value)}>
+            <option value="">{t('field.country')}</option>
+            {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
         </div>
-        <div className="col-md-1">
+        <div className="col-md-2">
           <input className="form-control form-control-sm" type="number" placeholder={t('field.from_year')}
             value={school.from_year} onChange={e => u('from_year', e.target.value)} />
         </div>
-        <div className="col-md-1">
+        <div className="col-md-2">
           <input className="form-control form-control-sm" type="number" placeholder={t('field.to_year')}
             value={school.to_year} onChange={e => u('to_year', e.target.value)} />
         </div>
-        <div className="col-md-5">
+        <div className="col-md-4">
           <input className="form-control form-control-sm" placeholder={t('field.edu_level_desc')}
             value={school.education_level_description}
             onChange={e => u('education_level_description', e.target.value)} />
         </div>
-        <div className="col-md-5">
+        <div className="col-md-2">
           <input className="form-control form-control-sm" placeholder={t('field.lang_instruction')}
             value={school.language_of_instruction}
             onChange={e => u('language_of_instruction', e.target.value)} />
@@ -126,7 +147,7 @@ function PreviousSchoolRow({ school, onChange, onRemove }) {
   );
 }
 
-function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId }) {
+function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail }) {
   const { t } = useTranslation();
   const u = (f, v) => onChange({ ...person, [f]: v });
   const isGuardian  = person.person_type_id === 'guardian';
@@ -138,6 +159,27 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
     } else {
       onChange({ ...person, _sameAddress: false, copy_address_from_person_id: null });
     }
+  };
+
+  // Single-default enforcement for emails
+  const updateEmail = (i, updated) => {
+    const next = (person.emails || []).map((e, j) =>
+      j === i ? updated : (updated.is_default ? { ...e, is_default: false } : e)
+    );
+    u('emails', next);
+  };
+  const removeEmail = (i) => {
+    const next = [...(person.emails || [])];
+    next.splice(i, 1);
+    u('emails', next);
+  };
+
+  // Single-default enforcement for phones
+  const updatePhone = (i, updated) => {
+    const next = (person.phones || []).map((p, j) =>
+      j === i ? updated : (updated.is_default ? { ...p, is_default: false } : p)
+    );
+    u('phones', next);
   };
 
   const updateSchool = (i, val) => {
@@ -155,6 +197,8 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
   const typeLabel = isGuardian
     ? t('guardian.title', { n: idx + 1 })
     : t('applicant.title', { n: idx + 1 });
+
+  const canUseAppEmail = isGuardian && isFirst && !!primaryEmail && (person.emails || []).length === 0;
 
   return (
     <div className="dynamic-section">
@@ -220,73 +264,61 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         </div>
       </div>
 
-
       {/* Emails */}
       <div className="mt-3">
         <h6 style={{ color: 'var(--muted)' }}>{t('contact.email')}</h6>
+        {canUseAppEmail && (
+          <button className="add-btn mb-2" onClick={() => u('emails', [{
+            ...emptyEmail(), email_address: primaryEmail, email_type_id: 'personal', is_default: true,
+          }])}>
+            <i className="bi bi-envelope-fill me-1" /> {t('guardian.use_app_email')}
+          </button>
+        )}
         {(person.emails || []).map((em, i) => (
           <div key={em._uid || i} className="border rounded p-2 mb-2" style={{ background: 'var(--bg)' }}>
             <div className="row g-2 align-items-center">
+              <div className="col-auto" style={{ minWidth: 140 }}>
+                <select className="form-select form-select-sm" value={em.email_type_id || ''}
+                  onChange={e => updateEmail(i, { ...em, email_type_id: e.target.value })}>
+                  <option value="">{t('placeholder.select')}</option>
+                  {EMAIL_TYPES.map(et => <option key={et} value={et}>{t(`email_type.${et}`)}</option>)}
+                </select>
+              </div>
               <div className="col">
                 <input type="email" className="form-control form-control-sm"
                   placeholder="email@example.com"
                   value={em.email_address}
-                  onChange={e => {
-                    const next = [...person.emails];
-                    next[i] = { ...em, email_address: e.target.value };
-                    u('emails', next);
-                  }} />
+                  onChange={e => updateEmail(i, { ...em, email_address: e.target.value })} />
               </div>
               <div className="col-auto">
                 <div className="form-check form-check-inline mb-0">
                   <input type="checkbox" className="form-check-input" id={`def_em_${idx}_${i}`}
                     checked={em.is_default}
-                    onChange={e => {
-                      const next = [...person.emails];
-                      next[i] = { ...em, is_default: e.target.checked };
-                      u('emails', next);
-                    }} />
+                    onChange={e => updateEmail(i, { ...em, is_default: e.target.checked })} />
                   <label className="form-check-label small" htmlFor={`def_em_${idx}_${i}`}>{t('contact.is_default')}</label>
-                </div>
-                <div className="form-check form-check-inline mb-0">
-                  <input type="checkbox" className="form-check-input" id={`emg_em_${idx}_${i}`}
-                    checked={em.is_emergency}
-                    onChange={e => {
-                      const next = [...person.emails];
-                      next[i] = { ...em, is_emergency: e.target.checked };
-                      u('emails', next);
-                    }} />
-                  <label className="form-check-label small" htmlFor={`emg_em_${idx}_${i}`}>{t('contact.is_emergency')}</label>
                 </div>
               </div>
               <div className="col-auto">
-                <button className="remove-btn" onClick={() => {
-                  const next = [...person.emails];
-                  next.splice(i, 1);
-                  u('emails', next);
-                }}>&times;</button>
+                <button className="remove-btn" onClick={() => removeEmail(i)}>&times;</button>
               </div>
             </div>
           </div>
         ))}
         <button className="add-btn" onClick={() => u('emails', [...(person.emails || []), emptyEmail()])}>
-          <i className="bi bi-plus" /> {t('guardian.add_contact')}
+          <i className="bi bi-plus" /> {t('contact.add_email')}
         </button>
       </div>
 
       {/* Phones */}
       <div className="mt-3">
         <h6 style={{ color: 'var(--muted)' }}>{t('contact.phone')}</h6>
+        <p className="form-text mb-2" style={{ fontSize: '0.8rem' }}>{t('contact.emergency_note')}</p>
         {(person.phones || []).map((ph, i) => (
           <PhoneRow
             key={ph._uid || i}
             phone={ph}
             idx={`${idx}_${i}`}
-            onChange={val => {
-              const next = [...person.phones];
-              next[i] = val;
-              u('phones', next);
-            }}
+            onChange={val => updatePhone(i, val)}
             onRemove={() => {
               const next = [...person.phones];
               next.splice(i, 1);
@@ -295,7 +327,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           />
         ))}
         <button className="add-btn" onClick={() => u('phones', [...(person.phones || []), emptyPhone()])}>
-          <i className="bi bi-plus" /> {t('guardian.add_contact')}
+          <i className="bi bi-plus" /> {t('contact.add_phone')}
         </button>
       </div>
 
@@ -343,26 +375,23 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
 
 /**
  * Transforms a person's flat UI fields into the arrays savePersons_ expects.
- * The person_id is preserved if already set (resume/edit).
+ * NOTE: _uid is intentionally preserved — Step3Relations depends on it to
+ * build unique guardian_person_id keys before the backend assigns person_id.
  */
 function transformPersonForSave(person) {
   const out = { ...person };
 
-  // Nationalities
   out.nationalities = person.nationality
     ? [{ country_id: person.nationality, is_primary: true }]
     : [];
   delete out.nationality;
 
-  // IDs
   out.ids = (person.id_type_id && person.id_number)
     ? [{ id_type_id: person.id_type_id, id_number: person.id_number }]
     : [];
   delete out.id_type_id;
   delete out.id_number;
 
-  // Clean UI-only fields
-  delete out._uid;
   delete out._sameAddress;
 
   return out;
@@ -371,6 +400,7 @@ function transformPersonForSave(person) {
 export default function Step2Persons({ onNext, onBack }) {
   const { t } = useTranslation();
   const { stepData, updateStep } = useWizard();
+  const primaryEmail = stepData.email?.primary_email || '';
 
   const [persons, setPersons] = useState(() => {
     if (stepData.persons?.length) return stepData.persons;
@@ -381,7 +411,6 @@ export default function Step2Persons({ onNext, onBack }) {
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
   const firstPerson = persons[0] || null;
-  // ID to copy address from: the first guardian's person_id or _uid
   const firstPersonId = firstPerson ? (firstPerson.person_id || firstPerson._uid) : null;
 
   const updatePerson = (i, val) => {
@@ -436,6 +465,7 @@ export default function Step2Persons({ onNext, onBack }) {
             onChange={val => updatePerson(i, val)}
             onRemove={() => removePerson(i)}
             firstPersonId={firstPersonId}
+            primaryEmail={primaryEmail}
           />
         );
       })}
@@ -459,6 +489,7 @@ export default function Step2Persons({ onNext, onBack }) {
             onChange={val => updatePerson(i, val)}
             onRemove={() => removePerson(i)}
             firstPersonId={firstPersonId}
+            primaryEmail={primaryEmail}
           />
         );
       })}

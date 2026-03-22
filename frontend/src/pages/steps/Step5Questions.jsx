@@ -119,7 +119,7 @@ export default function Step5Questions({ onNext, onBack }) {
   useEffect(() => {
     gasCall('fetchQuestions', { context_designation: 'Enrollment', language: i18n.language })
       .then(data => setSets(data.sets || []))
-      .catch(e => setErr(e.message))
+      .catch(() => setSets([]))
       .finally(() => setLoading(false));
   }, [i18n.language]); // eslint-disable-line
 
@@ -149,7 +149,6 @@ export default function Step5Questions({ onNext, onBack }) {
   };
 
   if (loading) return <div className="spinner" />;
-  if (err)     return <div className="field-error">{err}</div>;
   if (!sets.length) return (
     <>
       <div className="kis-card">
