@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
@@ -8,11 +8,20 @@ import HoneypotField from '../components/HoneypotField';
 import { CONSENT_TEXTS } from '../consentTexts';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
+const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
 export default function ConsentPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { setApplicationId, setResumeToken, updateStep } = useWizard();
+
+  useEffect(() => {
+    if (!RECAPTCHA_SITE_KEY || document.querySelector('#recaptcha-script')) return;
+    const s = document.createElement('script');
+    s.id = 'recaptcha-script';
+    s.src = `https://www.google.com/recaptcha/api.js?render=${RECAPTCHA_SITE_KEY}`;
+    document.head.appendChild(s);
+  }, []);
 
   const [email,       setEmail]       = useState('');
   const [emailErr,    setEmailErr]    = useState('');
