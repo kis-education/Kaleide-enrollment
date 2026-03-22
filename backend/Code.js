@@ -204,7 +204,7 @@ function initApplication_(p) {
     language:           lang,
   }]);
 
-  sendMagicLinkEmail_(p.primary_email, resumeToken, lang);
+  sendMagicLinkEmail_(p.primary_email, resumeToken, lang, true);
   sendInternalEmail_(
     '[KIS Admissions] New application started',
     buildApplicationInitiatedBody_(applicationId, p.primary_email, now)
@@ -218,23 +218,27 @@ function initApplication_(p) {
  * @param {Object} p - { application_id } or { primary_email }
  */
 function sendMagicLink_(p) {
-  let app;
   if (p.application_id) {
+    // Single-app link (e.g. from within the wizard)
     const rows = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
       Filter: '"application_id" = "' + p.application_id + '"'
     });
-    app = rows && rows[0];
+    const app = rows && rows[0];
+    if (!app) throw new Error('Application not found');
+    sendMagicLinkEmail_(app.primary_email, app.resume_token, app.preferred_language || 'es');
   } else if (p.primary_email) {
+    // Find all non-submitted applications for this email
     const rows = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
-      Filter: '"primary_email" = "' + p.primary_email + '"'
+      Filter: '"primary_email" = "' + p.primary_email + '" && ISBLANK([submitted_at])'
     });
-    // Send to most recent application
-    app = rows && rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+    if (!rows || !rows.length) throw new Error('Application not found');
+    const apps = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    const lang = apps[0].preferred_language || 'es';
+    const tokens = apps.map(a => a.resume_token);
+    sendMagicLinkMultiEmail_(p.primary_email, tokens, lang);
+  } else {
+    throw new Error('Missing application_id or primary_email');
   }
-
-  if (!app) throw new Error('Application not found');
-
-  sendMagicLinkEmail_(app.primary_email, app.resume_token, app.preferred_language || 'es');
   return { sent: true };
 }
 
@@ -1091,7 +1095,7 @@ function sendInternalEmail_(subject, bodyHtml) {
  * @param {string} resumeToken
  * @param {string} lang - 'en' or 'es'
  */
-function sendMagicLinkEmail_(email, resumeToken, lang) {
+function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp) {
   const resumeUrl = RESUME_BASE_URL + resumeToken;
   const isEn = lang === 'en';
 
@@ -1099,15 +1103,59 @@ function sendMagicLinkEmail_(email, resumeToken, lang) {
     ? 'Your Kaleide application link'
     : 'Tu enlace de solicitud de Kaleide';
 
+  const gdprBlock = isFirstApp
+    ? '<div style="margin:24px 0;padding:16px;background:#f2f4f7;border-left:4px solid #00a19a;border-radius:4px;font-size:0.9em;color:#4a5568;">'
+      + '<strong>EN — Data Protection:</strong><br>' + CONSENT_TEXTS.gdpr.en
+      + '<br><br>'
+      + '<strong>ES — Protección de datos:</strong><br>' + CONSENT_TEXTS.gdpr.es
+      + '<br><br><em>You accepted these terms when submitting the consent form. / Aceptaste estos t\u00e9rminos al enviar el formulario de consentimiento.</em>'
+      + '</div>'
+    : '';
+
   const body = isEn
-    ? '<p>Click the link below to access or resume your application:</p>'
-      + '<p style="margin:24px 0;"><a href="' + resumeUrl + '" style="background:#00a19a;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;">Resume Application</a></p>'
+    ? '<p>Click the link below to access your application:</p>'
+      + '<p style="margin:24px 0;"><a href="' + resumeUrl + '" style="background:#00a19a;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;">Start Application</a></p>'
       + '<p style="color:#6b7c93;font-size:0.9em;">Or copy this URL into your browser:<br>' + resumeUrl + '</p>'
+      + gdprBlock
       + '<p>This link will take you directly to your application. Keep it safe.</p>'
-    : '<p>Haz clic en el enlace de abajo para acceder o continuar tu solicitud:</p>'
-      + '<p style="margin:24px 0;"><a href="' + resumeUrl + '" style="background:#00a19a;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;">Continuar solicitud</a></p>'
+    : '<p>Haz clic en el enlace de abajo para acceder a tu solicitud:</p>'
+      + '<p style="margin:24px 0;"><a href="' + resumeUrl + '" style="background:#00a19a;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;">Iniciar solicitud</a></p>'
       + '<p style="color:#6b7c93;font-size:0.9em;">O copia esta URL en tu navegador:<br>' + resumeUrl + '</p>'
+      + gdprBlock
       + '<p>Este enlace te lleva directamente a tu solicitud. Gu\u00e1rdalo en un lugar seguro.</p>';
+
+  GmailApp.sendEmail(email, subject, '', {
+    htmlBody: buildFamilyEmail_(subject, body),
+    name: 'Kaleide International School',
+  });
+}
+
+/**
+ * Sends a resume email with one link per open application (for families with multiple apps).
+ */
+function sendMagicLinkMultiEmail_(email, resumeTokens, lang) {
+  const isEn = lang === 'en';
+
+  const subject = isEn
+    ? 'Your Kaleide application links'
+    : 'Tus enlaces de solicitud de Kaleide';
+
+  const linkItems = resumeTokens.map((token, idx) => {
+    const url = RESUME_BASE_URL + token;
+    const label = isEn
+      ? 'Application ' + (idx + 1)
+      : 'Solicitud ' + (idx + 1);
+    return '<p style="margin:12px 0;"><a href="' + url + '" style="background:#00a19a;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;">' + label + '</a>'
+      + '<span style="color:#6b7c93;font-size:0.85em;margin-left:12px;">' + url + '</span></p>';
+  }).join('');
+
+  const body = isEn
+    ? '<p>We found ' + resumeTokens.length + ' open application(s) for your email. Click a link below to resume:</p>'
+      + linkItems
+      + '<p>Each link goes directly to that application. Keep them safe.</p>'
+    : '<p>Hemos encontrado ' + resumeTokens.length + ' solicitud(es) abierta(s) para tu correo. Haz clic en un enlace para continuar:</p>'
+      + linkItems
+      + '<p>Cada enlace va directamente a esa solicitud. Gu\u00e1rdalos en un lugar seguro.</p>';
 
   GmailApp.sendEmail(email, subject, '', {
     htmlBody: buildFamilyEmail_(subject, body),

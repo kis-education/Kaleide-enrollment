@@ -19,6 +19,7 @@ export default function ConsentPage() {
   const [consent,     setConsent]     = useState(false);
   const [submitting,  setSubmitting]  = useState(false);
   const [err,         setErr]         = useState('');
+  const [sent,        setSent]        = useState(false);
 
   const validateEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 
@@ -39,25 +40,46 @@ export default function ConsentPage() {
       setApplicationId(data.application_id);
       setResumeToken(data.resume_token);
       updateStep('email', { primary_email: email, verified: false });
-      navigate('/apply');
+      setSent(true);
     } catch (e) {
       setErr(e.message);
       setSubmitting(false);
     }
   };
 
-  return (
-    <div className="wizard-layout">
-      <header className="kis-header">
-        <div className="brand">
-          <img src={LOGO} alt="KIS" />
-          <div>
-            <div className="brand-name">Kaleide International School</div>
-            <div className="brand-sub">{t('landing.header_sub')}</div>
+  const header = (
+    <header className="kis-header">
+      <div className="brand">
+        <img src={LOGO} alt="KIS" />
+        <div>
+          <div className="brand-name">Kaleide International School</div>
+          <div className="brand-sub">{t('landing.header_sub')}</div>
+        </div>
+      </div>
+      <LangToggle />
+    </header>
+  );
+
+  if (sent) {
+    return (
+      <div className="wizard-layout">
+        {header}
+        <div className="landing-hero">
+          <img src={LOGO} alt="KIS" className="landing-logo" />
+          <h1 className="landing-title">{t('consent.sent_title')}</h1>
+          <p className="landing-subtitle">{t('consent.sent_subtitle', { email })}</p>
+          <div className="kis-card" style={{ maxWidth: 480, margin: '0 auto', textAlign: 'center' }}>
+            <i className="bi bi-envelope-check" style={{ fontSize: '2.5rem', color: 'var(--teal-dk)' }} />
+            <p className="mt-3" style={{ color: 'var(--muted)' }}>{t('consent.sent_note')}</p>
           </div>
         </div>
-        <LangToggle />
-      </header>
+      </div>
+    );
+  }
+
+  return (
+    <div className="wizard-layout">
+      {header}
 
       <div className="landing-hero">
         <img src={LOGO} alt="KIS" className="landing-logo" />
