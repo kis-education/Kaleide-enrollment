@@ -42,6 +42,7 @@ const T = {
   STATUS_LOG:         'enrStatusLog',
   STATUS_TYPES:       'enrStatusTypes',
   CONSENTS:           'enrConsentsLog',
+  ADDRESSES:          'enrAddresses',
   GUARDIANS:          'enrGuardians',
   APPLICANTS:         'enrApplicants',
   GUARDIAN_APPLICANT: 'enrGuardianApplicantRelations',
@@ -60,6 +61,9 @@ const T = {
   QB_OPT_TRANS:       'qbAnswerOptionTranslations',
   QB_CONDITIONS:      'qbQuestionConditions',
   QB_RESPONSES:       'qbResponses',
+  // Main SMS tables (used during application promotion)
+  SMS_ADDRESSES:      'addresses_S',
+  SMS_ADDRESS_LOG:    'addressLog',
 };
 
 // ─── Entry points ─────────────────────────────────────────────────────────────
@@ -106,6 +110,7 @@ function doPost(e) {
       case 'saveResponses':        result = saveResponses_(payload);        break;
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
       case 'verifyRecaptcha':      result = verifyRecaptcha_(payload);      break;
+      case 'promoteApplication': result = promoteApplication_(payload); break;
       default:
         return jsonResponse_({ ok: false, error: 'Unknown action: ' + action }, 400);
     }
@@ -228,11 +233,25 @@ function resumeApplication_(p) {
     }) || [],
   ] : [[], [], [], []];
 
+  // Fetch enrAddresses records and nest under guardians / applicants
+  const allAddressIds = [
+    ...guardians.map(g => g.address_id),
+    ...applicants.map(a => a.address_id),
+  ].filter(Boolean);
+  const addressMap = {};
+  if (allAddressIds.length) {
+    const addressRows = appsheetRequest_(T.ADDRESSES, 'Find', [], {
+      Filter: allAddressIds.map(aid => '"address_id" = "' + aid + '"').join(' || ')
+    }) || [];
+    addressRows.forEach(row => { addressMap[row.address_id] = row; });
+  }
+
   return {
     application: app,
     guardians: guardians.map(g => ({
       ...g,
       contacts: contacts.filter(c => c.guardian_id === g.guardian_id),
+      address:  g.address_id ? (addressMap[g.address_id] || null) : null,
     })),
     applicants: applicants.map(a => ({
       ...a,
@@ -240,6 +259,7 @@ function resumeApplication_(p) {
       allergies:         allergies.filter(x => x.applicant_id === a.applicant_id),
       dietary:           dietary.filter(x => x.applicant_id === a.applicant_id),
       medical:           medical.filter(x => x.applicant_id === a.applicant_id),
+      address:           a.address_id ? (addressMap[a.address_id] || null) : null,
     })),
     documents,
     responses,
@@ -607,37 +627,60 @@ function verifyRecaptcha_(p) {
 
 /**
  * Upserts guardians and their contacts for an application.
+ * Address data is written to enrAddresses; guardians reference it via address_id.
+ * Pass `same_address_as_primary: true` on a guardian to reuse the first guardian's address.
  * @param {string} applicationId
- * @param {Array}  guardians - array of guardian objects with optional contacts array
+ * @param {Array}  guardians - array of guardian objects with optional contacts array and address object
  */
 function saveGuardians_(applicationId, guardians) {
   if (!Array.isArray(guardians)) return;
 
+  let primaryAddressId = null; // address_id of the first guardian, for same-address reuse
+
   guardians.forEach((g, idx) => {
     const guardianId = g.guardian_id || generateUuid_();
+    const now = new Date().toISOString();
+
+    // ── Resolve address ────────────────────────────────────────────────────────
+    let addressId = null;
+    if (g.same_address_as_primary && primaryAddressId) {
+      addressId = primaryAddressId;
+    } else if (g.address && hasAddressData_(g.address)) {
+      const newAddressId = generateUuid_();
+      appsheetRequest_(T.ADDRESSES, 'Add', [{
+        address_id:     newAddressId,
+        application_id: applicationId,
+        address_line_1: g.address.address_line_1 || null,
+        address_line_2: g.address.address_line_2 || null,
+        city:           g.address.city           || null,
+        province:       g.address.province       || null,
+        country_id:     g.address.country_id     || null,
+        zip:            g.address.zip            || null,
+        created_at:     now,
+      }]);
+      addressId = newAddressId;
+    }
+
+    if (idx === 0) primaryAddressId = addressId;
+
     const guardianRow = {
       guardian_id:          guardianId,
       application_id:       applicationId,
       guardian_order:       idx + 1,
-      first_name:           g.first_name || null,
-      middle_name:          g.middle_name || null,
-      last_name:            g.last_name || null,
-      date_of_birth:        g.date_of_birth || null,
-      place_of_birth:       g.place_of_birth || null,
-      nationality_id:       g.nationality_id || null,
-      id_type_id:           g.id_type_id || null,
-      id_number:            g.id_number || null,
-      profession:           g.profession || null,
-      employer:             g.employer || null,
-      address_line_1:       g.address_line_1 || null,
-      address_line_2:       g.address_line_2 || null,
-      city:                 g.city || null,
-      province:             g.province || null,
-      country_id:           g.country_id || null,
-      zip:                  g.zip || null,
-      is_primary_contact:   g.is_primary_contact || false,
-      is_emergency_contact: g.is_emergency_contact || false,
-      created_at:           g.created_at || new Date().toISOString(),
+      first_name:           g.first_name           || null,
+      middle_name:          g.middle_name           || null,
+      last_name:            g.last_name             || null,
+      date_of_birth:        g.date_of_birth         || null,
+      place_of_birth:       g.place_of_birth        || null,
+      nationality_id:       g.nationality_id        || null,
+      id_type_id:           g.id_type_id            || null,
+      id_number:            g.id_number             || null,
+      profession:           g.profession            || null,
+      employer:             g.employer              || null,
+      address_id:           addressId,
+      is_primary_contact:   g.is_primary_contact    || false,
+      is_emergency_contact: g.is_emergency_contact  || false,
+      created_at:           g.created_at            || now,
     };
 
     if (g.guardian_id) {
@@ -653,14 +696,13 @@ function saveGuardians_(applicationId, guardians) {
         guardian_id:  guardianId,
         contact_type: c.contact_type,
         value:        c.value,
-        is_default:   c.is_default || false,
+        is_default:   c.is_default   || false,
         is_emergency: c.is_emergency || false,
-        is_whatsapp:  c.is_whatsapp || false,
-        is_telegram:  c.is_telegram || false,
+        is_whatsapp:  c.is_whatsapp  || false,
+        is_telegram:  c.is_telegram  || false,
       }));
       const existingContacts = g.contacts.filter(c => c.contact_id);
-
-      if (newContacts.length) appsheetRequest_(T.GUARDIAN_CONTACTS, 'Add', newContacts);
+      if (newContacts.length)      appsheetRequest_(T.GUARDIAN_CONTACTS, 'Add',  newContacts);
       if (existingContacts.length) appsheetRequest_(T.GUARDIAN_CONTACTS, 'Edit', existingContacts);
     }
   });
@@ -668,6 +710,9 @@ function saveGuardians_(applicationId, guardians) {
 
 /**
  * Upserts applicants and their sub-records.
+ * Address data is written to enrAddresses; applicants reference it via address_id.
+ * Pass `copy_address_from_guardian_id` to reuse the referenced guardian's address_id.
+ * Pass an `address` object to create a new enrAddresses record.
  * @param {string} applicationId
  * @param {Array}  applicants
  */
@@ -676,36 +721,55 @@ function saveApplicants_(applicationId, applicants) {
 
   applicants.forEach((a, idx) => {
     const applicantId = a.applicant_id || generateUuid_();
+    const now = new Date().toISOString();
+
+    // ── Resolve address ────────────────────────────────────────────────────────
+    let addressId = null;
+    if (a.copy_address_from_guardian_id) {
+      const guardianRows = appsheetRequest_(T.GUARDIANS, 'Find', [], {
+        Filter: '"guardian_id" = "' + a.copy_address_from_guardian_id + '"',
+      });
+      addressId = (guardianRows && guardianRows[0]) ? (guardianRows[0].address_id || null) : null;
+    } else if (a.address && hasAddressData_(a.address)) {
+      const newAddressId = generateUuid_();
+      appsheetRequest_(T.ADDRESSES, 'Add', [{
+        address_id:     newAddressId,
+        application_id: applicationId,
+        address_line_1: a.address.address_line_1 || null,
+        address_line_2: a.address.address_line_2 || null,
+        city:           a.address.city           || null,
+        province:       a.address.province       || null,
+        country_id:     a.address.country_id     || null,
+        zip:            a.address.zip            || null,
+        created_at:     now,
+      }]);
+      addressId = newAddressId;
+    }
+
     const applicantRow = {
       applicant_id:               applicantId,
       application_id:             applicationId,
       applicant_order:            idx + 1,
-      first_name:                 a.first_name || null,
-      middle_name:                a.middle_name || null,
-      last_name:                  a.last_name || null,
-      date_of_birth:              a.date_of_birth || null,
-      place_of_birth:             a.place_of_birth || null,
-      nationality_id:             a.nationality_id || null,
-      id_type_id:                 a.id_type_id || null,
-      id_number:                  a.id_number || null,
-      gender:                     a.gender || null,
-      mother_tongue_language:     a.mother_tongue_language || null,
-      other_languages:            a.other_languages || null,
+      first_name:                 a.first_name                 || null,
+      middle_name:                a.middle_name                || null,
+      last_name:                  a.last_name                  || null,
+      date_of_birth:              a.date_of_birth              || null,
+      place_of_birth:             a.place_of_birth             || null,
+      nationality_id:             a.nationality_id             || null,
+      id_type_id:                 a.id_type_id                 || null,
+      id_number:                  a.id_number                  || null,
+      gender:                     a.gender                     || null,
+      mother_tongue_language:     a.mother_tongue_language     || null,
+      other_languages:            a.other_languages            || null,
       desired_education_level_id: a.desired_education_level_id || null,
-      desired_start_date:         a.desired_start_date || null,
-      address_same_as_guardian_id: a.address_same_as_guardian_id || null,
-      address_line_1:             a.address_line_1 || null,
-      address_line_2:             a.address_line_2 || null,
-      city:                       a.city || null,
-      province:                   a.province || null,
-      country_id:                 a.country_id || null,
-      zip:                        a.zip || null,
-      has_adaptation_needs:       a.has_adaptation_needs || false,
-      adaptation_notes:           a.adaptation_notes || null,
-      is_sibling:                 a.is_sibling || false,
-      is_alumni_family:           a.is_alumni_family || false,
-      is_transfer:                a.is_transfer || false,
-      created_at:                 a.created_at || new Date().toISOString(),
+      desired_start_date:         a.desired_start_date         || null,
+      address_id:                 addressId,
+      has_adaptation_needs:       a.has_adaptation_needs       || false,
+      adaptation_notes:           a.adaptation_notes           || null,
+      is_sibling:                 a.is_sibling                 || false,
+      is_alumni_family:           a.is_alumni_family           || false,
+      is_transfer:                a.is_transfer                || false,
+      created_at:                 a.created_at                 || now,
     };
 
     if (a.applicant_id) {
@@ -1063,7 +1127,10 @@ function generateConsentPdf_(applicationId, app, guardians, contacts, applicants
       .setBold(true);
     if (emails) body.appendParagraph('   Email: ' + emails);
     if (phones) body.appendParagraph('   Phone: ' + phones);
-    if (g.address_line_1) body.appendParagraph('   Address: ' + [g.address_line_1, g.address_line_2, g.city, g.province, g.country_id, g.zip].filter(Boolean).join(', '));
+    const gAddr = g.address;
+    if (gAddr && gAddr.address_line_1) {
+      body.appendParagraph('   Address: ' + [gAddr.address_line_1, gAddr.address_line_2, gAddr.city, gAddr.province, gAddr.country_id, gAddr.zip].filter(Boolean).join(', '));
+    }
     nl();
   });
 
@@ -1119,7 +1186,95 @@ function generateConsentPdf_(applicationId, app, guardians, contacts, applicants
   return pdfFile.getUrl();
 }
 
+// ─── Promotion logic ──────────────────────────────────────────────────────────
+
+/**
+ * Promotes a submitted application into the main SMS.
+ * For each guardian and applicant that has an address_id, fetches the enrAddresses
+ * record and creates an addresses_S entry plus an addressLog entry in the main SMS.
+ * @param {Object} p - { application_id, guardian_personal_ids, applicant_personal_ids }
+ *   guardian_personal_ids: { [guardian_id]: personal_id } map of promoted guardian personal IDs
+ *   applicant_personal_ids: { [applicant_id]: personal_id } map of promoted applicant personal IDs
+ */
+function promoteApplication_(p) {
+  const { application_id, guardian_personal_ids = {}, applicant_personal_ids = {} } = p;
+  if (!application_id) throw new Error('Missing application_id');
+
+  const now = new Date().toISOString();
+
+  const guardians  = appsheetRequest_(T.GUARDIANS,  'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
+  const applicants = appsheetRequest_(T.APPLICANTS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
+
+  // Collect unique address_ids with their associated personal_id mappings
+  const addressEntries = [];
+
+  guardians.forEach(g => {
+    if (g.address_id && guardian_personal_ids[g.guardian_id]) {
+      addressEntries.push({ address_id: g.address_id, personal_id: guardian_personal_ids[g.guardian_id] });
+    }
+  });
+  applicants.forEach(a => {
+    if (a.address_id && applicant_personal_ids[a.applicant_id]) {
+      addressEntries.push({ address_id: a.address_id, personal_id: applicant_personal_ids[a.applicant_id] });
+    }
+  });
+
+  if (!addressEntries.length) return { promoted_addresses: 0 };
+
+  // Fetch enrAddresses records
+  const addressIds = [...new Set(addressEntries.map(e => e.address_id))];
+  const addressRows = appsheetRequest_(T.ADDRESSES, 'Find', [], {
+    Filter: addressIds.map(id => '"address_id" = "' + id + '"').join(' || ')
+  }) || [];
+  const addressMap = {};
+  addressRows.forEach(row => { addressMap[row.address_id] = row; });
+
+  const smsAddresses = [];
+  const smsAddressLogs = [];
+
+  addressEntries.forEach(({ address_id, personal_id }) => {
+    const addr = addressMap[address_id];
+    if (!addr) return;
+
+    const smsAddressId = generateUuid_();
+    smsAddresses.push({
+      address_id:     smsAddressId,
+      personal_id,
+      address_line_1: addr.address_line_1 || null,
+      address_line_2: addr.address_line_2 || null,
+      city:           addr.city           || null,
+      province:       addr.province       || null,
+      country_id:     addr.country_id     || null,
+      zip:            addr.zip            || null,
+      created_at:     now,
+    });
+
+    smsAddressLogs.push({
+      log_id:     generateUuid_(),
+      personal_id,
+      address_id: smsAddressId,
+      active:     true,
+      default:    true,
+      created_at: now,
+    });
+  });
+
+  if (smsAddresses.length)    appsheetRequest_(T.SMS_ADDRESSES,   'Add', smsAddresses);
+  if (smsAddressLogs.length)  appsheetRequest_(T.SMS_ADDRESS_LOG, 'Add', smsAddressLogs);
+
+  return { promoted_addresses: smsAddresses.length };
+}
+
 // ─── Utility helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the address object contains at least one meaningful field.
+ * @param {Object} addr
+ * @returns {boolean}
+ */
+function hasAddressData_(addr) {
+  return !!(addr && (addr.address_line_1 || addr.city || addr.country_id || addr.zip));
+}
 
 /**
  * Generates a UUID v4 string.
