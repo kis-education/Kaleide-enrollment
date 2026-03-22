@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
+import * as log from '../../logger';
 
 function buildInitialRelations(persons, existingRelations) {
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
@@ -41,8 +42,11 @@ export default function Step3Relations({ onNext, onBack }) {
 
   useEffect(() => {
     gasCall('fetchLookups', {})
-      .then(data => { if (data.relationTypes?.length) setRelationTypes(data.relationTypes); })
-      .catch(() => {});
+      .then(data => {
+        log.info('Step3: fetchLookups relationTypes', { count: data.relationTypes?.length, data: JSON.stringify(data.relationTypes) });
+        if (data.relationTypes?.length) setRelationTypes(data.relationTypes);
+      })
+      .catch(err => log.error('Step3: fetchLookups failed', { message: err.message }));
   }, []);
 
   const updateRelation = (idx, updates) => {

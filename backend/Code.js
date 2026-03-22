@@ -691,10 +691,14 @@ function fetchQuestions_(p) {
  * @returns {{ allergies: Array, dietary: Array, medical: Array }}
  */
 function fetchLookups_() {
-  const allergies     = appsheetRequest_(T.LOOKUP_ALLERGIES,      'Find', [], {}) || [];
-  const dietary       = appsheetRequest_(T.LOOKUP_DIETARY,        'Find', [], {}) || [];
-  const medical       = appsheetRequest_(T.LOOKUP_MEDICAL,        'Find', [], {}) || [];
-  const relationTypes = appsheetRequest_(T.LOOKUP_RELATION_TYPES, 'Find', [], {}) || [];
+  const safe = (fn) => { try { return fn() || []; } catch (e) { Logger.log('fetchLookups_ error: ' + e.message); return []; } };
+
+  const allergies     = safe(() => appsheetRequest_(T.LOOKUP_ALLERGIES,      'Find', [], {}));
+  const dietary       = safe(() => appsheetRequest_(T.LOOKUP_DIETARY,        'Find', [], {}));
+  const medical       = safe(() => appsheetRequest_(T.LOOKUP_MEDICAL,        'Find', [], {}));
+  const relationTypes = safe(() => appsheetRequest_(T.LOOKUP_RELATION_TYPES, 'Find', [], {}));
+
+  Logger.log('fetchLookups_ relationTypes raw: ' + JSON.stringify(relationTypes));
 
   return {
     allergies:     allergies.map(r =>     ({ id: r.row_id, label: r.food_allergy_designation })),
