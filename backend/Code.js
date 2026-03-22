@@ -819,6 +819,7 @@ function savePersons_(applicationId, persons) {
           email_id:      emailId,
           email_type_id: e.email_type_id || null,
           is_default:    e.is_default    || false,
+          is_emergency:  e.is_emergency  || false,
         }]);
       });
     }
@@ -1073,9 +1074,12 @@ function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, app
 
   let guardianRows = '';
   guardians.forEach((g, i) => {
-    const emails = (g.emails || []).map(e => e.email_address).filter(Boolean).join(', ');
+    const emails = (g.emails || []).map(e =>
+      (e.email_address || '') + (e.is_emergency ? ' <span style="background:#fff3ec;color:#c05800;padding:1px 5px;border-radius:3px;font-size:0.75em">Emergency</span>' : '')
+    ).filter(e => e.trim()).join(', ');
     const phones = (g.phones || []).map(ph =>
       (ph.phone_number || '') + (ph.is_whatsapp ? ' \uD83D\uDCAC' : '') + (ph.is_telegram ? ' \u2708\uFE0F' : '')
+      + (ph.is_emergency ? ' <span style="background:#fff3ec;color:#c05800;padding:1px 5px;border-radius:3px;font-size:0.75em">Emergency</span>' : '')
     ).filter(Boolean).join(', ');
 
     guardianRows +=
@@ -1195,9 +1199,12 @@ function generateConsentPdf_(applicationId, app, guardians, applicants, consentR
     .setHeading(DocumentApp.ParagraphHeading.HEADING2);
 
   guardians.forEach((g, i) => {
-    const emails = (g.emails || []).map(e => e.email_address).filter(Boolean).join(', ');
+    const emails = (g.emails || []).map(e =>
+      (e.email_address || '') + (e.is_emergency ? ' [Emergency]' : '')
+    ).filter(e => e.trim()).join(', ');
     const phones = (g.phones || []).map(ph =>
       (ph.phone_number || '') + (ph.is_whatsapp ? ' (WhatsApp)' : '') + (ph.is_telegram ? ' (Telegram)' : '')
+      + (ph.is_emergency ? ' [Emergency]' : '')
     ).filter(Boolean).join(', ');
 
     body.appendParagraph((i + 1) + '. ' + (g.first_name || '') + ' ' + (g.last_name || ''))

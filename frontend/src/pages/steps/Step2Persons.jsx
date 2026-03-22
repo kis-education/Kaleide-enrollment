@@ -45,7 +45,7 @@ const emptyPerson = (type) => ({
   copy_address_from_person_id: null,
 });
 
-const emptyEmail = () => ({ _uid: Date.now() + Math.random(), email_address: '', is_default: false });
+const emptyEmail = () => ({ _uid: Date.now() + Math.random(), email_address: '', is_default: false, is_emergency: false });
 const emptyPhone = () => ({ _uid: Date.now() + Math.random(), phone_number: '', is_default: false, is_emergency: false, is_whatsapp: false, is_telegram: false });
 const emptySchool = () => ({
   _uid:                        Date.now() + Math.random(),
@@ -71,6 +71,16 @@ function PhoneRow({ phone, onChange, onRemove, idx }) {
             onChange={e => u('phone_number', e.target.value)} />
         </div>
         <div className="col-auto">
+          <div className="form-check form-check-inline mb-0">
+            <input type="checkbox" className="form-check-input" id={`def_ph_${idx}`}
+              checked={phone.is_default} onChange={e => u('is_default', e.target.checked)} />
+            <label className="form-check-label small" htmlFor={`def_ph_${idx}`}>{t('contact.is_default')}</label>
+          </div>
+          <div className="form-check form-check-inline mb-0">
+            <input type="checkbox" className="form-check-input" id={`emg_ph_${idx}`}
+              checked={phone.is_emergency} onChange={e => u('is_emergency', e.target.checked)} />
+            <label className="form-check-label small" htmlFor={`emg_ph_${idx}`}>{t('contact.is_emergency')}</label>
+          </div>
           <div className="form-check form-check-inline mb-0">
             <input type="checkbox" className="form-check-input" id={`wa_${idx}`}
               checked={phone.is_whatsapp} onChange={e => u('is_whatsapp', e.target.checked)} />
@@ -339,20 +349,48 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
       <div className="mt-3">
         <h6 style={{ color: 'var(--muted)' }}>{t('contact.email')}</h6>
         {(person.emails || []).map((em, i) => (
-          <div key={em._uid || i} className="d-flex gap-2 mb-2">
-            <input type="email" className="form-control form-control-sm"
-              placeholder="email@example.com"
-              value={em.email_address}
-              onChange={e => {
-                const next = [...person.emails];
-                next[i] = { ...em, email_address: e.target.value };
-                u('emails', next);
-              }} />
-            <button className="remove-btn" onClick={() => {
-              const next = [...person.emails];
-              next.splice(i, 1);
-              u('emails', next);
-            }}>&times;</button>
+          <div key={em._uid || i} className="border rounded p-2 mb-2" style={{ background: 'var(--bg)' }}>
+            <div className="row g-2 align-items-center">
+              <div className="col">
+                <input type="email" className="form-control form-control-sm"
+                  placeholder="email@example.com"
+                  value={em.email_address}
+                  onChange={e => {
+                    const next = [...person.emails];
+                    next[i] = { ...em, email_address: e.target.value };
+                    u('emails', next);
+                  }} />
+              </div>
+              <div className="col-auto">
+                <div className="form-check form-check-inline mb-0">
+                  <input type="checkbox" className="form-check-input" id={`def_em_${idx}_${i}`}
+                    checked={em.is_default}
+                    onChange={e => {
+                      const next = [...person.emails];
+                      next[i] = { ...em, is_default: e.target.checked };
+                      u('emails', next);
+                    }} />
+                  <label className="form-check-label small" htmlFor={`def_em_${idx}_${i}`}>{t('contact.is_default')}</label>
+                </div>
+                <div className="form-check form-check-inline mb-0">
+                  <input type="checkbox" className="form-check-input" id={`emg_em_${idx}_${i}`}
+                    checked={em.is_emergency}
+                    onChange={e => {
+                      const next = [...person.emails];
+                      next[i] = { ...em, is_emergency: e.target.checked };
+                      u('emails', next);
+                    }} />
+                  <label className="form-check-label small" htmlFor={`emg_em_${idx}_${i}`}>{t('contact.is_emergency')}</label>
+                </div>
+              </div>
+              <div className="col-auto">
+                <button className="remove-btn" onClick={() => {
+                  const next = [...person.emails];
+                  next.splice(i, 1);
+                  u('emails', next);
+                }}>&times;</button>
+              </div>
+            </div>
           </div>
         ))}
         <button className="add-btn" onClick={() => u('emails', [...(person.emails || []), emptyEmail()])}>

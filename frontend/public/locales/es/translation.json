@@ -99,6 +99,8 @@
 
   "contact.phone": "Teléfono",
   "contact.email": "Correo electrónico",
+  "contact.is_default": "Predeterminado",
+  "contact.is_emergency": "Emergencia",
 
   "field.primary_email": "Correo electrónico",
   "field.first_name": "Nombre",
