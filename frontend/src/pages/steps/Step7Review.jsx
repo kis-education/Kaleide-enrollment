@@ -42,7 +42,9 @@ export default function Step7Review({ onBack }) {
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
   const { applicationId, stepData } = useWizard();
 
-  const { email, guardians, applicants, health, documents } = stepData;
+  const { email, persons, documents } = stepData;
+  const guardians  = (persons || []).filter(p => p.person_type_id === 'guardian');
+  const applicants = (persons || []).filter(p => p.person_type_id === 'applicant');
 
   const [esig,         setEsig]         = useState('');
   const [consentGdpr,  setConsentGdpr]  = useState(false);
@@ -103,28 +105,30 @@ export default function Step7Review({ onBack }) {
         </ReviewSection>
 
         {/* Guardians */}
-        {(guardians || []).map((g, i) => (
+        {guardians.map((g, i) => (
           <ReviewSection key={i} title={`${t('guardian.title', { n: i + 1 })} — ${g.first_name || ''} ${g.last_name || ''}`}>
             <ReviewRow label={t('field.date_of_birth')} value={g.date_of_birth} />
-            <ReviewRow label={t('field.nationality')} value={g.nationality_id} />
-            <ReviewRow label={t('field.id_number')} value={g.id_number} />
-            <ReviewRow label={t('field.profession')} value={g.profession} />
-            <ReviewRow label={t('field.address_line_1')} value={g.address_line_1} />
-            <ReviewRow label={t('field.city')} value={g.city} />
-            <ReviewRow label={t('field.country')} value={g.country_id} />
-            {(g.contacts || []).map((c, ci) => (
-              <ReviewRow key={ci} label={t(`contact.${c.contact_type}`)} value={c.value + (c.is_whatsapp ? ' (WhatsApp)' : '') + (c.is_telegram ? ' (Telegram)' : '')} />
+            <ReviewRow label={t('field.nationality')} value={g.nationalities?.[0]?.country_id} />
+            <ReviewRow label={t('field.id_number')} value={g.ids?.[0] ? `${g.ids[0].id_type_id}: ${g.ids[0].id_number}` : null} />
+            <ReviewRow label={t('field.address_line_1')} value={g.address?.address_line_1} />
+            <ReviewRow label={t('field.city')} value={g.address?.city} />
+            <ReviewRow label={t('field.country')} value={g.address?.country_id} />
+            {(g.emails || []).map((e, ei) => (
+              <ReviewRow key={ei} label={t('contact.email')} value={e.email_address} />
+            ))}
+            {(g.phones || []).map((ph, pi) => (
+              <ReviewRow key={pi} label={t('contact.phone')} value={ph.phone_number + (ph.is_whatsapp ? ' (WhatsApp)' : '') + (ph.is_telegram ? ' (Telegram)' : '')} />
             ))}
           </ReviewSection>
         ))}
 
         {/* Applicants */}
-        {(applicants || []).map((a, i) => (
+        {applicants.map((a, i) => (
           <ReviewSection key={i} title={`${t('applicant.title', { n: i + 1 })} — ${a.first_name || ''} ${a.last_name || ''}`}>
             <ReviewRow label={t('field.date_of_birth')} value={a.date_of_birth} />
             <ReviewRow label={t('field.gender')} value={a.gender} />
-            <ReviewRow label={t('field.nationality')} value={a.nationality_id} />
-            <ReviewRow label={t('field.start_date')} value={a.desired_start_date} />
+            <ReviewRow label={t('field.nationality')} value={a.nationalities?.[0]?.country_id} />
+            <ReviewRow label={t('field.start_date')} value={email?.desired_start_date} />
             {(a.previous_schools || []).map((s, si) => (
               <ReviewRow key={si} label={`${t('applicant.prev_school')} ${si + 1}`} value={`${s.school_name || ''} (${s.from_year || ''}–${s.to_year || ''})`} />
             ))}

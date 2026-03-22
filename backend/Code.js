@@ -375,6 +375,9 @@ function saveStep_(p) {
     case 'interviews':
       saveInterviews_(application_id, payload);
       break;
+    case 'questions':
+      // Responses are saved individually via saveResponses_ — nothing to do here
+      break;
     case 'documents':
       // Documents are saved individually via uploadDocument_
       break;

@@ -16,15 +16,9 @@ const emptyPerson = (type) => ({
   id_type_id:                  '',     // UI-only flat field → transformed on save
   id_number:                   '',     // UI-only flat field → transformed on save
   // Guardian-specific
-  is_primary_contact:          false,
-  is_emergency_contact:        false,
   emails:                      [],
   phones:                      [],
   // Applicant-specific
-  desired_education_level_id:  '',
-  is_sibling:                  false,
-  is_alumni_family:            false,
-  is_transfer:                 false,
   previous_schools:            [],
   // Address
   address:                     emptyAddress(),
@@ -222,40 +216,6 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         </div>
       </div>
 
-      {/* Guardian-specific fields */}
-      {isGuardian && (
-        <div className="row g-3 mt-1">
-          <div className="col-12 d-flex gap-4">
-            <div className="form-check">
-              <input type="checkbox" className="form-check-input" id={`primary_${idx}`}
-                checked={person.is_primary_contact} onChange={e => u('is_primary_contact', e.target.checked)} />
-              <label className="form-check-label" htmlFor={`primary_${idx}`}>{t('guardian.is_primary')}</label>
-            </div>
-            <div className="form-check">
-              <input type="checkbox" className="form-check-input" id={`emergency_${idx}`}
-                checked={person.is_emergency_contact} onChange={e => u('is_emergency_contact', e.target.checked)} />
-              <label className="form-check-label" htmlFor={`emergency_${idx}`}>{t('guardian.is_emergency')}</label>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Applicant flags */}
-      {isApplicant && (
-        <div className="mt-3 d-flex flex-wrap gap-3">
-          {[
-            ['is_sibling',       'applicant.is_sibling'],
-            ['is_alumni_family', 'applicant.is_alumni'],
-            ['is_transfer',      'applicant.is_transfer'],
-          ].map(([field, labelKey]) => (
-            <div className="form-check" key={field}>
-              <input type="checkbox" className="form-check-input" id={`${field}_${idx}`}
-                checked={!!person[field]} onChange={e => u(field, e.target.checked)} />
-              <label className="form-check-label" htmlFor={`${field}_${idx}`}>{t(labelKey)}</label>
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Emails */}
       <div className="mt-3">
