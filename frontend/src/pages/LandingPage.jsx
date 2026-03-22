@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
 import LangToggle from '../components/LangToggle';
 import { Toast, useToast } from '../components/Toast';
+import HoneypotField from '../components/HoneypotField';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
