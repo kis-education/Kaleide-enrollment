@@ -113,7 +113,7 @@ export default function Step3Relations({ onNext, onBack }) {
                 onChange={e => updateRelation(relIdx, { relation_type_id: e.target.value })}
               >
                 <option value="">{t('relation.none')}</option>
-                {relationTypes.map(rt => (
+                {relationTypes.filter(rt => rt.id).map(rt => (
                   <option key={rt.id} value={rt.id}>
                     {t(`relation.${rt.id}`, { defaultValue: rt.id.replace(/_/g, ' ') })}
                   </option>

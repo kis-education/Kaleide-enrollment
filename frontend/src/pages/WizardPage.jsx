@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
 import { gasCall } from '../api';
@@ -29,9 +30,17 @@ const STEP_COMPONENTS = [
 
 export default function WizardPage() {
   const { t }                           = useTranslation();
+  const navigate                        = useNavigate();
   const { applicationId, currentStep, setCurrentStep, stepData } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!applicationId) {
+      log.warn('WizardPage: no applicationId — redirecting to /consent');
+      navigate('/consent', { replace: true });
+    }
+  }, [applicationId]); // eslint-disable-line
 
 const handleNext = async (stepKey, data) => {
     setSaving(true);
