@@ -1,0 +1,10 @@
+# clasp — rootDir is machine-specific, do not commit
+backend/.clasp.json
+
+# macOS
+.DS_Store
+
+# Editor directories
+.vscode/*
+!.vscode/extensions.json
+.idea
