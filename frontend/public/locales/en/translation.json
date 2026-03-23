@@ -48,6 +48,7 @@
   "relation.is_custodial": "Custodial guardian",
   "relation.is_pickup": "Authorised for pick-up",
   "relation.none": "(not specified)",
+  "relation.between_applicants": "Relationship between students",
   "relation.is_of": "is",
   "relation.of": "of",
   "relation.parent": "parent",

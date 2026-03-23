@@ -48,6 +48,7 @@
   "relation.is_custodial": "Tutor legal",
   "relation.is_pickup": "Autorizado para recoger",
   "relation.none": "(sin especificar)",
+  "relation.between_applicants": "Vínculo entre alumnos",
   "relation.is_of": "es",
   "relation.of": "de",
   "relation.parent": "padre/madre",
