@@ -1801,7 +1801,7 @@ function hasAddressData_(addr) {
 // 'ES' = Spain / European = D/M/YYYY
 // 'US' = United States    = M/D/YYYY
 // NOTE: AppSheet API format is independent of Google Sheets regional settings — observed as M/D/YYYY
-var APPSHEET_DATE_LOCALE = 'US';
+var APPSHEET_DATE_LOCALE = 'ES';
 
 /**
  * Normalises any date string to ISO YYYY-MM-DD.
