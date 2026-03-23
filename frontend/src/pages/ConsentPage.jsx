@@ -6,6 +6,7 @@ import { useWizard } from '../context/WizardContext';
 import LangToggle from '../components/LangToggle';
 import HoneypotField from '../components/HoneypotField';
 import LegalFooter from '../components/LegalFooter';
+import PrivacyPolicyModal from '../components/PrivacyPolicyModal';
 import { CONSENT_TEXTS } from '../consentTexts';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
@@ -30,6 +31,7 @@ export default function ConsentPage() {
   const [submitting,  setSubmitting]  = useState(false);
   const [err,         setErr]         = useState('');
   const [sent,        setSent]        = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
 
   const validateEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 
@@ -114,7 +116,11 @@ export default function ConsentPage() {
               <p className="consent-text" style={{ fontSize: '0.82rem' }}>
                 <a href="https://kaleide.org/es/legal-es/" target="_blank" rel="noopener noreferrer">{t('legal.notice_link')}</a>
                 {' · '}
-                <a href="/privacy" target="_blank" rel="noopener noreferrer">{t('legal.privacy_link')}</a>
+                <button onClick={() => setShowPrivacy(true)} style={{
+                  background: 'none', border: 'none', padding: 0,
+                  color: 'var(--teal-dk)', cursor: 'pointer', fontSize: 'inherit',
+                  textDecoration: 'underline',
+                }}>{t('legal.privacy_link')}</button>
               </p>
               <div className="form-check mt-3">
                 <input
@@ -156,6 +162,7 @@ export default function ConsentPage() {
         </div>
       </div>
       <LegalFooter />
+      <PrivacyPolicyModal show={showPrivacy} onClose={() => setShowPrivacy(false)} />
     </div>
   );
 }
