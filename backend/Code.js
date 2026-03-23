@@ -1383,7 +1383,18 @@ function appsheetRequest_(table, action, rows, selector, debugOut) {
   const url  = APPSHEET_BASE_URL + appId + '/tables/' + encodeURIComponent(table) + '/Action';
   const body = { Action: action, Properties: { Locale: 'en-US' } };
 
-  if (rows && rows.length > 0) body.Rows = rows;
+  // AppSheet REST API v2 stores booleans as "TRUE"/"FALSE" strings in Google Sheets.
+  // Sending JSON true/false causes silent row rejection — convert before sending.
+  const sanitize_ = (r) => {
+    const out = {};
+    for (const k in r) {
+      const v = r[k];
+      out[k] = (v === true) ? 'TRUE' : (v === false) ? 'FALSE' : v;
+    }
+    return out;
+  };
+
+  if (rows && rows.length > 0) body.Rows = rows.map(sanitize_);
   if (selector) {
     if (selector.Filter) {
       // Convert SQL-like Filter to AppSheet FILTER() formula syntax.
