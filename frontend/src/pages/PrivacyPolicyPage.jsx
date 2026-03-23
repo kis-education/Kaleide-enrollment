@@ -1,5 +1,4 @@
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
 import LangToggle from '../components/LangToggle';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
@@ -30,10 +29,6 @@ export default function PrivacyPolicyPage() {
             {t('legal.privacy_placeholder')}
           </p>
         </div>
-
-        <Link to="/consent" style={{ color: 'var(--teal-dk)' }}>
-          ← {t('legal.back_to_form')}
-        </Link>
       </div>
     </div>
   );

@@ -1,5 +1,4 @@
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
 
 const LEGAL_NOTICE_URL = 'https://kaleide.org/es/legal-es/';
 
@@ -21,9 +20,10 @@ export default function LegalFooter() {
         {t('legal.notice_link')}
       </a>
       <span style={{ margin: '0 0.5rem' }}>·</span>
-      <Link to="/privacy" style={{ color: 'var(--muted)' }}>
+      <a href="/privacy" target="_blank" rel="noopener noreferrer"
+        style={{ color: 'var(--muted)' }}>
         {t('legal.privacy_link')}
-      </Link>
+      </a>
     </footer>
   );
 }
