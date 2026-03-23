@@ -95,8 +95,16 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock }) {
 
   const handleNext = () => {
     if (relations.length > 0 && !validationOk) return;
+    // For new AA relations, also persist the reverse so both children can query their siblings
+    const relationsToSave = [];
+    relations.forEach(r => {
+      relationsToSave.push(r);
+      if (r._kind === 'aa' && !r.relation_id) {
+        relationsToSave.push({ ...r, _uid: `${r.person_id_b}__${r.person_id_a}`, person_id_a: r.person_id_b, person_id_b: r.person_id_a });
+      }
+    });
     updateStep('relations', relations);
-    onNext('relations', relations);
+    onNext('relations', relationsToSave);
   };
 
   if (!guardians.length || !applicants.length) {
