@@ -971,7 +971,7 @@ function savePersons_(applicationId, persons) {
   // ── Batch writes (one API call per table) ─────────────────────────────────
   if (personsEdit.length)  appsheetRequest_(T.PERSONS,              'Edit', personsEdit);
   if (personsAdd.length)   appsheetRequest_(T.PERSONS,              'Add',  personsAdd);
-  if (nats.length)         appsheetRequest_(T.PERSON_NATIONALITIES, 'Add',  nats);
+  if (nats.length)         appsheetRequest_(T.PERSON_NATIONALITIES, 'Add',  nats, null, _debug);
   if (ids.length)          appsheetRequest_(T.PERSON_IDS,           'Add',  ids);
   if (langs.length)        appsheetRequest_(T.PERSON_LANGUAGES,     'Add',  langs);
   if (addresses.length)    appsheetRequest_(T.ADDRESSES,            'Add',  addresses);
@@ -1361,7 +1361,7 @@ function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, app
  * @param {Object} selector - Optional selector options (for Find)
  * @returns {Array|null} Parsed rows array or null
  */
-function appsheetRequest_(table, action, rows, selector) {
+function appsheetRequest_(table, action, rows, selector, debugOut) {
   const props  = PropertiesService.getScriptProperties();
   const appId  = props.getProperty('APPSHEET_APP_ID');
   const apiKey = props.getProperty('APPSHEET_ACCESS_KEY');
@@ -1401,29 +1401,28 @@ function appsheetRequest_(table, action, rows, selector) {
   const text       = response.getContentText();
 
   Logger.log('AppSheet ' + action + ' ' + table + ' → HTTP ' + statusCode + ' | ' + text.slice(0, 600));
+  if (debugOut) { debugOut.http = statusCode; debugOut.body = text.slice(0, 800); }
 
   if (statusCode < 200 || statusCode >= 300) {
     throw new Error('AppSheet HTTP ' + statusCode + ' on ' + table + '/' + action + ': ' + text.slice(0, 300));
   }
 
+  let parsed;
   try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed.error === 'string') {
-      throw new Error('AppSheet error on ' + table + '/' + action + ': ' + parsed.error);
-    }
-    const resultRows = parsed.Rows || parsed.rows || null;
-    if ((action === 'Add' || action === 'Edit') && rows && rows.length > 0) {
-      if (!resultRows || resultRows.length === 0) {
-        // Throw so the error surfaces in the DEV LOG with the full AppSheet response.
-        // Catches both Rows:[] (explicit rejection) and Rows:null/missing (silent failure).
-        throw new Error('AppSheet silently rejected ' + action + ' on ' + table + ' (0 rows returned). Response: ' + text.slice(0, 400));
-      }
-    }
-    return resultRows || parsed || null;
-  } catch (e) {
-    if (e.message.startsWith('AppSheet')) throw e;
-    return null;
+    parsed = JSON.parse(text);
+  } catch (_) {
+    throw new Error('AppSheet non-JSON response on ' + table + '/' + action + ': ' + text.slice(0, 400));
   }
+  if (parsed && typeof parsed.error === 'string') {
+    throw new Error('AppSheet error on ' + table + '/' + action + ': ' + parsed.error);
+  }
+  const resultRows = parsed.Rows || parsed.rows || null;
+  if ((action === 'Add' || action === 'Edit') && rows && rows.length > 0) {
+    if (!resultRows || resultRows.length === 0) {
+      throw new Error('AppSheet silently rejected ' + action + ' on ' + table + ' (0 rows returned). Response: ' + text.slice(0, 400));
+    }
+  }
+  return resultRows || parsed || null;
 }
 
 // ─── PDF generation ───────────────────────────────────────────────────────────
