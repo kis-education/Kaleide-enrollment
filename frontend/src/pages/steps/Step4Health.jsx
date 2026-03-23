@@ -148,6 +148,19 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock }) {
     })
   );
 
+  // Re-sync if stepData.health arrives after mount (e.g. after rehydration from server)
+  useEffect(() => {
+    if (!stepData.health?.length) return;
+    setHealthData(
+      (stepData.persons || [])
+        .filter(p => p.person_type_id === 'applicant')
+        .map(a => {
+          const existing = stepData.health.find(h => h.person_id === (a.person_id || a._uid));
+          return existing || { person_id: a.person_id || a._uid, allergies: [], dietary: [], medical: [] };
+        })
+    );
+  }, [stepData.health]); // eslint-disable-line
+
   const [allergiesOpts, setAllergiesOpts] = useState([]);
   const [dietaryOpts,   setDietaryOpts]   = useState([]);
   const [medicalOpts,   setMedicalOpts]   = useState([]);
