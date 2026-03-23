@@ -931,7 +931,7 @@ function savePersons_(applicationId, persons) {
     if (Array.isArray(person.emails)) {
       person.emails.filter(e => !e.email_id).forEach(e => {
         const emailId = generateUuid_();
-        emails.push({ email_id: emailId, application_id: applicationId, value: e.email_address || e.value, created_at: now });
+        emails.push({ email_id: emailId, application_id: applicationId, email_type_id: e.email_type_id || null, value: e.email_address || e.value, created_at: now });
         personEmails.push({ record_id: generateUuid_(), person_id: personId, email_id: emailId, is_default: e.is_default || false, is_emergency: e.is_emergency || false });
       });
     }
@@ -940,7 +940,7 @@ function savePersons_(applicationId, persons) {
     if (Array.isArray(person.phones)) {
       person.phones.filter(ph => !ph.phone_id).forEach(ph => {
         const phoneId = generateUuid_();
-        phones.push({ phone_id: phoneId, application_id: applicationId, value: ph.phone_number || ph.value, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
+        phones.push({ phone_id: phoneId, application_id: applicationId, phone_nr_type_id: ph.phone_type_id || ph.phone_nr_type_id || null, value: ph.phone_number || ph.value, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
         personPhones.push({ record_id: generateUuid_(), person_id: personId, phone_id: phoneId, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false });
       });
     }
