@@ -1006,22 +1006,26 @@ function saveRelations_(applicationId, relations) {
   if (!Array.isArray(relations)) return {};
 
   const newRelations = relations.filter(r => !r.relation_id).map(r => ({
-    relation_id:           generateUuid_(),
-    application_id:        applicationId,
-    person_id_a:           r.guardian_person_id,
-    person_id_b:           r.applicant_person_id,
-    relation_type_id:      r.relation_type_id      || null,
-    is_custodial:          r.is_custodial          || false,
-    is_pick_up_authorized: r.is_pick_up_authorized || false,
+    relation_id:              generateUuid_(),
+    application_id:           applicationId,
+    person_id_a:              r.guardian_person_id || r.person_id_a,
+    person_id_b:              r.applicant_person_id || r.person_id_b,
+    guardian_person_id:       r.guardian_person_id || r.person_id_a,
+    applicant_person_id:      r.applicant_person_id || r.person_id_b,
+    relation_type_id:         r.relation_type_id      || null,
+    is_custodial:             r.is_custodial          || false,
+    is_pick_up_authorized:    r.is_pick_up_authorized || false,
   }));
   const existingRelations = relations.filter(r => r.relation_id).map(r => ({
-    relation_id:           r.relation_id,
-    application_id:        applicationId,
-    person_id_a:           r.guardian_person_id || r.person_id_a,
-    person_id_b:           r.applicant_person_id || r.person_id_b,
-    relation_type_id:      r.relation_type_id      || null,
-    is_custodial:          r.is_custodial          || false,
-    is_pick_up_authorized: r.is_pick_up_authorized || false,
+    relation_id:              r.relation_id,
+    application_id:           applicationId,
+    person_id_a:              r.guardian_person_id || r.person_id_a,
+    person_id_b:              r.applicant_person_id || r.person_id_b,
+    guardian_person_id:       r.guardian_person_id || r.person_id_a,
+    applicant_person_id:      r.applicant_person_id || r.person_id_b,
+    relation_type_id:         r.relation_type_id      || null,
+    is_custodial:             r.is_custodial          || false,
+    is_pick_up_authorized:    r.is_pick_up_authorized || false,
   }));
 
   const _debug = { newRelations: newRelations.length, existingRelations: existingRelations.length, firstNew: newRelations[0] || null };

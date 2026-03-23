@@ -36,7 +36,7 @@ function TagSelect({ options, selected, onChange, placeholder }) {
         <div className="border rounded mt-1" style={{ maxHeight: 180, overflowY: 'auto' }}>
           {filtered.map(o => (
             <div key={o.id} className="px-3 py-1" style={{ cursor: 'pointer' }}
-              onMouseDown={() => { onChange([...selected, o]); setInput(''); }}>
+              onMouseDown={e => { e.preventDefault(); onChange([...selected, o]); setInput(''); }}>
               {o.label}
             </div>
           ))}
