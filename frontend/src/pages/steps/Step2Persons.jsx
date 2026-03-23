@@ -107,9 +107,17 @@ function PhoneRow({ phone, idx, onChange, onRemove }) {
   );
 }
 
-function PreviousSchoolRow({ school, onChange, onRemove }) {
+function PreviousSchoolRow({ school, onChange, onRemove, birthYear }) {
   const { t } = useTranslation();
   const u = (f, v) => onChange({ ...school, [f]: v });
+  const currentYear = new Date().getFullYear();
+  const minYear     = birthYear || currentYear - 30;
+  const fromYear    = parseInt(school.from_year) || null;
+  const minToYear   = fromYear ? Math.max(minYear, fromYear) : minYear;
+
+  const yearRange = (min, max) =>
+    Array.from({ length: max - min + 1 }, (_, i) => max - i);
+
   return (
     <div className="border rounded p-2 mb-2" style={{ background: 'var(--bg)' }}>
       <div className="row g-2">
@@ -129,12 +137,23 @@ function PreviousSchoolRow({ school, onChange, onRemove }) {
           </select>
         </div>
         <div className="col-md-2">
-          <input className="form-control form-control-sm" type="number" placeholder={t('field.from_year')}
-            value={school.from_year} onChange={e => u('from_year', e.target.value)} />
+          <select className="form-select form-select-sm" value={school.from_year || ''}
+            onChange={e => {
+              const val = e.target.value;
+              const updates = { from_year: val };
+              if (school.to_year && parseInt(school.to_year) < parseInt(val)) updates.to_year = val;
+              onChange({ ...school, ...updates });
+            }}>
+            <option value="">{t('field.from_year')}</option>
+            {yearRange(minYear, currentYear).map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
         </div>
         <div className="col-md-2">
-          <input className="form-control form-control-sm" type="number" placeholder={t('field.to_year')}
-            value={school.to_year} onChange={e => u('to_year', e.target.value)} />
+          <select className="form-select form-select-sm" value={school.to_year || ''}
+            onChange={e => u('to_year', e.target.value)}>
+            <option value="">{t('field.to_year')}</option>
+            {yearRange(minToYear, currentYear).map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
         </div>
         <div className="col-md-4">
           <input className="form-control form-control-sm" placeholder={t('field.edu_level_desc')}
@@ -374,14 +393,32 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
       {isApplicant && (
         <div className="mt-3">
           <h6 style={{ color: 'var(--muted)' }}>{t('applicant.prev_schools')}</h6>
-          {(person.previous_schools || []).map((s, i) => (
-            <PreviousSchoolRow key={s._uid || i} school={s}
-              onChange={val => updateSchool(i, val)}
-              onRemove={() => removeSchool(i)} />
-          ))}
-          <button className="add-btn" onClick={() => u('previous_schools', [...(person.previous_schools || []), emptySchool()])}>
-            <i className="bi bi-plus" /> {t('applicant.add_school')}
-          </button>
+          {(() => {
+            const birthYear = person.date_of_birth
+              ? new Date(person.date_of_birth).getFullYear() : null;
+            const dobMissing = !birthYear;
+            return (
+              <>
+                {(person.previous_schools || []).map((s, i) => (
+                  <PreviousSchoolRow key={s._uid || i} school={s}
+                    birthYear={birthYear}
+                    onChange={val => updateSchool(i, val)}
+                    onRemove={() => removeSchool(i)} />
+                ))}
+                <button className="add-btn"
+                  disabled={dobMissing}
+                  title={dobMissing ? t('applicant.dob_required_for_school') : undefined}
+                  onClick={() => u('previous_schools', [...(person.previous_schools || []), emptySchool()])}>
+                  <i className="bi bi-plus" /> {t('applicant.add_school')}
+                </button>
+                {dobMissing && (
+                  <p className="small mt-1" style={{ color: 'var(--muted)' }}>
+                    {t('applicant.dob_required_for_school')}
+                  </p>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
     </div>

@@ -107,6 +107,7 @@
   "applicant.is_alumni": "Alumni family",
   "applicant.is_transfer": "Transfer student",
   "applicant.unnamed": "Unnamed applicant",
+  "applicant.dob_required_for_school": "Please enter the date of birth before adding previous schools.",
   "applicant.prev_school": "Previous school",
 
   "contact.phone": "Phone",

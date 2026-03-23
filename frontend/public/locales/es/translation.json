@@ -107,6 +107,7 @@
   "applicant.is_alumni": "Familia alumni",
   "applicant.is_transfer": "Alumno de traslado",
   "applicant.unnamed": "Alumno sin nombre",
+  "applicant.dob_required_for_school": "Introduce la fecha de nacimiento antes de añadir colegios anteriores.",
   "applicant.prev_school": "Colegio anterior",
 
   "contact.phone": "Teléfono",
