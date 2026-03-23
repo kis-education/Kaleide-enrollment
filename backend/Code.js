@@ -721,10 +721,10 @@ function fetchLookups_() {
   Logger.log('fetchLookups_ relationTypes[0]: ' + JSON.stringify(relationTypes[0]));
 
   return {
-    allergies:     allergies.map(r =>     ({ id: r.row_id, label: r.food_allergy_designation })),
-    dietary:       dietary.map(r =>       ({ id: r.row_id, label: r.diet_designation })),
-    medical:       medical.map(r =>       ({ id: r.row_id, label: r.medical_condition_designation })),
-    relationTypes: relationTypes.map(r => ({ id: r.row_id, label: r.relation_type_designation })),
+    allergies:     allergies.map(r =>     ({ id: r['Row ID'] || r.row_id, label: r.food_allergy_designation })),
+    dietary:       dietary.map(r =>       ({ id: r['Row ID'] || r.row_id, label: r.diet_designation })),
+    medical:       medical.map(r =>       ({ id: r['Row ID'] || r.row_id, label: r.medical_condition_designation })),
+    relationTypes: relationTypes.map(r => ({ id: r['Row ID'] || r.row_id, label: r.relation_type_designation })),
   };
 }
 
