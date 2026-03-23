@@ -969,19 +969,28 @@ function savePersons_(applicationId, persons) {
   };
 
   // ── Batch writes (one API call per table) ─────────────────────────────────
-  if (personsEdit.length)  appsheetRequest_(T.PERSONS,              'Edit', personsEdit);
-  if (personsAdd.length)   appsheetRequest_(T.PERSONS,              'Add',  personsAdd);
-  if (nats.length)         appsheetRequest_(T.PERSON_NATIONALITIES, 'Add',  nats, null, _debug);
-  if (ids.length)          appsheetRequest_(T.PERSON_IDS,           'Add',  ids);
-  if (langs.length)        appsheetRequest_(T.PERSON_LANGUAGES,     'Add',  langs);
-  if (addresses.length)    appsheetRequest_(T.ADDRESSES,            'Add',  addresses);
-  if (personAddrs.length)  appsheetRequest_(T.PERSON_ADDRESSES,     'Add',  personAddrs);
-  if (emails.length)       appsheetRequest_(T.EMAILS,               'Add',  emails);
-  if (personEmails.length) appsheetRequest_(T.PERSON_EMAILS,        'Add',  personEmails);
-  if (phones.length)       appsheetRequest_(T.PHONES,               'Add',  phones);
-  if (personPhones.length) appsheetRequest_(T.PERSON_PHONES,        'Add',  personPhones);
-  if (schoolsAdd.length)   appsheetRequest_(T.PREV_SCHOOLS,         'Add',  schoolsAdd);
-  if (schoolsEdit.length)  appsheetRequest_(T.PREV_SCHOOLS,         'Edit', schoolsEdit);
+  // Each write is isolated so a failure on one table doesn't stop the others.
+  // Errors are collected in _debug.errors for visibility in the dev log.
+  _debug.errors = {};
+  const write_ = (table, action, rows, debugOut) => {
+    if (!rows.length) return;
+    try { appsheetRequest_(table, action, rows, null, debugOut); }
+    catch (e) { _debug.errors[table + '/' + action] = e.message.slice(0, 200); }
+  };
+
+  write_(T.PERSONS,              'Edit', personsEdit);
+  write_(T.PERSONS,              'Add',  personsAdd);
+  write_(T.PERSON_NATIONALITIES, 'Add',  nats,       _debug);
+  write_(T.PERSON_IDS,           'Add',  ids);
+  write_(T.PERSON_LANGUAGES,     'Add',  langs);
+  write_(T.ADDRESSES,            'Add',  addresses);
+  write_(T.PERSON_ADDRESSES,     'Add',  personAddrs);
+  write_(T.EMAILS,               'Add',  emails);
+  write_(T.PERSON_EMAILS,        'Add',  personEmails);
+  write_(T.PHONES,               'Add',  phones);
+  write_(T.PERSON_PHONES,        'Add',  personPhones);
+  write_(T.PREV_SCHOOLS,         'Add',  schoolsAdd);
+  write_(T.PREV_SCHOOLS,         'Edit', schoolsEdit);
 
   return _debug;
 }
