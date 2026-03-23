@@ -1418,9 +1418,12 @@ function appsheetRequest_(table, action, rows, selector) {
       throw new Error('AppSheet error on ' + table + '/' + action + ': ' + parsed.error);
     }
     const resultRows = parsed.Rows || parsed.rows || null;
-    if ((action === 'Add' || action === 'Edit') && rows && rows.length > 0 && resultRows !== null && resultRows.length === 0) {
-      // Throw so the error surfaces in the DEV LOG with the full AppSheet response
-      throw new Error('AppSheet silently rejected ' + action + ' on ' + table + ' (0 rows returned). Response: ' + text.slice(0, 400));
+    if ((action === 'Add' || action === 'Edit') && rows && rows.length > 0) {
+      if (!resultRows || resultRows.length === 0) {
+        // Throw so the error surfaces in the DEV LOG with the full AppSheet response.
+        // Catches both Rows:[] (explicit rejection) and Rows:null/missing (silent failure).
+        throw new Error('AppSheet silently rejected ' + action + ' on ' + table + ' (0 rows returned). Response: ' + text.slice(0, 400));
+      }
     }
     return resultRows || parsed || null;
   } catch (e) {
