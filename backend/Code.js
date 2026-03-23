@@ -278,9 +278,9 @@ function resumeApplication_(p) {
   }
 
   const persons    = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
-  // Sheet uses person_id_a/person_id_b; map to guardian_person_id/applicant_person_id for frontend
+  // DB stores person_id_a/person_id_b; add guardian_person_id/applicant_person_id aliases for frontend
   const relations  = (appsheetRequest_(T.RELATIONS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [])
-    .map(r => ({ ...r, guardian_person_id: r.person_id_a || r.guardian_person_id, applicant_person_id: r.person_id_b || r.applicant_person_id }));
+    .map(r => ({ ...r, guardian_person_id: r.person_id_a, applicant_person_id: r.person_id_b }));
   const documents  = appsheetRequest_(T.DOCUMENTS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
   const responses  = appsheetRequest_(T.QB_RESPONSES,  'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [];
   // interview_type is a plain enum string; interviewer_id is a plain email string — no FK resolution
@@ -335,7 +335,7 @@ function resumeApplication_(p) {
 
   const enrichedPersons = persons.map(person => {
     const pid      = person.person_id;
-    const addrJoin = personAddrJoins.find(r => r.person_id === pid && r.is_primary)
+    const addrJoin = personAddrJoins.find(r => r.person_id === pid && r.is_default)
                   || personAddrJoins.find(r => r.person_id === pid)
                   || null;
     return {
@@ -922,7 +922,7 @@ function savePersons_(applicationId, persons) {
       needAddressJunction = true;
     }
     if (needAddressJunction && addressId) {
-      personAddrs.push({ record_id: generateUuid_(), person_id: personId, address_id: addressId, label: 'home', is_primary: true });
+      personAddrs.push({ record_id: generateUuid_(), person_id: personId, address_id: addressId, is_default: true });
     }
     personAddressIds[personId] = addressId;
     if (personUid) personAddressIds[String(personUid)] = addressId;
@@ -931,8 +931,8 @@ function savePersons_(applicationId, persons) {
     if (Array.isArray(person.emails)) {
       person.emails.filter(e => !e.email_id).forEach(e => {
         const emailId = generateUuid_();
-        emails.push({ email_id: emailId, application_id: applicationId, email_address: e.email_address, created_at: now });
-        personEmails.push({ record_id: generateUuid_(), person_id: personId, email_id: emailId, email_type_id: e.email_type_id || null, is_default: e.is_default || false, is_emergency: e.is_emergency || false });
+        emails.push({ email_id: emailId, application_id: applicationId, value: e.email_address || e.value, created_at: now });
+        personEmails.push({ record_id: generateUuid_(), person_id: personId, email_id: emailId, is_default: e.is_default || false, is_emergency: e.is_emergency || false });
       });
     }
 
@@ -940,8 +940,8 @@ function savePersons_(applicationId, persons) {
     if (Array.isArray(person.phones)) {
       person.phones.filter(ph => !ph.phone_id).forEach(ph => {
         const phoneId = generateUuid_();
-        phones.push({ phone_id: phoneId, application_id: applicationId, phone_number: ph.phone_number, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
-        personPhones.push({ record_id: generateUuid_(), person_id: personId, phone_id: phoneId, phone_type_id: ph.phone_type_id || null, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false });
+        phones.push({ phone_id: phoneId, application_id: applicationId, value: ph.phone_number || ph.value, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
+        personPhones.push({ record_id: generateUuid_(), person_id: personId, phone_id: phoneId, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false });
       });
     }
 
@@ -965,8 +965,8 @@ function savePersons_(applicationId, persons) {
     phones: phones.length, personPhones: personPhones.length,
     schoolsAdd: schoolsAdd.length, schoolsEdit: schoolsEdit.length,
     firstNat: nats[0] || null,
-    firstPhone: phones[0] ? { phone_number: phones[0].phone_number } : null,
-    firstEmail: emails[0] ? { email_address: emails[0].email_address } : null,
+    firstPhone: phones[0] ? { value: phones[0].value } : null,
+    firstEmail: emails[0] ? { value: emails[0].value } : null,
     personIdMap,
   };
 
@@ -1313,10 +1313,10 @@ function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, app
   let guardianRows = '';
   guardians.forEach((g, i) => {
     const emails = (g.emails || []).map(e =>
-      (e.email_address || '') + (e.is_emergency ? ' <span style="background:#fff3ec;color:#c05800;padding:1px 5px;border-radius:3px;font-size:0.75em">Emergency</span>' : '')
+      (e.value || '') + (e.is_emergency ? ' <span style="background:#fff3ec;color:#c05800;padding:1px 5px;border-radius:3px;font-size:0.75em">Emergency</span>' : '')
     ).filter(e => e.trim()).join(', ');
     const phones = (g.phones || []).map(ph =>
-      (ph.phone_number || '') + (ph.is_whatsapp ? ' \uD83D\uDCAC' : '') + (ph.is_telegram ? ' \u2708\uFE0F' : '')
+      (ph.value || '') + (ph.is_whatsapp ? ' \uD83D\uDCAC' : '') + (ph.is_telegram ? ' \u2708\uFE0F' : '')
       + (ph.is_emergency ? ' <span style="background:#fff3ec;color:#c05800;padding:1px 5px;border-radius:3px;font-size:0.75em">Emergency</span>' : '')
     ).filter(Boolean).join(', ');
 
@@ -1504,10 +1504,10 @@ function generateConsentPdf_(applicationId, app, guardians, applicants, consentR
 
   guardians.forEach((g, i) => {
     const emails = (g.emails || []).map(e =>
-      (e.email_address || '') + (e.is_emergency ? ' [Emergency]' : '')
+      (e.value || '') + (e.is_emergency ? ' [Emergency]' : '')
     ).filter(e => e.trim()).join(', ');
     const phones = (g.phones || []).map(ph =>
-      (ph.phone_number || '') + (ph.is_whatsapp ? ' (WhatsApp)' : '') + (ph.is_telegram ? ' (Telegram)' : '')
+      (ph.value || '') + (ph.is_whatsapp ? ' (WhatsApp)' : '') + (ph.is_telegram ? ' (Telegram)' : '')
       + (ph.is_emergency ? ' [Emergency]' : '')
     ).filter(Boolean).join(', ');
 
@@ -1648,7 +1648,7 @@ function promoteApplication_(p) {
 
   const personAddrMap = {};
   addrJoins.forEach(j => {
-    if (!personAddrMap[j.person_id] || j.is_primary) {
+    if (!personAddrMap[j.person_id] || j.is_default) {
       personAddrMap[j.person_id] = j.address_id;
     }
   });
@@ -1704,8 +1704,8 @@ function promoteApplication_(p) {
     }) || [];
 
     relations.forEach(rel => {
-      const guardianPersonalId  = person_personal_ids[rel.guardian_person_id];
-      const applicantPersonalId = person_personal_ids[rel.applicant_person_id];
+      const guardianPersonalId  = person_personal_ids[rel.person_id_a];
+      const applicantPersonalId = person_personal_ids[rel.person_id_b];
       if (!guardianPersonalId || !applicantPersonalId) return;
       relationalRecords.push({
         record_id:             generateUuid_(),
