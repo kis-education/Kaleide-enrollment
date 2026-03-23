@@ -32,17 +32,38 @@ const STEP_COMPONENTS = [
 export default function WizardPage() {
   const { t }                           = useTranslation();
   const navigate                        = useNavigate();
-  const { applicationId, currentStep, setCurrentStep, stepData } = useWizard();
+  const {
+    applicationId, resumeToken,
+    currentStep, setCurrentStep,
+    stepData, updateStep,
+    hydrateFromResume, needsHydration,
+  } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
   const [sendingMagicLink,  setSendingMagicLink]  = useState(false);
+  const [rehydrating,       setRehydrating]       = useState(false);
 
+  // On page reload, applicationId is restored from sessionStorage but stepData is empty.
+  // Auto-resume from the server to restore full wizard state.
   useEffect(() => {
-    if (!applicationId) {
+    if (needsHydration && resumeToken) {
+      setRehydrating(true);
+      log.info('WizardPage: rehydrating session after reload', { applicationId });
+      gasCall('resumeApplication', { resume_token: resumeToken })
+        .then(data => {
+          hydrateFromResume(data);
+          log.success('WizardPage: rehydration complete');
+        })
+        .catch(err => {
+          log.error('WizardPage: rehydration failed', { message: err.message });
+          navigate('/consent', { replace: true });
+        })
+        .finally(() => setRehydrating(false));
+    } else if (!applicationId) {
       log.warn('WizardPage: no applicationId — redirecting to /consent');
       navigate('/consent', { replace: true });
     }
-  }, [applicationId]); // eslint-disable-line
+  }, []); // eslint-disable-line
 
 const handleNext = async (stepKey, data) => {
     setSaving(true);
@@ -115,6 +136,22 @@ const handleNext = async (stepKey, data) => {
         </div>
         <LangToggle />
       </header>
+
+      {/* Rehydrating overlay (page reload) */}
+      {rehydrating && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(248,249,250,0.95)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          backdropFilter: 'blur(3px)',
+        }}>
+          <div className="spinner-border" role="status"
+            style={{ color: 'var(--teal)', width: '3rem', height: '3rem' }} />
+          <p style={{ marginTop: 16, color: 'var(--teal-dk)', fontWeight: 600, fontSize: '1rem' }}>
+            {t('resume.loading')}
+          </p>
+        </div>
+      )}
 
       {/* Saving overlay */}
       {(saving || sendingMagicLink) && (

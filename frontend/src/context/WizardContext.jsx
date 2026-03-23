@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 
 const WizardContext = createContext(null);
 
@@ -21,11 +21,46 @@ const initialStepData = {
   documents: [],
 };
 
+const SESSION_KEY = 'kis_wizard_session';
+
+function loadSession() {
+  try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null') || {}; } catch { return {}; }
+}
+function saveSession(patch) {
+  try {
+    const current = loadSession();
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ ...current, ...patch }));
+  } catch { /* ignore */ }
+}
+
 export function WizardProvider({ children }) {
-  const [applicationId, setApplicationId] = useState(null);
-  const [resumeToken,   setResumeToken]   = useState(null);
-  const [currentStep,   setCurrentStep]   = useState(0);
-  const [stepData,      setStepData]      = useState(initialStepData);
+  const session = loadSession();
+  const [applicationId, setApplicationIdRaw] = useState(session.applicationId || null);
+  const [resumeToken,   setResumeTokenRaw]   = useState(session.resumeToken   || null);
+  const [currentStep,   setCurrentStepRaw]   = useState(session.currentStep   || 0);
+  const [stepData,      setStepData]         = useState(initialStepData);
+
+  const setApplicationId = useCallback((id) => {
+    setApplicationIdRaw(id);
+    saveSession({ applicationId: id });
+  }, []);
+  const setResumeToken = useCallback((tok) => {
+    setResumeTokenRaw(tok);
+    saveSession({ resumeToken: tok });
+  }, []);
+  const setCurrentStep = useCallback((step) => {
+    setCurrentStepRaw(step);
+    saveSession({ currentStep: step });
+  }, []);
+
+  // Clear session when application is submitted
+  const clearSession = useCallback(() => {
+    try { sessionStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
+    setApplicationIdRaw(null);
+    setResumeTokenRaw(null);
+    setCurrentStepRaw(0);
+    setStepData(initialStepData);
+  }, []);
 
   const updateStep = useCallback((stepKey, data) => {
     setStepData(prev => ({ ...prev, [stepKey]: data }));
@@ -68,7 +103,8 @@ export function WizardProvider({ children }) {
       resumeToken,   setResumeToken,
       currentStep,   setCurrentStep,
       stepData,      updateStep,
-      hydrateFromResume,
+      hydrateFromResume, clearSession,
+      needsHydration: !!(applicationId && !stepData.email.verified),
     }}>
       {children}
     </WizardContext.Provider>
