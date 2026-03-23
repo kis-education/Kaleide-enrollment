@@ -34,7 +34,8 @@ export default function WizardPage() {
   const navigate                        = useNavigate();
   const { applicationId, currentStep, setCurrentStep, stepData } = useWizard();
   const { message: toastMsg, showToast } = useToast();
-  const [saving, setSaving] = useState(false);
+  const [saving,            setSaving]            = useState(false);
+  const [sendingMagicLink,  setSendingMagicLink]  = useState(false);
 
   useEffect(() => {
     if (!applicationId) {
@@ -51,6 +52,14 @@ const handleNext = async (stepKey, data) => {
         log.info(`WizardPage: auto-saving step "${stepKey}" for application ${applicationId}`);
         const saveResult = await gasCall('saveStep', { application_id: applicationId, step: stepKey, payload: data });
         log.success(`WizardPage: saveStep "${stepKey}" OK`, saveResult?._debug || {});
+
+        // Stamp real person_ids returned from backend so Step3Relations can reference them
+        if (stepKey === 'persons' && saveResult?._debug?.personIdMap?.length) {
+          const map = {};
+          saveResult._debug.personIdMap.forEach(({ _uid, person_id }) => { if (_uid) map[_uid] = person_id; });
+          const updated = data.map(p => ({ ...p, person_id: p.person_id || (p._uid && map[p._uid]) || undefined }));
+          updateStep('persons', updated);
+        }
       } catch (err) {
         log.warn(`WizardPage: saveStep "${stepKey}" failed (non-blocking)`, { message: err.message });
         showToast(t('wizard.save_failed'));
@@ -78,6 +87,7 @@ const handleNext = async (stepKey, data) => {
       return;
     }
     log.info('WizardPage: sending magic link for Save & Continue Later', { applicationId });
+    setSendingMagicLink(true);
     try {
       await gasCall('sendMagicLink', { application_id: applicationId });
       log.success('WizardPage: magic link sent');
@@ -85,6 +95,8 @@ const handleNext = async (stepKey, data) => {
     } catch (err) {
       log.error('WizardPage: sendMagicLink failed', { message: err.message });
       showToast(t('wizard.save_later_error'));
+    } finally {
+      setSendingMagicLink(false);
     }
   };
 
@@ -105,7 +117,7 @@ const handleNext = async (stepKey, data) => {
       </header>
 
       {/* Saving overlay */}
-      {saving && (
+      {(saving || sendingMagicLink) && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 9999,
           background: 'rgba(248,249,250,0.88)',
@@ -115,7 +127,7 @@ const handleNext = async (stepKey, data) => {
           <div className="spinner-border" role="status"
             style={{ color: 'var(--teal)', width: '3rem', height: '3rem' }} />
           <p style={{ marginTop: 16, color: 'var(--teal-dk)', fontWeight: 600, fontSize: '1rem' }}>
-            {t('wizard.saving')}
+            {sendingMagicLink ? t('wizard.sending_magic_link') : t('wizard.saving')}
           </p>
         </div>
       )}

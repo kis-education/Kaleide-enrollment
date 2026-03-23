@@ -4,11 +4,11 @@ import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
 
 function TagSelect({ options, selected, onChange, placeholder }) {
-  const [input, setInput] = useState('');
-  const filtered = options.filter(o =>
-    !selected.find(s => s.id === o.id) &&
-    o.label.toLowerCase().includes(input.toLowerCase())
-  );
+  const [input,   setInput]   = useState('');
+  const [focused, setFocused] = useState(false);
+  const available = options.filter(o => !selected.find(s => s.id === o.id));
+  const filtered  = available.filter(o => o.label.toLowerCase().includes(input.toLowerCase()));
+  const showDropdown = focused && filtered.length > 0;
   return (
     <div>
       <div className="d-flex flex-wrap gap-1 mb-2">
@@ -23,10 +23,17 @@ function TagSelect({ options, selected, onChange, placeholder }) {
         ))}
       </div>
       <div className="input-group input-group-sm">
-        <input className="form-control" value={input} onChange={e => setInput(e.target.value)} placeholder={placeholder} />
+        <input
+          className="form-control"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          placeholder={placeholder}
+        />
       </div>
-      {input && filtered.length > 0 && (
-        <div className="border rounded mt-1" style={{ maxHeight: 160, overflowY: 'auto' }}>
+      {showDropdown && (
+        <div className="border rounded mt-1" style={{ maxHeight: 180, overflowY: 'auto' }}>
           {filtered.map(o => (
             <div key={o.id} className="px-3 py-1" style={{ cursor: 'pointer' }}
               onMouseDown={() => { onChange([...selected, o]); setInput(''); }}>

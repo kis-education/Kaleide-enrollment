@@ -847,11 +847,13 @@ function savePersons_(applicationId, persons) {
   const emails      = [], personEmails = [];
   const phones      = [], personPhones = [];
   const schoolsAdd  = [], schoolsEdit  = [];
+  const personIdMap = []; // [{ _uid, person_id }] — returned so frontend can stamp real IDs
 
   persons.forEach(person => {
     const personId    = person.person_id || generateUuid_();
     const personUid   = person._uid;
     const isApplicant = person.person_type_id === 'applicant';
+    personIdMap.push({ _uid: personUid || null, person_id: personId });
 
     // ── Core person row (schema columns only — strip AppSheet virtual fields) ─
     const baseRow = {
@@ -952,7 +954,7 @@ function savePersons_(applicationId, persons) {
     }
   });
 
-  // ── DEBUG: return row counts so frontend can log them ─────────────────────
+  // ── DEBUG: return row counts + person ID map so frontend can stamp real IDs
   const _debug = {
     personsEdit: personsEdit.length, personsAdd: personsAdd.length,
     nats: nats.length, ids: ids.length, langs: langs.length,
@@ -963,6 +965,7 @@ function savePersons_(applicationId, persons) {
     firstNat: nats[0] || null,
     firstPhone: phones[0] ? { phone_number: phones[0].phone_number } : null,
     firstEmail: emails[0] ? { email_address: emails[0].email_address } : null,
+    personIdMap,
   };
 
   // ── Batch writes (one API call per table) ─────────────────────────────────

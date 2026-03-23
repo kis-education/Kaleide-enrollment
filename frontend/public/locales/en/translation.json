@@ -74,6 +74,7 @@
   "wizard.save_later_sent": "Link sent to your email.",
   "wizard.save_later_error": "Could not send link. Try again.",
   "wizard.saving": "Saving…",
+  "wizard.sending_magic_link": "Sending you a magic link by email so you can continue later…",
   "wizard.save_failed": "Your progress could not be saved — please check your connection.",
 
   "resume.loading": "Loading your application…",

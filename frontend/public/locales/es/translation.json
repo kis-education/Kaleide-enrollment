@@ -74,6 +74,7 @@
   "wizard.save_later_sent": "Enlace enviado a tu correo.",
   "wizard.save_later_error": "No se pudo enviar el enlace. Inténtalo de nuevo.",
   "wizard.saving": "Guardando…",
+  "wizard.sending_magic_link": "Enviándote un enlace mágico por correo para que puedas continuar después…",
   "wizard.save_failed": "No se ha podido guardar tu progreso — comprueba tu conexión.",
 
   "resume.loading": "Cargando tu solicitud…",
