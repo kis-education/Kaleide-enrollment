@@ -416,7 +416,7 @@ function saveStep_(p) {
       extra = savePersons_(application_id, payload);
       break;
     case 'relations':
-      saveRelations_(application_id, payload);
+      extra = saveRelations_(application_id, payload);
       break;
     case 'health':
       saveHealth_(application_id, payload);
@@ -992,7 +992,7 @@ function savePersons_(applicationId, persons) {
  * @param {Array}  relations - [{ guardian_person_id, applicant_person_id, relation_type_id, is_custodial, is_pick_up_authorized }]
  */
 function saveRelations_(applicationId, relations) {
-  if (!Array.isArray(relations)) return;
+  if (!Array.isArray(relations)) return {};
 
   const newRelations = relations.filter(r => !r.relation_id).map(r => ({
     relation_id:           generateUuid_(),
@@ -1004,8 +1004,11 @@ function saveRelations_(applicationId, relations) {
     is_pick_up_authorized: r.is_pick_up_authorized || false,
   }));
   const existingRelations = relations.filter(r => r.relation_id);
-  if (newRelations.length)      appsheetRequest_(T.RELATIONS, 'Add',  newRelations);
+
+  const _debug = { newRelations: newRelations.length, existingRelations: existingRelations.length, firstNew: newRelations[0] || null };
+  if (newRelations.length)      appsheetRequest_(T.RELATIONS, 'Add',  newRelations, null, _debug);
   if (existingRelations.length) appsheetRequest_(T.RELATIONS, 'Edit', existingRelations);
+  return _debug;
 }
 
 /**
