@@ -65,9 +65,9 @@ function ApplicantHealthSection({ applicant, health, onChange, allergiesOpts, di
 
   const update = (field, val) => onChange({ ...health, [field]: val });
 
-  const allergiesSelected = (health.allergies || []).map(a => ({ id: a.food_allergy_id || a._uid, label: a.label || a.food_allergy_id, observations: a.observations || '' }));
-  const dietarySelected   = (health.dietary   || []).map(d => ({ id: d.diet_id           || d._uid, label: d.label || d.diet_id,           observations: d.observations || '' }));
-  const medicalSelected   = (health.medical   || []).map(m => ({ id: m.medical_condition_id || m._uid, label: m.label || m.medical_condition_id, observations: m.observations || '' }));
+  const allergiesSelected = (health.allergies || []).map(a => { const opt = allergiesOpts.find(o => o.id === (a.food_allergy_id || a._uid)); return { id: a.food_allergy_id || a._uid, label: a.label || opt?.label || a.food_allergy_id, observations: a.observations || '' }; });
+  const dietarySelected   = (health.dietary   || []).map(d => { const opt = dietaryOpts.find(o => o.id === (d.diet_id || d._uid));                return { id: d.diet_id || d._uid,                   label: d.label || opt?.label || d.diet_id,           observations: d.observations || '' }; });
+  const medicalSelected   = (health.medical   || []).map(m => { const opt = medicalOpts.find(o => o.id === (m.medical_condition_id || m._uid));    return { id: m.medical_condition_id || m._uid,         label: m.label || opt?.label || m.medical_condition_id, observations: m.observations || '' }; });
 
   return (
     <div className="dynamic-section">
