@@ -240,5 +240,9 @@
   "error.esig_required": "Please sign with your full name.",
   "error.consent_required": "Please accept all required consents.",
   "error.recaptcha_failed": "Security check failed. Please try again.",
-  "error.file_too_large": "File is too large (max 10 MB)."
+  "error.file_too_large": "File is too large (max 10 MB).",
+  "error.custodial_required": "At least one guardian must have custodial or pick-up authorization.",
+
+  "locked.message": "This section is saved and locked.",
+  "locked.edit": "Edit"
 }

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
+import LockedBanner from '../../components/LockedBanner';
 
 const DOCUMENT_TYPES = [
   { key: 'passport',        labelKey: 'doc.passport'        },
@@ -93,7 +94,7 @@ function DocumentUploader({ docType, applicationId, onUploaded, existing }) {
   );
 }
 
-export default function Step6Documents({ onNext, onBack }) {
+export default function Step6Documents({ onNext, onBack, locked, onUnlock }) {
   const { t }  = useTranslation();
   const { applicationId, stepData, updateStep } = useWizard();
   const [documents, setDocuments] = useState(stepData.documents || []);
@@ -122,7 +123,9 @@ export default function Step6Documents({ onNext, onBack }) {
         <p style={{ color: 'var(--muted)' }}>{t('step6.subtitle')}</p>
       </div>
 
-      <div className="kis-card">
+      {locked && <LockedBanner onUnlock={onUnlock} />}
+
+      <div className="kis-card" style={locked ? { pointerEvents: 'none', opacity: 0.7 } : {}}>
         {DOCUMENT_TYPES.map(doc => (
           <DocumentUploader
             key={doc.key}

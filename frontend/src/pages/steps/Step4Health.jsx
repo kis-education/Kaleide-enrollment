@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
+import LockedBanner from '../../components/LockedBanner';
 
 function TagSelect({ options, selected, onChange, placeholder }) {
   const [input,   setInput]   = useState('');
@@ -121,7 +122,7 @@ function ApplicantHealthSection({ applicant, health, onChange, allergiesOpts, di
   );
 }
 
-export default function Step4Health({ onNext, onBack }) {
+export default function Step4Health({ onNext, onBack, locked, onUnlock }) {
   const { t } = useTranslation();
   const { stepData, updateStep } = useWizard();
   const applicants = (stepData.persons || []).filter(p => p.person_type_id === 'applicant');
@@ -170,23 +171,27 @@ export default function Step4Health({ onNext, onBack }) {
         <p style={{ color: 'var(--muted)' }}>{t('step4.subtitle')}</p>
       </div>
 
-      {applicants.map((a, i) => (
-        <ApplicantHealthSection
-          key={a.person_id || a._uid || i}
-          applicant={a}
-          health={healthData[i] || { allergies: [], dietary: [], medical: [] }}
-          onChange={val => updateHealth(i, val)}
-          allergiesOpts={allergiesOpts}
-          dietaryOpts={dietaryOpts}
-          medicalOpts={medicalOpts}
-        />
-      ))}
+      {locked && <LockedBanner onUnlock={onUnlock} />}
 
-      {applicants.length === 0 && (
-        <div className="text-center py-4" style={{ color: 'var(--muted)' }}>
-          {t('step4.no_applicants')}
-        </div>
-      )}
+      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
+        {applicants.map((a, i) => (
+          <ApplicantHealthSection
+            key={a.person_id || a._uid || i}
+            applicant={a}
+            health={healthData[i] || { allergies: [], dietary: [], medical: [] }}
+            onChange={val => updateHealth(i, val)}
+            allergiesOpts={allergiesOpts}
+            dietaryOpts={dietaryOpts}
+            medicalOpts={medicalOpts}
+          />
+        ))}
+
+        {applicants.length === 0 && (
+          <div className="text-center py-4" style={{ color: 'var(--muted)' }}>
+            {t('step4.no_applicants')}
+          </div>
+        )}
+      </fieldset>
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>

@@ -233,6 +233,11 @@
   "yes": "Sí",
   "no": "No",
 
+  "error.custodial_required": "Al menos un tutor debe tener autorización de custodia o recogida.",
+
+  "locked.message": "Esta sección está guardada y bloqueada.",
+  "locked.edit": "Editar",
+
   "error.invalid_email": "Por favor, introduce una dirección de correo válida.",
   "error.invalid_code": "Por favor, introduce el código de 6 dígitos.",
   "error.guardian_required": "Por favor, completa al menos un tutor.",

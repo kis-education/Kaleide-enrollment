@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
+import LockedBanner from '../../components/LockedBanner';
 import * as log from '../../logger';
 
 function buildInitialRelations(persons, existingRelations) {
@@ -27,7 +28,7 @@ function buildInitialRelations(persons, existingRelations) {
   });
 }
 
-export default function Step3Relations({ onNext, onBack }) {
+export default function Step3Relations({ onNext, onBack, locked, onUnlock }) {
   const { t } = useTranslation();
   const { stepData, updateStep } = useWizard();
 
@@ -50,7 +51,15 @@ export default function Step3Relations({ onNext, onBack }) {
   }, []);
 
   const updateRelation = (idx, updates) => {
-    setRelations(prev => prev.map((r, i) => i === idx ? { ...r, ...updates } : r));
+    setRelations(prev => prev.map((r, i) => {
+      if (i !== idx) return r;
+      const merged = { ...r, ...updates };
+      // Custodial implies pick-up authorized
+      if (updates.is_custodial === true) merged.is_pick_up_authorized = true;
+      // Removing pick-up authorized removes custodial
+      if (updates.is_pick_up_authorized === false) merged.is_custodial = false;
+      return merged;
+    }));
   };
 
   const handleBack = () => {
@@ -58,7 +67,10 @@ export default function Step3Relations({ onNext, onBack }) {
     onBack();
   };
 
+  const hasCustodialOrPickup = relations.some(r => r.is_custodial || r.is_pick_up_authorized);
+
   const handleNext = () => {
+    if (relations.length > 0 && !hasCustodialOrPickup) return;
     updateStep('relations', relations);
     onNext('relations', relations);
   };
@@ -91,6 +103,16 @@ export default function Step3Relations({ onNext, onBack }) {
         <p style={{ color: 'var(--muted)' }}>{t('step3.subtitle')}</p>
       </div>
 
+      {locked && <LockedBanner onUnlock={onUnlock} />}
+
+      {!locked && relations.length > 0 && !hasCustodialOrPickup && (
+        <div className="field-error mb-3">
+          <i className="bi bi-exclamation-triangle-fill me-2" />
+          {t('error.custodial_required')}
+        </div>
+      )}
+
+      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
       {relations.map((rel, relIdx) => {
         const g = persons.find(p => (p.person_id || p._uid) === rel.guardian_person_id);
         const a = persons.find(p => (p.person_id || p._uid) === rel.applicant_person_id);
@@ -146,12 +168,17 @@ export default function Step3Relations({ onNext, onBack }) {
           </div>
         );
       })}
+      </fieldset>
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>
           <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
         </button>
-        <button className="btn-primary-kis" onClick={handleNext}>
+        <button
+          className="btn-primary-kis"
+          onClick={handleNext}
+          disabled={!locked && relations.length > 0 && !hasCustodialOrPickup}
+        >
           {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
         </button>
       </div>

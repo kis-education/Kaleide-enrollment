@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
+import LockedBanner from '../../components/LockedBanner';
 
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
@@ -485,7 +486,7 @@ function transformPersonForSave(person) {
   return out;
 }
 
-export default function Step2Persons({ onNext, onBack }) {
+export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
   const { t } = useTranslation();
   const { stepData, updateStep } = useWizard();
   const primaryEmail = stepData.email?.primary_email || '';
@@ -542,55 +543,59 @@ export default function Step2Persons({ onNext, onBack }) {
         <p style={{ color: 'var(--muted)' }}>{t('step2.subtitle')}</p>
       </div>
 
-      {/* Guardians */}
-      <h5 style={{ color: 'var(--teal-dk)', marginTop: 16, marginBottom: 8 }}>
-        {t('person.guardians_section')}
-      </h5>
-      {persons.map((p, i) => {
-        if (p.person_type_id !== 'guardian') return null;
-        const guardianIdx = guardians.indexOf(p);
-        return (
-          <PersonSection
-            key={p.person_id || p._uid || i}
-            person={p}
-            idx={guardianIdx}
-            isFirst={guardianIdx === 0}
-            onChange={val => updatePerson(i, val)}
-            onRemove={() => removePerson(i)}
-            firstPersonId={firstPersonId}
-            primaryEmail={primaryEmail}
-          />
-        );
-      })}
-      <button className="add-btn" onClick={() => addPerson('guardian')}>
-        <i className="bi bi-plus-lg" /> {t('person.add_guardian')}
-      </button>
+      {locked && <LockedBanner onUnlock={onUnlock} />}
 
-      {/* Applicants */}
-      <h5 style={{ color: 'var(--teal-dk)', marginTop: 28, marginBottom: 8 }}>
-        {t('person.applicants_section')}
-      </h5>
-      {persons.map((p, i) => {
-        if (p.person_type_id !== 'applicant') return null;
-        const applicantIdx = applicants.indexOf(p);
-        return (
-          <PersonSection
-            key={p.person_id || p._uid || i}
-            person={p}
-            idx={applicantIdx}
-            isFirst={applicantIdx === 0}
-            onChange={val => updatePerson(i, val)}
-            onRemove={() => removePerson(i)}
-            firstPersonId={firstPersonId}
-            primaryEmail={primaryEmail}
-          />
-        );
-      })}
-      <button className="add-btn" onClick={() => addPerson('applicant')}>
-        <i className="bi bi-plus-lg" /> {t('person.add_applicant')}
-      </button>
+      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
+        {/* Guardians */}
+        <h5 style={{ color: 'var(--teal-dk)', marginTop: 16, marginBottom: 8 }}>
+          {t('person.guardians_section')}
+        </h5>
+        {persons.map((p, i) => {
+          if (p.person_type_id !== 'guardian') return null;
+          const guardianIdx = guardians.indexOf(p);
+          return (
+            <PersonSection
+              key={p.person_id || p._uid || i}
+              person={p}
+              idx={guardianIdx}
+              isFirst={guardianIdx === 0}
+              onChange={val => updatePerson(i, val)}
+              onRemove={() => removePerson(i)}
+              firstPersonId={firstPersonId}
+              primaryEmail={primaryEmail}
+            />
+          );
+        })}
+        <button className="add-btn" onClick={() => addPerson('guardian')}>
+          <i className="bi bi-plus-lg" /> {t('person.add_guardian')}
+        </button>
 
-      {err && <div className="field-error mt-2">{err}</div>}
+        {/* Applicants */}
+        <h5 style={{ color: 'var(--teal-dk)', marginTop: 28, marginBottom: 8 }}>
+          {t('person.applicants_section')}
+        </h5>
+        {persons.map((p, i) => {
+          if (p.person_type_id !== 'applicant') return null;
+          const applicantIdx = applicants.indexOf(p);
+          return (
+            <PersonSection
+              key={p.person_id || p._uid || i}
+              person={p}
+              idx={applicantIdx}
+              isFirst={applicantIdx === 0}
+              onChange={val => updatePerson(i, val)}
+              onRemove={() => removePerson(i)}
+              firstPersonId={firstPersonId}
+              primaryEmail={primaryEmail}
+            />
+          );
+        })}
+        <button className="add-btn" onClick={() => addPerson('applicant')}>
+          <i className="bi bi-plus-lg" /> {t('person.add_applicant')}
+        </button>
+
+        {err && <div className="field-error mt-2">{err}</div>}
+      </fieldset>
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>

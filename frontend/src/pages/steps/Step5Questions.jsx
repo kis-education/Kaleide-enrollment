@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
+import LockedBanner from '../../components/LockedBanner';
 
 function QuestionField({ question, value, onChange }) {
   const type = question.response_type_id?.toLowerCase?.() || 'text';
@@ -103,7 +104,7 @@ function meetsConditions(question, person, responses, personKey) {
   });
 }
 
-export default function Step5Questions({ onNext, onBack }) {
+export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
   const { t, i18n }  = useTranslation();
   const { applicationId, stepData, updateStep } = useWizard();
 
@@ -172,6 +173,9 @@ export default function Step5Questions({ onNext, onBack }) {
         <p style={{ color: 'var(--muted)' }}>{t('step5.subtitle')}</p>
       </div>
 
+      {locked && <LockedBanner onUnlock={onUnlock} />}
+
+      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
       {sets.map(set => (
         <div key={set.set_id} className="kis-card">
           {set.designation && <h3 style={{ color: 'var(--teal-dk)', fontSize: '1.05rem' }}>{set.designation}</h3>}
@@ -224,6 +228,7 @@ export default function Step5Questions({ onNext, onBack }) {
           })}
         </div>
       ))}
+      </fieldset>
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>
