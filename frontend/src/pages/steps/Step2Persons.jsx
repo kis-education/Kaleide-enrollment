@@ -457,6 +457,20 @@ function preparePersonForUI(person) {
       out._nat_record_id = primary ? primary.record_id : null;
     }
   }
+  // Remap server field names to UI field names for phones and emails
+  if (Array.isArray(out.phones)) {
+    out.phones = out.phones.map(ph => ({
+      ...ph,
+      phone_number:  ph.phone_number  || ph.value            || '',
+      phone_type_id: ph.phone_type_id || ph.phone_nr_type_id || '',
+    }));
+  }
+  if (Array.isArray(out.emails)) {
+    out.emails = out.emails.map(e => ({
+      ...e,
+      email_address: e.email_address || e.value || '',
+    }));
+  }
   return out;
 }
 
