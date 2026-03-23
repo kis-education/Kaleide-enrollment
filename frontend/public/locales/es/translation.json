@@ -219,6 +219,12 @@
   "consent.legal_es": "Confirmo que la información proporcionada en esta solicitud es exacta y completa según mi leal saber y entender.",
   "consent.legal_accept": "Confirmo / I confirm",
 
+  "legal.notice_link": "Aviso legal",
+  "legal.privacy_link": "Política de privacidad",
+  "legal.privacy_title": "Política de privacidad",
+  "legal.privacy_placeholder": "El texto completo de la política de privacidad estará disponible próximamente.",
+  "legal.back_to_form": "Volver al formulario",
+
   "action.remove": "Eliminar",
   "placeholder.select": "Selecciona…",
   "placeholder.country_code": "p.ej. ES",

@@ -5,6 +5,7 @@ import { gasCall } from '../api';
 import { useWizard } from '../context/WizardContext';
 import LangToggle from '../components/LangToggle';
 import HoneypotField from '../components/HoneypotField';
+import LegalFooter from '../components/LegalFooter';
 import { CONSENT_TEXTS } from '../consentTexts';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
@@ -110,6 +111,11 @@ export default function ConsentPage() {
             <div className="consent-block mb-4">
               <p className="consent-text"><strong>EN:</strong> {CONSENT_TEXTS.gdpr.en}</p>
               <p className="consent-text"><strong>ES:</strong> {CONSENT_TEXTS.gdpr.es}</p>
+              <p className="consent-text" style={{ fontSize: '0.82rem' }}>
+                <a href="https://kaleide.org/es/legal-es/" target="_blank" rel="noopener noreferrer">{t('legal.notice_link')}</a>
+                {' · '}
+                <a href="/privacy" target="_blank" rel="noopener noreferrer">{t('legal.privacy_link')}</a>
+              </p>
               <div className="form-check mt-3">
                 <input
                   type="checkbox"
@@ -149,6 +155,7 @@ export default function ConsentPage() {
           </form>
         </div>
       </div>
+      <LegalFooter />
     </div>
   );
 }

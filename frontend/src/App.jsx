@@ -5,7 +5,8 @@ import LandingPage      from './pages/LandingPage'
 import ConsentPage      from './pages/ConsentPage'
 import WizardPage       from './pages/WizardPage'
 import ResumePage       from './pages/ResumePage'
-import ConfirmationPage from './pages/ConfirmationPage'
+import ConfirmationPage   from './pages/ConfirmationPage'
+import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
 import DevLogger        from './components/DevLogger'
 import * as log         from './logger'
 
@@ -51,8 +52,9 @@ function App() {
           <Route path="/consent"         element={<ConsentPage />}      />
           <Route path="/apply"           element={<WizardPage />}       />
           <Route path="/resume/:token"   element={<ResumePage />}       />
-          <Route path="/confirmation"    element={<ConfirmationPage />} />
-          <Route path="*"               element={<LandingPage />}      />
+          <Route path="/confirmation"    element={<ConfirmationPage />}   />
+          <Route path="/privacy"         element={<PrivacyPolicyPage />} />
+          <Route path="*"               element={<LandingPage />}        />
         </Routes>
       </Suspense>
       </ErrorBoundary>

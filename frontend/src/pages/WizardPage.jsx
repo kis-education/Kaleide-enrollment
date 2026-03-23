@@ -5,6 +5,7 @@ import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
 import { gasCall } from '../api';
 import LangToggle from '../components/LangToggle';
+import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
 import { Toast, useToast } from '../components/Toast';
 
@@ -138,6 +139,7 @@ const handleNext = async (stepKey, data) => {
       </div>
 
       <Toast message={toastMsg} />
+      <LegalFooter />
     </div>
   );
 }
