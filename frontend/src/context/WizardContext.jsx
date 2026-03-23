@@ -80,6 +80,12 @@ export function WizardProvider({ children }) {
       },
       persons:   appData.persons   || [],
       relations: appData.relations || [],
+      health:    (appData.persons  || []).map(p => ({
+        person_id: p.person_id,
+        allergies: p.allergies || [],
+        dietary:   p.dietary   || [],
+        medical:   p.medical   || [],
+      })),
     }));
     // Determine deepest incomplete step
     const submitted = appData.application.submitted_at;
