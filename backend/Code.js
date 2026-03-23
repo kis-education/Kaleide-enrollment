@@ -868,9 +868,6 @@ function savePersons_(applicationId, persons) {
         person_id:  personId,
         id_type_id: x.id_type_id,
         id_number:  x.id_number,
-        issued_by:  x.issued_by  || null,
-        issued_at:  x.issued_at  || null,
-        expires_at: x.expires_at || null,
       }));
       if (newIds.length) appsheetRequest_(T.PERSON_IDS, 'Add', newIds);
     }
