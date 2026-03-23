@@ -61,8 +61,8 @@ function PhoneRow({ phone, idx, onChange, onRemove }) {
   const update = (fields) => onChange({ ...phone, ...fields });
   return (
     <div className="border rounded p-2 mb-2" style={{ background: 'var(--bg)' }}>
-      <div className="row g-2 align-items-center">
-        <div className="col-auto" style={{ minWidth: 140 }}>
+      <div className="row g-2 align-items-center mb-2">
+        <div className="col-auto" style={{ minWidth: 120 }}>
           <select className="form-select form-select-sm" value={phone.phone_type_id || ''}
             onChange={e => update({ phone_type_id: e.target.value })}>
             <option value="">{t('placeholder.select')}</option>
@@ -75,32 +75,32 @@ function PhoneRow({ phone, idx, onChange, onRemove }) {
             value={phone.phone_number}
             onChange={e => update({ phone_number: e.target.value })} />
         </div>
-        <div className="col-auto d-flex gap-2 flex-wrap">
-          <div className="form-check form-check-inline mb-0">
-            <input type="checkbox" className="form-check-input" id={`def_ph_${idx}`}
-              checked={phone.is_default}
-              onChange={e => update({ is_default: e.target.checked, is_emergency: e.target.checked ? false : phone.is_emergency })} />
-            <label className="form-check-label small" htmlFor={`def_ph_${idx}`}>{t('contact.is_default')}</label>
-          </div>
-          <div className="form-check form-check-inline mb-0">
-            <input type="checkbox" className="form-check-input" id={`emerg_ph_${idx}`}
-              checked={phone.is_emergency}
-              onChange={e => update({ is_emergency: e.target.checked, is_default: e.target.checked ? false : phone.is_default })} />
-            <label className="form-check-label small" htmlFor={`emerg_ph_${idx}`}>{t('contact.is_emergency')}</label>
-          </div>
-          <div className="form-check form-check-inline mb-0">
-            <input type="checkbox" className="form-check-input" id={`wa_${idx}`}
-              checked={phone.is_whatsapp} onChange={e => update({ is_whatsapp: e.target.checked })} />
-            <label className="form-check-label small" htmlFor={`wa_${idx}`}>WhatsApp</label>
-          </div>
-          <div className="form-check form-check-inline mb-0">
-            <input type="checkbox" className="form-check-input" id={`tg_${idx}`}
-              checked={phone.is_telegram} onChange={e => update({ is_telegram: e.target.checked })} />
-            <label className="form-check-label small" htmlFor={`tg_${idx}`}>Telegram</label>
-          </div>
-        </div>
         <div className="col-auto">
           <button className="remove-btn" onClick={onRemove}>&times;</button>
+        </div>
+      </div>
+      <div className="d-flex gap-3 flex-wrap">
+        <div className="form-check mb-0">
+          <input type="checkbox" className="form-check-input" id={`def_ph_${idx}`}
+            checked={phone.is_default}
+            onChange={e => update({ is_default: e.target.checked, is_emergency: e.target.checked ? false : phone.is_emergency })} />
+          <label className="form-check-label small" htmlFor={`def_ph_${idx}`}>{t('contact.is_default')}</label>
+        </div>
+        <div className="form-check mb-0">
+          <input type="checkbox" className="form-check-input" id={`emerg_ph_${idx}`}
+            checked={phone.is_emergency}
+            onChange={e => update({ is_emergency: e.target.checked, is_default: e.target.checked ? false : phone.is_default })} />
+          <label className="form-check-label small" htmlFor={`emerg_ph_${idx}`}>{t('contact.is_emergency')}</label>
+        </div>
+        <div className="form-check mb-0">
+          <input type="checkbox" className="form-check-input" id={`wa_${idx}`}
+            checked={phone.is_whatsapp} onChange={e => update({ is_whatsapp: e.target.checked })} />
+          <label className="form-check-label small" htmlFor={`wa_${idx}`}>WhatsApp</label>
+        </div>
+        <div className="form-check mb-0">
+          <input type="checkbox" className="form-check-input" id={`tg_${idx}`}
+            checked={phone.is_telegram} onChange={e => update({ is_telegram: e.target.checked })} />
+          <label className="form-check-label small" htmlFor={`tg_${idx}`}>Telegram</label>
         </div>
       </div>
     </div>
