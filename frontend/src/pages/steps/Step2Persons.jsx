@@ -433,8 +433,8 @@ function preparePersonForUI(person) {
   const out = { ...person };
   // nationality: prefer existing flat field; fall back to first nationality in array
   if (!out.nationality) {
-    const primary = (out.nationalities || []).find(n => n.is_primary) || (out.nationalities || [])[0];
-    out.nationality = primary ? primary.country_id : '';
+    const primary = (out.nationalities || [])[0];
+    out.nationality = primary ? (primary.nationality_id || primary.country_id || '') : '';
   }
   // id_type_id / id_number: prefer existing flat fields; fall back to first id in array
   if (!out.id_type_id) {
@@ -454,7 +454,7 @@ function transformPersonForSave(person) {
   const out = { ...person };
 
   out.nationalities = person.nationality
-    ? [{ country_id: person.nationality, is_primary: true }]
+    ? [{ nationality_id: person.nationality }]
     : [];
   delete out.nationality;
 

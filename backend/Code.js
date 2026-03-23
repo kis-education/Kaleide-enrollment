@@ -876,7 +876,7 @@ function savePersons_(applicationId, persons) {
     // ── Nationalities ─────────────────────────────────────────────────────────
     if (Array.isArray(person.nationalities)) {
       person.nationalities.filter(n => !n.record_id).forEach(n => {
-        nats.push({ record_id: generateUuid_(), person_id: personId, country_id: n.country_id, is_primary: n.is_primary || false });
+        nats.push({ record_id: generateUuid_(), person_id: personId, nationality_id: n.nationality_id || n.country_id });
       });
     }
 
