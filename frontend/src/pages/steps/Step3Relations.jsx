@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
-import { gasCall } from '../../api';
+import { fetchLookups } from '../../api';
 import * as log from '../../logger';
 
 function buildInitialRelations(persons, existingRelations) {
@@ -41,7 +41,7 @@ export default function Step3Relations({ onNext, onBack }) {
   const [relationTypes, setRelationTypes] = useState([]);
 
   useEffect(() => {
-    gasCall('fetchLookups', {})
+    fetchLookups()
       .then(data => {
         log.info('Step3: fetchLookups relationTypes', { count: data.relationTypes?.length, data: JSON.stringify(data.relationTypes) });
         if (data.relationTypes?.length) setRelationTypes(data.relationTypes);

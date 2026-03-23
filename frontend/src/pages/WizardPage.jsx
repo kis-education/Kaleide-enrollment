@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
-import { gasCall } from '../api';
+import { gasCall, prefetchLookups } from '../api';
 import LangToggle from '../components/LangToggle';
 import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
@@ -42,6 +42,9 @@ export default function WizardPage() {
   const [saving,            setSaving]            = useState(false);
   const [sendingMagicLink,  setSendingMagicLink]  = useState(false);
   const [rehydrating,       setRehydrating]       = useState(false);
+
+  // Kick off lookup prefetch immediately so Step3/Step4 get cached data.
+  useEffect(() => { prefetchLookups(); }, []); // eslint-disable-line
 
   // On page reload, applicationId is restored from sessionStorage but stepData is empty.
   // Auto-resume from the server to restore full wizard state.

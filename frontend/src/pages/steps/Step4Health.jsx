@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
-import { gasCall } from '../../api';
+import { fetchLookups } from '../../api';
 
 function TagSelect({ options, selected, onChange, placeholder }) {
   const [input,   setInput]   = useState('');
@@ -138,7 +138,7 @@ export default function Step4Health({ onNext, onBack }) {
   const [medicalOpts,   setMedicalOpts]   = useState([]);
 
   useEffect(() => {
-    gasCall('fetchLookups', {})
+    fetchLookups()
       .then(data => {
         setAllergiesOpts(data.allergies || []);
         setDietaryOpts(data.dietary   || []);

@@ -3,6 +3,29 @@
  * Every call includes _hp (honeypot — empty, untouched by real users).
  */
 
+// ─── Lookups cache ────────────────────────────────────────────────────────────
+// fetchLookups result is static for the lifetime of the page — cache it.
+// prefetchLookups() kicks off the request early; fetchLookups() returns the
+// cached promise (or value) so steps get the result immediately if it's ready.
+let _lookupsCache  = null;
+let _lookupsFlight = null;
+
+export function prefetchLookups() {
+  if (_lookupsCache || _lookupsFlight) return;
+  _lookupsFlight = gasCall('fetchLookups', {})
+    .then(data  => { _lookupsCache = data; _lookupsFlight = null; return data; })
+    .catch(_err => { _lookupsFlight = null; });
+}
+
+export function fetchLookups() {
+  if (_lookupsCache)  return Promise.resolve(_lookupsCache);
+  if (_lookupsFlight) return _lookupsFlight;
+  _lookupsFlight = gasCall('fetchLookups', {})
+    .then(data  => { _lookupsCache = data; _lookupsFlight = null; return data; })
+    .catch(err  => { _lookupsFlight = null; throw err; });
+  return _lookupsFlight;
+}
+
 import * as log from './logger';
 
 const GAS_ENDPOINT = import.meta.env.VITE_GAS_ENDPOINT;
