@@ -437,10 +437,24 @@ function preparePersonForUI(person) {
     out.nationality = primary ? (primary.nationality_id || primary.country_id || '') : '';
   }
   // id_type_id / id_number: prefer existing flat fields; fall back to first id in array
+  // _id_record_id carries the existing DB record_id so transformPersonForSave can skip re-creation
   if (!out.id_type_id) {
     const firstId = (out.ids || [])[0];
-    out.id_type_id = firstId ? firstId.id_type_id : '';
-    out.id_number  = firstId ? firstId.id_number  : '';
+    out.id_type_id    = firstId ? firstId.id_type_id : '';
+    out.id_number     = firstId ? firstId.id_number  : '';
+    out._id_record_id = firstId ? firstId.record_id  : null;
+  }
+  // _nat_record_id carries the existing DB record_id for the nationality
+  if (!out.nationality) {
+    const primary = (out.nationalities || [])[0];
+    out.nationality    = primary ? (primary.nationality_id || primary.country_id || '') : '';
+    out._nat_record_id = primary ? primary.record_id : null;
+  } else {
+    // flat nationality already set (e.g. first render from stepData) — still try to pick up record_id
+    if (!out._nat_record_id) {
+      const primary = (out.nationalities || [])[0];
+      out._nat_record_id = primary ? primary.record_id : null;
+    }
   }
   return out;
 }
@@ -454,15 +468,17 @@ function transformPersonForSave(person) {
   const out = { ...person };
 
   out.nationalities = person.nationality
-    ? [{ nationality_id: person.nationality }]
+    ? [{ ...(person._nat_record_id ? { record_id: person._nat_record_id } : {}), nationality_id: person.nationality }]
     : [];
   delete out.nationality;
+  delete out._nat_record_id;
 
   out.ids = (person.id_type_id && person.id_number)
-    ? [{ id_type_id: person.id_type_id, id_number: person.id_number }]
+    ? [{ ...(person._id_record_id ? { record_id: person._id_record_id } : {}), id_type_id: person.id_type_id, id_number: person.id_number }]
     : [];
   delete out.id_type_id;
   delete out.id_number;
+  delete out._id_record_id;
 
   delete out._sameAddress;
 
