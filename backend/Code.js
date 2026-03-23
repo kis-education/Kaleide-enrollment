@@ -278,7 +278,9 @@ function resumeApplication_(p) {
   }
 
   const persons    = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
-  const relations  = appsheetRequest_(T.RELATIONS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  // Sheet uses person_id_a/person_id_b; map to guardian_person_id/applicant_person_id for frontend
+  const relations  = (appsheetRequest_(T.RELATIONS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [])
+    .map(r => ({ ...r, guardian_person_id: r.person_id_a || r.guardian_person_id, applicant_person_id: r.person_id_b || r.applicant_person_id }));
   const documents  = appsheetRequest_(T.DOCUMENTS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
   const responses  = appsheetRequest_(T.QB_RESPONSES,  'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [];
   // interview_type is a plain enum string; interviewer_id is a plain email string — no FK resolution
@@ -1006,13 +1008,21 @@ function saveRelations_(applicationId, relations) {
   const newRelations = relations.filter(r => !r.relation_id).map(r => ({
     relation_id:           generateUuid_(),
     application_id:        applicationId,
-    guardian_person_id:    r.guardian_person_id,
-    applicant_person_id:   r.applicant_person_id,
+    person_id_a:           r.guardian_person_id,
+    person_id_b:           r.applicant_person_id,
     relation_type_id:      r.relation_type_id      || null,
     is_custodial:          r.is_custodial          || false,
     is_pick_up_authorized: r.is_pick_up_authorized || false,
   }));
-  const existingRelations = relations.filter(r => r.relation_id);
+  const existingRelations = relations.filter(r => r.relation_id).map(r => ({
+    relation_id:           r.relation_id,
+    application_id:        applicationId,
+    person_id_a:           r.guardian_person_id || r.person_id_a,
+    person_id_b:           r.applicant_person_id || r.person_id_b,
+    relation_type_id:      r.relation_type_id      || null,
+    is_custodial:          r.is_custodial          || false,
+    is_pick_up_authorized: r.is_pick_up_authorized || false,
+  }));
 
   const _debug = { newRelations: newRelations.length, existingRelations: existingRelations.length, firstNew: newRelations[0] || null };
   if (newRelations.length)      appsheetRequest_(T.RELATIONS, 'Add',  newRelations, null, _debug);
