@@ -49,8 +49,8 @@ const handleNext = async (stepKey, data) => {
     if (applicationId && stepKey) {
       try {
         log.info(`WizardPage: auto-saving step "${stepKey}" for application ${applicationId}`);
-        await gasCall('saveStep', { application_id: applicationId, step: stepKey, payload: data });
-        log.success(`WizardPage: saveStep "${stepKey}" OK`);
+        const saveResult = await gasCall('saveStep', { application_id: applicationId, step: stepKey, payload: data });
+        log.success(`WizardPage: saveStep "${stepKey}" OK`, saveResult?._debug || {});
       } catch (err) {
         log.warn(`WizardPage: saveStep "${stepKey}" failed (non-blocking)`, { message: err.message });
         showToast(t('wizard.save_failed'));

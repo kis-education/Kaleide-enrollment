@@ -426,6 +426,26 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
 }
 
 /**
+ * Converts a stored/resumed person (arrays) back to the flat UI fields that
+ * PersonSection uses (nationality, id_type_id, id_number).
+ */
+function preparePersonForUI(person) {
+  const out = { ...person };
+  // nationality: prefer existing flat field; fall back to first nationality in array
+  if (!out.nationality) {
+    const primary = (out.nationalities || []).find(n => n.is_primary) || (out.nationalities || [])[0];
+    out.nationality = primary ? primary.country_id : '';
+  }
+  // id_type_id / id_number: prefer existing flat fields; fall back to first id in array
+  if (!out.id_type_id) {
+    const firstId = (out.ids || [])[0];
+    out.id_type_id = firstId ? firstId.id_type_id : '';
+    out.id_number  = firstId ? firstId.id_number  : '';
+  }
+  return out;
+}
+
+/**
  * Transforms a person's flat UI fields into the arrays savePersons_ expects.
  * NOTE: _uid is intentionally preserved — Step3Relations depends on it to
  * build unique guardian_person_id keys before the backend assigns person_id.
@@ -455,7 +475,7 @@ export default function Step2Persons({ onNext, onBack }) {
   const primaryEmail = stepData.email?.primary_email || '';
 
   const [persons, setPersons] = useState(() => {
-    if (stepData.persons?.length) return stepData.persons;
+    if (stepData.persons?.length) return stepData.persons.map(preparePersonForUI);
     return [emptyPerson('guardian'), emptyPerson('applicant')];
   });
   const [err, setErr] = useState('');

@@ -376,6 +376,7 @@ function saveStep_(p) {
   }
   appsheetRequest_(T.APPLICATIONS, 'Edit', [appRow]);
 
+  let extra = null;
   switch (step) {
     case 'application':
       // Application-level fields already written above
@@ -412,7 +413,7 @@ function saveStep_(p) {
       break;
     }
     case 'persons':
-      savePersons_(application_id, payload);
+      extra = savePersons_(application_id, payload);
       break;
     case 'relations':
       saveRelations_(application_id, payload);
@@ -433,7 +434,7 @@ function saveStep_(p) {
       throw new Error('Unknown step: ' + step);
   }
 
-  return { saved: true, step };
+  return { saved: true, step, _debug: extra };
 }
 
 /**
@@ -893,9 +894,14 @@ function savePersons_(applicationId, persons) {
 
     // ── Address ───────────────────────────────────────────────────────────────
     let addressId = null;
+    let needAddressJunction = false;
     const copyFrom = person.copy_address_from_person_id;
     if (copyFrom && (personAddressIds[copyFrom] || personAddressIds[String(copyFrom)])) {
       addressId = personAddressIds[copyFrom] || personAddressIds[String(copyFrom)];
+      needAddressJunction = true; // always link when copying (the address row itself already exists)
+    } else if (person.address?.address_id) {
+      // Resumed person with existing address — junction row already in AppSheet, no re-add needed
+      addressId = person.address.address_id;
     } else if (person.address && hasAddressData_(person.address)) {
       addressId = generateUuid_();
       addresses.push({
@@ -909,8 +915,9 @@ function savePersons_(applicationId, persons) {
         zip:            person.address.zip            || null,
         created_at:     now,
       });
+      needAddressJunction = true;
     }
-    if (addressId && !person.person_id) {
+    if (needAddressJunction && addressId) {
       personAddrs.push({ record_id: generateUuid_(), person_id: personId, address_id: addressId, label: 'home', is_primary: true });
     }
     personAddressIds[personId] = addressId;
@@ -945,6 +952,19 @@ function savePersons_(applicationId, persons) {
     }
   });
 
+  // ── DEBUG: return row counts so frontend can log them ─────────────────────
+  const _debug = {
+    personsEdit: personsEdit.length, personsAdd: personsAdd.length,
+    nats: nats.length, ids: ids.length, langs: langs.length,
+    addresses: addresses.length, personAddrs: personAddrs.length,
+    emails: emails.length, personEmails: personEmails.length,
+    phones: phones.length, personPhones: personPhones.length,
+    schoolsAdd: schoolsAdd.length, schoolsEdit: schoolsEdit.length,
+    firstNat: nats[0] || null,
+    firstPhone: phones[0] ? { phone_number: phones[0].phone_number } : null,
+    firstEmail: emails[0] ? { email_address: emails[0].email_address } : null,
+  };
+
   // ── Batch writes (one API call per table) ─────────────────────────────────
   if (personsEdit.length)  appsheetRequest_(T.PERSONS,              'Edit', personsEdit);
   if (personsAdd.length)   appsheetRequest_(T.PERSONS,              'Add',  personsAdd);
@@ -959,6 +979,8 @@ function savePersons_(applicationId, persons) {
   if (personPhones.length) appsheetRequest_(T.PERSON_PHONES,        'Add',  personPhones);
   if (schoolsAdd.length)   appsheetRequest_(T.PREV_SCHOOLS,         'Add',  schoolsAdd);
   if (schoolsEdit.length)  appsheetRequest_(T.PREV_SCHOOLS,         'Edit', schoolsEdit);
+
+  return _debug;
 }
 
 /**
