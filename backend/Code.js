@@ -720,26 +720,11 @@ function fetchLookups_() {
   Logger.log('fetchLookups_ medical[0]: '       + JSON.stringify(medical[0]));
   Logger.log('fetchLookups_ relationTypes[0]: ' + JSON.stringify(relationTypes[0]));
 
-  // Extract the first non-empty string value from a row — used as the ID for stub tables
-  // where we don't know the exact column name. Also tries known column names first.
-  function pickId(r, knownKeys) {
-    if (!r) return null;
-    for (var k = 0; k < knownKeys.length; k++) {
-      if (r[knownKeys[k]]) return r[knownKeys[k]];
-    }
-    // Fallback: first string value in the row
-    var vals = Object.values(r);
-    for (var v = 0; v < vals.length; v++) {
-      if (typeof vals[v] === 'string' && vals[v]) return vals[v];
-    }
-    return null;
-  }
-
   return {
-    allergies:     allergies.map(r =>     ({ id: pickId(r, ['row_id', 'food_allergy_id', 'id']),    label: r.food_allergy_designation        || pickId(r, ['food_allergy_designation']) })),
-    dietary:       dietary.map(r =>       ({ id: pickId(r, ['row_id', 'dietary_req_id',   'id']),    label: r.diet_designation                || pickId(r, ['diet_designation'])         })),
-    medical:       medical.map(r =>       ({ id: pickId(r, ['row_id', 'medical_cond_id',  'id']),    label: r.medical_condition_designation   || pickId(r, ['medical_condition_designation']) })),
-    relationTypes: relationTypes.map(r => ({ id: pickId(r, ['row_id', 'relation_type_id', 'id']) })),
+    allergies:     allergies.map(r =>     ({ id: r.row_id, label: r.food_allergy_designation })),
+    dietary:       dietary.map(r =>       ({ id: r.row_id, label: r.diet_designation })),
+    medical:       medical.map(r =>       ({ id: r.row_id, label: r.medical_condition_designation })),
+    relationTypes: relationTypes.map(r => ({ id: r.row_id, label: r.relation_type_designation })),
   };
 }
 
