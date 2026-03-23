@@ -835,17 +835,25 @@ function verifyRecaptcha_(p) {
 function savePersons_(applicationId, persons) {
   if (!Array.isArray(persons)) return;
 
-  const personAddressIds = {}; // person_id/uid → address_id, for address copy resolution
+  const now = new Date().toISOString();
+  const personAddressIds = {}; // personId/uid → addressId, for copy resolution
 
-  persons.forEach((person, idx) => {
+  // Accumulate all rows first, then batch-write per table to stay within
+  // AppSheet's API bandwidth quota (one call per table instead of one per person).
+  const personsAdd  = [], personsEdit  = [];
+  const nats        = [], ids          = [], langs        = [];
+  const addresses   = [], personAddrs  = [];
+  const emails      = [], personEmails = [];
+  const phones      = [], personPhones = [];
+  const schoolsAdd  = [], schoolsEdit  = [];
+
+  persons.forEach(person => {
     const personId    = person.person_id || generateUuid_();
     const personUid   = person._uid;
-    const now         = new Date().toISOString();
-    const isGuardian  = person.person_type_id === 'guardian';
     const isApplicant = person.person_type_id === 'applicant';
 
-    // ── Core person row ───────────────────────────────────────────────────────
-    const personRow = {
+    // ── Core person row (schema columns only — strip AppSheet virtual fields) ─
+    const baseRow = {
       person_id:      personId,
       application_id: applicationId,
       person_type_id: person.person_type_id || 'guardian',
@@ -855,45 +863,32 @@ function savePersons_(applicationId, persons) {
       date_of_birth:  person.date_of_birth  || null,
       place_of_birth: person.place_of_birth || null,
       gender:         person.gender         || null,
-      created_at:     person.created_at     || now,
     };
     if (person.person_id) {
-      appsheetRequest_(T.PERSONS, 'Edit', [personRow]);
+      personsEdit.push(baseRow);
     } else {
-      appsheetRequest_(T.PERSONS, 'Add', [personRow]);
+      personsAdd.push({ ...baseRow, created_at: now });
     }
 
     // ── Nationalities ─────────────────────────────────────────────────────────
     if (Array.isArray(person.nationalities)) {
-      const newNats = person.nationalities.filter(n => !n.record_id).map(n => ({
-        record_id:  generateUuid_(),
-        person_id:  personId,
-        country_id: n.country_id,
-        is_primary: n.is_primary || false,
-      }));
-      if (newNats.length) appsheetRequest_(T.PERSON_NATIONALITIES, 'Add', newNats);
+      person.nationalities.filter(n => !n.record_id).forEach(n => {
+        nats.push({ record_id: generateUuid_(), person_id: personId, country_id: n.country_id, is_primary: n.is_primary || false });
+      });
     }
 
     // ── IDs ───────────────────────────────────────────────────────────────────
     if (Array.isArray(person.ids)) {
-      const newIds = person.ids.filter(x => !x.record_id).map(x => ({
-        record_id:  generateUuid_(),
-        person_id:  personId,
-        id_type_id: x.id_type_id,
-        id_number:  x.id_number,
-      }));
-      if (newIds.length) appsheetRequest_(T.PERSON_IDS, 'Add', newIds);
+      person.ids.filter(x => !x.record_id).forEach(x => {
+        ids.push({ record_id: generateUuid_(), person_id: personId, id_type_id: x.id_type_id, id_number: x.id_number });
+      });
     }
 
     // ── Languages ─────────────────────────────────────────────────────────────
     if (Array.isArray(person.languages)) {
-      const newLangs = person.languages.filter(x => !x.record_id).map(x => ({
-        record_id:         generateUuid_(),
-        person_id:         personId,
-        language_id:       x.language_id,   // plain free text — no FK/Ref resolution; languages lookup not yet live
-        is_mother_tongue:  x.is_mother_tongue || false,
-      }));
-      if (newLangs.length) appsheetRequest_(T.PERSON_LANGUAGES, 'Add', newLangs);
+      person.languages.filter(x => !x.record_id).forEach(x => {
+        langs.push({ record_id: generateUuid_(), person_id: personId, language_id: x.language_id, is_mother_tongue: x.is_mother_tongue || false });
+      });
     }
 
     // ── Address ───────────────────────────────────────────────────────────────
@@ -902,9 +897,9 @@ function savePersons_(applicationId, persons) {
     if (copyFrom && (personAddressIds[copyFrom] || personAddressIds[String(copyFrom)])) {
       addressId = personAddressIds[copyFrom] || personAddressIds[String(copyFrom)];
     } else if (person.address && hasAddressData_(person.address)) {
-      const newAddressId = generateUuid_();
-      appsheetRequest_(T.ADDRESSES, 'Add', [{
-        address_id:     newAddressId,
+      addressId = generateUuid_();
+      addresses.push({
+        address_id:     addressId,
         application_id: applicationId,
         address_line_1: person.address.address_line_1 || null,
         address_line_2: person.address.address_line_2 || null,
@@ -913,39 +908,20 @@ function savePersons_(applicationId, persons) {
         country_id:     person.address.country_id     || null,
         zip:            person.address.zip            || null,
         created_at:     now,
-      }]);
-      addressId = newAddressId;
+      });
     }
     if (addressId && !person.person_id) {
-      appsheetRequest_(T.PERSON_ADDRESSES, 'Add', [{
-        record_id:  generateUuid_(),
-        person_id:  personId,
-        address_id: addressId,
-        label:      'home',
-        is_primary: true,
-      }]);
+      personAddrs.push({ record_id: generateUuid_(), person_id: personId, address_id: addressId, label: 'home', is_primary: true });
     }
     personAddressIds[personId] = addressId;
-    if (personUid) personAddressIds[String(personUid)] = addressId; // also key by _uid for copy resolution
+    if (personUid) personAddressIds[String(personUid)] = addressId;
 
     // ── Emails ────────────────────────────────────────────────────────────────
     if (Array.isArray(person.emails)) {
       person.emails.filter(e => !e.email_id).forEach(e => {
         const emailId = generateUuid_();
-        appsheetRequest_(T.EMAILS, 'Add', [{
-          email_id:       emailId,
-          application_id: applicationId,
-          email_address:  e.email_address,
-          created_at:     now,
-        }]);
-        appsheetRequest_(T.PERSON_EMAILS, 'Add', [{
-          record_id:     generateUuid_(),
-          person_id:     personId,
-          email_id:      emailId,
-          email_type_id: e.email_type_id || null,
-          is_default:    e.is_default    || false,
-          is_emergency:  e.is_emergency  || false,
-        }]);
+        emails.push({ email_id: emailId, application_id: applicationId, email_address: e.email_address, created_at: now });
+        personEmails.push({ record_id: generateUuid_(), person_id: personId, email_id: emailId, email_type_id: e.email_type_id || null, is_default: e.is_default || false, is_emergency: e.is_emergency || false });
       });
     }
 
@@ -953,43 +929,36 @@ function savePersons_(applicationId, persons) {
     if (Array.isArray(person.phones)) {
       person.phones.filter(ph => !ph.phone_id).forEach(ph => {
         const phoneId = generateUuid_();
-        appsheetRequest_(T.PHONES, 'Add', [{
-          phone_id:       phoneId,
-          application_id: applicationId,
-          phone_number:   ph.phone_number,
-          is_whatsapp:    ph.is_whatsapp || false,
-          is_telegram:    ph.is_telegram || false,
-          created_at:     now,
-        }]);
-        appsheetRequest_(T.PERSON_PHONES, 'Add', [{
-          record_id:     generateUuid_(),
-          person_id:     personId,
-          phone_id:      phoneId,
-          phone_type_id: ph.phone_type_id || null,
-          is_default:    ph.is_default    || false,
-          is_emergency:  ph.is_emergency  || false,
-        }]);
+        phones.push({ phone_id: phoneId, application_id: applicationId, phone_number: ph.phone_number, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
+        personPhones.push({ record_id: generateUuid_(), person_id: personId, phone_id: phoneId, phone_type_id: ph.phone_type_id || null, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false });
       });
     }
 
     // ── Previous schools (applicants only) ────────────────────────────────────
     if (isApplicant && Array.isArray(person.previous_schools)) {
-      const newSchools = person.previous_schools.filter(s => !s.previous_school_id).map(s => ({
-        previous_school_id:          generateUuid_(),
-        person_id:                   personId,
-        school_name:                 s.school_name || null,
-        city:                        s.city || null,
-        country_id:                  s.country_id || null,
-        from_year:                   s.from_year || null,
-        to_year:                     s.to_year || null,
-        education_level_description: s.education_level_description || null,
-        language_of_instruction:     s.language_of_instruction || null,
-      }));
-      const existingSchools = person.previous_schools.filter(s => s.previous_school_id);
-      if (newSchools.length)      appsheetRequest_(T.PREV_SCHOOLS, 'Add',  newSchools);
-      if (existingSchools.length) appsheetRequest_(T.PREV_SCHOOLS, 'Edit', existingSchools);
+      person.previous_schools.filter(s => !s.previous_school_id).forEach(s => {
+        schoolsAdd.push({ previous_school_id: generateUuid_(), person_id: personId, school_name: s.school_name || null, city: s.city || null, country_id: s.country_id || null, from_year: s.from_year || null, to_year: s.to_year || null, education_level_description: s.education_level_description || null, language_of_instruction: s.language_of_instruction || null });
+      });
+      person.previous_schools.filter(s => s.previous_school_id).forEach(s => {
+        schoolsEdit.push({ previous_school_id: s.previous_school_id, person_id: personId, school_name: s.school_name || null, city: s.city || null, country_id: s.country_id || null, from_year: s.from_year || null, to_year: s.to_year || null, education_level_description: s.education_level_description || null, language_of_instruction: s.language_of_instruction || null });
+      });
     }
   });
+
+  // ── Batch writes (one API call per table) ─────────────────────────────────
+  if (personsEdit.length)  appsheetRequest_(T.PERSONS,              'Edit', personsEdit);
+  if (personsAdd.length)   appsheetRequest_(T.PERSONS,              'Add',  personsAdd);
+  if (nats.length)         appsheetRequest_(T.PERSON_NATIONALITIES, 'Add',  nats);
+  if (ids.length)          appsheetRequest_(T.PERSON_IDS,           'Add',  ids);
+  if (langs.length)        appsheetRequest_(T.PERSON_LANGUAGES,     'Add',  langs);
+  if (addresses.length)    appsheetRequest_(T.ADDRESSES,            'Add',  addresses);
+  if (personAddrs.length)  appsheetRequest_(T.PERSON_ADDRESSES,     'Add',  personAddrs);
+  if (emails.length)       appsheetRequest_(T.EMAILS,               'Add',  emails);
+  if (personEmails.length) appsheetRequest_(T.PERSON_EMAILS,        'Add',  personEmails);
+  if (phones.length)       appsheetRequest_(T.PHONES,               'Add',  phones);
+  if (personPhones.length) appsheetRequest_(T.PERSON_PHONES,        'Add',  personPhones);
+  if (schoolsAdd.length)   appsheetRequest_(T.PREV_SCHOOLS,         'Add',  schoolsAdd);
+  if (schoolsEdit.length)  appsheetRequest_(T.PREV_SCHOOLS,         'Edit', schoolsEdit);
 }
 
 /**
