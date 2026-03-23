@@ -264,6 +264,19 @@ function resumeApplication_(p) {
   const app = apps[0];
   const id  = app.application_id;
 
+  // Stamp email as confirmed — using the magic link proves ownership
+  if (!app.email_confirmed) {
+    const now = new Date().toISOString();
+    appsheetRequest_(T.APPLICATIONS, 'Edit', [{
+      application_id:    id,
+      email_confirmed:   true,
+      email_confirmed_at: now,
+      updated_at:        now,
+    }]);
+    app.email_confirmed    = true;
+    app.email_confirmed_at = now;
+  }
+
   const persons    = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
   const relations  = appsheetRequest_(T.RELATIONS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
   const documents  = appsheetRequest_(T.DOCUMENTS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
