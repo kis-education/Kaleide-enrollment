@@ -42,11 +42,30 @@ const QB_EMPLOYER_ID         = 'a1b2c3d4-0021-0000-0000-000000000000';
 const QB_HAS_ADAPTATION_ID   = 'a1b2c3d4-0022-0000-0000-000000000000';
 const QB_ADAPTATION_NOTES_ID = 'a1b2c3d4-0023-0000-0000-000000000000';
 
-// AppSheet table names matching the enr* / qb* schema
+// AppSheet table names matching the enr* / qb* schema (post DL-E15)
+//
+// DL-E15 reorganisation:
+//   - `enrApplications`         → `enrEnrollments` (1 row per applicant, not per session)
+//   - new `enrEnrollmentGroups` (1 row per wizard session — session-level fields live here)
+//   - new `enrPrograms` / `enrProgramTypes` (admission programme catalog)
+//   - `enrApplicationSources`   → `enrEnrollmentSources`
+//   - `sysStates_T`             (universal state catalog; entity_type_code='ENR_ADMISSION_SCHOOL')
+//
+// Stage-1 transitional notes:
+//   - `enrStatusTypes` is kept as a legacy proxy for state lookup until sysStates_T is fully wired.
+//   - `enrStatusLog` / `enrConsentsLog` will be migrated to polymorphic sys* tables (DL-S37/DL-S44)
+//     in a later cut. For now we keep the enr* names but FK semantics change:
+//       · staging tables (persons/addresses/emails/phones/relations) FK → enrollment_group_id
+//       · per-enrollment tables (documents/interviews/consents/status_log) FK → enrollment_id
 const T = {
-  APPLICATIONS:         'enrApplications',
+  ENROLLMENTS:          'enrEnrollments',        // rename of enrApplications
+  ENROLLMENT_GROUPS:    'enrEnrollmentGroups',   // new — session header
+  PROGRAMS:             'enrPrograms',           // new — admission programme catalog
+  PROGRAM_TYPES:        'enrProgramTypes',       // new
+  ENROLLMENT_SOURCES:   'enrEnrollmentSources',  // rename of enrApplicationSources
+  STATES_T:             'sysStates_T',           // universal state catalog
   STATUS_LOG:           'enrStatusLog',
-  STATUS_TYPES:         'enrStatusTypes',
+  STATUS_TYPES:         'enrStatusTypes',        // legacy proxy — Stage 1 only
   CONSENTS:             'enrConsentsLog',
   PERSONS:              'enrPersons',
   PERSON_NATIONALITIES: 'enrPersonNationalities',
@@ -134,19 +153,30 @@ function doPost(e) {
     let result;
 
     switch (action) {
-      case 'initApplication':      result = initApplication_(payload);      break;
+      // ── DL-E15 actions (new canonical names) ────────────────────────────────
+      // Legacy names are kept as aliases for transitional frontend compatibility.
+      case 'initApplication':         // legacy alias
+      case 'initEnrollmentSession':   result = initEnrollmentSession_(payload);   break;
+
+      case 'resumeApplication':       // legacy alias
+      case 'resumeSession':           result = resumeSession_(payload);           break;
+
+      case 'submitApplication':       // legacy alias
+      case 'submitEnrollmentSession': result = submitEnrollmentSession_(payload); break;
+
+      case 'promoteApplication':      // legacy alias
+      case 'promoteEnrollment':       result = promoteEnrollment_(payload);       break;
+
+      // ── Actions that keep their name (payload shape may have changed) ───────
       case 'sendMagicLink':        result = sendMagicLink_(payload);        break;
-      case 'resumeApplication':    result = resumeApplication_(payload);    break;
       case 'saveStep':             result = saveStep_(payload);             break;
-      case 'submitApplication':    result = submitApplication_(payload);    break;
       case 'sendVerificationCode': result = sendVerificationCode_(payload); break;
       case 'verifyEmail':          result = verifyEmail_(payload);          break;
       case 'fetchQuestions':       result = fetchQuestions_(payload);       break;
       case 'saveResponses':        result = saveResponses_(payload);        break;
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
       case 'verifyRecaptcha':      result = verifyRecaptcha_(payload);      break;
-      case 'promoteApplication': result = promoteApplication_(payload); break;
-      case 'fetchLookups':       result = fetchLookups_(payload);       break;
+      case 'fetchLookups':         result = fetchLookups_(payload);         break;
       default:
         return jsonResponse_({ ok: false, error: 'Unknown action: ' + action }, 400);
     }
@@ -162,11 +192,23 @@ function doPost(e) {
 // ─── Action handlers ──────────────────────────────────────────────────────────
 
 /**
- * Creates a new application in DRAFT status, sends magic link and internal notification.
- * @param {Object} p - { primary_email, preferred_language?, recaptcha_token? }
- * @returns {{ application_id: string, resume_token: string }}
+ * Creates a new enrollment session (header row in enrEnrollmentGroups) — DL-E15.
+ *
+ * Unlike the legacy initApplication_, this no longer inserts into enrEnrollments
+ * (per-applicant rows). Those are created later by submitEnrollmentSession_, one
+ * per applicant person captured in the wizard. The session header carries the
+ * email, language, resume token, source and program reference.
+ *
+ * GDPR consent is captured visually on the consent page but the formal consent
+ * record is deferred to submit time (when enrollments exist to attach it to).
+ * This avoids the awkward "consent attached to a non-existent enrollment" case
+ * during the staging period.
+ *
+ * @param {Object} p - { primary_email, preferred_language?, program_id?, recaptcha_token? }
+ * @returns {{ enrollment_group_id: string, resume_token: string,
+ *             application_id: string }} (application_id is a legacy alias = enrollment_group_id)
  */
-function initApplication_(p) {
+function initEnrollmentSession_(p) {
   // Verify reCAPTCHA before writing anything to the database
   const secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
   if (secret) {
@@ -175,122 +217,176 @@ function initApplication_(p) {
     if (!rcResult.pass) throw new Error('reCAPTCHA verification failed');
   }
 
-  const applicationId = generateUuid_();
-  const resumeToken   = generateUuid_();
-  const now           = new Date().toISOString();
+  const enrollmentGroupId = generateUuid_();
+  const resumeToken       = generateUuid_();
+  const now               = new Date().toISOString();
+  const lang              = p.preferred_language || 'es';
 
-  // Look up DRAFT status type id
-  const statusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
-    Filter: '"status_code" = "DRAFT" && "school_id" = "' + SCHOOL_ID + '"'
-  });
-  const draftTypeId = (statusTypes && statusTypes[0]) ? statusTypes[0].status_type_id : null;
+  // ── Resolve source_id from enrEnrollmentSources (Capa 2 catalog) ───────────
+  // The public web wizard always corresponds to source_code = 'WEB_PUBLIC'.
+  let sourceId = null;
+  try {
+    const sources = appsheetRequest_(T.ENROLLMENT_SOURCES, 'Find', [], {
+      Filter: '"source_code" = "WEB_PUBLIC"'
+    });
+    if (sources && sources[0]) sourceId = sources[0].source_id;
+  } catch (e) {
+    // Non-fatal: source_id stays null if catalog not yet seeded
+    Logger.log('initEnrollmentSession_: enrEnrollmentSources lookup failed: ' + e.message);
+  }
 
-  appsheetRequest_(T.APPLICATIONS, 'Add', [{
-    application_id:     applicationId,
-    school_id:          SCHOOL_ID,
-    status_type_id:     draftTypeId,
-    resume_token:       resumeToken,
-    primary_email:      p.primary_email,
-    preferred_language: p.preferred_language || 'es',
-    email_confirmed:    false,
-    desired_start_date: p.desired_start_date || null,
-    source:             p.source || 'enrollment_site',
-    created_at:         now,
-    updated_at:         now,
+  // ── Resolve program_id ─────────────────────────────────────────────────────
+  // If the frontend supplied program_id, trust it. Otherwise resolve the active
+  // ADMISSION_SCHOOL program for this tenant. If none exists yet, programId
+  // stays null and the wizard proceeds — operationally Diego must seed an
+  // active program in enrPrograms before the school goes live.
+  let programId = p.program_id || null;
+  if (!programId) {
+    try {
+      const programs = appsheetRequest_(T.PROGRAMS, 'Find', [], {
+        Filter: '"school_id" = "' + SCHOOL_ID + '" && "program_type_code" = "ADMISSION_SCHOOL" && ISBLANK([deleted_at])'
+      });
+      if (programs && programs.length) programId = programs[0].program_id;
+    } catch (e) {
+      Logger.log('initEnrollmentSession_: enrPrograms lookup failed: ' + e.message);
+    }
+  }
+
+  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Add', [{
+    enrollment_group_id:    enrollmentGroupId,
+    school_id:              SCHOOL_ID,
+    program_id:             programId,
+    source_id:              sourceId,
+    requester_person_table: null,  // resolved at submit when guardians are known
+    requester_person_id:    null,
+    primary_email:          p.primary_email,
+    preferred_language:     lang,
+    resume_token:           resumeToken,
+    magic_link_token:       null,
+    submitted_at:           null,
+    desired_start_date:     p.desired_start_date || null,  // Stage-1: captured here, propagated to each enrEnrollments on submit
+    source_locale:          lang,
+    created_at:             now,
+    updated_at:             now,
   }]);
 
-  // Record GDPR consent
-  const lang = p.preferred_language || 'es';
-  const gdprText = CONSENT_TEXTS.gdpr.en + '\n\n' + CONSENT_TEXTS.gdpr.es;
-  appsheetRequest_(T.CONSENTS, 'Add', [{
-    consent_id:         generateUuid_(),
-    application_id:     applicationId,
-    consent_type:       'gdpr_data_processing',
-    consent_text_shown: gdprText,
-    consented:          true,
-    consent_timestamp:  now,
-    language:           lang,
-  }]);
+  // NOTE: GDPR consent record is intentionally deferred to submit time.
+  // At init we have no enrEnrollments to attach the consent to, and the
+  // post-DL-S44 polymorphic sysConsentsLog is not yet wired here. The frontend
+  // still shows and requires the consent checkbox; the audit-trail row is
+  // created when submitEnrollmentSession_ runs, one consent per enrollment.
 
   sendMagicLinkEmail_(p.primary_email, resumeToken, lang, true);
   sendInternalEmail_(
-    '[KIS Admissions] New application started',
-    buildApplicationInitiatedBody_(applicationId, p.primary_email, now)
+    '[KIS Admissions] New enrollment session started',
+    buildApplicationInitiatedBody_(enrollmentGroupId, p.primary_email, now)
   );
 
-  return { application_id: applicationId, resume_token: resumeToken };
+  return {
+    enrollment_group_id: enrollmentGroupId,
+    resume_token:        resumeToken,
+    // legacy alias for frontends that still read `application_id`
+    application_id:      enrollmentGroupId,
+  };
 }
 
 /**
- * Resends magic link for an existing application.
- * @param {Object} p - { application_id } or { primary_email }
+ * Resends magic link for an existing enrollment session.
+ *
+ * DL-E15: queries enrEnrollmentGroups (the session header) — primary_email,
+ * preferred_language and resume_token now live there, not on enrEnrollments.
+ *
+ * Accepts the legacy `application_id` payload key as an alias for
+ * `enrollment_group_id` so older frontend builds continue to work.
+ *
+ * @param {Object} p - { enrollment_group_id? | application_id? } or { primary_email }
  */
 function sendMagicLink_(p) {
-  if (p.application_id) {
-    // Single-app link (e.g. from within the wizard)
-    const rows = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
-      Filter: '"application_id" = "' + p.application_id + '"'
+  const groupId = p.enrollment_group_id || p.application_id;
+
+  if (groupId) {
+    // Single-session link (e.g. from within the wizard)
+    const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+      Filter: '"enrollment_group_id" = "' + groupId + '"'
     });
-    const app = rows && rows[0];
-    if (!app) throw new Error('Application not found');
-    sendMagicLinkEmail_(app.primary_email, app.resume_token, app.preferred_language || 'es');
+    const grp = rows && rows[0];
+    if (!grp) throw new Error('Enrollment group not found');
+    sendMagicLinkEmail_(grp.primary_email, grp.resume_token, grp.preferred_language || 'es');
   } else if (p.primary_email) {
-    // Find all non-submitted applications for this email
-    const rows = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
+    // Find all non-submitted sessions for this email
+    const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
       Filter: '"primary_email" = "' + p.primary_email + '" && ISBLANK([submitted_at])'
     });
-    if (!rows || !rows.length) throw new Error('Application not found');
-    const apps = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    const lang = apps[0].preferred_language || 'es';
-    const tokens = apps.map(a => a.resume_token);
+    if (!rows || !rows.length) throw new Error('Enrollment group not found');
+    const grps = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    const lang = grps[0].preferred_language || 'es';
+    const tokens = grps.map(g => g.resume_token);
     sendMagicLinkMultiEmail_(p.primary_email, tokens, lang);
   } else {
-    throw new Error('Missing application_id or primary_email');
+    throw new Error('Missing enrollment_group_id or primary_email');
   }
   return { sent: true };
 }
 
 /**
- * Accepts a resume_token and returns the full application state.
+ * Accepts a resume_token and returns the full session state — DL-E15.
+ *
+ * Queries enrEnrollmentGroups (the session header) by resume_token, then loads:
+ *   - the N enrEnrollments rows (only present after submit)
+ *   - staging tables (persons, relations, documents, responses, interviews) by
+ *     enrollment_group_id
+ *
+ * Compatibility shim: legacy frontends expect `{ application, ... }`. We expose
+ * the group as `application` AND `group` (and the same payload also has a
+ * top-level `enrollments` array). This dual-key shape is transitional debt —
+ * delete the `application` alias once all frontend builds read `group`.
+ *
  * @param {Object} p - { resume_token }
- * @returns {Object} Full application state including all child records
+ * @returns {Object} { group, application(alias), enrollments[], persons[], ... }
  */
-function resumeApplication_(p) {
-  const apps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
+function resumeSession_(p) {
+  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
     Filter: '"resume_token" = "' + p.resume_token + '"'
   });
-  if (!apps || !apps.length) throw new Error('Invalid or expired resume token');
+  if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
 
-  const app = apps[0];
-  const id  = app.application_id;
+  const group = groups[0];
+  const id    = group.enrollment_group_id;
 
-  // Stamp email as confirmed — using the magic link proves ownership
-  if (!app.email_confirmed) {
-    const now = new Date().toISOString();
-    appsheetRequest_(T.APPLICATIONS, 'Edit', [{
-      application_id:    id,
-      email_confirmed:   true,
-      email_confirmed_at: now,
-      updated_at:        now,
-    }]);
-    app.email_confirmed    = true;
-    app.email_confirmed_at = now;
-  }
+  // Per-applicant enrollment rows (empty until submit)
+  const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + id + '"'
+  }) || [];
 
-  const persons    = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  const persons    = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"enrollment_group_id" = "' + id + '"' }) || [];
   // DB stores person_id_a/person_id_b; add guardian_person_id/applicant_person_id aliases for frontend
-  const relations  = (appsheetRequest_(T.RELATIONS, 'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [])
+  const relations  = (appsheetRequest_(T.RELATIONS, 'Find', [], { Filter: '"enrollment_group_id" = "' + id + '"' }) || [])
     .map(r => ({ ...r, guardian_person_id: r.person_id_a, applicant_person_id: r.person_id_b }));
-  const documents  = appsheetRequest_(T.DOCUMENTS,     'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
-  const responses  = appsheetRequest_(T.QB_RESPONSES,  'Find', [], { Filter: '"respondent_id" = "' + id + '"' }) || [];
-  // interview_type is a plain enum string; interviewer_id is a plain email string — no FK resolution
-  const interviews = appsheetRequest_(T.INTERVIEWS,    'Find', [], { Filter: '"application_id" = "' + id + '"' }) || [];
+  // Documents / interviews FK to enrollment_id (per-applicant). Aggregate across the N enrollments.
+  let documents  = [];
+  let interviews = [];
+  if (enrollments.length) {
+    const eidFilter = enrollments.map(e => '"enrollment_id" = "' + e.enrollment_id + '"').join(' || ');
+    documents  = appsheetRequest_(T.DOCUMENTS,  'Find', [], { Filter: eidFilter }) || [];
+    interviews = appsheetRequest_(T.INTERVIEWS, 'Find', [], { Filter: eidFilter }) || [];
+  }
+  // qbResponses respondent_id semantics: pre-submit it is the enrollment_group_id;
+  // post-submit per-applicant responses may also exist keyed to enrollment_id.
+  const respondentIds = [id].concat(enrollments.map(e => e.enrollment_id));
+  const responses = appsheetRequest_(T.QB_RESPONSES, 'Find', [], {
+    Filter: respondentIds.map(rid => '"respondent_id" = "' + rid + '"').join(' || ')
+  }) || [];
 
   // Normalise date fields to ISO format before sending to the frontend
-  app.desired_start_date = normalizeDate_(app.desired_start_date);
+  group.desired_start_date = normalizeDate_(group.desired_start_date);
 
   if (!persons.length) {
-    return { application: app, persons: [], relations, documents, responses, interviews };
+    return {
+      group,
+      application: group, // legacy alias — TODO: drop once frontend uses `group`
+      enrollments,
+      persons: [], relations, documents, responses, interviews
+    };
   }
 
   const personIds = persons.map(per => per.person_id);
@@ -354,37 +450,65 @@ function resumeApplication_(p) {
     };
   });
 
-  return { application: app, persons: enrichedPersons, relations, documents, responses, interviews };
+  return {
+    group,
+    application: group, // legacy alias — TODO: drop once frontend uses `group`
+    enrollments,
+    persons: enrichedPersons,
+    relations,
+    documents,
+    responses,
+    interviews,
+  };
 }
 
 /**
- * Partial save for any wizard step.
- * @param {Object} p - { application_id, step, payload }
+ * Partial save for any wizard step — DL-E15.
+ *
+ * The payload key is `enrollment_group_id`; legacy `application_id` is accepted
+ * as alias. All staging-table writes (persons/addresses/emails/phones/relations)
+ * now FK to enrollment_group_id, not application_id.
+ *
+ * Step semantics:
+ *   - `application` step name is kept (legacy) but its target is the GROUP row.
+ *     desired_start_date and source_locale are written to enrEnrollmentGroups;
+ *     they are propagated to each enrEnrollments at submit time.
+ *   - `review` step is staff-side and was driving status transitions on the old
+ *     enrApplications. Until DL-S37 wires sysStateTransitionLog into this flow,
+ *     we keep the legacy enrStatusTypes / enrStatusLog path — but it now writes
+ *     status against EACH enrollment in the group (the group itself has no state).
+ *
+ * @param {Object} p - { enrollment_group_id?|application_id?, step, payload }
  */
 function saveStep_(p) {
-  const { application_id, step, payload } = p;
-  if (!application_id || !step || !payload) throw new Error('Missing required fields');
+  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
+  const { step, payload } = p;
+  if (!enrollmentGroupId || !step || !payload) throw new Error('Missing required fields');
 
-  // Update application record — include step-specific application-level fields
-  const appRow = { application_id, updated_at: new Date().toISOString() };
+  const now = new Date().toISOString();
+
+  // ── Update the GROUP row for session-level fields ──────────────────────────
+  // (legacy: this used to touch enrApplications)
+  const groupRow = { enrollment_group_id: enrollmentGroupId, updated_at: now };
   if (step === 'application') {
-    appRow.desired_start_date = payload.desired_start_date || null;
-    appRow.source             = payload.source             || 'enrollment_site';
+    // desired_start_date lives in enrEnrollments per DL-E15, but Stage-1 stages
+    // it on the group and propagates at submit. source maps to source_locale
+    // for now (real source_id was resolved at init).
+    groupRow.desired_start_date = payload.desired_start_date || null;
+    if (payload.source) groupRow.source_locale = payload.source;
   }
-  if (step === 'review') {
-    // reviewed_by is always the authenticated staff email — never a client-supplied value
-    appRow.reviewed_by   = getStaffEmail_();
-    appRow.review_notes  = payload.review_notes || null;
-  }
-  appsheetRequest_(T.APPLICATIONS, 'Edit', [appRow]);
+  // Note: `review` step no longer writes to the group — it walks enrollments below.
+  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [groupRow]);
 
   let extra = null;
   switch (step) {
     case 'application':
-      // Application-level fields already written above
+      // Group-level fields already written above
       break;
     case 'review': {
-      // Log the status transition when a status_code is supplied
+      // Log status transition across all enrollments in the group when a
+      // status_code is supplied. Stage-1: still uses the legacy enrStatusTypes /
+      // enrStatusLog tables; DL-S37 will migrate this to sysStateTransitionLog.
       if (payload.status_code) {
         const newStatusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
           Filter: '"status_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '"'
@@ -392,39 +516,42 @@ function saveStep_(p) {
         const newStatusTypeId = newStatusTypes && newStatusTypes[0]
           ? newStatusTypes[0].status_type_id : null;
         if (newStatusTypeId) {
-          const currentApps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
-            Filter: '"application_id" = "' + application_id + '"'
+          const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+            Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+          }) || [];
+          enrollments.forEach(enr => {
+            appsheetRequest_(T.STATUS_LOG, 'Add', [{
+              log_id:              generateUuid_(),
+              enrollment_id:       enr.enrollment_id,
+              from_status_type_id: enr.current_state_id || null,
+              to_status_type_id:   newStatusTypeId,
+              changed_by:          getStaffEmail_(),
+              changed_at:          now,
+              reason:              payload.reason || null,
+            }]);
+            appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
+              enrollment_id:    enr.enrollment_id,
+              current_state_id: newStatusTypeId,
+              reviewed_by:      getStaffEmail_(),
+              review_notes:     payload.review_notes || null,
+              updated_at:       now,
+            }]);
           });
-          const currentApp = currentApps && currentApps[0];
-          appsheetRequest_(T.STATUS_LOG, 'Add', [{
-            log_id:              generateUuid_(),
-            application_id,
-            from_status_type_id: currentApp ? currentApp.status_type_id : null,
-            to_status_type_id:   newStatusTypeId,
-            changed_by:          getStaffEmail_(),
-            changed_at:          new Date().toISOString(),
-            reason:              payload.reason || null,
-          }]);
-          appsheetRequest_(T.APPLICATIONS, 'Edit', [{
-            application_id,
-            status_type_id: newStatusTypeId,
-            updated_at:     new Date().toISOString(),
-          }]);
         }
       }
       break;
     }
     case 'persons':
-      extra = savePersons_(application_id, payload);
+      extra = savePersons_(enrollmentGroupId, payload);
       break;
     case 'relations':
-      extra = saveRelations_(application_id, payload);
+      extra = saveRelations_(enrollmentGroupId, payload);
       break;
     case 'health':
-      saveHealth_(application_id, payload);
+      saveHealth_(enrollmentGroupId, payload);
       break;
     case 'interviews':
-      saveInterviews_(application_id, payload);
+      saveInterviews_(enrollmentGroupId, payload);
       break;
     case 'questions':
       // Responses are saved individually via saveResponses_ — nothing to do here
@@ -440,68 +567,138 @@ function saveStep_(p) {
 }
 
 /**
- * Marks application as submitted, logs status change, sends emails.
- * @param {Object} p - { application_id, esignature, consents }
+ * Submits an enrollment session — DL-E15.
+ *
+ * Materialises N enrEnrollments rows (one per applicant person captured in the
+ * staging tables), stamps submitted_at on the group, writes per-enrollment
+ * status_log + consent rows, generates the consent PDF and sends the family +
+ * internal confirmation emails.
+ *
+ * The initial state on each enrollment is resolved from the legacy
+ * enrStatusTypes catalog with status_code = 'RQ' (Requested). Per DL-E15
+ * pendientes-flagged decision, RQ is the on-submit state (IN is reserved for
+ * "wizard in progress" which post-DL-E15 no longer applies per row).
+ *
+ * @param {Object} p - { enrollment_group_id?|application_id?, esignature, consents, language }
  */
-function submitApplication_(p) {
-  const { application_id } = p;
-  if (!application_id) throw new Error('Missing application_id');
+function submitEnrollmentSession_(p) {
+  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
+  if (!enrollmentGroupId) throw new Error('Missing enrollment_group_id');
 
   const now = new Date().toISOString();
 
-  // Look up SUBMITTED status type id
+  // Load the group header
+  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+  });
+  const group = groups && groups[0];
+  if (!group) throw new Error('Enrollment group not found');
+
+  // ── Resolve the initial state (RQ = Requested) ─────────────────────────────
+  // Stage-1: keep using the legacy enrStatusTypes lookup. Post-DL-S34 this will
+  // resolve against sysStates_T filtering on entity_type_code='ENR_ADMISSION_SCHOOL'.
   const statusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
-    Filter: '"status_code" = "SUBMITTED" && "school_id" = "' + SCHOOL_ID + '"'
+    Filter: '"status_code" = "RQ" && "school_id" = "' + SCHOOL_ID + '"'
   });
-  const submittedTypeId = (statusTypes && statusTypes[0]) ? statusTypes[0].status_type_id : null;
+  const rqStateId = (statusTypes && statusTypes[0]) ? statusTypes[0].status_type_id : null;
 
-  // Get current status for log
-  const apps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
-    Filter: '"application_id" = "' + application_id + '"'
-  });
-  const app = apps && apps[0];
-  if (!app) throw new Error('Application not found');
-
-  // Stamp submitted_at and update status
-  appsheetRequest_(T.APPLICATIONS, 'Edit', [{
-    application_id,
-    status_type_id: submittedTypeId,
-    submitted_at:   now,
-    updated_at:     now,
-  }]);
-
-  // Write status log entry
-  appsheetRequest_(T.STATUS_LOG, 'Add', [{
-    log_id:               generateUuid_(),
-    application_id,
-    from_status_type_id:  app.status_type_id,
-    to_status_type_id:    submittedTypeId,
-    changed_by:           getStaffEmail_() || 'applicant',
-    changed_at:           now,
-    reason:               'Application submitted by family',
-  }]);
-
-  const lang = p.language || 'es';
-
-  // Log GDPR consent
-  let consentRows = [];
-  if (p.consents) {
-    consentRows = p.consents.map(c => ({
-      consent_id:         generateUuid_(),
-      application_id,
-      consent_type:       c.type,
-      consent_text_shown: c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
-      consented:          c.accepted,
-      consent_timestamp:  now,
-      language:           lang,
-    }));
-    if (consentRows.length) appsheetRequest_(T.CONSENTS, 'Add', consentRows);
-  }
-
-  // Fetch persons for email summaries and PDF
-  const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: '"application_id" = "' + application_id + '"' }) || [];
+  // ── Fetch persons captured in this group ───────────────────────────────────
+  const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+  }) || [];
   const guardians  = allPersons.filter(per => per.person_type_id === 'guardian');
   const applicants = allPersons.filter(per => per.person_type_id === 'applicant');
+
+  if (!applicants.length) {
+    throw new Error('No applicant person found in enrollment group');
+  }
+
+  // ── Identify the requester (first guardian) if not yet recorded ────────────
+  if (!group.requester_person_id && guardians.length) {
+    appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+      enrollment_group_id:    enrollmentGroupId,
+      requester_person_table: 'enrPersons',
+      requester_person_id:    guardians[0].person_id,
+      updated_at:             now,
+    }]);
+  }
+
+  // ── Create one enrEnrollments row per applicant ────────────────────────────
+  const desiredStartDate = group.desired_start_date || null;
+  const enrollmentIds = [];
+  applicants.forEach(applicant => {
+    const enrollmentId = generateUuid_();
+    appsheetRequest_(T.ENROLLMENTS, 'Add', [{
+      enrollment_id:          enrollmentId,
+      enrollment_group_id:    enrollmentGroupId,
+      program_id:             group.program_id || null,
+      school_id:              SCHOOL_ID,
+      applicant_person_table: 'enrPersons',
+      applicant_person_id:    applicant.person_id,
+      current_state_id:       rqStateId,
+      desired_start_date:     desiredStartDate,
+      source_locale:          group.preferred_language || group.source_locale || 'es',
+      submitted_at:           now,
+      created_at:             now,
+      updated_at:             now,
+    }]);
+    enrollmentIds.push(enrollmentId);
+
+    // Per-enrollment status log entry (RQ → initial)
+    if (rqStateId) {
+      appsheetRequest_(T.STATUS_LOG, 'Add', [{
+        log_id:              generateUuid_(),
+        enrollment_id:       enrollmentId,
+        from_status_type_id: null,
+        to_status_type_id:   rqStateId,
+        changed_by:          getStaffEmail_() || 'applicant',
+        changed_at:          now,
+        reason:              'Enrollment requested by family',
+      }]);
+    }
+  });
+
+  // ── Mark the group as submitted ────────────────────────────────────────────
+  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+    enrollment_group_id: enrollmentGroupId,
+    submitted_at:        now,
+    updated_at:          now,
+  }]);
+
+  const lang = p.language || group.preferred_language || 'es';
+
+  // ── Log GDPR + legal consents (per enrollment) ─────────────────────────────
+  // Stage-1: still using enrConsentsLog with FK to enrollment_id (per-applicant).
+  // The GDPR consent that the family accepted on the consent page (deferred at
+  // init time) is also recorded here, once per enrollment, alongside any
+  // additional consents from the review step.
+  let consentRows = [];
+  const consents = Array.isArray(p.consents) ? p.consents.slice() : [];
+  // Ensure GDPR consent is captured even if frontend forgot to include it
+  if (!consents.some(c => c.type === 'gdpr_data_processing')) {
+    consents.push({
+      type: 'gdpr_data_processing',
+      accepted: true,
+      consent_text_shown: CONSENT_TEXTS.gdpr.en + '\n\n' + CONSENT_TEXTS.gdpr.es,
+    });
+  }
+  enrollmentIds.forEach(eid => {
+    consents.forEach(c => {
+      consentRows.push({
+        consent_id:         generateUuid_(),
+        enrollment_id:      eid,
+        consent_type:       c.type,
+        consent_text_shown: c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
+        consented:          c.accepted,
+        consent_timestamp:  now,
+        language:           lang,
+      });
+    });
+  });
+  if (consentRows.length) appsheetRequest_(T.CONSENTS, 'Add', consentRows);
+
+  // (Local var renamed to keep downstream PDF / email code unchanged below)
+  const app = group;  // alias to minimise the diff in email/PDF builders
 
   // Enrich guardians with emails and phones for notifications
   const gPersonIds = guardians.map(g => g.person_id);
@@ -539,51 +736,63 @@ function submitApplication_(p) {
   // Fetch QB responses for enrollment-specific questions (profession, employer, adaptation)
   const enrQbIds = [QB_PROFESSION_ID, QB_EMPLOYER_ID, QB_HAS_ADAPTATION_ID, QB_ADAPTATION_NOTES_ID];
   const qbResRows = appsheetRequest_(T.QB_RESPONSES, 'Find', [], {
-    Filter: '"respondent_id" = "' + application_id + '" && (' +
+    Filter: '(' + [enrollmentGroupId].concat(enrollmentIds).map(rid => '"respondent_id" = "' + rid + '"').join(' || ') + ') && (' +
       enrQbIds.map(id => '"question_id" = "' + id + '"').join(' || ') + ')'
   }) || [];
   // Map question_id → last response_text (aggregates multiple if more than one respondent)
   const qbResponseMap = {};
   qbResRows.forEach(r => { qbResponseMap[r.question_id] = r.response_text; });
 
-  // Generate signed consent PDF and record in enrApplicationDocuments
+  // Generate one signed consent PDF for the session and attach it to every
+  // enrollment in the group via enrApplicationDocuments (FK to enrollment_id).
   try {
-    const pdfUrl = generateConsentPdf_(application_id, app, enrichedGuardians, applicants, consentRows, p.esignature || '', now, qbResponseMap);
-    appsheetRequest_(T.DOCUMENTS, 'Add', [{
+    const pdfUrl = generateConsentPdf_(enrollmentGroupId, app, enrichedGuardians, applicants, consentRows, p.esignature || '', now, qbResponseMap);
+    const docRows = enrollmentIds.map(eid => ({
       document_id:   generateUuid_(),
-      application_id,
+      enrollment_id: eid,
       document_type: 'signed_consent_record',
       drive_url:     pdfUrl,
       uploaded_at:   now,
       uploaded_by:   'system',
-    }]);
+    }));
+    if (docRows.length) appsheetRequest_(T.DOCUMENTS, 'Add', docRows);
   } catch (pdfErr) {
     Logger.log('PDF generation error (non-fatal): ' + pdfErr.message);
   }
 
   // Send family confirmation (bilingual)
-  sendFamilyConfirmationEmail_(app.primary_email, application_id, applicants, app.preferred_language || 'es');
+  sendFamilyConfirmationEmail_(app.primary_email, enrollmentGroupId, applicants, app.preferred_language || 'es');
 
   // Send internal notification
   sendInternalEmail_(
-    '[KIS Admissions] Application submitted \u2014 action required',
-    buildApplicationSubmittedBody_(application_id, now, enrichedGuardians, applicants, app, qbResponseMap)
+    '[KIS Admissions] Enrollment session submitted \u2014 action required',
+    buildApplicationSubmittedBody_(enrollmentGroupId, now, enrichedGuardians, applicants, app, qbResponseMap)
   );
 
-  return { submitted: true, application_id };
+  return {
+    submitted:           true,
+    enrollment_group_id: enrollmentGroupId,
+    enrollment_ids:      enrollmentIds,
+    // legacy alias \u2014 frontend builds reading application_id keep working
+    application_id:      enrollmentGroupId,
+  };
 }
 
 /**
  * Generates and emails a 6-digit verification code.
- * @param {Object} p - { application_id, primary_email }
+ *
+ * Cache key uses the enrollment_group_id (accepts legacy application_id alias).
+ *
+ * @param {Object} p - { enrollment_group_id?|application_id?, primary_email }
  */
 function sendVerificationCode_(p) {
-  const { application_id, primary_email } = p;
-  if (!application_id || !primary_email) throw new Error('Missing application_id or primary_email');
+  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
+  const primary_email     = p.primary_email;
+  if (!enrollmentGroupId || !primary_email) throw new Error('Missing enrollment_group_id or primary_email');
 
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   const cache = CacheService.getScriptCache();
-  cache.put('verify_' + application_id, code, 600); // 10 min TTL
+  cache.put('verify_' + enrollmentGroupId, code, 600); // 10 min TTL
 
   const lang = p.preferred_language || 'es';
   const subject = lang === 'en'
@@ -603,28 +812,31 @@ function sendVerificationCode_(p) {
 }
 
 /**
- * Verifies a 6-digit code and marks email as confirmed.
- * @param {Object} p - { application_id, code }
+ * Verifies a 6-digit code.
+ *
+ * Per DL-E15 the legacy `email_confirmed` / `email_confirmed_at` columns are
+ * eliminated (modeled as an EMAIL_VERIFICATION milestone, out of wizard scope).
+ * Stage-1: we only validate the code from cache and return success. No DB
+ * write is performed. The cache key uses enrollment_group_id (legacy
+ * application_id accepted).
+ *
+ * @param {Object} p - { enrollment_group_id?|application_id?, code }
  */
 function verifyEmail_(p) {
-  const { application_id, code } = p;
-  if (!application_id || !code) throw new Error('Missing application_id or code');
+  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
+  const code = p.code;
+  if (!enrollmentGroupId || !code) throw new Error('Missing enrollment_group_id or code');
 
   const cache    = CacheService.getScriptCache();
-  const stored   = cache.get('verify_' + application_id);
+  const stored   = cache.get('verify_' + enrollmentGroupId);
 
   if (!stored) throw new Error('Verification code expired or not found');
   if (stored !== code.toString()) throw new Error('Invalid verification code');
 
-  cache.remove('verify_' + application_id);
+  cache.remove('verify_' + enrollmentGroupId);
 
-  appsheetRequest_(T.APPLICATIONS, 'Edit', [{
-    application_id,
-    email_confirmed:    true,
-    email_confirmed_at: new Date().toISOString(),
-    updated_at:         new Date().toISOString(),
-  }]);
-
+  // No DB write — `email_confirmed` columns are removed in DL-E15. The
+  // EMAIL_VERIFICATION milestone (sysMilestones) will replace this when wired.
   return { verified: true };
 }
 
@@ -746,10 +958,15 @@ function fetchLookups_() {
 
 /**
  * Batch-writes question responses.
- * @param {Object} p - { application_id, respondent_id, respondent_type_category_id, responses: Array }
+ *
+ * `respondent_id` defaults to the enrollment_group_id (pre-submit responses
+ * are session-scoped). Legacy `application_id` is accepted as alias.
+ *
+ * @param {Object} p - { enrollment_group_id?|application_id?, respondent_id, respondent_type_category_id, responses: Array }
  */
 function saveResponses_(p) {
-  const { application_id, respondent_id, respondent_type_category_id, responses } = p;
+  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
+  const { respondent_id, respondent_type_category_id, responses } = p;
   if (!responses || !responses.length) return { saved: 0 };
 
   const now  = new Date().toISOString();
@@ -758,7 +975,7 @@ function saveResponses_(p) {
     school_id:                    SCHOOL_ID,
     set_id:                       r.set_id || null,
     question_id:                  r.question_id,
-    respondent_id:                respondent_id || application_id,
+    respondent_id:                respondent_id || enrollmentGroupId,
     respondent_type_category_id:  respondent_type_category_id || 'client',
     response_text:                r.response_text || null,
     response_option_id:           r.response_option_id || null,
@@ -772,13 +989,25 @@ function saveResponses_(p) {
 }
 
 /**
- * Accepts a base64-encoded file, saves to Drive, writes document record.
- * @param {Object} p - { application_id, base64, mimeType, filename, document_type }
+ * Accepts a base64-encoded file, saves to Drive, writes a document record.
+ *
+ * DL-E15: enrApplicationDocuments now FKs to enrollment_id (per-applicant).
+ * Pre-submit uploads have no enrollment yet, so the row is written with
+ * enrollment_group_id only (a transitional column kept while the wizard is in
+ * Stage-1). At submit, the consent PDF flow does FK to enrollment_id directly.
+ *
+ * Accepts either `enrollment_id` (post-submit), `enrollment_group_id`, or the
+ * legacy `application_id` alias.
+ *
+ * @param {Object} p - { enrollment_id?|enrollment_group_id?|application_id?, base64, mimeType, filename, document_type }
  * @returns {{ drive_url: string, document_id: string }}
  */
 function uploadDocument_(p) {
-  const { application_id, base64, mimeType, filename, document_type } = p;
-  if (!base64 || !application_id) throw new Error('Missing base64 or application_id');
+  const enrollmentId      = p.enrollment_id || null;
+  const enrollmentGroupId = p.enrollment_group_id || p.application_id || null;
+  const { base64, mimeType, filename, document_type } = p;
+  if (!base64) throw new Error('Missing base64');
+  if (!enrollmentId && !enrollmentGroupId) throw new Error('Missing enrollment_id or enrollment_group_id');
 
   const blob   = Utilities.newBlob(Utilities.base64Decode(base64), mimeType, filename);
   const folder = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
@@ -789,14 +1018,17 @@ function uploadDocument_(p) {
   const documentId = generateUuid_();
   const now        = new Date().toISOString();
 
-  appsheetRequest_(T.DOCUMENTS, 'Add', [{
-    document_id:     documentId,
-    application_id,
-    document_type:   document_type || 'other',
-    drive_url:       driveUrl,
-    uploaded_at:     now,
-    uploaded_by:     'applicant',
-  }]);
+  const docRow = {
+    document_id:   documentId,
+    document_type: document_type || 'other',
+    drive_url:     driveUrl,
+    uploaded_at:   now,
+    uploaded_by:   'applicant',
+  };
+  if (enrollmentId)      docRow.enrollment_id       = enrollmentId;
+  if (enrollmentGroupId) docRow.enrollment_group_id = enrollmentGroupId;
+
+  appsheetRequest_(T.DOCUMENTS, 'Add', [docRow]);
 
   return { document_id: documentId, drive_url: driveUrl };
 }
@@ -828,14 +1060,21 @@ function verifyRecaptcha_(p) {
 // ─── Step save helpers ────────────────────────────────────────────────────────
 
 /**
- * Upserts persons (guardians and applicants) for an application.
+ * Upserts persons (guardians and applicants) for an enrollment session.
+ *
+ * DL-E15: staging tables (enrPersons, enrAddresses, enrEmails, enrPhones) now
+ * FK to enrollment_group_id. The persons captured in a session are shared by
+ * all child enrollments (one row per real adult/child even when there are
+ * multiple siblings) — this avoids the legacy duplication.
+ *
  * Each person may have: nationalities, ids, languages, address, emails, phones.
  * Pass `copy_address_from_person_id` to reuse another person's address.
  * Previous schools are written for applicant-type persons.
- * @param {string} applicationId
+ *
+ * @param {string} enrollmentGroupId
  * @param {Array}  persons - array of person objects
  */
-function savePersons_(applicationId, persons) {
+function savePersons_(enrollmentGroupId, persons) {
   if (!Array.isArray(persons)) return;
 
   const now = new Date().toISOString();
@@ -859,9 +1098,9 @@ function savePersons_(applicationId, persons) {
 
     // ── Core person row (schema columns only — strip AppSheet virtual fields) ─
     const baseRow = {
-      person_id:      personId,
-      application_id: applicationId,
-      person_type_id: person.person_type_id || 'guardian',
+      person_id:           personId,
+      enrollment_group_id: enrollmentGroupId,
+      person_type_id:      person.person_type_id || 'guardian',
       first_name:     person.first_name     || null,
       middle_name:    person.middle_name    || null,
       last_name:      person.last_name      || null,
@@ -909,9 +1148,9 @@ function savePersons_(applicationId, persons) {
     } else if (person.address && hasAddressData_(person.address)) {
       addressId = generateUuid_();
       addresses.push({
-        address_id:     addressId,
-        application_id: applicationId,
-        address_line_1: person.address.address_line_1 || null,
+        address_id:          addressId,
+        enrollment_group_id: enrollmentGroupId,
+        address_line_1:      person.address.address_line_1 || null,
         address_line_2: person.address.address_line_2 || null,
         city:           person.address.city           || null,
         province:       person.address.province       || null,
@@ -931,7 +1170,7 @@ function savePersons_(applicationId, persons) {
     if (Array.isArray(person.emails)) {
       person.emails.filter(e => !e.email_id).forEach(e => {
         const emailId = generateUuid_();
-        emails.push({ email_id: emailId, application_id: applicationId, email_type_id: e.email_type_id || null, value: e.email_address || e.value, created_at: now });
+        emails.push({ email_id: emailId, enrollment_group_id: enrollmentGroupId, email_type_id: e.email_type_id || null, value: e.email_address || e.value, created_at: now });
         personEmails.push({ record_id: generateUuid_(), person_id: personId, email_id: emailId, is_default: e.is_default || false, is_emergency: e.is_emergency || false });
       });
     }
@@ -940,7 +1179,7 @@ function savePersons_(applicationId, persons) {
     if (Array.isArray(person.phones)) {
       person.phones.filter(ph => !ph.phone_id).forEach(ph => {
         const phoneId = generateUuid_();
-        phones.push({ phone_id: phoneId, application_id: applicationId, phone_nr_type_id: ph.phone_type_id || ph.phone_nr_type_id || null, value: ph.phone_number || ph.value, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
+        phones.push({ phone_id: phoneId, enrollment_group_id: enrollmentGroupId, phone_nr_type_id: ph.phone_type_id || ph.phone_nr_type_id || null, value: ph.phone_number || ph.value, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
         personPhones.push({ record_id: generateUuid_(), person_id: personId, phone_id: phoneId, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false });
       });
     }
@@ -998,16 +1237,20 @@ function savePersons_(applicationId, persons) {
 }
 
 /**
- * Upserts guardian-applicant relations for an application.
- * @param {string} applicationId
+ * Upserts guardian-applicant relations for an enrollment session.
+ *
+ * DL-E15: enrRelations FKs to enrollment_group_id (the session header), not to
+ * a specific enrollment. Relations are shared across all child enrollments.
+ *
+ * @param {string} enrollmentGroupId
  * @param {Array}  relations - [{ guardian_person_id, applicant_person_id, relation_type_id, is_custodial, is_pick_up_authorized }]
  */
-function saveRelations_(applicationId, relations) {
+function saveRelations_(enrollmentGroupId, relations) {
   if (!Array.isArray(relations)) return {};
 
   const newRelations = relations.filter(r => !r.relation_id).map(r => ({
     relation_id:           generateUuid_(),
-    application_id:        applicationId,
+    enrollment_group_id:   enrollmentGroupId,
     person_id_a:           r.guardian_person_id || r.person_id_a,
     person_id_b:           r.applicant_person_id || r.person_id_b,
     relation_type_id:      r.relation_type_id      || null,
@@ -1016,7 +1259,7 @@ function saveRelations_(applicationId, relations) {
   }));
   const existingRelations = relations.filter(r => r.relation_id).map(r => ({
     relation_id:           r.relation_id,
-    application_id:        applicationId,
+    enrollment_group_id:   enrollmentGroupId,
     person_id_a:           r.guardian_person_id || r.person_id_a,
     person_id_b:           r.applicant_person_id || r.person_id_b,
     relation_type_id:      r.relation_type_id      || null,
@@ -1032,10 +1275,15 @@ function saveRelations_(applicationId, relations) {
 
 /**
  * Upserts health records for each person.
- * @param {string} applicationId
+ *
+ * No FK to the session — rows key off person_id which already ties back to the
+ * enrollment_group_id via enrPersons. The first arg is kept for signature
+ * symmetry with the other step savers.
+ *
+ * @param {string} enrollmentGroupId  (unused; kept for symmetry)
  * @param {Array}  healthData - [{ person_id, allergies, dietary, medical }]
  */
-function saveHealth_(applicationId, healthData) {
+function saveHealth_(enrollmentGroupId, healthData) {  // eslint-disable-line no-unused-vars
   if (!Array.isArray(healthData)) return;
 
   healthData.forEach(h => {
@@ -1075,13 +1323,19 @@ function saveHealth_(applicationId, healthData) {
 }
 
 /**
- * Upserts interview records for an application.
+ * Upserts interview records for the enrollments in a session.
+ *
+ * DL-E15: enrInterviews FKs to enrollment_id (per-applicant). Each incoming
+ * interview row must carry its own `enrollment_id`. Rows lacking one are
+ * skipped (staff UI should always set it after submit).
+ *
  * interview_type must be one of: family_interview | child_observation | follow_up
  * interviewer_id is a plain email string — written directly, no FK resolution.
- * @param {string} applicationId
- * @param {Array}  interviews - array of interview objects
+ *
+ * @param {string} enrollmentGroupId  (kept for signature symmetry, not written)
+ * @param {Array}  interviews - array of interview objects (must include enrollment_id)
  */
-function saveInterviews_(applicationId, interviews) {
+function saveInterviews_(enrollmentGroupId, interviews) {  // eslint-disable-line no-unused-vars
   if (!Array.isArray(interviews)) return;
 
   const staffEmail = getStaffEmail_();
@@ -1089,9 +1343,8 @@ function saveInterviews_(applicationId, interviews) {
 
   const VALID_TYPES = ['family_interview', 'child_observation', 'follow_up'];
 
-  const newInterviews = interviews.filter(i => !i.interview_id).map(i => ({
-    interview_id:   generateUuid_(),
-    application_id: applicationId,
+  const rowBase_ = (i) => ({
+    enrollment_id:  i.enrollment_id || null,
     interview_type: VALID_TYPES.includes(i.interview_type) ? i.interview_type : null,
     interview_date: i.interview_date  || null,
     interviewer_id: i.interviewer_id  || staffEmail,  // plain email — no FK resolution
@@ -1099,20 +1352,15 @@ function saveInterviews_(applicationId, interviews) {
     risk_rating:    i.risk_rating     || null,
     notes:          i.notes           || null,
     flags:          i.flags           || null,
-    created_at:     now,
-  }));
+  });
 
-  const existingInterviews = interviews.filter(i => i.interview_id).map(i => ({
-    interview_id:   i.interview_id,
-    application_id: applicationId,
-    interview_type: VALID_TYPES.includes(i.interview_type) ? i.interview_type : null,
-    interview_date: i.interview_date  || null,
-    interviewer_id: i.interviewer_id  || staffEmail,  // plain email — no FK resolution
-    format:         i.format          || null,
-    risk_rating:    i.risk_rating     || null,
-    notes:          i.notes           || null,
-    flags:          i.flags           || null,
-  }));
+  const newInterviews = interviews
+    .filter(i => !i.interview_id && i.enrollment_id)
+    .map(i => Object.assign({ interview_id: generateUuid_(), created_at: now }, rowBase_(i)));
+
+  const existingInterviews = interviews
+    .filter(i => i.interview_id)
+    .map(i => Object.assign({ interview_id: i.interview_id }, rowBase_(i)));
 
   if (newInterviews.length)      appsheetRequest_(T.INTERVIEWS, 'Add',  newInterviews);
   if (existingInterviews.length) appsheetRequest_(T.INTERVIEWS, 'Edit', existingInterviews);
@@ -1208,19 +1456,24 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang) {
 
 /**
  * Sends bilingual EN/ES confirmation email to the family on submission.
+ *
+ * @param {string} email
+ * @param {string} sessionId  - enrollment_group_id (label shown to the family)
+ * @param {Array}  applicants
+ * @param {string} lang
  */
-function sendFamilyConfirmationEmail_(email, applicationId, applicants, lang) {
+function sendFamilyConfirmationEmail_(email, sessionId, applicants, lang) {
   const names = applicants.map(a => (a.first_name || '') + ' ' + (a.last_name || '')).join(', ');
 
   const body =
     '<h2 style="color:#00a19a;">Thank you / Gracias</h2>' +
     '<p><strong>EN:</strong> Your enrollment application has been received. We will review it and be in touch shortly.</p>' +
     '<p><strong>Applicant(s):</strong> ' + names + '</p>' +
-    '<p><strong>Application ID:</strong> ' + applicationId + '</p>' +
+    '<p><strong>Application ID:</strong> ' + sessionId + '</p>' +
     '<hr style="border:none;border-top:1px solid #e3e7ed;margin:24px 0;">' +
     '<p><strong>ES:</strong> Hemos recibido tu solicitud de matr\u00edcula. La revisaremos y nos pondremos en contacto contigo en breve.</p>' +
     '<p><strong>Alumno/s:</strong> ' + names + '</p>' +
-    '<p><strong>N\u00famero de solicitud:</strong> ' + applicationId + '</p>';
+    '<p><strong>N\u00famero de solicitud:</strong> ' + sessionId + '</p>';
 
   GmailApp.sendEmail(email, 'Kaleide enrollment application received / Solicitud de matr\u00edcula recibida', '', {
     htmlBody: buildFamilyEmail_('Enrollment application received', body),
@@ -1592,54 +1845,106 @@ function generateConsentPdf_(applicationId, app, guardians, applicants, consentR
 // ─── Promotion logic ──────────────────────────────────────────────────────────
 
 /**
- * Promotes a submitted application into the main SMS.
- * Checks application.source to determine promotion scope:
- *   - enrollment_site: promote all persons (guardians + applicants) to SMS
- *   - families_app: skip guardian promotion (they already exist); only promote
- *     the applicant(s) and create relationalRecords linking them to existing
- *     guardian personal_ids.
+ * Promotes a single submitted enrollment into the main SMS — DL-E15 §6.1.
  *
- * For each promoted person, copies their primary address to addresses_S + addressLog.
- * Stores desired_start_date as a note on personCategoriesLog for each applicant.
+ * Operates per-enrollment (not per-session/group). The applicant of this
+ * enrollment is promoted along with its guardians (from the parent group).
+ * For sessions with multiple sibling enrollments, the caller must promote
+ * each enrollment_id separately; this function deduplicates shared adults so
+ * the second call doesn't create a duplicate personalData_S row for a guardian
+ * already promoted by the first sibling.
  *
- * @param {Object} p - { application_id, person_personal_ids }
- *   person_personal_ids: { [enr_person_id]: sms_personal_id }
- *     For enrollment_site: include all persons.
- *     For families_app: include guardian existing personal_ids AND new applicant personal_ids.
+ * Source mode (group.source_code or legacy applicants source):
+ *   - WEB_PUBLIC / enrollment_site: promote applicant + all guardians (unless
+ *     already promoted in a prior call)
+ *   - FAMILIES_APP: guardians already exist in SMS; only promote the applicant,
+ *     and link them to the existing guardian personal_ids via relationalRecords.
+ *
+ * Dedupe rule: a person whose `personal_id` column on enrPersons is already
+ * populated is considered already promoted; reuse that personal_id rather than
+ * creating a new personalData_S row.
+ *
+ * @param {Object} p - { enrollment_id, person_personal_ids }
+ *   person_personal_ids: { [enr_person_id]: sms_personal_id } — the caller may
+ *     pre-allocate or look up existing personal_ids for shared adults.
  */
-function promoteApplication_(p) {
-  const { application_id, person_personal_ids = {} } = p;
-  if (!application_id) throw new Error('Missing application_id');
+function promoteEnrollment_(p) {
+  const enrollmentId = p.enrollment_id;
+  // Legacy compat: if caller still sends application_id treat it as enrollment_id
+  const fallbackId   = !enrollmentId && p.application_id ? p.application_id : null;
+  const targetId     = enrollmentId || fallbackId;
+  const personPersonalIds = p.person_personal_ids || {};
+  if (!targetId) throw new Error('Missing enrollment_id');
 
   const now = new Date().toISOString();
 
-  // Fetch application to determine source and desired_start_date
-  const apps = appsheetRequest_(T.APPLICATIONS, 'Find', [], {
-    Filter: '"application_id" = "' + application_id + '"'
+  // ── Load the enrollment row ────────────────────────────────────────────────
+  const enrs = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+    Filter: '"enrollment_id" = "' + targetId + '"'
   });
-  const appRow = apps && apps[0];
-  if (!appRow) throw new Error('Application not found');
+  const enrRow = enrs && enrs[0];
+  if (!enrRow) throw new Error('Enrollment not found');
 
-  const source           = appRow.source || 'enrollment_site';
-  const desiredStartDate = appRow.desired_start_date || null;
+  // ── Load the parent group ──────────────────────────────────────────────────
+  const groupId = enrRow.enrollment_group_id;
+  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + groupId + '"'
+  });
+  const groupRow = groups && groups[0];
+  if (!groupRow) throw new Error('Parent enrollment group not found');
 
-  const allPersonIds = Object.keys(person_personal_ids);
-  if (!allPersonIds.length) return { promoted_addresses: 0 };
+  // Resolve source: prefer group.source_id → lookup to enrEnrollmentSources;
+  // fall back to a legacy `source` string on the group if present.
+  let sourceCode = groupRow.source_code || groupRow.source || 'WEB_PUBLIC';
+  if (groupRow.source_id && !groupRow.source_code) {
+    try {
+      const srcs = appsheetRequest_(T.ENROLLMENT_SOURCES, 'Find', [], {
+        Filter: '"source_id" = "' + groupRow.source_id + '"'
+      });
+      if (srcs && srcs[0] && srcs[0].source_code) sourceCode = srcs[0].source_code;
+    } catch (_) { /* keep default */ }
+  }
+  const isFamiliesApp = (sourceCode === 'FAMILIES_APP' || sourceCode === 'families_app');
 
-  // Fetch persons to distinguish guardians from applicants
-  const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
-    Filter: allPersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
+  const desiredStartDate = enrRow.desired_start_date || groupRow.desired_start_date || null;
+
+  // ── Persons to consider: applicant of this enrollment + ALL guardians of group ─
+  const applicantPersonId = enrRow.applicant_person_id;
+  const groupPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + groupId + '"'
   }) || [];
 
-  const guardianPersonIds  = allPersons.filter(p => p.person_type_id === 'guardian').map(p => p.person_id);
-  const applicantPersonIds = allPersons.filter(p => p.person_type_id === 'applicant').map(p => p.person_id);
+  const guardianPersons  = groupPersons.filter(per => per.person_type_id === 'guardian');
+  const applicantPerson  = groupPersons.find(per => per.person_id === applicantPersonId);
+  if (!applicantPerson) throw new Error('Applicant person not found on enrollment');
 
-  // Determine which persons to promote addresses for
-  const promotePersonIds = source === 'families_app'
-    ? applicantPersonIds   // guardians already in SMS
-    : allPersonIds;        // promote everyone
+  // Compose the working set: applicant + guardians
+  const candidatePersons = [applicantPerson].concat(guardianPersons);
 
-  // Find primary address for each person to promote
+  // ── Dedupe of shared adults ────────────────────────────────────────────────
+  // If a candidate person already has a `personal_id` column populated on the
+  // enrPersons row, they've been promoted in a prior sibling call. Reuse it.
+  // If the caller supplied person_personal_ids[<enr_person_id>] use that.
+  const personalIdByPersonId = {};
+  candidatePersons.forEach(per => {
+    if (personPersonalIds[per.person_id]) {
+      personalIdByPersonId[per.person_id] = personPersonalIds[per.person_id];
+    } else if (per.personal_id) {
+      personalIdByPersonId[per.person_id] = per.personal_id;
+    }
+  });
+
+  // Persons we still need to address-promote: only those who don't have a
+  // personalData_S row yet. For families_app the guardian addresses also stay.
+  const personsAlreadyPromoted = candidatePersons.filter(per => personalIdByPersonId[per.person_id]).map(per => per.person_id);
+  const personsToAddressPromote = isFamiliesApp
+    ? [applicantPerson.person_id]   // guardians already in SMS
+    : candidatePersons.map(per => per.person_id);
+
+  // Final filter: don't re-promote addresses for adults already promoted
+  const promotePersonIds = personsToAddressPromote.filter(pid => !personsAlreadyPromoted.includes(pid) || pid === applicantPerson.person_id);
+
+  // ── Look up addresses for those persons ────────────────────────────────────
   const addrJoins = promotePersonIds.length
     ? appsheetRequest_(T.PERSON_ADDRESSES, 'Find', [], {
         Filter: promotePersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
@@ -1665,10 +1970,10 @@ function promoteApplication_(p) {
   const smsAddressLogs = [];
 
   promotePersonIds.forEach(personId => {
-    const personalId = person_personal_ids[personId];
+    const personalId = personalIdByPersonId[personId];
     const addrId     = personAddrMap[personId];
     const addr       = addrId ? addressMap[addrId] : null;
-    if (!addr) return;
+    if (!addr || !personalId) return;
 
     const smsAddressId = generateUuid_();
     smsAddresses.push({
@@ -1695,56 +2000,53 @@ function promoteApplication_(p) {
   if (smsAddresses.length)   appsheetRequest_(T.SMS_ADDRESSES,   'Add', smsAddresses);
   if (smsAddressLogs.length) appsheetRequest_(T.SMS_ADDRESS_LOG, 'Add', smsAddressLogs);
 
-  // For families_app: create relationalRecords linking new applicants to existing guardians
+  // ── Link applicant ↔ guardians via relationalRecords ───────────────────────
+  // Done always (not just families_app): the relations exist for every session.
   const relationalRecords = [];
-  if (source === 'families_app' && applicantPersonIds.length && guardianPersonIds.length) {
-    // Fetch enrRelations to get guardian ↔ applicant relationships
-    const relations = appsheetRequest_(T.RELATIONS, 'Find', [], {
-      Filter: '"application_id" = "' + application_id + '"'
-    }) || [];
+  const groupRelations = appsheetRequest_(T.RELATIONS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + groupId + '"'
+  }) || [];
 
-    relations.forEach(rel => {
-      const guardianPersonalId  = person_personal_ids[rel.person_id_a];
-      const applicantPersonalId = person_personal_ids[rel.person_id_b];
-      if (!guardianPersonalId || !applicantPersonalId) return;
-      relationalRecords.push({
-        record_id:             generateUuid_(),
-        school_id:             SCHOOL_ID,
-        participant_id:        applicantPersonalId,
-        relative_id:           guardianPersonalId,
-        relation_id:           rel.relation_type_id || null,
-        is_custodial:          rel.is_custodial          || false,
-        is_pick_up_authorized: rel.is_pick_up_authorized || false,
-        is_school_rep:         false,
-        is_active:             true,
-      });
+  groupRelations.forEach(rel => {
+    // Only emit relational records that involve THIS enrollment's applicant
+    if (rel.person_id_b !== applicantPerson.person_id) return;
+    const guardianPersonalId  = personalIdByPersonId[rel.person_id_a];
+    const applicantPersonalId = personalIdByPersonId[rel.person_id_b];
+    if (!guardianPersonalId || !applicantPersonalId) return;
+    relationalRecords.push({
+      record_id:             generateUuid_(),
+      school_id:             SCHOOL_ID,
+      participant_id:        applicantPersonalId,
+      relative_id:           guardianPersonalId,
+      relation_id:           rel.relation_type_id || null,
+      is_custodial:          rel.is_custodial          || false,
+      is_pick_up_authorized: rel.is_pick_up_authorized || false,
+      is_school_rep:         false,
+      is_active:             true,
     });
-    if (relationalRecords.length) {
-      appsheetRequest_(T.SMS_RELATIONAL_RECORDS, 'Add', relationalRecords);
-    }
+  });
+  if (relationalRecords.length) {
+    appsheetRequest_(T.SMS_RELATIONAL_RECORDS, 'Add', relationalRecords);
   }
 
-  // Store desired_start_date for admissions team on personCategoriesLog for each applicant
+  // ── personCategoriesLog entry for the applicant ────────────────────────────
   const categoryLogs = [];
   if (desiredStartDate) {
-    applicantPersonIds.forEach(personId => {
-      const personalId = person_personal_ids[personId];
-      if (!personalId) return;
+    const applicantPersonalId = personalIdByPersonId[applicantPerson.person_id];
+    if (applicantPersonalId) {
       categoryLogs.push({
         person_category_log_id: generateUuid_(),
         school_id:              SCHOOL_ID,
-        personal_id:            personalId,
+        personal_id:            applicantPersonalId,
         person_category_id:     'applicant',
         status_date:            desiredStartDate,
         last_known_status:      'desired_start: ' + desiredStartDate,
       });
-    });
-    if (categoryLogs.length) {
       appsheetRequest_(T.SMS_PERSON_CATEGORIES, 'Add', categoryLogs);
     }
   }
 
-  // Log promotion as a status transition
+  // ── Log promotion as a status transition on the enrollment ─────────────────
   const promotedStatusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
     Filter: '"status_code" = "PROMOTED" && "school_id" = "' + SCHOOL_ID + '"'
   });
@@ -1753,27 +2055,34 @@ function promoteApplication_(p) {
   if (promotedTypeId) {
     appsheetRequest_(T.STATUS_LOG, 'Add', [{
       log_id:              generateUuid_(),
-      application_id,
-      from_status_type_id: appRow.status_type_id || null,
+      enrollment_id:       targetId,
+      from_status_type_id: enrRow.current_state_id || null,
       to_status_type_id:   promotedTypeId,
       changed_by:          getStaffEmail_(),
       changed_at:          now,
-      reason:              'Application promoted to SMS',
+      reason:              'Enrollment promoted to SMS',
     }]);
-    appsheetRequest_(T.APPLICATIONS, 'Edit', [{ application_id, status_type_id: promotedTypeId, updated_at: now }]);
+    appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
+      enrollment_id:    targetId,
+      current_state_id: promotedTypeId,
+      updated_at:       now,
+    }]);
   }
 
-  // Stamp promoted_at on the application
-  appsheetRequest_(T.APPLICATIONS, 'Edit', [{
-    application_id,
-    promoted_at: now,
-    updated_at:  now,
+  // Stamp promoted_at on the enrollment
+  appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
+    enrollment_id: targetId,
+    promoted_at:   now,
+    updated_at:    now,
   }]);
 
   return {
+    enrollment_id:        targetId,
     promoted_addresses:   smsAddresses.length,
     relational_records:   relationalRecords.length,
     category_log_entries: categoryLogs.length,
+    // legacy alias for callers that still read application_id
+    application_id:       targetId,
   };
 }
 

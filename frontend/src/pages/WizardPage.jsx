@@ -33,7 +33,7 @@ export default function WizardPage() {
   const { t }                           = useTranslation();
   const navigate                        = useNavigate();
   const {
-    applicationId, resumeToken,
+    enrollmentGroupId, resumeToken,
     currentStep, setCurrentStep,
     stepData, updateStep,
     hydrateFromResume, needsHydration,
@@ -47,13 +47,13 @@ export default function WizardPage() {
   // Kick off lookup prefetch immediately so Step3/Step4 get cached data.
   useEffect(() => { prefetchLookups(); }, []); // eslint-disable-line
 
-  // On page reload, applicationId is restored from sessionStorage but stepData is empty.
+  // On page reload, enrollmentGroupId is restored from sessionStorage but stepData is empty.
   // Auto-resume from the server to restore full wizard state.
   useEffect(() => {
     if (needsHydration && resumeToken) {
       setRehydrating(true);
-      log.info('WizardPage: rehydrating session after reload', { applicationId });
-      gasCall('resumeApplication', { resume_token: resumeToken })
+      log.info('WizardPage: rehydrating session after reload', { enrollmentGroupId });
+      gasCall('resumeSession', { resume_token: resumeToken })
         .then(data => {
           hydrateFromResume(data);
           // Lock all steps — data was loaded from server, user should not accidentally edit
@@ -65,8 +65,8 @@ export default function WizardPage() {
           navigate('/consent', { replace: true });
         })
         .finally(() => setRehydrating(false));
-    } else if (!applicationId) {
-      log.warn('WizardPage: no applicationId — redirecting to /consent');
+    } else if (!enrollmentGroupId) {
+      log.warn('WizardPage: no enrollmentGroupId — redirecting to /consent');
       navigate('/consent', { replace: true });
     }
   }, []); // eslint-disable-line
@@ -74,10 +74,17 @@ export default function WizardPage() {
 const handleNext = async (stepKey, data) => {
     setSaving(true);
     log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
-    if (applicationId && stepKey) {
+    if (enrollmentGroupId && stepKey) {
       try {
-        log.info(`WizardPage: auto-saving step "${stepKey}" for application ${applicationId}`);
-        const saveResult = await gasCall('saveStep', { application_id: applicationId, step: stepKey, payload: data });
+        log.info(`WizardPage: auto-saving step "${stepKey}" for enrollment group ${enrollmentGroupId}`);
+        // Send both new and legacy keys so backend keeps working during the
+        // parallel refactor — server-side will prefer enrollment_group_id.
+        const saveResult = await gasCall('saveStep', {
+          enrollment_group_id: enrollmentGroupId,
+          application_id:      enrollmentGroupId, // legacy alias
+          step:                stepKey,
+          payload:             data,
+        });
         log.success(`WizardPage: saveStep "${stepKey}" OK`, saveResult?._debug || {});
 
         // Stamp real person_ids returned from backend so Step3Relations can reference them
@@ -92,7 +99,7 @@ const handleNext = async (stepKey, data) => {
         showToast(t('wizard.save_failed'));
       }
     } else {
-      log.warn('WizardPage: skipping saveStep', { applicationId, stepKey });
+      log.warn('WizardPage: skipping saveStep', { enrollmentGroupId, stepKey });
     }
     setSaving(false);
     setCompletedSteps(prev => new Set([...prev, currentStep]));
@@ -115,14 +122,17 @@ const handleNext = async (stepKey, data) => {
   };
 
   const handleSaveLater = async () => {
-    if (!applicationId) {
-      log.warn('WizardPage: Save Later clicked but no applicationId in context');
+    if (!enrollmentGroupId) {
+      log.warn('WizardPage: Save Later clicked but no enrollmentGroupId in context');
       return;
     }
-    log.info('WizardPage: sending magic link for Save & Continue Later', { applicationId });
+    log.info('WizardPage: sending magic link for Save & Continue Later', { enrollmentGroupId });
     setSendingMagicLink(true);
     try {
-      await gasCall('sendMagicLink', { application_id: applicationId });
+      await gasCall('sendMagicLink', {
+        enrollment_group_id: enrollmentGroupId,
+        application_id:      enrollmentGroupId, // legacy alias
+      });
       log.success('WizardPage: magic link sent');
       showToast(t('wizard.save_later_sent'));
     } catch (err) {

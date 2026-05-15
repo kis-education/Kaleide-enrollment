@@ -15,7 +15,7 @@ const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 export default function ConsentPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { setApplicationId, setResumeToken, updateStep } = useWizard();
+  const { setEnrollmentGroupId, setResumeToken, updateStep } = useWizard();
 
   useEffect(() => {
     if (!RECAPTCHA_SITE_KEY || document.querySelector('#recaptcha-script')) return;
@@ -51,12 +51,14 @@ export default function ConsentPage() {
         recaptcha_token = await window.grecaptcha.execute(RECAPTCHA_SITE_KEY, { action: 'init_application' });
       }
 
-      const data = await gasCall('initApplication', {
+      const data = await gasCall('initEnrollmentSession', {
         primary_email:      email,
         preferred_language: navigator.language?.startsWith('en') ? 'en' : 'es',
         recaptcha_token,
       });
-      setApplicationId(data.application_id);
+      // Backend post-DL-E15 returns enrollment_group_id; during the transitional
+      // period the legacy `application_id` may still come back — accept either.
+      setEnrollmentGroupId(data.enrollment_group_id || data.application_id);
       setResumeToken(data.resume_token);
       updateStep('email', { primary_email: email, verified: false });
       setSent(true);
