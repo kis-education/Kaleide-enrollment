@@ -17,19 +17,21 @@ export default function ResumePage() {
       navigate('/');
       return;
     }
-    log.info('ResumePage: calling resumeApplication', { resume_token: token });
-    gasCall('resumeApplication', { resume_token: token })
+    log.info('ResumePage: calling resumeSession', { resume_token: token });
+    gasCall('resumeSession', { resume_token: token })
       .then(data => {
-        log.success('ResumePage: resumeApplication succeeded', {
-          application_id: data.application?.application_id,
-          status_type_id: data.application?.status_type_id,
+        // Post-DL-E15 shape uses `group`; legacy responses still use `application`.
+        const grp = data.group || data.application;
+        log.success('ResumePage: resumeSession succeeded', {
+          enrollment_group_id: grp?.enrollment_group_id || grp?.application_id,
+          status_type_id:      grp?.status_type_id,
         });
         hydrateFromResume(data);
         log.info('ResumePage: hydration complete, navigating to /apply');
         navigate('/apply');
       })
       .catch(err => {
-        log.error('ResumePage: resumeApplication failed', { message: err.message });
+        log.error('ResumePage: resumeSession failed', { message: err.message });
         navigate('/?resume_error=1');
       });
   }, [token]); // eslint-disable-line

@@ -21,7 +21,7 @@ function fileToBase64(file) {
   });
 }
 
-function DocumentUploader({ docType, applicationId, onUploaded, existing }) {
+function DocumentUploader({ docType, enrollmentGroupId, onUploaded, existing }) {
   const { t }    = useTranslation();
   const [status, setStatus] = useState(existing ? 'success' : '');
   const [url,    setUrl]    = useState(existing?.drive_url || '');
@@ -35,7 +35,8 @@ function DocumentUploader({ docType, applicationId, onUploaded, existing }) {
     try {
       const base64 = await fileToBase64(file);
       const data   = await gasCall('uploadDocument', {
-        application_id: applicationId,
+        enrollment_group_id: enrollmentGroupId,
+        application_id:      enrollmentGroupId, // legacy alias
         base64,
         mimeType:      file.type,
         filename:      file.name,
@@ -96,7 +97,7 @@ function DocumentUploader({ docType, applicationId, onUploaded, existing }) {
 
 export default function Step6Documents({ onNext, onBack, locked, onUnlock }) {
   const { t }  = useTranslation();
-  const { applicationId, stepData, updateStep } = useWizard();
+  const { enrollmentGroupId, stepData, updateStep } = useWizard();
   const [documents, setDocuments] = useState(stepData.documents || []);
 
   const handleUploaded = (doc) => {
@@ -130,7 +131,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock }) {
           <DocumentUploader
             key={doc.key}
             docType={doc.key}
-            applicationId={applicationId}
+            enrollmentGroupId={enrollmentGroupId}
             onUploaded={handleUploaded}
             existing={documents.find(d => d.document_type === doc.key)}
           />

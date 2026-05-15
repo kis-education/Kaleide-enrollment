@@ -35,14 +35,19 @@ function saveSession(patch) {
 
 export function WizardProvider({ children }) {
   const session = loadSession();
-  const [applicationId, setApplicationIdRaw] = useState(session.applicationId || null);
+  // Post-DL-E15: identity is `enrollmentGroupId` (cabecera enrEnrollmentGroups).
+  // Backward-compat: fall back to legacy `session.applicationId` so in-flight
+  // sessions from before this refactor keep working until they expire.
+  const [enrollmentGroupId, setEnrollmentGroupIdRaw] = useState(
+    session.enrollmentGroupId || session.applicationId || null
+  );
   const [resumeToken,   setResumeTokenRaw]   = useState(session.resumeToken   || null);
   const [currentStep,   setCurrentStepRaw]   = useState(session.currentStep   || 0);
   const [stepData,      setStepData]         = useState(initialStepData);
 
-  const setApplicationId = useCallback((id) => {
-    setApplicationIdRaw(id);
-    saveSession({ applicationId: id });
+  const setEnrollmentGroupId = useCallback((id) => {
+    setEnrollmentGroupIdRaw(id);
+    saveSession({ enrollmentGroupId: id });
   }, []);
   const setResumeToken = useCallback((tok) => {
     setResumeTokenRaw(tok);
@@ -53,10 +58,10 @@ export function WizardProvider({ children }) {
     saveSession({ currentStep: step });
   }, []);
 
-  // Clear session when application is submitted
+  // Clear session when enrollment group is submitted
   const clearSession = useCallback(() => {
     try { sessionStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
-    setApplicationIdRaw(null);
+    setEnrollmentGroupIdRaw(null);
     setResumeTokenRaw(null);
     setCurrentStepRaw(0);
     setStepData(initialStepData);
@@ -66,51 +71,54 @@ export function WizardProvider({ children }) {
     setStepData(prev => ({ ...prev, [stepKey]: data }));
   }, []);
 
-  const hydrateFromResume = useCallback((appData) => {
-    setApplicationId(appData.application.application_id);
-    setResumeToken(appData.application.resume_token);
+  const hydrateFromResume = useCallback((data) => {
+    // Post-DL-E15 shape: { group, enrollments[], persons[], relations[], ... }
+    // Legacy shape (transitional): { application, persons[], relations[], ... }
+    const group = data.group || data.application;
+    setEnrollmentGroupId(group.enrollment_group_id || group.application_id);
+    setResumeToken(group.resume_token);
     // The magic link token itself proves email ownership — treat as verified regardless
     // of the email_confirmed DB flag (which may lag or not have been written yet).
     setStepData(prev => ({
       ...prev,
       email: {
-        primary_email:      appData.application.primary_email      || '',
+        primary_email:      group.primary_email      || '',
         verified:           true,
-        desired_start_date: appData.application.desired_start_date || '',
+        desired_start_date: group.desired_start_date || '',
       },
-      persons:   appData.persons   || [],
-      relations: appData.relations || [],
-      health:    (appData.persons  || []).map(p => ({
+      persons:   data.persons   || [],
+      relations: data.relations || [],
+      health:    (data.persons  || []).map(p => ({
         person_id: p.person_id,
         allergies: p.allergies || [],
         dietary:   p.dietary   || [],
         medical:   p.medical   || [],
       })),
     }));
-    // Determine deepest incomplete step
-    const submitted = appData.application.submitted_at;
+    // Determine deepest incomplete step — group.submitted_at indicates submit
+    const submitted = group.submitted_at;
     if (submitted) { setCurrentStep(6); return; }
-    const persons = appData.persons || [];
+    const persons = data.persons || [];
     const hasGuardians  = persons.some(p => p.person_type_id === 'guardian');
     const hasApplicants = persons.some(p => p.person_type_id === 'applicant');
     // No persons yet → always start at step 0 (start date), even if AppSheet set a default date
     if (!hasGuardians && !hasApplicants) { setCurrentStep(0); return; }
-    const desiredStartDate = appData.application.desired_start_date;
+    const desiredStartDate = group.desired_start_date;
     if (!desiredStartDate)          { setCurrentStep(0); return; }
     if (!hasGuardians || !hasApplicants) { setCurrentStep(1); return; }
-    const hasRelations = (appData.relations || []).length > 0;
+    const hasRelations = (data.relations || []).length > 0;
     if (!hasRelations)              { setCurrentStep(2); return; }
     setCurrentStep(3);
   }, []);
 
   return (
     <WizardContext.Provider value={{
-      applicationId, setApplicationId,
+      enrollmentGroupId, setEnrollmentGroupId,
       resumeToken,   setResumeToken,
       currentStep,   setCurrentStep,
       stepData,      updateStep,
       hydrateFromResume, clearSession,
-      needsHydration: !!(applicationId && !stepData.email.verified),
+      needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>
       {children}
     </WizardContext.Provider>

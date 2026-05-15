@@ -40,7 +40,7 @@ export default function Step7Review({ onBack }) {
   const { t, i18n }  = useTranslation();
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
-  const { applicationId, stepData } = useWizard();
+  const { enrollmentGroupId, stepData } = useWizard();
 
   const { email, persons, documents } = stepData;
   const guardians  = (persons || []).filter(p => p.person_type_id === 'guardian');
@@ -73,10 +73,14 @@ export default function Step7Review({ onBack }) {
         }
       }
 
-      await gasCall('submitApplication', {
-        application_id: applicationId,
-        esignature:     esig,
-        language:       lang,
+      // Backend post-DL-E15: action `submitEnrollmentSession`, payload uses
+      // `enrollment_group_id`; legacy `application_id` is accepted as alias
+      // during the transitional period.
+      await gasCall('submitEnrollmentSession', {
+        enrollment_group_id: enrollmentGroupId,
+        application_id:      enrollmentGroupId, // legacy alias
+        esignature:          esig,
+        language:            lang,
         consents: [
           { type: 'gdpr',  accepted: consentGdpr,  consent_text_shown: CONSENT_TEXTS.gdpr[lang]  },
           { type: 'legal', accepted: consentLegal, consent_text_shown: CONSENT_TEXTS.legal[lang] },

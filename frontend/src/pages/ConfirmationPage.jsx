@@ -7,7 +7,7 @@ const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favico
 
 export default function ConfirmationPage() {
   const { t }           = useTranslation();
-  const { applicationId } = useWizard();
+  const { enrollmentGroupId } = useWizard();
 
   return (
     <div className="wizard-layout">
@@ -34,13 +34,13 @@ export default function ConfirmationPage() {
           {t('confirmation.subtitle')}
         </p>
 
-        {applicationId && (
+        {enrollmentGroupId && (
           <div className="kis-card" style={{ textAlign: 'left', marginTop: 28 }}>
             <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--muted)' }}>
               {t('confirmation.app_id_label')}
             </p>
             <p style={{ margin: '4px 0 0', fontFamily: 'monospace', color: 'var(--teal-dk)', fontWeight: 700 }}>
-              {applicationId}
+              {enrollmentGroupId}
             </p>
           </div>
         )}

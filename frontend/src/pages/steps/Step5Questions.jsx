@@ -106,7 +106,7 @@ function meetsConditions(question, person, responses, personKey) {
 
 export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
   const { t, i18n }  = useTranslation();
-  const { applicationId, stepData, updateStep } = useWizard();
+  const { enrollmentGroupId, stepData, updateStep } = useWizard();
 
   const [sets,     setSets]     = useState([]);
   const [loading,  setLoading]  = useState(true);
@@ -136,15 +136,16 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
       const [qid, respondentId] = key.split('__');
       return {
         question_id:   qid,
-        respondent_id: respondentId || applicationId,
+        respondent_id: respondentId || enrollmentGroupId,
         response_text: Array.isArray(val) ? val.join(',') : String(val ?? ''),
         language:      i18n.language,
       };
     });
-    if (rows.length && applicationId) {
+    if (rows.length && enrollmentGroupId) {
       await gasCall('saveResponses', {
-        application_id:              applicationId,
-        respondent_id:               applicationId,
+        enrollment_group_id:         enrollmentGroupId,
+        application_id:              enrollmentGroupId, // legacy alias
+        respondent_id:               enrollmentGroupId,
         respondent_type_category_id: 'client',
         responses:                   rows,
       }).catch(() => {});
@@ -219,7 +220,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
             }
 
             // General question (no audience filter)
-            const key = `${q.question_id}__${applicationId}`;
+            const key = `${q.question_id}__${enrollmentGroupId}`;
             return (
               <div key={key} className="mb-4">
                 <QuestionField question={q} value={responses[key]} onChange={v => setResponse(key, v)} />
