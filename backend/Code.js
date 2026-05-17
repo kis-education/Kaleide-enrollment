@@ -74,9 +74,9 @@ const T = {
   ADDRESSES:            'enrAddresses',
   PERSON_ADDRESSES:     'enrPersonAddresses',
   EMAILS:               'enrEmails',
-  PERSON_EMAILS:        'enrPersonEmails',
+  // enrPersonEmails deleted 2026-05-17 (no canonical sys* equivalent; join omitted)
   PHONES:               'enrPhones',
-  PERSON_PHONES:        'enrPersonPhones',
+  // enrPersonPhones deleted 2026-05-17 (no canonical sys* equivalent; join omitted)
   PERSON_RELATIONS:     'sysPersonRelations',    // polymorphic person relations (DL-S45)
   PREV_SCHOOLS:         'enrPreviousSchools',
   PERSON_MEDICAL:       'enrPersonMedicalConditions',
@@ -398,8 +398,10 @@ function resumeSession_(p) {
   const personIds_        = appsheetRequest_(T.PERSON_IDS,           'Find', [], { Filter: pidFilter }) || [];
   const languages         = appsheetRequest_(T.PERSON_LANGUAGES,     'Find', [], { Filter: pidFilter }) || [];
   const personAddrJoins   = appsheetRequest_(T.PERSON_ADDRESSES,     'Find', [], { Filter: pidFilter }) || [];
-  const personEmailJoins  = appsheetRequest_(T.PERSON_EMAILS,        'Find', [], { Filter: pidFilter }) || [];
-  const personPhoneJoins  = appsheetRequest_(T.PERSON_PHONES,        'Find', [], { Filter: pidFilter }) || [];
+  // enrPersonEmails / enrPersonPhones deleted 2026-05-17 — person→email/phone joins unavailable.
+  // Actual email/phone values still stored in enrEmails/enrPhones by enrollment_group_id.
+  const personEmailJoins  = [];
+  const personPhoneJoins  = [];
   const prevSchools       = appsheetRequest_(T.PREV_SCHOOLS,         'Find', [], { Filter: pidFilter }) || [];
   const medical           = appsheetRequest_(T.PERSON_MEDICAL,       'Find', [], { Filter: pidFilter }) || [];
   const allergies         = appsheetRequest_(T.PERSON_ALLERGIES,     'Find', [], { Filter: pidFilter }) || [];
@@ -742,16 +744,10 @@ function submitEnrollmentSession_(p) {
 
   // Enrich guardians with emails and phones for notifications
   const gPersonIds = guardians.map(g => g.person_id);
-  const gEmailJoins = gPersonIds.length
-    ? appsheetRequest_(T.PERSON_EMAILS, 'Find', [], {
-        Filter: gPersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
-      }) || []
-    : [];
-  const gPhoneJoins = gPersonIds.length
-    ? appsheetRequest_(T.PERSON_PHONES, 'Find', [], {
-        Filter: gPersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
-      }) || []
-    : [];
+  // enrPersonEmails / enrPersonPhones deleted 2026-05-17 — notification enrichment unavailable.
+  // Guardian primary_email from enrEnrollmentGroups is still used for magic links / receipts.
+  const gEmailJoins = [];
+  const gPhoneJoins = [];
 
   const gEmailIds = gEmailJoins.map(r => r.email_id).filter(Boolean);
   const gPhoneIds = gPhoneJoins.map(r => r.phone_id).filter(Boolean);
@@ -1272,9 +1268,9 @@ function savePersons_(enrollmentGroupId, persons) {
   write_(T.ADDRESSES,            'Add',  addresses);
   write_(T.PERSON_ADDRESSES,     'Add',  personAddrs);
   write_(T.EMAILS,               'Add',  emails);
-  write_(T.PERSON_EMAILS,        'Add',  personEmails);
+  // enrPersonEmails deleted 2026-05-17 — person→email join not written
   write_(T.PHONES,               'Add',  phones);
-  write_(T.PERSON_PHONES,        'Add',  personPhones);
+  // enrPersonPhones deleted 2026-05-17 — person→phone join not written
   write_(T.PREV_SCHOOLS,         'Add',  schoolsAdd);
   write_(T.PREV_SCHOOLS,         'Edit', schoolsEdit);
 
