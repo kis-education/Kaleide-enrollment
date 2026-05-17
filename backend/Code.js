@@ -2202,53 +2202,6 @@ function getOrCreateDriveFolder_(name) {
   return DriveApp.createFolder(name);
 }
 
-/**
- * Seeds the enrPrograms and enrEnrollmentSources catalog tables with the
- * minimum records needed for the KIS admission wizard to function.
- *
- * Run once from the GAS editor: seedEnrollmentCatalogs()
- * Safe to re-run — checks for existing records before inserting.
- */
-function seedEnrollmentCatalogs() {
-  // ── enrEnrollmentSources ────────────────────────────────────────────────────
-  const sources = appsheetRequest_(T.ENROLLMENT_SOURCES, 'Find', [], {
-    Filter: '"source_code" = "WEB_PUBLIC"'
-  });
-  if (!sources || !sources.length) {
-    appsheetRequest_(T.ENROLLMENT_SOURCES, 'Add', [{
-      source_id:    generateUuid_(),
-      school_id:    SCHOOL_ID,
-      source_code:  'WEB_PUBLIC',
-      label:        'Public web wizard (admissions.kaleide.org)',
-      is_active:    'TRUE',
-      created_at:   new Date().toISOString(),
-      updated_at:   new Date().toISOString(),
-    }]);
-    Logger.log('seedEnrollmentCatalogs: enrEnrollmentSources WEB_PUBLIC created');
-  } else {
-    Logger.log('seedEnrollmentCatalogs: enrEnrollmentSources WEB_PUBLIC already exists — skip');
-  }
-
-  // ── enrPrograms ─────────────────────────────────────────────────────────────
-  const programs = appsheetRequest_(T.PROGRAMS, 'Find', [], {
-    Filter: '"school_id" = "KIS" && "program_type_code" = "ADMISSION_SCHOOL"'
-  });
-  if (!programs || !programs.length) {
-    appsheetRequest_(T.PROGRAMS, 'Add', [{
-      program_id:        generateUuid_(),
-      school_id:         SCHOOL_ID,
-      program_type_code: 'ADMISSION_SCHOOL',
-      label:             'Kaleide School Admission',
-      is_active:         'TRUE',
-      deleted_at:        '',
-      created_at:        new Date().toISOString(),
-      updated_at:        new Date().toISOString(),
-    }]);
-    Logger.log('seedEnrollmentCatalogs: enrPrograms ADMISSION_SCHOOL created');
-  } else {
-    Logger.log('seedEnrollmentCatalogs: enrPrograms ADMISSION_SCHOOL already exists — skip');
-  }
-}
 
 /**
  * Diagnostic: returns raw AppSheet HTTP status + body for a table action.
