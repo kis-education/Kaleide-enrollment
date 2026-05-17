@@ -1,45 +1,63 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
-
-const CURRENT_YEAR = new Date().getFullYear();
-const SCHOOL_YEARS = Array.from({ length: 5 }, (_, i) => {
-  const y = CURRENT_YEAR + i;
-  return { value: String(y), label: `${y}/${String(y + 1).slice(-2)}` };
-});
+import { fetchLookups } from '../../api';
 
 export default function Step1Email({ onNext }) {
   const { t }    = useTranslation();
   const { stepData, updateStep } = useWizard();
 
-  const data = stepData.email;
+  const data  = stepData.email;
   const email = data.primary_email || '';
 
-  const initialDate = data.desired_start_date || '';
-  const initialYear = initialDate ? initialDate.slice(0, 4) : String(CURRENT_YEAR);
-  const initialIsSeptember = !initialDate || initialDate.slice(5, 10) === '09-01';
+  const [programs,          setPrograms]          = useState(null); // null = loading
+  const [selectedProgramId, setSelectedProgramId] = useState(data.program_id || '');
+  const [startType,         setStartType]         = useState(() => {
+    const d = data.desired_start_date || '';
+    return d && d.slice(5, 10) !== '09-01' ? 'midterm' : 'september';
+  });
+  const [desiredStartDate, setDesiredStartDate] = useState(data.desired_start_date || '');
 
-  const [schoolYear,       setSchoolYear]       = useState(initialYear);
-  const [startType,        setStartType]        = useState(initialIsSeptember ? 'september' : 'midterm');
-  const [desiredStartDate, setDesiredStartDate] = useState(
-    initialIsSeptember ? `${initialYear}-09-01` : (initialDate || `${initialYear}-09-01`)
-  );
+  useEffect(() => {
+    fetchLookups()
+      .then(lookups => {
+        const progs = lookups.programs || [];
+        setPrograms(progs);
+        // Auto-select when only one programme is available
+        if (!selectedProgramId && progs.length === 1) {
+          setSelectedProgramId(progs[0].program_id);
+          if (!desiredStartDate && progs[0].period_starts_on) {
+            setDesiredStartDate(progs[0].period_starts_on);
+          }
+        }
+      })
+      .catch(() => setPrograms([]));
+  }, []); // eslint-disable-line
 
-  const handleSchoolYear = (year) => {
-    setSchoolYear(year);
-    if (startType === 'september') setDesiredStartDate(`${year}-09-01`);
+  const handleProgramChange = (programId) => {
+    setSelectedProgramId(programId);
+    const prog = (programs || []).find(p => p.program_id === programId);
+    if (prog?.period_starts_on && startType === 'september') {
+      setDesiredStartDate(prog.period_starts_on);
+    }
   };
 
   const handleStartType = (type) => {
     setStartType(type);
-    if (type === 'september') setDesiredStartDate(`${schoolYear}-09-01`);
-    else setDesiredStartDate('');
+    if (type === 'september') {
+      const prog = (programs || []).find(p => p.program_id === selectedProgramId);
+      setDesiredStartDate(prog?.period_starts_on || '');
+    } else {
+      setDesiredStartDate('');
+    }
   };
 
   const handleContinue = () => {
-    updateStep('email', { primary_email: email, verified: true, desired_start_date: desiredStartDate });
-    onNext('application', { desired_start_date: desiredStartDate });
+    updateStep('email', { primary_email: email, verified: true, desired_start_date: desiredStartDate, program_id: selectedProgramId });
+    onNext('application', { desired_start_date: desiredStartDate, program_id: selectedProgramId });
   };
+
+  const canContinue = selectedProgramId && (startType === 'september' ? !!desiredStartDate : !!desiredStartDate);
 
   return (
     <div className="kis-card">
@@ -56,10 +74,25 @@ export default function Step1Email({ onNext }) {
         <h6 style={{ color: 'var(--teal-dk)', marginBottom: 12 }}>{t('step1.start_date_title')}</h6>
         <div className="row g-3">
           <div className="col-md-4">
-            <label className="form-label">{t('field.school_year')}</label>
-            <select className="form-select" value={schoolYear} onChange={e => handleSchoolYear(e.target.value)}>
-              {SCHOOL_YEARS.map(y => <option key={y.value} value={y.value}>{y.label}</option>)}
-            </select>
+            <label className="form-label">{t('field.program')}</label>
+            {programs === null ? (
+              <div className="d-flex align-items-center gap-2" style={{ height: 38 }}>
+                <div className="spinner-border spinner-border-sm" role="status" style={{ color: 'var(--teal)' }} />
+              </div>
+            ) : programs.length === 0 ? (
+              <p className="text-muted small mb-0">{t('step1.no_programs')}</p>
+            ) : (
+              <select
+                className="form-select"
+                value={selectedProgramId}
+                onChange={e => handleProgramChange(e.target.value)}
+              >
+                {programs.length > 1 && <option value="">{t('step1.select_program')}</option>}
+                {programs.map(p => (
+                  <option key={p.program_id} value={p.program_id}>{p.designation}</option>
+                ))}
+              </select>
+            )}
           </div>
           <div className="col-md-8">
             <label className="form-label">{t('field.start_type')}</label>
@@ -96,7 +129,7 @@ export default function Step1Email({ onNext }) {
         <button
           className="btn-primary-kis"
           onClick={handleContinue}
-          disabled={startType === 'midterm' && !desiredStartDate}
+          disabled={!canContinue}
         >
           {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
         </button>

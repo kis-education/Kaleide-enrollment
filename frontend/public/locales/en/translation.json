@@ -30,6 +30,8 @@
   "step1.resend_link": "Resend code",
   "step1.verified": "Email verified: {{email}}",
   "step1.start_date_title": "When would you like your child to start?",
+  "step1.select_program": "Select a programme…",
+  "step1.no_programs": "No admission programmes are available at this time.",
 
   "step2.subtitle": "Add all guardians and the children you wish to enrol.",
   "step3.subtitle": "Specify the relationship between each guardian and each student.",
@@ -147,6 +149,7 @@
   "field.gender": "Gender",
   "field.mother_tongue": "Mother tongue",
   "field.school_year": "School year",
+  "field.program": "Admission programme",
   "field.start_type": "Start type",
   "field.start_date": "Requested start date",
   "field.adaptation_notes": "Adaptation notes",

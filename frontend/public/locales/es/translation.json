@@ -30,6 +30,8 @@
   "step1.resend_link": "Reenviar código",
   "step1.verified": "Correo verificado: {{email}}",
   "step1.start_date_title": "¿Cuándo le gustaría que su hijo/a comenzase?",
+  "step1.select_program": "Selecciona un programa…",
+  "step1.no_programs": "No hay programas de admisión disponibles en este momento.",
 
   "step2.subtitle": "Añade todos los tutores y los alumnos que deseas matricular.",
   "step3.subtitle": "Indica el vínculo entre cada tutor y cada alumno.",
@@ -147,6 +149,7 @@
   "field.gender": "Género",
   "field.mother_tongue": "Lengua materna",
   "field.school_year": "Curso escolar",
+  "field.program": "Programa de admisión",
   "field.start_type": "Tipo de incorporación",
   "field.start_date": "Fecha de incorporación solicitada",
   "field.adaptation_notes": "Notas sobre adaptación",

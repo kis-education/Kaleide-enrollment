@@ -496,7 +496,8 @@ function saveStep_(p) {
     // desired_start_date is NOT staged on enrEnrollmentGroups (column doesn't exist).
     // It propagates to each enrEnrollments row at submit time via the submit payload.
     // source maps to source_locale for now (real source_id was resolved at init).
-    if (payload.source) groupRow.source_locale = payload.source;
+    if (payload.program_id)  groupRow.program_id   = payload.program_id;
+    if (payload.source)      groupRow.source_locale = payload.source;
   }
   // Note: `review` step no longer writes to the group — it walks enrollments below.
   appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [groupRow]);
@@ -978,17 +979,27 @@ function fetchLookups_() {
   const dietary       = safe(() => appsheetRequest_(T.LOOKUP_DIETARY,        'Find', [], { Filter: 'true' }));
   const medical       = safe(() => appsheetRequest_(T.LOOKUP_MEDICAL,        'Find', [], { Filter: 'true' }));
   const relationTypes = safe(() => appsheetRequest_(T.LOOKUP_RELATION_TYPES, 'Find', [], { Filter: 'true' }));
+  const programs      = safe(() => appsheetRequest_(T.PROGRAMS,              'Find', [], {
+    Filter: '"school_id" = "' + SCHOOL_ID + '" && ISBLANK([deleted_at])'
+  }));
 
   Logger.log('fetchLookups_ allergies[0]: '     + JSON.stringify(allergies[0]));
   Logger.log('fetchLookups_ dietary[0]: '       + JSON.stringify(dietary[0]));
   Logger.log('fetchLookups_ medical[0]: '       + JSON.stringify(medical[0]));
   Logger.log('fetchLookups_ relationTypes[0]: ' + JSON.stringify(relationTypes[0]));
+  Logger.log('fetchLookups_ programs: '         + programs.length + ' rows');
 
   return {
     allergies:     allergies.map(r =>     ({ id: r['Row ID'] || r.row_id, label: r.food_allergy_designation })),
     dietary:       dietary.map(r =>       ({ id: r['Row ID'] || r.row_id, label: r.diet_designation })),
     medical:       medical.map(r =>       ({ id: r['Row ID'] || r.row_id, label: r.medical_condition_designation })),
     relationTypes: relationTypes.map(r => ({ id: r['Row ID'] || r.row_id, label: r.relation_type_designation })),
+    programs:      programs.map(r => ({
+      program_id:       r.program_id,
+      designation:      r.designation,
+      period_starts_on: r.period_starts_on || null,
+      period_ends_on:   r.period_ends_on   || null,
+    })),
   };
 }
 

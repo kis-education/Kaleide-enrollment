@@ -79,6 +79,8 @@ export default function Step7Review({ onBack }) {
       await gasCall('submitEnrollmentSession', {
         enrollment_group_id: enrollmentGroupId,
         application_id:      enrollmentGroupId, // legacy alias
+        desired_start_date:  email?.desired_start_date || null,
+        program_id:          email?.program_id         || null,
         esignature:          esig,
         language:            lang,
         consents: [
