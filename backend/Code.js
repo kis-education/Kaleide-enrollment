@@ -177,6 +177,7 @@ function doPost(e) {
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
       case 'verifyRecaptcha':      result = verifyRecaptcha_(payload);      break;
       case 'fetchLookups':         result = fetchLookups_(payload);         break;
+      case 'diagTable':            result = diagTable_(payload);            break;
       default:
         return jsonResponse_({ ok: false, error: 'Unknown action: ' + action }, 400);
     }
@@ -1668,11 +1669,15 @@ function appsheetRequest_(table, action, rows, selector, debugOut) {
 
   // AppSheet REST API v2 stores booleans as "TRUE"/"FALSE" strings in Google Sheets.
   // Sending JSON true/false causes silent row rejection — convert before sending.
+  // null/undefined must also become "" — AppSheet silently rejects rows with JSON null values.
   const sanitize_ = (r) => {
     const out = {};
     for (const k in r) {
       const v = r[k];
-      out[k] = (v === true) ? 'TRUE' : (v === false) ? 'FALSE' : v;
+      if (v === true)                   out[k] = 'TRUE';
+      else if (v === false)             out[k] = 'FALSE';
+      else if (v === null || v === undefined) out[k] = '';
+      else                              out[k] = v;
     }
     return out;
   };
@@ -2195,6 +2200,83 @@ function getOrCreateDriveFolder_(name) {
   const folders = DriveApp.getFoldersByName(name);
   if (folders.hasNext()) return folders.next();
   return DriveApp.createFolder(name);
+}
+
+/**
+ * Seeds the enrPrograms and enrEnrollmentSources catalog tables with the
+ * minimum records needed for the KIS admission wizard to function.
+ *
+ * Run once from the GAS editor: seedEnrollmentCatalogs()
+ * Safe to re-run — checks for existing records before inserting.
+ */
+function seedEnrollmentCatalogs() {
+  // ── enrEnrollmentSources ────────────────────────────────────────────────────
+  const sources = appsheetRequest_(T.ENROLLMENT_SOURCES, 'Find', [], {
+    Filter: '"source_code" = "WEB_PUBLIC"'
+  });
+  if (!sources || !sources.length) {
+    appsheetRequest_(T.ENROLLMENT_SOURCES, 'Add', [{
+      source_id:    generateUuid_(),
+      school_id:    SCHOOL_ID,
+      source_code:  'WEB_PUBLIC',
+      label:        'Public web wizard (admissions.kaleide.org)',
+      is_active:    'TRUE',
+      created_at:   new Date().toISOString(),
+      updated_at:   new Date().toISOString(),
+    }]);
+    Logger.log('seedEnrollmentCatalogs: enrEnrollmentSources WEB_PUBLIC created');
+  } else {
+    Logger.log('seedEnrollmentCatalogs: enrEnrollmentSources WEB_PUBLIC already exists — skip');
+  }
+
+  // ── enrPrograms ─────────────────────────────────────────────────────────────
+  const programs = appsheetRequest_(T.PROGRAMS, 'Find', [], {
+    Filter: '"school_id" = "KIS" && "program_type_code" = "ADMISSION_SCHOOL"'
+  });
+  if (!programs || !programs.length) {
+    appsheetRequest_(T.PROGRAMS, 'Add', [{
+      program_id:        generateUuid_(),
+      school_id:         SCHOOL_ID,
+      program_type_code: 'ADMISSION_SCHOOL',
+      label:             'Kaleide School Admission',
+      is_active:         'TRUE',
+      deleted_at:        '',
+      created_at:        new Date().toISOString(),
+      updated_at:        new Date().toISOString(),
+    }]);
+    Logger.log('seedEnrollmentCatalogs: enrPrograms ADMISSION_SCHOOL created');
+  } else {
+    Logger.log('seedEnrollmentCatalogs: enrPrograms ADMISSION_SCHOOL already exists — skip');
+  }
+}
+
+/**
+ * Diagnostic: returns raw AppSheet HTTP status + body for a table action.
+ * Used to debug 200-with-empty-body responses without the JSON-parse wrapper.
+ * @param {Object} p - { table, action? }
+ */
+function diagTable_(p) {
+  const table  = p.table  || 'enrEnrollmentGroups';
+  const action = p.action || 'Find';
+  const props  = PropertiesService.getScriptProperties();
+  const appId  = props.getProperty('APPSHEET_APP_ID');
+  const apiKey = props.getProperty('APPSHEET_ACCESS_KEY');
+  const url    = APPSHEET_BASE_URL + appId + '/tables/' + encodeURIComponent(table) + '/Action';
+  const rowToAdd = p.row || null;
+  const body   = { Action: action, Properties: { Locale: 'en-US' } };
+  if (rowToAdd) body.Rows = [rowToAdd];
+  const res    = UrlFetchApp.fetch(url, {
+    method: 'post', contentType: 'application/json',
+    headers: { ApplicationAccessKey: apiKey },
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true,
+  });
+  const status = res.getResponseCode();
+  const text   = res.getContentText();
+  Logger.log('diagTable_ ' + table + '/' + action + ' → HTTP ' + status + ' | body(' + text.length + '): ' + text.slice(0, 800));
+  // Also log curl-ready info (app_id only, key masked)
+  Logger.log('curl: POST ' + url + ' | key prefix: ' + (apiKey || '').slice(0, 8) + '...');
+  return { table, action, http_status: status, body_length: text.length, body_preview: text.slice(0, 500), app_id: appId };
 }
 
 /**
