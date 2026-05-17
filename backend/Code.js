@@ -51,22 +51,22 @@ const QB_ADAPTATION_NOTES_ID = 'a1b2c3d4-0023-0000-0000-000000000000';
 //   - `enrApplicationSources`   → `enrEnrollmentSources`
 //   - `sysStates_T`             (universal state catalog; entity_type_code='ENR_ADMISSION_SCHOOL')
 //
-// Stage-1 transitional notes:
-//   - `enrStatusTypes` is kept as a legacy proxy for state lookup until sysStates_T is fully wired.
-//   - `enrStatusLog` / `enrConsentsLog` will be migrated to polymorphic sys* tables (DL-S37/DL-S44)
-//     in a later cut. For now we keep the enr* names but FK semantics change:
-//       · staging tables (persons/addresses/emails/phones/relations) FK → enrollment_group_id
-//       · per-enrollment tables (documents/interviews/consents/status_log) FK → enrollment_id
+// Stage-1 notes:
+//   - sysStates_T: entity_type_code='ENR_APPLICATION'. PK=state_id, code field=state_code.
+//   - sysStateTransitionLog: polymorphic on entity_type_code+entity_id. DL-S37.
+//   - sysConsentsLog: polymorphic on entity_type_code+entity_id. Signer via signer_table+signer_id. DL-S44.
+//   - sysPersonRelations: polymorphic via context_entity_type_code+context_entity_id. DL-S45.
+//   · staging tables (persons/addresses/emails/phones/relations) FK → enrollment_group_id
+//   · per-enrollment tables (documents/interviews/consents/state_log) FK → enrollment_id
 const T = {
   ENROLLMENTS:          'enrEnrollments',        // rename of enrApplications
   ENROLLMENT_GROUPS:    'enrEnrollmentGroups',   // new — session header
   PROGRAMS:             'enrPrograms',           // new — admission programme catalog
   PROGRAM_TYPES:        'enrProgramTypes',       // new
   ENROLLMENT_SOURCES:   'enrEnrollmentSources',  // rename of enrApplicationSources
-  STATES_T:             'sysStates_T',           // universal state catalog
-  STATUS_LOG:           'enrStatusLog',
-  STATUS_TYPES:         'enrStatusTypes',        // legacy proxy — Stage 1 only
-  CONSENTS:             'enrConsentsLog',
+  STATES_T:             'sysStates_T',           // universal state catalog (entity_type_code='ENR_APPLICATION')
+  STATE_TRANSITION_LOG: 'sysStateTransitionLog', // polymorphic state log (DL-S37)
+  CONSENTS_LOG:         'sysConsentsLog',         // polymorphic consents log (DL-S44)
   PERSONS:              'enrPersons',
   PERSON_NATIONALITIES: 'enrPersonNationalities',
   PERSON_IDS:           'enrPersonIDs',
@@ -77,7 +77,7 @@ const T = {
   PERSON_EMAILS:        'enrPersonEmails',
   PHONES:               'enrPhones',
   PERSON_PHONES:        'enrPersonPhones',
-  RELATIONS:            'enrRelations',
+  PERSON_RELATIONS:     'sysPersonRelations',    // polymorphic person relations (DL-S45)
   PREV_SCHOOLS:         'enrPreviousSchools',
   PERSON_MEDICAL:       'enrPersonMedicalConditions',
   PERSON_ALLERGIES:     'enrPersonFoodAllergies',
@@ -359,9 +359,9 @@ function resumeSession_(p) {
   }) || [];
 
   const persons    = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"enrollment_group_id" = "' + id + '"' }) || [];
-  // DB stores person_id_a/person_id_b; add guardian_person_id/applicant_person_id aliases for frontend
-  const relations  = (appsheetRequest_(T.RELATIONS, 'Find', [], { Filter: '"enrollment_group_id" = "' + id + '"' }) || [])
-    .map(r => ({ ...r, guardian_person_id: r.person_id_a, applicant_person_id: r.person_id_b }));
+  // DB stores from_person_id/to_person_id; add guardian_person_id/applicant_person_id aliases for frontend
+  const relations  = (appsheetRequest_(T.PERSON_RELATIONS, 'Find', [], { Filter: '"context_entity_id" = "' + id + '" && "context_entity_type_code" = "ENR_APPLICATION"' }) || [])
+    .map(r => ({ ...r, guardian_person_id: r.from_person_id, applicant_person_id: r.to_person_id }));
   // Documents / interviews FK to enrollment_id (per-applicant). Aggregate across the N enrollments.
   let documents  = [];
   let interviews = [];
@@ -473,10 +473,8 @@ function resumeSession_(p) {
  *   - `application` step name is kept (legacy) but its target is the GROUP row.
  *     desired_start_date and source_locale are written to enrEnrollmentGroups;
  *     they are propagated to each enrEnrollments at submit time.
- *   - `review` step is staff-side and was driving status transitions on the old
- *     enrApplications. Until DL-S37 wires sysStateTransitionLog into this flow,
- *     we keep the legacy enrStatusTypes / enrStatusLog path — but it now writes
- *     status against EACH enrollment in the group (the group itself has no state).
+ *   - `review` step is staff-side and drives status transitions on each enrollment
+ *     in the group (the group itself has no state). Uses sysStates_T + sysStateTransitionLog.
  *
  * @param {Object} p - { enrollment_group_id?|application_id?, step, payload }
  */
@@ -507,31 +505,33 @@ function saveStep_(p) {
       break;
     case 'review': {
       // Log status transition across all enrollments in the group when a
-      // status_code is supplied. Stage-1: still uses the legacy enrStatusTypes /
-      // enrStatusLog tables; DL-S37 will migrate this to sysStateTransitionLog.
+      // status_code is supplied. Uses sysStates_T + sysStateTransitionLog (DL-S37).
       if (payload.status_code) {
-        const newStatusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
-          Filter: '"status_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '"'
+        const newStateRows = appsheetRequest_(T.STATES_T, 'Find', [], {
+          Filter: '"state_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
         });
-        const newStatusTypeId = newStatusTypes && newStatusTypes[0]
-          ? newStatusTypes[0].status_type_id : null;
-        if (newStatusTypeId) {
+        const newStateId = newStateRows && newStateRows[0]
+          ? newStateRows[0].state_id : null;
+        if (newStateId) {
           const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
             Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
           }) || [];
           enrollments.forEach(enr => {
-            appsheetRequest_(T.STATUS_LOG, 'Add', [{
+            appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
               log_id:              generateUuid_(),
-              enrollment_id:       enr.enrollment_id,
-              from_status_type_id: enr.current_state_id || null,
-              to_status_type_id:   newStatusTypeId,
-              changed_by:          getStaffEmail_(),
-              changed_at:          now,
-              reason:              payload.reason || null,
+              school_id:           SCHOOL_ID,
+              entity_type_code:    'ENR_APPLICATION',
+              entity_id:           enr.enrollment_id,
+              from_state_id:       enr.current_state_id || null,
+              to_state_id:         newStateId,
+              mode_actually_used:  'MANUAL',
+              transitioned_by:     getStaffEmail_(),
+              transitioned_at:     now,
+              notes:               payload.reason || null,
             }]);
             appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
               enrollment_id:    enr.enrollment_id,
-              current_state_id: newStatusTypeId,
+              current_state_id: newStateId,
               reviewed_by:      getStaffEmail_(),
               review_notes:     payload.review_notes || null,
               updated_at:       now,
@@ -574,8 +574,8 @@ function saveStep_(p) {
  * status_log + consent rows, generates the consent PDF and sends the family +
  * internal confirmation emails.
  *
- * The initial state on each enrollment is resolved from the legacy
- * enrStatusTypes catalog with status_code = 'RQ' (Requested). Per DL-E15
+ * The initial state on each enrollment is resolved from sysStates_T
+ * with state_code = 'RQ' (Requested). Per DL-E15
  * pendientes-flagged decision, RQ is the on-submit state (IN is reserved for
  * "wizard in progress" which post-DL-E15 no longer applies per row).
  *
@@ -595,12 +595,10 @@ function submitEnrollmentSession_(p) {
   if (!group) throw new Error('Enrollment group not found');
 
   // ── Resolve the initial state (RQ = Requested) ─────────────────────────────
-  // Stage-1: keep using the legacy enrStatusTypes lookup. Post-DL-S34 this will
-  // resolve against sysStates_T filtering on entity_type_code='ENR_ADMISSION_SCHOOL'.
-  const statusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
-    Filter: '"status_code" = "RQ" && "school_id" = "' + SCHOOL_ID + '"'
+  const statusTypes = appsheetRequest_(T.STATES_T, 'Find', [], {
+    Filter: '"state_code" = "RQ" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
   });
-  const rqStateId = (statusTypes && statusTypes[0]) ? statusTypes[0].status_type_id : null;
+  const rqStateId = (statusTypes && statusTypes[0]) ? statusTypes[0].state_id : null;
 
   // ── Fetch persons captured in this group ───────────────────────────────────
   const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
@@ -644,16 +642,19 @@ function submitEnrollmentSession_(p) {
     }]);
     enrollmentIds.push(enrollmentId);
 
-    // Per-enrollment status log entry (RQ → initial)
+    // Per-enrollment state transition log entry (null → RQ)
     if (rqStateId) {
-      appsheetRequest_(T.STATUS_LOG, 'Add', [{
-        log_id:              generateUuid_(),
-        enrollment_id:       enrollmentId,
-        from_status_type_id: null,
-        to_status_type_id:   rqStateId,
-        changed_by:          getStaffEmail_() || 'applicant',
-        changed_at:          now,
-        reason:              'Enrollment requested by family',
+      appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
+        log_id:             generateUuid_(),
+        school_id:          SCHOOL_ID,
+        entity_type_code:   'ENR_APPLICATION',
+        entity_id:          enrollmentId,
+        from_state_id:      null,
+        to_state_id:        rqStateId,
+        mode_actually_used: 'AUTOMATIC',
+        transitioned_by:    'SYSTEM:WIZARD',
+        transitioned_at:    now,
+        notes:              'Enrollment requested by family',
       }]);
     }
   });
@@ -668,10 +669,12 @@ function submitEnrollmentSession_(p) {
   const lang = p.language || group.preferred_language || 'es';
 
   // ── Log GDPR + legal consents (per enrollment) ─────────────────────────────
-  // Stage-1: still using enrConsentsLog with FK to enrollment_id (per-applicant).
+  // sysConsentsLog (DL-S44): polymorphic on entity_type_code + entity_id.
+  // Signer: first guardian of the session (the family representative who submitted).
   // The GDPR consent that the family accepted on the consent page (deferred at
   // init time) is also recorded here, once per enrollment, alongside any
   // additional consents from the review step.
+  const signerPersonId = guardians[0] ? guardians[0].person_id : null;
   let consentRows = [];
   const consents = Array.isArray(p.consents) ? p.consents.slice() : [];
   // Ensure GDPR consent is captured even if frontend forgot to include it
@@ -685,17 +688,25 @@ function submitEnrollmentSession_(p) {
   enrollmentIds.forEach(eid => {
     consents.forEach(c => {
       consentRows.push({
-        consent_id:         generateUuid_(),
-        enrollment_id:      eid,
-        consent_type:       c.type,
-        consent_text_shown: c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
-        consented:          c.accepted,
-        consent_timestamp:  now,
-        language:           lang,
+        consent_id:           generateUuid_(),
+        school_id:            SCHOOL_ID,
+        entity_type_code:     'ENR_APPLICATION',
+        entity_id:            eid,
+        signer_table:         'enrPersons',
+        signer_id:            signerPersonId,
+        consent_type:         c.type,
+        consent_text_shown:   c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
+        consent_text_version: '1.0',
+        consented:            c.accepted,
+        consent_timestamp:    now,
+        language:             lang,
+        signed_method:        'WIZARD_CLICK_AND_SIGN',
+        created_at:           now,
+        created_by:           'SYSTEM:WIZARD',
       });
     });
   });
-  if (consentRows.length) appsheetRequest_(T.CONSENTS, 'Add', consentRows);
+  if (consentRows.length) appsheetRequest_(T.CONSENTS_LOG, 'Add', consentRows);
 
   // (Local var renamed to keep downstream PDF / email code unchanged below)
   const app = group;  // alias to minimise the diff in email/PDF builders
@@ -1239,8 +1250,8 @@ function savePersons_(enrollmentGroupId, persons) {
 /**
  * Upserts guardian-applicant relations for an enrollment session.
  *
- * DL-E15: enrRelations FKs to enrollment_group_id (the session header), not to
- * a specific enrollment. Relations are shared across all child enrollments.
+ * DL-E15 / DL-S45: sysPersonRelations scoped to context_entity_id=enrollment_group_id
+ * (the session header). Relations are shared across all child enrollments.
  *
  * @param {string} enrollmentGroupId
  * @param {Array}  relations - [{ guardian_person_id, applicant_person_id, relation_type_id, is_custodial, is_pick_up_authorized }]
@@ -1248,28 +1259,37 @@ function savePersons_(enrollmentGroupId, persons) {
 function saveRelations_(enrollmentGroupId, relations) {
   if (!Array.isArray(relations)) return {};
 
-  const newRelations = relations.filter(r => !r.relation_id).map(r => ({
-    relation_id:           generateUuid_(),
-    enrollment_group_id:   enrollmentGroupId,
-    person_id_a:           r.guardian_person_id || r.person_id_a,
-    person_id_b:           r.applicant_person_id || r.person_id_b,
-    relation_type_id:      r.relation_type_id      || null,
-    is_custodial:          r.is_custodial          || false,
-    is_pick_up_authorized: r.is_pick_up_authorized || false,
-  }));
+  const newRelations = relations.filter(r => !r.relation_id).map(r => {
+    const relId = generateUuid_();
+    return {
+      relation_id:               relId,
+      school_id:                 SCHOOL_ID,
+      context_entity_type_code:  'ENR_APPLICATION',
+      context_entity_id:         enrollmentGroupId,
+      pair_id:                   relId,
+      from_person_table:         'enrPersons',
+      from_person_id:            r.guardian_person_id || r.person_id_a,
+      to_person_table:           'enrPersons',
+      to_person_id:              r.applicant_person_id || r.person_id_b,
+      relation_type_id:          r.relation_type_id      || null,
+      is_custodial:              r.is_custodial          || false,
+      is_pick_up_authorized:     r.is_pick_up_authorized || false,
+      is_school_rep:             false,
+      is_emergency_contact:      false,
+    };
+  });
   const existingRelations = relations.filter(r => r.relation_id).map(r => ({
     relation_id:           r.relation_id,
-    enrollment_group_id:   enrollmentGroupId,
-    person_id_a:           r.guardian_person_id || r.person_id_a,
-    person_id_b:           r.applicant_person_id || r.person_id_b,
+    from_person_id:        r.guardian_person_id || r.person_id_a,
+    to_person_id:          r.applicant_person_id || r.person_id_b,
     relation_type_id:      r.relation_type_id      || null,
     is_custodial:          r.is_custodial          || false,
     is_pick_up_authorized: r.is_pick_up_authorized || false,
   }));
 
   const _debug = { newRelations: newRelations.length, existingRelations: existingRelations.length, firstNew: newRelations[0] || null };
-  if (newRelations.length)      appsheetRequest_(T.RELATIONS, 'Add',  newRelations, null, _debug);
-  if (existingRelations.length) appsheetRequest_(T.RELATIONS, 'Edit', existingRelations);
+  if (newRelations.length)      appsheetRequest_(T.PERSON_RELATIONS, 'Add',  newRelations, null, _debug);
+  if (existingRelations.length) appsheetRequest_(T.PERSON_RELATIONS, 'Edit', existingRelations);
   return _debug;
 }
 
@@ -1724,7 +1744,7 @@ function appsheetRequest_(table, action, rows, selector, debugOut) {
  * @param {Object} app           - Application row (has desired_start_date, source)
  * @param {Array}  guardians     - Enriched guardian person rows (.emails, .phones, .address)
  * @param {Array}  applicants    - Applicant person rows
- * @param {Array}  consentRows   - Consent rows as written to enrConsentsLog
+ * @param {Array}  consentRows   - Consent rows as written to sysConsentsLog
  * @param {string} esignature    - Typed e-signature name
  * @param {string} submittedAt   - ISO submission timestamp
  * @param {Object} qbResponseMap - { [question_id]: response_text }
@@ -2003,15 +2023,15 @@ function promoteEnrollment_(p) {
   // ── Link applicant ↔ guardians via relationalRecords ───────────────────────
   // Done always (not just families_app): the relations exist for every session.
   const relationalRecords = [];
-  const groupRelations = appsheetRequest_(T.RELATIONS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + groupId + '"'
+  const groupRelations = appsheetRequest_(T.PERSON_RELATIONS, 'Find', [], {
+    Filter: '"context_entity_id" = "' + groupId + '" && "context_entity_type_code" = "ENR_APPLICATION"'
   }) || [];
 
   groupRelations.forEach(rel => {
     // Only emit relational records that involve THIS enrollment's applicant
-    if (rel.person_id_b !== applicantPerson.person_id) return;
-    const guardianPersonalId  = personalIdByPersonId[rel.person_id_a];
-    const applicantPersonalId = personalIdByPersonId[rel.person_id_b];
+    if (rel.to_person_id !== applicantPerson.person_id) return;
+    const guardianPersonalId  = personalIdByPersonId[rel.from_person_id];
+    const applicantPersonalId = personalIdByPersonId[rel.to_person_id];
     if (!guardianPersonalId || !applicantPersonalId) return;
     relationalRecords.push({
       record_id:             generateUuid_(),
@@ -2046,25 +2066,28 @@ function promoteEnrollment_(p) {
     }
   }
 
-  // ── Log promotion as a status transition on the enrollment ─────────────────
-  const promotedStatusTypes = appsheetRequest_(T.STATUS_TYPES, 'Find', [], {
-    Filter: '"status_code" = "PROMOTED" && "school_id" = "' + SCHOOL_ID + '"'
+  // ── Log promotion as a state transition on the enrollment ──────────────────
+  const promotedStateRows = appsheetRequest_(T.STATES_T, 'Find', [], {
+    Filter: '"state_code" = "PROMOTED" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
   });
-  const promotedTypeId = promotedStatusTypes && promotedStatusTypes[0]
-    ? promotedStatusTypes[0].status_type_id : null;
-  if (promotedTypeId) {
-    appsheetRequest_(T.STATUS_LOG, 'Add', [{
-      log_id:              generateUuid_(),
-      enrollment_id:       targetId,
-      from_status_type_id: enrRow.current_state_id || null,
-      to_status_type_id:   promotedTypeId,
-      changed_by:          getStaffEmail_(),
-      changed_at:          now,
-      reason:              'Enrollment promoted to SMS',
+  const promotedStateId = promotedStateRows && promotedStateRows[0]
+    ? promotedStateRows[0].state_id : null;
+  if (promotedStateId) {
+    appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
+      log_id:             generateUuid_(),
+      school_id:          SCHOOL_ID,
+      entity_type_code:   'ENR_APPLICATION',
+      entity_id:          targetId,
+      from_state_id:      enrRow.current_state_id || null,
+      to_state_id:        promotedStateId,
+      mode_actually_used: 'MANUAL',
+      transitioned_by:    getStaffEmail_(),
+      transitioned_at:    now,
+      notes:              'Enrollment promoted to SMS',
     }]);
     appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
       enrollment_id:    targetId,
-      current_state_id: promotedTypeId,
+      current_state_id: promotedStateId,
       updated_at:       now,
     }]);
   }
