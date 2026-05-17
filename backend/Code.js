@@ -266,7 +266,7 @@ function initEnrollmentSession_(p) {
     resume_token:           resumeToken,
     magic_link_token:       null,
     submitted_at:           null,
-    desired_start_date:     p.desired_start_date || null,  // Stage-1: captured here, propagated to each enrEnrollments on submit
+    // desired_start_date NOT on enrEnrollmentGroups (propagated to enrEnrollments at submit from the request payload)
     source_locale:          lang,
     created_at:             now,
     updated_at:             now,
@@ -493,10 +493,9 @@ function saveStep_(p) {
   // (legacy: this used to touch enrApplications)
   const groupRow = { enrollment_group_id: enrollmentGroupId, updated_at: now };
   if (step === 'application') {
-    // desired_start_date lives in enrEnrollments per DL-E15, but Stage-1 stages
-    // it on the group and propagates at submit. source maps to source_locale
-    // for now (real source_id was resolved at init).
-    groupRow.desired_start_date = payload.desired_start_date || null;
+    // desired_start_date is NOT staged on enrEnrollmentGroups (column doesn't exist).
+    // It propagates to each enrEnrollments row at submit time via the submit payload.
+    // source maps to source_locale for now (real source_id was resolved at init).
     if (payload.source) groupRow.source_locale = payload.source;
   }
   // Note: `review` step no longer writes to the group — it walks enrollments below.
@@ -629,7 +628,8 @@ function submitEnrollmentSession_(p) {
   }
 
   // ── Create one enrEnrollments row per applicant ────────────────────────────
-  const desiredStartDate = group.desired_start_date || null;
+  // desired_start_date comes from the submit payload (not staged on the group).
+  const desiredStartDate = p.desired_start_date || null;
   const enrollmentIds = [];
   applicants.forEach(applicant => {
     const enrollmentId = generateUuid_();
@@ -1718,9 +1718,9 @@ function appsheetRequest_(table, action, rows, selector, debugOut) {
     const out = {};
     for (const k in r) {
       const v = r[k];
-      if (v === true)                   out[k] = 'TRUE';
+      if (v === null || v === undefined) continue; // omit — AppSheet silently rejects "" on Enum/Ref columns
+      else if (v === true)              out[k] = 'TRUE';
       else if (v === false)             out[k] = 'FALSE';
-      else if (v === null || v === undefined) out[k] = '';
       else                              out[k] = v;
     }
     return out;
