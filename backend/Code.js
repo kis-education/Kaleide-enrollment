@@ -523,12 +523,15 @@ function saveStep_(p) {
               school_id:           SCHOOL_ID,
               entity_type_code:    'ENR_APPLICATION',
               entity_id:           enr.enrollment_id,
+              transition_id:       null,
               from_state_id:       enr.current_state_id || null,
               to_state_id:         newStateId,
               mode_actually_used:  'MANUAL',
-              transitioned_by:     getStaffEmail_(),
+              transitioned_by:     getStaffEmail_() || 'SYSTEM:WIZARD',
               transitioned_at:     now,
               notes:               payload.reason || null,
+              created_at:          now,
+              created_by:          getStaffEmail_() || 'SYSTEM:WIZARD',
             }]);
             appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
               enrollment_id:    enr.enrollment_id,
@@ -650,12 +653,15 @@ function submitEnrollmentSession_(p) {
         school_id:          SCHOOL_ID,
         entity_type_code:   'ENR_APPLICATION',
         entity_id:          enrollmentId,
+        transition_id:      null,
         from_state_id:      null,
         to_state_id:        rqStateId,
         mode_actually_used: 'AUTOMATIC',
         transitioned_by:    'SYSTEM:WIZARD',
         transitioned_at:    now,
         notes:              'Enrollment requested by family',
+        created_at:         now,
+        created_by:         'SYSTEM:WIZARD',
       }]);
     }
   });
@@ -678,10 +684,23 @@ function submitEnrollmentSession_(p) {
   const signerPersonId = guardians[0] ? guardians[0].person_id : null;
   let consentRows = [];
   const consents = Array.isArray(p.consents) ? p.consents.slice() : [];
+  // Map legacy frontend consent type strings to canonical sysConsentsLog codes.
+  // Frontend sends 'gdpr'; 'gdpr_data_processing' is a legacy alias.
+  const CONSENT_TYPE_MAP = {
+    gdpr:                  'GDPR_SCHOOL',
+    gdpr_data_processing:  'GDPR_SCHOOL',
+    image_rights:          'IMAGE_RIGHTS',
+    commercial_comms:      'COMMERCIAL_COMMS',
+    platform_groups:       'PLATFORM_GROUPS',
+  };
+  function canonicalConsentType_(raw) {
+    return CONSENT_TYPE_MAP[raw] || raw.toUpperCase();
+  }
+
   // Ensure GDPR consent is captured even if frontend forgot to include it
-  if (!consents.some(c => c.type === 'gdpr_data_processing')) {
+  if (!consents.some(c => c.type === 'gdpr' || c.type === 'gdpr_data_processing')) {
     consents.push({
-      type: 'gdpr_data_processing',
+      type: 'gdpr',
       accepted: true,
       consent_text_shown: CONSENT_TEXTS.gdpr.en + '\n\n' + CONSENT_TEXTS.gdpr.es,
     });
@@ -689,21 +708,29 @@ function submitEnrollmentSession_(p) {
   enrollmentIds.forEach(eid => {
     consents.forEach(c => {
       consentRows.push({
-        consent_id:           generateUuid_(),
-        school_id:            SCHOOL_ID,
-        entity_type_code:     'ENR_APPLICATION',
-        entity_id:            eid,
-        signer_table:         'enrPersons',
-        signer_id:            signerPersonId,
-        consent_type:         c.type,
-        consent_text_shown:   c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
-        consent_text_version: '1.0',
-        consented:            c.accepted,
-        consent_timestamp:    now,
-        language:             lang,
-        signed_method:        'WIZARD_CLICK_AND_SIGN',
-        created_at:           now,
-        created_by:           'SYSTEM:WIZARD',
+        consent_id:             generateUuid_(),
+        school_id:              SCHOOL_ID,
+        entity_type_code:       'ENR_APPLICATION',
+        entity_id:              eid,
+        signer_table:           'enrPersons',
+        signer_id:              signerPersonId,
+        consent_type:           canonicalConsentType_(c.type),
+        consent_use:            null,
+        consented:              c.accepted,
+        consent_text_shown:     c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
+        consent_text_version:   'v1',
+        language:               lang,
+        signed_method:          'WIZARD_CLICK_AND_SIGN',
+        evidence_document_id:   null,
+        signing_session_id:     null,
+        consent_timestamp:      now,
+        ip_address:             null,
+        user_agent:             null,
+        evidence_metadata_json: null,
+        tsa_seal_id:            null,
+        tsa_seal_timestamp:     null,
+        created_at:             now,
+        created_by:             'SYSTEM:WIZARD',
       });
     });
   });
@@ -1003,6 +1030,11 @@ function saveResponses_(p) {
 /**
  * Accepts a base64-encoded file, saves to Drive, writes a document record.
  *
+ * TODO: enrApplicationDocuments will be replaced by recFiles (rec* module) when rec* is built.
+ * Until then, document uploads write to enrApplicationDocuments (table still exists physically).
+ * Decision 2026-05-17 — see CLAUDE.md "Transition rule (definitive)": no legacy/transient tables
+ * for modules with no legacy consumers. This refactor is deferred to a separate rec* integration PR.
+ *
  * DL-E15: enrApplicationDocuments now FKs to enrollment_id (per-applicant).
  * Pre-submit uploads have no enrollment yet, so the row is written with
  * enrollment_group_id only (a transitional column kept while the wizard is in
@@ -1260,24 +1292,39 @@ function savePersons_(enrollmentGroupId, persons) {
 function saveRelations_(enrollmentGroupId, relations) {
   if (!Array.isArray(relations)) return {};
 
-  const newRelations = relations.filter(r => !r.relation_id).map(r => {
-    const relId = generateUuid_();
-    return {
-      relation_id:               relId,
-      school_id:                 SCHOOL_ID,
-      context_entity_type_code:  'ENR_APPLICATION',
-      context_entity_id:         enrollmentGroupId,
-      pair_id:                   relId,
-      from_person_table:         'enrPersons',
-      from_person_id:            r.guardian_person_id || r.person_id_a,
-      to_person_table:           'enrPersons',
-      to_person_id:              r.applicant_person_id || r.person_id_b,
-      relation_type_id:          r.relation_type_id      || null,
-      is_custodial:              r.is_custodial          || false,
-      is_pick_up_authorized:     r.is_pick_up_authorized || false,
-      is_school_rep:             false,
-      is_emergency_contact:      false,
+  // DL-S45: sysPersonRelations is bidirectional — always insert 2 rows per pair
+  // sharing the same pair_id (guardian→applicant + applicant→guardian).
+  const newRelations = [];
+  relations.filter(r => !r.relation_id).forEach(r => {
+    const pairId = generateUuid_();
+    const now    = new Date().toISOString();
+    const base   = {
+      school_id:                SCHOOL_ID,
+      context_entity_type_code: 'ENR_APPLICATION',
+      context_entity_id:        enrollmentGroupId,
+      pair_id:                  pairId,
+      relation_type_id:         r.relation_type_id      || null,
+      is_custodial:             r.is_custodial          || false,
+      is_pick_up_authorized:    r.is_pick_up_authorized || false,
+      is_school_rep:            false,
+      is_emergency_contact:     false,
+      created_at:               now,
+      created_by:               'SYSTEM:WIZARD',
     };
+    newRelations.push(Object.assign({}, base, {
+      relation_id:       generateUuid_(),
+      from_person_table: 'enrPersons',
+      from_person_id:    r.guardian_person_id || r.person_id_a,
+      to_person_table:   'enrPersons',
+      to_person_id:      r.applicant_person_id || r.person_id_b,
+    }));
+    newRelations.push(Object.assign({}, base, {
+      relation_id:       generateUuid_(),
+      from_person_table: 'enrPersons',
+      from_person_id:    r.applicant_person_id || r.person_id_b,
+      to_person_table:   'enrPersons',
+      to_person_id:      r.guardian_person_id || r.person_id_a,
+    }));
   });
   const existingRelations = relations.filter(r => r.relation_id).map(r => ({
     relation_id:           r.relation_id,
@@ -2083,12 +2130,15 @@ function promoteEnrollment_(p) {
       school_id:          SCHOOL_ID,
       entity_type_code:   'ENR_APPLICATION',
       entity_id:          targetId,
+      transition_id:      null,
       from_state_id:      enrRow.current_state_id || null,
       to_state_id:        promotedStateId,
       mode_actually_used: 'MANUAL',
-      transitioned_by:    getStaffEmail_(),
+      transitioned_by:    getStaffEmail_() || 'SYSTEM:WIZARD',
       transitioned_at:    now,
       notes:              'Enrollment promoted to SMS',
+      created_at:         now,
+      created_by:         getStaffEmail_() || 'SYSTEM:WIZARD',
     }]);
     appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
       enrollment_id:    targetId,
