@@ -4,12 +4,22 @@ import { useWizard } from '../../context/WizardContext';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
 import LockedBanner from '../../components/LockedBanner';
+import { generateUuid } from '../../utils/uuid';
 
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
 
+// person_id generated client-side at creation. Backend savePersons_ accepts
+// the provided id (`person.person_id || generateUuid_()`), so the round-trip
+// returns the same id — no stamping needed. Step3Relations can reference
+// these persons by person_id from the moment they exist, eliminating the
+// optimistic-UI race where the temp _uid would otherwise be used downstream.
+// _uid is preserved for backwards-compat (React keys in legacy components
+// and the personIdMap fallback in WizardPage handle the very edge case of
+// a resumed session that pre-dates this change).
 const emptyPerson = (type) => ({
   _uid:                        Date.now() + Math.random(),
+  person_id:                   generateUuid(),
   person_type_id:              type,
   first_name:                  '',
   middle_name:                 '',
