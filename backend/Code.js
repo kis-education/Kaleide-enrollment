@@ -3155,6 +3155,8 @@ function adminCleanupOrphanSessions() {
     });
   });
 
+  let actuallyAbandoned = 0;
+  const failures = [];
   toAbandon.forEach(s => {
     try {
       appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
@@ -3163,15 +3165,20 @@ function adminCleanupOrphanSessions() {
         updated_at:          now.toISOString(),
       }]);
       Logger.log('abandoned: ' + s.enrollment_group_id + ' email=' + s.primary_email + ' age_days=' + Math.round((now - new Date(s.created_at)) / 86400000));
+      actuallyAbandoned++;
     } catch (e) {
       Logger.log('FAILED to abandon ' + s.enrollment_group_id + ': ' + e.message);
+      failures.push({ id: s.enrollment_group_id, error: e.message.slice(0, 200) });
     }
   });
 
   const summary = {
-    scanned:   open.length,
-    abandoned: toAbandon.length,
-    kept:      kept.length,
+    scanned:    open.length,
+    toAbandon:  toAbandon.length,   // intended
+    abandoned:  actuallyAbandoned,  // succeeded
+    failed:     failures.length,
+    kept:       kept.length,
+    failures:   failures,
   };
   Logger.log('adminCleanupOrphanSessions summary: ' + JSON.stringify(summary));
   return summary;
