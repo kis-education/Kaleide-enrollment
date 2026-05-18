@@ -300,12 +300,13 @@ function initEnrollmentSession_(p) {
     buildApplicationInitiatedBody_(enrollmentGroupId, p.primary_email, now)
   );
 
-  // D-E18: recognize legacy families by email against personalData_S (via KMS).
-  // Non-fatal — if the bridge is down or the email is new, recognition is empty
-  // and the wizard proceeds as a fresh family.
+  // D-E18: recognize legacy families by email against personalData_S.
+  // Non-fatal — if the lookup fails, recognition is empty and the wizard
+  // proceeds as a fresh family. Internal call: skips reCAPTCHA (the init
+  // call already burned the token) but inherits the rate limit.
   let recognition = { matched: false, persons: [] };
   try {
-    recognition = recognizeFamily_({ primary_email: p.primary_email });
+    recognition = recognizeFamily_({ primary_email: p.primary_email }, { internal: true });
   } catch (e) {
     Logger.log('initEnrollmentSession_: recognizeFamily_ failed (non-fatal): ' + e.message);
   }
@@ -324,65 +325,87 @@ function initEnrollmentSession_(p) {
  * D-E18: recognize whether a primary_email belongs to a family already
  * present in personalData_S (the SMS canonical person catalog).
  *
- * Calls the KMS public bridge (sys.recognizeByEmail) via HTTPS. The KMS
- * endpoint is gated by a shared secret stored in script properties:
- *   - KMS_RECOGNIZE_URL    — full /exec URL of the KMS public deployment
- *   - KMS_RECOGNIZE_SECRET — shared secret (also configured in KMS as
- *                            KMS_PUBLIC_API_SECRET)
+ * The wizard's GAS cannot reach the KMS (the KMS keeps executeAs:
+ * USER_ACCESSING + access: DOMAIN — staff-only, no anonymous calls). So
+ * the lookup is done here directly against AppSheet, against the same
+ * tables the KMS reads. Stage 2 (Postgres) will collapse this to a
+ * single SQL view shared by both apps; until then the duplication is
+ * small (~30 lines).
  *
- * If either property is unset, this function returns
- * { matched: false, persons: [] } silently — the wizard then proceeds as a
- * fresh family. This makes the bridge optional during deployment phases
- * where the KMS public endpoint is not yet wired.
+ * Resolution chain (mirrors kms-server/sys/admin.gs::sys_getAuthContext):
+ *   email (lowercased, trimmed)
+ *     → contactEmails.email
+ *     → personalData_S.personal_id
  *
- * The wizard's Step2 UI uses the returned persons to pre-fill guardian
- * forms and to populate enrPersons.personal_id at savePersons_ time, which
- * later activates the dedup branch in promoteEnrollment_ for FAMILIES_APP.
+ * Returns only display fields (personal_id, first_name, last_name) — no
+ * addresses, relations, or children. The wizard's Step2 banner uses these
+ * to pre-fill the first guardian; accepting the match stamps personal_id
+ * on the enrPersons row, which later drives the dedup branch in
+ * promoteEnrollment_ for FAMILIES_APP migrations.
  *
- * @param {{ primary_email: string }} p
+ * Protection against bot enumeration of personalData_S:
+ *   - reCAPTCHA v3 token required on every public call (same RECAPTCHA_SECRET
+ *     Script Property used by initEnrollmentSession_)
+ *   - Per-email rate limit: 5 lookups / minute via CacheService
+ *
+ * Internal callers (initEnrollmentSession_) pass { internal: true } as
+ * the second argument — the reCAPTCHA token was already consumed by the
+ * init call so it cannot be reused here. The rate limit still applies.
+ *
+ * @param {{ primary_email: string, recaptcha_token?: string }} p
+ * @param {{ internal?: boolean }} [opts]
  * @returns {{ matched: boolean, persons: Array<{ personal_id: string, first_name: string, last_name: string }> }}
  */
-function recognizeFamily_(p) {
+function recognizeFamily_(p, opts) {
+  const internal = !!(opts && opts.internal);
   const email = (p && p.primary_email || '').toString().toLowerCase().trim();
   if (!email) throw new Error('Missing primary_email');
 
-  const props  = PropertiesService.getScriptProperties();
-  const url    = (props.getProperty('KMS_RECOGNIZE_URL')    || '').trim();
-  const secret = (props.getProperty('KMS_RECOGNIZE_SECRET') || '').trim();
-  if (!url || !secret) {
-    Logger.log('recognizeFamily_: KMS bridge not configured (KMS_RECOGNIZE_URL/SECRET); returning empty match');
+  // ── reCAPTCHA gate for public calls ───────────────────────────────────────
+  if (!internal) {
+    const secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
+    if (secret) {
+      if (!p.recaptcha_token) throw new Error('Missing reCAPTCHA token');
+      const rc = verifyRecaptcha_({ token: p.recaptcha_token });
+      if (!rc.pass) throw new Error('reCAPTCHA verification failed');
+    }
+  }
+
+  // ── Rate limit: 5/min per email (applies to internal and external) ─────────
+  const cacheKey = 'recognize_' + Utilities.base64EncodeWebSafe(email);
+  const cache = CacheService.getScriptCache();
+  const count = parseInt(cache.get(cacheKey) || '0', 10);
+  if (count >= 5) {
+    throw new Error('Too many recognition queries for this email; try again in 1 minute');
+  }
+  cache.put(cacheKey, String(count + 1), 60);
+
+  // ── email → contactEmails.personal_ids ─────────────────────────────────────
+  // Defensive: strip double quotes to avoid mangling the AppSheet filter
+  // expression. Valid emails never contain them after lowercase+trim.
+  const safeEmail = email.replace(/"/g, '');
+  const emailRows = appsheetRequest_('contactEmails', 'Find', [], {
+    Filter: '"email" = "' + safeEmail + '"'
+  }) || [];
+
+  const personalIds = emailRows
+    .map(r => r.personal_id)
+    .filter((id, i, arr) => id && arr.indexOf(id) === i);
+  if (!personalIds.length) {
     return { matched: false, persons: [] };
   }
 
-  const response = UrlFetchApp.fetch(url, {
-    method:  'post',
-    contentType: 'application/json',
-    payload: JSON.stringify({
-      action:  'sys.recognizeByEmail',
-      payload: { primary_email: email },
-      secret:  secret,
-    }),
-    muteHttpExceptions: true,
-    followRedirects: true,
-  });
+  // ── personal_ids → personalData_S display fields ───────────────────────────
+  const filter = personalIds.map(id => '"personal_id" = "' + id + '"').join(' || ');
+  const persons = appsheetRequest_('personalData_S', 'Find', [], { Filter: filter }) || [];
 
-  const status = response.getResponseCode();
-  const body   = response.getContentText();
-  let json;
-  try { json = JSON.parse(body); } catch (_) { json = null; }
-
-  if (status !== 200 || !json) {
-    Logger.log('recognizeFamily_: KMS returned ' + status + ' / ' + body.slice(0, 200));
-    return { matched: false, persons: [] };
-  }
-  if (!json.success) {
-    // RATE_LIMITED, CONFIG_MISSING, FORBIDDEN — treat as empty match for the wizard
-    Logger.log('recognizeFamily_: KMS error ' + JSON.stringify(json.error || {}));
-    return { matched: false, persons: [] };
-  }
   return {
-    matched: !!(json.data && json.data.matched),
-    persons: (json.data && Array.isArray(json.data.persons)) ? json.data.persons : [],
+    matched: persons.length > 0,
+    persons: persons.map(row => ({
+      personal_id: row.personal_id,
+      first_name:  row.first_name || '',
+      last_name:   row.last_name  || '',
+    })),
   };
 }
 
