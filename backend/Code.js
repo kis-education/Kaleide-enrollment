@@ -1045,10 +1045,27 @@ function submitEnrollmentSession_(p) {
   if (!group) throw new Error('Enrollment group not found');
 
   // ── Resolve the initial state (RQ = Requested) ─────────────────────────────
+  // Diego report 2026-05-19: previously when sysStates_T was missing the
+  // RQ row for this tenant + entity_type, rqStateId came back null and
+  // AppSheet silently fell back to its default state (typically the first
+  // active state in display_order, which for KIS happens to be IN). The
+  // enrollment ended up "stuck in Inicial" with no transition log entry.
+  // Fail-fast now: a missing initial state is a configuration bug, not
+  // something to paper over with silent defaults.
   const statusTypes = appsheetRequest_(T.STATES_T, 'Find', [], {
     Filter: '"state_code" = "RQ" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
   });
-  const rqStateId = (statusTypes && statusTypes[0]) ? statusTypes[0].state_id : null;
+  const rqStateRow = statusTypes && statusTypes[0];
+  if (!rqStateRow || !rqStateRow.state_id) {
+    Logger.log('submitEnrollmentSession_: sysStates_T has no RQ row for school=' + SCHOOL_ID +
+               ' entity_type=ENR_APPLICATION. Filter returned ' + (statusTypes ? statusTypes.length : 0) + ' rows.');
+    throw new Error(
+      'Configuration error: sysStates_T is missing an active row with state_code="RQ" + ' +
+      'entity_type_code="ENR_APPLICATION" for school "' + SCHOOL_ID + '". ' +
+      'Seed it via Admin → Catálogos → Estados de programa before accepting submissions.'
+    );
+  }
+  const rqStateId = rqStateRow.state_id;
 
   // ── Fetch persons captured in this group ───────────────────────────────────
   const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
@@ -1099,24 +1116,27 @@ function submitEnrollmentSession_(p) {
     }]);
     enrollmentIds.push(enrollmentId);
 
-    // Per-enrollment state transition log entry (null → RQ)
-    if (rqStateId) {
-      appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
-        log_id:             generateUuid_(),
-        school_id:          SCHOOL_ID,
-        entity_type_code:   'ENR_APPLICATION',
-        entity_id:          enrollmentId,
-        transition_id:      null,
-        from_state_id:      null,
-        to_state_id:        rqStateId,
-        mode_actually_used: 'AUTOMATIC',
-        transitioned_by:    'SYSTEM:WIZARD',
-        transitioned_at:    now,
-        notes:              'Enrollment requested by family',
-        created_at:         now,
-        created_by:         'SYSTEM:WIZARD',
-      }]);
-    }
+    // Per-enrollment state transition log entry (null → RQ).
+    // mode_actually_used='MANUAL': the wizard submit IS the user's manual
+    // action that triggers this transition; AUTOMATIC is reserved for
+    // handler-fired transitions (timer expirations, upstream completion).
+    // Consistent with the other transition log writes in this codebase
+    // (promoteEnrollment_, the staff state-change flow) which also use MANUAL.
+    appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
+      log_id:             generateUuid_(),
+      school_id:          SCHOOL_ID,
+      entity_type_code:   'ENR_APPLICATION',
+      entity_id:          enrollmentId,
+      transition_id:      null,
+      from_state_id:      null,
+      to_state_id:        rqStateId,
+      mode_actually_used: 'MANUAL',
+      transitioned_by:    'SYSTEM:WIZARD',
+      transitioned_at:    now,
+      notes:              'Enrollment requested by family',
+      created_at:         now,
+      created_by:         'SYSTEM:WIZARD',
+    }]);
   });
 
   // ── Mark the group as submitted ────────────────────────────────────────────
