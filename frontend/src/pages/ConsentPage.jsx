@@ -15,7 +15,7 @@ const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 export default function ConsentPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { setEnrollmentGroupId, setResumeToken, updateStep } = useWizard();
+  const { setEnrollmentGroupId, setResumeToken, updateStep, setRecognition } = useWizard();
 
   useEffect(() => {
     if (!RECAPTCHA_SITE_KEY || document.querySelector('#recaptcha-script')) return;
@@ -60,6 +60,7 @@ export default function ConsentPage() {
       // period the legacy `application_id` may still come back — accept either.
       setEnrollmentGroupId(data.enrollment_group_id || data.application_id);
       setResumeToken(data.resume_token);
+      setRecognition(data.recognition);
       updateStep('email', { primary_email: email, verified: false });
       setSent(true);
     } catch (e) {

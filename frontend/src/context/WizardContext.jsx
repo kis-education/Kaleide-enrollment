@@ -44,6 +44,18 @@ export function WizardProvider({ children }) {
   const [resumeToken,   setResumeTokenRaw]   = useState(session.resumeToken   || null);
   const [currentStep,   setCurrentStepRaw]   = useState(session.currentStep   || 0);
   const [stepData,      setStepData]         = useState(initialStepData);
+  // D-E18: recognition result from initEnrollmentSession. Survives reloads via
+  // sessionStorage so Step2 can show the "we recognised your family" banner
+  // even after the family resumes from magic link.
+  const [recognition, setRecognitionRaw] = useState(
+    session.recognition || { matched: false, persons: [] }
+  );
+
+  const setRecognition = useCallback((r) => {
+    const safe = (r && typeof r === 'object') ? r : { matched: false, persons: [] };
+    setRecognitionRaw(safe);
+    saveSession({ recognition: safe });
+  }, []);
 
   const setEnrollmentGroupId = useCallback((id) => {
     setEnrollmentGroupIdRaw(id);
@@ -65,6 +77,7 @@ export function WizardProvider({ children }) {
     setResumeTokenRaw(null);
     setCurrentStepRaw(0);
     setStepData(initialStepData);
+    setRecognitionRaw({ matched: false, persons: [] });
   }, []);
 
   const updateStep = useCallback((stepKey, data) => {
@@ -117,6 +130,7 @@ export function WizardProvider({ children }) {
       resumeToken,   setResumeToken,
       currentStep,   setCurrentStep,
       stepData,      updateStep,
+      recognition,   setRecognition,
       hydrateFromResume, clearSession,
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>

@@ -502,7 +502,7 @@ function transformPersonForSave(person) {
 
 export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
   const { t } = useTranslation();
-  const { stepData, updateStep } = useWizard();
+  const { stepData, updateStep, recognition } = useWizard();
   const primaryEmail = stepData.email?.primary_email || '';
 
   const [persons, setPersons] = useState(() => {
@@ -510,6 +510,33 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
     return [emptyPerson('guardian'), emptyPerson('applicant')];
   });
   const [err, setErr] = useState('');
+  // D-E18: dismissed flag survives only within this render of Step2; if the user
+  // declines the banner, hide it for the rest of the session.
+  const [recognitionDismissed, setRecognitionDismissed] = useState(false);
+
+  // True when a guardian already carries a personal_id (set by accepting the
+  // recognition banner, or hydrated from a resumed session). Used to hide the
+  // banner once the user has accepted the match.
+  const recognitionAccepted = persons.some(p =>
+    p.person_type_id === 'guardian' && p.personal_id
+  );
+
+  const acceptRecognition = (recPerson) => {
+    // Pre-fill the first guardian slot with the recognised person and stamp
+    // personal_id so savePersons_ writes the FK reverse to enrPersons.
+    setPersons(prev => {
+      const next = [...prev];
+      const i = next.findIndex(p => p.person_type_id === 'guardian');
+      if (i === -1) return next;
+      next[i] = {
+        ...next[i],
+        first_name:  recPerson.first_name || next[i].first_name || '',
+        last_name:   recPerson.last_name  || next[i].last_name  || '',
+        personal_id: recPerson.personal_id,
+      };
+      return next;
+    });
+  };
 
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
@@ -558,6 +585,38 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
       </div>
 
       {locked && <LockedBanner onUnlock={onUnlock} />}
+
+      {/* D-E18: legacy family recognised by email — offer to pre-fill */}
+      {recognition?.matched && !recognitionAccepted && !recognitionDismissed && (
+        <div className="alert alert-info d-flex align-items-start gap-3 mb-3" style={{ borderLeft: '4px solid var(--teal)' }}>
+          <i className="bi bi-people-fill" style={{ fontSize: '1.4rem', color: 'var(--teal)' }} />
+          <div className="flex-grow-1">
+            <strong>{t('step2.recognized_title', 'Reconocimos tu familia')}</strong>
+            <p className="mb-2" style={{ fontSize: '0.92rem' }}>
+              {t('step2.recognized_body', 'Tenemos a las siguientes personas registradas con tu email. Si alguna es el progenitor que inicia esta solicitud, pulsa para pre-rellenar:')}
+            </p>
+            <div className="d-flex gap-2 flex-wrap">
+              {recognition.persons.map(rp => (
+                <button
+                  key={rp.personal_id}
+                  type="button"
+                  className="btn btn-outline-primary btn-sm"
+                  onClick={() => acceptRecognition(rp)}
+                >
+                  {[rp.first_name, rp.last_name].filter(Boolean).join(' ') || rp.personal_id}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="btn btn-link btn-sm text-muted"
+                onClick={() => setRecognitionDismissed(true)}
+              >
+                {t('step2.recognized_dismiss', 'Ninguno · seguir como familia nueva')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
         {/* Guardians */}

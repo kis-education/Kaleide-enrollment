@@ -34,6 +34,9 @@
   "step1.no_programs": "No admission programmes are available at this time.",
 
   "step2.subtitle": "Add all guardians and the children you wish to enrol.",
+  "step2.recognized_title": "We recognised your family",
+  "step2.recognized_body": "We have the following people registered with your email. If any is the parent submitting this application, click to pre-fill:",
+  "step2.recognized_dismiss": "None · continue as a new family",
   "step3.subtitle": "Specify the relationship between each guardian and each student.",
   "step4.subtitle": "Please provide health information for each student.",
   "step4.no_applicants": "Please complete the Guardians & Students step first.",

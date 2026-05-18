@@ -34,6 +34,9 @@
   "step1.no_programs": "No hay programas de admisión disponibles en este momento.",
 
   "step2.subtitle": "Añade todos los tutores y los alumnos que deseas matricular.",
+  "step2.recognized_title": "Reconocimos tu familia",
+  "step2.recognized_body": "Tenemos a las siguientes personas registradas con tu email. Si alguna es el progenitor que inicia esta solicitud, pulsa para pre-rellenar:",
+  "step2.recognized_dismiss": "Ninguno · seguir como familia nueva",
   "step3.subtitle": "Indica el vínculo entre cada tutor y cada alumno.",
   "step4.subtitle": "Proporciona información de salud para cada alumno.",
   "step4.no_applicants": "Por favor, completa primero el paso de Tutores y Alumnos.",

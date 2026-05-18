@@ -82,7 +82,8 @@ const T = {
   PERSON_MEDICAL:       'enrPersonMedicalConditions',
   PERSON_ALLERGIES:     'enrPersonFoodAllergies',
   PERSON_DIETARY:       'enrPersonDietaryRequirements',
-  DOCUMENTS:            'enrApplicationDocuments',
+  REC_FILES:            'recFiles',                // canonical document storage (DL-R09)
+  REC_SCOPES:           'recScopes',               // file ↔ entity polymorphic M:N (DL-R13)
   INTERVIEWS:           'enrInterviews',
   QB_CONTEXTS:          'qbContexts',
   QB_SETS:              'qbQuestionSets',
@@ -177,6 +178,7 @@ function doPost(e) {
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
       case 'verifyRecaptcha':      result = verifyRecaptcha_(payload);      break;
       case 'fetchLookups':         result = fetchLookups_(payload);         break;
+      case 'recognizeFamily':      result = recognizeFamily_(payload);      break;
       case 'diagTable':            result = diagTable_(payload);            break;
       case 'diagAllTables':        result = diagAllTables_();               break;
       default:
@@ -206,14 +208,29 @@ function doPost(e) {
  * This avoids the awkward "consent attached to a non-existent enrollment" case
  * during the staging period.
  *
- * @param {Object} p - { primary_email, preferred_language?, program_id?, recaptcha_token? }
+ * source_code: defaults to 'WEB_PUBLIC' (anonymous web wizard). Staff
+ * initiating a session from the KMS pass 'KMS_INTERNAL' (D-E16): the
+ * session is still resumed by the family via magic link from their own
+ * device, but the origin is recorded for downstream reporting and for
+ * promoteEnrollment_'s isFamiliesApp branch behaviour. For 'KMS_INTERNAL'
+ * the reCAPTCHA token is optional (staff is already authenticated upstream).
+ *
+ * @param {Object} p - { primary_email, preferred_language?, program_id?,
+ *                       source_code?, recaptcha_token? }
  * @returns {{ enrollment_group_id: string, resume_token: string,
  *             application_id: string }} (application_id is a legacy alias = enrollment_group_id)
  */
 function initEnrollmentSession_(p) {
-  // Verify reCAPTCHA before writing anything to the database
+  const sourceCode = (p.source_code || 'WEB_PUBLIC').toUpperCase();
+  const VALID_SOURCES = ['WEB_PUBLIC', 'KMS_INTERNAL', 'FAMILIES_APP'];
+  if (VALID_SOURCES.indexOf(sourceCode) === -1) {
+    throw new Error('Invalid source_code: ' + sourceCode);
+  }
+
+  // Verify reCAPTCHA before writing anything to the database.
+  // KMS_INTERNAL skips reCAPTCHA — staff is already authenticated upstream.
   const secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
-  if (secret) {
+  if (secret && sourceCode === 'WEB_PUBLIC') {
     if (!p.recaptcha_token) throw new Error('Missing reCAPTCHA token');
     const rcResult = verifyRecaptcha_({ token: p.recaptcha_token });
     if (!rcResult.pass) throw new Error('reCAPTCHA verification failed');
@@ -225,11 +242,10 @@ function initEnrollmentSession_(p) {
   const lang              = p.preferred_language || 'es';
 
   // ── Resolve source_id from enrEnrollmentSources (Capa 2 catalog) ───────────
-  // The public web wizard always corresponds to source_code = 'WEB_PUBLIC'.
   let sourceId = null;
   try {
     const sources = appsheetRequest_(T.ENROLLMENT_SOURCES, 'Find', [], {
-      Filter: '"source_code" = "WEB_PUBLIC"'
+      Filter: '"source_code" = "' + sourceCode + '"'
     });
     if (sources && sources[0]) sourceId = sources[0].source_id;
   } catch (e) {
@@ -284,11 +300,89 @@ function initEnrollmentSession_(p) {
     buildApplicationInitiatedBody_(enrollmentGroupId, p.primary_email, now)
   );
 
+  // D-E18: recognize legacy families by email against personalData_S (via KMS).
+  // Non-fatal — if the bridge is down or the email is new, recognition is empty
+  // and the wizard proceeds as a fresh family.
+  let recognition = { matched: false, persons: [] };
+  try {
+    recognition = recognizeFamily_({ primary_email: p.primary_email });
+  } catch (e) {
+    Logger.log('initEnrollmentSession_: recognizeFamily_ failed (non-fatal): ' + e.message);
+  }
+
   return {
     enrollment_group_id: enrollmentGroupId,
     resume_token:        resumeToken,
+    source_code:         sourceCode,
+    recognition:         recognition,
     // legacy alias for frontends that still read `application_id`
     application_id:      enrollmentGroupId,
+  };
+}
+
+/**
+ * D-E18: recognize whether a primary_email belongs to a family already
+ * present in personalData_S (the SMS canonical person catalog).
+ *
+ * Calls the KMS public bridge (sys.recognizeByEmail) via HTTPS. The KMS
+ * endpoint is gated by a shared secret stored in script properties:
+ *   - KMS_RECOGNIZE_URL    — full /exec URL of the KMS public deployment
+ *   - KMS_RECOGNIZE_SECRET — shared secret (also configured in KMS as
+ *                            KMS_PUBLIC_API_SECRET)
+ *
+ * If either property is unset, this function returns
+ * { matched: false, persons: [] } silently — the wizard then proceeds as a
+ * fresh family. This makes the bridge optional during deployment phases
+ * where the KMS public endpoint is not yet wired.
+ *
+ * The wizard's Step2 UI uses the returned persons to pre-fill guardian
+ * forms and to populate enrPersons.personal_id at savePersons_ time, which
+ * later activates the dedup branch in promoteEnrollment_ for FAMILIES_APP.
+ *
+ * @param {{ primary_email: string }} p
+ * @returns {{ matched: boolean, persons: Array<{ personal_id: string, first_name: string, last_name: string }> }}
+ */
+function recognizeFamily_(p) {
+  const email = (p && p.primary_email || '').toString().toLowerCase().trim();
+  if (!email) throw new Error('Missing primary_email');
+
+  const props  = PropertiesService.getScriptProperties();
+  const url    = (props.getProperty('KMS_RECOGNIZE_URL')    || '').trim();
+  const secret = (props.getProperty('KMS_RECOGNIZE_SECRET') || '').trim();
+  if (!url || !secret) {
+    Logger.log('recognizeFamily_: KMS bridge not configured (KMS_RECOGNIZE_URL/SECRET); returning empty match');
+    return { matched: false, persons: [] };
+  }
+
+  const response = UrlFetchApp.fetch(url, {
+    method:  'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({
+      action:  'sys.recognizeByEmail',
+      payload: { primary_email: email },
+      secret:  secret,
+    }),
+    muteHttpExceptions: true,
+    followRedirects: true,
+  });
+
+  const status = response.getResponseCode();
+  const body   = response.getContentText();
+  let json;
+  try { json = JSON.parse(body); } catch (_) { json = null; }
+
+  if (status !== 200 || !json) {
+    Logger.log('recognizeFamily_: KMS returned ' + status + ' / ' + body.slice(0, 200));
+    return { matched: false, persons: [] };
+  }
+  if (!json.success) {
+    // RATE_LIMITED, CONFIG_MISSING, FORBIDDEN — treat as empty match for the wizard
+    Logger.log('recognizeFamily_: KMS error ' + JSON.stringify(json.error || {}));
+    return { matched: false, persons: [] };
+  }
+  return {
+    matched: !!(json.data && json.data.matched),
+    persons: (json.data && Array.isArray(json.data.persons)) ? json.data.persons : [],
   };
 }
 
@@ -364,12 +458,34 @@ function resumeSession_(p) {
   // DB stores from_person_id/to_person_id; add guardian_person_id/applicant_person_id aliases for frontend
   const relations  = (appsheetRequest_(T.PERSON_RELATIONS, 'Find', [], { Filter: '"context_entity_id" = "' + id + '" && "context_entity_type_code" = "ENR_APPLICATION"' }) || [])
     .map(r => ({ ...r, guardian_person_id: r.from_person_id, applicant_person_id: r.to_person_id }));
-  // Documents / interviews FK to enrollment_id (per-applicant). Aggregate across the N enrollments.
-  let documents  = [];
+  // Documents: recFiles + recScopes (DL-R09 / DL-R13).
+  // Pre-submit uploads are tracked by origin_reference=enrollment_group_id on recFiles.
+  // Post-submit, the same files are scoped to each enrollment_id via recScopes.
+  // We aggregate both paths so resume reflects the full document list.
+  let documents = [];
+  try {
+    const preSubmitFiles = appsheetRequest_(T.REC_FILES, 'Find', [], {
+      Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin_reference" = "' + id + '"'
+    }) || [];
+    // De-dup by file_id and shape for frontend compatibility (drive_url, document_type)
+    const fileById = {};
+    preSubmitFiles.forEach(f => { fileById[f.file_id] = f; });
+    documents = Object.values(fileById).map(f => ({
+      document_id:   f.file_id,
+      file_id:       f.file_id,
+      document_type: _docTypeFromRecType_(f.rec_type_code),
+      drive_url:     f.drive_file_id ? ('https://drive.google.com/file/d/' + f.drive_file_id + '/view') : '',
+      uploaded_at:   f.created_at,
+      rec_type_code: f.rec_type_code,
+      status:        f.status,
+    }));
+  } catch (e) {
+    Logger.log('resumeSession_: recFiles read failed (non-fatal): ' + e.message);
+  }
+
   let interviews = [];
   if (enrollments.length) {
     const eidFilter = enrollments.map(e => '"enrollment_id" = "' + e.enrollment_id + '"').join(' || ');
-    documents  = appsheetRequest_(T.DOCUMENTS,  'Find', [], { Filter: eidFilter }) || [];
     interviews = appsheetRequest_(T.INTERVIEWS, 'Find', [], { Filter: eidFilter }) || [];
   }
   // qbResponses respondent_id semantics: pre-submit it is the enrollment_group_id;
@@ -780,21 +896,91 @@ function submitEnrollmentSession_(p) {
   const qbResponseMap = {};
   qbResRows.forEach(r => { qbResponseMap[r.question_id] = r.response_text; });
 
-  // Generate one signed consent PDF for the session and attach it to every
-  // enrollment in the group via enrApplicationDocuments (FK to enrollment_id).
+  // Generate one signed consent PDF for the session and write it as a recFiles
+  // row scoped to every enrollment in the group (DL-R09 / DL-R13).
   try {
-    const pdfUrl = generateConsentPdf_(enrollmentGroupId, app, enrichedGuardians, applicants, consentRows, p.esignature || '', now, qbResponseMap);
-    const docRows = enrollmentIds.map(eid => ({
-      document_id:   generateUuid_(),
-      enrollment_id: eid,
-      document_type: 'signed_consent_record',
-      drive_url:     pdfUrl,
-      uploaded_at:   now,
-      uploaded_by:   'system',
+    const pdfMeta = generateConsentPdf_(enrollmentGroupId, app, enrichedGuardians, applicants, consentRows, p.esignature || '', now, qbResponseMap);
+    const pdfFileId = generateUuid_();
+    appsheetRequest_(T.REC_FILES, 'Add', [{
+      file_id:                  pdfFileId,
+      school_id:                SCHOOL_ID,
+      rec_type_code:            REC_TYPE_BY_DOCUMENT_TYPE.signed_consent_record,
+      drive_file_id:            pdfMeta.drive_file_id,
+      drive_folder_id:          pdfMeta.drive_folder_id,
+      file_name:                pdfMeta.file_name,
+      original_filename:        pdfMeta.file_name,
+      mime_type:                pdfMeta.mime_type,
+      file_size_bytes:          pdfMeta.file_size_bytes,
+      file_hash_sha256:         null,
+      status:                   'ACTIVE',
+      upload_idempotency_token: 'consent_pdf:' + enrollmentGroupId,
+      origin:                   'WIZARD_SUBMIT',
+      origin_reference:         enrollmentGroupId,
+      document_date:            now,
+      signed_at:                now,
+      description:              'Signed consent record generated at submit',
+      language:                 lang,
+      was_originally_paper:     false,
+      created_at:               now,
+      created_by:               'SYSTEM:WIZARD',
+      updated_at:               now,
+      updated_by:               'SYSTEM:WIZARD',
+    }]);
+    // One scope per enrollment — primary on the first, secondary on the rest
+    // (DL-R13: exactly one primary scope per recFiles row).
+    const scopeRows = enrollmentIds.map((eid, i) => ({
+      scope_id:               generateUuid_(),
+      school_id:              SCHOOL_ID,
+      file_id:                pdfFileId,
+      scope_type_code:        'enr_admission_school',
+      scope_target_id:        eid,
+      is_primary:             i === 0,
+      shortcut_drive_file_id: null,
+      created_at:             now,
+      created_by:             'SYSTEM:WIZARD',
+      updated_at:             now,
+      updated_by:             'SYSTEM:WIZARD',
     }));
-    if (docRows.length) appsheetRequest_(T.DOCUMENTS, 'Add', docRows);
+    if (scopeRows.length) appsheetRequest_(T.REC_SCOPES, 'Add', scopeRows);
   } catch (pdfErr) {
     Logger.log('PDF generation error (non-fatal): ' + pdfErr.message);
+  }
+
+  // Materialise scopes for pre-submit uploads: files captured during Step6
+  // have a recFiles row but no recScopes (no enrollment_id existed yet).
+  // Now that the N enrollments exist, fan out one scope per (file, enrollment).
+  try {
+    if (enrollmentIds.length) {
+      const preSubmitFiles = appsheetRequest_(T.REC_FILES, 'Find', [], {
+        Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin" = "WIZARD" && "origin_reference" = "' + enrollmentGroupId + '"'
+      }) || [];
+      const newScopes = [];
+      preSubmitFiles.forEach(f => {
+        // Skip any file that already has a scope (idempotency on retry)
+        const existing = appsheetRequest_(T.REC_SCOPES, 'Find', [], {
+          Filter: '"school_id" = "' + SCHOOL_ID + '" && "file_id" = "' + f.file_id + '"'
+        }) || [];
+        if (existing.length) return;
+        enrollmentIds.forEach((eid, i) => {
+          newScopes.push({
+            scope_id:               generateUuid_(),
+            school_id:              SCHOOL_ID,
+            file_id:                f.file_id,
+            scope_type_code:        'enr_admission_school',
+            scope_target_id:        eid,
+            is_primary:             i === 0,
+            shortcut_drive_file_id: null,
+            created_at:             now,
+            created_by:             'SYSTEM:WIZARD',
+            updated_at:             now,
+            updated_by:             'SYSTEM:WIZARD',
+          });
+        });
+      });
+      if (newScopes.length) appsheetRequest_(T.REC_SCOPES, 'Add', newScopes);
+    }
+  } catch (scopeErr) {
+    Logger.log('rec scope materialisation error (non-fatal): ' + scopeErr.message);
   }
 
   // Send family confirmation (bilingual)
@@ -1036,23 +1222,62 @@ function saveResponses_(p) {
 }
 
 /**
- * Accepts a base64-encoded file, saves to Drive, writes a document record.
+ * Maps a wizard document_type to a canonical recTypes_T code.
+ * The values on the right must exist in the tenant's recTypes_T catalog
+ * (Capa 3, DL-R08). If a document_type is not mapped here it falls through
+ * to 'OTHER' — operationally that means the file uploads successfully but
+ * sorts to the catch-all bucket.
+ */
+const REC_TYPE_BY_DOCUMENT_TYPE = {
+  passport:              'ID_PASSPORT',
+  birth_cert:            'BIRTH_CERTIFICATE',
+  report_card:           'SCHOOL_REPORT',
+  medical_cert:          'MEDICAL_CERTIFICATE',
+  photo:                 'PHOTO_ID',
+  signed_consent_record: 'SIGNED_CONSENT',
+};
+
+/**
+ * Inverse lookup of REC_TYPE_BY_DOCUMENT_TYPE — given a recTypes_T code,
+ * returns the wizard's legacy document_type key (used by the Step6 UI to
+ * key uploaded files by type). Returns 'other' for unmapped codes.
+ * @param {string} recTypeCode
+ * @returns {string}
+ */
+function _docTypeFromRecType_(recTypeCode) {
+  const keys = Object.keys(REC_TYPE_BY_DOCUMENT_TYPE);
+  for (let i = 0; i < keys.length; i++) {
+    if (REC_TYPE_BY_DOCUMENT_TYPE[keys[i]] === recTypeCode) return keys[i];
+  }
+  return 'other';
+}
+
+/**
+ * Accepts a base64-encoded file, saves to Drive, writes a recFiles row.
  *
- * TODO: enrApplicationDocuments will be replaced by recFiles (rec* module) when rec* is built.
- * Until then, document uploads write to enrApplicationDocuments (table still exists physically).
- * Decision 2026-05-17 — see CLAUDE.md "Transition rule (definitive)": no legacy/transient tables
- * for modules with no legacy consumers. This refactor is deferred to a separate rec* integration PR.
+ * DL-R09 / DL-R13: documents now live in the rec* module (canonical):
+ *   - recFiles row with status='ACTIVE', origin='WIZARD',
+ *     origin_reference=enrollment_group_id (so submit can find pre-submit
+ *     uploads of this session) and rec_type_code resolved from the wizard's
+ *     legacy document_type.
+ *   - recScopes are NOT written here. The canonical scope_type for admissions
+ *     ('enr_admission_school' per config/kis/recScopeTypes_T.json) targets
+ *     enrEnrollments.enrollment_id, which does not exist pre-submit. Scopes
+ *     are materialised by submitEnrollmentSession_, one per applicant enrollment.
  *
- * DL-E15: enrApplicationDocuments now FKs to enrollment_id (per-applicant).
- * Pre-submit uploads have no enrollment yet, so the row is written with
- * enrollment_group_id only (a transitional column kept while the wizard is in
- * Stage-1). At submit, the consent PDF flow does FK to enrollment_id directly.
+ * Idempotency: an upload_idempotency_token (generated by the frontend per
+ * file selection) avoids duplicate recFiles rows on retry. If a row already
+ * exists with that token, return it.
  *
- * Accepts either `enrollment_id` (post-submit), `enrollment_group_id`, or the
- * legacy `application_id` alias.
+ * Accepts either `enrollment_group_id` or the legacy `application_id` alias.
+ * Post-submit uploads (rare — most uploads happen pre-submit at Step6) pass
+ * enrollment_id directly; in that case the primary scope is written immediately.
  *
- * @param {Object} p - { enrollment_id?|enrollment_group_id?|application_id?, base64, mimeType, filename, document_type }
- * @returns {{ drive_url: string, document_id: string }}
+ * @param {Object} p - { enrollment_id?|enrollment_group_id?|application_id?,
+ *                       base64, mimeType, filename, document_type,
+ *                       upload_idempotency_token? }
+ * @returns {{ file_id: string, drive_url: string, document_id: string }}
+ *   (document_id is a legacy alias = file_id, kept for frontend compat)
  */
 function uploadDocument_(p) {
   const enrollmentId      = p.enrollment_id || null;
@@ -1061,28 +1286,85 @@ function uploadDocument_(p) {
   if (!base64) throw new Error('Missing base64');
   if (!enrollmentId && !enrollmentGroupId) throw new Error('Missing enrollment_id or enrollment_group_id');
 
+  const idempotencyToken = p.upload_idempotency_token || generateUuid_();
+
+  // Idempotency check — if a recFiles row already exists for this token, return it
+  try {
+    const existing = appsheetRequest_(T.REC_FILES, 'Find', [], {
+      Filter: '"school_id" = "' + SCHOOL_ID + '" && "upload_idempotency_token" = "' + idempotencyToken + '"'
+    }) || [];
+    if (existing.length) {
+      const row = existing[0];
+      return {
+        file_id:     row.file_id,
+        document_id: row.file_id,
+        drive_url:   row.drive_file_id ? ('https://drive.google.com/file/d/' + row.drive_file_id + '/view') : '',
+      };
+    }
+  } catch (_) { /* non-fatal: lookup might fail on first run if cache cold */ }
+
+  // ── Drive upload ───────────────────────────────────────────────────────────
   const blob   = Utilities.newBlob(Utilities.base64Decode(base64), mimeType, filename);
   const folder = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
   const file   = folder.createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
-  const driveUrl   = file.getUrl();
-  const documentId = generateUuid_();
-  const now        = new Date().toISOString();
+  const driveFileId   = file.getId();
+  const driveUrl      = file.getUrl();
+  const fileId        = generateUuid_();
+  const now           = new Date().toISOString();
+  const recTypeCode   = REC_TYPE_BY_DOCUMENT_TYPE[document_type] || 'OTHER';
 
-  const docRow = {
-    document_id:   documentId,
-    document_type: document_type || 'other',
-    drive_url:     driveUrl,
-    uploaded_at:   now,
-    uploaded_by:   'applicant',
+  // ── recFiles row (DL-R09) ──────────────────────────────────────────────────
+  appsheetRequest_(T.REC_FILES, 'Add', [{
+    file_id:                  fileId,
+    school_id:                SCHOOL_ID,
+    rec_type_code:            recTypeCode,
+    drive_file_id:            driveFileId,
+    drive_folder_id:          folder.getId(),
+    file_name:                filename,
+    original_filename:        filename,
+    mime_type:                mimeType,
+    file_size_bytes:          blob.getBytes().length,
+    file_hash_sha256:         null,
+    status:                   'ACTIVE',
+    upload_idempotency_token: idempotencyToken,
+    origin:                   'WIZARD',
+    origin_reference:         enrollmentGroupId || enrollmentId,
+    document_date:            null,
+    signed_at:                null,
+    description:              null,
+    language:                 null,
+    was_originally_paper:     false,
+    created_at:               now,
+    created_by:               'SYSTEM:WIZARD',
+    updated_at:               now,
+    updated_by:               'SYSTEM:WIZARD',
+  }]);
+
+  // ── Primary scope (only if we already have an enrollment_id) ───────────────
+  // Pre-submit uploads (enrollment_id == null) defer scopes to submitEnrollmentSession_.
+  if (enrollmentId) {
+    appsheetRequest_(T.REC_SCOPES, 'Add', [{
+      scope_id:                generateUuid_(),
+      school_id:               SCHOOL_ID,
+      file_id:                 fileId,
+      scope_type_code:         'enr_admission_school',
+      scope_target_id:         enrollmentId,
+      is_primary:              true,
+      shortcut_drive_file_id:  null,
+      created_at:              now,
+      created_by:              'SYSTEM:WIZARD',
+      updated_at:              now,
+      updated_by:              'SYSTEM:WIZARD',
+    }]);
+  }
+
+  return {
+    file_id:     fileId,
+    document_id: fileId, // legacy alias for frontends still reading document_id
+    drive_url:   driveUrl,
   };
-  if (enrollmentId)      docRow.enrollment_id       = enrollmentId;
-  if (enrollmentGroupId) docRow.enrollment_group_id = enrollmentGroupId;
-
-  appsheetRequest_(T.DOCUMENTS, 'Add', [docRow]);
-
-  return { document_id: documentId, drive_url: driveUrl };
 }
 
 /**
@@ -1149,10 +1431,16 @@ function savePersons_(enrollmentGroupId, persons) {
     personIdMap.push({ _uid: personUid || null, person_id: personId });
 
     // ── Core person row (schema columns only — strip AppSheet virtual fields) ─
+    // personal_id: D-E18 FK reverse to personalData_S. Populated when the
+    // guardian was recognized by email at init (or selected manually in
+    // Step2). Activates the dedup branch of promoteEnrollment_ — without this,
+    // promotion creates duplicate personalData_S rows for adults already in
+    // the SMS. Applicants never carry a personal_id (always promoted fresh).
     const baseRow = {
       person_id:           personId,
       enrollment_group_id: enrollmentGroupId,
       person_type_id:      person.person_type_id || 'guardian',
+      personal_id:         (!isApplicant && person.personal_id) ? person.personal_id : null,
       first_name:     person.first_name     || null,
       middle_name:    person.middle_name    || null,
       last_name:      person.last_name      || null,
@@ -1919,7 +2207,14 @@ function generateConsentPdf_(applicationId, app, guardians, applicants, consentR
 
   docFile.setTrashed(true);
 
-  return pdfFile.getUrl();
+  return {
+    drive_url:       pdfFile.getUrl(),
+    drive_file_id:   pdfFile.getId(),
+    drive_folder_id: folder.getId(),
+    mime_type:       'application/pdf',
+    file_name:       pdfBlob.getName(),
+    file_size_bytes: pdfBlob.getBytes().length,
+  };
 }
 
 // ─── Promotion logic ──────────────────────────────────────────────────────────
