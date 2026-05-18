@@ -181,6 +181,7 @@ function doPost(e) {
       case 'fetchLookups':         result = fetchLookups_(payload);         break;
       case 'recognizeFamily':      result = recognizeFamily_(payload);      break;
       case 'reportUnsolicited':    result = reportUnsolicited_(payload);    break;
+      case 'abandonSession':       result = abandonSession_(payload);       break;
       case 'diagTable':            result = diagTable_(payload);            break;
       case 'diagAllTables':        result = diagAllTables_();               break;
       default:
@@ -278,6 +279,33 @@ function initEnrollmentSession_(p) {
     if (!p.recaptcha_token) throw new Error('Missing reCAPTCHA token');
     const rcResult = verifyRecaptcha_({ token: p.recaptcha_token });
     if (!rcResult.pass) throw new Error('reCAPTCHA verification failed');
+  }
+
+  // ── Single-session policy (Diego decision 2026-05-18) ─────────────────────
+  // The data model supports N applicants per session, so a family never
+  // legitimately needs two parallel sessions. If the email already has any
+  // open session (not submitted, not abandoned), re-send the magic link to
+  // the existing one instead of creating a new orphan row. The user can
+  // explicitly abandon a session via abandonSession_ to start fresh.
+  const normalizedEmail = (p.primary_email || '').toLowerCase().trim();
+  const existingOpen = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"primary_email" = "' + normalizedEmail + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
+  }) || [];
+  if (existingOpen.length) {
+    _checkMagicLinkRateLimit_(normalizedEmail);
+    const sorted = existingOpen.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    const lang = sorted[0].preferred_language || (p.preferred_language || 'es');
+    if (sorted.length === 1) {
+      sendMagicLinkEmail_(sorted[0].primary_email, sorted[0].resume_token, lang, false);
+    } else {
+      sendMagicLinkMultiEmail_(sorted[0].primary_email, sorted.map(g => g.resume_token), lang);
+    }
+    return {
+      resumed:             true,
+      count:               sorted.length,
+      enrollment_group_id: sorted[0].enrollment_group_id,
+      application_id:      sorted[0].enrollment_group_id, // legacy alias
+    };
   }
 
   const enrollmentGroupId = generateUuid_();
@@ -481,23 +509,71 @@ function sendMagicLink_(p) {
     });
     const grp = rows && rows[0];
     if (!grp) throw new Error('Enrollment group not found');
+    if (grp.abandoned_at) throw new Error('This application was abandoned');
     _checkMagicLinkRateLimit_((grp.primary_email || '').toLowerCase().trim());
     sendMagicLinkEmail_(grp.primary_email, grp.resume_token, grp.preferred_language || 'es');
   } else if (p.primary_email) {
-    // Find all non-submitted sessions for this email
+    // Find all non-submitted, non-abandoned sessions for this email
     const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"primary_email" = "' + p.primary_email + '" && ISBLANK([submitted_at])'
+      Filter: '"primary_email" = "' + p.primary_email + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
     });
     if (!rows || !rows.length) throw new Error('Enrollment group not found');
     _checkMagicLinkRateLimit_(p.primary_email.toLowerCase().trim());
     const grps = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     const lang = grps[0].preferred_language || 'es';
-    const tokens = grps.map(g => g.resume_token);
-    sendMagicLinkMultiEmail_(p.primary_email, tokens, lang);
+    if (grps.length === 1) {
+      // Use the single-link template (with full security footer + GDPR block)
+      // instead of the abridged multi template when there's actually only one
+      // open session — which is the common case under the new single-session policy.
+      sendMagicLinkEmail_(p.primary_email, grps[0].resume_token, lang, false);
+    } else {
+      sendMagicLinkMultiEmail_(p.primary_email, grps.map(g => g.resume_token), lang);
+    }
   } else {
     throw new Error('Missing enrollment_group_id or primary_email');
   }
   return { sent: true };
+}
+
+/**
+ * Marks an enrollment session as abandoned by the family.
+ *
+ * Triggered by the "Start over" affordance in the wizard. Sets
+ * abandoned_at = now on the enrEnrollmentGroups row; the resume_token
+ * stays in the database (for audit) but resumeSession_ refuses to load
+ * it and sendMagicLink_ filters it out. After abandoning, a fresh init
+ * with the same email creates a new session (the single-session check
+ * in initEnrollmentSession_ ignores abandoned rows).
+ *
+ * Auth: the resume_token IS the authorisation. Only the family that has
+ * the magic link can abandon, which matches the trust model of the rest
+ * of the wizard.
+ *
+ * The row is NOT deleted. Staff may want to inspect abandoned sessions
+ * for analytics (drop-off points) and to detect abuse patterns.
+ *
+ * @param {{ resume_token: string }} p
+ * @returns {{ abandoned: boolean }}
+ */
+function abandonSession_(p) {
+  const token = (p && p.resume_token || '').toString().trim();
+  if (!token) throw new Error('Missing resume_token');
+
+  const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"resume_token" = "' + token + '"'
+  });
+  const grp = rows && rows[0];
+  if (!grp) throw new Error('Enrollment group not found');
+  if (grp.submitted_at) throw new Error('Cannot abandon a submitted application');
+  if (grp.abandoned_at) return { abandoned: true }; // idempotent
+
+  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+    enrollment_group_id: grp.enrollment_group_id,
+    abandoned_at:        new Date().toISOString(),
+    updated_at:          new Date().toISOString(),
+  }]);
+
+  return { abandoned: true };
 }
 
 /**
@@ -580,6 +656,13 @@ function resumeSession_(p) {
 
   const group = groups[0];
   const id    = group.enrollment_group_id;
+
+  // Refuse if the family explicitly abandoned this session via abandonSession_.
+  // Submitted sessions stay resumable regardless (the family must always be
+  // able to view what they sent), but an abandon-before-submit is final.
+  if (group.abandoned_at) {
+    throw new Error('This application was abandoned; start a new one from admissions.kaleide.org');
+  }
 
   // Soft expiry: 7 days from created_at. The row stays in the database
   // (submitted_at / promoted_at semantics unaffected), but resume access
