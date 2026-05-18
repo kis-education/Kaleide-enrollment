@@ -31,6 +31,7 @@ export default function ConsentPage() {
   const [submitting,  setSubmitting]  = useState(false);
   const [err,         setErr]         = useState('');
   const [sent,        setSent]        = useState(false);
+  const [resumed,     setResumed]     = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
 
   const validateEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
@@ -59,9 +60,13 @@ export default function ConsentPage() {
       // Backend post-DL-E15 returns enrollment_group_id; during the transitional
       // period the legacy `application_id` may still come back — accept either.
       setEnrollmentGroupId(data.enrollment_group_id || data.application_id);
-      setResumeToken(data.resume_token);
+      // When the backend resumed an existing session (single-session policy),
+      // there's no fresh resume_token in the response — the existing token
+      // is in the email. Clear local resume_token to avoid a stale pointer.
+      setResumeToken(data.resumed ? null : (data.resume_token || null));
       setRecognition(data.recognition);
       updateStep('email', { primary_email: email, verified: false });
+      setResumed(!!data.resumed);
       setSent(true);
     } catch (e) {
       setErr(e.message);
@@ -83,16 +88,19 @@ export default function ConsentPage() {
   );
 
   if (sent) {
+    const title    = resumed ? t('consent.resumed_title')    : t('consent.sent_title');
+    const subtitle = resumed ? t('consent.resumed_subtitle', { email }) : t('consent.sent_subtitle', { email });
+    const note     = resumed ? t('consent.resumed_note')     : t('consent.sent_note');
     return (
       <div className="wizard-layout">
         {header}
         <div className="landing-hero">
           <img src={LOGO} alt="KIS" className="landing-logo" />
-          <h1 className="landing-title">{t('consent.sent_title')}</h1>
-          <p className="landing-subtitle">{t('consent.sent_subtitle', { email })}</p>
+          <h1 className="landing-title">{title}</h1>
+          <p className="landing-subtitle">{subtitle}</p>
           <div className="kis-card" style={{ maxWidth: 480, margin: '0 auto', textAlign: 'center' }}>
-            <i className="bi bi-envelope-check" style={{ fontSize: '2.5rem', color: 'var(--teal-dk)' }} />
-            <p className="mt-3" style={{ color: 'var(--muted)' }}>{t('consent.sent_note')}</p>
+            <i className={resumed ? 'bi bi-arrow-clockwise' : 'bi bi-envelope-check'} style={{ fontSize: '2.5rem', color: 'var(--teal-dk)' }} />
+            <p className="mt-3" style={{ color: 'var(--muted)' }}>{note}</p>
           </div>
         </div>
       </div>

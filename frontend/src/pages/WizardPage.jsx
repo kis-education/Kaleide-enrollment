@@ -37,12 +37,14 @@ export default function WizardPage() {
     currentStep, setCurrentStep,
     stepData, updateStep,
     hydrateFromResume, needsHydration,
+    clearSession,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
   const [sendingMagicLink,  setSendingMagicLink]  = useState(false);
   const [rehydrating,       setRehydrating]       = useState(false);
   const [completedSteps,    setCompletedSteps]    = useState(new Set());
+  const [abandoning,        setAbandoning]        = useState(false);
 
   // Kick off lookup prefetch immediately so Step3/Step4 get cached data.
   useEffect(() => { prefetchLookups(); }, []); // eslint-disable-line
@@ -121,6 +123,28 @@ const handleNext = async (stepKey, data) => {
     setCompletedSteps(prev => { const s = new Set(prev); s.delete(currentStep); return s; });
   };
 
+  const handleStartOver = async () => {
+    if (!resumeToken) return;
+    if (!window.confirm(t('wizard.abandon_confirm'))) return;
+    log.info('WizardPage: abandoning session', { enrollmentGroupId });
+    setAbandoning(true);
+    try {
+      await gasCall('abandonSession', { resume_token: resumeToken });
+      log.success('WizardPage: session abandoned');
+      clearSession();
+      navigate('/consent');
+    } catch (err) {
+      log.error('WizardPage: abandonSession failed', { message: err.message });
+      // Even on backend failure, clear local state — the user wanted out.
+      // The backend session becomes a 7-day-expiring orphan instead of an
+      // abandoned-marked row; acceptable degradation.
+      clearSession();
+      navigate('/consent');
+    } finally {
+      setAbandoning(false);
+    }
+  };
+
   const handleSaveLater = async () => {
     if (!enrollmentGroupId) {
       log.warn('WizardPage: Save Later clicked but no enrollmentGroupId in context');
@@ -195,9 +219,24 @@ const handleNext = async (stepKey, data) => {
       <WizardProgress currentStep={currentStep} />
 
       {/* Save-later bar */}
-      <div className="wizard-header-bar">
+      <div className="wizard-header-bar" style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center' }}>
         <button className="save-later-btn" onClick={handleSaveLater}>
           <i className="bi bi-bookmark" /> {t('wizard.save_later')}
+        </button>
+        <button
+          onClick={handleStartOver}
+          disabled={abandoning}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: '#a02020',
+            fontSize: '0.85rem',
+            cursor: abandoning ? 'wait' : 'pointer',
+            padding: '6px 10px',
+            textDecoration: 'underline',
+          }}
+        >
+          <i className="bi bi-arrow-counterclockwise" /> {t('wizard.abandon_link')}
         </button>
       </div>
 
