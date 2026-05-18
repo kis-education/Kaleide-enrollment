@@ -1391,6 +1391,7 @@ function sendVerificationCode_(p) {
   GmailApp.sendEmail(primary_email, subject, '', {
     htmlBody: buildFamilyEmail_(subject, body),
     name: 'Kaleide International School',
+    from: ADMISSIONS_EMAIL,
   });
 
   return { sent: true };
@@ -2129,6 +2130,7 @@ function sendInternalEmail_(subject, bodyHtml) {
   GmailApp.sendEmail(ADMISSIONS_EMAIL, subject, '', {
     htmlBody: buildInternalEmail_(subject, bodyHtml),
     name: 'KIS Admissions System',
+    from: ADMISSIONS_EMAIL,
   });
 }
 
@@ -2195,6 +2197,7 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp) {
   GmailApp.sendEmail(email, subject, '', {
     htmlBody: buildFamilyEmail_(subject, body),
     name: 'Kaleide International School',
+    from: ADMISSIONS_EMAIL,
   });
 }
 
@@ -2248,6 +2251,7 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang) {
   GmailApp.sendEmail(email, subject, '', {
     htmlBody: buildFamilyEmail_(subject, body),
     name: 'Kaleide International School',
+    from: ADMISSIONS_EMAIL,
   });
 }
 
@@ -2275,6 +2279,7 @@ function sendFamilyConfirmationEmail_(email, sessionId, applicants, lang) {
   GmailApp.sendEmail(email, 'Kaleide enrollment application received / Solicitud de matr\u00edcula recibida', '', {
     htmlBody: buildFamilyEmail_('Enrollment application received', body),
     name: 'Kaleide International School',
+    from: ADMISSIONS_EMAIL,
   });
 }
 
