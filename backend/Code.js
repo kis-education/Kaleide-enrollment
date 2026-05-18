@@ -3093,7 +3093,7 @@ function getOrCreateDriveFolder_(name) {
  * Returns a summary { scanned, abandoned, kept } and logs each row id.
  * Safe to re-run — idempotent (skips already-abandoned rows).
  */
-function adminCleanupOrphanSessions_() {
+function adminCleanupOrphanSessions() {
   const now = new Date();
   const CUTOFF_MS = 30 * 24 * 60 * 60 * 1000;
   const all = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {}) || [];
@@ -3128,7 +3128,7 @@ function adminCleanupOrphanSessions_() {
         personCountByGroup[k] = (personCountByGroup[k] || 0) + 1;
       });
     } catch (e) {
-      Logger.log('adminCleanupOrphanSessions_: person count chunk ' + i + ' failed: ' + e.message);
+      Logger.log('adminCleanupOrphanSessions: person count chunk ' + i + ' failed: ' + e.message);
     }
   }
 
@@ -3173,7 +3173,7 @@ function adminCleanupOrphanSessions_() {
     abandoned: toAbandon.length,
     kept:      kept.length,
   };
-  Logger.log('adminCleanupOrphanSessions_ summary: ' + JSON.stringify(summary));
+  Logger.log('adminCleanupOrphanSessions summary: ' + JSON.stringify(summary));
   return summary;
 }
 
