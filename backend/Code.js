@@ -523,6 +523,18 @@ function resumeSession_(p) {
   const group = groups[0];
   const id    = group.enrollment_group_id;
 
+  // Soft expiry: 7 days from created_at. The row stays in the database
+  // (submitted_at / promoted_at semantics unaffected), but resume access
+  // is denied past the window. Submitted sessions are always resumable —
+  // the family must always be able to view what they sent.
+  if (!group.submitted_at) {
+    const RESUME_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+    const createdAt = group.created_at ? new Date(group.created_at).getTime() : 0;
+    if (createdAt && (Date.now() - createdAt) > RESUME_TOKEN_TTL_MS) {
+      throw new Error('Resume link expired (7 days); contact admisiones@kaleide.org to reopen');
+    }
+  }
+
   // Per-applicant enrollment rows (empty until submit)
   const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
     Filter: '"enrollment_group_id" = "' + id + '"'
