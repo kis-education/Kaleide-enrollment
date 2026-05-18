@@ -20,6 +20,7 @@ const DRIVE_FOLDER_NAME  = 'KIS Admissions Documents';
 const SCHOOL_ID          = 'KIS';
 const ADMISSIONS_EMAIL   = 'admissions@kaleide.org';
 const RESUME_BASE_URL    = 'https://admissions.kaleide.org/#/resume/';
+const REPORT_BASE_URL    = 'https://admissions.kaleide.org/#/report/';
 const LOGO_URL           = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 const APPSHEET_BASE_URL  = 'https://api.appsheet.com/api/v2/apps/';
 
@@ -179,6 +180,7 @@ function doPost(e) {
       case 'verifyRecaptcha':      result = verifyRecaptcha_(payload);      break;
       case 'fetchLookups':         result = fetchLookups_(payload);         break;
       case 'recognizeFamily':      result = recognizeFamily_(payload);      break;
+      case 'reportUnsolicited':    result = reportUnsolicited_(payload);    break;
       case 'diagTable':            result = diagTable_(payload);            break;
       case 'diagAllTables':        result = diagAllTables_();               break;
       default:
@@ -496,6 +498,62 @@ function sendMagicLink_(p) {
     throw new Error('Missing enrollment_group_id or primary_email');
   }
   return { sent: true };
+}
+
+/**
+ * Reports a magic-link email as unsolicited (recipient did not initiate
+ * the enrollment session). Triggered from the link in the magic-link
+ * email body ("Esto no es mío"). The resume_token IS the authorisation —
+ * only the recipient of the email knows it.
+ *
+ * Effects:
+ *   1. The session's primary_email is marked BLOCKED for ~6h in
+ *      ScriptCache → _checkMagicLinkRateLimit_ refuses further sends.
+ *   2. An internal email goes to ADMISSIONS_EMAIL with the report details
+ *      so staff can decide whether to extend the block manually, revoke
+ *      the session row, or follow up with the apparent victim.
+ *   3. The session header is NOT deleted. Staff may want to inspect it.
+ *
+ * Returns success unconditionally to avoid leaking whether the token
+ * was valid (anti-enumeration for the report endpoint itself).
+ *
+ * @param {{ resume_token: string }} p
+ * @returns {{ reported: boolean }}
+ */
+function reportUnsolicited_(p) {
+  const token = (p && p.resume_token || '').toString().trim();
+  if (!token) return { reported: true }; // silent ack
+
+  try {
+    const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+      Filter: '"resume_token" = "' + token + '"'
+    });
+    const group = groups && groups[0];
+    if (!group) return { reported: true }; // silent ack
+
+    const email = (group.primary_email || '').toLowerCase().trim();
+    if (email) {
+      const cache = CacheService.getScriptCache();
+      const blockKey = 'magic_blocked_' + Utilities.base64EncodeWebSafe(email);
+      cache.put(blockKey, '1', 21600); // 6h (ScriptCache max)
+    }
+
+    sendInternalEmail_(
+      '[KIS Admissions] Unsolicited magic-link reported',
+      '<p>A recipient marked their enrollment magic-link as unsolicited.</p>'
+      + '<ul>'
+      + '<li><strong>Group ID:</strong> ' + (group.enrollment_group_id || '') + '</li>'
+      + '<li><strong>Email:</strong> ' + email + '</li>'
+      + '<li><strong>Created at:</strong> ' + (group.created_at || '') + '</li>'
+      + '<li><strong>Reported at:</strong> ' + new Date().toISOString() + '</li>'
+      + '</ul>'
+      + '<p>The email has been temporarily blocked (~6h). Review the session and decide '
+      + 'whether to extend the block, contact the apparent victim, or delete the row.</p>'
+    );
+  } catch (e) {
+    Logger.log('reportUnsolicited_ swallowed error: ' + e.message);
+  }
+  return { reported: true };
 }
 
 /**
@@ -1838,6 +1896,7 @@ function sendInternalEmail_(subject, bodyHtml) {
  */
 function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp) {
   const resumeUrl = RESUME_BASE_URL + resumeToken;
+  const reportUrl = REPORT_BASE_URL + resumeToken;
   const isEn = lang === 'en';
 
   const subject = isEn
@@ -1853,17 +1912,41 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp) {
       + '</div>'
     : '';
 
+  // Anti-abuse footer \u2014 present on every magic-link send.
+  // "Esto no es m\u00edo" \u2192 /report endpoint blocks the email for ~6h + alerts staff.
+  const securityFooter = isEn
+    ? '<div style="margin:32px 0 0;padding:16px;background:#fff8e1;border-left:4px solid #f0a500;border-radius:4px;font-size:0.85em;color:#5c4400;">'
+      + '<strong>Did you not request this?</strong><br>'
+      + 'Someone started a Kaleide application using your email. If it was not you, '
+      + 'simply ignore this message \u2014 nothing is created until you click the link above. '
+      + 'The link will expire in 7 days.<br><br>'
+      + 'If you are receiving multiple of these without requesting them, '
+      + '<a href="' + reportUrl + '" style="color:#0066cc;">report as unsolicited</a> '
+      + 'or contact <a href="mailto:' + ADMISSIONS_EMAIL + '" style="color:#0066cc;">' + ADMISSIONS_EMAIL + '</a>.'
+      + '</div>'
+    : '<div style="margin:32px 0 0;padding:16px;background:#fff8e1;border-left:4px solid #f0a500;border-radius:4px;font-size:0.85em;color:#5c4400;">'
+      + '<strong>\u00bfNo has sido t\u00fa?</strong><br>'
+      + 'Alguien ha iniciado una solicitud en Kaleide con tu correo. Si no has sido t\u00fa, '
+      + 'puedes ignorar este mensaje \u2014 no se crea nada hasta que pulses el enlace de arriba. '
+      + 'El enlace caducar\u00e1 en 7 d\u00edas.<br><br>'
+      + 'Si recibes varios sin haberlos pedido, '
+      + '<a href="' + reportUrl + '" style="color:#0066cc;">rep\u00f3rtalo como no solicitado</a> '
+      + 'o escr\u00edbenos a <a href="mailto:' + ADMISSIONS_EMAIL + '" style="color:#0066cc;">' + ADMISSIONS_EMAIL + '</a>.'
+      + '</div>';
+
   const body = isEn
     ? '<p>Click the link below to access your application:</p>'
       + '<p style="margin:24px 0;"><a href="' + resumeUrl + '" style="background:#00a19a;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;">Start Application</a></p>'
       + '<p style="color:#6b7c93;font-size:0.9em;">Or copy this URL into your browser:<br>' + resumeUrl + '</p>'
       + gdprBlock
       + '<p>This link will take you directly to your application. Keep it safe.</p>'
+      + securityFooter
     : '<p>Haz clic en el enlace de abajo para acceder a tu solicitud:</p>'
       + '<p style="margin:24px 0;"><a href="' + resumeUrl + '" style="background:#00a19a;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;">Iniciar solicitud</a></p>'
       + '<p style="color:#6b7c93;font-size:0.9em;">O copia esta URL en tu navegador:<br>' + resumeUrl + '</p>'
       + gdprBlock
-      + '<p>Este enlace te lleva directamente a tu solicitud. Gu\u00e1rdalo en un lugar seguro.</p>';
+      + '<p>Este enlace te lleva directamente a tu solicitud. Gu\u00e1rdalo en un lugar seguro.</p>'
+      + securityFooter;
 
   GmailApp.sendEmail(email, subject, '', {
     htmlBody: buildFamilyEmail_(subject, body),
@@ -1890,13 +1973,33 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang) {
       + '<span style="color:#6b7c93;font-size:0.85em;margin-left:12px;">' + url + '</span></p>';
   }).join('');
 
+  // For the multi-link email we use the FIRST token for the report link.
+  // reportUnsolicited_ blocks the email address, not the individual session,
+  // so any of the tokens is equivalent.
+  const reportUrl = REPORT_BASE_URL + resumeTokens[0];
+  const securityFooter = isEn
+    ? '<div style="margin:32px 0 0;padding:16px;background:#fff8e1;border-left:4px solid #f0a500;border-radius:4px;font-size:0.85em;color:#5c4400;">'
+      + '<strong>Did you not request this?</strong><br>'
+      + 'If none of these applications is yours, '
+      + '<a href="' + reportUrl + '" style="color:#0066cc;">report as unsolicited</a> '
+      + 'or contact <a href="mailto:' + ADMISSIONS_EMAIL + '" style="color:#0066cc;">' + ADMISSIONS_EMAIL + '</a>.'
+      + '</div>'
+    : '<div style="margin:32px 0 0;padding:16px;background:#fff8e1;border-left:4px solid #f0a500;border-radius:4px;font-size:0.85em;color:#5c4400;">'
+      + '<strong>\u00bfNo has sido t\u00fa?</strong><br>'
+      + 'Si ninguna de estas solicitudes es tuya, '
+      + '<a href="' + reportUrl + '" style="color:#0066cc;">rep\u00f3rtalo como no solicitado</a> '
+      + 'o escr\u00edbenos a <a href="mailto:' + ADMISSIONS_EMAIL + '" style="color:#0066cc;">' + ADMISSIONS_EMAIL + '</a>.'
+      + '</div>';
+
   const body = isEn
     ? '<p>We found ' + resumeTokens.length + ' open application(s) for your email. Click a link below to resume:</p>'
       + linkItems
       + '<p>Each link goes directly to that application. Keep them safe.</p>'
+      + securityFooter
     : '<p>Hemos encontrado ' + resumeTokens.length + ' solicitud(es) abierta(s) para tu correo. Haz clic en un enlace para continuar:</p>'
       + linkItems
-      + '<p>Cada enlace va directamente a esa solicitud. Gu\u00e1rdalos en un lugar seguro.</p>';
+      + '<p>Cada enlace va directamente a esa solicitud. Gu\u00e1rdalos en un lugar seguro.</p>'
+      + securityFooter;
 
   GmailApp.sendEmail(email, subject, '', {
     htmlBody: buildFamilyEmail_(subject, body),

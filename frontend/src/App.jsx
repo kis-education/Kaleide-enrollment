@@ -5,6 +5,7 @@ import LandingPage      from './pages/LandingPage'
 import ConsentPage      from './pages/ConsentPage'
 import WizardPage       from './pages/WizardPage'
 import ResumePage       from './pages/ResumePage'
+import ReportUnsolicitedPage from './pages/ReportUnsolicitedPage'
 import ConfirmationPage   from './pages/ConfirmationPage'
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
 import DevLogger        from './components/DevLogger'
@@ -52,6 +53,7 @@ function App() {
           <Route path="/consent"         element={<ConsentPage />}      />
           <Route path="/apply"           element={<WizardPage />}       />
           <Route path="/resume/:token"   element={<ResumePage />}       />
+          <Route path="/report/:token"   element={<ReportUnsolicitedPage />} />
           <Route path="/confirmation"    element={<ConfirmationPage />}   />
           <Route path="/privacy"         element={<PrivacyPolicyPage />} />
           <Route path="*"               element={<LandingPage />}        />
