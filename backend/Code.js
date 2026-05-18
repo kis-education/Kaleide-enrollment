@@ -3116,6 +3116,48 @@ function getOrCreateDriveFolder_(name) {
  * Returns a summary { scanned, abandoned, kept } and logs each row id.
  * Safe to re-run — idempotent (skips already-abandoned rows).
  */
+/**
+ * Manually clears the magic-link block AND rate-limit counter for a given
+ * email. Used to recover from a reportUnsolicited_ that locked the address
+ * for ~6h, or from a rate-limit that the family triggered accidentally.
+ *
+ * Usage (manual, from Apps Script editor):
+ *   1. Project Settings → Script Properties → set UNBLOCK_TARGET_EMAIL
+ *      to the address to unblock (e.g. ground.contact@gmail.com)
+ *   2. Editor → Run → adminUnblockEmail
+ *   3. Look at the Execution log — confirms the cleared keys
+ *   4. (Optional) Remove the Script Property afterwards
+ *
+ * Effects:
+ *   - magic_blocked_<email>: removed (releases the 6h hard-block)
+ *   - magic_count_<email>:   removed (resets rate-limit to 0/3)
+ *
+ * Does NOT undo:
+ *   - abandoned_at on existing sessions (those stay abandoned — correct,
+ *     they were reported as unsolicited; new init will create fresh)
+ *   - the internal email already sent to staff (audit trail preserved)
+ *
+ * Idempotent: re-running with no cache entries is a no-op.
+ *
+ * @returns {{ ok: boolean, email?: string, reason?: string }}
+ */
+function adminUnblockEmail() {
+  const props = PropertiesService.getScriptProperties();
+  const email = (props.getProperty('UNBLOCK_TARGET_EMAIL') || '').toLowerCase().trim();
+  if (!email) {
+    Logger.log('adminUnblockEmail: Script Property UNBLOCK_TARGET_EMAIL is empty. ' +
+               'Set it in Project Settings → Script Properties and re-run.');
+    return { ok: false, reason: 'no_email_property' };
+  }
+  const cache = CacheService.getScriptCache();
+  const blockKey = 'magic_blocked_' + Utilities.base64EncodeWebSafe(email);
+  const countKey = 'magic_count_'   + Utilities.base64EncodeWebSafe(email);
+  cache.remove(blockKey);
+  cache.remove(countKey);
+  Logger.log('adminUnblockEmail: cleared block + count for ' + email);
+  return { ok: true, email: email };
+}
+
 function adminCleanupOrphanSessions() {
   const now = new Date();
   const CUTOFF_MS = 30 * 24 * 60 * 60 * 1000;
