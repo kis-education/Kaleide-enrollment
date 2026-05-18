@@ -667,10 +667,32 @@ function reportUnsolicited_(p) {
     if (!group) return { reported: true }; // silent ack
 
     const email = (group.primary_email || '').toLowerCase().trim();
+    const nowIso = new Date().toISOString();
+
+    // (1) Hard-block future magic-link sends to this address for ~6h.
     if (email) {
       const cache = CacheService.getScriptCache();
       const blockKey = 'magic_blocked_' + Utilities.base64EncodeWebSafe(email);
       cache.put(blockKey, '1', 21600); // 6h (ScriptCache max)
+    }
+
+    // (2) Invalidate the existing session by marking it abandoned. Without
+    //     this step the reporter (or whoever holds the magic link) could
+    //     still click and resume — defeating the "this isn't mine" claim.
+    //     resumeSession_ refuses sessions with abandoned_at set.
+    //     Submitted sessions are never invalidated (the family must always
+    //     be able to view what they sent).
+    if (!group.submitted_at && !group.abandoned_at) {
+      try {
+        appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+          enrollment_group_id: group.enrollment_group_id,
+          abandoned_at:        nowIso,
+          updated_at:          nowIso,
+        }]);
+        Logger.log('reportUnsolicited_: abandoned ' + group.enrollment_group_id);
+      } catch (abandonErr) {
+        Logger.log('reportUnsolicited_: failed to abandon ' + group.enrollment_group_id + ': ' + abandonErr.message);
+      }
     }
 
     sendInternalEmail_(
@@ -680,10 +702,11 @@ function reportUnsolicited_(p) {
       + '<li><strong>Group ID:</strong> ' + (group.enrollment_group_id || '') + '</li>'
       + '<li><strong>Email:</strong> ' + email + '</li>'
       + '<li><strong>Created at:</strong> ' + (group.created_at || '') + '</li>'
-      + '<li><strong>Reported at:</strong> ' + new Date().toISOString() + '</li>'
+      + '<li><strong>Reported at:</strong> ' + nowIso + '</li>'
+      + (group.submitted_at ? '<li><strong>Note:</strong> session was already submitted; NOT abandoned (preserves family access to submitted record).</li>' : '<li><strong>Session abandoned:</strong> yes</li>')
       + '</ul>'
-      + '<p>The email has been temporarily blocked (~6h). Review the session and decide '
-      + 'whether to extend the block, contact the apparent victim, or delete the row.</p>'
+      + '<p>The email has been temporarily blocked (~6h) for new magic-link sends. '
+      + 'Review the session and decide whether to extend the block, contact the apparent victim, or delete the row.</p>'
     );
   } catch (e) {
     Logger.log('reportUnsolicited_ swallowed error: ' + e.message);
