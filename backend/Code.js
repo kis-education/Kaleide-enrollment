@@ -977,6 +977,13 @@ function submitEnrollmentSession_(p) {
   const enrollmentIds = [];
   applicants.forEach(applicant => {
     const enrollmentId = generateUuid_();
+    // submitted_at lives on enrEnrollmentGroups (the session header), NOT on
+    // each enrEnrollments row — DL-E15. The per-enrollment "submitted" moment
+    // is reflected by current_state_id transitioning to RQ (logged in
+    // sysStateTransitionLog below). AppSheet rejected the whole row silently
+    // when we tried to write submitted_at here ("'submitted_at' is not a
+    // valid table column name") — caught 2026-05-18 by Diego's first
+    // end-to-end test.
     appsheetRequest_(T.ENROLLMENTS, 'Add', [{
       enrollment_id:          enrollmentId,
       enrollment_group_id:    enrollmentGroupId,
@@ -987,7 +994,6 @@ function submitEnrollmentSession_(p) {
       current_state_id:       rqStateId,
       desired_start_date:     desiredStartDate,
       source_locale:          group.preferred_language || group.source_locale || 'es',
-      submitted_at:           now,
       created_at:             now,
       updated_at:             now,
     }]);
