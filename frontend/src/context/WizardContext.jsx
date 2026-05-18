@@ -53,6 +53,44 @@ export function WizardProvider({ children }) {
   // had changed; this baseline+diff pattern brings unchanged-step transitions
   // to ~50ms (UI only).
   const [savedBaseline, setSavedBaseline] = useState(initialStepData);
+  // Promise for the most recently launched (and not yet settled) saveStep.
+  // The wizard uses an optimistic-UI pattern: handleNext launches the save
+  // asynchronously and advances the UI immediately. The PREVIOUS click's
+  // save must finish before the next advance, so handleNext awaits this
+  // promise as its first action. Submit also awaits it before sending.
+  // At most one save is in flight at any time (sequential await chain).
+  const [pendingSavePromise, setPendingSavePromiseRaw] = useState(null);
+  // Boolean shadow of pendingSavePromise for cheap reactive subscriptions
+  // (boolean changes trigger re-render predictably, Promise references don't).
+  const [hasPendingSave, setHasPendingSave] = useState(false);
+
+  /**
+   * Registers a save promise as the current in-flight save. When it settles,
+   * the promise is cleared automatically (if it's still the current one —
+   * a newer save can supersede this slot mid-flight, in which case the
+   * older promise's finally() leaves the newer one intact).
+   */
+  const setPendingSave = useCallback((promise) => {
+    setPendingSavePromiseRaw(promise);
+    setHasPendingSave(true);
+    promise.finally(() => {
+      setPendingSavePromiseRaw(prev => prev === promise ? null : prev);
+      // Only clear hasPendingSave if no newer promise replaced us.
+      setHasPendingSave(false);
+      // ^ subtle: this might briefly drop to false even if a newer save
+      // was set concurrently. Acceptable — the next save's setPendingSave
+      // will re-set to true within the same tick.
+    });
+  }, []);
+
+  /**
+   * Returns a promise that resolves when the most recent save completes
+   * (success or failure). Safe to await even when there's no save in
+   * flight — returns an already-resolved Promise.
+   */
+  const awaitPendingSave = useCallback(() => {
+    return pendingSavePromise || Promise.resolve();
+  }, [pendingSavePromise]);
   // Steps the user has already passed. Initially empty; populated either by
   // forward navigation (WizardPage.handleNext → addCompletedStep) or by
   // hydration from a resumed session (hydrateFromResume infers from data).
@@ -233,6 +271,7 @@ export function WizardProvider({ children }) {
       recognition,   setRecognition,
       completedSteps, addCompletedStep, removeCompletedStep,
       isStepDirty, markStepSaved,
+      setPendingSave, awaitPendingSave, hasPendingSave,
       hydrateFromResume, clearSession,
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>

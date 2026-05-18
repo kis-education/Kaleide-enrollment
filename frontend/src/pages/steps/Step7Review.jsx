@@ -40,7 +40,7 @@ export default function Step7Review({ onBack }) {
   const { t, i18n }  = useTranslation();
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
-  const { enrollmentGroupId, stepData } = useWizard();
+  const { enrollmentGroupId, stepData, awaitPendingSave, hasPendingSave } = useWizard();
 
   const { email, persons, documents } = stepData;
   const guardians  = (persons || []).filter(p => p.person_type_id === 'guardian');
@@ -61,6 +61,15 @@ export default function Step7Review({ onBack }) {
     setSubmitting(true);
 
     try {
+      // Drain any background save still in flight from Step 6 (or earlier).
+      // The optimistic-UI pattern (handleNext) doesn't await saves before
+      // advancing — submit IS the natural sync point where we MUST have
+      // all data persisted before sending the final action.
+      if (hasPendingSave) {
+        try { await awaitPendingSave(); }
+        catch (_) { /* errors already toasted; submit proceeds with whatever was last saved */ }
+      }
+
       // reCAPTCHA v3
       if (RECAPTCHA_SITE_KEY) {
         const rc = await loadRecaptcha(RECAPTCHA_SITE_KEY);

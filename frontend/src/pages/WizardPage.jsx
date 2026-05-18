@@ -40,6 +40,7 @@ export default function WizardPage() {
     clearSession,
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
+    setPendingSave, awaitPendingSave, hasPendingSave,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -76,46 +77,62 @@ export default function WizardPage() {
 
 const handleNext = async (stepKey, data) => {
     log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
-    // Skip saveStep entirely when the step data hasn't changed since the
-    // last save (or since hydration). Diego measured ~1-2s wasted per Next
-    // click when users just click through without editing. The dirty check
-    // uses JSON.stringify diffing in WizardContext.isStepDirty.
+
+    // Optimistic-UI guardrail (Nivel 2): before advancing, ensure the
+    // PREVIOUS step's save (if any) has settled. Saves run in background;
+    // typically the user spends >1s on each step so the previous save is
+    // done by the time Next is clicked, making this a no-op. If they click
+    // fast, brief wait — the "Guardando..." indicator covers it.
+    if (hasPendingSave) {
+      log.info('WizardPage: waiting for previous step save to settle');
+      try { await awaitPendingSave(); }
+      catch (_) { /* errors handled inside the save promise */ }
+    }
+
     const needsSave = !!(enrollmentGroupId && stepKey && isStepDirty(stepKey));
     if (!needsSave && enrollmentGroupId && stepKey) {
       log.info(`WizardPage: step "${stepKey}" not dirty, skipping saveStep`);
     }
     if (needsSave) {
-      setSaving(true);
-      try {
-        log.info(`WizardPage: auto-saving step "${stepKey}" for enrollment group ${enrollmentGroupId}`);
-        // Send both new and legacy keys so backend keeps working during the
-        // parallel refactor — server-side will prefer enrollment_group_id.
-        const saveResult = await gasCall('saveStep', {
-          enrollment_group_id: enrollmentGroupId,
-          application_id:      enrollmentGroupId, // legacy alias
-          step:                stepKey,
-          payload:             data,
-        });
-        log.success(`WizardPage: saveStep "${stepKey}" OK`, saveResult?._debug || {});
+      log.info(`WizardPage: auto-saving step "${stepKey}" in background`);
+      // Fire-and-forget. Wrap in an async IIFE so we can register the
+      // promise via setPendingSave for the next handleNext / submit to await.
+      const savePromise = (async () => {
+        try {
+          // Send both new and legacy keys so backend keeps working during the
+          // parallel refactor — server-side will prefer enrollment_group_id.
+          const saveResult = await gasCall('saveStep', {
+            enrollment_group_id: enrollmentGroupId,
+            application_id:      enrollmentGroupId, // legacy alias
+            step:                stepKey,
+            payload:             data,
+          });
+          log.success(`WizardPage: saveStep "${stepKey}" OK (background)`, saveResult?._debug || {});
 
-        // Stamp real person_ids returned from backend so Step3Relations can reference them
-        if (stepKey === 'persons' && saveResult?._debug?.personIdMap?.length) {
-          const map = {};
-          saveResult._debug.personIdMap.forEach(({ _uid, person_id }) => { if (_uid) map[_uid] = person_id; });
-          const updated = data.map(p => ({ ...p, person_id: p.person_id || (p._uid && map[p._uid]) || undefined }));
-          updateStep('persons', updated);
+          // Stamp real person_ids returned from backend so Step3Relations
+          // can reference them. With optimistic advance the user may already
+          // be on Step 3 when this resolves — Step 3 will re-render once
+          // updateStep fires, picking up the real ids.
+          if (stepKey === 'persons' && saveResult?._debug?.personIdMap?.length) {
+            const map = {};
+            saveResult._debug.personIdMap.forEach(({ _uid, person_id }) => { if (_uid) map[_uid] = person_id; });
+            const updated = data.map(p => ({ ...p, person_id: p.person_id || (p._uid && map[p._uid]) || undefined }));
+            updateStep('persons', updated);
+          }
+          markStepSaved(stepKey);
+        } catch (err) {
+          log.warn(`WizardPage: saveStep "${stepKey}" failed (background)`, { message: err.message });
+          showToast(t('wizard.save_failed'));
+          throw err; // surface to the awaiter — handleNext / submit handle gracefully
         }
-        // Snapshot the just-saved data so subsequent Next clicks on the same
-        // step skip the save unless the user edits again.
-        markStepSaved(stepKey);
-      } catch (err) {
-        log.warn(`WizardPage: saveStep "${stepKey}" failed (non-blocking)`, { message: err.message });
-        showToast(t('wizard.save_failed'));
-      }
+      })();
+      setPendingSave(savePromise);
     } else {
       log.warn('WizardPage: skipping saveStep', { enrollmentGroupId, stepKey, dirty: needsSave });
     }
-    setSaving(false);
+    // Note: setSaving / "Guardando..." indicator is now driven by hasPendingSave
+    // from context, not by this local saving flag. Local flag retained but unused
+    // (TODO cleanup: remove the local saving state once we confirm no callers).
     addCompletedStep(currentStep);
     const nextStep = Math.min(currentStep + 1, STEP_COMPONENTS.length - 1);
     log.info(`WizardPage: advancing to step ${nextStep}`);
@@ -235,6 +252,26 @@ const handleNext = async (stepKey, data) => {
         <button className="save-later-btn" onClick={handleSaveLater}>
           <i className="bi bi-bookmark" /> {t('wizard.save_later')}
         </button>
+
+        {/* Save-in-flight indicator. Driven by hasPendingSave from context;
+            shows up briefly while the previous step's save is running in
+            background. Centred so it's visible without crowding the buttons. */}
+        {hasPendingSave && (
+          <span
+            style={{
+              color: 'var(--muted)',
+              fontSize: '0.82rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+            aria-live="polite"
+          >
+            <i className="bi bi-cloud-arrow-up" />
+            {t('wizard.saving_in_background', 'Guardando…')}
+          </span>
+        )}
+
         <button
           onClick={handleStartOver}
           disabled={abandoning}
