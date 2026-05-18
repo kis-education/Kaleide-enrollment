@@ -39,6 +39,7 @@ export default function WizardPage() {
     hydrateFromResume, needsHydration,
     clearSession,
     completedSteps, addCompletedStep, removeCompletedStep,
+    isStepDirty, markStepSaved,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -74,9 +75,17 @@ export default function WizardPage() {
   }, []); // eslint-disable-line
 
 const handleNext = async (stepKey, data) => {
-    setSaving(true);
     log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
-    if (enrollmentGroupId && stepKey) {
+    // Skip saveStep entirely when the step data hasn't changed since the
+    // last save (or since hydration). Diego measured ~1-2s wasted per Next
+    // click when users just click through without editing. The dirty check
+    // uses JSON.stringify diffing in WizardContext.isStepDirty.
+    const needsSave = !!(enrollmentGroupId && stepKey && isStepDirty(stepKey));
+    if (!needsSave && enrollmentGroupId && stepKey) {
+      log.info(`WizardPage: step "${stepKey}" not dirty, skipping saveStep`);
+    }
+    if (needsSave) {
+      setSaving(true);
       try {
         log.info(`WizardPage: auto-saving step "${stepKey}" for enrollment group ${enrollmentGroupId}`);
         // Send both new and legacy keys so backend keeps working during the
@@ -96,12 +105,15 @@ const handleNext = async (stepKey, data) => {
           const updated = data.map(p => ({ ...p, person_id: p.person_id || (p._uid && map[p._uid]) || undefined }));
           updateStep('persons', updated);
         }
+        // Snapshot the just-saved data so subsequent Next clicks on the same
+        // step skip the save unless the user edits again.
+        markStepSaved(stepKey);
       } catch (err) {
         log.warn(`WizardPage: saveStep "${stepKey}" failed (non-blocking)`, { message: err.message });
         showToast(t('wizard.save_failed'));
       }
     } else {
-      log.warn('WizardPage: skipping saveStep', { enrollmentGroupId, stepKey });
+      log.warn('WizardPage: skipping saveStep', { enrollmentGroupId, stepKey, dirty: needsSave });
     }
     setSaving(false);
     addCompletedStep(currentStep);

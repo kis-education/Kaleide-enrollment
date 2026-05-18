@@ -44,6 +44,15 @@ export function WizardProvider({ children }) {
   const [resumeToken,   setResumeTokenRaw]   = useState(session.resumeToken   || null);
   const [currentStep,   setCurrentStepRaw]   = useState(session.currentStep   || 0);
   const [stepData,      setStepData]         = useState(initialStepData);
+  // Snapshot of step data AS LAST SAVED to the backend. Used by isStepDirty()
+  // to skip redundant saveStep round-trips when the user clicks Next without
+  // actually modifying anything. Updated by markStepSaved() after a successful
+  // save, and seeded by hydrateFromResume() to reflect the just-loaded state.
+  // Stored as a plain object (not Set/Map) so JSON.stringify works for diffing.
+  // 2026-05-19 perf: Diego measured ~1-2s wasted per Next click when nothing
+  // had changed; this baseline+diff pattern brings unchanged-step transitions
+  // to ~50ms (UI only).
+  const [savedBaseline, setSavedBaseline] = useState(initialStepData);
   // Steps the user has already passed. Initially empty; populated either by
   // forward navigation (WizardPage.handleNext → addCompletedStep) or by
   // hydration from a resumed session (hydrateFromResume infers from data).
@@ -99,7 +108,40 @@ export function WizardProvider({ children }) {
     setStepData(initialStepData);
     setRecognitionRaw({ matched: false, persons: [] });
     setCompletedStepsRaw(new Set());
+    setSavedBaseline(initialStepData);
   }, []);
+
+  /**
+   * True if the step's current data differs from what was last saved to the
+   * backend (or last hydrated from a resume). Used by WizardPage.handleNext
+   * to skip redundant saveStep round-trips when the user clicks Next without
+   * changing anything.
+   *
+   * Implementation: deep equality via JSON.stringify. Sufficient for the
+   * step data shapes (plain objects, arrays of plain objects, primitives —
+   * no Dates / functions / Symbols). On parse-equal-but-encode-different
+   * edge cases (e.g. property reordering during normalisation) the dirty
+   * check returns TRUE, which is a false positive — benign, we just do
+   * an unnecessary save. Worst case is the current behaviour.
+   */
+  const isStepDirty = useCallback((stepKey) => {
+    try {
+      const cur  = stepData[stepKey];
+      const base = savedBaseline[stepKey];
+      return JSON.stringify(cur) !== JSON.stringify(base);
+    } catch (_) {
+      return true; // err on the side of saving
+    }
+  }, [stepData, savedBaseline]);
+
+  /**
+   * Snapshots the current stepData[stepKey] into the saved-baseline so the
+   * next isStepDirty() call returns false. Call this AFTER a successful
+   * saveStep round-trip.
+   */
+  const markStepSaved = useCallback((stepKey) => {
+    setSavedBaseline(prev => ({ ...prev, [stepKey]: stepData[stepKey] }));
+  }, [stepData]);
 
   const updateStep = useCallback((stepKey, data) => {
     setStepData(prev => ({ ...prev, [stepKey]: data }));
@@ -118,8 +160,7 @@ export function WizardProvider({ children }) {
     // Backend returns qbResponses as `responses`; recFiles as `documents`.
     const responses = data.responses || [];
     const documents = data.documents || [];
-    setStepData(prev => ({
-      ...prev,
+    const hydrated = {
       email: {
         primary_email:      group.primary_email      || '',
         verified:           true,
@@ -135,7 +176,13 @@ export function WizardProvider({ children }) {
       })),
       questions: responses,
       documents,
-    }));
+    };
+    setStepData(prev => ({ ...prev, ...hydrated }));
+    // Seed the saved baseline with the freshly-loaded data so isStepDirty()
+    // correctly reports false for steps the user hasn't touched after resume.
+    // Without this seed, every Next click after a resume would re-save even
+    // when nothing changed.
+    setSavedBaseline(prev => ({ ...prev, ...hydrated }));
 
     // ── Step-completion inference ───────────────────────────────────────────
     // Marks every step the family has visibly passed through, then jumps to
@@ -185,6 +232,7 @@ export function WizardProvider({ children }) {
       stepData,      updateStep,
       recognition,   setRecognition,
       completedSteps, addCompletedStep, removeCompletedStep,
+      isStepDirty, markStepSaved,
       hydrateFromResume, clearSession,
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>
