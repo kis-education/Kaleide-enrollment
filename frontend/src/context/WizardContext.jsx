@@ -44,6 +44,26 @@ export function WizardProvider({ children }) {
   const [resumeToken,   setResumeTokenRaw]   = useState(session.resumeToken   || null);
   const [currentStep,   setCurrentStepRaw]   = useState(session.currentStep   || 0);
   const [stepData,      setStepData]         = useState(initialStepData);
+  // Steps the user has already passed. Initially empty; populated either by
+  // forward navigation (WizardPage.handleNext → addCompletedStep) or by
+  // hydration from a resumed session (hydrateFromResume infers from data).
+  // Lifted into context (was WizardPage local state) so hydrate can seed it.
+  const [completedSteps, setCompletedStepsRaw] = useState(new Set(session.completedSteps || []));
+
+  const addCompletedStep = useCallback((idx) => {
+    setCompletedStepsRaw(prev => {
+      const next = new Set(prev); next.add(idx);
+      saveSession({ completedSteps: [...next] });
+      return next;
+    });
+  }, []);
+  const removeCompletedStep = useCallback((idx) => {
+    setCompletedStepsRaw(prev => {
+      const next = new Set(prev); next.delete(idx);
+      saveSession({ completedSteps: [...next] });
+      return next;
+    });
+  }, []);
   // D-E18: recognition result from initEnrollmentSession. Survives reloads via
   // sessionStorage so Step2 can show the "we recognised your family" banner
   // even after the family resumes from magic link.
@@ -78,6 +98,7 @@ export function WizardProvider({ children }) {
     setCurrentStepRaw(0);
     setStepData(initialStepData);
     setRecognitionRaw({ matched: false, persons: [] });
+    setCompletedStepsRaw(new Set());
   }, []);
 
   const updateStep = useCallback((stepKey, data) => {
@@ -92,6 +113,11 @@ export function WizardProvider({ children }) {
     setResumeToken(group.resume_token);
     // The magic link token itself proves email ownership — treat as verified regardless
     // of the email_confirmed DB flag (which may lag or not have been written yet).
+    const persons   = data.persons   || [];
+    const relations = data.relations || [];
+    // Backend returns qbResponses as `responses`; recFiles as `documents`.
+    const responses = data.responses || [];
+    const documents = data.documents || [];
     setStepData(prev => ({
       ...prev,
       email: {
@@ -99,29 +125,56 @@ export function WizardProvider({ children }) {
         verified:           true,
         desired_start_date: group.desired_start_date || '',
       },
-      persons:   data.persons   || [],
-      relations: data.relations || [],
-      health:    (data.persons  || []).map(p => ({
+      persons,
+      relations,
+      health: persons.map(p => ({
         person_id: p.person_id,
         allergies: p.allergies || [],
         dietary:   p.dietary   || [],
         medical:   p.medical   || [],
       })),
+      questions: responses,
+      documents,
     }));
-    // Determine deepest incomplete step — group.submitted_at indicates submit
-    const submitted = group.submitted_at;
+
+    // ── Step-completion inference ───────────────────────────────────────────
+    // Marks every step the family has visibly passed through, then jumps to
+    // the deepest one with data so they land where they left off (with prior
+    // steps locked for the LockedBanner unlock-to-edit pattern). Submitted
+    // sessions always go straight to Review (step 6).
+    const submitted = !!group.submitted_at;
+    const hasGuardians     = persons.some(p => p.person_type_id === 'guardian');
+    const hasApplicants    = persons.some(p => p.person_type_id === 'applicant');
+    const hasStartDate     = !!group.desired_start_date;
+    const hasRelations     = relations.length > 0;
+    // Step 3 (health), 4 (questions), 5 (documents) are visited even if the
+    // family had nothing to declare. Best proxies we have without an explicit
+    // current_step pointer on the group: persons exist → step 3 visited;
+    // explicit response/document rows for higher steps.
+    const visitedHealth    = hasGuardians && hasApplicants && hasRelations;
+    const visitedQuestions = responses.length > 0;
+    const visitedDocuments = documents.length > 0;
+
+    const completed = new Set();
+    if (hasStartDate)                       completed.add(0);
+    if (hasGuardians && hasApplicants)      completed.add(1);
+    if (hasRelations)                       completed.add(2);
+    if (visitedHealth)                      completed.add(3);
+    if (visitedQuestions)                   completed.add(4);
+    if (visitedDocuments)                   completed.add(5);
+    if (submitted) [0,1,2,3,4,5,6].forEach(i => completed.add(i));
+    setCompletedStepsRaw(completed);
+    saveSession({ completedSteps: [...completed] });
+
+    // Land on the first incomplete step, or Review if everything's filled.
+    // Submitted sessions go to Review (read-only view of what was sent).
     if (submitted) { setCurrentStep(6); return; }
-    const persons = data.persons || [];
-    const hasGuardians  = persons.some(p => p.person_type_id === 'guardian');
-    const hasApplicants = persons.some(p => p.person_type_id === 'applicant');
-    // No persons yet → always start at step 0 (start date), even if AppSheet set a default date
-    if (!hasGuardians && !hasApplicants) { setCurrentStep(0); return; }
-    const desiredStartDate = group.desired_start_date;
-    if (!desiredStartDate)          { setCurrentStep(0); return; }
-    if (!hasGuardians || !hasApplicants) { setCurrentStep(1); return; }
-    const hasRelations = (data.relations || []).length > 0;
-    if (!hasRelations)              { setCurrentStep(2); return; }
-    setCurrentStep(3);
+    const STEP_COUNT = 7;
+    let target = STEP_COUNT - 1; // default to Review
+    for (let i = 0; i < STEP_COUNT; i++) {
+      if (!completed.has(i)) { target = i; break; }
+    }
+    setCurrentStep(target);
   }, []);
 
   return (
@@ -131,6 +184,7 @@ export function WizardProvider({ children }) {
       currentStep,   setCurrentStep,
       stepData,      updateStep,
       recognition,   setRecognition,
+      completedSteps, addCompletedStep, removeCompletedStep,
       hydrateFromResume, clearSession,
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>

@@ -38,12 +38,12 @@ export default function WizardPage() {
     stepData, updateStep,
     hydrateFromResume, needsHydration,
     clearSession,
+    completedSteps, addCompletedStep, removeCompletedStep,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
   const [sendingMagicLink,  setSendingMagicLink]  = useState(false);
   const [rehydrating,       setRehydrating]       = useState(false);
-  const [completedSteps,    setCompletedSteps]    = useState(new Set());
   const [abandoning,        setAbandoning]        = useState(false);
 
   // Kick off lookup prefetch immediately so Step3/Step4 get cached data.
@@ -57,9 +57,9 @@ export default function WizardPage() {
       log.info('WizardPage: rehydrating session after reload', { enrollmentGroupId });
       gasCall('resumeSession', { resume_token: resumeToken })
         .then(data => {
+          // hydrateFromResume now seeds completedSteps in context based on
+          // which steps have data — no need to override here.
           hydrateFromResume(data);
-          // Lock all steps — data was loaded from server, user should not accidentally edit
-          setCompletedSteps(new Set([0, 1, 2, 3, 4, 5]));
           log.success('WizardPage: rehydration complete');
         })
         .catch(err => {
@@ -104,7 +104,7 @@ const handleNext = async (stepKey, data) => {
       log.warn('WizardPage: skipping saveStep', { enrollmentGroupId, stepKey });
     }
     setSaving(false);
-    setCompletedSteps(prev => new Set([...prev, currentStep]));
+    addCompletedStep(currentStep);
     const nextStep = Math.min(currentStep + 1, STEP_COMPONENTS.length - 1);
     log.info(`WizardPage: advancing to step ${nextStep}`);
     setCurrentStep(nextStep);
@@ -112,7 +112,7 @@ const handleNext = async (stepKey, data) => {
   };
 
   const handleBack = () => {
-    setCompletedSteps(prev => new Set([...prev, currentStep]));
+    addCompletedStep(currentStep);
     const prevStep = Math.max(currentStep - 1, 0);
     log.info(`WizardPage: going back to step ${prevStep}`);
     setCurrentStep(prevStep);
@@ -120,7 +120,7 @@ const handleNext = async (stepKey, data) => {
   };
 
   const handleUnlock = () => {
-    setCompletedSteps(prev => { const s = new Set(prev); s.delete(currentStep); return s; });
+    removeCompletedStep(currentStep);
   };
 
   const handleStartOver = async () => {
