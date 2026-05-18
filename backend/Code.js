@@ -281,36 +281,63 @@ function initEnrollmentSession_(p) {
     if (!rcResult.pass) throw new Error('reCAPTCHA verification failed');
   }
 
-  // ── Single-session policy (Diego decision 2026-05-18, refined 2026-05-19) ─
-  // The data model supports N applicants per session, so a family never
-  // legitimately needs two parallel sessions. If the email already has any
-  // open session (not submitted, not abandoned):
-  //   1. Pick the most-recently-updated one (proxy for "where the family
-  //      was actually working") — falling back to most recent created_at.
-  //   2. Auto-abandon the others inline. They are residue from accidental
-  //      re-inits (double-click, "I think it didn't work, retry") and
-  //      keeping them creates the multi-link confusion that Diego hit on
-  //      2026-05-19.
-  //   3. Re-send the magic link of the winner (single, not multi).
-  // The user can still explicitly abandon via abandonSession_ from inside
-  // the wizard ("Empezar de cero").
+  // ── Single-session policy (Diego decision 2026-05-18) ─────────────────────
+  // ── Selection heuristic refined twice (2026-05-19):
+  //      v1 — "oldest wins" (wrong: oldest is usually the stale empty one)
+  //      v2 — "most-recently-updated wins" (wrong: recency != progress —
+  //           a fresh empty session beats an older half-filled one)
+  //      v3 — "most progressed wins" (current):
+  //
+  // Score each candidate session by enrPersons count (cheap proxy for
+  // "passed Step 1 and captured applicants/guardians"). Tiebreak by
+  // updated_at DESC. Why person count: the wizard's first non-trivial
+  // step is Step 2 (persons); a session with 0 persons is essentially
+  // "user clicked init and bounced". A session with N persons has clearly
+  // crossed the threshold of real engagement, and more persons reflect
+  // more sibling capture / more progress overall.
+  //
+  // Cost: one extra Find on enrPersons per init when N candidates > 1.
+  // Cheap enough — typical N is 1 or 2.
+  //
+  // Effect on Diego's day-3-third-attempt scenario: a half-filled session
+  // (more persons) beats a freshly-bounced session (zero persons)
+  // regardless of which has the more recent updated_at.
   const normalizedEmail = (p.primary_email || '').toLowerCase().trim();
   const existingOpen = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
     Filter: '"primary_email" = "' + normalizedEmail + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
   }) || [];
   if (existingOpen.length) {
     _checkMagicLinkRateLimit_(normalizedEmail);
-    // Sort: most-recently-updated first; created_at as tiebreaker.
+
+    // Resolve person counts for all candidates in ONE query (filtered by OR).
+    let personCountByGroup = {};
+    if (existingOpen.length > 1) {
+      try {
+        const ids = existingOpen.map(g => g.enrollment_group_id);
+        const filter = ids.map(id => '"enrollment_group_id" = "' + id + '"').join(' || ');
+        const personRows = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }) || [];
+        personRows.forEach(pr => {
+          const k = pr.enrollment_group_id;
+          personCountByGroup[k] = (personCountByGroup[k] || 0) + 1;
+        });
+      } catch (e) {
+        // If the person-count query fails, fall back to updated_at-only sort.
+        // Logged so we know to investigate but doesn't block the re-send.
+        Logger.log('initEnrollmentSession_: person count query failed (falling back to updated_at): ' + e.message);
+      }
+    }
+
     const sorted = existingOpen.slice().sort((a, b) => {
+      const ac = personCountByGroup[a.enrollment_group_id] || 0;
+      const bc = personCountByGroup[b.enrollment_group_id] || 0;
+      if (bc !== ac) return bc - ac;
       const au = new Date(a.updated_at || a.created_at || 0).getTime();
       const bu = new Date(b.updated_at || b.created_at || 0).getTime();
-      if (bu !== au) return bu - au;
-      const ac = new Date(a.created_at || 0).getTime();
-      const bc = new Date(b.created_at || 0).getTime();
-      return bc - ac;
+      return bu - au;
     });
     const winner = sorted[0];
     const losers = sorted.slice(1);
+
     // Auto-abandon the losers (best-effort; failure to mark does not block the
     // re-send to the winner). They'll otherwise resurface on the next init and
     // need to be re-evaluated.
@@ -323,7 +350,8 @@ function initEnrollmentSession_(p) {
           updated_at:          nowIso,
         }]);
         Logger.log('initEnrollmentSession_: auto-abandoned ' + loser.enrollment_group_id +
-                   ' (older/empty parallel session for ' + normalizedEmail + ')');
+                   ' (lower-progress parallel session for ' + normalizedEmail +
+                   '; person_count=' + (personCountByGroup[loser.enrollment_group_id] || 0) + ')');
       } catch (e) {
         Logger.log('initEnrollmentSession_: failed to auto-abandon ' + loser.enrollment_group_id + ': ' + e.message);
       }
@@ -2916,21 +2944,41 @@ function adminCleanupOrphanSessions_() {
   const toAbandon = [];
   const kept = [];
 
+  // Pre-fetch person counts for all candidate sessions in a few batched
+  // queries (mirrors the live policy heuristic — see initEnrollmentSession_
+  // for rationale: person count is a cheap proxy for progress, with
+  // updated_at as tiebreaker).
+  const personCountByGroup = {};
+  const allCandidateIds = open.map(g => g.enrollment_group_id);
+  // AppSheet Filter syntax tolerates fairly long OR expressions, but split
+  // into chunks of 50 to stay safe.
+  for (let i = 0; i < allCandidateIds.length; i += 50) {
+    const chunk = allCandidateIds.slice(i, i + 50);
+    try {
+      const filter = chunk.map(id => '"enrollment_group_id" = "' + id + '"').join(' || ');
+      const rows = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }) || [];
+      rows.forEach(r => {
+        const k = r.enrollment_group_id;
+        personCountByGroup[k] = (personCountByGroup[k] || 0) + 1;
+      });
+    } catch (e) {
+      Logger.log('adminCleanupOrphanSessions_: person count chunk ' + i + ' failed: ' + e.message);
+    }
+  }
+
   Object.keys(byEmail).forEach(email => {
-    // Sort: most-recently-updated first, then most recent created_at
-    // (mirrors initEnrollmentSession_'s selection heuristic so the cleanup
-    // converges to the same survivor the live policy would have picked).
+    // Sort: most progressed first (person count), then most-recently-updated.
     const sessions = byEmail[email].slice().sort((a, b) => {
+      const ac = personCountByGroup[a.enrollment_group_id] || 0;
+      const bc = personCountByGroup[b.enrollment_group_id] || 0;
+      if (bc !== ac) return bc - ac;
       const au = new Date(a.updated_at || a.created_at || 0).getTime();
       const bu = new Date(b.updated_at || b.created_at || 0).getTime();
-      if (bu !== au) return bu - au;
-      const ac = new Date(a.created_at || 0).getTime();
-      const bc = new Date(b.created_at || 0).getTime();
-      return bc - ac;
+      return bu - au;
     });
-    // Keep the most-recently-updated; mark every other one as abandoned.
-    // Edge: if the keeper is itself older than 30 days, abandon it too
-    // (covers the "abandoned long ago and never touched" case).
+    // Keep the most progressed; mark every other one as abandoned.
+    // Edge: if the keeper is itself older than 30 days (by updated_at),
+    // abandon it too — covers the "abandoned long ago" case.
     sessions.forEach((s, i) => {
       const lastTouched = new Date(s.updated_at || s.created_at).getTime();
       if (i === 0 && (now.getTime() - lastTouched) <= CUTOFF_MS) {
