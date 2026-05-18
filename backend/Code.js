@@ -281,30 +281,61 @@ function initEnrollmentSession_(p) {
     if (!rcResult.pass) throw new Error('reCAPTCHA verification failed');
   }
 
-  // ── Single-session policy (Diego decision 2026-05-18) ─────────────────────
+  // ── Single-session policy (Diego decision 2026-05-18, refined 2026-05-19) ─
   // The data model supports N applicants per session, so a family never
   // legitimately needs two parallel sessions. If the email already has any
-  // open session (not submitted, not abandoned), re-send the magic link to
-  // the existing one instead of creating a new orphan row. The user can
-  // explicitly abandon a session via abandonSession_ to start fresh.
+  // open session (not submitted, not abandoned):
+  //   1. Pick the most-recently-updated one (proxy for "where the family
+  //      was actually working") — falling back to most recent created_at.
+  //   2. Auto-abandon the others inline. They are residue from accidental
+  //      re-inits (double-click, "I think it didn't work, retry") and
+  //      keeping them creates the multi-link confusion that Diego hit on
+  //      2026-05-19.
+  //   3. Re-send the magic link of the winner (single, not multi).
+  // The user can still explicitly abandon via abandonSession_ from inside
+  // the wizard ("Empezar de cero").
   const normalizedEmail = (p.primary_email || '').toLowerCase().trim();
   const existingOpen = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
     Filter: '"primary_email" = "' + normalizedEmail + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
   }) || [];
   if (existingOpen.length) {
     _checkMagicLinkRateLimit_(normalizedEmail);
-    const sorted = existingOpen.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    const lang = sorted[0].preferred_language || (p.preferred_language || 'es');
-    if (sorted.length === 1) {
-      sendMagicLinkEmail_(sorted[0].primary_email, sorted[0].resume_token, lang, false);
-    } else {
-      sendMagicLinkMultiEmail_(sorted[0].primary_email, sorted.map(g => g.resume_token), lang);
-    }
+    // Sort: most-recently-updated first; created_at as tiebreaker.
+    const sorted = existingOpen.slice().sort((a, b) => {
+      const au = new Date(a.updated_at || a.created_at || 0).getTime();
+      const bu = new Date(b.updated_at || b.created_at || 0).getTime();
+      if (bu !== au) return bu - au;
+      const ac = new Date(a.created_at || 0).getTime();
+      const bc = new Date(b.created_at || 0).getTime();
+      return bc - ac;
+    });
+    const winner = sorted[0];
+    const losers = sorted.slice(1);
+    // Auto-abandon the losers (best-effort; failure to mark does not block the
+    // re-send to the winner). They'll otherwise resurface on the next init and
+    // need to be re-evaluated.
+    const nowIso = new Date().toISOString();
+    losers.forEach(loser => {
+      try {
+        appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+          enrollment_group_id: loser.enrollment_group_id,
+          abandoned_at:        nowIso,
+          updated_at:          nowIso,
+        }]);
+        Logger.log('initEnrollmentSession_: auto-abandoned ' + loser.enrollment_group_id +
+                   ' (older/empty parallel session for ' + normalizedEmail + ')');
+      } catch (e) {
+        Logger.log('initEnrollmentSession_: failed to auto-abandon ' + loser.enrollment_group_id + ': ' + e.message);
+      }
+    });
+    const lang = winner.preferred_language || (p.preferred_language || 'es');
+    sendMagicLinkEmail_(winner.primary_email, winner.resume_token, lang, false);
     return {
       resumed:             true,
-      count:               sorted.length,
-      enrollment_group_id: sorted[0].enrollment_group_id,
-      application_id:      sorted[0].enrollment_group_id, // legacy alias
+      count:               1,                // post-abandon: only the winner remains addressable
+      abandoned_count:     losers.length,    // for frontend telemetry / debug
+      enrollment_group_id: winner.enrollment_group_id,
+      application_id:      winner.enrollment_group_id, // legacy alias
     };
   }
 
@@ -2857,9 +2888,13 @@ function getOrCreateDriveFolder_(name) {
  *
  * Why duplicates of same email:
  *   The new policy collapses to one open per email. Existing duplicates
- *   from before the policy must be reduced to one. Keeps the oldest
- *   non-abandoned row (most likely the one with actual progress);
- *   marks the rest.
+ *   from before the policy must be reduced to one. Keeps the
+ *   most-recently-updated non-abandoned row (proxy for "the one with
+ *   actual work done on it"); marks the rest. NOTE: earlier draft of
+ *   this script kept the OLDEST per email — that was wrong and was
+ *   corrected 2026-05-19 after Diego's test produced the exact opposite
+ *   of the intended outcome (the empty stale session won, the filled
+ *   one was abandoned).
  *
  * Returns a summary { scanned, abandoned, kept } and logs each row id.
  * Safe to re-run — idempotent (skips already-abandoned rows).
@@ -2882,13 +2917,23 @@ function adminCleanupOrphanSessions_() {
   const kept = [];
 
   Object.keys(byEmail).forEach(email => {
-    const sessions = byEmail[email].sort((a, b) =>
-      new Date(a.created_at) - new Date(b.created_at)
-    );
-    // Keep the OLDEST (most likely to have real progress); mark others
+    // Sort: most-recently-updated first, then most recent created_at
+    // (mirrors initEnrollmentSession_'s selection heuristic so the cleanup
+    // converges to the same survivor the live policy would have picked).
+    const sessions = byEmail[email].slice().sort((a, b) => {
+      const au = new Date(a.updated_at || a.created_at || 0).getTime();
+      const bu = new Date(b.updated_at || b.created_at || 0).getTime();
+      if (bu !== au) return bu - au;
+      const ac = new Date(a.created_at || 0).getTime();
+      const bc = new Date(b.created_at || 0).getTime();
+      return bc - ac;
+    });
+    // Keep the most-recently-updated; mark every other one as abandoned.
+    // Edge: if the keeper is itself older than 30 days, abandon it too
+    // (covers the "abandoned long ago and never touched" case).
     sessions.forEach((s, i) => {
-      const age = now.getTime() - new Date(s.created_at).getTime();
-      if (i === 0 && age <= CUTOFF_MS) {
+      const lastTouched = new Date(s.updated_at || s.created_at).getTime();
+      if (i === 0 && (now.getTime() - lastTouched) <= CUTOFF_MS) {
         kept.push(s);
       } else {
         toAbandon.push(s);

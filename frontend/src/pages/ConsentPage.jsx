@@ -88,19 +88,59 @@ export default function ConsentPage() {
   );
 
   if (sent) {
-    const title    = resumed ? t('consent.resumed_title')    : t('consent.sent_title');
-    const subtitle = resumed ? t('consent.resumed_subtitle', { email }) : t('consent.sent_subtitle', { email });
-    const note     = resumed ? t('consent.resumed_note')     : t('consent.sent_note');
+    if (resumed) {
+      // Distinct visual treatment — amber warning style — because the user
+      // came to start a NEW application and we're telling them we won't.
+      // Pre-2026-05-19 this branch shared structure with the "we sent" page
+      // and was easy to miss; Diego flagged it on his test.
+      return (
+        <div className="wizard-layout">
+          {header}
+          <div className="landing-hero">
+            <img src={LOGO} alt="KIS" className="landing-logo" />
+            <div style={{
+              maxWidth: 580,
+              margin: '0 auto',
+              padding: '32px 28px',
+              background: '#fff8e1',
+              border: '2px solid #f0a500',
+              borderRadius: 12,
+              textAlign: 'center',
+            }}>
+              <div style={{
+                width: 72, height: 72,
+                background: '#ffe082',
+                borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                margin: '0 auto 20px',
+              }}>
+                <i className="bi bi-info-circle-fill" style={{ fontSize: '2.2rem', color: '#b45309' }} />
+              </div>
+              <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: '#92400e', marginBottom: 16 }}>
+                {t('consent.resumed_title')}
+              </h1>
+              <p style={{ color: '#5c4400', lineHeight: 1.5, marginBottom: 12, fontSize: '1rem' }}>
+                {t('consent.resumed_subtitle', { email })}
+              </p>
+              <p style={{ color: '#5c4400', lineHeight: 1.5, fontSize: '0.92rem', marginBottom: 0 }}>
+                {t('consent.resumed_note')}
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    // Default "we sent your link" — fresh new session
     return (
       <div className="wizard-layout">
         {header}
         <div className="landing-hero">
           <img src={LOGO} alt="KIS" className="landing-logo" />
-          <h1 className="landing-title">{title}</h1>
-          <p className="landing-subtitle">{subtitle}</p>
+          <h1 className="landing-title">{t('consent.sent_title')}</h1>
+          <p className="landing-subtitle">{t('consent.sent_subtitle', { email })}</p>
           <div className="kis-card" style={{ maxWidth: 480, margin: '0 auto', textAlign: 'center' }}>
-            <i className={resumed ? 'bi bi-arrow-clockwise' : 'bi bi-envelope-check'} style={{ fontSize: '2.5rem', color: 'var(--teal-dk)' }} />
-            <p className="mt-3" style={{ color: 'var(--muted)' }}>{note}</p>
+            <i className="bi bi-envelope-check" style={{ fontSize: '2.5rem', color: 'var(--teal-dk)' }} />
+            <p className="mt-3" style={{ color: 'var(--muted)' }}>{t('consent.sent_note')}</p>
           </div>
         </div>
       </div>
