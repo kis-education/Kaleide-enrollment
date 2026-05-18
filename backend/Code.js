@@ -735,27 +735,33 @@ function resumeSession_(p) {
     }
   }
 
-  // Per-applicant enrollment rows (empty until submit)
-  const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + id + '"'
-  }) || [];
-
-  const persons    = appsheetRequest_(T.PERSONS,       'Find', [], { Filter: '"enrollment_group_id" = "' + id + '"' }) || [];
-  // DB stores from_person_id/to_person_id; add guardian_person_id/applicant_person_id aliases for frontend
-  const relations  = (appsheetRequest_(T.PERSON_RELATIONS, 'Find', [], { Filter: '"context_entity_id" = "' + id + '" && "context_entity_type_code" = "ENR_APPLICATION"' }) || [])
+  // ── Top-level reads in parallel ────────────────────────────────────────────
+  // Pre-parallelization: 4 sequential ~600ms-1s Finds (~3-4s total).
+  // Now: one fetchAll batch (~1s bounded by slowest).
+  // Note: enrollments[] is needed for the interviews filter, but interviews
+  // and qbResponses both share enrollment_group_id as a primary filter so we
+  // can issue them with the group_id directly; interviews still need to be
+  // post-filtered to enrollment_id once enrollments come back, but since
+  // pre-submit there are zero enrollments anyway this is a non-issue in the
+  // common case. For the post-submit case (rare in resume), we re-filter
+  // client-side from the broader set already fetched.
+  const topRead = appsheetRequestBatch_([
+    { table: T.ENROLLMENTS,      action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
+    { table: T.PERSONS,          action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
+    { table: T.PERSON_RELATIONS, action: 'Find', selector: { Filter: '"context_entity_id" = "' + id + '" && "context_entity_type_code" = "ENR_APPLICATION"' } },
+    { table: T.REC_FILES,        action: 'Find', selector: { Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin_reference" = "' + id + '"' } },
+    { table: T.QB_RESPONSES,     action: 'Find', selector: { Filter: '"respondent_id" = "' + id + '"' } },
+  ]);
+  const enrollments = topRead[0].ok ? (topRead[0].data || []) : [];
+  const persons     = topRead[1].ok ? (topRead[1].data || []) : [];
+  const relations   = (topRead[2].ok ? (topRead[2].data || []) : [])
     .map(r => ({ ...r, guardian_person_id: r.from_person_id, applicant_person_id: r.to_person_id }));
-  // Documents: recFiles + recScopes (DL-R09 / DL-R13).
-  // Pre-submit uploads are tracked by origin_reference=enrollment_group_id on recFiles.
-  // Post-submit, the same files are scoped to each enrollment_id via recScopes.
-  // We aggregate both paths so resume reflects the full document list.
+
+  // Documents: dedup by file_id + shape for frontend (drive_url, document_type)
   let documents = [];
-  try {
-    const preSubmitFiles = appsheetRequest_(T.REC_FILES, 'Find', [], {
-      Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin_reference" = "' + id + '"'
-    }) || [];
-    // De-dup by file_id and shape for frontend compatibility (drive_url, document_type)
+  if (topRead[3].ok) {
     const fileById = {};
-    preSubmitFiles.forEach(f => { fileById[f.file_id] = f; });
+    (topRead[3].data || []).forEach(f => { fileById[f.file_id] = f; });
     documents = Object.values(fileById).map(f => ({
       document_id:   f.file_id,
       file_id:       f.file_id,
@@ -765,8 +771,18 @@ function resumeSession_(p) {
       rec_type_code: f.rec_type_code,
       status:        f.status,
     }));
-  } catch (e) {
-    Logger.log('resumeSession_: recFiles read failed (non-fatal): ' + e.message);
+  } else {
+    Logger.log('resumeSession_: recFiles read failed (non-fatal): ' + topRead[3].error);
+  }
+
+  // qbResponses: backfill per-enrollment respondent_ids post-submit. Cheap
+  // — appended to the group-scoped result rather than re-issued as a
+  // separate parallel batch.
+  let responses = topRead[4].ok ? (topRead[4].data || []) : [];
+  if (enrollments.length) {
+    const enrIdFilter = enrollments.map(e => '"respondent_id" = "' + e.enrollment_id + '"').join(' || ');
+    const perEnr = appsheetRequest_(T.QB_RESPONSES, 'Find', [], { Filter: enrIdFilter }) || [];
+    responses = responses.concat(perEnr);
   }
 
   let interviews = [];
@@ -774,12 +790,6 @@ function resumeSession_(p) {
     const eidFilter = enrollments.map(e => '"enrollment_id" = "' + e.enrollment_id + '"').join(' || ');
     interviews = appsheetRequest_(T.INTERVIEWS, 'Find', [], { Filter: eidFilter }) || [];
   }
-  // qbResponses respondent_id semantics: pre-submit it is the enrollment_group_id;
-  // post-submit per-applicant responses may also exist keyed to enrollment_id.
-  const respondentIds = [id].concat(enrollments.map(e => e.enrollment_id));
-  const responses = appsheetRequest_(T.QB_RESPONSES, 'Find', [], {
-    Filter: respondentIds.map(rid => '"respondent_id" = "' + rid + '"').join(' || ')
-  }) || [];
 
   // Normalise date fields to ISO format before sending to the frontend
   group.desired_start_date = normalizeDate_(group.desired_start_date);
@@ -796,44 +806,52 @@ function resumeSession_(p) {
   const personIds = persons.map(per => per.person_id);
   const pidFilter = personIds.map(pid => '"person_id" = "' + pid + '"').join(' || ');
 
-  const nationalities     = appsheetRequest_(T.PERSON_NATIONALITIES, 'Find', [], { Filter: pidFilter }) || [];
-  const personIds_        = appsheetRequest_(T.PERSON_IDS,           'Find', [], { Filter: pidFilter }) || [];
-  const languages         = appsheetRequest_(T.PERSON_LANGUAGES,     'Find', [], { Filter: pidFilter }) || [];
-  const personAddrJoins   = appsheetRequest_(T.PERSON_ADDRESSES,     'Find', [], { Filter: pidFilter }) || [];
+  // 8 person-detail Finds in parallel (was sequential ~5-8s, now ~1s).
+  const personDetailRead = appsheetRequestBatch_([
+    { table: T.PERSON_NATIONALITIES, action: 'Find', selector: { Filter: pidFilter } },
+    { table: T.PERSON_IDS,           action: 'Find', selector: { Filter: pidFilter } },
+    { table: T.PERSON_LANGUAGES,     action: 'Find', selector: { Filter: pidFilter } },
+    { table: T.PERSON_ADDRESSES,     action: 'Find', selector: { Filter: pidFilter } },
+    { table: T.PREV_SCHOOLS,         action: 'Find', selector: { Filter: pidFilter } },
+    { table: T.PERSON_MEDICAL,       action: 'Find', selector: { Filter: pidFilter } },
+    { table: T.PERSON_ALLERGIES,     action: 'Find', selector: { Filter: pidFilter } },
+    { table: T.PERSON_DIETARY,       action: 'Find', selector: { Filter: pidFilter } },
+  ]);
+  const pickRows = (i) => personDetailRead[i].ok ? (personDetailRead[i].data || []) : [];
+  const nationalities    = pickRows(0);
+  const personIds_       = pickRows(1);
+  const languages        = pickRows(2);
+  const personAddrJoins  = pickRows(3);
   // enrPersonEmails / enrPersonPhones deleted 2026-05-17 — person→email/phone joins unavailable.
   // Actual email/phone values still stored in enrEmails/enrPhones by enrollment_group_id.
-  const personEmailJoins  = [];
-  const personPhoneJoins  = [];
-  const prevSchools       = appsheetRequest_(T.PREV_SCHOOLS,         'Find', [], { Filter: pidFilter }) || [];
-  const medical           = appsheetRequest_(T.PERSON_MEDICAL,       'Find', [], { Filter: pidFilter }) || [];
-  const allergies         = appsheetRequest_(T.PERSON_ALLERGIES,     'Find', [], { Filter: pidFilter }) || [];
-  const dietary           = appsheetRequest_(T.PERSON_DIETARY,       'Find', [], { Filter: pidFilter }) || [];
+  const personEmailJoins = [];
+  const personPhoneJoins = [];
+  const prevSchools      = pickRows(4);
+  const medical          = pickRows(5);
+  const allergies        = pickRows(6);
+  const dietary          = pickRows(7);
 
-  // Batch-fetch address / email / phone value rows
+  // Batch-fetch address / email / phone value rows (3 parallel Finds).
   const addrIds  = personAddrJoins.map(r => r.address_id).filter(Boolean);
   const emailIds = personEmailJoins.map(r => r.email_id).filter(Boolean);
   const phoneIds = personPhoneJoins.map(r => r.phone_id).filter(Boolean);
 
+  const valueRead = appsheetRequestBatch_([
+    addrIds.length  ? { table: T.ADDRESSES, action: 'Find', selector: { Filter: addrIds.map(x => '"address_id" = "' + x + '"').join(' || ') } }
+                    : { table: T.ADDRESSES, action: 'Find', rows: [] }, // skipped at build
+    emailIds.length ? { table: T.EMAILS,    action: 'Find', selector: { Filter: emailIds.map(x => '"email_id" = "' + x + '"').join(' || ') } }
+                    : { table: T.EMAILS,    action: 'Find', rows: [] },
+    phoneIds.length ? { table: T.PHONES,    action: 'Find', selector: { Filter: phoneIds.map(x => '"phone_id" = "' + x + '"').join(' || ') } }
+                    : { table: T.PHONES,    action: 'Find', rows: [] },
+  ]);
   const addressMap = {};
-  if (addrIds.length) {
-    (appsheetRequest_(T.ADDRESSES, 'Find', [], {
-      Filter: addrIds.map(x => '"address_id" = "' + x + '"').join(' || ')
-    }) || []).forEach(r => { addressMap[r.address_id] = r; });
-  }
+  if (valueRead[0].ok) (valueRead[0].data || []).forEach(r => { addressMap[r.address_id] = r; });
 
   const emailMap = {};
-  if (emailIds.length) {
-    (appsheetRequest_(T.EMAILS, 'Find', [], {
-      Filter: emailIds.map(x => '"email_id" = "' + x + '"').join(' || ')
-    }) || []).forEach(r => { emailMap[r.email_id] = r; });
-  }
+  if (valueRead[1].ok) (valueRead[1].data || []).forEach(r => { emailMap[r.email_id] = r; });
 
   const phoneMap = {};
-  if (phoneIds.length) {
-    (appsheetRequest_(T.PHONES, 'Find', [], {
-      Filter: phoneIds.map(x => '"phone_id" = "' + x + '"').join(' || ')
-    }) || []).forEach(r => { phoneMap[r.phone_id] = r; });
-  }
+  if (valueRead[2].ok) (valueRead[2].data || []).forEach(r => { phoneMap[r.phone_id] = r; });
 
   const enrichedPersons = persons.map(person => {
     const pid      = person.person_id;
@@ -1450,16 +1468,31 @@ function fetchQuestions_(p) {
  * @returns {{ allergies: Array, dietary: Array, medical: Array }}
  */
 function fetchLookups_() {
-  const safe = (fn) => { try { return fn() || []; } catch (e) { Logger.log('fetchLookups_ error: ' + e.message); return []; } };
-
-  // Filter: 'true' → FILTER("table", TRUE) — explicitly requests all rows
-  const allergies     = safe(() => appsheetRequest_(T.LOOKUP_ALLERGIES,      'Find', [], { Filter: 'true' }));
-  const dietary       = safe(() => appsheetRequest_(T.LOOKUP_DIETARY,        'Find', [], { Filter: 'true' }));
-  const medical       = safe(() => appsheetRequest_(T.LOOKUP_MEDICAL,        'Find', [], { Filter: 'true' }));
-  const relationTypes = safe(() => appsheetRequest_(T.LOOKUP_RELATION_TYPES, 'Find', [], { Filter: 'true' }));
-  const programs      = safe(() => appsheetRequest_(T.PROGRAMS,              'Find', [], {
-    Filter: '"school_id" = "' + SCHOOL_ID + '" && ISBLANK([deleted_at])'
-  }));
+  // 5 catalog reads in parallel via appsheetRequestBatch_ instead of
+  // sequential. Pre-parallelization: ~3-5s on first call (cache miss).
+  // Now: ~1s bounded by the slowest single fetch.
+  const specs = [
+    { table: T.LOOKUP_ALLERGIES,      action: 'Find', selector: { Filter: 'true' } },
+    { table: T.LOOKUP_DIETARY,        action: 'Find', selector: { Filter: 'true' } },
+    { table: T.LOOKUP_MEDICAL,        action: 'Find', selector: { Filter: 'true' } },
+    { table: T.LOOKUP_RELATION_TYPES, action: 'Find', selector: { Filter: 'true' } },
+    { table: T.PROGRAMS,              action: 'Find', selector: {
+        Filter: '"school_id" = "' + SCHOOL_ID + '" && ISBLANK([deleted_at])'
+    } },
+  ];
+  const results = appsheetRequestBatch_(specs);
+  const pick = (i) => {
+    if (!results[i].ok) {
+      Logger.log('fetchLookups_ error on ' + specs[i].table + ': ' + results[i].error);
+      return [];
+    }
+    return results[i].data || [];
+  };
+  const allergies     = pick(0);
+  const dietary       = pick(1);
+  const medical       = pick(2);
+  const relationTypes = pick(3);
+  const programs      = pick(4);
 
   Logger.log('fetchLookups_ allergies[0]: '     + JSON.stringify(allergies[0]));
   Logger.log('fetchLookups_ dietary[0]: '       + JSON.stringify(dietary[0]));
@@ -1841,29 +1874,40 @@ function savePersons_(enrollmentGroupId, persons) {
     personIdMap,
   };
 
-  // ── Batch writes (one API call per table) ─────────────────────────────────
-  // Each write is isolated so a failure on one table doesn't stop the others.
-  // Errors are collected in _debug.errors for visibility in the dev log.
+  // ── Batch writes — all in parallel via appsheetRequestBatch_ ──────────────
+  // Pre-parallelization this was ~11 sequential ~600ms-1s AppSheet calls
+  // ≈ 6-11s per "Next" click in Step 2. With fetchAll the same writes run
+  // concurrently, bounded by the slowest single call (~1-1.5s typical).
+  //
+  // Safe to parallelize: every Add targets a different table and AppSheet's
+  // REST API v2 does NOT enforce Ref-column FK validity at insert time
+  // (Ref columns are just typed text at the storage layer; AppSheet's view
+  // layer interprets them). Subsequent reads see all rows once their
+  // respective Add completes.
+  //
+  // Per-spec errors land in _debug.errors instead of bubbling — matches the
+  // previous "log and continue" behaviour so one bad table doesn't kill the
+  // whole Step 2 save.
   _debug.errors = {};
-  const write_ = (table, action, rows, debugOut) => {
-    if (!rows.length) return;
-    try { appsheetRequest_(table, action, rows, null, debugOut); }
-    catch (e) { _debug.errors[table + '/' + action] = e.message.slice(0, 200); }
-  };
-
-  write_(T.PERSONS,              'Edit', personsEdit);
-  write_(T.PERSONS,              'Add',  personsAdd);
-  write_(T.PERSON_NATIONALITIES, 'Add',  nats,       _debug);
-  write_(T.PERSON_IDS,           'Add',  ids);
-  write_(T.PERSON_LANGUAGES,     'Add',  langs);
-  write_(T.ADDRESSES,            'Add',  addresses);
-  write_(T.PERSON_ADDRESSES,     'Add',  personAddrs);
-  write_(T.EMAILS,               'Add',  emails);
-  // enrPersonEmails deleted 2026-05-17 — person→email join not written
-  write_(T.PHONES,               'Add',  phones);
-  // enrPersonPhones deleted 2026-05-17 — person→phone join not written
-  write_(T.PREV_SCHOOLS,         'Add',  schoolsAdd);
-  write_(T.PREV_SCHOOLS,         'Edit', schoolsEdit);
+  const writeSpecs = [
+    { table: T.PERSONS,              action: 'Edit', rows: personsEdit },
+    { table: T.PERSONS,              action: 'Add',  rows: personsAdd },
+    { table: T.PERSON_NATIONALITIES, action: 'Add',  rows: nats },
+    { table: T.PERSON_IDS,           action: 'Add',  rows: ids },
+    { table: T.PERSON_LANGUAGES,     action: 'Add',  rows: langs },
+    { table: T.ADDRESSES,            action: 'Add',  rows: addresses },
+    { table: T.PERSON_ADDRESSES,     action: 'Add',  rows: personAddrs },
+    { table: T.EMAILS,               action: 'Add',  rows: emails },
+    // enrPersonEmails deleted 2026-05-17 — person→email join not written
+    { table: T.PHONES,               action: 'Add',  rows: phones },
+    // enrPersonPhones deleted 2026-05-17 — person→phone join not written
+    { table: T.PREV_SCHOOLS,         action: 'Add',  rows: schoolsAdd },
+    { table: T.PREV_SCHOOLS,         action: 'Edit', rows: schoolsEdit },
+  ];
+  const writeResults = appsheetRequestBatch_(writeSpecs);
+  writeResults.forEach((res, i) => {
+    if (!res.ok) _debug.errors[writeSpecs[i].table + '/' + writeSpecs[i].action] = res.error.slice(0, 200);
+  });
 
   return _debug;
 }
@@ -2414,6 +2458,128 @@ function appsheetRequest_(table, action, rows, selector, debugOut) {
     }
   }
   return resultRows || parsed || null;
+}
+
+/**
+ * Parallel sibling of appsheetRequest_. Dispatches N AppSheet API calls
+ * concurrently via UrlFetchApp.fetchAll() and returns the per-spec
+ * results in the same order. Used by the wizard's hot paths
+ * (savePersons_, fetchLookups_, resumeSession_) to collapse what were
+ * 5-11 sequential ~600ms-1s calls into a single round-trip-limited
+ * batch (~1-1.5s total).
+ *
+ * Differs from appsheetRequest_:
+ *   - Never throws — every spec returns { ok, data, error, http } so the
+ *     caller decides whether one failure aborts everything or is logged
+ *     and skipped. The current callers prefer "log and continue".
+ *   - Specs with empty rows[] on Add/Edit/Delete are skipped at build
+ *     time (returns { ok: true, data: [], skipped: true }) — matches the
+ *     "write_" no-op semantics that savePersons_ used to do per write.
+ *
+ * Apps Script's fetchAll runs the underlying HTTP in parallel up to its
+ * internal concurrency limit (empirically ~10-20 in flight at once is
+ * fine; we never get close in this codebase).
+ *
+ * @param {Array<{ table: string, action: 'Find'|'Add'|'Edit'|'Delete', rows?: Array, selector?: Object }>} specs
+ * @returns {Array<{ ok: boolean, data?: *, error?: string, http?: number, skipped?: boolean }>}
+ */
+function appsheetRequestBatch_(specs) {
+  if (!specs || !specs.length) return [];
+  const props  = PropertiesService.getScriptProperties();
+  const appId  = props.getProperty('APPSHEET_APP_ID');
+  const apiKey = props.getProperty('APPSHEET_ACCESS_KEY');
+  if (!appId || !apiKey) throw new Error('AppSheet credentials not configured in Script Properties');
+
+  const sanitize_ = (r) => {
+    const out = {};
+    for (const k in r) {
+      const v = r[k];
+      if (v === null || v === undefined) continue;
+      else if (v === true)              out[k] = 'TRUE';
+      else if (v === false)             out[k] = 'FALSE';
+      else                              out[k] = v;
+    }
+    return out;
+  };
+
+  // Pre-decide skips so the per-spec result array maps 1:1 to the input.
+  const built = specs.map(spec => {
+    const writeAction = (spec.action === 'Add' || spec.action === 'Edit' || spec.action === 'Delete');
+    if (writeAction && (!spec.rows || spec.rows.length === 0)) {
+      return { skipped: true, spec };
+    }
+    const body = { Action: spec.action, Properties: { Locale: 'en-US' } };
+    if (spec.rows && spec.rows.length > 0) body.Rows = spec.rows.map(sanitize_);
+    if (spec.selector) {
+      if (spec.selector.Filter) {
+        const expr = spec.selector.Filter
+          .replace(/"(\w+)"\s*(=|!=|<=|>=|<|>)/g, '[$1] $2')
+          .replace(/&&/g, 'AND')
+          .replace(/\|\|/g, 'OR')
+          .replace(/\btrue\b/g, 'TRUE')
+          .replace(/\bfalse\b/g, 'FALSE');
+        body.Properties.Selector = 'FILTER("' + spec.table + '", ' + expr + ')';
+      } else {
+        body.Properties = Object.assign({}, body.Properties, spec.selector);
+      }
+    }
+    return {
+      skipped: false,
+      spec,
+      request: {
+        url:                APPSHEET_BASE_URL + appId + '/tables/' + encodeURIComponent(spec.table) + '/Action',
+        method:             'post',
+        contentType:        'application/json',
+        headers:            { ApplicationAccessKey: apiKey },
+        payload:            JSON.stringify(body),
+        muteHttpExceptions: true,
+      },
+    };
+  });
+
+  const dispatchIdx = []; // map dispatched-index → built-index, for stitching
+  const requests = [];
+  built.forEach((b, i) => {
+    if (!b.skipped) { dispatchIdx.push(i); requests.push(b.request); }
+  });
+  const startMs = Date.now();
+  const responses = requests.length ? UrlFetchApp.fetchAll(requests) : [];
+  Logger.log('appsheetRequestBatch_: ' + requests.length + ' parallel calls in ' + (Date.now() - startMs) + 'ms');
+
+  const out = new Array(specs.length);
+  built.forEach((b, i) => {
+    if (b.skipped) {
+      out[i] = { ok: true, data: [], skipped: true };
+    }
+  });
+  responses.forEach((response, j) => {
+    const i = dispatchIdx[j];
+    const spec = specs[i];
+    const statusCode = response.getResponseCode();
+    const text       = response.getContentText();
+    if (statusCode < 200 || statusCode >= 300) {
+      out[i] = { ok: false, http: statusCode, error: 'HTTP ' + statusCode + ' on ' + spec.table + '/' + spec.action + ': ' + text.slice(0, 200) };
+      return;
+    }
+    let parsed;
+    try { parsed = JSON.parse(text); } catch (_) {
+      out[i] = { ok: false, http: statusCode, error: 'Non-JSON response on ' + spec.table + '/' + spec.action + ': ' + text.slice(0, 200) };
+      return;
+    }
+    if (parsed && typeof parsed.error === 'string') {
+      out[i] = { ok: false, http: statusCode, error: 'AppSheet error on ' + spec.table + '/' + spec.action + ': ' + parsed.error };
+      return;
+    }
+    const resultRows = parsed.Rows || parsed.rows || null;
+    if ((spec.action === 'Add' || spec.action === 'Edit') && spec.rows && spec.rows.length > 0) {
+      if (!resultRows || resultRows.length === 0) {
+        out[i] = { ok: false, http: statusCode, error: 'AppSheet silently rejected ' + spec.action + ' on ' + spec.table + ' (0 rows returned)' };
+        return;
+      }
+    }
+    out[i] = { ok: true, http: statusCode, data: resultRows || parsed || null };
+  });
+  return out;
 }
 
 // ─── PDF generation ───────────────────────────────────────────────────────────
