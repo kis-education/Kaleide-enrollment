@@ -2829,6 +2829,90 @@ function getOrCreateDriveFolder_(name) {
 
 
 /**
+ * One-shot maintenance: marks pre-existing orphan sessions as abandoned.
+ *
+ * Run MANUALLY from the Apps Script editor (Run → adminCleanupOrphanSessions)
+ * once, after deploying the single-session policy (commit c8b4cc7). It
+ * sweeps enrEnrollmentGroups for rows that:
+ *
+ *   - have no submitted_at  (never finished)
+ *   - have no abandoned_at  (not yet marked)
+ *   - are older than 30 days OR are duplicates of the same email
+ *
+ * and stamps abandoned_at = now on each. Future initEnrollmentSession_
+ * calls then bypass them cleanly.
+ *
+ * Why 30 days (vs the 7-day resumeSession_ TTL):
+ *   The TTL prevents new resumes but the rows still appear in
+ *   sendMagicLink_'s by-email path until abandoned. A 30-day cutoff is
+ *   conservative — old enough to be confidently dead, recent enough that
+ *   genuine multi-week-old sessions aren't surprise-killed if a family
+ *   reaches out to admisiones@.
+ *
+ * Why duplicates of same email:
+ *   The new policy collapses to one open per email. Existing duplicates
+ *   from before the policy must be reduced to one. Keeps the oldest
+ *   non-abandoned row (most likely the one with actual progress);
+ *   marks the rest.
+ *
+ * Returns a summary { scanned, abandoned, kept } and logs each row id.
+ * Safe to re-run — idempotent (skips already-abandoned rows).
+ */
+function adminCleanupOrphanSessions_() {
+  const now = new Date();
+  const CUTOFF_MS = 30 * 24 * 60 * 60 * 1000;
+  const all = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {}) || [];
+  const open = all.filter(g => !g.submitted_at && !g.abandoned_at);
+
+  // Group by email to detect duplicates
+  const byEmail = {};
+  open.forEach(g => {
+    const k = (g.primary_email || '').toLowerCase().trim();
+    if (!k) return;
+    (byEmail[k] = byEmail[k] || []).push(g);
+  });
+
+  const toAbandon = [];
+  const kept = [];
+
+  Object.keys(byEmail).forEach(email => {
+    const sessions = byEmail[email].sort((a, b) =>
+      new Date(a.created_at) - new Date(b.created_at)
+    );
+    // Keep the OLDEST (most likely to have real progress); mark others
+    sessions.forEach((s, i) => {
+      const age = now.getTime() - new Date(s.created_at).getTime();
+      if (i === 0 && age <= CUTOFF_MS) {
+        kept.push(s);
+      } else {
+        toAbandon.push(s);
+      }
+    });
+  });
+
+  toAbandon.forEach(s => {
+    try {
+      appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+        enrollment_group_id: s.enrollment_group_id,
+        abandoned_at:        now.toISOString(),
+        updated_at:          now.toISOString(),
+      }]);
+      Logger.log('abandoned: ' + s.enrollment_group_id + ' email=' + s.primary_email + ' age_days=' + Math.round((now - new Date(s.created_at)) / 86400000));
+    } catch (e) {
+      Logger.log('FAILED to abandon ' + s.enrollment_group_id + ': ' + e.message);
+    }
+  });
+
+  const summary = {
+    scanned:   open.length,
+    abandoned: toAbandon.length,
+    kept:      kept.length,
+  };
+  Logger.log('adminCleanupOrphanSessions_ summary: ' + JSON.stringify(summary));
+  return summary;
+}
+
+/**
  * Diagnostic: tests Find on every enr* and sys* table used by the wizard.
  * Returns http_status + body_length per table so misconfigurations are visible.
  */
