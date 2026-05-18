@@ -1045,20 +1045,28 @@ function submitEnrollmentSession_(p) {
   if (!group) throw new Error('Enrollment group not found');
 
   // ── Resolve the initial state (RQ = Requested) ─────────────────────────────
-  // Diego report 2026-05-19: previously when sysStates_T was missing the
-  // RQ row for this tenant + entity_type, rqStateId came back null and
-  // AppSheet silently fell back to its default state (typically the first
-  // active state in display_order, which for KIS happens to be IN). The
-  // enrollment ended up "stuck in Inicial" with no transition log entry.
-  // Fail-fast now: a missing initial state is a configuration bug, not
-  // something to paper over with silent defaults.
-  const statusTypes = appsheetRequest_(T.STATES_T, 'Find', [], {
-    Filter: '"state_code" = "RQ" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
-  });
-  const rqStateRow = statusTypes && statusTypes[0];
+  // Diego 2026-05-19 found that the AppSheet multi-AND filter on sysStates_T
+  // wasn't selecting the right row: the wizard wrote to_state_id = UUID of IN
+  // (a70e878a-...) into sysStateTransitionLog instead of UUID of RQ
+  // (6e434294-...). Root cause: AppSheet's Selector expression parser
+  // misbehaves with three chained "[col] = value AND [col] = value AND [col] = value"
+  // — it appears to ignore the filter and return the full table. statusTypes[0]
+  // then picks the first row by display_order, which for KIS is IN.
+  //
+  // Switching to fetch-all-then-filter in memory. For sysStates_T this is
+  // ~10 rows so the cost is negligible. Safer than depending on a filter
+  // parser quirk.
+  const allStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
+  const rqStateRow = allStates.find(r =>
+    r.school_id === SCHOOL_ID &&
+    r.entity_type_code === 'ENR_APPLICATION' &&
+    r.state_code === 'RQ' &&
+    !r.deleted_at
+  );
   if (!rqStateRow || !rqStateRow.state_id) {
     Logger.log('submitEnrollmentSession_: sysStates_T has no RQ row for school=' + SCHOOL_ID +
-               ' entity_type=ENR_APPLICATION. Filter returned ' + (statusTypes ? statusTypes.length : 0) + ' rows.');
+               ' entity_type=ENR_APPLICATION. Total rows scanned: ' + allStates.length +
+               '. state_codes seen: ' + allStates.filter(r => r.school_id === SCHOOL_ID).map(r => r.state_code).join(','));
     throw new Error(
       'Configuration error: sysStates_T is missing an active row with state_code="RQ" + ' +
       'entity_type_code="ENR_APPLICATION" for school "' + SCHOOL_ID + '". ' +
@@ -1066,6 +1074,7 @@ function submitEnrollmentSession_(p) {
     );
   }
   const rqStateId = rqStateRow.state_id;
+  Logger.log('submitEnrollmentSession_: resolved RQ state_id=' + rqStateId);
 
   // ── Fetch persons captured in this group ───────────────────────────────────
   const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
@@ -2968,11 +2977,16 @@ function promoteEnrollment_(p) {
   }
 
   // ── Log promotion as a state transition on the enrollment ──────────────────
-  const promotedStateRows = appsheetRequest_(T.STATES_T, 'Find', [], {
-    Filter: '"state_code" = "PROMOTED" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
-  });
-  const promotedStateId = promotedStateRows && promotedStateRows[0]
-    ? promotedStateRows[0].state_id : null;
+  // In-memory filter (same reason as submitEnrollmentSession_ RQ lookup):
+  // AppSheet's 3-condition AND filter doesn't reliably select the row.
+  const allPromotedStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
+  const promotedStateRow = allPromotedStates.find(r =>
+    r.school_id === SCHOOL_ID &&
+    r.entity_type_code === 'ENR_APPLICATION' &&
+    r.state_code === 'PROMOTED' &&
+    !r.deleted_at
+  );
+  const promotedStateId = promotedStateRow ? promotedStateRow.state_id : null;
   if (promotedStateId) {
     appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
       log_id:             generateUuid_(),
