@@ -21,11 +21,6 @@ const SCHOOL_ID          = 'KIS';
 const ADMISSIONS_EMAIL   = 'admissions@kaleide.org';
 const RESUME_BASE_URL    = 'https://admissions.kaleide.org/#/resume/';
 const REPORT_BASE_URL    = 'https://admissions.kaleide.org/#/report/';
-// State machine entity type per DL-E15 (was 'ENR_APPLICATION' pre-DL-E15;
-// canonical name is 'ENR_ADMISSION_SCHOOL' — the wizard is one
-// program-type instance of the broader enrollment framework).
-// Used in sysStates_T / sysStateTransitionLog / sysConsentsLog filters and writes.
-const ENR_ENTITY_TYPE_CODE = 'ENR_ADMISSION_SCHOOL';
 const LOGO_URL           = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 const APPSHEET_BASE_URL  = 'https://api.appsheet.com/api/v2/apps/';
 
@@ -58,7 +53,7 @@ const QB_ADAPTATION_NOTES_ID = 'a1b2c3d4-0023-0000-0000-000000000000';
 //   - `sysStates_T`             (universal state catalog; entity_type_code='ENR_ADMISSION_SCHOOL')
 //
 // Stage-1 notes:
-//   - sysStates_T: entity_type_code='ENR_ADMISSION_SCHOOL' (DL-E15). PK=state_id, code field=state_code.
+//   - sysStates_T: entity_type_code='ENR_APPLICATION'. PK=state_id, code field=state_code.
 //   - sysStateTransitionLog: polymorphic on entity_type_code+entity_id. DL-S37.
 //   - sysConsentsLog: polymorphic on entity_type_code+entity_id. Signer via signer_table+signer_id. DL-S44.
 //   - sysPersonRelations: polymorphic via context_entity_type_code+context_entity_id. DL-S45.
@@ -70,7 +65,7 @@ const T = {
   PROGRAMS:             'enrPrograms',           // new — admission programme catalog
   PROGRAM_TYPES:        'enrProgramTypes',       // new
   ENROLLMENT_SOURCES:   'enrEnrollmentSources',  // rename of enrApplicationSources
-  STATES_T:             'sysStates_T',           // universal state catalog (entity_type_code='ENR_ADMISSION_SCHOOL' per DL-E15)
+  STATES_T:             'sysStates_T',           // universal state catalog (entity_type_code='ENR_APPLICATION')
   STATE_TRANSITION_LOG: 'sysStateTransitionLog', // polymorphic state log (DL-S37)
   CONSENTS_LOG:         'sysConsentsLog',         // polymorphic consents log (DL-S44)
   PERSONS:              'enrPersons',
@@ -960,7 +955,7 @@ function saveStep_(p) {
       // status_code is supplied. Uses sysStates_T + sysStateTransitionLog (DL-S37).
       if (payload.status_code) {
         const newStateRows = appsheetRequest_(T.STATES_T, 'Find', [], {
-          Filter: '"state_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "' + ENR_ENTITY_TYPE_CODE + '"'
+          Filter: '"state_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
         });
         const newStateId = newStateRows && newStateRows[0]
           ? newStateRows[0].state_id : null;
@@ -972,7 +967,7 @@ function saveStep_(p) {
             appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
               log_id:              generateUuid_(),
               school_id:           SCHOOL_ID,
-              entity_type_code:    ENR_ENTITY_TYPE_CODE,
+              entity_type_code:    'ENR_APPLICATION',
               entity_id:           enr.enrollment_id,
               transition_id:       null,
               from_state_id:       enr.current_state_id || null,
@@ -1051,7 +1046,7 @@ function submitEnrollmentSession_(p) {
 
   // ── Resolve the initial state (RQ = Requested) ─────────────────────────────
   const statusTypes = appsheetRequest_(T.STATES_T, 'Find', [], {
-    Filter: '"state_code" = "RQ" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "' + ENR_ENTITY_TYPE_CODE + '"'
+    Filter: '"state_code" = "RQ" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
   });
   const rqStateId = (statusTypes && statusTypes[0]) ? statusTypes[0].state_id : null;
 
@@ -1109,7 +1104,7 @@ function submitEnrollmentSession_(p) {
       appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
         log_id:             generateUuid_(),
         school_id:          SCHOOL_ID,
-        entity_type_code:   ENR_ENTITY_TYPE_CODE,
+        entity_type_code:   'ENR_APPLICATION',
         entity_id:          enrollmentId,
         transition_id:      null,
         from_state_id:      null,
@@ -1168,7 +1163,7 @@ function submitEnrollmentSession_(p) {
       consentRows.push({
         consent_id:             generateUuid_(),
         school_id:              SCHOOL_ID,
-        entity_type_code:       ENR_ENTITY_TYPE_CODE,
+        entity_type_code:       'ENR_APPLICATION',
         entity_id:              eid,
         signer_table:           'enrPersons',
         signer_id:              signerPersonId,
@@ -2954,7 +2949,7 @@ function promoteEnrollment_(p) {
 
   // ── Log promotion as a state transition on the enrollment ──────────────────
   const promotedStateRows = appsheetRequest_(T.STATES_T, 'Find', [], {
-    Filter: '"state_code" = "PROMOTED" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "' + ENR_ENTITY_TYPE_CODE + '"'
+    Filter: '"state_code" = "PROMOTED" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
   });
   const promotedStateId = promotedStateRows && promotedStateRows[0]
     ? promotedStateRows[0].state_id : null;
@@ -2962,7 +2957,7 @@ function promoteEnrollment_(p) {
     appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
       log_id:             generateUuid_(),
       school_id:          SCHOOL_ID,
-      entity_type_code:   ENR_ENTITY_TYPE_CODE,
+      entity_type_code:   'ENR_APPLICATION',
       entity_id:          targetId,
       transition_id:      null,
       from_state_id:      enrRow.current_state_id || null,
