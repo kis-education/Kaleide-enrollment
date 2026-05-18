@@ -193,6 +193,48 @@ function doPost(e) {
   }
 }
 
+// ─── Security helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Rate-limit + abuse-report gate for any code path that sends a magic link
+ * email. Two layers:
+ *
+ *   - HARD BLOCK: if an email has been reported as "unsolicited" via the
+ *     reportUnsolicited action, all magic links to it are blocked for
+ *     ~6 hours (ScriptCache TTL). The cache key 'magic_blocked_<email>' is
+ *     set by reportUnsolicited_.
+ *   - RATE LIMIT: max 3 sends / email / hour. Sliding window via
+ *     ScriptCache counter ('magic_count_<email>'). The 4th send within the
+ *     window throws and is not sent.
+ *
+ * Both checks use ScriptCache (not UserCache) because the caller may be
+ * anonymous and we want the limit to apply across all sessions.
+ *
+ * Throws on block; caller may catch and decide whether to surface the
+ * error or swallow it (responding 200 anyway to avoid leaking which emails
+ * are blocked — anti-enumeration).
+ *
+ * @param {string} email - already lowercased + trimmed
+ */
+function _checkMagicLinkRateLimit_(email) {
+  if (!email) return;
+  const cache = CacheService.getScriptCache();
+  const blockKey = 'magic_blocked_' + Utilities.base64EncodeWebSafe(email);
+  if (cache.get(blockKey)) {
+    const err = new Error('Magic link sending is temporarily blocked for this address');
+    err.code = 'BLOCKED_BY_REPORT';
+    throw err;
+  }
+  const countKey = 'magic_count_' + Utilities.base64EncodeWebSafe(email);
+  const count = parseInt(cache.get(countKey) || '0', 10);
+  if (count >= 3) {
+    const err = new Error('Too many magic-link requests for this email; try again in 1 hour');
+    err.code = 'RATE_LIMITED';
+    throw err;
+  }
+  cache.put(countKey, String(count + 1), 3600); // 1h TTL — sliding within window
+}
+
 // ─── Action handlers ──────────────────────────────────────────────────────────
 
 /**
@@ -294,6 +336,13 @@ function initEnrollmentSession_(p) {
   // still shows and requires the consent checkbox; the audit-trail row is
   // created when submitEnrollmentSession_ runs, one consent per enrollment.
 
+  // Rate-limit + abuse-report gate. Run BEFORE actually sending.
+  // Throws on block — propagates to the doPost handler which returns 4xx.
+  // Note: the session header row above was already inserted (we have an
+  // enrollment_group_id). Throwing here leaves an orphan row, but the
+  // resume_token is never delivered to the attacker so it is effectively
+  // unreachable. Acceptable trade-off.
+  _checkMagicLinkRateLimit_((p.primary_email || '').toLowerCase().trim());
   sendMagicLinkEmail_(p.primary_email, resumeToken, lang, true);
   sendInternalEmail_(
     '[KIS Admissions] New enrollment session started',
@@ -430,6 +479,7 @@ function sendMagicLink_(p) {
     });
     const grp = rows && rows[0];
     if (!grp) throw new Error('Enrollment group not found');
+    _checkMagicLinkRateLimit_((grp.primary_email || '').toLowerCase().trim());
     sendMagicLinkEmail_(grp.primary_email, grp.resume_token, grp.preferred_language || 'es');
   } else if (p.primary_email) {
     // Find all non-submitted sessions for this email
@@ -437,6 +487,7 @@ function sendMagicLink_(p) {
       Filter: '"primary_email" = "' + p.primary_email + '" && ISBLANK([submitted_at])'
     });
     if (!rows || !rows.length) throw new Error('Enrollment group not found');
+    _checkMagicLinkRateLimit_(p.primary_email.toLowerCase().trim());
     const grps = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     const lang = grps[0].preferred_language || 'es';
     const tokens = grps.map(g => g.resume_token);
