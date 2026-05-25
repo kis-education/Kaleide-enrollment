@@ -89,7 +89,7 @@ const handleNext = async (stepKey, data) => {
       catch (_) { /* errors handled inside the save promise */ }
     }
 
-    const needsSave = !!(enrollmentGroupId && stepKey && isStepDirty(stepKey));
+    const needsSave = !!(enrollmentGroupId && stepKey && isStepDirty(stepKey, data));
     if (!needsSave && enrollmentGroupId && stepKey) {
       log.info(`WizardPage: step "${stepKey}" not dirty, skipping saveStep`);
     }

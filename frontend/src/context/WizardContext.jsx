@@ -162,9 +162,13 @@ export function WizardProvider({ children }) {
    * check returns TRUE, which is a false positive — benign, we just do
    * an unnecessary save. Worst case is the current behaviour.
    */
-  const isStepDirty = useCallback((stepKey) => {
+  // `data` is optional: if provided, compare it directly against the baseline
+  // (avoids the React batching problem where updateStep() and onNext() are called
+  // in the same tick — the state update hasn't committed yet, so stepData[stepKey]
+  // would still be stale). Callers that have the fresh data should always pass it.
+  const isStepDirty = useCallback((stepKey, data) => {
     try {
-      const cur  = stepData[stepKey];
+      const cur  = data !== undefined ? data : stepData[stepKey];
       const base = savedBaseline[stepKey];
       return JSON.stringify(cur) !== JSON.stringify(base);
     } catch (_) {
