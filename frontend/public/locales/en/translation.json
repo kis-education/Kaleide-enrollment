@@ -256,6 +256,8 @@
   "error.invalid_code": "Please enter the 6-digit code.",
   "error.guardian_required": "Please complete at least one guardian.",
   "error.applicant_required": "Please complete at least one applicant.",
+  "error.person_name_required": "{{name}} must have a first and last name.",
+  "error.relation_type_required": "Please select a relationship type for all guardians.",
   "error.esig_required": "Please sign with your full name.",
   "error.consent_required": "Please accept all required consents.",
   "error.recaptcha_failed": "Security check failed. Please try again.",

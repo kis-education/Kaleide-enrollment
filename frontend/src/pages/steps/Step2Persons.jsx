@@ -574,13 +574,25 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
   };
 
   const handleNext = () => {
-    if (!guardians[0]?.first_name || !guardians[0]?.last_name) {
+    if (!guardians.length) {
       setErr(t('error.guardian_required'));
       return;
     }
-    if (!applicants[0]?.first_name || !applicants[0]?.last_name) {
+    if (!applicants.length) {
       setErr(t('error.applicant_required'));
       return;
+    }
+    // Every person must have first_name + last_name
+    for (const p of persons) {
+      if (!p.first_name?.trim() || !p.last_name?.trim()) {
+        const sameType = persons.filter(x => x.person_type_id === p.person_type_id);
+        const idx = sameType.indexOf(p) + 1;
+        const label = p.person_type_id === 'applicant'
+          ? t('applicant.title', { n: idx })
+          : t('guardian.title', { n: idx });
+        setErr(t('error.person_name_required', { name: label }));
+        return;
+      }
     }
     setErr('');
     let firstGuardianDone = false;

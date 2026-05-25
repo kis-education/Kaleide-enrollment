@@ -92,7 +92,8 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock }) {
       (r.is_custodial || r.is_pick_up_authorized)
     );
   });
-  const validationOk = uncoveredApplicants.length === 0;
+  const missingRelationType = relations.some(r => r._kind === 'ga' && !r.relation_type_id);
+  const validationOk = uncoveredApplicants.length === 0 && !missingRelationType;
 
   const handleNext = () => {
     if (relations.length > 0 && !validationOk) return;
@@ -146,6 +147,12 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock }) {
           <i className="bi bi-exclamation-triangle-fill me-2" />
           {uncoveredApplicants.map(a => [a.first_name, a.last_name].filter(Boolean).join(' ') || t('applicant.unnamed')).join(', ')}
           {': '}{t('error.custodial_required')}
+        </div>
+      )}
+      {!locked && missingRelationType && (
+        <div className="field-error mb-3">
+          <i className="bi bi-exclamation-triangle-fill me-2" />
+          {t('error.relation_type_required')}
         </div>
       )}
 

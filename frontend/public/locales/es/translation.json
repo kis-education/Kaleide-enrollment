@@ -261,6 +261,8 @@
   "error.invalid_code": "Por favor, introduce el código de 6 dígitos.",
   "error.guardian_required": "Por favor, completa al menos un tutor.",
   "error.applicant_required": "Por favor, completa al menos un alumno.",
+  "error.person_name_required": "{{name}} debe tener nombre y apellidos.",
+  "error.relation_type_required": "Selecciona el tipo de relación para todos los tutores.",
   "error.esig_required": "Por favor, firma con tu nombre completo.",
   "error.consent_required": "Por favor, acepta todos los consentimientos requeridos.",
   "error.recaptcha_failed": "La verificación de seguridad ha fallado. Por favor, inténtalo de nuevo.",
