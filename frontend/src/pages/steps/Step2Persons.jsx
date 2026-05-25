@@ -582,7 +582,18 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
       return;
     }
     setErr('');
-    const transformed = persons.map(transformPersonForSave);
+    const transformed = persons.map(transformPersonForSave).map(p => {
+      if (p.person_type_id === 'guardian' && primaryEmail) {
+        const alreadyHas = (p.emails || []).some(e => e.email_address === primaryEmail);
+        if (!alreadyHas) {
+          return {
+            ...p,
+            emails: [{ email_address: primaryEmail, is_default: true }, ...(p.emails || [])],
+          };
+        }
+      }
+      return p;
+    });
     updateStep('persons', transformed);
     onNext('persons', transformed);
   };
