@@ -1866,6 +1866,14 @@ function savePersons_(enrollmentGroupId, persons) {
   const now = new Date().toISOString();
   const personAddressIds = {}; // personId/uid → addressId, for copy resolution
 
+  // Fetch person_ids that actually exist in AppSheet for this group.
+  // Used to distinguish true Edit (row exists) from phantom IDs (frontend
+  // stamped an ID from a previous failed Add — must retry as Add).
+  const existingPersonRows = appsheetRequest_(T.PERSONS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+  }) || [];
+  const existingPersonIds = new Set(existingPersonRows.map(function(r) { return r.person_id; }));
+
   // Accumulate all rows first, then batch-write per table to stay within
   // AppSheet's API bandwidth quota (one call per table instead of one per person).
   const personsAdd  = [], personsEdit  = [];
@@ -1900,7 +1908,7 @@ function savePersons_(enrollmentGroupId, persons) {
       place_of_birth: person.place_of_birth || null,
       gender:         person.gender         || null,
     };
-    if (person.person_id) {
+    if (person.person_id && existingPersonIds.has(person.person_id)) {
       personsEdit.push(baseRow);
     } else {
       personsAdd.push({ ...baseRow, created_at: now });
