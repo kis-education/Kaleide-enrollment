@@ -111,6 +111,14 @@ export function WizardProvider({ children }) {
       return next;
     });
   }, []);
+  // True once hydrateFromResume detects submitted_at IS NOT NULL.
+  // Drives read-only wizard mode: fields locked, no saves, no abandon.
+  const [isSubmitted, setIsSubmittedRaw] = useState(session.isSubmitted || false);
+  const setIsSubmitted = useCallback((val) => {
+    setIsSubmittedRaw(val);
+    saveSession({ isSubmitted: val });
+  }, []);
+
   // D-E18: recognition result from initEnrollmentSession. Survives reloads via
   // sessionStorage so Step2 can show the "we recognised your family" banner
   // even after the family resumes from magic link.
@@ -147,6 +155,7 @@ export function WizardProvider({ children }) {
     setRecognitionRaw({ matched: false, persons: [] });
     setCompletedStepsRaw(new Set());
     setSavedBaseline(initialStepData);
+    setIsSubmittedRaw(false);
   }, []);
 
   /**
@@ -232,6 +241,7 @@ export function WizardProvider({ children }) {
     // steps locked for the LockedBanner unlock-to-edit pattern). Submitted
     // sessions always go straight to Review (step 6).
     const submitted = !!group.submitted_at;
+    if (submitted) setIsSubmitted(true);
     const hasGuardians     = persons.some(p => p.person_type_id === 'guardian');
     const hasApplicants    = persons.some(p => p.person_type_id === 'applicant');
     const hasStartDate     = !!group.desired_start_date;
@@ -277,6 +287,7 @@ export function WizardProvider({ children }) {
       isStepDirty, markStepSaved,
       setPendingSave, awaitPendingSave, hasPendingSave,
       hydrateFromResume, clearSession,
+      isSubmitted,
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>
       {children}

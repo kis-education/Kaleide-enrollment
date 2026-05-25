@@ -113,7 +113,7 @@ export default function LandingPage() {
                 {t('consent.already_submitted_title')}
               </h1>
               <p style={{ color: '#2e4a2f', lineHeight: 1.5, marginBottom: 12, fontSize: '1rem' }}>
-                {t('consent.already_submitted_subtitle', { email })}
+                {t('consent.already_submitted_subtitle_sent', { email })}
               </p>
               <p style={{ color: '#2e4a2f', lineHeight: 1.5, fontSize: '0.92rem', marginBottom: 0 }}>
                 {t('consent.already_submitted_note')}

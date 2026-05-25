@@ -40,7 +40,7 @@ export default function Step7Review({ onBack }) {
   const { t, i18n }  = useTranslation();
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
-  const { enrollmentGroupId, stepData, awaitPendingSave, hasPendingSave } = useWizard();
+  const { enrollmentGroupId, stepData, awaitPendingSave, hasPendingSave, isSubmitted } = useWizard();
 
   const { email, persons, documents } = stepData;
   const guardians  = (persons || []).filter(p => p.person_type_id === 'guardian');
@@ -160,75 +160,90 @@ export default function Step7Review({ onBack }) {
         )}
       </div>
 
-      {/* Legal / GDPR */}
-      <div className="kis-card mt-3">
-        <h3 style={{ color: 'var(--teal-dk)', marginTop: 0, fontSize: '1rem' }}>{t('step7.legal_title')}</h3>
+      {isSubmitted ? (
+        /* Read-only mode: application already submitted */
+        <div className="kis-card mt-3" style={{ textAlign: 'center', padding: '32px 20px' }}>
+          <i className="bi bi-check-circle-fill" style={{ fontSize: '2.8rem', color: '#2e7d32' }} />
+          <h3 style={{ color: '#1b5e20', marginTop: 16, marginBottom: 8 }}>
+            {t('step7.submitted_title')}
+          </h3>
+          <p style={{ color: '#2e4a2f', marginBottom: 0, maxWidth: 440, margin: '0 auto' }}>
+            {t('step7.submitted_note')}
+          </p>
+        </div>
+      ) : (
+        /* Active mode: consent form + submit */
+        <>
+          <div className="kis-card mt-3">
+            <h3 style={{ color: 'var(--teal-dk)', marginTop: 0, fontSize: '1rem' }}>{t('step7.legal_title')}</h3>
 
-        <div className="consent-block">
-          <p className="consent-text">
-            <strong>EN:</strong> {CONSENT_TEXTS.gdpr.en}
-          </p>
-          <p className="consent-text">
-            <strong>ES:</strong> {CONSENT_TEXTS.gdpr.es}
-          </p>
-          <div className="form-check">
-            <input type="checkbox" className="form-check-input" id="consent_gdpr"
-              checked={consentGdpr} onChange={e => setConsentGdpr(e.target.checked)} />
-            <label className="form-check-label fw-semibold" htmlFor="consent_gdpr">
-              {t('consent.gdpr_accept')}
-            </label>
+            <div className="consent-block">
+              <p className="consent-text">
+                <strong>EN:</strong> {CONSENT_TEXTS.gdpr.en}
+              </p>
+              <p className="consent-text">
+                <strong>ES:</strong> {CONSENT_TEXTS.gdpr.es}
+              </p>
+              <div className="form-check">
+                <input type="checkbox" className="form-check-input" id="consent_gdpr"
+                  checked={consentGdpr} onChange={e => setConsentGdpr(e.target.checked)} />
+                <label className="form-check-label fw-semibold" htmlFor="consent_gdpr">
+                  {t('consent.gdpr_accept')}
+                </label>
+              </div>
+            </div>
+
+            <div className="consent-block">
+              <p className="consent-text">
+                <strong>EN:</strong> {CONSENT_TEXTS.legal.en}
+              </p>
+              <p className="consent-text">
+                <strong>ES:</strong> {CONSENT_TEXTS.legal.es}
+              </p>
+              <div className="form-check">
+                <input type="checkbox" className="form-check-input" id="consent_legal"
+                  checked={consentLegal} onChange={e => setConsentLegal(e.target.checked)} />
+                <label className="form-check-label fw-semibold" htmlFor="consent_legal">
+                  {t('consent.legal_accept')}
+                </label>
+              </div>
+            </div>
+
+            {/* E-signature */}
+            <div className="mt-4">
+              <label className="form-label fw-semibold">{t('step7.esig_label')}</label>
+              <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: 8 }}>
+                {t('step7.esig_instructions')}
+              </p>
+              <input
+                type="text"
+                className="esig-field"
+                value={esig}
+                onChange={e => setEsig(e.target.value)}
+                placeholder={t('step7.esig_placeholder')}
+              />
+            </div>
           </div>
-        </div>
 
-        <div className="consent-block">
-          <p className="consent-text">
-            <strong>EN:</strong> {CONSENT_TEXTS.legal.en}
-          </p>
-          <p className="consent-text">
-            <strong>ES:</strong> {CONSENT_TEXTS.legal.es}
-          </p>
-          <div className="form-check">
-            <input type="checkbox" className="form-check-input" id="consent_legal"
-              checked={consentLegal} onChange={e => setConsentLegal(e.target.checked)} />
-            <label className="form-check-label fw-semibold" htmlFor="consent_legal">
-              {t('consent.legal_accept')}
-            </label>
+          {err && <div className="field-error mt-3 p-3 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
+
+          <div className="d-flex justify-content-between mt-4">
+            <button className="btn-secondary-kis" onClick={onBack} disabled={submitting}>
+              <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
+            </button>
+            <button className="btn-primary-kis" onClick={handleSubmit} disabled={submitting}>
+              {submitting
+                ? <><span className="spinner-border spinner-border-sm me-2" />{t('step7.submitting')}</>
+                : <><i className="bi bi-send me-1" />{t('step7.submit')}</>
+              }
+            </button>
           </div>
-        </div>
 
-        {/* E-signature */}
-        <div className="mt-4">
-          <label className="form-label fw-semibold">{t('step7.esig_label')}</label>
-          <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: 8 }}>
-            {t('step7.esig_instructions')}
+          <p style={{ textAlign: 'center', fontSize: '0.75rem', color: 'var(--muted)', marginTop: 12 }}>
+            {t('step7.recaptcha_notice')}
           </p>
-          <input
-            type="text"
-            className="esig-field"
-            value={esig}
-            onChange={e => setEsig(e.target.value)}
-            placeholder={t('step7.esig_placeholder')}
-          />
-        </div>
-      </div>
-
-      {err && <div className="field-error mt-3 p-3 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
-
-      <div className="d-flex justify-content-between mt-4">
-        <button className="btn-secondary-kis" onClick={onBack} disabled={submitting}>
-          <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
-        </button>
-        <button className="btn-primary-kis" onClick={handleSubmit} disabled={submitting}>
-          {submitting
-            ? <><span className="spinner-border spinner-border-sm me-2" />{t('step7.submitting')}</>
-            : <><i className="bi bi-send me-1" />{t('step7.submit')}</>
-          }
-        </button>
-      </div>
-
-      <p style={{ textAlign: 'center', fontSize: '0.75rem', color: 'var(--muted)', marginTop: 12 }}>
-        {t('step7.recaptcha_notice')}
-      </p>
+        </>
+      )}
     </>
   );
 }

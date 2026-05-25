@@ -313,10 +313,21 @@ function initEnrollmentSession_(p) {
     Filter: '"primary_email" = "' + normalizedEmail + '" && NOT(ISBLANK([submitted_at])) && ISBLANK([abandoned_at])'
   }) || [];
   if (existingSubmitted.length) {
+    const grp = existingSubmitted[0];
+    // Send a magic link so the family can view their submitted application in
+    // read-only mode. Rate-limit is checked but errors are swallowed — the
+    // already_submitted response is always returned regardless.
+    try {
+      _checkMagicLinkRateLimit_(normalizedEmail);
+      const lang = grp.preferred_language || (p.preferred_language || 'es');
+      sendMagicLinkEmail_(grp.primary_email, grp.resume_token, lang, false);
+    } catch (e) {
+      Logger.log('initEnrollmentSession_: could not send magic link for submitted session: ' + e.message);
+    }
     return {
       already_submitted:   true,
-      enrollment_group_id: existingSubmitted[0].enrollment_group_id,
-      application_id:      existingSubmitted[0].enrollment_group_id,
+      enrollment_group_id: grp.enrollment_group_id,
+      application_id:      grp.enrollment_group_id,
     };
   }
 

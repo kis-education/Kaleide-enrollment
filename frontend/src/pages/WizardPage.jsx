@@ -41,6 +41,7 @@ export default function WizardPage() {
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
     setPendingSave, awaitPendingSave, hasPendingSave,
+    isSubmitted,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -247,47 +248,59 @@ const handleNext = async (stepKey, data) => {
       {/* Progress */}
       <WizardProgress currentStep={currentStep} />
 
-      {/* Save-later bar */}
-      <div className="wizard-header-bar" style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center' }}>
-        <button className="save-later-btn" onClick={handleSaveLater}>
-          <i className="bi bi-bookmark" /> {t('wizard.save_later')}
-        </button>
+      {/* Submitted notice — replaces Save-later bar when session is read-only */}
+      {isSubmitted ? (
+        <div style={{
+          background: '#e8f5e9', borderBottom: '2px solid #43a047',
+          padding: '10px 20px', display: 'flex', alignItems: 'center', gap: 10,
+          color: '#1b5e20', fontSize: '0.9rem', fontWeight: 600,
+        }}>
+          <i className="bi bi-check-circle-fill" style={{ fontSize: '1.1rem' }} />
+          {t('wizard.submitted_readonly_banner', 'Solicitud enviada — los campos están bloqueados.')}
+        </div>
+      ) : (
+        /* Save-later bar */
+        <div className="wizard-header-bar" style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center' }}>
+          <button className="save-later-btn" onClick={handleSaveLater}>
+            <i className="bi bi-bookmark" /> {t('wizard.save_later')}
+          </button>
 
-        {/* Save-in-flight indicator. Driven by hasPendingSave from context;
-            shows up briefly while the previous step's save is running in
-            background. Centred so it's visible without crowding the buttons. */}
-        {hasPendingSave && (
-          <span
+          {/* Save-in-flight indicator. Driven by hasPendingSave from context;
+              shows up briefly while the previous step's save is running in
+              background. Centred so it's visible without crowding the buttons. */}
+          {hasPendingSave && (
+            <span
+              style={{
+                color: 'var(--muted)',
+                fontSize: '0.82rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+              aria-live="polite"
+            >
+              <i className="bi bi-cloud-arrow-up" />
+              {t('wizard.saving_in_background', 'Guardando…')}
+            </span>
+          )}
+
+          <button
+            onClick={handleStartOver}
+            disabled={abandoning}
             style={{
-              color: 'var(--muted)',
-              fontSize: '0.82rem',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
+              background: 'transparent',
+              border: 'none',
+              color: '#a02020',
+              fontSize: '0.85rem',
+              cursor: abandoning ? 'wait' : 'pointer',
+              padding: '6px 10px',
+              textDecoration: 'underline',
             }}
-            aria-live="polite"
           >
-            <i className="bi bi-cloud-arrow-up" />
-            {t('wizard.saving_in_background', 'Guardando…')}
-          </span>
-        )}
-
-        <button
-          onClick={handleStartOver}
-          disabled={abandoning}
-          style={{
-            background: 'transparent',
-            border: 'none',
-            color: '#a02020',
-            fontSize: '0.85rem',
-            cursor: abandoning ? 'wait' : 'pointer',
-            padding: '6px 10px',
-            textDecoration: 'underline',
-          }}
-        >
-          <i className="bi bi-arrow-counterclockwise" /> {t('wizard.abandon_link')}
-        </button>
-      </div>
+            <i className="bi bi-arrow-counterclockwise" /> {t('wizard.abandon_link')}
+          </button>
+        </div>
+      )}
 
       {/* Step content */}
       <div className="wizard-body">
@@ -295,7 +308,7 @@ const handleNext = async (stepKey, data) => {
           onNext={handleNext}
           onBack={handleBack}
           locked={completedSteps.has(currentStep)}
-          onUnlock={handleUnlock}
+          onUnlock={isSubmitted ? null : handleUnlock}
         />
       </div>
 
