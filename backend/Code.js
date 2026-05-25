@@ -304,6 +304,22 @@ function initEnrollmentSession_(p) {
   // (more persons) beats a freshly-bounced session (zero persons)
   // regardless of which has the more recent updated_at.
   const normalizedEmail = (p.primary_email || '').toLowerCase().trim();
+
+  // ── Guard: already-submitted sessions block re-submission ─────────────────
+  // If the email already has a submitted (non-abandoned) session, return early
+  // without creating a new session or sending another magic link.
+  // The frontend renders a "ya enviada / already submitted" screen.
+  const existingSubmitted = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"primary_email" = "' + normalizedEmail + '" && NOT(ISBLANK([submitted_at])) && ISBLANK([abandoned_at])'
+  }) || [];
+  if (existingSubmitted.length) {
+    return {
+      already_submitted:   true,
+      enrollment_group_id: existingSubmitted[0].enrollment_group_id,
+      application_id:      existingSubmitted[0].enrollment_group_id,
+    };
+  }
+
   const existingOpen = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
     Filter: '"primary_email" = "' + normalizedEmail + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
   }) || [];

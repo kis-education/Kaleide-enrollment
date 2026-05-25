@@ -32,8 +32,9 @@ export default function LandingPage() {
   const [consent,     setConsent]     = useState(false);
   const [submitting,  setSubmitting]  = useState(false);
   const [err,         setErr]         = useState('');
-  const [sent,        setSent]        = useState(false);
-  const [resumed,     setResumed]     = useState(false);
+  const [sent,           setSent]           = useState(false);
+  const [resumed,        setResumed]        = useState(false);
+  const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
 
   const validateEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
@@ -59,6 +60,11 @@ export default function LandingPage() {
         preferred_language: navigator.language?.startsWith('en') ? 'en' : 'es',
         recaptcha_token,
       });
+      if (data.already_submitted) {
+        setAlreadySubmitted(true);
+        setSent(true);
+        return;
+      }
       setEnrollmentGroupId(data.enrollment_group_id || data.application_id);
       setResumeToken(data.resumed ? null : (data.resume_token || null));
       setRecognition(data.recognition);
@@ -85,6 +91,38 @@ export default function LandingPage() {
   );
 
   if (sent) {
+    if (alreadySubmitted) {
+      return (
+        <div className="wizard-layout">
+          {header}
+          <div className="landing-hero">
+            <img src={LOGO} alt="KIS" className="landing-logo" />
+            <div style={{
+              maxWidth: 580, margin: '0 auto', padding: '32px 28px',
+              background: '#e8f5e9', border: '2px solid #43a047',
+              borderRadius: 12, textAlign: 'center',
+            }}>
+              <div style={{
+                width: 72, height: 72, background: '#c8e6c9', borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                margin: '0 auto 20px',
+              }}>
+                <i className="bi bi-check-circle-fill" style={{ fontSize: '2.2rem', color: '#2e7d32' }} />
+              </div>
+              <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: '#1b5e20', marginBottom: 16 }}>
+                {t('consent.already_submitted_title')}
+              </h1>
+              <p style={{ color: '#2e4a2f', lineHeight: 1.5, marginBottom: 12, fontSize: '1rem' }}>
+                {t('consent.already_submitted_subtitle', { email })}
+              </p>
+              <p style={{ color: '#2e4a2f', lineHeight: 1.5, fontSize: '0.92rem', marginBottom: 0 }}>
+                {t('consent.already_submitted_note')}
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
     if (resumed) {
       return (
         <div className="wizard-layout">
