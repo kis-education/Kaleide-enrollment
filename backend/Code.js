@@ -1380,6 +1380,7 @@ function submitEnrollmentSession_(p) {
  * @param {string=} replyTo
  */
 function sendAsAlias_(toEmail, subject, htmlBody, replyTo) {
+  const encodedBody = Utilities.base64Encode(htmlBody, Utilities.Charset.UTF_8);
   const lines = [
     'From: ' + FROM_NAME + ' <' + ADMISSIONS_EMAIL + '>',
     'To: ' + toEmail,
@@ -1387,8 +1388,9 @@ function sendAsAlias_(toEmail, subject, htmlBody, replyTo) {
     'Subject: =?UTF-8?B?' + Utilities.base64Encode(subject, Utilities.Charset.UTF_8) + '?=',
     'MIME-Version: 1.0',
     'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
     '',
-    htmlBody,
+    encodedBody,
   ].filter(Boolean);
   const raw = Utilities.base64EncodeWebSafe(lines.join('\r\n')).replace(/=+$/, '');
   Gmail.Users.Messages.send({ raw: raw }, 'me');
