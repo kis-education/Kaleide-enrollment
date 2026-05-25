@@ -1970,7 +1970,7 @@ function savePersons_(enrollmentGroupId, persons) {
     if (Array.isArray(person.phones)) {
       person.phones.filter(ph => !ph.phone_id).forEach(ph => {
         const phoneId = generateUuid_();
-        phones.push({ phone_id: phoneId, enrollment_group_id: enrollmentGroupId, person_id: personId, phone_nr_type_id: ph.phone_type_id || ph.phone_nr_type_id || null, value: ph.phone_number || ph.value, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
+        phones.push({ phone_id: phoneId, enrollment_group_id: enrollmentGroupId, person_id: personId, phone_nr_type_id: ph.phone_type_id || ph.phone_nr_type_id || null, value: ph.phone_number || ph.value, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, is_sms: ph.is_sms || false, created_at: now });
       });
     }
 
