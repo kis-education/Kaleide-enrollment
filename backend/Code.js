@@ -849,6 +849,24 @@ function resumeSession_(p) {
   // Normalise date fields to ISO format before sending to the frontend
   group.desired_start_date = normalizeDate_(group.desired_start_date);
 
+  // Reopen check: if submitted_at is set but KMS moved all enrollments back to
+  // IN state, the session should be editable again. AppSheet's Edit API cannot
+  // reliably clear a DateTime field (null and '' are both silently ignored), so
+  // we resolve editability here from the actual state — overriding submitted_at
+  // in the response without touching AppSheet.
+  if (group.submitted_at && enrollments.length > 0) {
+    const allStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
+    const inState = allStates.find(function(r) {
+      return r.school_id === SCHOOL_ID &&
+             r.entity_type_code === 'ENR_APPLICATION' &&
+             r.state_code === 'IN' && !r.deleted_at;
+    });
+    if (inState && enrollments.every(function(e) { return e.current_state_id === inState.state_id; })) {
+      group.submitted_at = null;
+      Logger.log('resumeSession_: all enrollments in IN — wizard unlocked (submitted_at overridden in response for group ' + group.enrollment_group_id + ')');
+    }
+  }
+
   if (!persons.length) {
     return {
       group,
