@@ -4,9 +4,8 @@
   "landing.header_sub": "Admisiones",
   "landing.title": "Matricúlate en Kaleide International School",
   "landing.subtitle": "Inicia tu solicitud de admisión en línea. Puedes guardar tu progreso en cualquier momento y retomarlo desde tu correo electrónico.",
-  "landing.access_title": "Iniciar o recuperar tu solicitud",
-  "landing.access_subtitle": "Introduce tu correo. Si tienes una solicitud abierta te enviaremos un enlace para continuar; si no, te llevamos a iniciar una nueva.",
   "landing.access_btn": "Iniciar o recuperar solicitud",
+  "landing.starting": "Iniciando…",
   "landing.magic_link_sent": "¡Enlace enviado! Revisa tu bandeja de entrada.",
   "landing.resume_error": "No hemos podido cargar tu solicitud. El enlace puede haber caducado — introduce tu correo a continuación para recibir uno nuevo.",
 
