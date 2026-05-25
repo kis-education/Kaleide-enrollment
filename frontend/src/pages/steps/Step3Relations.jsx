@@ -150,7 +150,7 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock }) {
       )}
 
       <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
-      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
+      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
 
         {/* Guardian → Applicant */}
         {gaRelations.map((rel, relIdx) => {

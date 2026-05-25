@@ -641,7 +641,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
       )}
 
       <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
-      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
+      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
         {/* Guardians */}
         <h5 style={{ color: 'var(--teal-dk)', marginTop: 16, marginBottom: 8 }}>
           {t('person.guardians_section')}

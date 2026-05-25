@@ -202,7 +202,7 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock }) {
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
       <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
-      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
+      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
         {applicants.map((a, i) => (
           <ApplicantHealthSection
             key={a.person_id || a._uid || i}

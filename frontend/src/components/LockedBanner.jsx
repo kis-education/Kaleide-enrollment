@@ -7,6 +7,8 @@ export default function LockedBanner({ onUnlock, highlight }) {
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       background: 'var(--teal-lt)', color: 'var(--teal-dk)',
       borderRadius: 8, padding: '8px 14px', marginBottom: 16, fontSize: '0.88rem',
+      position: 'sticky', top: 0, zIndex: 40,
+      boxShadow: '0 2px 8px rgba(0,0,0,0.10)',
     }}>
       <span><i className="bi bi-lock-fill me-2" />{t('locked.message')}</span>
       <button

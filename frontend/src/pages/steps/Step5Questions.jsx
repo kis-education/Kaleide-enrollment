@@ -178,7 +178,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
       <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
-      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
+      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
       {sets.map(set => (
         <div key={set.set_id} className="kis-card">
           {set.designation && <h3 style={{ color: 'var(--teal-dk)', fontSize: '1.05rem' }}>{set.designation}</h3>}
