@@ -19,6 +19,7 @@ const CORS_ORIGIN        = 'https://admissions.kaleide.org';
 const DRIVE_FOLDER_NAME  = 'KIS Admissions Documents';
 const SCHOOL_ID          = 'KIS';
 const ADMISSIONS_EMAIL   = 'admissions@kaleide.org';
+const FROM_NAME          = 'Kaleide International School';
 const RESUME_BASE_URL    = 'https://admissions.kaleide.org/#/resume/';
 const REPORT_BASE_URL    = 'https://admissions.kaleide.org/#/report/';
 const LOGO_URL           = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
@@ -230,7 +231,7 @@ function _checkMagicLinkRateLimit_(email) {
   }
   const countKey = 'magic_count_' + Utilities.base64EncodeWebSafe(email);
   const count = parseInt(cache.get(countKey) || '0', 10);
-  if (count >= 3) {
+  if (count >= 10) {
     const err = new Error('Too many magic-link requests for this email; try again in 1 hour');
     err.code = 'RATE_LIMITED';
     throw err;
@@ -1370,6 +1371,30 @@ function submitEnrollmentSession_(p) {
  *
  * @param {Object} p - { enrollment_group_id?|application_id?, primary_email }
  */
+/**
+ * Sends HTML email from the admissions@ alias via Gmail Advanced Service (raw RFC822).
+ * Uses only gmail.send scope — avoids the Settings API scope escalation that
+ * GmailApp.sendEmail triggers when sending from a non-primary alias.
+ * The blank line separating headers from body is explicit (not filtered) so
+ * Gmail can locate the body correctly.
+ */
+function sendAsAlias_(toEmail, subject, htmlBody, replyTo) {
+  const encodedBody = Utilities.base64Encode(htmlBody, Utilities.Charset.UTF_8);
+  const headers = [
+    'From: ' + FROM_NAME + ' <' + ADMISSIONS_EMAIL + '>',
+    'To: ' + toEmail,
+    ...(replyTo ? ['Reply-To: ' + replyTo] : []),
+    'Subject: =?UTF-8?B?' + Utilities.base64Encode(subject, Utilities.Charset.UTF_8) + '?=',
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+  ];
+  const raw = Utilities.base64EncodeWebSafe(
+    headers.join('\r\n') + '\r\n\r\n' + encodedBody
+  ).replace(/=+$/, '');
+  Gmail.Users.Messages.send({ raw: raw }, 'me');
+}
+
 function sendVerificationCode_(p) {
   const enrollmentGroupId = p.enrollment_group_id || p.application_id;
   const primary_email     = p.primary_email;
@@ -1388,11 +1413,7 @@ function sendVerificationCode_(p) {
     ? '<p>Your verification code is: <strong style="font-size:1.5em;letter-spacing:4px;">' + code + '</strong></p><p>This code expires in 10 minutes.</p>'
     : '<p>Tu c\u00f3digo de verificaci\u00f3n es: <strong style="font-size:1.5em;letter-spacing:4px;">' + code + '</strong></p><p>Este c\u00f3digo caduca en 10 minutos.</p>';
 
-  GmailApp.sendEmail(primary_email, subject, '', {
-    htmlBody: buildFamilyEmail_(subject, body),
-    name: 'Kaleide International School',
-    from: ADMISSIONS_EMAIL,
-  });
+  sendAsAlias_(primary_email, subject, buildFamilyEmail_(subject, body));
 
   return { sent: true };
 }
@@ -2127,11 +2148,7 @@ function saveInterviews_(enrollmentGroupId, interviews) {  // eslint-disable-lin
  * @param {string} bodyHtml - inner HTML content (no shell)
  */
 function sendInternalEmail_(subject, bodyHtml) {
-  GmailApp.sendEmail(ADMISSIONS_EMAIL, subject, '', {
-    htmlBody: buildInternalEmail_(subject, bodyHtml),
-    name: 'KIS Admissions System',
-    from: ADMISSIONS_EMAIL,
-  });
+  sendAsAlias_(ADMISSIONS_EMAIL, subject, buildInternalEmail_(subject, bodyHtml));
 }
 
 /**
@@ -2194,11 +2211,7 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp) {
       + '<p>Este enlace te lleva directamente a tu solicitud. Gu\u00e1rdalo en un lugar seguro.</p>'
       + securityFooter;
 
-  GmailApp.sendEmail(email, subject, '', {
-    htmlBody: buildFamilyEmail_(subject, body),
-    name: 'Kaleide International School',
-    from: ADMISSIONS_EMAIL,
-  });
+  sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
 }
 
 /**
@@ -2248,11 +2261,7 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang) {
       + '<p>Cada enlace va directamente a esa solicitud. Gu\u00e1rdalos en un lugar seguro.</p>'
       + securityFooter;
 
-  GmailApp.sendEmail(email, subject, '', {
-    htmlBody: buildFamilyEmail_(subject, body),
-    name: 'Kaleide International School',
-    from: ADMISSIONS_EMAIL,
-  });
+  sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
 }
 
 /**
@@ -2276,11 +2285,7 @@ function sendFamilyConfirmationEmail_(email, sessionId, applicants, lang) {
     '<p><strong>Alumno/s:</strong> ' + names + '</p>' +
     '<p><strong>N\u00famero de solicitud:</strong> ' + sessionId + '</p>';
 
-  GmailApp.sendEmail(email, 'Kaleide enrollment application received / Solicitud de matr\u00edcula recibida', '', {
-    htmlBody: buildFamilyEmail_('Enrollment application received', body),
-    name: 'Kaleide International School',
-    from: ADMISSIONS_EMAIL,
-  });
+  sendAsAlias_(email, 'Kaleide enrollment application received / Solicitud de matr\u00edcula recibida', buildFamilyEmail_('Enrollment application received', body));
 }
 
 // ─── Email builders ───────────────────────────────────────────────────────────
