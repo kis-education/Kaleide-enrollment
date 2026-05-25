@@ -141,6 +141,7 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock }) {
   const { stepData, updateStep } = useWizard();
   const applicants = (stepData.persons || []).filter(p => p.person_type_id === 'applicant');
 
+  const [highlightEdit, setHighlightEdit] = useState(false);
   const [healthData, setHealthData] = useState(() =>
     applicants.map(a => {
       const existing = (stepData.health || []).find(h => h.person_id === (a.person_id || a._uid));
@@ -198,8 +199,9 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock }) {
         <p style={{ color: 'var(--muted)' }}>{t('step4.subtitle')}</p>
       </div>
 
-      {locked && <LockedBanner onUnlock={onUnlock} />}
+      {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
+      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
         {applicants.map((a, i) => (
           <ApplicantHealthSection
@@ -219,6 +221,7 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock }) {
           </div>
         )}
       </fieldset>
+      </div>
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>

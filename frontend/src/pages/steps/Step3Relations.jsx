@@ -57,6 +57,7 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock }) {
     buildInitialRelations(persons, stepData.relations)
   );
   const [relationTypes, setRelationTypes] = useState([]);
+  const [highlightEdit, setHighlightEdit] = useState(false);
 
   useEffect(() => {
     fetchLookups()
@@ -138,7 +139,7 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock }) {
         <p style={{ color: 'var(--muted)' }}>{t('step3.subtitle')}</p>
       </div>
 
-      {locked && <LockedBanner onUnlock={onUnlock} />}
+      {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
       {!locked && uncoveredApplicants.length > 0 && (
         <div className="field-error mb-3">
@@ -148,6 +149,7 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock }) {
         </div>
       )}
 
+      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
 
         {/* Guardian → Applicant */}
@@ -238,6 +240,7 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock }) {
         )}
 
       </fieldset>
+      </div>
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>

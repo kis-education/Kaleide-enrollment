@@ -520,6 +520,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
     return [emptyPerson('guardian'), emptyPerson('applicant')];
   });
   const [err, setErr] = useState('');
+  const [highlightEdit, setHighlightEdit] = useState(false);
   // D-E18: dismissed flag survives only within this render of Step2; if the user
   // declines the banner, hide it for the rest of the session.
   const [recognitionDismissed, setRecognitionDismissed] = useState(false);
@@ -605,7 +606,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
         <p style={{ color: 'var(--muted)' }}>{t('step2.subtitle')}</p>
       </div>
 
-      {locked && <LockedBanner onUnlock={onUnlock} />}
+      {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
       {/* D-E18: legacy family recognised by email — offer to pre-fill */}
       {recognition?.matched && !recognitionAccepted && !recognitionDismissed && (
@@ -639,6 +640,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
         </div>
       )}
 
+      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
         {/* Guardians */}
         <h5 style={{ color: 'var(--teal-dk)', marginTop: 16, marginBottom: 8 }}>
@@ -690,6 +692,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
 
         {err && <div className="field-error mt-2">{err}</div>}
       </fieldset>
+      </div>
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>

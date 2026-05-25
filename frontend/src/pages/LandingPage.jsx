@@ -14,30 +14,35 @@ export default function LandingPage() {
   const [searchParams] = useSearchParams();
   const resumeError = searchParams.get('resume_error') === '1';
 
-  const [resumeEmail, setResumeEmail]     = useState('');
-  const [resumeErr, setResumeErr]         = useState('');
-  const [resumeSending, setResumeSending] = useState(false);
+  const [email,    setEmail]    = useState('');
+  const [emailErr, setEmailErr] = useState('');
+  const [sending,  setSending]  = useState(false);
 
   const { message: toastMsg, showToast } = useToast();
 
   const validateEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 
-  const handleResume = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!validateEmail(resumeEmail)) {
-      setResumeErr(t('error.invalid_email'));
+    if (!validateEmail(email)) {
+      setEmailErr(t('error.invalid_email'));
       return;
     }
-    setResumeErr('');
-    setResumeSending(true);
+    setEmailErr('');
+    setSending(true);
     try {
-      await gasCall('sendMagicLink', { primary_email: resumeEmail });
+      await gasCall('sendMagicLink', { primary_email: email });
       showToast(t('landing.magic_link_sent'));
-      setResumeEmail('');
+      setEmail('');
     } catch (err) {
-      setResumeErr(err.message);
+      // No open sessions for this email → start a new application
+      if (err.message?.includes('not found') || err.message?.includes('no encontrad')) {
+        navigate('/consent?email=' + encodeURIComponent(email));
+      } else {
+        setEmailErr(err.message);
+      }
     } finally {
-      setResumeSending(false);
+      setSending(false);
     }
   };
 
@@ -68,36 +73,26 @@ export default function LandingPage() {
         <h1 className="landing-title">{t('landing.title')}</h1>
         <p className="landing-subtitle">{t('landing.subtitle')}</p>
 
-        {/* Start application */}
-        <div className="kis-card" style={{ maxWidth: 460, margin: '0 auto 28px' }}>
-          <h2 style={{ marginBottom: 4 }}>{t('landing.start_title')}</h2>
-          <p className="section-subtitle">{t('landing.start_subtitle')}</p>
-          <button className="btn-primary-kis w-100" onClick={() => navigate('/consent')}>
-            {t('landing.start_btn')} <i className="bi bi-arrow-right ms-1" />
-          </button>
-        </div>
-
-        {/* Resume application */}
         <div className="kis-card" style={{ maxWidth: 460, margin: '0 auto' }}>
-          <h2 style={{ marginBottom: 4 }}>{t('landing.resume_title')}</h2>
-          <p className="section-subtitle">{t('landing.resume_subtitle')}</p>
-          <form onSubmit={handleResume} noValidate>
+          <h2 style={{ marginBottom: 4 }}>{t('landing.access_title')}</h2>
+          <p className="section-subtitle">{t('landing.access_subtitle')}</p>
+          <form onSubmit={handleSubmit} noValidate>
             <HoneypotField />
             <div className="mb-3">
               <label className="form-label fw-semibold">{t('field.primary_email')}</label>
               <input
                 type="email"
-                className={`form-control ${resumeErr ? 'is-invalid' : ''}`}
-                value={resumeEmail}
-                onChange={e => { setResumeEmail(e.target.value); setResumeErr(''); }}
+                className={`form-control ${emailErr ? 'is-invalid' : ''}`}
+                value={email}
+                onChange={e => { setEmail(e.target.value); setEmailErr(''); }}
                 placeholder="your@email.com"
               />
-              {resumeErr && <div className="field-error">{resumeErr}</div>}
+              {emailErr && <div className="field-error">{emailErr}</div>}
             </div>
-            <button type="submit" className="btn-secondary-kis w-100" disabled={resumeSending}>
-              {resumeSending
+            <button type="submit" className="btn-primary-kis w-100" disabled={sending}>
+              {sending
                 ? <span className="spinner-border spinner-border-sm" />
-                : t('landing.resume_btn')
+                : <>{t('landing.access_btn')} <i className="bi bi-arrow-right ms-1" /></>
               }
             </button>
           </form>

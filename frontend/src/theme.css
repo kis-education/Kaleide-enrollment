@@ -484,6 +484,21 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Locked banner — shake + highlight when user tries to interact with a locked step */
+@keyframes locked-shake {
+  0%, 100% { transform: translateX(0); }
+  20%       { transform: translateX(-5px); }
+  40%       { transform: translateX(5px); }
+  60%       { transform: translateX(-5px); }
+  80%       { transform: translateX(4px); }
+}
+.locked-edit-shake {
+  animation: locked-shake 0.4s ease-in-out;
+  background: var(--orange, #f37021) !important;
+  color: #fff !important;
+  border-color: var(--orange, #f37021) !important;
+}
+
 /* Confirmation page */
 .confirmation-icon {
   width: 72px;

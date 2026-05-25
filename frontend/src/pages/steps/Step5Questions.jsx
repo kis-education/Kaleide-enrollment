@@ -111,6 +111,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
   const [sets,     setSets]     = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [responses, setResponses] = useState(stepData.questions || {});
+  const [highlightEdit, setHighlightEdit] = useState(false);
 
   const persons    = stepData.persons || [];
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
@@ -174,8 +175,9 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
         <p style={{ color: 'var(--muted)' }}>{t('step5.subtitle')}</p>
       </div>
 
-      {locked && <LockedBanner onUnlock={onUnlock} />}
+      {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
+      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0 }}>
       {sets.map(set => (
         <div key={set.set_id} className="kis-card">
@@ -230,6 +232,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
         </div>
       ))}
       </fieldset>
+      </div>
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>

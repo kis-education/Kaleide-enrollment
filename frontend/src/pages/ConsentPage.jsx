@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
 import { useWizard } from '../context/WizardContext';
@@ -15,6 +15,7 @@ const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 export default function ConsentPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { setEnrollmentGroupId, setResumeToken, updateStep, setRecognition } = useWizard();
 
   useEffect(() => {
@@ -25,7 +26,7 @@ export default function ConsentPage() {
     document.head.appendChild(s);
   }, []);
 
-  const [email,       setEmail]       = useState('');
+  const [email,       setEmail]       = useState(searchParams.get('email') || '');
   const [emailErr,    setEmailErr]    = useState('');
   const [consent,     setConsent]     = useState(false);
   const [submitting,  setSubmitting]  = useState(false);

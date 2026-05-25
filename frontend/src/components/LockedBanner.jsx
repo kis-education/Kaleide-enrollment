@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 
-export default function LockedBanner({ onUnlock }) {
+export default function LockedBanner({ onUnlock, highlight }) {
   const { t } = useTranslation();
   return (
     <div style={{
@@ -10,7 +10,7 @@ export default function LockedBanner({ onUnlock }) {
     }}>
       <span><i className="bi bi-lock-fill me-2" />{t('locked.message')}</span>
       <button
-        className="btn-secondary-kis"
+        className={`btn-secondary-kis${highlight ? ' locked-edit-shake' : ''}`}
         style={{ padding: '4px 12px', fontSize: '0.85rem' }}
         onClick={onUnlock}
       >
