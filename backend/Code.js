@@ -1953,7 +1953,8 @@ function savePersons_(enrollmentGroupId, persons) {
       needAddressJunction = true;
     }
     if (needAddressJunction && addressId) {
-      personAddrs.push({ record_id: generateUuid_(), person_id: personId, address_id: addressId, is_default: true });
+      var statusDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MM/dd/yyyy');
+      personAddrs.push({ record_id: generateUuid_(), person_id: personId, address_id: addressId, is_default: true, is_active: true, status_date: statusDate });
     }
     personAddressIds[personId] = addressId;
     if (personUid) personAddressIds[String(personUid)] = addressId;
