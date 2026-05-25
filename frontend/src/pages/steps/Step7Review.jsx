@@ -162,15 +162,22 @@ export default function Step7Review({ onBack }) {
 
       {isSubmitted ? (
         /* Read-only mode: application already submitted */
-        <div className="kis-card mt-3" style={{ textAlign: 'center', padding: '32px 20px' }}>
-          <i className="bi bi-check-circle-fill" style={{ fontSize: '2.8rem', color: '#2e7d32' }} />
-          <h3 style={{ color: '#1b5e20', marginTop: 16, marginBottom: 8 }}>
-            {t('step7.submitted_title')}
-          </h3>
-          <p style={{ color: '#2e4a2f', marginBottom: 0, maxWidth: 440, margin: '0 auto' }}>
-            {t('step7.submitted_note')}
-          </p>
-        </div>
+        <>
+          <div className="kis-card mt-3" style={{ textAlign: 'center', padding: '32px 20px' }}>
+            <i className="bi bi-check-circle-fill" style={{ fontSize: '2.8rem', color: '#2e7d32' }} />
+            <h3 style={{ color: '#1b5e20', marginTop: 16, marginBottom: 8 }}>
+              {t('step7.submitted_title')}
+            </h3>
+            <p style={{ color: '#2e4a2f', marginBottom: 0, maxWidth: 440, margin: '0 auto' }}>
+              {t('step7.submitted_note')}
+            </p>
+          </div>
+          <div className="d-flex mt-4">
+            <button className="btn-secondary-kis" onClick={onBack}>
+              <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
+            </button>
+          </div>
+        </>
       ) : (
         /* Active mode: consent form + submit */
         <>
