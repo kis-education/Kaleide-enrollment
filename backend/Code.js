@@ -1130,12 +1130,23 @@ function submitEnrollmentSession_(p) {
     }]);
   }
 
-  // ── Create one enrEnrollments row per applicant ────────────────────────────
-  // desired_start_date comes from the submit payload (not staged on the group).
+  // ── Create one enrEnrollments row per applicant (or update if re-submitting) ──
+  // When a staff member reverts an application to IN and the family re-submits,
+  // existing enrollment rows must be updated to RQ state rather than duplicated.
+  const existingEnrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+  }) || [];
+  // Map applicant_person_id → existing enrollment_id for quick lookup
+  const existingByApplicant = {};
+  existingEnrollments.forEach(function(e) {
+    if (e.applicant_person_id) existingByApplicant[e.applicant_person_id] = e.enrollment_id;
+  });
+
   const desiredStartDate = p.desired_start_date || null;
   const enrollmentIds = [];
   applicants.forEach(applicant => {
-    const enrollmentId = generateUuid_();
+    const existingId = existingByApplicant[applicant.person_id];
+    const enrollmentId = existingId || generateUuid_();
     // submitted_at lives on enrEnrollmentGroups (the session header), NOT on
     // each enrEnrollments row — DL-E15. The per-enrollment "submitted" moment
     // is reflected by current_state_id transitioning to RQ (logged in
@@ -1143,19 +1154,29 @@ function submitEnrollmentSession_(p) {
     // when we tried to write submitted_at here ("'submitted_at' is not a
     // valid table column name") — caught 2026-05-18 by Diego's first
     // end-to-end test.
-    appsheetRequest_(T.ENROLLMENTS, 'Add', [{
-      enrollment_id:          enrollmentId,
-      enrollment_group_id:    enrollmentGroupId,
-      program_id:             group.program_id || null,
-      school_id:              SCHOOL_ID,
-      applicant_person_table: 'enrPersons',
-      applicant_person_id:    applicant.person_id,
-      current_state_id:       rqStateId,
-      desired_start_date:     desiredStartDate,
-      source_locale:          group.preferred_language || group.source_locale || 'es',
-      created_at:             now,
-      updated_at:             now,
-    }]);
+    if (existingId) {
+      // Re-submit: update existing enrollment to RQ state
+      appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
+        enrollment_id:      enrollmentId,
+        current_state_id:   rqStateId,
+        desired_start_date: desiredStartDate,
+        updated_at:         now,
+      }]);
+    } else {
+      appsheetRequest_(T.ENROLLMENTS, 'Add', [{
+        enrollment_id:          enrollmentId,
+        enrollment_group_id:    enrollmentGroupId,
+        program_id:             group.program_id || null,
+        school_id:              SCHOOL_ID,
+        applicant_person_table: 'enrPersons',
+        applicant_person_id:    applicant.person_id,
+        current_state_id:       rqStateId,
+        desired_start_date:     desiredStartDate,
+        source_locale:          group.preferred_language || group.source_locale || 'es',
+        created_at:             now,
+        updated_at:             now,
+      }]);
+    }
     enrollmentIds.push(enrollmentId);
 
     // Per-enrollment state transition log entry (null → RQ).
@@ -1969,8 +1990,8 @@ function savePersons_(enrollmentGroupId, persons) {
     personsEdit: personsEdit.length, personsAdd: personsAdd.length,
     nats: nats.length, ids: ids.length, langs: langs.length,
     addresses: addresses.length, personAddrs: personAddrs.length,
-    emails: emails.length, personEmails: personEmails.length,
-    phones: phones.length, personPhones: personPhones.length,
+    emails: emails.length,
+    phones: phones.length,
     schoolsAdd: schoolsAdd.length, schoolsEdit: schoolsEdit.length,
     firstNat: nats[0] || null,
     firstPhone: phones[0] ? { value: phones[0].value } : null,
