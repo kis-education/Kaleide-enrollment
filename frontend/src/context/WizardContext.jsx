@@ -241,7 +241,7 @@ export function WizardProvider({ children }) {
     // steps locked for the LockedBanner unlock-to-edit pattern). Submitted
     // sessions always go straight to Review (step 6).
     const submitted = !!group.submitted_at;
-    if (submitted) setIsSubmitted(true);
+    setIsSubmitted(submitted);
     const hasGuardians     = persons.some(p => p.person_type_id === 'guardian');
     const hasApplicants    = persons.some(p => p.person_type_id === 'applicant');
     const hasStartDate     = !!group.desired_start_date;
