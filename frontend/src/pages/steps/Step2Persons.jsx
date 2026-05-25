@@ -583,8 +583,10 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock }) {
       return;
     }
     setErr('');
+    let firstGuardianDone = false;
     const transformed = persons.map(transformPersonForSave).map(p => {
-      if (p.person_type_id === 'guardian' && primaryEmail) {
+      if (p.person_type_id === 'guardian' && primaryEmail && !firstGuardianDone) {
+        firstGuardianDone = true;
         const alreadyHas = (p.emails || []).some(e => e.email_address === primaryEmail);
         if (!alreadyHas) {
           return {

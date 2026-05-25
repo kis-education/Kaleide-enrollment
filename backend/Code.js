@@ -791,9 +791,13 @@ function resumeSession_(p) {
     { table: T.PERSON_RELATIONS, action: 'Find', selector: { Filter: '"context_entity_id" = "' + id + '" && "context_entity_type_code" = "ENR_APPLICATION"' } },
     { table: T.REC_FILES,        action: 'Find', selector: { Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin_reference" = "' + id + '"' } },
     { table: T.QB_RESPONSES,     action: 'Find', selector: { Filter: '"respondent_id" = "' + id + '"' } },
+    { table: T.EMAILS,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
+    { table: T.PHONES,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
   ]);
   const enrollments = topRead[0].ok ? (topRead[0].data || []) : [];
   const persons     = topRead[1].ok ? (topRead[1].data || []) : [];
+  const allEmails   = topRead[5].ok ? (topRead[5].data || []) : [];
+  const allPhones   = topRead[6].ok ? (topRead[6].data || []) : [];
   const relations   = (topRead[2].ok ? (topRead[2].data || []) : [])
     .map(r => ({ ...r, guardian_person_id: r.from_person_id, applicant_person_id: r.to_person_id }));
 
@@ -862,36 +866,19 @@ function resumeSession_(p) {
   const personIds_       = pickRows(1);
   const languages        = pickRows(2);
   const personAddrJoins  = pickRows(3);
-  // enrPersonEmails / enrPersonPhones deleted 2026-05-17 — person→email/phone joins unavailable.
-  // Actual email/phone values still stored in enrEmails/enrPhones by enrollment_group_id.
-  const personEmailJoins = [];
-  const personPhoneJoins = [];
   const prevSchools      = pickRows(4);
   const medical          = pickRows(5);
   const allergies        = pickRows(6);
   const dietary          = pickRows(7);
 
-  // Batch-fetch address / email / phone value rows (3 parallel Finds).
-  const addrIds  = personAddrJoins.map(r => r.address_id).filter(Boolean);
-  const emailIds = personEmailJoins.map(r => r.email_id).filter(Boolean);
-  const phoneIds = personPhoneJoins.map(r => r.phone_id).filter(Boolean);
-
+  // Batch-fetch address value rows (emails/phones already fetched by enrollment_group_id in topRead).
+  const addrIds = personAddrJoins.map(r => r.address_id).filter(Boolean);
   const valueRead = appsheetRequestBatch_([
-    addrIds.length  ? { table: T.ADDRESSES, action: 'Find', selector: { Filter: addrIds.map(x => '"address_id" = "' + x + '"').join(' || ') } }
-                    : { table: T.ADDRESSES, action: 'Find', rows: [] }, // skipped at build
-    emailIds.length ? { table: T.EMAILS,    action: 'Find', selector: { Filter: emailIds.map(x => '"email_id" = "' + x + '"').join(' || ') } }
-                    : { table: T.EMAILS,    action: 'Find', rows: [] },
-    phoneIds.length ? { table: T.PHONES,    action: 'Find', selector: { Filter: phoneIds.map(x => '"phone_id" = "' + x + '"').join(' || ') } }
-                    : { table: T.PHONES,    action: 'Find', rows: [] },
+    addrIds.length ? { table: T.ADDRESSES, action: 'Find', selector: { Filter: addrIds.map(x => '"address_id" = "' + x + '"').join(' || ') } }
+                   : { table: T.ADDRESSES, action: 'Find', rows: [] },
   ]);
   const addressMap = {};
   if (valueRead[0].ok) (valueRead[0].data || []).forEach(r => { addressMap[r.address_id] = r; });
-
-  const emailMap = {};
-  if (valueRead[1].ok) (valueRead[1].data || []).forEach(r => { emailMap[r.email_id] = r; });
-
-  const phoneMap = {};
-  if (valueRead[2].ok) (valueRead[2].data || []).forEach(r => { phoneMap[r.phone_id] = r; });
 
   const enrichedPersons = persons.map(person => {
     const pid      = person.person_id;
@@ -905,8 +892,8 @@ function resumeSession_(p) {
       ids:               personIds_.filter(x => x.person_id === pid),
       languages:         languages.filter(x => x.person_id === pid),
       address:           addrJoin ? (addressMap[addrJoin.address_id] || null) : null,
-      emails:            personEmailJoins.filter(r => r.person_id === pid).map(r => ({ ...r, ...(emailMap[r.email_id] || {}) })),
-      phones:            personPhoneJoins.filter(r => r.person_id === pid).map(r => ({ ...r, ...(phoneMap[r.phone_id] || {}) })),
+      emails:            allEmails.filter(e => e.person_id === pid),
+      phones:            allPhones.filter(ph => ph.person_id === pid),
       previous_schools:  prevSchools.filter(s => s.person_id === pid),
       medical:           medical.filter(x => x.person_id === pid),
       allergies:         allergies.filter(x => x.person_id === pid),
@@ -1834,8 +1821,8 @@ function savePersons_(enrollmentGroupId, persons) {
   const personsAdd  = [], personsEdit  = [];
   const nats        = [], ids          = [], langs        = [];
   const addresses   = [], personAddrs  = [];
-  const emails      = [], personEmails = [];
-  const phones      = [], personPhones = [];
+  const emails      = [];
+  const phones      = [];
   const schoolsAdd  = [], schoolsEdit  = [];
   const personIdMap = []; // [{ _uid, person_id }] — returned so frontend can stamp real IDs
 
@@ -1925,8 +1912,7 @@ function savePersons_(enrollmentGroupId, persons) {
     if (Array.isArray(person.emails)) {
       person.emails.filter(e => !e.email_id).forEach(e => {
         const emailId = generateUuid_();
-        emails.push({ email_id: emailId, enrollment_group_id: enrollmentGroupId, email_type_id: e.email_type_id || null, value: e.email_address || e.value, created_at: now });
-        personEmails.push({ record_id: generateUuid_(), person_id: personId, email_id: emailId, is_default: e.is_default || false, is_emergency: e.is_emergency || false });
+        emails.push({ email_id: emailId, enrollment_group_id: enrollmentGroupId, person_id: personId, email_type_id: e.email_type_id || null, value: e.email_address || e.value, is_default: e.is_default || false, is_emergency: e.is_emergency || false, created_at: now });
       });
     }
 
@@ -1934,8 +1920,7 @@ function savePersons_(enrollmentGroupId, persons) {
     if (Array.isArray(person.phones)) {
       person.phones.filter(ph => !ph.phone_id).forEach(ph => {
         const phoneId = generateUuid_();
-        phones.push({ phone_id: phoneId, enrollment_group_id: enrollmentGroupId, phone_nr_type_id: ph.phone_type_id || ph.phone_nr_type_id || null, value: ph.phone_number || ph.value, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
-        personPhones.push({ record_id: generateUuid_(), person_id: personId, phone_id: phoneId, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false });
+        phones.push({ phone_id: phoneId, enrollment_group_id: enrollmentGroupId, person_id: personId, phone_nr_type_id: ph.phone_type_id || ph.phone_nr_type_id || null, value: ph.phone_number || ph.value, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, created_at: now });
       });
     }
 
@@ -1988,9 +1973,7 @@ function savePersons_(enrollmentGroupId, persons) {
     { table: T.ADDRESSES,            action: 'Add',  rows: addresses },
     { table: T.PERSON_ADDRESSES,     action: 'Add',  rows: personAddrs },
     { table: T.EMAILS,               action: 'Add',  rows: emails },
-    // enrPersonEmails deleted 2026-05-17 — person→email join not written
     { table: T.PHONES,               action: 'Add',  rows: phones },
-    // enrPersonPhones deleted 2026-05-17 — person→phone join not written
     { table: T.PREV_SCHOOLS,         action: 'Add',  rows: schoolsAdd },
     { table: T.PREV_SCHOOLS,         action: 'Edit', rows: schoolsEdit },
   ];
