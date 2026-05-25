@@ -19,7 +19,6 @@ const CORS_ORIGIN        = 'https://admissions.kaleide.org';
 const DRIVE_FOLDER_NAME  = 'KIS Admissions Documents';
 const SCHOOL_ID          = 'KIS';
 const ADMISSIONS_EMAIL   = 'admissions@kaleide.org';
-const FROM_NAME          = 'Kaleide International School';
 const RESUME_BASE_URL    = 'https://admissions.kaleide.org/#/resume/';
 const REPORT_BASE_URL    = 'https://admissions.kaleide.org/#/report/';
 const LOGO_URL           = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
@@ -1371,31 +1370,6 @@ function submitEnrollmentSession_(p) {
  *
  * @param {Object} p - { enrollment_group_id?|application_id?, primary_email }
  */
-/**
- * Sends an email FROM the admissions@ alias using Gmail Advanced Service (raw RFC822).
- * Requires gmail.send scope only (no CASA). Gmail server verifies the From: alias.
- * @param {string} toEmail
- * @param {string} subject
- * @param {string} htmlBody
- * @param {string=} replyTo
- */
-function sendAsAlias_(toEmail, subject, htmlBody, replyTo) {
-  const encodedBody = Utilities.base64Encode(htmlBody, Utilities.Charset.UTF_8);
-  const lines = [
-    'From: ' + FROM_NAME + ' <' + ADMISSIONS_EMAIL + '>',
-    'To: ' + toEmail,
-    replyTo ? 'Reply-To: ' + replyTo : null,
-    'Subject: =?UTF-8?B?' + Utilities.base64Encode(subject, Utilities.Charset.UTF_8) + '?=',
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    encodedBody,
-  ].filter(Boolean);
-  const raw = Utilities.base64EncodeWebSafe(lines.join('\r\n')).replace(/=+$/, '');
-  Gmail.Users.Messages.send({ raw: raw }, 'me');
-}
-
 function sendVerificationCode_(p) {
   const enrollmentGroupId = p.enrollment_group_id || p.application_id;
   const primary_email     = p.primary_email;
@@ -1414,7 +1388,11 @@ function sendVerificationCode_(p) {
     ? '<p>Your verification code is: <strong style="font-size:1.5em;letter-spacing:4px;">' + code + '</strong></p><p>This code expires in 10 minutes.</p>'
     : '<p>Tu c\u00f3digo de verificaci\u00f3n es: <strong style="font-size:1.5em;letter-spacing:4px;">' + code + '</strong></p><p>Este c\u00f3digo caduca en 10 minutos.</p>';
 
-  sendAsAlias_(primary_email, subject, buildFamilyEmail_(subject, body));
+  GmailApp.sendEmail(primary_email, subject, '', {
+    htmlBody: buildFamilyEmail_(subject, body),
+    name: 'Kaleide International School',
+    from: ADMISSIONS_EMAIL,
+  });
 
   return { sent: true };
 }
@@ -2149,7 +2127,11 @@ function saveInterviews_(enrollmentGroupId, interviews) {  // eslint-disable-lin
  * @param {string} bodyHtml - inner HTML content (no shell)
  */
 function sendInternalEmail_(subject, bodyHtml) {
-  sendAsAlias_(ADMISSIONS_EMAIL, subject, buildInternalEmail_(subject, bodyHtml));
+  GmailApp.sendEmail(ADMISSIONS_EMAIL, subject, '', {
+    htmlBody: buildInternalEmail_(subject, bodyHtml),
+    name: 'KIS Admissions System',
+    from: ADMISSIONS_EMAIL,
+  });
 }
 
 /**
@@ -2212,7 +2194,11 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp) {
       + '<p>Este enlace te lleva directamente a tu solicitud. Gu\u00e1rdalo en un lugar seguro.</p>'
       + securityFooter;
 
-  sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
+  GmailApp.sendEmail(email, subject, '', {
+    htmlBody: buildFamilyEmail_(subject, body),
+    name: 'Kaleide International School',
+    from: ADMISSIONS_EMAIL,
+  });
 }
 
 /**
@@ -2262,7 +2248,11 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang) {
       + '<p>Cada enlace va directamente a esa solicitud. Gu\u00e1rdalos en un lugar seguro.</p>'
       + securityFooter;
 
-  sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
+  GmailApp.sendEmail(email, subject, '', {
+    htmlBody: buildFamilyEmail_(subject, body),
+    name: 'Kaleide International School',
+    from: ADMISSIONS_EMAIL,
+  });
 }
 
 /**
@@ -2286,7 +2276,11 @@ function sendFamilyConfirmationEmail_(email, sessionId, applicants, lang) {
     '<p><strong>Alumno/s:</strong> ' + names + '</p>' +
     '<p><strong>N\u00famero de solicitud:</strong> ' + sessionId + '</p>';
 
-  sendAsAlias_(email, 'Kaleide enrollment application received / Solicitud de matr\u00edcula recibida', buildFamilyEmail_('Enrollment application received', body));
+  GmailApp.sendEmail(email, 'Kaleide enrollment application received / Solicitud de matr\u00edcula recibida', '', {
+    htmlBody: buildFamilyEmail_('Enrollment application received', body),
+    name: 'Kaleide International School',
+    from: ADMISSIONS_EMAIL,
+  });
 }
 
 // ─── Email builders ───────────────────────────────────────────────────────────
