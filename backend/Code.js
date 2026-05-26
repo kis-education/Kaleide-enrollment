@@ -2056,18 +2056,47 @@ function savePersons_(enrollmentGroupId, persons) {
 function saveRelations_(enrollmentGroupId, relations) {
   if (!Array.isArray(relations)) return {};
 
+  // Load relationTypes catalog to resolve inverse type for the reverse row (DL-S45).
+  // Fallback to same type if catalog unavailable — silent degradation.
+  const relTypesData = (() => {
+    try {
+      const res = appsheetRequest_(T.LOOKUP_RELATION_TYPES, 'Find', [], { Filter: 'true' });
+      return (res && res.data) || [];
+    } catch (_) { return []; }
+  })();
+  const typeById    = {};  // rowId → { is_symmetric, inverse_code }
+  const typeByDesig = {};  // designation → rowId
+  relTypesData.forEach(rt => {
+    const id = rt['Row ID'] || rt.row_id;
+    if (!id) return;
+    typeById[id] = {
+      is_symmetric: rt.is_symmetric === true || rt.is_symmetric === 'true' || rt.is_symmetric === 'TRUE',
+      inverse_code: rt.inverse_code || null,
+    };
+    if (rt.relation_type_designation) typeByDesig[rt.relation_type_designation] = id;
+  });
+
+  function resolveInverseTypeId(fwdTypeId) {
+    const info = typeById[fwdTypeId];
+    if (!info) return fwdTypeId;                   // unknown type — keep same
+    if (info.is_symmetric) return fwdTypeId;       // symmetric — same type for both directions
+    const invId = info.inverse_code ? typeByDesig[info.inverse_code] : null;
+    return invId || fwdTypeId;                     // fallback: same if inverse not found
+  }
+
   // DL-S45: sysPersonRelations is bidirectional — always insert 2 rows per pair
   // sharing the same pair_id (guardian→applicant + applicant→guardian).
   const newRelations = [];
   relations.filter(r => !r.relation_id).forEach(r => {
-    const pairId = generateUuid_();
-    const now    = new Date().toISOString();
-    const base   = {
+    const pairId     = generateUuid_();
+    const now        = new Date().toISOString();
+    const fwdTypeId  = r.relation_type_id || null;
+    const invTypeId  = fwdTypeId ? resolveInverseTypeId(fwdTypeId) : null;
+    const base = {
       school_id:                SCHOOL_ID,
       context_entity_type_code: 'ENR_APPLICATION',
       context_entity_id:        enrollmentGroupId,
       pair_id:                  pairId,
-      relation_type_id:         r.relation_type_id      || null,
       is_custodial:             r.is_custodial          || false,
       is_pick_up_authorized:    r.is_pick_up_authorized || false,
       is_school_rep:            false,
@@ -2075,19 +2104,23 @@ function saveRelations_(enrollmentGroupId, relations) {
       created_at:               now,
       created_by:               'SYSTEM:WIZARD',
     };
+    // Forward row: guardian/personA → applicant/personB uses the user-selected type
     newRelations.push(Object.assign({}, base, {
       relation_id:       generateUuid_(),
       from_person_table: 'enrPersons',
       from_person_id:    r.guardian_person_id || r.person_id_a,
       to_person_table:   'enrPersons',
       to_person_id:      r.applicant_person_id || r.person_id_b,
+      relation_type_id:  fwdTypeId,
     }));
+    // Inverse row: applicant/personB → guardian/personA uses the inverse type
     newRelations.push(Object.assign({}, base, {
       relation_id:       generateUuid_(),
       from_person_table: 'enrPersons',
       from_person_id:    r.applicant_person_id || r.person_id_b,
       to_person_table:   'enrPersons',
-      to_person_id:      r.guardian_person_id || r.person_id_a,
+      to_person_id:      r.guardian_person_id  || r.person_id_a,
+      relation_type_id:  invTypeId,
     }));
   });
   const existingRelations = relations.filter(r => r.relation_id).map(r => ({
