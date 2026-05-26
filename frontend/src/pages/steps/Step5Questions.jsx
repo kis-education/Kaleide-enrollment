@@ -104,7 +104,7 @@ function meetsConditions(question, person, responses, personKey) {
   });
 }
 
-export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
+export default function Step5Questions({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t, i18n }  = useTranslation();
   const { enrollmentGroupId, stepData, updateStep } = useWizard();
 
@@ -163,7 +163,12 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
       </div>
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}><i className="bi bi-arrow-left me-1" />{t('nav.back')}</button>
-        <button className="btn-primary-kis" onClick={() => { updateStep('questions', {}); onNext('questions', {}); }}>{t('nav.continue')}<i className="bi bi-arrow-right ms-1" /></button>
+        <button className="btn-primary-kis" onClick={() => { updateStep('questions', {}); onNext('questions', {}); }} disabled={savePending}>
+          {savePending
+            ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.9em', height: '0.9em', borderWidth: '0.12em' }} />{t('wizard.saving_in_background')}</>
+            : <>{t('nav.continue')}<i className="bi bi-arrow-right ms-1" /></>
+          }
+        </button>
       </div>
     </>
   );
@@ -238,8 +243,11 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock }) {
         <button className="btn-secondary-kis" onClick={handleBack}>
           <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
         </button>
-        <button className="btn-primary-kis" onClick={handleNext}>
-          {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
+        <button className="btn-primary-kis" onClick={handleNext} disabled={savePending}>
+          {savePending
+            ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.9em', height: '0.9em', borderWidth: '0.12em' }} />{t('wizard.saving_in_background')}</>
+            : <>{t('nav.continue')} <i className="bi bi-arrow-right ms-1" /></>
+          }
         </button>
       </div>
     </>

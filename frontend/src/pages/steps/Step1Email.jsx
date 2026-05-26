@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
 
-export default function Step1Email({ onNext }) {
+export default function Step1Email({ onNext, savePending }) {
   const { t }    = useTranslation();
   const { stepData, updateStep } = useWizard();
 
@@ -129,9 +129,12 @@ export default function Step1Email({ onNext }) {
         <button
           className="btn-primary-kis"
           onClick={handleContinue}
-          disabled={!canContinue}
+          disabled={!canContinue || savePending}
         >
-          {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
+          {savePending
+            ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.9em', height: '0.9em', borderWidth: '0.12em' }} />{t('wizard.saving_in_background')}</>
+            : <>{t('nav.continue')} <i className="bi bi-arrow-right ms-1" /></>
+          }
         </button>
       </div>
     </div>

@@ -512,3 +512,76 @@ body {
   font-size: 2rem;
   color: var(--teal-dk);
 }
+
+/* ─── Responsive ─────────────────────────────────────────────────────────── */
+
+/* Header: hide school subtitle on very small screens */
+@media (max-width: 479px) {
+  .kis-header {
+    padding: 10px 14px;
+  }
+  .kis-header .brand-name {
+    font-size: 0.92rem;
+  }
+  .kis-header .brand-sub {
+    display: none;
+  }
+}
+
+/* Save-later bar: wrap on mobile so buttons don't crowd */
+@media (max-width: 575px) {
+  .wizard-header-bar {
+    padding: 8px 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+/* Wizard body: tighter padding on mobile */
+@media (max-width: 575px) {
+  .wizard-body {
+    padding: 20px 12px;
+  }
+  .kis-card {
+    padding: 18px 16px;
+  }
+}
+
+/* Navigation buttons: slightly smaller on mobile */
+@media (max-width: 479px) {
+  .btn-primary-kis {
+    padding: 11px 22px;
+    font-size: 0.92rem;
+  }
+  .btn-secondary-kis {
+    padding: 10px 18px;
+    font-size: 0.88rem;
+  }
+}
+
+/* Review rows: stack label above value on narrow screens */
+@media (max-width: 575px) {
+  .review-row {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .review-label {
+    min-width: unset;
+    font-size: 0.78rem;
+  }
+}
+
+/* Wizard progress: tighter on very small screens */
+@media (max-width: 479px) {
+  .wizard-progress {
+    padding: 12px 14px;
+  }
+  .wizard-step {
+    font-size: 0.75rem;
+    gap: 5px;
+  }
+  .wizard-step .step-connector {
+    width: 20px;
+    margin: 0 2px;
+  }
+}

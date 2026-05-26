@@ -309,6 +309,7 @@ const handleNext = async (stepKey, data) => {
           onBack={handleBack}
           locked={completedSteps.has(currentStep)}
           onUnlock={isSubmitted ? null : handleUnlock}
+          savePending={hasPendingSave}
         />
       </div>
 
