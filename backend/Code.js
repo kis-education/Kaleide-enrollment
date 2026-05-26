@@ -2080,7 +2080,10 @@ function saveRelations_(enrollmentGroupId, relations) {
     const info = typeById[fwdTypeId];
     if (!info) return fwdTypeId;                   // unknown type — keep same
     if (info.is_symmetric) return fwdTypeId;       // symmetric — same type for both directions
-    const invId = info.inverse_code ? typeByDesig[info.inverse_code] : null;
+    // inverse_code may be a row ID (AppSheet Ref column) or a designation string — handle both
+    const invId = info.inverse_code
+      ? (typeById[info.inverse_code] ? info.inverse_code : typeByDesig[info.inverse_code])
+      : null;
     return invId || fwdTypeId;                     // fallback: same if inverse not found
   }
 
