@@ -16,8 +16,8 @@ function buildInitialRelations(persons, existingRelations) {
     return applicants.map(a => {
       const aId = a.person_id || a._uid;
       const found = existing.find(
-        r => (r.guardian_person_id === gId || r.person_id_a === gId) &&
-             (r.applicant_person_id === aId || r.person_id_b === aId)
+        r => (r.guardian_person_id === gId || r.person_id_a === gId || r.from_person_id === gId) &&
+             (r.applicant_person_id === aId || r.person_id_b === aId || r.to_person_id === aId)
       );
       return found
         ? { ...found, _kind: 'ga' }
@@ -33,7 +33,9 @@ function buildInitialRelations(persons, existingRelations) {
       const idB = applicants[j].person_id || applicants[j]._uid;
       const found = existing.find(
         r => (r.person_id_a === idA && r.person_id_b === idB) ||
-             (r.person_id_a === idB && r.person_id_b === idA)
+             (r.person_id_a === idB && r.person_id_b === idA) ||
+             (r.from_person_id === idA && r.to_person_id === idB) ||
+             (r.from_person_id === idB && r.to_person_id === idA)
       );
       aa.push(found
         ? { ...found, _kind: 'aa' }

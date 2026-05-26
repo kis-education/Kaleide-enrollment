@@ -222,9 +222,13 @@ export function WizardProvider({ children }) {
         verified:           true,
         desired_start_date: group.desired_start_date || '',
       },
+      application: {
+        desired_start_date: group.desired_start_date || '',
+        program_id:         group.program_id         || '',
+      },
       persons,
       relations,
-      health: persons.map(p => ({
+      health: persons.filter(p => p.person_type_id === 'applicant').map(p => ({
         person_id: p.person_id,
         allergies: p.allergies || [],
         dietary:   p.dietary   || [],

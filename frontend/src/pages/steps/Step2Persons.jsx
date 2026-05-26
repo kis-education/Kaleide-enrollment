@@ -492,14 +492,18 @@ function preparePersonForUI(person) {
 function transformPersonForSave(person) {
   const out = { ...person };
 
+  // Spread existing array entry as base to preserve server fields (e.g. person_id)
+  // so the dirty check stays stable on resume.
+  const existingNat = (person.nationalities || [])[0] || {};
   out.nationalities = person.nationality
-    ? [{ ...(person._nat_record_id ? { record_id: person._nat_record_id } : {}), nationality_id: person.nationality }]
+    ? [{ ...existingNat, ...(person._nat_record_id ? { record_id: person._nat_record_id } : {}), nationality_id: person.nationality }]
     : [];
   delete out.nationality;
   delete out._nat_record_id;
 
+  const existingId = (person.ids || [])[0] || {};
   out.ids = (person.id_type_id && person.id_number)
-    ? [{ ...(person._id_record_id ? { record_id: person._id_record_id } : {}), id_type_id: person.id_type_id, id_number: person.id_number }]
+    ? [{ ...existingId, ...(person._id_record_id ? { record_id: person._id_record_id } : {}), id_type_id: person.id_type_id, id_number: person.id_number }]
     : [];
   delete out.id_type_id;
   delete out.id_number;
