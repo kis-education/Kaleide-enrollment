@@ -186,13 +186,18 @@ export function WizardProvider({ children }) {
   }, [stepData, savedBaseline]);
 
   /**
-   * Snapshots the current stepData[stepKey] into the saved-baseline so the
-   * next isStepDirty() call returns false. Call this AFTER a successful
-   * saveStep round-trip.
+   * Stamps `savedData` into the saved-baseline for `stepKey` so the next
+   * isStepDirty() call returns false. Call this AFTER a successful saveStep
+   * round-trip, passing the exact data that was sent to the backend.
+   *
+   * Do NOT read from stepData[stepKey] here — the save is async and
+   * markStepSaved is captured in a closure at save-launch time. By the time
+   * the await resolves, stepData may have advanced via updateStep() batching,
+   * so stepData[stepKey] would be stale relative to what was actually saved.
    */
-  const markStepSaved = useCallback((stepKey) => {
-    setSavedBaseline(prev => ({ ...prev, [stepKey]: stepData[stepKey] }));
-  }, [stepData]);
+  const markStepSaved = useCallback((stepKey, savedData) => {
+    setSavedBaseline(prev => ({ ...prev, [stepKey]: savedData }));
+  }, []);
 
   const updateStep = useCallback((stepKey, data) => {
     setStepData(prev => ({ ...prev, [stepKey]: data }));

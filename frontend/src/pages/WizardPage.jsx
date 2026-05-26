@@ -120,7 +120,7 @@ const handleNext = async (stepKey, data) => {
             const updated = data.map(p => ({ ...p, person_id: p.person_id || (p._uid && map[p._uid]) || undefined }));
             updateStep('persons', updated);
           }
-          markStepSaved(stepKey);
+          markStepSaved(stepKey, data);
         } catch (err) {
           log.warn(`WizardPage: saveStep "${stepKey}" failed (background)`, { message: err.message });
           showToast(t('wizard.save_failed'));
