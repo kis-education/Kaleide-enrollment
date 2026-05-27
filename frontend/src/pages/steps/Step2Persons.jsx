@@ -511,6 +511,34 @@ function transformPersonForSave(person) {
 
   delete out._sameAddress;
 
+  // Normalize phones to server-canonical shape: remove UI-added alias fields
+  // (phone_number, phone_type_id) that preparePersonForUI adds on top of the
+  // server fields (value, phone_nr_type_id). Without this, the dirty check
+  // always returns true for resumed sessions because the baseline has the
+  // raw server shape while the transformed data has both old and new field names.
+  if (Array.isArray(out.phones)) {
+    out.phones = out.phones.map(ph => {
+      // eslint-disable-next-line no-unused-vars
+      const { phone_number, phone_type_id, ...rest } = ph;
+      // Preserve phone_number / phone_type_id as canonical fields when no
+      // server-side alias exists (new phones added in the UI never have
+      // phone_nr_type_id / value set, only phone_number / phone_type_id).
+      if (!rest.value && phone_number)          rest.value            = phone_number;
+      if (!rest.phone_nr_type_id && phone_type_id) rest.phone_nr_type_id = phone_type_id;
+      return rest;
+    });
+  }
+
+  // Same normalization for emails: remove UI-added email_address alias.
+  if (Array.isArray(out.emails)) {
+    out.emails = out.emails.map(e => {
+      // eslint-disable-next-line no-unused-vars
+      const { email_address, ...rest } = e;
+      if (!rest.value && email_address) rest.value = email_address;
+      return rest;
+    });
+  }
+
   return out;
 }
 

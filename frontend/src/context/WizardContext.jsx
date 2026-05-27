@@ -212,7 +212,26 @@ export function WizardProvider({ children }) {
     // The magic link token itself proves email ownership — treat as verified regardless
     // of the email_confirmed DB flag (which may lag or not have been written yet).
     const persons   = data.persons   || [];
-    const relations = data.relations || [];
+    // The backend always inserts 2 rows per relation pair (forward + inverse).
+    // Step3Relations only knows and produces 1 row per pair, so we must
+    // deduplicate here to keep the savedBaseline in the same shape as what
+    // handleNext sends via onNext. Deduplicate by pair_id, preferring the row
+    // whose from_person_id matches a guardian so the semantic direction is right.
+    const guardianIds = new Set(persons.filter(p => p.person_type_id === 'guardian').map(p => p.person_id));
+    const relationsRaw = data.relations || [];
+    const relByPair = {};
+    relationsRaw.forEach(r => {
+      const key = r.pair_id || r.relation_id; // pair_id groups forward+inverse; fallback to own id
+      if (!relByPair[key]) {
+        relByPair[key] = r;
+      } else {
+        // Prefer the row whose from_person_id is a guardian
+        if (guardianIds.has(r.from_person_id) && !guardianIds.has(relByPair[key].from_person_id)) {
+          relByPair[key] = r;
+        }
+      }
+    });
+    const relations = Object.values(relByPair);
     // Backend returns qbResponses as `responses`; recFiles as `documents`.
     const responses = data.responses || [];
     const documents = data.documents || [];
@@ -221,6 +240,11 @@ export function WizardProvider({ children }) {
         primary_email:      group.primary_email      || '',
         verified:           true,
         desired_start_date: group.desired_start_date || '',
+        // program_id is seeded here so Step1Email initialises selectedProgramId
+        // from the saved value on resume, which keeps the dirty check stable:
+        // onNext('application', { ..., program_id }) must match
+        // savedBaseline.application.program_id (also seeded from group.program_id).
+        program_id:         group.program_id         || '',
       },
       application: {
         desired_start_date: group.desired_start_date || '',
