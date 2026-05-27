@@ -5,6 +5,12 @@ import { fetchLookups } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
 import * as log from '../../logger';
 
+function parseBool(val) {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string')  return val.toLowerCase() === 'true' || val === '1';
+  return Boolean(val);
+}
+
 function buildInitialRelations(persons, existingRelations) {
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
@@ -20,7 +26,7 @@ function buildInitialRelations(persons, existingRelations) {
              (r.applicant_person_id === aId || r.person_id_b === aId || r.to_person_id === aId)
       );
       return found
-        ? { ...found, _kind: 'ga' }
+        ? { ...found, _kind: 'ga', is_custodial: parseBool(found.is_custodial), is_pick_up_authorized: parseBool(found.is_pick_up_authorized) }
         : { _uid: `${gId}__${aId}`, _kind: 'ga', guardian_person_id: gId, applicant_person_id: aId, relation_type_id: '', is_custodial: false, is_pick_up_authorized: false };
     });
   });

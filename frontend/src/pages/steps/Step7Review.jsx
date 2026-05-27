@@ -8,6 +8,13 @@ import * as log from '../../logger';
 
 const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
+// AppSheet returns booleans as "TRUE"/"FALSE" strings — normalise before rendering.
+function parseBool(val) {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string')  return val.toLowerCase() === 'true' || val === '1';
+  return Boolean(val);
+}
+
 // ─── Presentational components ────────────────────────────────────────────────
 
 function SectionCard({ title, icon, children }) {
@@ -199,9 +206,9 @@ export default function Step7Review({ onBack }) {
               <span style={{ color: 'var(--muted)', minWidth: 170, flexShrink: 0 }}>{t('contact.email')}</span>
               <span style={{ color: 'var(--text)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 {addr}
-                {typeLabel  && <Chip>{typeLabel}</Chip>}
-                {e.is_default   && <Chip>{t('contact.is_default')}</Chip>}
-                {e.is_emergency && <Chip color="orange">{t('contact.is_emergency')}</Chip>}
+                {typeLabel              && <Chip>{typeLabel}</Chip>}
+                {parseBool(e.is_default)   && <Chip>{t('contact.is_default')}</Chip>}
+                {parseBool(e.is_emergency) && <Chip color="orange">{t('contact.is_emergency')}</Chip>}
               </span>
             </div>
           );
@@ -217,11 +224,11 @@ export default function Step7Review({ onBack }) {
               <span style={{ color: 'var(--muted)', minWidth: 170, flexShrink: 0 }}>{t('contact.phone')}</span>
               <span style={{ color: 'var(--text)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 {num}
-                {typeLabel     && <Chip>{typeLabel}</Chip>}
-                {ph.is_whatsapp && <Chip>WhatsApp</Chip>}
-                {ph.is_telegram && <Chip>Telegram</Chip>}
-                {ph.is_default   && <Chip>{t('contact.is_default')}</Chip>}
-                {ph.is_emergency && <Chip color="orange">{t('contact.is_emergency')}</Chip>}
+                {typeLabel                  && <Chip>{typeLabel}</Chip>}
+                {parseBool(ph.is_whatsapp)   && <Chip>WhatsApp</Chip>}
+                {parseBool(ph.is_telegram)   && <Chip>Telegram</Chip>}
+                {parseBool(ph.is_default)    && <Chip>{t('contact.is_default')}</Chip>}
+                {parseBool(ph.is_emergency)  && <Chip color="orange">{t('contact.is_emergency')}</Chip>}
               </span>
             </div>
           );
@@ -324,9 +331,9 @@ export default function Step7Review({ onBack }) {
                   {aName}
                 </span>
                 <span style={{ marginLeft: 'auto', display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  {relLabel && <Chip>{relLabel}</Chip>}
-                  {r.is_custodial          && <Chip>{t('relation.is_custodial')}</Chip>}
-                  {r.is_pick_up_authorized && <Chip>{t('relation.is_pickup')}</Chip>}
+                  {relLabel                            && <Chip>{relLabel}</Chip>}
+                  {parseBool(r.is_custodial)          && <Chip>{t('relation.is_custodial')}</Chip>}
+                  {parseBool(r.is_pick_up_authorized) && <Chip>{t('relation.is_pickup')}</Chip>}
                 </span>
               </div>
             );

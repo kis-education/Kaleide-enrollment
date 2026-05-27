@@ -441,6 +441,14 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
  * Converts a stored/resumed person (arrays) back to the flat UI fields that
  * PersonSection uses (nationality, id_type_id, id_number).
  */
+// AppSheet returns booleans as strings "TRUE" / "FALSE". Normalise to real
+// JS booleans so checkbox `checked` and conditional renders work correctly.
+function parseBool(val) {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string')  return val.toLowerCase() === 'true' || val === '1';
+  return Boolean(val);
+}
+
 function preparePersonForUI(person) {
   const out = { ...person };
   // nationality: prefer existing flat field; fall back to first nationality in array
@@ -468,18 +476,25 @@ function preparePersonForUI(person) {
       out._nat_record_id = primary ? primary.record_id : null;
     }
   }
-  // Remap server field names to UI field names for phones and emails
+  // Remap server field names to UI field names for phones and emails.
+  // Also normalise boolean fields: AppSheet stores them as "TRUE"/"FALSE" strings.
   if (Array.isArray(out.phones)) {
     out.phones = out.phones.map(ph => ({
       ...ph,
       phone_number:  ph.phone_number  || ph.value            || '',
       phone_type_id: ph.phone_type_id || ph.phone_nr_type_id || '',
+      is_default:    parseBool(ph.is_default),
+      is_emergency:  parseBool(ph.is_emergency),
+      is_whatsapp:   parseBool(ph.is_whatsapp),
+      is_telegram:   parseBool(ph.is_telegram),
     }));
   }
   if (Array.isArray(out.emails)) {
     out.emails = out.emails.map(e => ({
       ...e,
       email_address: e.email_address || e.value || '',
+      is_default:    parseBool(e.is_default),
+      is_emergency:  parseBool(e.is_emergency),
     }));
   }
   return out;
