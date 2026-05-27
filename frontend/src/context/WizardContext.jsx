@@ -294,8 +294,19 @@ export function WizardProvider({ children }) {
     // Sort by relation_id so the baseline order is deterministic regardless of the
     // AppSheet API response order, which may differ from Step3's buildInitialRelations
     // output order (guardians × applicants from persons array).
+    // Also filter to only relations where BOTH persons exist in the current persons
+    // list — ghost persons from previous sessions (deleted/replaced) inflate the
+    // baseline count vs what buildInitialRelations produces, causing a permanent
+    // false-positive dirty check on every resume.
+    const personIds = new Set(persons.map(p => p.person_id).filter(Boolean));
     // eslint-disable-next-line no-unused-vars
-    const relations = Object.values(relByPair).map(({ _RowNumber, ...r }) => r)
+    const relations = Object.values(relByPair)
+      .filter(r => {
+        const fromId = r.from_person_id || r.guardian_person_id;
+        const toId   = r.to_person_id   || r.applicant_person_id;
+        return personIds.has(fromId) && personIds.has(toId);
+      })
+      .map(({ _RowNumber, ...r }) => r)
       .sort((a, b) => (a.relation_id || '').localeCompare(b.relation_id || ''));
     // Backend returns qbResponses as `responses`; recFiles as `documents`.
     const responsesRaw = data.responses || [];
