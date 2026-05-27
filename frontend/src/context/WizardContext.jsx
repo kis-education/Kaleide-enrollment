@@ -251,7 +251,11 @@ export function WizardProvider({ children }) {
     const relationsRaw = data.relations || [];
     const relByPair = {};
     relationsRaw.forEach(r => {
-      const key = r.pair_id || r.relation_id; // pair_id groups forward+inverse; fallback to own id
+      // pair_id groups forward+inverse rows for the same pair. If pair_id is null
+      // (rows created before pair_id was introduced), fall back to a canonical key
+      // derived from both person IDs sorted — guarantees forward and inverse always
+      // collapse to the same entry regardless of which direction was stored first.
+      const key = r.pair_id || [r.from_person_id, r.to_person_id].sort().join('__');
       if (!relByPair[key]) {
         relByPair[key] = r;
       } else {
