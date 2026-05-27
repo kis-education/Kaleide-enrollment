@@ -285,6 +285,10 @@ export function WizardProvider({ children }) {
       email: {
         primary_email:      group.primary_email      || '',
         verified:           true,
+        // group.desired_start_date is ISO (normalizeDate_ applied in resumeSession_).
+        // Seeding here lets Step7Review display the date correctly on resume, and
+        // ensures startType detection in Step1Email ('YYYY-09-01'.slice(5,10)==='09-01')
+        // works without requiring the family to re-enter the date.
         desired_start_date: group.desired_start_date || '',
         // program_id is NOT stored here — Step1Email initialises selectedProgramId
         // via useState('') and the useEffect auto-selects the single program from
@@ -292,12 +296,12 @@ export function WizardProvider({ children }) {
         // what isStepDirty compares against, and that is already correct.
       },
       application: {
-        // desired_start_date is intentionally excluded: the backend never writes it
-        // at saveStep time (only propagated to enrEnrollments at submit). Including it
-        // here would cause a permanent false-positive dirty save because the group row
-        // has no desired_start_date column and the frontend auto-fills from program's
-        // period_starts_on on every render.
-        program_id: group.program_id || '',
+        // desired_start_date is staged to enrEnrollmentGroups at saveStep time
+        // (backend normalizeDate_ → ISO). resumeSession_ also returns it as ISO
+        // via group.desired_start_date. fetchLookups now returns period_starts_on
+        // in ISO too, so effectiveDate from Step1Email will always be ISO → match.
+        desired_start_date: group.desired_start_date || '',
+        program_id:         group.program_id         || '',
       },
       persons,
       relations,

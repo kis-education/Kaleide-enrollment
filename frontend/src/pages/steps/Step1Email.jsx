@@ -57,10 +57,7 @@ export default function Step1Email({ onNext, savePending }) {
     const prog = (programs || []).find(p => p.program_id === selectedProgramId);
     const effectiveDate = desiredStartDate || (startType === 'september' ? (prog?.period_starts_on || '') : '');
     updateStep('email', { primary_email: email, verified: true, desired_start_date: effectiveDate, program_id: selectedProgramId });
-    // Only program_id: backend saveStep for 'application' never writes desired_start_date
-    // (only propagated to enrEnrollments at submit). Including it caused a false-positive
-    // dirty save on every resume because the group row has no desired_start_date column.
-    onNext('application', { program_id: selectedProgramId });
+    onNext('application', { desired_start_date: effectiveDate, program_id: selectedProgramId });
   };
 
   // September mode: date is implicit (not shown) — only program selection needed.

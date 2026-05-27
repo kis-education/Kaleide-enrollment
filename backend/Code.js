@@ -441,7 +441,7 @@ function initEnrollmentSession_(p) {
     resume_token:           resumeToken,
     magic_link_token:       null,
     submitted_at:           null,
-    // desired_start_date NOT on enrEnrollmentGroups (propagated to enrEnrollments at submit from the request payload)
+    desired_start_date:     null,  // staged here at saveStep('application'); propagated to enrEnrollments at submit
     source_locale:          lang,
     created_at:             now,
     updated_at:             now,
@@ -969,11 +969,12 @@ function saveStep_(p) {
   // (legacy: this used to touch enrApplications)
   const groupRow = { enrollment_group_id: enrollmentGroupId, updated_at: now };
   if (step === 'application') {
-    // desired_start_date is NOT staged on enrEnrollmentGroups (column doesn't exist).
-    // It propagates to each enrEnrollments row at submit time via the submit payload.
+    // Persist all session-level fields to enrEnrollmentGroups so they survive resume.
+    // desired_start_date is staged here and propagated to each enrEnrollments row at submit.
     // source maps to source_locale for now (real source_id was resolved at init).
-    if (payload.program_id)  groupRow.program_id   = payload.program_id;
-    if (payload.source)      groupRow.source_locale = payload.source;
+    if (payload.program_id)        groupRow.program_id        = payload.program_id;
+    if (payload.desired_start_date) groupRow.desired_start_date = normalizeDate_(payload.desired_start_date);
+    if (payload.source)            groupRow.source_locale     = payload.source;
   }
   // Note: `review` step no longer writes to the group — it walks enrollments below.
   appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [groupRow]);
@@ -1635,8 +1636,8 @@ function fetchLookups_() {
     programs:      programs.map(r => ({
       program_id:       r.program_id,
       designation:      r.designation,
-      period_starts_on: r.period_starts_on || null,
-      period_ends_on:   r.period_ends_on   || null,
+      period_starts_on: r.period_starts_on ? normalizeDate_(r.period_starts_on) : null,
+      period_ends_on:   r.period_ends_on   ? normalizeDate_(r.period_ends_on)   : null,
     })),
   };
 }
