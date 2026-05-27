@@ -325,7 +325,7 @@ export function WizardProvider({ children }) {
     // current_step pointer on the group: persons exist → step 3 visited;
     // explicit response/document rows for higher steps.
     const visitedHealth    = hasGuardians && hasApplicants && hasRelations;
-    const visitedQuestions = responses.length > 0;
+    const visitedQuestions = responsesRaw.length > 0;
     const visitedDocuments = documents.length > 0;
 
     const completed = new Set();
