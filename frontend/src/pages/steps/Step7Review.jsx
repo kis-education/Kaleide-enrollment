@@ -131,11 +131,14 @@ export default function Step7Review({ onBack }) {
             <ReviewRow label={t('field.city')} value={g.address?.city} />
             <ReviewRow label={t('field.country')} value={g.address?.country_id} />
             {(g.emails || []).map((e, ei) => (
-              <ReviewRow key={ei} label={t('contact.email')} value={e.email_address} />
+              <ReviewRow key={ei} label={t('contact.email')} value={e.email_address || e.value} />
             ))}
-            {(g.phones || []).map((ph, pi) => (
-              <ReviewRow key={pi} label={t('contact.phone')} value={ph.phone_number + (ph.is_whatsapp ? ' (WhatsApp)' : '') + (ph.is_telegram ? ' (Telegram)' : '')} />
-            ))}
+            {(g.phones || []).map((ph, pi) => {
+              const num = ph.phone_number || ph.value || '';
+              return (
+                <ReviewRow key={pi} label={t('contact.phone')} value={num + (ph.is_whatsapp ? ' (WhatsApp)' : '') + (ph.is_telegram ? ' (Telegram)' : '')} />
+              );
+            })}
           </ReviewSection>
         ))}
 
@@ -155,9 +158,12 @@ export default function Step7Review({ onBack }) {
         {/* Documents */}
         {(documents || []).length > 0 && (
           <ReviewSection title={t('step.documents')}>
-            {documents.map((d, i) => (
-              <ReviewRow key={i} label={t(`doc.${d.document_type}`) || d.document_type} value={t('doc.uploaded')} />
-            ))}
+            {documents.map((d, i) => {
+              const docKey = `doc.${d.document_type}`;
+              return (
+                <ReviewRow key={i} label={i18n.exists(docKey) ? t(docKey) : d.document_type} value={t('doc.uploaded')} />
+              );
+            })}
           </ReviewSection>
         )}
       </div>
