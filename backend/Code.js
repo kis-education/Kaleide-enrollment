@@ -804,6 +804,7 @@ function resumeSession_(p) {
     { table: T.QB_RESPONSES,     action: 'Find', selector: { Filter: '"respondent_id" = "' + id + '"' } },
     { table: T.EMAILS,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
     { table: T.PHONES,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
+    { table: T.PROGRAMS,         action: 'Find', selector: { Filter: '"program_id" = "' + group.program_id + '"' } },
   ]);
   const enrollments = topRead[0].ok ? (topRead[0].data || []) : [];
   const persons     = topRead[1].ok ? (topRead[1].data || []) : [];
@@ -848,6 +849,18 @@ function resumeSession_(p) {
 
   // Normalise date fields to ISO format before sending to the frontend
   group.desired_start_date = normalizeDate_(group.desired_start_date);
+
+  // enrEnrollmentGroups does not have a desired_start_date column (it lives on
+  // enrEnrollments), so saveStep('application') cannot persist it to the group row.
+  // Fall back to the program's period_starts_on so the frontend baseline matches
+  // what Step1Email computes — preventing a spurious save on every resume.
+  if (!group.desired_start_date && group.program_id) {
+    var progRows = topRead[7].ok ? (topRead[7].data || []) : [];
+    var progRow  = progRows[0] || null;
+    if (progRow && progRow.period_starts_on) {
+      group.desired_start_date = normalizeDate_(progRow.period_starts_on);
+    }
+  }
 
   // Reopen check: if submitted_at is set but KMS moved all enrollments back to
   // IN state, the session should be editable again. AppSheet's Edit API cannot
