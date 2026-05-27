@@ -53,11 +53,16 @@ export default function Step1Email({ onNext, savePending }) {
   };
 
   const handleContinue = () => {
-    updateStep('email', { primary_email: email, verified: true, desired_start_date: desiredStartDate, program_id: selectedProgramId });
-    onNext('application', { desired_start_date: desiredStartDate, program_id: selectedProgramId });
+    // In september mode the date picker is hidden; use program's period_starts_on as fallback.
+    const prog = (programs || []).find(p => p.program_id === selectedProgramId);
+    const effectiveDate = desiredStartDate || (startType === 'september' ? (prog?.period_starts_on || '') : '');
+    updateStep('email', { primary_email: email, verified: true, desired_start_date: effectiveDate, program_id: selectedProgramId });
+    onNext('application', { desired_start_date: effectiveDate, program_id: selectedProgramId });
   };
 
-  const canContinue = selectedProgramId && (startType === 'september' ? !!desiredStartDate : !!desiredStartDate);
+  // September mode: date is implicit (not shown) — only program selection needed.
+  // Midterm mode: user must enter a specific date.
+  const canContinue = selectedProgramId && (startType === 'september' ? true : !!desiredStartDate);
 
   return (
     <div className="kis-card">
