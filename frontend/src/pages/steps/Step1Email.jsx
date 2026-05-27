@@ -23,12 +23,17 @@ export default function Step1Email({ onNext, savePending }) {
       .then(lookups => {
         const progs = lookups.programs || [];
         setPrograms(progs);
-        // Auto-select when only one programme is available
         if (!selectedProgramId && progs.length === 1) {
+          // Auto-select when only one programme is available (new session)
           setSelectedProgramId(progs[0].program_id);
           if (!desiredStartDate && progs[0].period_starts_on) {
             setDesiredStartDate(progs[0].period_starts_on);
           }
+        } else if (selectedProgramId && !desiredStartDate) {
+          // Programme pre-loaded from a resumed session but no date saved yet —
+          // auto-fill from the programme's period_starts_on so canContinue is true.
+          const prog = progs.find(p => p.program_id === selectedProgramId);
+          if (prog?.period_starts_on) setDesiredStartDate(prog.period_starts_on);
         }
       })
       .catch(() => setPrograms([]));
