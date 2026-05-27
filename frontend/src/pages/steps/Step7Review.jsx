@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
@@ -43,9 +43,21 @@ export default function Step7Review({ onBack }) {
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
   const { enrollmentGroupId, stepData, awaitPendingSave, hasPendingSave, isSubmitted } = useWizard();
 
-  const { email, persons, documents } = stepData;
+  const { email, persons, documents, relations, health, questions } = stepData;
   const guardians  = (persons || []).filter(p => p.person_type_id === 'guardian');
   const applicants = (persons || []).filter(p => p.person_type_id === 'applicant');
+
+  const [questionSets, setQuestionSets] = useState([]);
+  useEffect(() => {
+    gasCall('fetchQuestions', { context_designation: 'Enrollment', language: lang })
+      .then(data => setQuestionSets(data.sets || []))
+      .catch(() => {});
+  }, []); // eslint-disable-line
+  const allQuestions = questionSets.flatMap(s => s.questions || []);
+
+  const gaRelations = (relations || []).filter(r =>
+    r._kind === 'ga' || (r.guardian_person_id && r.applicant_person_id)
+  );
 
   const [esig,         setEsig]         = useState('');
   const [consentGdpr,  setConsentGdpr]  = useState(false);
@@ -125,10 +137,15 @@ export default function Step7Review({ onBack }) {
         {guardians.map((g, i) => (
           <ReviewSection key={i} title={`${t('guardian.title', { n: i + 1 })} — ${g.first_name || ''} ${g.last_name || ''}`}>
             <ReviewRow label={t('field.date_of_birth')} value={g.date_of_birth} />
+            <ReviewRow label={t('field.middle_name')} value={g.middle_name} />
+            <ReviewRow label={t('field.place_of_birth')} value={g.place_of_birth} />
             <ReviewRow label={t('field.nationality')} value={g.nationalities?.[0]?.country_id} />
             <ReviewRow label={t('field.id_number')} value={g.ids?.[0] ? `${g.ids[0].id_type_id}: ${g.ids[0].id_number}` : null} />
             <ReviewRow label={t('field.address_line_1')} value={g.address?.address_line_1} />
+            <ReviewRow label={t('field.address_line_2')} value={g.address?.address_line_2} />
             <ReviewRow label={t('field.city')} value={g.address?.city} />
+            <ReviewRow label={t('field.province')} value={g.address?.province} />
+            <ReviewRow label={t('field.zip')} value={g.address?.zip} />
             <ReviewRow label={t('field.country')} value={g.address?.country_id} />
             {(g.emails || []).map((e, ei) => (
               <ReviewRow key={ei} label={t('contact.email')} value={e.email_address || e.value} />
@@ -145,15 +162,95 @@ export default function Step7Review({ onBack }) {
         {/* Applicants */}
         {applicants.map((a, i) => (
           <ReviewSection key={i} title={`${t('applicant.title', { n: i + 1 })} — ${a.first_name || ''} ${a.last_name || ''}`}>
+            <ReviewRow label={t('field.middle_name')} value={a.middle_name} />
             <ReviewRow label={t('field.date_of_birth')} value={a.date_of_birth} />
+            <ReviewRow label={t('field.place_of_birth')} value={a.place_of_birth} />
             <ReviewRow label={t('field.gender')} value={a.gender} />
             <ReviewRow label={t('field.nationality')} value={a.nationalities?.[0]?.country_id} />
+            <ReviewRow label={t('field.mother_tongue')} value={a.mother_tongue} />
             <ReviewRow label={t('field.start_date')} value={email?.desired_start_date} />
             {(a.previous_schools || []).map((s, si) => (
               <ReviewRow key={si} label={`${t('applicant.prev_school')} ${si + 1}`} value={`${s.school_name || ''} (${s.from_year || ''}–${s.to_year || ''})`} />
             ))}
           </ReviewSection>
         ))}
+
+        {/* Relations */}
+        {gaRelations.length > 0 && (
+          <ReviewSection title={t('step.relations')}>
+            {gaRelations.map((r, i) => {
+              const gId = r.guardian_person_id || r.person_id_a;
+              const aId = r.applicant_person_id || r.person_id_b;
+              const g = (persons || []).find(p => (p.person_id || p._uid) === gId);
+              const a = (persons || []).find(p => (p.person_id || p._uid) === aId);
+              if (!g || !a) return null;
+              const gName = [g.first_name, g.last_name].filter(Boolean).join(' ');
+              const aName = [a.first_name, a.last_name].filter(Boolean).join(' ');
+              const relTypeKey = `relation.${r.relation_type_id}`;
+              const relLabel = r.relation_type_id
+                ? (i18n.exists(relTypeKey) ? t(relTypeKey) : r.relation_type_id)
+                : '—';
+              const flags = [
+                r.is_custodial         && t('relation.is_custodial'),
+                r.is_pick_up_authorized && t('relation.is_pickup'),
+              ].filter(Boolean).join(' · ');
+              return (
+                <ReviewRow key={i}
+                  label={`${gName} → ${aName}`}
+                  value={relLabel + (flags ? ` (${flags})` : '')} />
+              );
+            })}
+          </ReviewSection>
+        )}
+
+        {/* Health */}
+        {(health || []).some(h => h.allergies?.length || h.dietary?.length || h.medical?.length) && (
+          <ReviewSection title={t('step.health')}>
+            {(health || []).map((h, hi) => {
+              const applicant = (persons || []).find(p => (p.person_id || p._uid) === h.person_id);
+              const name = applicant
+                ? [applicant.first_name, applicant.last_name].filter(Boolean).join(' ')
+                : null;
+              const hasAny = h.allergies?.length || h.dietary?.length || h.medical?.length;
+              if (!hasAny) return null;
+              return (
+                <div key={hi}>
+                  {name && (
+                    <p className="fw-semibold mb-1" style={{ fontSize: '0.9rem', color: 'var(--teal-dk)', marginTop: hi > 0 ? 8 : 0 }}>
+                      {name}
+                    </p>
+                  )}
+                  {(h.allergies || []).map((a, ai) => (
+                    <ReviewRow key={`a${ai}`} label={t('health.allergies')}
+                      value={a.label + (a.observations ? ` — ${a.observations}` : '')} />
+                  ))}
+                  {(h.dietary || []).map((d, di) => (
+                    <ReviewRow key={`d${di}`} label={t('health.dietary')}
+                      value={d.label + (d.observations ? ` — ${d.observations}` : '')} />
+                  ))}
+                  {(h.medical || []).map((m, mi) => (
+                    <ReviewRow key={`m${mi}`} label={t('health.medical')}
+                      value={m.label + (m.observations ? ` — ${m.observations}` : '')} />
+                  ))}
+                </div>
+              );
+            })}
+          </ReviewSection>
+        )}
+
+        {/* Questions */}
+        {allQuestions.length > 0 && Object.keys(questions || {}).length > 0 && (
+          <ReviewSection title={t('step.questions')}>
+            {Object.entries(questions || {}).map(([key, val], i) => {
+              if (val === '' || val === null || val === undefined) return null;
+              const [qid] = key.split('__');
+              const q = allQuestions.find(qq => qq.question_id === qid);
+              if (!q) return null;
+              const displayVal = Array.isArray(val) ? val.join(', ') : String(val);
+              return <ReviewRow key={i} label={q.question_text || qid} value={displayVal} />;
+            })}
+          </ReviewSection>
+        )}
 
         {/* Documents */}
         {(documents || []).length > 0 && (
