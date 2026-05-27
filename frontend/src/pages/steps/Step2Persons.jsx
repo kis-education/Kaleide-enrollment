@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
+import * as log from '../../logger';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
 import LockedBanner from '../../components/LockedBanner';
@@ -548,7 +549,12 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const primaryEmail = stepData.email?.primary_email || '';
 
   const [persons, setPersons] = useState(() => {
-    if (stepData.persons?.length) return stepData.persons.map(preparePersonForUI);
+    if (stepData.persons?.length) {
+      const ui = stepData.persons.map(preparePersonForUI);
+      log.debug('Step2: init persons from stepData (preparePersonForUI applied)', ui);
+      return ui;
+    }
+    log.debug('Step2: init persons with empty defaults');
     return [emptyPerson('guardian'), emptyPerson('applicant')];
   });
   const [err, setErr] = useState('');
@@ -648,6 +654,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       return p;
     });
     const transformed = withPrimaryEmail.map(transformPersonForSave);
+    log.info('Step2: onNext persons (transformed)', transformed);
     updateStep('persons', transformed);
     onNext('persons', transformed);
   };

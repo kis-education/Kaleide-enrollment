@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
+import * as log from '../../logger';
 
 export default function Step1Email({ onNext, savePending }) {
   const { t }    = useTranslation();
@@ -56,7 +57,9 @@ export default function Step1Email({ onNext, savePending }) {
     // In september mode the date picker is hidden; use program's period_starts_on as fallback.
     const prog = (programs || []).find(p => p.program_id === selectedProgramId);
     const effectiveDate = desiredStartDate || (startType === 'september' ? (prog?.period_starts_on || '') : '');
-    updateStep('email', { primary_email: email, verified: true, desired_start_date: effectiveDate, program_id: selectedProgramId });
+    const emailData = { primary_email: email, verified: true, desired_start_date: effectiveDate, program_id: selectedProgramId };
+    log.info('Step1: onNext application', { emailData, effectiveDate, selectedProgramId });
+    updateStep('email', emailData);
     onNext('application', { desired_start_date: effectiveDate, program_id: selectedProgramId });
   };
 

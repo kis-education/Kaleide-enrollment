@@ -1,9 +1,10 @@
 /**
- * DEV LOGGER — remove or set VITE_DEV_LOGGER=false for production.
- * Lightweight pub/sub log store. Import log functions anywhere.
+ * DEV LOGGER — lightweight pub/sub log store.
+ * Import log functions anywhere in the app.
+ * Mirrors to browser console AND the floating DevLogger panel.
  */
 
-const MAX_ENTRIES = 300;
+const MAX_ENTRIES = 500;
 const listeners   = new Set();
 export const entries = [];
 
@@ -23,10 +24,12 @@ function push(level, message, data) {
   // Mirror to browser console
   const con = level === 'error' ? console.error
     : level === 'warn'  ? console.warn
+    : level === 'debug' ? console.debug
     : console.log;
-  con(`[KIS ${level.toUpperCase()}] ${message}`, data !== undefined ? data : '');
+  con(`[ENR ${level.toUpperCase()}] ${message}`, data !== undefined ? data : '');
 }
 
+export const debug   = (msg, data) => push('debug',   msg, data);
 export const info    = (msg, data) => push('info',    msg, data);
 export const success = (msg, data) => push('success', msg, data);
 export const warn    = (msg, data) => push('warn',    msg, data);

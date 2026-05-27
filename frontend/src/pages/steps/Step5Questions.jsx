@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
+import * as log from '../../logger';
 
 function QuestionField({ question, value, onChange }) {
   const type = question.response_type_id?.toLowerCase?.() || 'text';
@@ -155,6 +156,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
         responses:                   rows,
       }).catch(() => {});
     }
+    log.info('Step5: onNext questions', responses);
     updateStep('questions', responses);
     onNext('questions', responses);
   };

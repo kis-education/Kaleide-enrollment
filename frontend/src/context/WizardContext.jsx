@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import * as log from '../logger';
 
 const WizardContext = createContext(null);
 
@@ -71,9 +72,11 @@ export function WizardProvider({ children }) {
    * older promise's finally() leaves the newer one intact).
    */
   const setPendingSave = useCallback((promise) => {
+    log.debug('setPendingSave: save promise registered');
     setPendingSavePromiseRaw(promise);
     setHasPendingSave(true);
     promise.finally(() => {
+      log.debug('setPendingSave: save promise settled, clearing hasPendingSave');
       setPendingSavePromiseRaw(prev => prev === promise ? null : prev);
       // Only clear hasPendingSave if no newer promise replaced us.
       setHasPendingSave(false);
@@ -182,35 +185,52 @@ export function WizardProvider({ children }) {
       const curStr  = JSON.stringify(cur);
       const baseStr = JSON.stringify(base);
       if (curStr !== baseStr) {
-        // Debug: log the first field difference to help diagnose false positives.
+        // ── Debug: find and log ALL field differences ──────────────────────────
         if (Array.isArray(cur) && Array.isArray(base)) {
-          outer: for (let i = 0; i < Math.max(cur.length, base.length); i++) {
+          const diffs = [];
+          for (let i = 0; i < Math.max(cur.length, base.length); i++) {
             const a = cur[i], b = base[i];
             if (JSON.stringify(a) !== JSON.stringify(b)) {
               const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
               for (const k of keys) {
                 if (JSON.stringify(a?.[k]) !== JSON.stringify(b?.[k])) {
-                  console.warn(`[dirty] step=${stepKey} idx=${i} key="${k}" cur=`, a?.[k], `base=`, b?.[k]);
-                  break outer;
+                  diffs.push({ idx: i, key: k, cur: a?.[k], base: b?.[k] });
                 }
               }
             }
           }
-        } else if (cur && base && typeof cur === 'object' && typeof base === 'object' && !Array.isArray(cur) && !Array.isArray(base)) {
+          log.warn(`[dirty] step=${stepKey} (array, ${diffs.length} diff(s))`, {
+            diffs,
+            cur_length: cur.length,
+            base_length: base.length,
+            cur_full: cur,
+            base_full: base,
+          });
+        } else if (cur && base && typeof cur === 'object' && !Array.isArray(cur) && typeof base === 'object' && !Array.isArray(base)) {
           const keys = new Set([...Object.keys(cur), ...Object.keys(base)]);
+          const diffs = {};
           for (const k of keys) {
             if (JSON.stringify(cur[k]) !== JSON.stringify(base[k])) {
-              console.warn(`[dirty] step=${stepKey} key="${k}" cur=`, cur[k], `base=`, base[k]);
-              break;
+              diffs[k] = { cur: cur[k], base: base[k] };
             }
           }
+          log.warn(`[dirty] step=${stepKey} (object, ${Object.keys(diffs).length} diff(s))`, {
+            diffs,
+            cur_full: cur,
+            base_full: base,
+          });
         } else {
-          console.warn(`[dirty] step=${stepKey} type mismatch cur=`, typeof cur, Array.isArray(cur) ? '[]' : '', `base=`, typeof base, Array.isArray(base) ? '[]' : '');
+          log.warn(`[dirty] step=${stepKey} type/value mismatch`, {
+            cur_type: typeof cur, cur_isArray: Array.isArray(cur), cur_full: cur,
+            base_type: typeof base, base_isArray: Array.isArray(base), base_full: base,
+          });
         }
         return true;
       }
+      log.debug(`[clean] step=${stepKey} — not dirty, skip save`);
       return false;
-    } catch (_) {
+    } catch (e) {
+      log.error(`isStepDirty: exception for step=${stepKey}`, { message: e.message });
       return true; // err on the side of saving
     }
   }, [stepData, savedBaseline]);
@@ -226,10 +246,12 @@ export function WizardProvider({ children }) {
    * so stepData[stepKey] would be stale relative to what was actually saved.
    */
   const markStepSaved = useCallback((stepKey, savedData) => {
+    log.success(`markStepSaved: ${stepKey}`, savedData);
     setSavedBaseline(prev => ({ ...prev, [stepKey]: savedData }));
   }, []);
 
   const updateStep = useCallback((stepKey, data) => {
+    log.debug(`updateStep: ${stepKey}`, data);
     setStepData(prev => ({ ...prev, [stepKey]: data }));
   }, []);
 
@@ -318,6 +340,18 @@ export function WizardProvider({ children }) {
       questions: responsesDict,
       documents,
     };
+    log.info('hydrateFromResume: seeding stepData + savedBaseline', {
+      enrollmentGroupId: group.enrollment_group_id || group.application_id,
+      persons_count: persons.length,
+      relations_count: relations.length,
+      health_count: hydrated.health?.length,
+      questions_count: Object.keys(hydrated.questions || {}).length,
+      documents_count: hydrated.documents?.length,
+      application: hydrated.application,
+      persons_ids: persons.map(p => ({ person_id: p.person_id, type: p.person_type_id })),
+      relations_full: relations,
+      persons_full: persons,
+    });
     setStepData(prev => ({ ...prev, ...hydrated }));
     // Seed the saved baseline with the freshly-loaded data so isStepDirty()
     // correctly reports false for steps the user hasn't touched after resume.

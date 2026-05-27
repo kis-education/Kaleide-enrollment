@@ -55,9 +55,15 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
 
-  const [relations,     setRelations]     = useState(() =>
-    buildInitialRelations(persons, stepData.relations)
-  );
+  const [relations,     setRelations]     = useState(() => {
+    const initial = buildInitialRelations(persons, stepData.relations);
+    log.debug('Step3: init relations (buildInitialRelations)', {
+      persons_ids: persons.map(p => ({ person_id: p.person_id, _uid: p._uid, type: p.person_type_id })),
+      stepData_relations: stepData.relations,
+      initial_relations: initial,
+    });
+    return initial;
+  });
   const [relationTypes, setRelationTypes] = useState([]);
   const [highlightEdit, setHighlightEdit] = useState(false);
 
@@ -116,6 +122,7 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
     // from buildInitialRelations order (guardians × applicants), causing false-positive
     // dirty saves on every resume.
     relationsToSave.sort((a, b) => (a.relation_id || '').localeCompare(b.relation_id || ''));
+    log.info('Step3: onNext relations (relationsToSave)', relationsToSave);
     onNext('relations', relationsToSave);
   };
 

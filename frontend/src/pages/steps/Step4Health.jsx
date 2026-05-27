@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
+import * as log from '../../logger';
 
 function TagSelect({ options, selected, onChange, placeholder }) {
   const [input,   setInput]   = useState('');
@@ -188,6 +189,7 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
   };
 
   const handleNext = () => {
+    log.info('Step4: onNext health', healthData);
     updateStep('health', healthData);
     onNext('health', healthData);
   };

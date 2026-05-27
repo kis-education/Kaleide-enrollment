@@ -47,6 +47,7 @@ export async function gasCall(action, payload = {}) {
   if (logPayload.base64) logPayload.base64 = `[base64 ~${Math.round((payload.base64?.length || 0) * 0.75 / 1024)}KB]`;
 
   log.info(`→ GAS ${action}`, logPayload);
+  log.debug(`→ GAS ${action} (raw payload keys)`, { keys: Object.keys(payload), enrollment_group_id: payload.enrollment_group_id || payload.application_id || null });
 
   const body = JSON.stringify({ action, _hp: '', ...payload });
   const t0   = performance.now();
@@ -85,5 +86,6 @@ export async function gasCall(action, payload = {}) {
   }
 
   log.success(`✓ ${action} OK`, data);
+  log.debug(`← GAS ${action} (full response)`, data);
   return data;
 }

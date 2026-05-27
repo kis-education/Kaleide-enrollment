@@ -92,10 +92,10 @@ const handleNext = async (stepKey, data) => {
 
     const needsSave = !!(enrollmentGroupId && stepKey && isStepDirty(stepKey, data));
     if (!needsSave && enrollmentGroupId && stepKey) {
-      log.info(`WizardPage: step "${stepKey}" not dirty, skipping saveStep`);
+      log.info(`WizardPage: step "${stepKey}" clean — skipping save`);
     }
     if (needsSave) {
-      log.info(`WizardPage: auto-saving step "${stepKey}" in background`);
+      log.info(`WizardPage: step "${stepKey}" dirty — launching background save`, { data });
       // Fire-and-forget. Wrap in an async IIFE so we can register the
       // promise via setPendingSave for the next handleNext / submit to await.
       const savePromise = (async () => {
@@ -118,8 +118,10 @@ const handleNext = async (stepKey, data) => {
             const map = {};
             saveResult._debug.personIdMap.forEach(({ _uid, person_id }) => { if (_uid) map[_uid] = person_id; });
             const updated = data.map(p => ({ ...p, person_id: p.person_id || (p._uid && map[p._uid]) || undefined }));
+            log.debug('WizardPage: stamping personIdMap into stepData.persons', { map, updated_ids: updated.map(p => ({ _uid: p._uid, person_id: p.person_id })) });
             updateStep('persons', updated);
           }
+          log.debug(`WizardPage: calling markStepSaved("${stepKey}") with saved data`, data);
           markStepSaved(stepKey, data);
         } catch (err) {
           log.warn(`WizardPage: saveStep "${stepKey}" failed (background)`, { message: err.message });

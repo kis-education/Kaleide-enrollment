@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
 import { CONSENT_TEXTS } from '../../consentTexts';
+import * as log from '../../logger';
 
 const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
@@ -59,6 +60,7 @@ export default function Step7Review({ onBack }) {
 
     setErr('');
     setSubmitting(true);
+    log.info('Step7: handleSubmit — submitting enrollment', { enrollmentGroupId, hasPendingSave, esig: esig.trim() ? '[signed]' : '[empty]' });
 
     try {
       // Drain any background save still in flight from Step 6 (or earlier).

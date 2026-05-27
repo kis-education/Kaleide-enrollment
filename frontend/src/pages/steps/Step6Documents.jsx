@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
+import * as log from '../../logger';
 
 const DOCUMENT_TYPES = [
   { key: 'passport',        labelKey: 'doc.passport'        },
@@ -113,6 +114,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   };
 
   const handleNext = () => {
+    log.info('Step6: onNext documents', documents);
     updateStep('documents', documents);
     onNext('documents', documents);
   };
