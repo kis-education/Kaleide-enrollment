@@ -627,11 +627,17 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       }
     }
     setErr('');
+    // Inject primary email BEFORE transformPersonForSave so the injected entry
+    // goes through the same normalization as existing emails. Doing it after
+    // would leave { email_address } on the injected entry while the rest have
+    // { value }, making the dirty-check always return true.
     let firstGuardianDone = false;
-    const transformed = persons.map(transformPersonForSave).map(p => {
+    const withPrimaryEmail = persons.map(p => {
       if (p.person_type_id === 'guardian' && primaryEmail && !firstGuardianDone) {
         firstGuardianDone = true;
-        const alreadyHas = (p.emails || []).some(e => e.email_address === primaryEmail);
+        const alreadyHas = (p.emails || []).some(
+          e => (e.email_address || e.value || '') === primaryEmail
+        );
         if (!alreadyHas) {
           return {
             ...p,
@@ -641,6 +647,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       }
       return p;
     });
+    const transformed = withPrimaryEmail.map(transformPersonForSave);
     updateStep('persons', transformed);
     onNext('persons', transformed);
   };
