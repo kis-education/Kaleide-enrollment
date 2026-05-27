@@ -519,7 +519,7 @@ function transformPersonForSave(person) {
   if (Array.isArray(out.phones)) {
     out.phones = out.phones.map(ph => {
       // eslint-disable-next-line no-unused-vars
-      const { phone_number, phone_type_id, ...rest } = ph;
+      const { phone_number, phone_type_id, _uid, ...rest } = ph;
       // Preserve phone_number / phone_type_id as canonical fields when no
       // server-side alias exists (new phones added in the UI never have
       // phone_nr_type_id / value set, only phone_number / phone_type_id).
@@ -529,11 +529,11 @@ function transformPersonForSave(person) {
     });
   }
 
-  // Same normalization for emails: remove UI-added email_address alias.
+  // Same normalization for emails: remove UI-added email_address alias and _uid.
   if (Array.isArray(out.emails)) {
     out.emails = out.emails.map(e => {
       // eslint-disable-next-line no-unused-vars
-      const { email_address, ...rest } = e;
+      const { email_address, _uid, ...rest } = e;
       if (!rest.value && email_address) rest.value = email_address;
       return rest;
     });

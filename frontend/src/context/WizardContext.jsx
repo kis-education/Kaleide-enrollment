@@ -179,7 +179,27 @@ export function WizardProvider({ children }) {
     try {
       const cur  = data !== undefined ? data : stepData[stepKey];
       const base = savedBaseline[stepKey];
-      return JSON.stringify(cur) !== JSON.stringify(base);
+      const curStr  = JSON.stringify(cur);
+      const baseStr = JSON.stringify(base);
+      if (curStr !== baseStr) {
+        // Debug: log the first field difference to help diagnose false positives.
+        if (Array.isArray(cur) && Array.isArray(base)) {
+          outer: for (let i = 0; i < Math.max(cur.length, base.length); i++) {
+            const a = cur[i], b = base[i];
+            if (JSON.stringify(a) !== JSON.stringify(b)) {
+              const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+              for (const k of keys) {
+                if (JSON.stringify(a?.[k]) !== JSON.stringify(b?.[k])) {
+                  console.warn(`[dirty] step=${stepKey} idx=${i} key="${k}" cur=`, a?.[k], `base=`, b?.[k]);
+                  break outer;
+                }
+              }
+            }
+          }
+        }
+        return true;
+      }
+      return false;
     } catch (_) {
       return true; // err on the side of saving
     }
