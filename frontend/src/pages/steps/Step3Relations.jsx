@@ -103,7 +103,8 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
     // Strip _kind (UI-only) before saving so baseline comparison stays stable.
     const relationsToSave = [];
     relations.forEach(r => {
-      const { _kind, ...rClean } = r;
+      // eslint-disable-next-line no-unused-vars
+      const { _kind, _RowNumber, ...rClean } = r;
       relationsToSave.push(rClean);
       if (_kind === 'aa' && !r.relation_id) {
         relationsToSave.push({ ...rClean, _uid: `${r.person_id_b}__${r.person_id_a}`, person_id_a: r.person_id_b, person_id_b: r.person_id_a });

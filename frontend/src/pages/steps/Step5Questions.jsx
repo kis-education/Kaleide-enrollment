@@ -110,7 +110,11 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
 
   const [sets,     setSets]     = useState([]);
   const [loading,  setLoading]  = useState(true);
-  const [responses, setResponses] = useState(stepData.questions || {});
+  // stepData.questions is normalized to a dict by hydrateFromResume; fall back to {}
+  // (never to [] — the dirty check compares against the dict shape).
+  const [responses, setResponses] = useState(
+    Array.isArray(stepData.questions) ? {} : (stepData.questions || {})
+  );
   const [highlightEdit, setHighlightEdit] = useState(false);
 
   const persons    = stepData.persons || [];

@@ -196,6 +196,16 @@ export function WizardProvider({ children }) {
               }
             }
           }
+        } else if (cur && base && typeof cur === 'object' && typeof base === 'object' && !Array.isArray(cur) && !Array.isArray(base)) {
+          const keys = new Set([...Object.keys(cur), ...Object.keys(base)]);
+          for (const k of keys) {
+            if (JSON.stringify(cur[k]) !== JSON.stringify(base[k])) {
+              console.warn(`[dirty] step=${stepKey} key="${k}" cur=`, cur[k], `base=`, base[k]);
+              break;
+            }
+          }
+        } else {
+          console.warn(`[dirty] step=${stepKey} type mismatch cur=`, typeof cur, Array.isArray(cur) ? '[]' : '', `base=`, typeof base, Array.isArray(base) ? '[]' : '');
         }
         return true;
       }
@@ -251,9 +261,21 @@ export function WizardProvider({ children }) {
         }
       }
     });
-    const relations = Object.values(relByPair);
+    // Strip AppSheet system column _RowNumber (changes between API calls, has no
+    // semantic meaning for the enrollment data). Without stripping, the dirty check
+    // always returns true for relations because _RowNumber in the baseline (set at
+    // resume time) can differ from the row reference Step3 finds in existing data.
+    // eslint-disable-next-line no-unused-vars
+    const relations = Object.values(relByPair).map(({ _RowNumber, ...r }) => r);
     // Backend returns qbResponses as `responses`; recFiles as `documents`.
-    const responses = data.responses || [];
+    const responsesRaw = data.responses || [];
+    // Step5Questions tracks responses as a dict { "${question_id}__${respondent_id}": responseText }
+    // while the backend stores/returns them as an array. Normalize here so savedBaseline.questions
+    // matches the shape Step5 sends via onNext — preventing a permanent false-positive dirty check.
+    const responsesDict = {};
+    responsesRaw.forEach(r => {
+      if (r.question_id) responsesDict[`${r.question_id}__${r.respondent_id || ''}`] = r.response_text || '';
+    });
     const documents = data.documents || [];
     const hydrated = {
       email: {
@@ -277,7 +299,7 @@ export function WizardProvider({ children }) {
         dietary:   p.dietary   || [],
         medical:   p.medical   || [],
       })),
-      questions: responses,
+      questions: responsesDict,
       documents,
     };
     setStepData(prev => ({ ...prev, ...hydrated }));
