@@ -265,8 +265,12 @@ export function WizardProvider({ children }) {
     // semantic meaning for the enrollment data). Without stripping, the dirty check
     // always returns true for relations because _RowNumber in the baseline (set at
     // resume time) can differ from the row reference Step3 finds in existing data.
+    // Sort by relation_id so the baseline order is deterministic regardless of the
+    // AppSheet API response order, which may differ from Step3's buildInitialRelations
+    // output order (guardians × applicants from persons array).
     // eslint-disable-next-line no-unused-vars
-    const relations = Object.values(relByPair).map(({ _RowNumber, ...r }) => r);
+    const relations = Object.values(relByPair).map(({ _RowNumber, ...r }) => r)
+      .sort((a, b) => (a.relation_id || '').localeCompare(b.relation_id || ''));
     // Backend returns qbResponses as `responses`; recFiles as `documents`.
     const responsesRaw = data.responses || [];
     // Step5Questions tracks responses as a dict { "${question_id}__${respondent_id}": responseText }
@@ -288,8 +292,12 @@ export function WizardProvider({ children }) {
         // what isStepDirty compares against, and that is already correct.
       },
       application: {
-        desired_start_date: group.desired_start_date || '',
-        program_id:         group.program_id         || '',
+        // desired_start_date is intentionally excluded: the backend never writes it
+        // at saveStep time (only propagated to enrEnrollments at submit). Including it
+        // here would cause a permanent false-positive dirty save because the group row
+        // has no desired_start_date column and the frontend auto-fills from program's
+        // period_starts_on on every render.
+        program_id: group.program_id || '',
       },
       persons,
       relations,
@@ -318,7 +326,9 @@ export function WizardProvider({ children }) {
     setIsSubmitted(submitted);
     const hasGuardians     = persons.some(p => p.person_type_id === 'guardian');
     const hasApplicants    = persons.some(p => p.person_type_id === 'applicant');
-    const hasStartDate     = !!group.desired_start_date;
+    // desired_start_date lives on enrEnrollments (not the group row), so check
+    // the first enrollment's date; fall back to group field for legacy sessions.
+    const hasStartDate     = !!(data.enrollments?.[0]?.desired_start_date) || !!group.desired_start_date;
     const hasRelations     = relations.length > 0;
     // Step 3 (health), 4 (questions), 5 (documents) are visited even if the
     // family had nothing to declare. Best proxies we have without an explicit

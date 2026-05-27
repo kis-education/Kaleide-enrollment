@@ -111,6 +111,11 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
       }
     });
     updateStep('relations', relations);
+    // Sort by relation_id so the order matches the baseline seeded in hydrateFromResume
+    // (also sorted by relation_id). AppSheet API response order is arbitrary and differs
+    // from buildInitialRelations order (guardians × applicants), causing false-positive
+    // dirty saves on every resume.
+    relationsToSave.sort((a, b) => (a.relation_id || '').localeCompare(b.relation_id || ''));
     onNext('relations', relationsToSave);
   };
 
