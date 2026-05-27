@@ -240,11 +240,10 @@ export function WizardProvider({ children }) {
         primary_email:      group.primary_email      || '',
         verified:           true,
         desired_start_date: group.desired_start_date || '',
-        // program_id is seeded here so Step1Email initialises selectedProgramId
-        // from the saved value on resume, which keeps the dirty check stable:
-        // onNext('application', { ..., program_id }) must match
-        // savedBaseline.application.program_id (also seeded from group.program_id).
-        program_id:         group.program_id         || '',
+        // program_id is NOT stored here — Step1Email initialises selectedProgramId
+        // via useState('') and the useEffect auto-selects the single program from
+        // fetchLookups(). savedBaseline.application.program_id (seeded below) is
+        // what isStepDirty compares against, and that is already correct.
       },
       application: {
         desired_start_date: group.desired_start_date || '',
