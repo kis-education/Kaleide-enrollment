@@ -2084,7 +2084,7 @@ function saveRelations_(enrollmentGroupId, relations) {
     const id = rt['Row ID'] || rt.row_id;
     if (!id) return;
     typeById[id] = {
-      is_symmetric: rt.is_symmetric === true || rt.is_symmetric === 'true' || rt.is_symmetric === 'TRUE',
+      is_symmetric: rt.is_symmetric === true || rt.is_symmetric === 'true' || rt.is_symmetric === 'TRUE' || rt.is_symmetric === 'Y',
       inverse_code: rt.inverse_code || null,
     };
     if (rt.relation_type_designation) typeByDesig[rt.relation_type_designation] = id;
