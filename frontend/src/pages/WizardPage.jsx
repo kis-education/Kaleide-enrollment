@@ -52,6 +52,15 @@ export default function WizardPage() {
   // Kick off lookup prefetch immediately so Step3/Step4 get cached data.
   useEffect(() => { prefetchLookups(); }, []); // eslint-disable-line
 
+  // If the session is already known to be submitted (from sessionStorage or after
+  // rehydration), redirect directly to /confirmation so the family sees next steps
+  // instead of the locked read-only wizard.
+  useEffect(() => {
+    if (isSubmitted && !rehydrating) {
+      navigate('/confirmation', { replace: true });
+    }
+  }, [isSubmitted, rehydrating]); // eslint-disable-line
+
   // On page reload, enrollmentGroupId is restored from sessionStorage but stepData is empty.
   // Auto-resume from the server to restore full wizard state.
   useEffect(() => {
