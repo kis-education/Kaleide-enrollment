@@ -27,10 +27,8 @@ export default function ResumePage() {
           status_type_id:      grp?.status_type_id,
         });
         hydrateFromResume(data);
-        const submitted = !!grp?.submitted_at;
-        const dest = submitted ? '/confirmation' : '/apply';
-        log.info('ResumePage: hydration complete, navigating', { dest, submitted });
-        navigate(dest);
+        log.info('ResumePage: hydration complete, navigating to /apply');
+        navigate('/apply');
       })
       .catch(err => {
         log.error('ResumePage: resumeSession failed', { message: err.message });

@@ -459,6 +459,16 @@ export default function Step7Review({ onBack }) {
               {t('step7.submitted_note')}
             </p>
           </div>
+          <div className="kis-card mt-3" style={{ textAlign: 'left' }}>
+            <h3 style={{ color: 'var(--teal-dk)', marginTop: 0, fontSize: '1rem' }}>
+              {t('confirmation.next_steps_title')}
+            </h3>
+            <ul style={{ color: 'var(--text)', lineHeight: 1.8, paddingLeft: 20, marginBottom: 0 }}>
+              <li>{t('confirmation.next_1')}</li>
+              <li>{t('confirmation.next_2')}</li>
+              <li>{t('confirmation.next_3')}</li>
+            </ul>
+          </div>
           <div className="d-flex mt-4">
             <button className="btn-secondary-kis" onClick={onBack}>
               <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
