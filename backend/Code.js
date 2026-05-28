@@ -598,7 +598,25 @@ function sendMagicLink_(p) {
     if (!grp) throw new Error('Enrollment group not found');
     if (grp.abandoned_at) throw new Error('This application was abandoned');
     _checkMagicLinkRateLimit_((grp.primary_email || '').toLowerCase().trim());
-    sendMagicLinkEmail_(grp.primary_email, grp.resume_token, grp.preferred_language || 'es');
+
+    // Renew token + created_at for non-submitted sessions so the new link is
+    // always valid for a fresh 7-day window regardless of when the session was
+    // originally created. Also invalidates any previously sent magic links.
+    let tokenToSend = grp.resume_token;
+    if (!grp.submitted_at) {
+      const nowIso   = new Date().toISOString();
+      const newToken = generateUuid_();
+      appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+        enrollment_group_id: grp.enrollment_group_id,
+        resume_token:        newToken,
+        created_at:          nowIso,
+        updated_at:          nowIso,
+      }]);
+      tokenToSend = newToken;
+      Logger.log('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id);
+    }
+
+    sendMagicLinkEmail_(grp.primary_email, tokenToSend, grp.preferred_language || 'es');
   } else if (p.primary_email) {
     // Find all non-submitted, non-abandoned sessions for this email
     const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
@@ -606,7 +624,27 @@ function sendMagicLink_(p) {
     });
     if (!rows || !rows.length) throw new Error('Enrollment group not found');
     _checkMagicLinkRateLimit_(p.primary_email.toLowerCase().trim());
-    const grps = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    // Renew tokens + created_at for all non-submitted sessions before sending.
+    const nowIso = new Date().toISOString();
+    const grps = rows
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+      .map(g => {
+        const newToken = generateUuid_();
+        try {
+          appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+            enrollment_group_id: g.enrollment_group_id,
+            resume_token:        newToken,
+            created_at:          nowIso,
+            updated_at:          nowIso,
+          }]);
+          return { ...g, resume_token: newToken };
+        } catch (e) {
+          Logger.log('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message);
+          return g; // fall back to original token on error
+        }
+      });
+
     const lang = grps[0].preferred_language || 'es';
     if (grps.length === 1) {
       // Use the single-link template (with full security footer + GDPR block)
