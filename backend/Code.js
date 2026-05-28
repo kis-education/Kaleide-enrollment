@@ -54,7 +54,7 @@ const QB_ADAPTATION_NOTES_ID = 'a1b2c3d4-0023-0000-0000-000000000000';
 //   - `sysStates_T`             (universal state catalog; entity_type_code='ENR_ADMISSION_SCHOOL')
 //
 // Stage-1 notes:
-//   - sysStates_T: entity_type_code='ENR_APPLICATION'. PK=state_id, code field=state_code.
+//   - sysStates_T: entity_type_code='ENR_ADMISSION_SCHOOL'. PK=state_id, code field=state_code.
 //   - sysStateTransitionLog: polymorphic on entity_type_code+entity_id. DL-S37.
 //   - sysConsentsLog: polymorphic on entity_type_code+entity_id. Signer via signer_table+signer_id. DL-S44.
 //   - sysPersonRelations: polymorphic via context_entity_type_code+context_entity_id. DL-S45.
@@ -66,7 +66,7 @@ const T = {
   PROGRAMS:             'enrPrograms',           // new — admission programme catalog
   PROGRAM_TYPES:        'enrProgramTypes',       // new
   ENROLLMENT_SOURCES:   'enrEnrollmentSources',  // rename of enrApplicationSources
-  STATES_T:             'sysStates_T',           // universal state catalog (entity_type_code='ENR_APPLICATION')
+  STATES_T:             'sysStates_T',           // universal state catalog (entity_type_code='ENR_ADMISSION_SCHOOL')
   STATE_TRANSITION_LOG: 'sysStateTransitionLog', // polymorphic state log (DL-S37)
   CONSENTS_LOG:         'sysConsentsLog',         // polymorphic consents log (DL-S44)
   PERSONS:              'enrPersons',
@@ -799,7 +799,7 @@ function resumeSession_(p) {
   const topRead = appsheetRequestBatch_([
     { table: T.ENROLLMENTS,      action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
     { table: T.PERSONS,          action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
-    { table: T.PERSON_RELATIONS, action: 'Find', selector: { Filter: '"context_entity_id" = "' + id + '" && "context_entity_type_code" = "ENR_APPLICATION"' } },
+    { table: T.PERSON_RELATIONS, action: 'Find', selector: { Filter: '"context_entity_id" = "' + id + '" && "context_entity_type_code" = "ENR_ADMISSION_SCHOOL"' } },
     { table: T.REC_FILES,        action: 'Find', selector: { Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin_reference" = "' + id + '"' } },
     { table: T.QB_RESPONSES,     action: 'Find', selector: { Filter: '"respondent_id" = "' + id + '"' } },
     { table: T.EMAILS,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
@@ -871,7 +871,7 @@ function resumeSession_(p) {
     const allStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
     const inState = allStates.find(function(r) {
       return r.school_id === SCHOOL_ID &&
-             r.entity_type_code === 'ENR_APPLICATION' &&
+             r.entity_type_code === 'ENR_ADMISSION_SCHOOL' &&
              r.state_code === 'IN' && !r.deleted_at;
     });
     if (inState && enrollments.every(function(e) { return e.current_state_id === inState.state_id; })) {
@@ -1002,7 +1002,7 @@ function saveStep_(p) {
       // status_code is supplied. Uses sysStates_T + sysStateTransitionLog (DL-S37).
       if (payload.status_code) {
         const newStateRows = appsheetRequest_(T.STATES_T, 'Find', [], {
-          Filter: '"state_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_APPLICATION"'
+          Filter: '"state_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL"'
         });
         const newStateId = newStateRows && newStateRows[0]
           ? newStateRows[0].state_id : null;
@@ -1014,7 +1014,7 @@ function saveStep_(p) {
             appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
               log_id:              generateUuid_(),
               school_id:           SCHOOL_ID,
-              entity_type_code:    'ENR_APPLICATION',
+              entity_type_code:    'ENR_ADMISSION_SCHOOL',
               entity_id:           enr.enrollment_id,
               transition_id:       null,
               from_state_id:       enr.current_state_id || null,
@@ -1106,17 +1106,17 @@ function submitEnrollmentSession_(p) {
   const allStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
   const rqStateRow = allStates.find(r =>
     r.school_id === SCHOOL_ID &&
-    r.entity_type_code === 'ENR_APPLICATION' &&
+    r.entity_type_code === 'ENR_ADMISSION_SCHOOL' &&
     r.state_code === 'RQ' &&
     !r.deleted_at
   );
   if (!rqStateRow || !rqStateRow.state_id) {
     Logger.log('submitEnrollmentSession_: sysStates_T has no RQ row for school=' + SCHOOL_ID +
-               ' entity_type=ENR_APPLICATION. Total rows scanned: ' + allStates.length +
+               ' entity_type=ENR_ADMISSION_SCHOOL. Total rows scanned: ' + allStates.length +
                '. state_codes seen: ' + allStates.filter(r => r.school_id === SCHOOL_ID).map(r => r.state_code).join(','));
     throw new Error(
       'Configuration error: sysStates_T is missing an active row with state_code="RQ" + ' +
-      'entity_type_code="ENR_APPLICATION" for school "' + SCHOOL_ID + '". ' +
+      'entity_type_code="ENR_ADMISSION_SCHOOL" for school "' + SCHOOL_ID + '". ' +
       'Seed it via Admin → Catálogos → Estados de programa before accepting submissions.'
     );
   }
@@ -1202,7 +1202,7 @@ function submitEnrollmentSession_(p) {
     appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
       log_id:             generateUuid_(),
       school_id:          SCHOOL_ID,
-      entity_type_code:   'ENR_APPLICATION',
+      entity_type_code:   'ENR_ADMISSION_SCHOOL',
       entity_id:          enrollmentId,
       transition_id:      null,
       from_state_id:      null,
@@ -1260,7 +1260,7 @@ function submitEnrollmentSession_(p) {
       consentRows.push({
         consent_id:             generateUuid_(),
         school_id:              SCHOOL_ID,
-        entity_type_code:       'ENR_APPLICATION',
+        entity_type_code:       'ENR_ADMISSION_SCHOOL',
         entity_id:              eid,
         signer_table:           'enrPersons',
         signer_id:              signerPersonId,
@@ -2111,7 +2111,7 @@ function saveRelations_(enrollmentGroupId, relations) {
     const invTypeId  = fwdTypeId ? resolveInverseTypeId(fwdTypeId) : null;
     const base = {
       school_id:                SCHOOL_ID,
-      context_entity_type_code: 'ENR_APPLICATION',
+      context_entity_type_code: 'ENR_ADMISSION_SCHOOL',
       context_entity_id:        enrollmentGroupId,
       pair_id:                  pairId,
       is_custodial:             r.is_custodial          || false,
@@ -3052,7 +3052,7 @@ function promoteEnrollment_(p) {
   // Done always (not just families_app): the relations exist for every session.
   const relationalRecords = [];
   const groupRelations = appsheetRequest_(T.PERSON_RELATIONS, 'Find', [], {
-    Filter: '"context_entity_id" = "' + groupId + '" && "context_entity_type_code" = "ENR_APPLICATION"'
+    Filter: '"context_entity_id" = "' + groupId + '" && "context_entity_type_code" = "ENR_ADMISSION_SCHOOL"'
   }) || [];
 
   groupRelations.forEach(rel => {
@@ -3100,7 +3100,7 @@ function promoteEnrollment_(p) {
   const allPromotedStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
   const promotedStateRow = allPromotedStates.find(r =>
     r.school_id === SCHOOL_ID &&
-    r.entity_type_code === 'ENR_APPLICATION' &&
+    r.entity_type_code === 'ENR_ADMISSION_SCHOOL' &&
     r.state_code === 'PROMOTED' &&
     !r.deleted_at
   );
@@ -3109,7 +3109,7 @@ function promoteEnrollment_(p) {
     appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
       log_id:             generateUuid_(),
       school_id:          SCHOOL_ID,
-      entity_type_code:   'ENR_APPLICATION',
+      entity_type_code:   'ENR_ADMISSION_SCHOOL',
       entity_id:          targetId,
       transition_id:      null,
       from_state_id:      enrRow.current_state_id || null,
