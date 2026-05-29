@@ -9,24 +9,33 @@ import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
 import { Toast, useToast } from '../components/Toast';
 
-import Step1Email     from './steps/Step1Email';
-import Step2Persons   from './steps/Step2Persons';
-import Step3Relations from './steps/Step3Relations';
-import Step4Health    from './steps/Step4Health';
-import Step5Questions from './steps/Step5Questions';
-import Step6Documents from './steps/Step6Documents';
-import Step7Review    from './steps/Step7Review';
+import Step1Email            from './steps/Step1Email';
+import Step2Persons          from './steps/Step2Persons';
+import Step3Relations        from './steps/Step3Relations';
+import Step4Health           from './steps/Step4Health';
+import Step5Questions        from './steps/Step5Questions';
+import Step6Documents        from './steps/Step6Documents';
+import Step7Review           from './steps/Step7Review';
+import Step8Status           from './steps/Step8Status';
+import WizardStepPlaceholder from './steps/WizardStepPlaceholder';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
 const STEP_COMPONENTS = [
-  Step1Email,
-  Step2Persons,
-  Step3Relations,
-  Step4Health,
-  Step5Questions,
-  Step6Documents,
-  Step7Review,
+  Step1Email,            // 1
+  Step2Persons,          // 2
+  Step3Relations,        // 3
+  Step4Health,           // 4
+  Step5Questions,        // 5
+  Step6Documents,        // 6
+  Step7Review,           // 7
+  Step8Status,           // 8 — Estado de solicitud
+  WizardStepPlaceholder, // 9
+  WizardStepPlaceholder, // 10
+  WizardStepPlaceholder, // 11
+  WizardStepPlaceholder, // 12
+  WizardStepPlaceholder, // 13
+  WizardStepPlaceholder, // 14
 ];
 
 export default function WizardPage() {

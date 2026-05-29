@@ -17,13 +17,22 @@ function normYN(v) {
 const WizardContext = createContext(null);
 
 export const STEPS = [
-  { key: 'email',     labelKey: 'step.email'     },
-  { key: 'persons',   labelKey: 'step.persons'   },
-  { key: 'relations', labelKey: 'step.relations' },
-  { key: 'health',    labelKey: 'step.health'    },
-  { key: 'questions', labelKey: 'step.questions' },
-  { key: 'documents', labelKey: 'step.documents' },
-  { key: 'review',    labelKey: 'step.review'    },
+  // Steps 1-7: enrollment wizard
+  { key: 'email',       labelKey: 'step.email'       },
+  { key: 'persons',     labelKey: 'step.persons'     },
+  { key: 'relations',   labelKey: 'step.relations'   },
+  { key: 'health',      labelKey: 'step.health'      },
+  { key: 'questions',   labelKey: 'step.questions'   },
+  { key: 'documents',   labelKey: 'step.documents'   },
+  { key: 'review',      labelKey: 'step.review'      },
+  // Steps 8-14: post-submission journey
+  { key: 'status',      labelKey: 'step.status'      },
+  { key: 'interview',   labelKey: 'step.interview'   },
+  { key: 'decision',    labelKey: 'step.decision'    },
+  { key: 'contract',    labelKey: 'step.contract'    },
+  { key: 'payment',     labelKey: 'step.payment'     },
+  { key: 'orientation', labelKey: 'step.orientation' },
+  { key: 'welcome',     labelKey: 'step.welcome'     },
 ];
 
 const initialStepData = {
@@ -441,8 +450,8 @@ export function WizardProvider({ children }) {
 
     // Land on the first incomplete step, or Review if everything's filled.
     // Submitted sessions go to Review (read-only view of what was sent).
-    if (submitted) { setCurrentStep(6); return; }
-    const STEP_COUNT = 7;
+    if (submitted) { setCurrentStep(7); return; }
+    const STEP_COUNT = 7; // only wizard steps 0-6 considered for non-submitted resume
     let target = STEP_COUNT - 1; // default to Review
     for (let i = 0; i < STEP_COUNT; i++) {
       if (!completed.has(i)) { target = i; break; }

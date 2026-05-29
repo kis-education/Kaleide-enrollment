@@ -26,12 +26,6 @@ export default function ResumePage() {
           enrollment_group_id: grp?.enrollment_group_id || grp?.application_id,
           submitted_at:        grp?.submitted_at,
         });
-        // If already submitted, go to tracking page instead of wizard
-        if (grp?.submitted_at) {
-          log.info('ResumePage: application already submitted, navigating to /track/' + token);
-          navigate('/track/' + token, { replace: true });
-          return;
-        }
         hydrateFromResume(data);
         log.info('ResumePage: hydration complete, navigating to /apply');
         navigate('/apply');

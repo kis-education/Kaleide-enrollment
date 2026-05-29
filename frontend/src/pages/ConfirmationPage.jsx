@@ -59,7 +59,7 @@ export default function ConfirmationPage() {
         {resumeToken && (
           <div style={{ marginTop: 28 }}>
             <Link
-              to={'/track/' + resumeToken}
+              to="/apply"
               style={{
                 display: 'inline-block',
                 background: 'var(--teal-dk)',
