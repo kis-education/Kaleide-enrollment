@@ -1,6 +1,19 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import * as log from '../logger';
 
+// P89 — Normalize AppSheet Y/N boolean strings to native booleans.
+// Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
+// to convert these, so the savedBaseline must be pre-normalized to the same shape
+// or the dirty comparator sees false !== "Y" and fires spurious saves.
+function normYN(v) {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'string') {
+    const l = v.toLowerCase();
+    return l === 'true' || l === 'y' || v === '1';
+  }
+  return Boolean(v);
+}
+
 const WizardContext = createContext(null);
 
 export const STEPS = [
@@ -340,8 +353,32 @@ export function WizardProvider({ children }) {
         desired_start_date: group.desired_start_date || '',
         program_id:         group.program_id         || '',
       },
-      persons,
-      relations,
+      // P89 — normalize Y/N booleans to native booleans so savedBaseline matches
+      // the shape that preparePersonForUI (Step2) and buildInitialRelations (Step3)
+      // produce. Without this, isStepDirty sees false !== "Y" on every navigation
+      // and fires spurious saveStep calls even when nothing changed.
+      persons: persons.map(p => ({
+        ...p,
+        phones: Array.isArray(p.phones) ? p.phones.map(ph => ({
+          ...ph,
+          is_default:   normYN(ph.is_default),
+          is_emergency: normYN(ph.is_emergency),
+          is_whatsapp:  normYN(ph.is_whatsapp),
+          is_telegram:  normYN(ph.is_telegram),
+        })) : p.phones,
+        emails: Array.isArray(p.emails) ? p.emails.map(e => ({
+          ...e,
+          is_default:   normYN(e.is_default),
+          is_emergency: normYN(e.is_emergency),
+        })) : p.emails,
+      })),
+      relations: relations.map(r => ({
+        ...r,
+        is_custodial:            normYN(r.is_custodial),
+        is_pick_up_authorized:   normYN(r.is_pick_up_authorized),
+        is_school_rep:           r.is_school_rep           !== undefined ? normYN(r.is_school_rep)           : r.is_school_rep,
+        is_emergency_contact:    r.is_emergency_contact    !== undefined ? normYN(r.is_emergency_contact)    : r.is_emergency_contact,
+      })),
       health: persons.filter(p => p.person_type_id === 'applicant').map(p => ({
         person_id: p.person_id,
         allergies: p.allergies || [],

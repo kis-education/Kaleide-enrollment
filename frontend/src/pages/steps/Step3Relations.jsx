@@ -7,7 +7,8 @@ import * as log from '../../logger';
 
 function parseBool(val) {
   if (typeof val === 'boolean') return val;
-  if (typeof val === 'string')  return val.toLowerCase() === 'true' || val === '1';
+  // P89 — handle both AppSheet formats: "TRUE"/"FALSE" and "Y"/"N"
+  if (typeof val === 'string') { const l = val.toLowerCase(); return l === 'true' || l === 'y' || val === '1'; }
   return Boolean(val);
 }
 
