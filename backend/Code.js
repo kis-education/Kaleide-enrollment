@@ -3681,16 +3681,35 @@ function getTrackingData_(p) {
     }
   }
 
+  // ── Resolve applicant names from enrPersons ──────────────────────────────
+  const applicantPersonIds = enrollments.map(e => e.applicant_person_id).filter(Boolean);
+  let personById = {};
+  if (applicantPersonIds.length) {
+    try {
+      const personFilter = applicantPersonIds.map(id => '"person_id" = "' + id + '"').join(' || ');
+      const persons = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: personFilter }) || [];
+      persons.forEach(p => { personById[p.person_id] = p; });
+    } catch (e) {
+      Logger.log('getTrackingData_: enrPersons read failed (non-fatal): ' + e.message);
+    }
+  }
+
   const enrichedEnrollments = enrollments.map(e => {
     const stateRow = stateById[e.current_state_id] || {};
-    // Resolve applicant name from enrPersons if available
+    const person   = e.applicant_person_id ? (personById[e.applicant_person_id] || {}) : {};
+    const firstName  = person.first_name  || '';
+    const lastName   = person.last_name   || '';
+    const applicantName = (firstName + ' ' + lastName).trim() || null;
     return {
-      enrollment_id:    e.enrollment_id,
-      current_state_id: e.current_state_id || null,
-      state_code:       stateRow.state_code || null,
-      state_label:      stateRow.designation || stateRow.state_code || null,
+      enrollment_id:      e.enrollment_id,
+      current_state_id:   e.current_state_id || null,
+      state_code:         stateRow.state_code || null,
+      state_label:        stateRow.designation || stateRow.state_code || null,
       desired_start_date: normalizeDate_(e.desired_start_date),
-      program_id:       e.program_id || group.program_id || null,
+      program_id:         e.program_id || group.program_id || null,
+      applicant_person_id: e.applicant_person_id || null,
+      applicant_name:     applicantName,
+      applicant_dob:      person.date_of_birth || null,
     };
   });
 

@@ -283,5 +283,9 @@
   "track.footer.contact": "Questions? Contact",
   "track.invalid_link_title": "Invalid or expired link",
   "track.invalid_link_body": "This link is not valid or has expired. If you think this is an error, please contact admissions@kaleide.org.",
-  "track.go_home": "Back to home"
+  "track.go_home": "Back to home",
+  "track.applicant_tabs.label": "Applicants",
+  "track.applicant_tab.unnamed": "Applicant {{n}}",
+  "track.empty.milestones": "No pending steps at the moment.",
+  "track.empty.documents": "Documents will appear here when available."
 }

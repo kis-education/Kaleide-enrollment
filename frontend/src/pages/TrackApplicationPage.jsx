@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import LangToggle from '../components/LangToggle';
@@ -6,9 +6,6 @@ import { useEnrollmentTrack } from '../hooks/useEnrollmentTrack';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
-// Inline state code → i18n key map.
-// state_label from the backend (sysStates_T.designation) takes precedence;
-// this map is a fallback for when the backend can't resolve the label.
 const STATE_I18N_KEY = {
   RQ:       'track.state.RQ',
   IN:       'track.state.IN',
@@ -58,19 +55,27 @@ export default function TrackApplicationPage() {
   const { token }   = useParams();
   const navigate    = useNavigate();
   const { t }       = useTranslation();
+  const headingRef  = useRef(null);
   const {
     loading, error, notSubmitted,
     group, enrollments, milestones, documents, signingSession,
   } = useEnrollmentTrack(token);
 
-  // Redirect if application not yet submitted → back to wizard
+  const [activeTab, setActiveTab] = useState(0);
+
+  // Focus main heading on mount for skip-to-content behaviour
+  useEffect(() => {
+    if (!loading && headingRef.current) {
+      headingRef.current.focus();
+    }
+  }, [loading]);
+
   useEffect(() => {
     if (notSubmitted && token) {
       navigate('/resume/' + token, { replace: true });
     }
   }, [notSubmitted, token, navigate]);
 
-  // Invalid / no token
   if (!token || error === 'no_token') {
     return (
       <div className="wizard-layout">
@@ -97,12 +102,27 @@ export default function TrackApplicationPage() {
     );
   }
 
+  const isMulti   = !loading && enrollments.length > 1;
+  const safeIdx   = Math.min(activeTab, Math.max(0, enrollments.length - 1));
+  const activeEnr = enrollments[safeIdx] || null;
+
+  // Milestones scoped to active enrollment in multi; all in single
+  const activeMilestones = activeEnr
+    ? milestones.filter(m => m.entity_id === activeEnr.enrollment_id)
+    : milestones;
+  // Documents are group-scoped — show all regardless of tab
+  const activeDocuments = documents;
+
   return (
     <div className="wizard-layout">
       <Header t={t} />
 
       <div style={{ maxWidth: 680, margin: '40px auto', padding: '0 16px' }}>
-        <h1 style={{ color: 'var(--teal-dk)', fontWeight: 800, marginBottom: 4 }}>
+        <h1
+          ref={headingRef}
+          tabIndex={-1}
+          style={{ color: 'var(--teal-dk)', fontWeight: 800, marginBottom: 4, outline: 'none' }}
+        >
           {t('track.title')}
         </h1>
         {group && (
@@ -111,68 +131,110 @@ export default function TrackApplicationPage() {
           </p>
         )}
 
-        {/* ── Section 1: Current State ─────────────────────────────────────── */}
-        <section style={{ marginBottom: 28 }}>
-          <SectionTitle>{t('track.state.current')}</SectionTitle>
-          {loading ? (
-            <div className="kis-card"><SkeletonBlock height={48} /><SkeletonBlock height={24} style={{ width: '60%' }} /></div>
-          ) : (
-            enrollments.map(enr => (
-              <StateCard key={enr.enrollment_id} enr={enr} t={t} />
-            ))
-          )}
-        </section>
+        {/* Applicant tabs — only when multiple enrollments */}
+        {isMulti && (
+          <div
+            role="tablist"
+            aria-label={t('track.applicant_tabs.label')}
+            style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}
+          >
+            {enrollments.map((enr, idx) => {
+              const label   = enr.applicant_name || t('track.applicant_tab.unnamed', { n: idx + 1 });
+              const isActive = idx === safeIdx;
+              return (
+                <button
+                  key={enr.enrollment_id}
+                  role="tab"
+                  aria-selected={isActive}
+                  aria-controls={'panel-' + enr.enrollment_id}
+                  id={'tab-' + enr.enrollment_id}
+                  onClick={() => setActiveTab(idx)}
+                  style={{
+                    padding: '7px 18px',
+                    borderRadius: 20,
+                    border: '2px solid ' + (isActive ? 'var(--teal-dk)' : 'var(--border)'),
+                    background: isActive ? 'var(--teal-dk)' : '#fff',
+                    color: isActive ? '#fff' : 'var(--text)',
+                    fontWeight: isActive ? 700 : 500,
+                    fontSize: '0.88rem',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
-        {/* ── Section 2: Milestones ─────────────────────────────────────────── */}
-        <section style={{ marginBottom: 28 }}>
-          <SectionTitle>{t('track.milestones.title')}</SectionTitle>
-          {loading ? (
-            <div className="kis-card">
-              <SkeletonBlock /><SkeletonBlock /><SkeletonBlock />
-            </div>
-          ) : milestones.length === 0 ? (
-            <div className="kis-card" style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>
-              {t('track.milestones.empty')}
-            </div>
-          ) : (
-            <div className="kis-card" style={{ padding: 0, overflow: 'hidden' }}>
-              {milestones.map((m, i) => (
-                <MilestoneRow
-                  key={m.milestone_id}
-                  milestone={m}
-                  t={t}
-                  isLast={i === milestones.length - 1}
-                  signingSession={signingSession}
-                />
-              ))}
-            </div>
-          )}
-        </section>
+        <div
+          role={isMulti ? 'tabpanel' : undefined}
+          id={activeEnr && isMulti ? 'panel-' + activeEnr.enrollment_id : undefined}
+          aria-labelledby={activeEnr && isMulti ? 'tab-' + activeEnr.enrollment_id : undefined}
+        >
+          {/* Section 1: Current State */}
+          <section
+            aria-label={t('track.state.current')}
+            style={{ marginBottom: 28 }}
+          >
+            <SectionTitle>{t('track.state.current')}</SectionTitle>
+            {loading ? (
+              <div className="kis-card">
+                <SkeletonBlock height={48} />
+                <SkeletonBlock height={24} style={{ width: '60%' }} />
+              </div>
+            ) : activeEnr ? (
+              <StateCard enr={activeEnr} t={t} />
+            ) : null}
+          </section>
 
-        {/* ── Section 3: Documents ─────────────────────────────────────────── */}
-        <section style={{ marginBottom: 28 }}>
-          <SectionTitle>{t('track.documents.title')}</SectionTitle>
-          {loading ? (
-            <div className="kis-card"><SkeletonBlock /><SkeletonBlock /></div>
-          ) : documents.length === 0 ? (
-            <div className="kis-card" style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>
-              {t('track.documents.empty')}
-            </div>
-          ) : (
-            <div className="kis-card" style={{ padding: 0, overflow: 'hidden' }}>
-              {documents.map((doc, i) => (
-                <DocumentRow
-                  key={doc.file_id}
-                  doc={doc}
-                  t={t}
-                  isLast={i === documents.length - 1}
-                />
-              ))}
-            </div>
-          )}
-        </section>
+          {/* Section 2: Milestones */}
+          <section style={{ marginBottom: 28 }}>
+            <SectionTitle>{t('track.milestones.title')}</SectionTitle>
+            {loading ? (
+              <div className="kis-card">
+                <SkeletonBlock /><SkeletonBlock /><SkeletonBlock />
+              </div>
+            ) : activeMilestones.length === 0 ? (
+              <EmptyState icon="📋" message={t('track.empty.milestones')} />
+            ) : (
+              <div className="kis-card" style={{ padding: 0, overflow: 'hidden' }}>
+                {activeMilestones.map((m, i) => (
+                  <MilestoneRow
+                    key={m.milestone_id}
+                    milestone={m}
+                    t={t}
+                    isLast={i === activeMilestones.length - 1}
+                    signingSession={signingSession}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
 
-        {/* ── Footer ───────────────────────────────────────────────────────── */}
+          {/* Section 3: Documents */}
+          <section style={{ marginBottom: 28 }}>
+            <SectionTitle>{t('track.documents.title')}</SectionTitle>
+            {loading ? (
+              <div className="kis-card"><SkeletonBlock /><SkeletonBlock /></div>
+            ) : activeDocuments.length === 0 ? (
+              <EmptyState icon="📄" message={t('track.empty.documents')} />
+            ) : (
+              <div className="kis-card" style={{ padding: 0, overflow: 'hidden' }}>
+                {activeDocuments.map((doc, i) => (
+                  <DocumentRow
+                    key={doc.file_id}
+                    doc={doc}
+                    t={t}
+                    isLast={i === activeDocuments.length - 1}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        {/* Footer */}
         <p style={{ color: 'var(--muted)', fontSize: '0.85rem', textAlign: 'center', marginTop: 32, marginBottom: 40 }}>
           {t('track.footer.contact')}{' '}
           <a href="mailto:admissions@kaleide.org" style={{ color: 'var(--teal-dk)' }}>
@@ -191,7 +253,7 @@ export default function TrackApplicationPage() {
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// Sub-components
 
 function Header({ t }) {
   return (
@@ -223,6 +285,18 @@ function SectionTitle({ children }) {
   );
 }
 
+function EmptyState({ icon, message }) {
+  return (
+    <div
+      className="kis-card"
+      style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--muted)', fontSize: '0.9rem' }}
+    >
+      <span aria-hidden="true" style={{ fontSize: '1.2rem' }}>{icon}</span>
+      <span>{message}</span>
+    </div>
+  );
+}
+
 function StateCard({ enr, t }) {
   const stateCode  = enr.state_code  || '—';
   const stateLabel = enr.state_label || t(STATE_I18N_KEY[stateCode] || 'track.state.unknown', { defaultValue: stateCode });
@@ -230,16 +304,31 @@ function StateCard({ enr, t }) {
 
   return (
     <div className="kis-card">
+      {enr.applicant_name && (
+        <p style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 10, color: 'var(--text)' }}>
+          {enr.applicant_name}
+          {enr.applicant_dob && (
+            <span style={{ fontWeight: 400, color: 'var(--muted)', fontSize: '0.85rem', marginLeft: 8 }}>
+              · {formatDate(enr.applicant_dob)}
+            </span>
+          )}
+        </p>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <span style={{
-          background: color,
-          color: '#fff',
-          padding: '4px 14px',
-          borderRadius: 20,
-          fontWeight: 700,
-          fontSize: '0.95rem',
-          letterSpacing: '0.03em',
-        }}>
+        <span
+          role="status"
+          aria-live="polite"
+          aria-label={t('track.state.current') + ': ' + stateLabel}
+          style={{
+            background: color,
+            color: '#fff',
+            padding: '4px 14px',
+            borderRadius: 20,
+            fontWeight: 700,
+            fontSize: '0.95rem',
+            letterSpacing: '0.03em',
+          }}
+        >
           {stateLabel}
         </span>
         {enr.desired_start_date && (
@@ -275,7 +364,7 @@ function MilestoneRow({ milestone, t, isLast, signingSession }) {
       gap: 8,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{
+        <span aria-hidden="true" style={{
           width: 10, height: 10, borderRadius: '50%',
           background: color, flexShrink: 0, display: 'inline-block',
         }} />
@@ -289,7 +378,10 @@ function MilestoneRow({ milestone, t, isLast, signingSession }) {
         )}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        <span style={{ fontSize: '0.78rem', color, fontWeight: 600 }}>
+        <span
+          aria-label={t('track.milestone_status.' + status, { defaultValue: status })}
+          style={{ fontSize: '0.78rem', color, fontWeight: 600 }}
+        >
           {t('track.milestone_status.' + status, { defaultValue: status })}
         </span>
         {firstPendingSigner && (
@@ -297,6 +389,7 @@ function MilestoneRow({ milestone, t, isLast, signingSession }) {
             href={firstPendingSigner.signing_url}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label={t('track.cta.sign') + ' — ' + (milestone.label || milestone.milestone_type_code || '')}
             style={{
               background: 'var(--teal-dk)',
               color: '#fff',
@@ -310,7 +403,7 @@ function MilestoneRow({ milestone, t, isLast, signingSession }) {
             {t('track.cta.sign')}
           </a>
         )}
-        {isDone && <span style={{ color: '#2f9e44', fontSize: '1rem' }}>✓</span>}
+        {isDone && <span aria-hidden="true" style={{ color: '#2f9e44', fontSize: '1rem' }}>✓</span>}
       </div>
     </div>
   );
@@ -341,6 +434,7 @@ function DocumentRow({ doc, t, isLast }) {
           href={doc.drive_url}
           target="_blank"
           rel="noopener noreferrer"
+          aria-label={t('track.cta.download') + ': ' + (doc.file_name || doc.document_type || doc.rec_type_code || '')}
           style={{
             color: 'var(--teal-dk)',
             fontSize: '0.85rem',
