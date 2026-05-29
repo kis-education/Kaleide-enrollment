@@ -1252,6 +1252,19 @@ function submitEnrollmentSession_(p) {
       created_at:         now,
       created_by:         'SYSTEM:WIZARD',
     }]);
+
+    // ── P71 fix — dual-write canónico DL-S37 §workflow ────────────────────────
+    // El Add anterior ya intenta escribir current_state_id, pero AppSheet
+    // ha rechazado silenciosamente este campo en otras escrituras del wizard
+    // (precedente: submitted_at, caught 2026-05-18 — ver comentario ~línea 1202).
+    // Aplicar Edit explícito como en saveStep_ case 'review' y promoteEnrollment_.
+    // Idempotente: si AppSheet ya escribió rqStateId en el Add, el Edit no
+    // cambia nada; si no lo escribió, el Edit lo corrige.
+    appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
+      enrollment_id:    enrollmentId,
+      current_state_id: rqStateId,
+      updated_at:       now,
+    }]);
   });
 
   // ── Mark the group as submitted ────────────────────────────────────────────
