@@ -102,8 +102,12 @@ const T = {
   SMS_RELATIONAL_RECORDS: 'relationalRecords',
   SMS_PERSON_CATEGORIES:  'personCategoriesLog',
   // Signing session tables (DL-S46, DL-S47 — Ola 4 P37)
-  SIGNING_SESSION_SIGNERS: 'sysSigningSessionSigners',
-  SIGNING_SESSIONS:        'sysSigningSessions',
+  SIGNING_SESSION_SIGNERS:   'sysSigningSessionSigners',
+  SIGNING_SESSIONS:          'sysSigningSessions',
+  SIGNING_SESSION_DOCUMENTS: 'sysSigningSessionDocuments',
+  // Milestone tracking (DL-S43)
+  MILESTONES:      'sysMilestones',
+  MILESTONE_TYPES: 'sysMilestoneTypes',
   // Lookup / reference tables
   LOOKUP_ALLERGIES:       'foodAllergies',
   LOOKUP_DIETARY:         'dietaryRequirements',
@@ -187,6 +191,7 @@ function doPost(e) {
       case 'reportUnsolicited':    result = reportUnsolicited_(payload);    break;
       case 'abandonSession':       result = abandonSession_(payload);       break;
       case 'resolveSigningToken':  result = resolveSigningToken_(payload);  break;
+      case 'getTrackingData':      result = getTrackingData_(payload);      break;
       case 'diagTable':            result = diagTable_(payload);            break;
       case 'diagAllTables':        result = diagAllTables_();               break;
       default:
@@ -3623,6 +3628,196 @@ function diagTable_(p) {
   Logger.log('diagTable_ ' + table + '/' + asAction + ' → HTTP ' + status + ' | body(' + text.length + '): ' + text.slice(0, 800));
   Logger.log('curl: POST ' + url + ' | key prefix: ' + (apiKey || '').slice(0, 8) + '...');
   return { table, appsheet_action: asAction, http_status: status, body_length: text.length, body_preview: text.slice(0, 500), app_id: appId };
+}
+
+// ─── Tracking ─────────────────────────────────────────────────────────────────
+
+/**
+ * Returns post-submit tracking data for a family's enrollment:
+ * current state, milestones, documents, and signing session.
+ *
+ * Auth: resume_token (same as resumeSession_). Submitted sessions only —
+ * throws if submitted_at is null (caller should redirect to wizard).
+ *
+ * Stage 1: sysMilestones, sysSigningSessions, sysSigningSessionDocuments may not
+ * yet be live in AppSheet — all their reads are wrapped in try/catch and degrade
+ * gracefully to empty arrays / null.
+ *
+ * @param {Object} p - { resume_token }
+ * @returns {{ group, enrollments, milestones, documents, signing_session }}
+ */
+function getTrackingData_(p) {
+  if (!p.resume_token) throw new Error('resume_token is required');
+
+  // ── Validate token + load group ──────────────────────────────────────────
+  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"resume_token" = "' + p.resume_token + '"'
+  });
+  if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
+
+  const group = groups[0];
+  const groupId = group.enrollment_group_id;
+
+  if (!group.submitted_at) {
+    throw new Error('Application not yet submitted');
+  }
+
+  // ── Load enrollments ──────────────────────────────────────────────────────
+  const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + groupId + '"'
+  }) || [];
+
+  // ── Resolve state labels from sysStates_T ────────────────────────────────
+  const stateIds = enrollments.map(e => e.current_state_id).filter(Boolean);
+  let stateById = {};
+  if (stateIds.length) {
+    try {
+      const allStates = appsheetRequest_(T.STATES_T, 'Find', [], {
+        Filter: '"entity_type_code" = "ENR_ADMISSION_SCHOOL" && "school_id" = "' + SCHOOL_ID + '"'
+      }) || [];
+      allStates.forEach(s => { stateById[s.state_id] = s; });
+    } catch (e) {
+      Logger.log('getTrackingData_: sysStates_T read failed (non-fatal): ' + e.message);
+    }
+  }
+
+  const enrichedEnrollments = enrollments.map(e => {
+    const stateRow = stateById[e.current_state_id] || {};
+    // Resolve applicant name from enrPersons if available
+    return {
+      enrollment_id:    e.enrollment_id,
+      current_state_id: e.current_state_id || null,
+      state_code:       stateRow.state_code || null,
+      state_label:      stateRow.designation || stateRow.state_code || null,
+      desired_start_date: normalizeDate_(e.desired_start_date),
+      program_id:       e.program_id || group.program_id || null,
+    };
+  });
+
+  // ── Milestones (graceful — table may not exist yet) ───────────────────────
+  let milestones = [];
+  const enrollmentIds = enrollments.map(e => e.enrollment_id).filter(Boolean);
+  if (enrollmentIds.length) {
+    try {
+      const idFilter = enrollmentIds.map(id => '"entity_id" = "' + id + '"').join(' || ');
+      const rows = appsheetRequest_(T.MILESTONES, 'Find', [], { Filter: idFilter }) || [];
+
+      // Load milestone types for labels (optional enrichment)
+      let typeMap = {};
+      try {
+        const types = appsheetRequest_(T.MILESTONE_TYPES, 'Find', [], {
+          Filter: '"school_id" = "' + SCHOOL_ID + '"'
+        }) || [];
+        types.forEach(t => { typeMap[t.milestone_type_id] = t; });
+      } catch (_) { /* optional */ }
+
+      milestones = rows
+        .filter(r => !r.deleted_at)
+        .map(r => {
+          const typeInfo = typeMap[r.milestone_type_id] || {};
+          return {
+            milestone_id:            r.milestone_id,
+            entity_id:               r.entity_id,
+            milestone_type_id:       r.milestone_type_id,
+            milestone_type_code:     typeInfo.milestone_type_code || null,
+            label:                   typeInfo.display_name || typeInfo.milestone_type_code || r.milestone_type_id,
+            category:                typeInfo.category     || null,
+            trigger_mode:            typeInfo.trigger_mode || null,
+            status:                  r.status,
+            evidence_ref:            r.evidence_ref        || null,
+            evidence_target_table:   r.evidence_target_table || null,
+            required_for_state_code: r.required_for_state_code || null,
+            completed_at:            r.completed_at        || null,
+            expires_at:              r.expires_at          || null,
+          };
+        });
+    } catch (e) {
+      Logger.log('getTrackingData_: sysMilestones not available (non-fatal): ' + e.message);
+    }
+  }
+
+  // ── Documents from recFiles ───────────────────────────────────────────────
+  let documents = [];
+  try {
+    const fileRows = appsheetRequest_(T.REC_FILES, 'Find', [], {
+      Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin_reference" = "' + groupId + '"'
+    }) || [];
+    // Dedup by file_id
+    const fileById = {};
+    fileRows.forEach(f => { fileById[f.file_id] = f; });
+    documents = Object.values(fileById)
+      .filter(f => !f.deleted_at)
+      .map(f => ({
+        file_id:       f.file_id,
+        document_type: _docTypeFromRecType_(f.rec_type_code),
+        rec_type_code: f.rec_type_code,
+        file_name:     f.original_filename || f.file_name || null,
+        drive_url:     f.drive_file_id ? ('https://drive.google.com/file/d/' + f.drive_file_id + '/view') : null,
+        created_at:    f.created_at || null,
+        status:        f.status || null,
+      }));
+  } catch (e) {
+    Logger.log('getTrackingData_: recFiles read failed (non-fatal): ' + e.message);
+  }
+
+  // ── Signing session (graceful — may not exist) ────────────────────────────
+  let signingSession = null;
+  if (enrollmentIds.length) {
+    try {
+      const idFilter = enrollmentIds.map(id => '"entity_id" = "' + id + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL"').join(' || ');
+      const sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [], { Filter: idFilter }) || [];
+      const active = sessions
+        .filter(s => !s.deleted_at)
+        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+
+      if (active.length) {
+        const sess = active[0];
+        const sessionId = sess.session_id;
+
+        // Load signers
+        let signers = [];
+        try {
+          const signerRows = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [], {
+            Filter: '"session_id" = "' + sessionId + '"'
+          }) || [];
+          signers = signerRows
+            .filter(s => !s.deleted_at)
+            .sort((a, b) => (a.signing_order || 0) - (b.signing_order || 0))
+            .map(s => ({
+              signer_id:    s.signer_id,
+              signer_role:  s.signer_role  || null,
+              signing_url:  s.signing_url  || null,
+              status:       s.signed_at    ? 'SIGNED' : 'PENDING',
+              signed_at:    s.signed_at    || null,
+            }));
+        } catch (_) { /* graceful */ }
+
+        signingSession = {
+          session_id:          sess.session_id,
+          entity_id:           sess.entity_id,
+          status:              sess.current_state_code || sess.status || null,
+          created_at:          sess.created_at || null,
+          expires_at:          sess.expires_at || null,
+          signers,
+        };
+      }
+    } catch (e) {
+      Logger.log('getTrackingData_: sysSigningSessions not available (non-fatal): ' + e.message);
+    }
+  }
+
+  return {
+    group: {
+      enrollment_group_id: groupId,
+      primary_email:       group.primary_email   || null,
+      submitted_at:        group.submitted_at     || null,
+      program_id:          group.program_id       || null,
+    },
+    enrollments:    enrichedEnrollments,
+    milestones,
+    documents,
+    signing_session: signingSession,
+  };
 }
 
 /**

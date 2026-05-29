@@ -6,8 +6,8 @@ import { useWizard } from '../context/WizardContext';
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
 export default function ConfirmationPage() {
-  const { t }           = useTranslation();
-  const { enrollmentGroupId } = useWizard();
+  const { t }                        = useTranslation();
+  const { enrollmentGroupId, resumeToken } = useWizard();
 
   return (
     <div className="wizard-layout">
@@ -55,6 +55,26 @@ export default function ConfirmationPage() {
             <li>{t('confirmation.next_3')}</li>
           </ul>
         </div>
+
+        {resumeToken && (
+          <div style={{ marginTop: 28 }}>
+            <Link
+              to={'/track/' + resumeToken}
+              style={{
+                display: 'inline-block',
+                background: 'var(--teal-dk)',
+                color: '#fff',
+                padding: '10px 24px',
+                borderRadius: 8,
+                fontWeight: 700,
+                textDecoration: 'none',
+                fontSize: '0.95rem',
+              }}
+            >
+              {t('confirmation.track_cta')}
+            </Link>
+          </div>
+        )}
 
         <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: 24 }}>
           {t('confirmation.contact_prefix')}{' '}
