@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
+import LockedBanner from '../../components/LockedBanner';
 import * as log from '../../logger';
 
-export default function Step1Email({ onNext, savePending }) {
+export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
   const { t }    = useTranslation();
   const { stepData, updateStep } = useWizard();
 
@@ -18,6 +19,7 @@ export default function Step1Email({ onNext, savePending }) {
     return d && d.slice(5, 10) !== '09-01' ? 'midterm' : 'september';
   });
   const [desiredStartDate, setDesiredStartDate] = useState(data.desired_start_date || '');
+  const [highlightEdit,    setHighlightEdit]    = useState(false);
 
   useEffect(() => {
     fetchLookups()
@@ -78,6 +80,10 @@ export default function Step1Email({ onNext, savePending }) {
         </div>
       )}
 
+      {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
+
+      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
+      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
       <div className="p-3 rounded" style={{ background: 'var(--teal-lt)' }}>
         <h6 style={{ color: 'var(--teal-dk)', marginBottom: 12 }}>{t('step1.start_date_title')}</h6>
         <div className="row g-3">
@@ -131,6 +137,8 @@ export default function Step1Email({ onNext, savePending }) {
             </div>
           )}
         </div>
+      </div>
+      </fieldset>
       </div>
 
       <div className="d-flex justify-content-end mt-3">
