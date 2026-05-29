@@ -29,9 +29,22 @@ clasp deploy \
 
 Without this secret the job fails silently — the frontend-deploy (Pages) is unaffected.
 
-### Smoke test lección (2026-05-29)
+### Smoke test technique — dos pasos (2026-05-29)
 
-Calling the GAS web app directly via `curl` from Cloud Shell consistently returns a Dutch "Kan het bestand momenteel niet openen" Google Drive error page even though `access: ANYONE_ANONYMOUS` is set. Root cause unclear (possible: deployment predates webapp manifest config, or CI/Cloud Shell IP blocked). **Smoke tests must be done from a browser** — Diego opens the `admissions.kaleide.org` URL and checks the network tab, or hits the deployment URL directly. The Cloud Shell curl path is unreliable for GAS web apps.
+GAS web apps devuelven una respuesta en **dos pasos**: la primera request al `/exec` recibe un HTTP 302 con `Location: https://script.googleusercontent.com/macros/echo?user_content_key=...`. El JSON real está en ese segundo URL. `curl -L` NO funciona correctamente porque convierte el POST a GET en el redirect y el endpoint echo devuelve una página de error de Google Drive en holandés. La técnica correcta para smoke tests desde CLI:
+
+```bash
+# Paso 1: POST sin seguir redirects, captura la Location header
+LOCATION=$(curl -s -D - -o /dev/null -X POST "$GAS_URL" \
+  -H "Content-Type: text/plain" \
+  -d '{"action":"...","_hp":"","key":"value"}' \
+  --max-time 60 | grep -i '^location:' | tr -d '\r' | awk '{print $2}')
+
+# Paso 2: GET al echo URL
+curl -s "$LOCATION" --max-time 30
+```
+
+Verificado: el deploy @92 (CLI 17) responde correctamente con este patrón. `admissions.kaleide.org` funciona OK desde browsers (manejan el redirect nativo).
 
 ## Email sending
 
