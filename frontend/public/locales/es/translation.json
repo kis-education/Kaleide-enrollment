@@ -266,5 +266,25 @@
   "error.esig_required": "Por favor, firma con tu nombre completo.",
   "error.consent_required": "Por favor, acepta todos los consentimientos requeridos.",
   "error.recaptcha_failed": "La verificación de seguridad ha fallado. Por favor, inténtalo de nuevo.",
-  "error.file_too_large": "El archivo es demasiado grande (máx. 10 MB)."
+  "error.file_too_large": "El archivo es demasiado grande (máx. 10 MB).",
+
+  "signing.loading":            "Verificando enlace…",
+  "signing.no_token_title":     "Acceso restringido",
+  "signing.no_token_body":      "Necesitas el enlace de tu correo electrónico para acceder a esta página.",
+  "signing.invalid_title":      "Enlace no válido",
+  "signing.invalid_body":       "Este enlace no es válido. Por favor, utiliza el enlace recibido en el correo de admisiones.",
+  "signing.expired_title":      "Enlace caducado",
+  "signing.expired_body":       "El periodo de firma ha caducado. Contacta con el equipo de admisiones para continuar.",
+  "signing.revoked_title":      "Proceso completado",
+  "signing.revoked_body":       "El proceso de matriculación ya ha sido completado. Si tienes alguna pregunta, contacta con admisiones.",
+  "signing.gdpr_blocked_title": "Consentimiento de datos",
+  "signing.gdpr_blocked_body":  "El tratamiento de datos fue rechazado. Para continuar, contacta con el equipo de admisiones.",
+  "signing.contact_cta":        "Contactar con admisiones",
+  "signing.ready_title":        "Firma de matriculación",
+  "signing.ready_subtitle":     "Completa los pasos a continuación para finalizar la matriculación.",
+  "signing.step_billing":       "Confirmación de cuotas",
+  "signing.step_gdpr":          "Protección de datos",
+  "signing.step_review":        "Revisión del expediente",
+  "signing.step_sign":          "Firma electrónica",
+  "signing.steps_coming":       "Los pasos de firma estarán disponibles próximamente."
 }

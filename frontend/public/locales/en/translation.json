@@ -265,5 +265,25 @@
   "error.custodial_required": "At least one guardian must have custodial or pick-up authorization.",
 
   "locked.message": "This section is saved and locked.",
-  "locked.edit": "Edit"
+  "locked.edit": "Edit",
+
+  "signing.loading":            "Verifying link…",
+  "signing.no_token_title":     "Restricted access",
+  "signing.no_token_body":      "You need the link from your email to access this page.",
+  "signing.invalid_title":      "Invalid link",
+  "signing.invalid_body":       "This link is not valid. Please use the link you received in the admissions email.",
+  "signing.expired_title":      "Link expired",
+  "signing.expired_body":       "The signing period has expired. Please contact the admissions team to continue.",
+  "signing.revoked_title":      "Process complete",
+  "signing.revoked_body":       "The enrolment process has already been completed. If you have any questions, please contact admissions.",
+  "signing.gdpr_blocked_title": "Data consent",
+  "signing.gdpr_blocked_body":  "Data processing consent was declined. To continue, please contact the admissions team.",
+  "signing.contact_cta":        "Contact admissions",
+  "signing.ready_title":        "Enrolment signing",
+  "signing.ready_subtitle":     "Complete the steps below to finalise enrolment.",
+  "signing.step_billing":       "Fee confirmation",
+  "signing.step_gdpr":          "Data protection",
+  "signing.step_review":        "Application review",
+  "signing.step_sign":          "Electronic signature",
+  "signing.steps_coming":       "Signing steps will be available soon."
 }

@@ -8,6 +8,7 @@ import ResumePage       from './pages/ResumePage'
 import ReportUnsolicitedPage from './pages/ReportUnsolicitedPage'
 import ConfirmationPage   from './pages/ConfirmationPage'
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
+import SigningWizardPage from './pages/SigningWizardPage'
 import DevLogger        from './components/DevLogger'
 import * as log         from './logger'
 
@@ -56,6 +57,7 @@ function App() {
           <Route path="/report/:token"   element={<ReportUnsolicitedPage />} />
           <Route path="/confirmation"    element={<ConfirmationPage />}   />
           <Route path="/privacy"         element={<PrivacyPolicyPage />} />
+          <Route path="/sign"            element={<SigningWizardPage />} />
           <Route path="*"               element={<LandingPage />}        />
         </Routes>
       </Suspense>

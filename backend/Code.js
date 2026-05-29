@@ -101,6 +101,9 @@ const T = {
   SMS_ADDRESS_LOG:        'addressLog',
   SMS_RELATIONAL_RECORDS: 'relationalRecords',
   SMS_PERSON_CATEGORIES:  'personCategoriesLog',
+  // Signing session tables (DL-S46, DL-S47 — Ola 4 P37)
+  SIGNING_SESSION_SIGNERS: 'sysSigningSessionSigners',
+  SIGNING_SESSIONS:        'sysSigningSessions',
   // Lookup / reference tables
   LOOKUP_ALLERGIES:       'foodAllergies',
   LOOKUP_DIETARY:         'dietaryRequirements',
@@ -183,6 +186,7 @@ function doPost(e) {
       case 'recognizeFamily':      result = recognizeFamily_(payload);      break;
       case 'reportUnsolicited':    result = reportUnsolicited_(payload);    break;
       case 'abandonSession':       result = abandonSession_(payload);       break;
+      case 'resolveSigningToken':  result = resolveSigningToken_(payload);  break;
       case 'diagTable':            result = diagTable_(payload);            break;
       case 'diagAllTables':        result = diagAllTables_();               break;
       default:
@@ -2938,6 +2942,121 @@ function generateConsentPdf_(applicationId, app, guardians, applicants, consentR
     mime_type:       'application/pdf',
     file_name:       pdfBlob.getName(),
     file_size_bytes: pdfBlob.getBytes().length,
+  };
+}
+
+// ─── Signing token resolution (Ola 4 — P37) ──────────────────────────────────
+
+/**
+ * Validates a guardian's signing_token against sysSigningSessionSigners and
+ * resolves the associated signing session state.
+ *
+ * Queries AppSheet directly (same credentials as the rest of the wizard —
+ * no KMS internal API call needed). Idempotent — read-only.
+ *
+ * Per roadmap §4.2 (wizard-admissions-roadmap.md) + DL-E24 §6.
+ *
+ * @param {{ signing_token: string }} p
+ * @returns {{ valid: true, signer_id, session_id, enrollment_group_id,
+ *             guardian_person_id, signer_role, signer_status, steps, signing_url }
+ *        | { valid: false, reason: 'INVALID'|'EXPIRED'|'REVOKED', state?: string }}
+ */
+function resolveSigningToken_(p) {
+  if (!p || !p.signing_token) throw new Error('signing_token required');
+
+  const token = String(p.signing_token).trim();
+
+  // Audit: log attempt (partial token only — no PII)
+  Logger.log('[resolveSigningToken_] attempt token=' + token.substring(0, 8) + '...');
+
+  // Basic format guard — signing_token is a UUID (hex + hyphens only)
+  if (!/^[0-9a-f-]{32,40}$/i.test(token)) {
+    Logger.log('[resolveSigningToken_] token format invalid');
+    return { valid: false, reason: 'INVALID' };
+  }
+
+  // 1. Lookup signer by signing_token via AppSheet Filter
+  let signerRows;
+  try {
+    signerRows = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+      { Filter: '"signing_token" = "' + token + '"' });
+  } catch (findErr) {
+    Logger.log('[resolveSigningToken_] sysSigningSessionSigners lookup failed: ' + findErr.message);
+    return { valid: false, reason: 'INVALID' };
+  }
+
+  const signer = signerRows && signerRows.find(r => !r['deleted_at']);
+  if (!signer) {
+    Logger.log('[resolveSigningToken_] TOKEN_NOT_FOUND token=' + token.substring(0, 8) + '...');
+    return { valid: false, reason: 'INVALID' };
+  }
+
+  const signerId  = signer['signer_id'];
+  const sessionId = signer['session_id'];
+
+  // 2. Load signing session
+  let sessionRows;
+  try {
+    sessionRows = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+      { Filter: '"session_id" = "' + sessionId + '"' });
+  } catch (sessErr) {
+    Logger.log('[resolveSigningToken_] sysSigningSessions lookup failed: ' + sessErr.message);
+    return { valid: false, reason: 'INVALID' };
+  }
+
+  const session = sessionRows && sessionRows.find(s => !s['deleted_at']);
+  if (!session) {
+    Logger.log('[resolveSigningToken_] SESSION_NOT_FOUND session=' + sessionId);
+    return { valid: false, reason: 'INVALID' };
+  }
+
+  // 3. Check terminal states
+  const stateCode = session['current_state_code'] || '';
+  if (stateCode === 'COMPLETED') {
+    Logger.log('[resolveSigningToken_] SESSION_COMPLETED signer=' + signerId);
+    return { valid: false, reason: 'REVOKED', state: stateCode };
+  }
+  if (stateCode === 'CANCELLED' || stateCode === 'EXPIRED') {
+    Logger.log('[resolveSigningToken_] SESSION_TERMINAL state=' + stateCode);
+    return { valid: false, reason: 'EXPIRED', state: stateCode };
+  }
+
+  // 4. entity_id = enrollment_group_id (DL-S46 polymorphic anchor)
+  const enrollmentGroupId = session['entity_id'];
+
+  // 5. Step completion states from signer fields (DL-S47 §5 + roadmap §4.2)
+  const gdprCompleted   = !!(signer['gdpr_step_completed_at']);
+  const reviewCompleted = !!(signer['review_step_completed_at']);
+  const signed          = !!(signer['signed_at']);
+
+  // billing_confirmed: enrGroupBilling.confirmed_at (P49 — table may not exist yet)
+  let billingConfirmed = false;
+  try {
+    const billingRows = appsheetRequest_('enrGroupBilling', 'Find', [],
+      { Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"' });
+    billingConfirmed = !!(billingRows && billingRows.find(b => !b['deleted_at'] && b['confirmed_at']));
+  } catch (billingErr) {
+    Logger.log('[resolveSigningToken_] enrGroupBilling not available (P49 pending): ' + billingErr.message);
+  }
+
+  Logger.log('[resolveSigningToken_] valid=true signer=' + signerId + ' group=' + enrollmentGroupId);
+
+  return {
+    valid:               true,
+    signer_id:           signerId,
+    session_id:          sessionId,
+    enrollment_group_id: enrollmentGroupId,
+    guardian_person_id:  signer['signer_person_id'] || null,
+    signer_role:         signer['signer_role']       || null,
+    signer_status:       stateCode,
+    steps: {
+      billing_confirmed: billingConfirmed,
+      gdpr_completed:    gdprCompleted,
+      gdpr_blocked:      false,  // sysConsentsLog check deferred per roadmap §4.5
+      review_completed:  reviewCompleted,
+      signed:            signed,
+    },
+    signing_url: signer['signing_url'] || null,
   };
 }
 
