@@ -108,6 +108,10 @@ const T = {
   // Milestone tracking (DL-S43)
   MILESTONES:      'sysMilestones',
   MILESTONE_TYPES: 'sysMilestoneTypes',
+  // Wizard post-RQ journey reads (Steps 10/12 — CLI 33-36)
+  ADMISSION_DECISION: 'enrAdmissionDecision', // DL-E13
+  TENANT_CONFIG:      'sysTenantConfig_T',    // DL-S19 — Capa 3 tenant config (bank fields Step 12)
+  FIN_PAYMENTS:       'finPayments',          // DL-040 — payment status Step 12
   // Lookup / reference tables
   LOOKUP_ALLERGIES:       'foodAllergies',
   LOOKUP_DIETARY:         'dietaryRequirements',
@@ -192,6 +196,15 @@ function doPost(e) {
       case 'abandonSession':       result = abandonSession_(payload);       break;
       case 'resolveSigningToken':  result = resolveSigningToken_(payload);  break;
       case 'getTrackingData':      result = getTrackingData_(payload);      break;
+      // ── Wizard post-RQ journey reads (Steps 9-14 — CLI 33-36) ───────────────
+      case 'getInterviewForEnrollment':
+        result = getInterviewForEnrollment_(payload);                       break;
+      case 'getAdmissionDecisionForEnrollment':
+        result = getAdmissionDecisionForEnrollment_(payload);               break;
+      case 'getReservationPaymentInfo':
+        result = getReservationPaymentInfo_(payload);                       break;
+      case 'getSigningTokenFromResumeToken':
+        result = getSigningTokenFromResumeToken_(payload);                  break;
       case 'diagTable':            result = diagTable_(payload);            break;
       case 'diagAllTables':        result = diagAllTables_();               break;
       default:
@@ -3837,6 +3850,731 @@ function getTrackingData_(p) {
     documents,
     signing_session: signingSession,
   };
+}
+
+// ─── Wizard post-RQ journey reads (Steps 9-14) ────────────────────────────────
+// CLI 33-36 — 4 endpoints added to serve the family-facing track page
+// (admissions.kaleide.org) on the post-submit wizard journey documented in
+// docs/kms/ui/wizard-post-rq-steps-ux-spec-2026-05.md.
+//
+// All four share the resume_token scoping pattern of getTrackingData_:
+//   1. resume_token → enrEnrollmentGroups
+//   2. cross-group guard against enrEnrollments.enrollment_group_id
+//   3. read the per-enrollment / per-group target table
+//   4. shape family-facing payload — staff-private columns stripped.
+//
+// PII guards: decided_by, notes, risk_rating, signer_email, flags, raw
+// interviewer_id are NEVER returned by these endpoints (UX spec §1/§2/§3
+// done-state declarations).
+
+/**
+ * Returns enrInterviews rows for a given enrollment, scoped by resume_token.
+ *
+ * Serves Step 9 (interview) and Step 10 (decision — interview is the
+ * pre-requisite gate) of the post-RQ wizard journey (UX spec §1).
+ *
+ * Auth: resume_token (same as getTrackingData_). The token resolves to an
+ * enrollmentGroup; the requested enrollment_id MUST belong to that group.
+ * Cross-group access yields 'Enrollment not in resume_token group'.
+ *
+ * Stage 1 — interview.notes, interview.risk_rating, interview.flags and the
+ * raw interview.interviewer_id are NEVER returned (staff-private per UX spec
+ * §1 done state). Only the derived interviewer_name is exposed.
+ *
+ * Defensive degrade: if enrInterviews is not reachable from this backend
+ * (table not yet shared with the AppSheet app, or schema mismatch), returns
+ * { interviews: [] } so the frontend renders empty state instead of erroring.
+ *
+ * @param {Object} p - { resume_token, enrollment_id }
+ * @returns {{ enrollment_id: string, interviews: Array<Object> }}
+ */
+function getInterviewForEnrollment_(p) {
+  if (!p || !p.resume_token)  throw new Error('resume_token is required');
+  if (!p.enrollment_id)       throw new Error('enrollment_id is required');
+
+  // 1. Resolve resume_token → enrollment_group
+  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"resume_token" = "' + p.resume_token + '"'
+  });
+  if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
+  const groupId = groups[0].enrollment_group_id;
+
+  // 2. Confirm enrollment_id belongs to the group (cross-group guard)
+  const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + groupId + '"'
+  }) || [];
+  const inGroup = enrollments.some(e => e.enrollment_id === p.enrollment_id);
+  if (!inGroup) throw new Error('Enrollment not in resume_token group');
+
+  // 3. Load interviews for the enrollment
+  let rows = [];
+  try {
+    rows = appsheetRequest_(T.INTERVIEWS, 'Find', [], {
+      Filter: '"enrollment_id" = "' + p.enrollment_id + '"'
+    }) || [];
+  } catch (e) {
+    Logger.log('getInterviewForEnrollment_: enrInterviews read failed: ' + e.message);
+    return { enrollment_id: p.enrollment_id, interviews: [] };
+  }
+
+  // 4. Resolve interviewer display names (best-effort against personalData_S).
+  //    enrInterviews.interviewer_id is the staff person uuid. Stage 1 the
+  //    personalData_S table may not be reachable from this anonymous app —
+  //    degrade gracefully to a null display name.
+  const interviewerIds = rows
+    .filter(r => !r.deleted_at && r.interviewer_id)
+    .map(r => r.interviewer_id);
+  const nameById = {};
+  if (interviewerIds.length) {
+    try {
+      const idFilter = interviewerIds.map(id => '"personal_id" = "' + id + '"').join(' || ');
+      const staff = appsheetRequest_('personalData_S', 'Find', [], { Filter: idFilter }) || [];
+      staff.forEach(s => {
+        const full = [s.first_name, s.last_name].filter(Boolean).join(' ').trim();
+        nameById[s.personal_id] = full || null;
+      });
+    } catch (_) { /* graceful — personalData_S may not be reachable */ }
+  }
+
+  // 5. Map to family-facing shape — strip notes / risk_rating / flags / raw
+  //    interviewer_id (UX spec §1 done state — staff-private).
+  const interviews = rows
+    .filter(r => !r.deleted_at)
+    .sort((a, b) => (a.interview_date || '').localeCompare(b.interview_date || ''))
+    .map(r => {
+      // Status derivation:
+      //   COMPLETED      — risk_rating set (staff already evaluated)
+      //   PAST_NO_NOTES  — date in the past but no rating yet (UX spec §1 error path)
+      //   SCHEDULED      — future or undated
+      let status;
+      if (r.risk_rating) {
+        status = 'COMPLETED';
+      } else if (r.interview_date && new Date(r.interview_date) < new Date()) {
+        status = 'PAST_NO_NOTES';
+      } else {
+        status = 'SCHEDULED';
+      }
+      return {
+        interview_id:     r.interview_id,
+        interview_type:   r.interview_type || null,
+        interview_date:   r.interview_date || null,
+        format:           r.format || null,
+        location_text:    r.format === 'IN_PERSON'  ? (r.location_text || null) : null,
+        meeting_url:      r.format === 'VIDEO_CALL' ? (r.meeting_url   || null) : null,
+        interviewer_name: r.interviewer_id ? (nameById[r.interviewer_id] || null) : null,
+        status:           status,
+        // notes / risk_rating / flags / interviewer_id raw INTENTIONALLY OMITTED
+      };
+    });
+
+  return { enrollment_id: p.enrollment_id, interviews: interviews };
+}
+
+/**
+ * Returns enrAdmissionDecision for a given enrollment, scoped by resume_token.
+ *
+ * Serves Step 10 (admission decision) of the post-RQ journey (UX spec §2).
+ *
+ * Auth: resume_token. Cross-group access rejected.
+ *
+ * The outcome variant (AC/WL/REJ/CAN/PENDING) is derived in the frontend from
+ * the state_code already served by getTrackingData_; this endpoint surfaces
+ * the structured decision row (when it exists) for the AC variant rendering
+ * (academic_year_label, start_date_confirmed, specific_conditions).
+ *
+ * Stage 1 — rejection_reason_family_visible is NOT exposed (OP-N+2 §9.5 UX
+ * spec — pending Diego decision). NULL returned regardless of column presence.
+ *
+ * DL-S50 + DL-S46 — admission_letter_file_id and signing_session_id were
+ * removed from the schema; the carta lives as a milestone evidence_ref and the
+ * signing session via sysSigningSessions polymorphic anchor. NOT returned.
+ *
+ * @param {Object} p - { resume_token, enrollment_id }
+ * @returns {{ enrollment_id: string, decision: Object | null }}
+ */
+function getAdmissionDecisionForEnrollment_(p) {
+  if (!p || !p.resume_token)  throw new Error('resume_token is required');
+  if (!p.enrollment_id)       throw new Error('enrollment_id is required');
+
+  // 1. Resolve resume_token → enrollment_group
+  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"resume_token" = "' + p.resume_token + '"'
+  });
+  if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
+  const groupId = groups[0].enrollment_group_id;
+
+  // 2. Cross-group guard
+  const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + groupId + '"'
+  }) || [];
+  const inGroup = enrollments.some(e => e.enrollment_id === p.enrollment_id);
+  if (!inGroup) throw new Error('Enrollment not in resume_token group');
+
+  // 3. Load decision row (zero or one expected — UNIQUE per enrollment)
+  let rows = [];
+  try {
+    rows = appsheetRequest_(T.ADMISSION_DECISION, 'Find', [], {
+      Filter: '"enrollment_id" = "' + p.enrollment_id + '"'
+    }) || [];
+  } catch (e) {
+    Logger.log('getAdmissionDecisionForEnrollment_: enrAdmissionDecision read failed: ' + e.message);
+    return { enrollment_id: p.enrollment_id, decision: null };
+  }
+
+  const active = rows.filter(r => !r.deleted_at);
+  if (!active.length) {
+    return { enrollment_id: p.enrollment_id, decision: null };
+  }
+  const d = active[0];
+
+  // 4. Resolve academic_year label (best-effort against calYears).
+  //    Stage 1 academic_year_id may be a Text uuid not yet wired to calYears.
+  let yearLabel = null;
+  if (d.academic_year_id) {
+    try {
+      const years = appsheetRequest_('calYears', 'Find', [], {
+        Filter: '"year_id" = "' + d.academic_year_id + '"'
+      }) || [];
+      if (years.length) {
+        yearLabel = years[0].designation || years[0].year_code || null;
+      }
+    } catch (_) { /* graceful — calYears may not be reachable */ }
+  }
+
+  // 5. Resolve education_level designation (best-effort against educationLevel).
+  let levelLabel = null;
+  if (d.academic_level_id) {
+    try {
+      const levels = appsheetRequest_('educationLevel', 'Find', [], {
+        Filter: '"row_id" = "' + d.academic_level_id + '"'
+      }) || [];
+      if (levels.length) {
+        levelLabel = levels[0].designation || d.academic_level_id;
+      }
+    } catch (_) { /* graceful */ }
+  }
+
+  // 6. Family-facing shape — strip decided_by, audit, evidence pointers.
+  //    Outcome variant is derived frontend-side from state_code (UX spec §2).
+  return {
+    enrollment_id: p.enrollment_id,
+    decision: {
+      decision_id:                 d.decision_id,
+      decided_at:                  d.decided_at || null,
+      academic_year_id:            d.academic_year_id || null,
+      academic_year_label:         yearLabel,
+      academic_level_id:           d.academic_level_id || null,
+      education_level_designation: levelLabel,
+      start_date_confirmed:        d.start_date_confirmed || null,
+      trial_period_days:           d.trial_period_days != null ? Number(d.trial_period_days) : null,
+      specific_conditions:         d.specific_conditions || null,
+      // rejection_reason_family_visible: INTENTIONALLY OMITTED — OP-N+2 §9.5
+      // decided_by, admission_letter_file_id, signing_session_id: NOT exposed
+    },
+  };
+}
+
+/**
+ * Normalises a surname for the transfer concept: strip diacritics, drop
+ * non-alphanumeric characters, uppercase, replace whitespace with underscore.
+ *
+ *   "Pérez de la Fuente" → "PEREZ_DE_LA_FUENTE"
+ *   "O'Hara"             → "OHARA"
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+function normalizeSurnameForConcept_(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')   // strip diacritics
+    .replace(/[^a-zA-Z0-9\s]/g, '')                     // strip non-alnum
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '_');
+}
+
+/**
+ * Server-side single source of truth for the reservation transfer concept.
+ * Pattern (UX spec §4 active state):
+ *   RES-{group_id_first_8_uppercase}-{primer_apellido_uppercase}
+ *
+ *   group_id "ab12cd34-1234-5678-9abc-deadbeef0000" + "García"
+ *     → "RES-AB12CD34-GARCIA"
+ *
+ * Generated server-side to avoid drift between what the family copies and
+ * what staff sees on the bank statement.
+ *
+ * @param {string} groupId         enrollment_group_id UUID
+ * @param {string} primarySurname  last_name of the primary applicant
+ * @returns {string}
+ */
+function buildReservationConcept_(groupId, primarySurname) {
+  const idChunk = String(groupId || '').replace(/-/g, '').substring(0, 8).toUpperCase();
+  const sur     = normalizeSurnameForConcept_(primarySurname);
+  return 'RES-' + idChunk + (sur ? '-' + sur : '');
+}
+
+/**
+ * Adds N business days (Mon–Fri) to an ISO date. Returns YYYY-MM-DD or null
+ * if input cannot be parsed.
+ *
+ * @param {string} isoDate
+ * @param {number} n
+ * @returns {string|null}
+ */
+function addBusinessDays_(isoDate, n) {
+  if (!isoDate || !n) return null;
+  const d = new Date(isoDate);
+  if (isNaN(d.getTime())) return null;
+  let added = 0;
+  while (added < n) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();   // 0=Sun, 6=Sat
+    if (dow !== 0 && dow !== 6) added++;
+  }
+  return d.toISOString().substring(0, 10);
+}
+
+/**
+ * Returns reservation bank-transfer info for Step 12 of the post-RQ journey.
+ *
+ * Auth: resume_token. Per-group (single concept + deadline per group, not per
+ * applicant — Step 12 is at group scope).
+ *
+ * Data sources:
+ *   - sysTenantConfig_T   (bank IBAN/BIC + amount + currency + deadline days)
+ *   - enrEnrollmentGroups (resolves group + school)
+ *   - enrPersons          (surname of first applicant for the concept)
+ *   - finPayments         (CONFIRMED RESERVATION payment for any enrollment)
+ *   - enrAdmissionDecision (reservation_deadline if present; fallback computed)
+ *   - recFiles            (best-effort proforma / receipt)
+ *
+ * UX spec §4 + P96 (Diego 2026-05-29) — Stage 1 = manual bank transfer.
+ *
+ * Defensive: if sysTenantConfig_T lacks the required bank columns, returns
+ * { error_code: 'TENANT_CONFIG_INCOMPLETE', bank: null, ... } so the frontend
+ * renders the red banner per UX spec §4 empty/error. The endpoint does NOT
+ * create the columns in AppSheet — Diego adds them as a separate OP item.
+ *
+ * @param {Object} p - { resume_token }
+ * @returns {Object} See UX spec §4 backend endpoints for the full shape.
+ */
+function getReservationPaymentInfo_(p) {
+  if (!p || !p.resume_token) throw new Error('resume_token is required');
+
+  // 1. Resolve resume_token → group
+  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"resume_token" = "' + p.resume_token + '"'
+  });
+  if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
+  const group = groups[0];
+  const groupId = group.enrollment_group_id;
+
+  // 2. Tenant config — bank fields. school_id from group (multi-tenant safe).
+  const groupSchoolId = group.school_id || SCHOOL_ID;
+  let cfgRows = [];
+  try {
+    cfgRows = appsheetRequest_(T.TENANT_CONFIG, 'Find', [], {
+      Filter: '"school_id" = "' + groupSchoolId + '"'
+    }) || [];
+  } catch (e) {
+    Logger.log('getReservationPaymentInfo_: sysTenantConfig_T read failed: ' + e.message);
+  }
+  if (!cfgRows.length) {
+    return {
+      payment_status:    'PENDING',
+      bank:              null,
+      amount:            null,
+      currency:          'EUR',
+      concept_reference: null,
+      deadline:          null,
+      proforma_file_id:  null,
+      confirmed_at:      null,
+      receipt_file_id:   null,
+      error_code:        'TENANT_CONFIG_INCOMPLETE',
+    };
+  }
+  const cfg = cfgRows[0];
+
+  // Required bank field presence — defensive (Diego must add columns first).
+  // The 5 canonical fields: bank_iban, bank_bic, reservation_amount_eur,
+  // reservation_currency, reservation_payment_business_days.
+  const requiredKeys = [
+    'bank_iban',
+    'bank_bic',
+    'reservation_amount_eur',
+    'reservation_currency',
+    'reservation_payment_business_days',
+  ];
+  const missingKeys = requiredKeys.filter(k => !(k in cfg));
+  // bank_iban and reservation_amount_eur are the hard-required values to render
+  // the bank panel; the others can fall back. Treat absence of EITHER as
+  // TENANT_CONFIG_INCOMPLETE per UX spec §4 empty/error.
+  if (missingKeys.length || !cfg.bank_iban || cfg.reservation_amount_eur == null || cfg.reservation_amount_eur === '') {
+    Logger.log('getReservationPaymentInfo_: missing bank config in sysTenantConfig_T: ' + JSON.stringify(missingKeys));
+    return {
+      payment_status:    'PENDING',
+      bank:              null,
+      amount:            null,
+      currency:          cfg.reservation_currency || 'EUR',
+      concept_reference: null,
+      deadline:          null,
+      proforma_file_id:  null,
+      confirmed_at:      null,
+      receipt_file_id:   null,
+      error_code:        'TENANT_CONFIG_INCOMPLETE',
+    };
+  }
+
+  // 3. First applicant surname for the concept
+  const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + groupId + '"'
+  }) || [];
+  if (!enrollments.length) {
+    throw new Error('No enrollments for group ' + groupId);
+  }
+  // Sort by applicant_order if present, else by created_at ascending.
+  const sorted = enrollments.slice().sort((a, b) => {
+    const ao = (a.applicant_order != null && a.applicant_order !== '' ? Number(a.applicant_order) : 999);
+    const bo = (b.applicant_order != null && b.applicant_order !== '' ? Number(b.applicant_order) : 999);
+    if (ao !== bo) return ao - bo;
+    return (a.created_at || '').localeCompare(b.created_at || '');
+  });
+  const firstEnr = sorted[0];
+  let surname = '';
+  if (firstEnr.applicant_person_id) {
+    try {
+      const persons = appsheetRequest_(T.PERSONS, 'Find', [], {
+        Filter: '"person_id" = "' + firstEnr.applicant_person_id + '"'
+      }) || [];
+      surname = (persons[0] && persons[0].last_name) || '';
+    } catch (_) { /* graceful */ }
+  }
+  const concept = buildReservationConcept_(groupId, surname);
+
+  // 4. Payment status — finPayments CONFIRMED for any enrollment in the group
+  const enrollmentIds = enrollments.map(e => e.enrollment_id).filter(Boolean);
+  let confirmedAt = null;
+  if (enrollmentIds.length) {
+    try {
+      const idFilter = enrollmentIds.map(id => '"enrollment_id" = "' + id + '"').join(' || ');
+      const payments = appsheetRequest_(T.FIN_PAYMENTS, 'Find', [], { Filter: idFilter }) || [];
+      const confirmed = payments.find(pay =>
+        !pay.deleted_at && pay.purpose === 'RESERVATION' && pay.status === 'CONFIRMED'
+      );
+      if (confirmed) {
+        confirmedAt = confirmed.confirmed_at || confirmed.updated_at || confirmed.created_at || null;
+      }
+    } catch (e) {
+      Logger.log('getReservationPaymentInfo_: finPayments read failed (non-fatal): ' + e.message);
+    }
+  }
+  const paymentStatus = confirmedAt ? 'CONFIRMED' : 'PENDING';
+
+  // 5. Deadline — prefer enrAdmissionDecision.reservation_deadline, else
+  //    compute (state_entered_at(AD) || updated_at || created_at) + N business
+  //    days from sysTenantConfig_T.reservation_payment_business_days.
+  let deadline = null;
+  try {
+    const idFilter = enrollmentIds.map(id => '"enrollment_id" = "' + id + '"').join(' || ');
+    if (idFilter) {
+      const decisions = appsheetRequest_(T.ADMISSION_DECISION, 'Find', [], { Filter: idFilter }) || [];
+      const dec = decisions.find(d => !d.deleted_at && d.reservation_deadline);
+      if (dec) deadline = dec.reservation_deadline;
+    }
+  } catch (_) { /* graceful — column may not exist Stage 1 */ }
+  if (!deadline) {
+    const adAnchor = firstEnr.state_entered_at || firstEnr.updated_at || firstEnr.created_at;
+    const bizDays  = Number(cfg.reservation_payment_business_days) || 15;
+    deadline = addBusinessDays_(adAnchor, bizDays);
+  }
+
+  // 6. Proforma / receipt — best-effort recFiles lookup by origin_reference
+  let proformaFileId = null, receiptFileId = null;
+  try {
+    const files = appsheetRequest_(T.REC_FILES, 'Find', [], {
+      Filter: '"origin_reference" = "' + groupId + '"'
+    }) || [];
+    const live = files.filter(f => !f.deleted_at);
+    const proforma = live.find(f => f.rec_type_code === 'RESERVATION_PROFORMA');
+    const receipt  = live.find(f => f.rec_type_code === 'RESERVATION_RECEIPT');
+    if (proforma) proformaFileId = proforma.file_id;
+    if (receipt)  receiptFileId  = receipt.file_id;
+  } catch (_) { /* graceful */ }
+
+  return {
+    payment_status:    paymentStatus,
+    bank: {
+      iban: String(cfg.bank_iban).replace(/\s+/g, '').toUpperCase(),
+      bic:  cfg.bank_bic ? String(cfg.bank_bic).trim().toUpperCase() : null,
+    },
+    amount:            Number(cfg.reservation_amount_eur),
+    currency:          cfg.reservation_currency || 'EUR',
+    concept_reference: concept,
+    deadline:          deadline,
+    proforma_file_id:  proformaFileId,
+    confirmed_at:      confirmedAt,
+    receipt_file_id:   receiptFileId,
+  };
+}
+
+/**
+ * Resolves resume_token → signing_token bridge for the track page deep-link
+ * into the signing sub-wizard. Implements **Opción A canónica per DL-S47 +
+ * OP-N+3 §9.5**: each signer in sysSigningSessionSigners has its own
+ * signing_token UUID; this endpoint returns the list of active signers (with
+ * their tokens) for ALL active signing sessions anchored to enrollments in
+ * the resume_token's group. The frontend renders a selector when > 1 signer.
+ *
+ * # Opción B — RECHAZADA y documentada
+ * Opción B propondría reutilizar `resume_token` con scope ampliado: el
+ * sub-wizard de firma aceptaría `resume_token` y resolvería el signer activo
+ * por contexto. Rechazada porque:
+ *   - Mezcla scopes: `resume_token` autoriza lectura del grupo entero pero la
+ *     firma es per-tutor — confundir scopes es riesgo de seguridad.
+ *   - Rompe el patrón DL-S47 (`signing_token` per signer es canónico).
+ *   - Imposibilita revocación granular (revocar a un tutor revocaría la
+ *     track page entera).
+ *   - El email transaccional ya envía `signing_token` directo (DL-E28 §9.1
+ *     paso 6); desplazar la fuente de verdad a `resume_token` obligaría a
+ *     refactorizar el motor de notificaciones.
+ *
+ * Auth: resume_token. Cross-group access rejected by the enrollments filter
+ * (sessions are anchored to enrollment_id ∈ group only).
+ *
+ * Filter `scope_doc_role` optional: when provided, only sessions whose
+ * sysSigningSessionDocuments include that document_role_code are returned.
+ * Stage 1 a single multi-doc session may cover both ADMISSION_LETTER and
+ * CONTRACT (UX spec §3 "Nota arquitectónica"); the filter is future-proof.
+ *
+ * Terminal sessions (COMPLETED / CANCELLED / EXPIRED) are filtered out.
+ *
+ * @param {Object} p - { resume_token, scope_doc_role?: 'ADMISSION_LETTER'|'CONTRACT'|null }
+ * @returns {Object} { group_id, sessions: Array<{ session_id, entity_id, current_state_code, document_roles, signers }> }
+ */
+function getSigningTokenFromResumeToken_(p) {
+  if (!p || !p.resume_token) throw new Error('resume_token is required');
+  const scopeDocRole = p.scope_doc_role || null;
+
+  // 1. Resolve group + enrollments
+  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"resume_token" = "' + p.resume_token + '"'
+  });
+  if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
+  const group = groups[0];
+  const groupId = group.enrollment_group_id;
+
+  const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + groupId + '"'
+  }) || [];
+  const enrollmentIds = enrollments.map(e => e.enrollment_id).filter(Boolean);
+  if (!enrollmentIds.length) {
+    return { group_id: groupId, sessions: [] };
+  }
+
+  // 2. Find sysSigningSessions anchored to these enrollments
+  //    Polymorphic anchor: entity_type_code='ENR_ADMISSION_SCHOOL', entity_id=enrollment_id
+  let sessions = [];
+  try {
+    const idFilter = enrollmentIds
+      .map(id => '("entity_id" = "' + id + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL")')
+      .join(' || ');
+    sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [], { Filter: idFilter }) || [];
+  } catch (e) {
+    Logger.log('getSigningTokenFromResumeToken_: sysSigningSessions read failed: ' + e.message);
+    return { group_id: groupId, sessions: [] };
+  }
+
+  // Filter out deleted + terminal sessions
+  const TERMINAL = ['COMPLETED', 'CANCELLED', 'EXPIRED'];
+  const activeSessions = sessions.filter(s =>
+    !s.deleted_at && TERMINAL.indexOf(s.current_state_code || s.status || '') === -1
+  );
+  if (!activeSessions.length) {
+    return { group_id: groupId, sessions: [] };
+  }
+
+  // 3. For each active session: load document roles + signers
+  const out = [];
+  for (let i = 0; i < activeSessions.length; i++) {
+    const sess = activeSessions[i];
+    const sessionId = sess.session_id;
+
+    // Document roles (for scope_doc_role filter + payload)
+    let docRoles = [];
+    try {
+      const docs = appsheetRequest_(T.SIGNING_SESSION_DOCUMENTS, 'Find', [], {
+        Filter: '"session_id" = "' + sessionId + '"'
+      }) || [];
+      const seen = {};
+      docs.filter(d => !d.deleted_at).forEach(d => {
+        if (d.document_role_code) seen[d.document_role_code] = true;
+      });
+      docRoles = Object.keys(seen);
+    } catch (_) { /* graceful — sysSigningSessionDocuments may not exist Stage 1 */ }
+
+    // Optional scope filter — skip session if requested role is not present.
+    // If we couldn't read docRoles at all, we conservatively include the
+    // session (the frontend can validate downstream via resolveSigningToken).
+    if (scopeDocRole && docRoles.length && docRoles.indexOf(scopeDocRole) === -1) {
+      continue;
+    }
+
+    // Signers
+    let signerRows = [];
+    try {
+      signerRows = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [], {
+        Filter: '"session_id" = "' + sessionId + '"'
+      }) || [];
+    } catch (e) {
+      Logger.log('getSigningTokenFromResumeToken_: signers read failed: ' + e.message);
+      continue;
+    }
+    const liveSigners = signerRows.filter(s => !s.deleted_at);
+
+    // Resolve display names from enrPersons (best-effort)
+    const personIds = liveSigners.map(s => s.signer_person_id).filter(Boolean);
+    const nameById = {};
+    if (personIds.length) {
+      try {
+        const personFilter = personIds.map(id => '"person_id" = "' + id + '"').join(' || ');
+        const persons = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: personFilter }) || [];
+        persons.forEach(per => {
+          nameById[per.person_id] = [per.first_name, per.last_name].filter(Boolean).join(' ').trim() || null;
+        });
+      } catch (_) { /* graceful */ }
+    }
+
+    out.push({
+      session_id:         sessionId,
+      entity_id:          sess.entity_id,
+      current_state_code: sess.current_state_code || sess.status || null,
+      document_roles:     docRoles,
+      signers: liveSigners
+        .sort((a, b) => (a.signing_order || 0) - (b.signing_order || 0))
+        .map(s => ({
+          signer_id:           s.signer_id,
+          signer_role:         s.signer_role || null,
+          signer_person_id:    s.signer_person_id || null,
+          signer_display_name: s.signer_person_id ? (nameById[s.signer_person_id] || null) : null,
+          signing_token:       s.signing_token || null,
+          signing_url:         s.signing_url   || null,
+          signed_at:           s.signed_at     || null,
+          // signer_email INTENTIONALLY OMITTED — UX spec §3 active only needs name
+        })),
+    });
+  }
+
+  return { group_id: groupId, sessions: out };
+}
+
+// === MANUAL TESTS ===
+// Run these from the GAS editor after clasp push. They are not invoked by
+// doPost — they are debug-only wrappers Diego can pick from the editor's
+// function dropdown.
+
+/**
+ * Manual test for getInterviewForEnrollment_.
+ * Replace the placeholders with real values from a seed session.
+ */
+function manual_testGetInterviewForEnrollment() {
+  const out = getInterviewForEnrollment_({
+    resume_token: '<RESUME_TOKEN_REAL>',
+    enrollment_id: '<ENROLLMENT_ID_REAL>'
+  });
+  Logger.log(JSON.stringify(out, null, 2));
+}
+
+/**
+ * Manual test for getAdmissionDecisionForEnrollment_.
+ */
+function manual_testGetAdmissionDecisionForEnrollment() {
+  const out = getAdmissionDecisionForEnrollment_({
+    resume_token: '<RESUME_TOKEN_REAL>',
+    enrollment_id: '<ENROLLMENT_ID_REAL>'
+  });
+  Logger.log(JSON.stringify(out, null, 2));
+}
+
+/**
+ * Manual test for getReservationPaymentInfo_.
+ */
+function manual_testGetReservationPaymentInfo() {
+  const out = getReservationPaymentInfo_({
+    resume_token: '<RESUME_TOKEN_REAL>'
+  });
+  Logger.log(JSON.stringify(out, null, 2));
+}
+
+/**
+ * Pure-function shape test for buildReservationConcept_. No AppSheet needed.
+ * Expected:
+ *   RES-AB12CD34-GARCIA
+ *   RES-00112233-PEREZ_DE_LA_FUENTE
+ *   RES-11223344
+ */
+function manual_testReservationConceptShape() {
+  Logger.log(buildReservationConcept_('ab12cd34-1234-5678-9abc-deadbeef0000', 'García'));
+  Logger.log(buildReservationConcept_('00112233-1234-5678-9abc-000000000000', 'Pérez de la Fuente'));
+  Logger.log(buildReservationConcept_('11223344-1234-5678-9abc-000000000000', ''));
+}
+
+/**
+ * Pure-function test for addBusinessDays_.
+ * 2026-05-29 is a Friday; +15 business days → 2026-06-19 (Friday).
+ */
+function manual_testAddBusinessDays() {
+  Logger.log(addBusinessDays_('2026-05-29', 15));
+}
+
+/**
+ * Manual probe — verify sysTenantConfig_T has the 5 bank fields required by
+ * getReservationPaymentInfo_. Logs BLOQUEANTE + the missing keys when any of
+ * bank_iban / bank_bic / reservation_amount_eur / reservation_currency /
+ * reservation_payment_business_days is absent. Run this BEFORE invoking
+ * manual_testGetReservationPaymentInfo against a real token.
+ */
+function manual_verifyTenantConfigBankFields() {
+  const rows = appsheetRequest_(T.TENANT_CONFIG, 'Find', [], {
+    Filter: '"school_id" = "' + SCHOOL_ID + '"'
+  }) || [];
+  if (!rows.length) {
+    Logger.log('BLOQUEANTE: sysTenantConfig_T sin fila para school_id=' + SCHOOL_ID);
+    return;
+  }
+  const r = rows[0];
+  const required = ['bank_iban', 'bank_bic', 'reservation_amount_eur',
+                    'reservation_currency', 'reservation_payment_business_days'];
+  const missing = required.filter(k => !(k in r));
+  if (missing.length) {
+    Logger.log('BLOQUEANTE: campos faltantes en sysTenantConfig_T: ' + JSON.stringify(missing));
+    Logger.log('Cabeceras tab-separated para pegar en fila 1 (solo nuevas columnas):');
+    Logger.log(missing.join('\t'));
+    return;
+  }
+  Logger.log('OK — bank fields present: ' + JSON.stringify(required.map(k => k + '=' + r[k])));
+}
+
+/**
+ * Manual test for getSigningTokenFromResumeToken_ (all sessions).
+ */
+function manual_testGetSigningTokenFromResumeToken() {
+  const out = getSigningTokenFromResumeToken_({
+    resume_token: '<RESUME_TOKEN_REAL>'
+  });
+  Logger.log(JSON.stringify(out, null, 2));
+}
+
+/**
+ * Manual test for getSigningTokenFromResumeToken_ scoped to ADMISSION_LETTER.
+ */
+function manual_testGetSigningTokenScopedAdmission() {
+  const out = getSigningTokenFromResumeToken_({
+    resume_token: '<RESUME_TOKEN_REAL>',
+    scope_doc_role: 'ADMISSION_LETTER'
+  });
+  Logger.log(JSON.stringify(out, null, 2));
 }
 
 /**
