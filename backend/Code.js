@@ -1799,13 +1799,72 @@ function fetchQuestions_(p) {
     throw new Error('Invalid context_code: ' + JSON.stringify(raw));
   }
   const contextCode = raw.trim().toUpperCase();
-  // KAL-5: whitelist regex prevents injection. UPPER_SNAKE: 1-64 chars,
-  // starts with letter, then letters/digits/underscore.
+  // KAL-5 defense-in-depth: whitelist regex prevents injection. UPPER_SNAKE:
+  // 1-64 chars, starts with letter, then letters/digits/underscore. Aplica
+  // tanto a la ruta canónica KMS como al fallback legacy — el motor qb-core
+  // re-valida pero validamos aquí primero para fail-fast antes de la red.
   if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(contextCode)) {
     throw new Error('Invalid context_code: ' + JSON.stringify(raw));
   }
 
   const lang = p.language || 'es';
+
+  // ── Q05-S5 (DL-Q05): proxy thin a KMS qb-public.resolveSetForConsumer ────
+  // El motor reusable vive en kis-app/kms-server/qb/qb-core.gs y se expone
+  // via doPost del KMS bajo `qb-public.resolveSetForConsumer` con auth por
+  // service token. Si Script Properties del wizard están configuradas, este
+  // path GANA al fallback legacy.
+  const props        = PropertiesService.getScriptProperties();
+  const kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
+  const serviceToken = props.getProperty('QB_SERVICE_TOKEN');
+
+  if (kmsUrl && serviceToken) {
+    const kmsPayload = {
+      action: 'qb-public.resolveSetForConsumer',
+      payload: {
+        service_token: serviceToken,
+        consumer_code: 'ADMISSIONS_WIZARD',
+        context_code:  contextCode,
+        receptor:      { locale: lang },
+        school_id:     SCHOOL_ID,
+      },
+      requestId: generateUuid_(),
+    };
+
+    const httpResp = UrlFetchApp.fetch(kmsUrl, {
+      method:             'post',
+      contentType:        'text/plain',
+      payload:            JSON.stringify(kmsPayload),
+      followRedirects:    true,
+      muteHttpExceptions: true,
+    });
+
+    const status = httpResp.getResponseCode();
+    const text   = httpResp.getContentText();
+    if (status !== 200) {
+      throw new Error('KMS qb-public HTTP ' + status + ': ' + redact_(text.slice(0, 200)));
+    }
+    let envelope;
+    try {
+      envelope = JSON.parse(text);
+    } catch (parseErr) {
+      throw new Error('KMS qb-public: non-JSON response: ' + redact_(text.slice(0, 200)));
+    }
+    if (!envelope || envelope.success !== true) {
+      const errPayload = envelope && envelope.error ? envelope.error : { code: 'UNKNOWN', message: 'no error object' };
+      throw new Error('KMS qb-public ' + errPayload.code + ': ' + errPayload.message);
+    }
+
+    return fetchQuestions_adaptKmsResponse_(envelope.data, lang);
+  }
+
+  // ── LEGACY pre-Q05-S5 — fallback path si KMS_DEPLOYMENT_URL o ───────────
+  // QB_SERVICE_TOKEN no están configuradas en Script Properties del wizard.
+  // Mantenido como red de seguridad hasta que el flow KMS esté estable en
+  // prod (remove tras estabilización post-Q05-S5).
+  // El filtro directo a qbContexts/Sets/Questions vía AppSheet API duplica
+  // el motor qb-core de Q05-S1 — su existencia es transitional.
+  // ─────────────────────────────────────────────────────────────────────────
 
   // Find matching context by stable code (case-insensitive at the boundary).
   const contexts = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
@@ -1884,6 +1943,109 @@ function fetchQuestions_(p) {
   }));
 
   return { context, sets: enrichedSets };
+}
+
+/**
+ * Adapta la response del motor qb-core del KMS al shape legacy que el
+ * frontend `QbSetRenderer` ya consume hoy (Step5Questions + Step7Review).
+ *
+ * KMS qb-core (Q05-S1) devuelve:
+ *   { consumer_code, context_code, context_id, locale,
+ *     sets: [{ set_id, set_code, designation, description, is_default_for_context,
+ *              questions: [{ question_id, question_code, response_type_code,
+ *                            designation, description, is_required, sequence,
+ *                            answer_options: [{ option_id, option_value, display_order, designation, description }],
+ *                            conditions: [{ question_condition_id, condition_ref_table, condition_ref_id }] }] }] }
+ *
+ * Wizard frontend espera (legacy shape pre-Q05-S5):
+ *   { context, sets: [{ ...s, items: [{ ..., question: { ..., question_text, help_text,
+ *                                                       placeholder_text, options: [{ ..., text }],
+ *                                                       conditions: [...], response_type_id,
+ *                                                       audience_category_id, is_required } }] }] }
+ *
+ * Mapeo aplicado:
+ *   - q.designation                   → question.question_text
+ *   - q.description                   → question.help_text (placeholder_text vacío — KMS no expone aún)
+ *   - q.response_type_code            → question.response_type_id (lowercased; el render hace toLowerCase)
+ *   - q.answer_options[i].designation → option.text
+ *   - q.answer_options[i].option_value → option.option_value (passthrough)
+ *   - q.conditions                    → question.conditions (passthrough — condition_ref_table/_id)
+ *   - set.questions[i] (with sequence)→ set.items[j].question (con item.display_order = sequence)
+ *
+ * Limitación conocida Q05-S5: el motor qb-core hoy NO devuelve
+ * `audience_category_id` (campo del fork legacy que QbSetRenderer usa para
+ * fan-out per applicant / per guardian). En el path KMS, las preguntas se
+ * renderizan como "general" (clave única = question_id__groupId). El
+ * fan-out completo llega en Q05-S6 (DL-Q05) cuando audience filtering
+ * server-side esté en qbAudienceRules + el motor pase el discriminador.
+ *
+ * @param {Object} kmsData — payload `data` del envelope KMS
+ * @param {string} lang    — locale solicitado (passthrough en context)
+ * @returns {Object}       — shape legacy fetchQuestions_
+ * @private
+ */
+function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
+  if (!kmsData) return { sets: [] };
+
+  const ctx = {
+    context_id:    kmsData.context_id,
+    context_code:  kmsData.context_code,
+    designation:   kmsData.context_code,
+    is_active:     true,
+  };
+
+  const sets = (kmsData.sets || []).map(s => {
+    const items = (s.questions || []).map((q, idx) => {
+      const options = (q.answer_options || []).map(o => ({
+        option_id:     o.option_id,
+        question_id:   q.question_id,
+        option_value:  o.option_value,
+        display_order: Number(o.display_order) || 0,
+        is_active:     true,
+        text:          o.designation || o.option_value || '',
+      }));
+
+      const adaptedQuestion = {
+        question_id:        q.question_id,
+        question_code:      q.question_code || null,
+        // Render del frontend hace .toLowerCase() sobre response_type_id;
+        // mantenemos el response_type_code crudo (es UPPER_SNAKE como BOOLEAN/SELECT/...).
+        response_type_id:   q.response_type_code || 'text',
+        response_type_code: q.response_type_code || null,
+        is_required:        !!q.is_required,
+        // Q05-S5: audience fan-out no soportado todavía via KMS — todas las
+        // preguntas se renderizan como "general" (group-scope). Q05-S6 lo
+        // levantará. NO ponemos 'participant' / 'client' aquí porque el
+        // engine no lo expone aún.
+        audience_category_id: null,
+        question_text:    q.designation  || '',
+        help_text:        q.description  || '',
+        placeholder_text: '',
+        options:          options,
+        conditions:       q.conditions   || [],
+      };
+
+      return {
+        set_id:        s.set_id,
+        question_id:   q.question_id,
+        display_order: Number(q.sequence) || idx,
+        question:      adaptedQuestion,
+      };
+    });
+
+    return {
+      set_id:                 s.set_id,
+      set_code:               s.set_code || null,
+      context_id:             kmsData.context_id,
+      designation:            s.designation || '',
+      description:            s.description || '',
+      is_active:              true,
+      is_default_for_context: !!s.is_default_for_context,
+      items:                  items,
+    };
+  });
+
+  return { context: ctx, sets: sets };
 }
 
 /**
@@ -3819,6 +3981,70 @@ function manual_testRecognizeFamilyAntiEnum() {
   // } catch (e) {
   //   Logger.log('FAIL — recognizeFamily_ threw: ' + e.message);
   // }
+}
+
+/**
+ * DL-Q05 Q05-S5 — smoke test cross-script wizard → KMS qb-public.
+ *
+ * Llama `fetchQuestions_({context_code:'ENROLLMENT', language:'es'})` y
+ * loggea la response. Si las Script Properties `KMS_DEPLOYMENT_URL` y
+ * `QB_SERVICE_TOKEN` están configuradas, la llamada va por HTTP al motor
+ * canónico del KMS. Si no, falla con el mensaje legible
+ * "Q05-S5 pending init: missing KMS_DEPLOYMENT_URL or QB_SERVICE_TOKEN".
+ *
+ * Procedimiento de uso:
+ *   1. En el KMS GAS editor: ejecutar `manual_initQbServiceToken()` y copiar el token.
+ *   2. En este wizard GAS editor → Project Settings → Script Properties:
+ *        QB_SERVICE_TOKEN   = <token>
+ *        KMS_DEPLOYMENT_URL = <URL /exec activa del KMS>
+ *   3. Ejecutar esta función. Verificar en Logger que hay sets devueltos con
+ *      shape legacy (items[].question.question_text + options[].text).
+ */
+function manual_testQbCrossScript() {
+  const props = PropertiesService.getScriptProperties();
+  const hasUrl   = !!props.getProperty('KMS_DEPLOYMENT_URL');
+  const hasToken = !!props.getProperty('QB_SERVICE_TOKEN');
+  Logger.log('Pre-check: KMS_DEPLOYMENT_URL=' + hasUrl + ', QB_SERVICE_TOKEN=' + hasToken);
+  if (!hasUrl || !hasToken) {
+    Logger.log('FAIL — Script Properties incompletas. Configura ambas y reintenta.');
+    return;
+  }
+
+  try {
+    const out = fetchQuestions_({ context_code: 'ENROLLMENT', language: 'es' });
+    const setCount = (out.sets || []).length;
+    const ctxCode  = out.context ? out.context.context_code : '(no context)';
+    Logger.log('PASS — fetchQuestions_ devolvió ' + setCount + ' sets para context=' + ctxCode);
+    (out.sets || []).forEach((s, si) => {
+      const itemCount = (s.items || []).length;
+      Logger.log('  set[' + si + ']: id=' + s.set_id
+               + ' designation="' + (s.designation || '') + '"'
+               + ' items=' + itemCount
+               + ' default=' + !!s.is_default_for_context);
+      (s.items || []).slice(0, 3).forEach((it, qi) => {
+        const q = it.question || {};
+        Logger.log('    item[' + qi + ']: question_id=' + q.question_id
+                 + ' text="' + ((q.question_text || '').slice(0, 60)) + '"'
+                 + ' type=' + q.response_type_id
+                 + ' options=' + ((q.options || []).length)
+                 + ' conditions=' + ((q.conditions || []).length));
+      });
+    });
+    // Shape assertion mínima — el QbSetRenderer falla silenciosamente si
+    // estos campos no existen. Hacemos check explícito aquí.
+    const firstQ = ((out.sets || [])[0] || {}).items && out.sets[0].items[0]
+      ? out.sets[0].items[0].question
+      : null;
+    if (firstQ) {
+      const shapeOk = ('question_text' in firstQ) && ('options' in firstQ)
+                   && ('response_type_id' in firstQ) && ('conditions' in firstQ);
+      Logger.log((shapeOk ? 'PASS' : 'FAIL') + ' — legacy shape preserved (question_text, options, response_type_id, conditions present)');
+    } else {
+      Logger.log('SKIP — no questions to verify shape (puede que el set esté vacío en KMS)');
+    }
+  } catch (e) {
+    Logger.log('FAIL — fetchQuestions_ threw: ' + e.message);
+  }
 }
 
 /**
