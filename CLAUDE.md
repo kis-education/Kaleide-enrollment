@@ -9,6 +9,16 @@ Public-facing enrollment wizard (admissions.kaleide.org). Families submit applic
 
 ## Security
 
+### Datos bancarios y fiscales viven en sus tablas dedicadas, NO en sysTenantConfig_T
+
+IBAN/BIC/sepa_creditor_id viven en `finBankAccounts` (multi-cuenta per DL-048).
+Importes y currency de subscriptions viven en `finSubscriptionTypes`/`finSubscriptionTemplates`.
+`sysTenantConfig_T` es generic tenant config — NO almacena PII ni datos financieros.
+
+Cualquier endpoint del wizard (o del KMS) que necesite IBAN/BIC para una transferencia, o un importe de reserva/matrícula, debe leer de las fuentes canónicas (`finBankAccounts.is_default=TRUE` + `finSubscriptionTypes.type_code='RESERVATION'` o el subscription_type que aplique). Está **prohibido** añadir columnas bancarias o importes a `sysTenantConfig_T` para esquivar el coste de la lectura cross-tabla.
+
+Precedente: CLI 24 (commits `1864427` docs + `68f74ea` backend, 2026-05-29) propuso erróneamente añadir 5 cols bancarias a `sysTenantConfig_T`; corregido en CLI 53 (2026-05-30) refactorizando `getReservationPaymentInfo_` a `finBankAccounts` + `finSubscriptionTypes`. P103 del operational-pending queda **ANULADO** en consecuencia.
+
 ### Regla — funciones de diagnóstico/debug fuera del dispatcher público
 
 El manifest `access: ANYONE_ANONYMOUS` significa que CUALQUIER función registrada en el switch(action) de `doPost` es invocable desde internet sin autenticación. Reglas obligatorias para futuras sesiones:

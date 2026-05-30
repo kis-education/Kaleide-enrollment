@@ -110,8 +110,11 @@ const T = {
   MILESTONE_TYPES: 'sysMilestoneTypes',
   // Wizard post-RQ journey reads (Steps 10/12 — CLI 33-36)
   ADMISSION_DECISION: 'enrAdmissionDecision', // DL-E13
-  TENANT_CONFIG:      'sysTenantConfig_T',    // DL-S19 — Capa 3 tenant config (bank fields Step 12)
+  TENANT_CONFIG:      'sysTenantConfig_T',    // DL-S19 — Capa 3 generic tenant config (NO datos bancarios ni fiscales — CLI 53)
   FIN_PAYMENTS:       'finPayments',          // DL-040 — payment status Step 12
+  // Step 12 deposit canonical sources (CLI 53 — corrige CLI 24 diseño erróneo)
+  BANK_ACCOUNTS:      'finBankAccounts',      // DL-048 — IBAN/BIC/sepa_creditor_id multi-cuenta per school
+  SUBSCRIPTION_TYPES: 'finSubscriptionTypes', // DL-041 — catálogo subscription types (RESERVATION amount + currency)
   // Lookup / reference tables
   LOOKUP_ALLERGIES:       'foodAllergies',
   LOOKUP_DIETARY:         'dietaryRequirements',
@@ -4292,14 +4295,30 @@ function addBusinessDays_(isoDate, n) {
 }
 
 /**
+ * Stage 1 default deadline window (business days) for the reservation
+ * payment, used when neither enrAdmissionDecision.reservation_deadline
+ * nor a tenant override is available.
+ *
+ * Roadmap: cuando finSubscriptionTypes (o tabla equivalente) exponga un
+ * campo `payment_business_days` para la fila RESERVATION del tenant, mover
+ * la lectura ahí. Hoy vive como constante porque la fuente canónica aún
+ * no expone el campo (CLI 53 — Diego 2026-05-30).
+ */
+const RESERVATION_PAYMENT_BUSINESS_DAYS = 7;
+
+/**
  * Returns reservation bank-transfer info for Step 12 of the post-RQ journey.
  *
  * Auth: resume_token. Per-group (single concept + deadline per group, not per
  * applicant — Step 12 is at group scope).
  *
- * Data sources:
- *   - sysTenantConfig_T   (bank IBAN/BIC + amount + currency + deadline days)
+ * Data sources (canónicas tras CLI 53 — corrige diseño erróneo CLI 24):
+ *   - finBankAccounts     (DL-048 — IBAN + BIC + sepa_creditor_id; multi-cuenta
+ *                          per school, fila is_default=TRUE elegida)
+ *   - finSubscriptionTypes (DL-041 — type_code='RESERVATION' aporta importe +
+ *                          currency a futuro; Stage 1 valida presencia mínima)
  *   - enrEnrollmentGroups (resolves group + school)
+ *   - enrEnrollments      (anchor per group; surname source for concept)
  *   - enrPersons          (surname of first applicant for the concept)
  *   - finPayments         (CONFIRMED RESERVATION payment for any enrollment)
  *   - enrAdmissionDecision (reservation_deadline if present; fallback computed)
@@ -4307,10 +4326,18 @@ function addBusinessDays_(isoDate, n) {
  *
  * UX spec §4 + P96 (Diego 2026-05-29) — Stage 1 = manual bank transfer.
  *
- * Defensive: if sysTenantConfig_T lacks the required bank columns, returns
- * { error_code: 'TENANT_CONFIG_INCOMPLETE', bank: null, ... } so the frontend
- * renders the red banner per UX spec §4 empty/error. The endpoint does NOT
- * create the columns in AppSheet — Diego adds them as a separate OP item.
+ * Defensive error codes:
+ *   - NO_DEFAULT_BANK_ACCOUNT       — finBankAccounts no tiene fila
+ *                                     is_default=TRUE para el school.
+ *   - NO_RESERVATION_SUBSCRIPTION_TYPE — finSubscriptionTypes no tiene fila
+ *                                       type_code='RESERVATION' para el school.
+ *
+ * Diseño histórico (CLI 24, commit 1864427 + 68f74ea): se propuso almacenar
+ * IBAN/BIC/importe en `sysTenantConfig_T`. Diego destapó (2026-05-30) que es
+ * incorrecto: sysTenantConfig_T es Capa 3 generic tenant config y NO debe
+ * mezclar datos bancarios ni fiscales. Las fuentes canónicas existen:
+ * `finBankAccounts` (DL-048 multi-cuenta) e `finSubscriptionTypes` (DL-041).
+ * CLI 53 refactoriza a esas fuentes y anula P103 (cols a sysTenantConfig_T).
  *
  * @param {Object} p - { resume_token }
  * @returns {Object} See UX spec §4 backend endpoints for the full shape.
@@ -4328,17 +4355,22 @@ function getReservationPaymentInfo_(p) {
   const groupId = group.enrollment_group_id;
   assertValidUuid_(groupId, 'enrollment_group_id');
 
-  // 2. Tenant config — bank fields. school_id from group (multi-tenant safe).
   const groupSchoolId = group.school_id || SCHOOL_ID;
-  let cfgRows = [];
+
+  // 2. Bank account — finBankAccounts default for the school (DL-048).
+  //    Filter is_default=TRUE + soft-delete + active. Only one TRUE row per
+  //    tenant by invariant (§40.2 fin-module-appsheet-guide), so [0] suffices.
+  let bank = null;
   try {
-    cfgRows = appsheetRequest_(T.TENANT_CONFIG, 'Find', [], {
-      Filter: '"school_id" = "' + appsheetEscape_(groupSchoolId) + '"'
+    const banks = appsheetRequest_(T.BANK_ACCOUNTS, 'Find', [], {
+      Filter: '"school_id" = "' + appsheetEscape_(groupSchoolId) + '" && "is_default" = TRUE'
     }) || [];
+    bank = banks.find(b => !b.deleted_at && b.is_active !== false && b.is_active !== 'N' && b.is_active !== 'FALSE') || null;
   } catch (e) {
-    Logger.log('getReservationPaymentInfo_: sysTenantConfig_T read failed: ' + e.message);
+    Logger.log('getReservationPaymentInfo_: finBankAccounts read failed: ' + e.message);
   }
-  if (!cfgRows.length) {
+  if (!bank || !bank.iban) {
+    Logger.log('getReservationPaymentInfo_: no default finBankAccounts for school=' + groupSchoolId);
     return {
       payment_status:    'PENDING',
       bank:              null,
@@ -4349,42 +4381,72 @@ function getReservationPaymentInfo_(p) {
       proforma_file_id:  null,
       confirmed_at:      null,
       receipt_file_id:   null,
-      error_code:        'TENANT_CONFIG_INCOMPLETE',
+      error_code:        'NO_DEFAULT_BANK_ACCOUNT',
     };
   }
-  const cfg = cfgRows[0];
+  const iban = String(bank.iban).replace(/\s+/g, '').toUpperCase();
+  const bic  = bank.bic ? String(bank.bic).trim().toUpperCase() : null;
 
-  // Required bank field presence — defensive (Diego must add columns first).
-  // The 5 canonical fields: bank_iban, bank_bic, reservation_amount_eur,
-  // reservation_currency, reservation_payment_business_days.
-  const requiredKeys = [
-    'bank_iban',
-    'bank_bic',
-    'reservation_amount_eur',
-    'reservation_currency',
-    'reservation_payment_business_days',
-  ];
-  const missingKeys = requiredKeys.filter(k => !(k in cfg));
-  // bank_iban and reservation_amount_eur are the hard-required values to render
-  // the bank panel; the others can fall back. Treat absence of EITHER as
-  // TENANT_CONFIG_INCOMPLETE per UX spec §4 empty/error.
-  if (missingKeys.length || !cfg.bank_iban || cfg.reservation_amount_eur == null || cfg.reservation_amount_eur === '') {
-    Logger.log('getReservationPaymentInfo_: missing bank config in sysTenantConfig_T: ' + JSON.stringify(missingKeys));
+  // 3. Reservation subscription type — finSubscriptionTypes RESERVATION row
+  //    (DL-041). Stage 1 valida la presencia de la fila + lee `designation`
+  //    para currency fallback. El importe canónico vivirá en este catálogo o
+  //    en finSubscriptionTemplates/finProducts asociados — Stage 1 lee del
+  //    propio row campos `default_amount_eur`/`reservation_amount_eur`/
+  //    `default_amount_cents` si existen; en su defecto null + error_code
+  //    posterior por amount NULL.
+  let subType = null;
+  try {
+    const types = appsheetRequest_(T.SUBSCRIPTION_TYPES, 'Find', [], {
+      Filter: '"school_id" = "' + appsheetEscape_(groupSchoolId) + '" && "type_code" = "RESERVATION"'
+    }) || [];
+    subType = types.find(t => !t.deleted_at) || null;
+  } catch (e) {
+    Logger.log('getReservationPaymentInfo_: finSubscriptionTypes read failed: ' + e.message);
+  }
+  if (!subType) {
+    Logger.log('getReservationPaymentInfo_: no RESERVATION finSubscriptionTypes row for school=' + groupSchoolId);
     return {
       payment_status:    'PENDING',
       bank:              null,
       amount:            null,
-      currency:          cfg.reservation_currency || 'EUR',
+      currency:          'EUR',
       concept_reference: null,
       deadline:          null,
       proforma_file_id:  null,
       confirmed_at:      null,
       receipt_file_id:   null,
-      error_code:        'TENANT_CONFIG_INCOMPLETE',
+      error_code:        'NO_RESERVATION_SUBSCRIPTION_TYPE',
     };
   }
+  // Amount: tolerant lookup of canonical/legacy column names. Returning the
+  // numeric amount in EUR. If absent in all candidates, treat as missing
+  // subscription type config (same error_code — Diego must populate it).
+  let amount = null;
+  if (subType.default_amount_eur != null && subType.default_amount_eur !== '') {
+    amount = Number(subType.default_amount_eur);
+  } else if (subType.reservation_amount_eur != null && subType.reservation_amount_eur !== '') {
+    amount = Number(subType.reservation_amount_eur);
+  } else if (subType.default_amount_cents != null && subType.default_amount_cents !== '') {
+    amount = Number(subType.default_amount_cents) / 100;
+  }
+  if (amount == null || !isFinite(amount) || amount <= 0) {
+    Logger.log('getReservationPaymentInfo_: RESERVATION finSubscriptionTypes row missing amount for school=' + groupSchoolId);
+    return {
+      payment_status:    'PENDING',
+      bank:              null,
+      amount:            null,
+      currency:          subType.currency || subType.default_currency || 'EUR',
+      concept_reference: null,
+      deadline:          null,
+      proforma_file_id:  null,
+      confirmed_at:      null,
+      receipt_file_id:   null,
+      error_code:        'NO_RESERVATION_SUBSCRIPTION_TYPE',
+    };
+  }
+  const currency = subType.currency || subType.default_currency || 'EUR';
 
-  // 3. First applicant surname for the concept
+  // 4. First applicant surname for the concept
   const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
     Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
   }) || [];
@@ -4410,7 +4472,7 @@ function getReservationPaymentInfo_(p) {
   }
   const concept = buildReservationConcept_(groupId, surname);
 
-  // 4. Payment status — finPayments CONFIRMED for any enrollment in the group
+  // 5. Payment status — finPayments CONFIRMED for any enrollment in the group
   const enrollmentIds = enrollments.map(e => e.enrollment_id).filter(Boolean);
   let confirmedAt = null;
   if (enrollmentIds.length) {
@@ -4429,9 +4491,12 @@ function getReservationPaymentInfo_(p) {
   }
   const paymentStatus = confirmedAt ? 'CONFIRMED' : 'PENDING';
 
-  // 5. Deadline — prefer enrAdmissionDecision.reservation_deadline, else
+  // 6. Deadline — prefer enrAdmissionDecision.reservation_deadline, else
   //    compute (state_entered_at(AD) || updated_at || created_at) + N business
-  //    days from sysTenantConfig_T.reservation_payment_business_days.
+  //    days from RESERVATION_PAYMENT_BUSINESS_DAYS const (Stage 1).
+  //    Roadmap: cuando finSubscriptionTypes RESERVATION row exponga
+  //    `payment_business_days`, leer de subType.payment_business_days en su
+  //    lugar (cae a la const si NULL).
   let deadline = null;
   try {
     const idFilter = enrollmentIds.map(id => '"enrollment_id" = "' + appsheetEscape_(id) + '"').join(' || ');
@@ -4443,11 +4508,11 @@ function getReservationPaymentInfo_(p) {
   } catch (_) { /* graceful — column may not exist Stage 1 */ }
   if (!deadline) {
     const adAnchor = firstEnr.state_entered_at || firstEnr.updated_at || firstEnr.created_at;
-    const bizDays  = Number(cfg.reservation_payment_business_days) || 15;
+    const bizDays  = Number(subType.payment_business_days) || RESERVATION_PAYMENT_BUSINESS_DAYS;
     deadline = addBusinessDays_(adAnchor, bizDays);
   }
 
-  // 6. Proforma / receipt — best-effort recFiles lookup by origin_reference
+  // 7. Proforma / receipt — best-effort recFiles lookup by origin_reference
   let proformaFileId = null, receiptFileId = null;
   try {
     const files = appsheetRequest_(T.REC_FILES, 'Find', [], {
@@ -4463,11 +4528,11 @@ function getReservationPaymentInfo_(p) {
   return {
     payment_status:    paymentStatus,
     bank: {
-      iban: String(cfg.bank_iban).replace(/\s+/g, '').toUpperCase(),
-      bic:  cfg.bank_bic ? String(cfg.bank_bic).trim().toUpperCase() : null,
+      iban: iban,
+      bic:  bic,
     },
-    amount:            Number(cfg.reservation_amount_eur),
-    currency:          cfg.reservation_currency || 'EUR',
+    amount:            amount,
+    currency:          currency,
     concept_reference: concept,
     deadline:          deadline,
     proforma_file_id:  proformaFileId,
@@ -4806,12 +4871,21 @@ function manual_testGetAdmissionDecisionForEnrollment() {
 
 /**
  * Manual test for getReservationPaymentInfo_.
+ *
+ * Post-CLI 53 — la fuente de los datos bancarios y del importe ya no es
+ * `sysTenantConfig_T`, sino `finBankAccounts` (default per school) +
+ * `finSubscriptionTypes` (type_code=RESERVATION). Antes de invocar este
+ * test contra un token real, ejecutar `manual_verifyReservationBankFields()`
+ * para confirmar que las dos fuentes están pobladas. Si una falla, esta
+ * función devolverá un payload con `error_code` ∈
+ * {NO_DEFAULT_BANK_ACCOUNT, NO_RESERVATION_SUBSCRIPTION_TYPE}.
  */
 function manual_testGetReservationPaymentInfo() {
   const out = getReservationPaymentInfo_({
     resume_token: '<RESUME_TOKEN_REAL>'
   });
   Logger.log(JSON.stringify(out, null, 2));
+  return out;
 }
 
 /**
@@ -4836,31 +4910,75 @@ function manual_testAddBusinessDays() {
 }
 
 /**
- * Manual probe — verify sysTenantConfig_T has the 5 bank fields required by
- * getReservationPaymentInfo_. Logs BLOQUEANTE + the missing keys when any of
- * bank_iban / bank_bic / reservation_amount_eur / reservation_currency /
- * reservation_payment_business_days is absent. Run this BEFORE invoking
- * manual_testGetReservationPaymentInfo against a real token.
+ * Manual probe — verify the canonical sources for Step 12 reservation
+ * payment info are populated (post CLI 53 refactor).
+ *
+ * Canonical sources (correct sources after fixing CLI 24 design error):
+ *   1) finBankAccounts has at least one row for SCHOOL_ID with is_default=TRUE,
+ *      non-deleted, with a non-empty iban.
+ *   2) finSubscriptionTypes has a row for SCHOOL_ID with type_code='RESERVATION',
+ *      non-deleted, with a positive amount (default_amount_eur /
+ *      reservation_amount_eur / default_amount_cents accepted).
+ *
+ * Returns a structured object with PASS/FAIL per check. Run this BEFORE
+ * invoking manual_testGetReservationPaymentInfo against a real token.
+ *
+ * @returns {Object} { pass, bank_account: {...}, subscription_type: {...} }
  */
-function manual_verifyTenantConfigBankFields() {
-  const rows = appsheetRequest_(T.TENANT_CONFIG, 'Find', [], {
-    Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '"'
-  }) || [];
-  if (!rows.length) {
-    Logger.log('BLOQUEANTE: sysTenantConfig_T sin fila para school_id=' + SCHOOL_ID);
-    return;
+function manual_verifyReservationBankFields() {
+  const out = {
+    school_id: SCHOOL_ID,
+    bank_account: { check: 'finBankAccounts.is_default=TRUE', pass: false, detail: null },
+    subscription_type: { check: 'finSubscriptionTypes.type_code=RESERVATION', pass: false, detail: null },
+    pass: false,
+  };
+
+  // 1) finBankAccounts default
+  try {
+    const banks = appsheetRequest_(T.BANK_ACCOUNTS, 'Find', [], {
+      Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "is_default" = TRUE'
+    }) || [];
+    const live = banks.filter(b => !b.deleted_at);
+    if (!live.length) {
+      out.bank_account.detail = 'BLOQUEANTE: no default finBankAccounts row (is_default=TRUE, no soft-deleted) for school_id=' + SCHOOL_ID;
+    } else if (!live[0].iban) {
+      out.bank_account.detail = 'BLOQUEANTE: default finBankAccounts row found but iban is empty (bank_account_id=' + (live[0].bank_account_id || '?') + ')';
+    } else {
+      out.bank_account.pass = true;
+      out.bank_account.detail = 'OK iban=' + live[0].iban + ' bic=' + (live[0].bic || '(none)') + ' account_code=' + (live[0].account_code || '?');
+    }
+  } catch (e) {
+    out.bank_account.detail = 'ERROR reading finBankAccounts: ' + e.message;
   }
-  const r = rows[0];
-  const required = ['bank_iban', 'bank_bic', 'reservation_amount_eur',
-                    'reservation_currency', 'reservation_payment_business_days'];
-  const missing = required.filter(k => !(k in r));
-  if (missing.length) {
-    Logger.log('BLOQUEANTE: campos faltantes en sysTenantConfig_T: ' + JSON.stringify(missing));
-    Logger.log('Cabeceras tab-separated para pegar en fila 1 (solo nuevas columnas):');
-    Logger.log(missing.join('\t'));
-    return;
+
+  // 2) finSubscriptionTypes RESERVATION
+  try {
+    const types = appsheetRequest_(T.SUBSCRIPTION_TYPES, 'Find', [], {
+      Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "type_code" = "RESERVATION"'
+    }) || [];
+    const live = types.filter(t => !t.deleted_at);
+    if (!live.length) {
+      out.subscription_type.detail = 'BLOQUEANTE: no finSubscriptionTypes row with type_code=RESERVATION (not soft-deleted) for school_id=' + SCHOOL_ID;
+    } else {
+      const r = live[0];
+      let amount = null;
+      if (r.default_amount_eur != null && r.default_amount_eur !== '') amount = Number(r.default_amount_eur);
+      else if (r.reservation_amount_eur != null && r.reservation_amount_eur !== '') amount = Number(r.reservation_amount_eur);
+      else if (r.default_amount_cents != null && r.default_amount_cents !== '') amount = Number(r.default_amount_cents) / 100;
+      if (amount == null || !isFinite(amount) || amount <= 0) {
+        out.subscription_type.detail = 'BLOQUEANTE: RESERVATION row found but no positive amount column (default_amount_eur / reservation_amount_eur / default_amount_cents). Diego: añadir importe a la fila o columna en finSubscriptionTypes.';
+      } else {
+        out.subscription_type.pass = true;
+        out.subscription_type.detail = 'OK amount=' + amount + ' currency=' + (r.currency || r.default_currency || 'EUR(default)') + ' subscription_type_id=' + (r.subscription_type_id || '?');
+      }
+    }
+  } catch (e) {
+    out.subscription_type.detail = 'ERROR reading finSubscriptionTypes: ' + e.message;
   }
-  Logger.log('OK — bank fields present: ' + JSON.stringify(required.map(k => k + '=' + r[k])));
+
+  out.pass = out.bank_account.pass && out.subscription_type.pass;
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
 }
 
 /**
