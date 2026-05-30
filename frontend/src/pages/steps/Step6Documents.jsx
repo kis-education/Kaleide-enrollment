@@ -22,7 +22,7 @@ function fileToBase64(file) {
   });
 }
 
-function DocumentUploader({ docType, enrollmentGroupId, onUploaded, existing }) {
+function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded, existing }) {
   const { t }    = useTranslation();
   const [status, setStatus] = useState(existing ? 'success' : '');
   const [url,    setUrl]    = useState(existing?.drive_url || '');
@@ -36,6 +36,7 @@ function DocumentUploader({ docType, enrollmentGroupId, onUploaded, existing }) 
     try {
       const base64 = await fileToBase64(file);
       const data   = await gasCall('uploadDocument', {
+        resume_token:        resumeToken, // KAL-4: required for IDOR defense
         enrollment_group_id: enrollmentGroupId,
         application_id:      enrollmentGroupId, // legacy alias
         base64,
@@ -98,7 +99,7 @@ function DocumentUploader({ docType, enrollmentGroupId, onUploaded, existing }) 
 
 export default function Step6Documents({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t }  = useTranslation();
-  const { enrollmentGroupId, stepData, updateStep } = useWizard();
+  const { enrollmentGroupId, resumeToken, stepData, updateStep } = useWizard();
   const [documents, setDocuments] = useState(stepData.documents || []);
 
   const handleUploaded = (doc) => {
@@ -134,6 +135,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
             key={doc.key}
             docType={doc.key}
             enrollmentGroupId={enrollmentGroupId}
+            resumeToken={resumeToken}
             onUploaded={handleUploaded}
             existing={documents.find(d => d.document_type === doc.key)}
           />

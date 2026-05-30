@@ -77,7 +77,7 @@ export default function Step7Review({ onBack }) {
   const { t, i18n }  = useTranslation();
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
-  const { enrollmentGroupId, stepData, awaitPendingSave, hasPendingSave, isSubmitted } = useWizard();
+  const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted } = useWizard();
 
   const { email, persons, documents, relations, health, questions } = stepData;
   const guardians  = (persons || []).filter(p => p.person_type_id === 'guardian');
@@ -152,6 +152,7 @@ export default function Step7Review({ onBack }) {
       }
 
       await gasCall('submitEnrollmentSession', {
+        resume_token:        resumeToken, // KAL-4: required for IDOR defense
         enrollment_group_id: enrollmentGroupId,
         application_id:      enrollmentGroupId,
         desired_start_date:  email?.desired_start_date || null,

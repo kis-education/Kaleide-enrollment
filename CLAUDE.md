@@ -37,6 +37,19 @@ Las 2 capas son obligatorias. Nunca solo una.
 
 Cross-ref: commit `CLI46` cierra los 15+ call-sites originales (initEnrollmentSession_, recognizeFamily_, sendMagicLink_, abandonSession_, reportUnsolicited_, resumeSession_, saveStep_, submitEnrollmentSession_, uploadDocument_, fetchQuestions_, fetchLookups_, resolveSigningToken_, promoteEnrollment_, adminCleanupOrphanSessions, getTrackingData_, getInterviewForEnrollment_, getAdmissionDecisionForEnrollment_, getReservationPaymentInfo_, getSigningTokenFromResumeToken_). Helpers en backend/Code.js cerca del inicio del archivo, justo antes de `// ─── Entry points ───`. Tests manuales: `manual_testAppSheetEscape_` y `manual_testFilterInjectionDefense_`.
 
+### IDOR — token enforcement obligatorio en endpoints mutables (KAL-4 cerrado 2026-05-30)
+
+Todo handler que modifique datos de un grupo familiar DEBE derivar el `enrollment_group_id` autorizado desde el `resume_token` del payload via `requireResumeToken_(payload)`, NUNCA desde el campo `enrollment_group_id` del payload directamente.
+
+Patrón obligatorio para nuevos handlers de mutación:
+1. Primera línea: `const groupId = requireResumeToken_(payload);`
+2. NUNCA usar `payload.enrollment_group_id` directo — siempre usar la `groupId` retornada.
+3. Si el handler acepta `enrollment_id` (no group_id), validar que ese enrollment pertenece al grupo del token.
+
+Handlers blindados 2026-05-30: saveStep_, submitEnrollmentSession_, saveResponses_, uploadDocument_. Los handlers de lectura (getTrackingData_, getInterviewForEnrollment_, etc.) ya usan este patrón desde CLI 12+33-36.
+
+Excepción: `promoteEnrollment_` queda pendiente como KAL-3 — requiere mecánica de gating staff distinta (no es un endpoint de familia; es invocado por KMS staff). Ver roadmap operational-pending.
+
 ## Deployment
 
 The wizard is served from a **fixed deployment URL**. `clasp push` only updates Head — users hit the deployment URL, which is frozen until redeployed.

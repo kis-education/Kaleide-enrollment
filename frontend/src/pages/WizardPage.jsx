@@ -112,6 +112,7 @@ const handleNext = async (stepKey, data) => {
           // Send both new and legacy keys so backend keeps working during the
           // parallel refactor — server-side will prefer enrollment_group_id.
           const saveResult = await gasCall('saveStep', {
+            resume_token:        resumeToken, // KAL-4: required for IDOR defense
             enrollment_group_id: enrollmentGroupId,
             application_id:      enrollmentGroupId, // legacy alias
             step:                stepKey,

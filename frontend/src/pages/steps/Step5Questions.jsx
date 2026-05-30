@@ -107,7 +107,7 @@ function meetsConditions(question, person, responses, personKey) {
 
 export default function Step5Questions({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t, i18n }  = useTranslation();
-  const { enrollmentGroupId, stepData, updateStep } = useWizard();
+  const { enrollmentGroupId, resumeToken, stepData, updateStep } = useWizard();
 
   const [sets,     setSets]     = useState([]);
   const [loading,  setLoading]  = useState(true);
@@ -149,6 +149,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
     });
     if (rows.length && enrollmentGroupId) {
       await gasCall('saveResponses', {
+        resume_token:                resumeToken, // KAL-4: required for IDOR defense
         enrollment_group_id:         enrollmentGroupId,
         application_id:              enrollmentGroupId, // legacy alias
         respondent_id:               enrollmentGroupId,

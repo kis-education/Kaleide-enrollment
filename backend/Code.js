@@ -189,6 +189,50 @@ function assertValidEmail_(v, fieldName) {
   }
 }
 
+// ─── IDOR defense (KAL-4) ─────────────────────────────────────────────────────
+// Closes the Insecure Direct Object Reference vector identified in the
+// 2026-05-29 audit. Mutation handlers (saveStep_, submitEnrollmentSession_,
+// saveResponses_, uploadDocument_) used to trust `enrollment_group_id` from
+// the payload directly, so anyone who knew or guessed a group_id could mutate
+// another family's wizard.
+//
+// Defense: every mutation handler MUST derive the authorised group_id from
+// the caller's resume_token (which is the family's bearer secret, set on the
+// enrEnrollmentGroups row at init time). The payload may still echo back
+// `enrollment_group_id` for legacy compat, but it must match the one resolved
+// from the token — otherwise the request is rejected.
+
+/**
+ * Resolves resume_token from payload → enrollment_group_id from BD.
+ * Throws if token missing, malformed, or no matching group found.
+ * Returns the canonical group_id (NEVER trust the one from payload).
+ *
+ * Defense pattern KAL-4 (IDOR): caller must derive group_id from token,
+ * not from the payload field directly. If payload also includes a
+ * enrollment_group_id, MUST match the one resolved from token.
+ *
+ * @param {Object} payload - request payload (must contain `resume_token`)
+ * @returns {string} canonical enrollment_group_id authorised by the token
+ */
+function requireResumeToken_(payload) {
+  const token = payload && payload.resume_token;
+  assertValidUuid_(token, 'resume_token');
+  const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
+  });
+  if (!rows || !rows.length) {
+    throw new Error('Unauthorized: resume_token not recognized');
+  }
+  const tokenGroupId = rows[0].enrollment_group_id;
+  // Cross-group guard: if payload also provides group_id (legacy alias
+  // `application_id` included), it MUST match the one resolved from token.
+  const payloadGroupId = payload && (payload.enrollment_group_id || payload.application_id);
+  if (payloadGroupId && payloadGroupId !== tokenGroupId) {
+    throw new Error('Unauthorized: payload enrollment_group_id does not match resume_token grant');
+  }
+  return tokenGroupId;
+}
+
 // ─── Entry points ─────────────────────────────────────────────────────────────
 
 /**
@@ -1112,10 +1156,11 @@ function resumeSession_(p) {
  * @param {Object} p - { enrollment_group_id?|application_id?, step, payload }
  */
 function saveStep_(p) {
-  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
+  // KAL-4: derive authorised group_id from resume_token; never trust the
+  // payload's enrollment_group_id directly. Cross-check inside the helper.
+  const enrollmentGroupId = requireResumeToken_(p);
   const { step, payload } = p;
-  if (!enrollmentGroupId || !step || !payload) throw new Error('Missing required fields');
-  assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
+  if (!step || !payload) throw new Error('Missing required fields');
 
   const now = new Date().toISOString();
 
@@ -1206,7 +1251,20 @@ function saveStep_(p) {
       throw new Error('Unknown step: ' + step);
   }
 
-  return { saved: true, step, _debug: extra };
+  // KAL-4: _debug payload (extra) contained PII samples (firstNew / firstPhone /
+  // firstEmail from savePersons_); it is gated behind a script property so
+  // diagnostics still work during deploys but not for normal traffic.
+  // The frontend (Step2 → WizardPage) consumes _debug.personIdMap to stamp
+  // real person_ids back into the wizard form, so when _debug is suppressed
+  // we still expose ONLY that map (no PII fields).
+  const debugEnabled = PropertiesService.getScriptProperties().getProperty('DEBUG_MODE') === '1';
+  let safeDebug = null;
+  if (extra && extra.personIdMap) {
+    // Always expose the personIdMap (no PII — just _uid ↔ person_id pairs).
+    safeDebug = { personIdMap: extra.personIdMap };
+  }
+  if (debugEnabled) safeDebug = extra;
+  return { saved: true, step, _debug: safeDebug };
 }
 
 /**
@@ -1225,9 +1283,9 @@ function saveStep_(p) {
  * @param {Object} p - { enrollment_group_id?|application_id?, esignature, consents, language }
  */
 function submitEnrollmentSession_(p) {
-  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
-  if (!enrollmentGroupId) throw new Error('Missing enrollment_group_id');
-  assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
+  // KAL-4: derive authorised group_id from resume_token; never trust the
+  // payload's enrollment_group_id directly. Cross-check inside the helper.
+  const enrollmentGroupId = requireResumeToken_(p);
 
   const now = new Date().toISOString();
 
@@ -1829,9 +1887,24 @@ function fetchLookups_() {
  * @param {Object} p - { enrollment_group_id?|application_id?, respondent_id, respondent_type_category_id, responses: Array }
  */
 function saveResponses_(p) {
-  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
+  // KAL-4: derive authorised group_id from resume_token; never trust the
+  // payload's enrollment_group_id directly. Cross-check inside the helper.
+  const enrollmentGroupId = requireResumeToken_(p);
   const { respondent_id, respondent_type_category_id, responses } = p;
   if (!responses || !responses.length) return { saved: 0 };
+
+  // KAL-4: if respondent_id is supplied and differs from the group_id (i.e.
+  // the responder is a specific applicant person, not the group itself),
+  // verify that person belongs to this group.
+  if (respondent_id && respondent_id !== enrollmentGroupId) {
+    assertValidUuid_(respondent_id, 'respondent_id');
+    const persons = appsheetRequest_(T.PERSONS, 'Find', [], {
+      Filter: '"person_id" = "' + appsheetEscape_(respondent_id) + '" && "enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
+    }) || [];
+    if (!persons.length) {
+      throw new Error('Unauthorized: respondent_id does not belong to token group');
+    }
+  }
 
   const now  = new Date().toISOString();
   const rows = responses.map(r => ({
@@ -1911,13 +1984,23 @@ function _docTypeFromRecType_(recTypeCode) {
  *   (document_id is a legacy alias = file_id, kept for frontend compat)
  */
 function uploadDocument_(p) {
+  // KAL-4: derive authorised group_id from resume_token; never trust the
+  // payload's enrollment_group_id directly. Cross-check inside the helper.
+  const enrollmentGroupId = requireResumeToken_(p);
   const enrollmentId      = p.enrollment_id || null;
-  const enrollmentGroupId = p.enrollment_group_id || p.application_id || null;
   const { base64, mimeType, filename, document_type } = p;
   if (!base64) throw new Error('Missing base64');
-  if (!enrollmentId && !enrollmentGroupId) throw new Error('Missing enrollment_id or enrollment_group_id');
-  if (enrollmentId)      assertValidUuid_(enrollmentId, 'enrollment_id');
-  if (enrollmentGroupId) assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
+  if (enrollmentId) {
+    assertValidUuid_(enrollmentId, 'enrollment_id');
+    // KAL-4: post-submit uploads target a specific enrollment; verify it
+    // belongs to the token's group.
+    const enrollment = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
+      Filter: '"enrollment_id" = "' + appsheetEscape_(enrollmentId) + '" && "enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
+    });
+    if (!enrollment || !enrollment.length) {
+      throw new Error('Unauthorized: enrollment_id does not belong to token group');
+    }
+  }
 
   const idempotencyToken = p.upload_idempotency_token || generateUuid_();
   // KAL-5: idempotency token is server-generated UUID by default; if the
@@ -4618,6 +4701,84 @@ function manual_testFilterInjectionDefense_() {
   assertValidEmail_('test@example.com', 'email');
   assertValidUuid_('a8bf5292-eb12-43f8-9a82-1d2a39c11f4e', 'uuid');
   Logger.log('PASS — valid email + UUID accepted');
+}
+
+/**
+ * KAL-4: tests that requireResumeToken_ enforces the IDOR boundary.
+ * Pure-shape checks (no DB) for malformed/missing inputs; the DB-backed
+ * cases are gated to allow Diego to plug real tokens.
+ */
+function manual_testRequireResumeToken_() {
+  // Caso 1: token válido → resuelve group_id correctamente
+  // Diego: descomenta con un resume_token real conocido y verifica que retorna su group_id.
+  // const groupId = requireResumeToken_({ resume_token: '<RESUME_TOKEN_REAL>' });
+  // Logger.log('PASS — resolved group_id from real token: ' + groupId);
+
+  // Caso 2: token malformado → throws
+  try {
+    requireResumeToken_({ resume_token: 'not-a-uuid' });
+    Logger.log('FAIL — malformed token should have thrown');
+  } catch (e) {
+    Logger.log('PASS — malformed token rejected: ' + e.message);
+  }
+
+  // Caso 3: token válido pero payload claims different group_id → throws
+  // Diego: descomenta con un resume_token real + un enrollment_group_id de OTRA familia
+  // try {
+  //   requireResumeToken_({
+  //     resume_token: '<RESUME_TOKEN_REAL>',
+  //     enrollment_group_id: '<GROUP_ID_DE_OTRA_FAMILIA>'
+  //   });
+  //   Logger.log('FAIL — cross-group payload should have thrown');
+  // } catch (e) {
+  //   Logger.log('PASS — cross-group payload rejected: ' + e.message);
+  // }
+
+  // Caso 4: payload sin resume_token → throws
+  try {
+    requireResumeToken_({});
+    Logger.log('FAIL — missing token should have thrown');
+  } catch (e) {
+    Logger.log('PASS — missing token rejected: ' + e.message);
+  }
+
+  // Caso 5: token con shape válido pero NO existe en BD → throws
+  try {
+    requireResumeToken_({ resume_token: '00000000-0000-0000-0000-000000000000' });
+    Logger.log('FAIL — unknown token should have thrown');
+  } catch (e) {
+    Logger.log('PASS — unknown token rejected: ' + e.message);
+  }
+}
+
+/**
+ * KAL-4: end-to-end IDOR defense smoke test for saveStep_.
+ * Requires Diego to plug a real resume_token and a foreign group_id.
+ */
+function manual_testIdorDefenseSaveStep_() {
+  // Caso 1: saveStep con token y group_id matching → OK (sólo group-level edit).
+  // Diego: descomenta con datos reales.
+  // const ok = saveStep_({
+  //   resume_token:        '<RESUME_TOKEN_REAL>',
+  //   enrollment_group_id: '<GROUP_ID_DEL_MISMO_TOKEN>',
+  //   step:                'application',
+  //   payload:             { source: 'TEST_KAL4' }
+  // });
+  // Logger.log('PASS — same-group saveStep OK: ' + JSON.stringify(ok));
+
+  // Caso 2: saveStep con token A pero group_id de familia B → throws "Unauthorized".
+  // Diego: descomenta con un token real y un group_id de OTRA familia.
+  // try {
+  //   saveStep_({
+  //     resume_token:        '<RESUME_TOKEN_REAL_A>',
+  //     enrollment_group_id: '<GROUP_ID_FAMILIA_B>',
+  //     step:                'application',
+  //     payload:             { source: 'TEST_KAL4' }
+  //   });
+  //   Logger.log('FAIL — cross-group saveStep should have thrown');
+  // } catch (e) {
+  //   Logger.log('PASS — cross-group saveStep rejected: ' + e.message);
+  // }
 }
 
 /**
