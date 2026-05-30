@@ -3,107 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
+import QbSetRenderer from '../../shared/QbSetRenderer';
 import * as log from '../../logger';
-
-function QuestionField({ question, value, onChange }) {
-  const type = question.response_type_id?.toLowerCase?.() || 'text';
-
-  if (type === 'boolean') {
-    return (
-      <div className="form-check form-switch">
-        <input type="checkbox" className="form-check-input" role="switch"
-          checked={!!value} onChange={e => onChange(e.target.checked)} />
-        <label className="form-check-label">{question.question_text}</label>
-        {question.help_text && <div className="form-text">{question.help_text}</div>}
-      </div>
-    );
-  }
-
-  if (type === 'select') {
-    return (
-      <div>
-        <label className="form-label">{question.question_text}{question.is_required && ' *'}</label>
-        {question.help_text && <div className="form-text mb-1">{question.help_text}</div>}
-        {question.options?.length <= 5 ? (
-          <div>
-            {question.options.map(o => (
-              <div key={o.option_id} className="form-check">
-                <input type="radio" className="form-check-input"
-                  name={`q_${question.question_id}`}
-                  checked={value === o.option_value}
-                  onChange={() => onChange(o.option_value)} />
-                <label className="form-check-label">{o.text}</label>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <select className="form-select" value={value || ''} onChange={e => onChange(e.target.value)}>
-            <option value="" />
-            {question.options.map(o => <option key={o.option_id} value={o.option_value}>{o.text}</option>)}
-          </select>
-        )}
-      </div>
-    );
-  }
-
-  if (type === 'multi_select' || type === 'multi-select') {
-    const sel = Array.isArray(value) ? value : [];
-    return (
-      <div>
-        <label className="form-label">{question.question_text}{question.is_required && ' *'}</label>
-        {question.help_text && <div className="form-text mb-1">{question.help_text}</div>}
-        {question.options.map(o => (
-          <div key={o.option_id} className="form-check">
-            <input type="checkbox" className="form-check-input"
-              checked={sel.includes(o.option_value)}
-              onChange={e => {
-                if (e.target.checked) onChange([...sel, o.option_value]);
-                else onChange(sel.filter(v => v !== o.option_value));
-              }} />
-            <label className="form-check-label">{o.text}</label>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <label className="form-label">{question.question_text}{question.is_required && ' *'}</label>
-      {question.help_text && <div className="form-text mb-1">{question.help_text}</div>}
-      <textarea className="form-control" rows={3}
-        placeholder={question.placeholder_text || ''}
-        value={value || ''}
-        onChange={e => onChange(e.target.value)} />
-    </div>
-  );
-}
-
-/**
- * Evaluates whether a question's display conditions are met.
- * @param {Object} question   - Question object with .conditions array
- * @param {Object} person     - The person this question is shown for (applicant or guardian)
- * @param {Object} responses  - Current responses map { `${qid}__${personKey}`: value }
- * @param {string} personKey  - person.person_id or person._uid used as the response key suffix
- */
-function meetsConditions(question, person, responses, personKey) {
-  if (!question.conditions?.length) return true;
-  return question.conditions.every(c => {
-    if (c.condition_operator === 'age_gte' && person?.date_of_birth) {
-      const age = (Date.now() - new Date(person.date_of_birth)) / (365.25 * 24 * 3600 * 1000);
-      return age >= parseFloat(c.condition_value || 0);
-    }
-    // eq condition: condition_value format is "question_id:expected_value"
-    if (c.condition_operator === 'eq' && c.condition_value) {
-      const [refQid, expectedVal] = c.condition_value.split(':');
-      const responseKey = `${refQid}__${personKey}`;
-      const actual = responses && responses[responseKey];
-      // Compare as string; booleans stored as true/false
-      return String(actual) === expectedVal || actual === (expectedVal === 'true');
-    }
-    return true;
-  });
-}
 
 export default function Step5Questions({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t, i18n }  = useTranslation();
@@ -118,9 +19,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
   );
   const [highlightEdit, setHighlightEdit] = useState(false);
 
-  const persons    = stepData.persons || [];
-  const applicants = persons.filter(p => p.person_type_id === 'applicant');
-  const guardians  = persons.filter(p => p.person_type_id === 'guardian');
+  const persons = stepData.persons || [];
 
   useEffect(() => {
     gasCall('fetchQuestions', { context_code: 'ENROLLMENT', language: i18n.language })
@@ -191,58 +90,15 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
 
       <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
-      {sets.map(set => (
-        <div key={set.set_id} className="kis-card">
-          {set.designation && <h3 style={{ color: 'var(--teal-dk)', fontSize: '1.05rem' }}>{set.designation}</h3>}
-
-          {(set.items || []).map(item => {
-            const q = item.question;
-            if (!q) return null;
-            const isClientQ = q.audience_category_id === 'client';
-            const isParticipantQ = q.audience_category_id === 'participant';
-
-            if (isParticipantQ) {
-              return applicants.map((a, ai) => {
-                const personKey = a.person_id || a._uid;
-                if (!meetsConditions(q, a, responses, personKey)) return null;
-                const key = `${q.question_id}__${personKey}`;
-                const name = [a.first_name, a.last_name].filter(Boolean).join(' ') || `Applicant ${ai + 1}`;
-                return (
-                  <div key={key} className="mb-4">
-                    <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: 4 }}>
-                      <i className="bi bi-person me-1" />{name}
-                    </p>
-                    <QuestionField question={q} value={responses[key]} onChange={v => setResponse(key, v)} />
-                  </div>
-                );
-              });
-            }
-
-            if (isClientQ) {
-              return guardians.map((g, gi) => {
-                const key = `${q.question_id}__${g.person_id || g._uid}`;
-                const name = [g.first_name, g.last_name].filter(Boolean).join(' ') || `Guardian ${gi + 1}`;
-                return (
-                  <div key={key} className="mb-4">
-                    <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: 4 }}>
-                      <i className="bi bi-person-fill me-1" />{name}
-                    </p>
-                    <QuestionField question={q} value={responses[key]} onChange={v => setResponse(key, v)} />
-                  </div>
-                );
-              });
-            }
-
-            // General question (no audience filter)
-            const key = `${q.question_id}__${enrollmentGroupId}`;
-            return (
-              <div key={key} className="mb-4">
-                <QuestionField question={q} value={responses[key]} onChange={v => setResponse(key, v)} />
-              </div>
-            );
-          })}
-        </div>
-      ))}
+        <QbSetRenderer
+          sets={sets}
+          responses={responses}
+          persons={persons}
+          groupId={enrollmentGroupId}
+          onResponse={setResponse}
+          t={t}
+          locale={i18n.language}
+        />
       </fieldset>
       </div>
 

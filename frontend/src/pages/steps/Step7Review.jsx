@@ -410,7 +410,14 @@ export default function Step7Review({ onBack }) {
         </SectionCard>
       )}
 
-      {/* ── Questions ── */}
+      {/* ── Questions ──
+          DL-Q05 Q05-S3 decision: NOT migrated to <QbSetRenderer readOnly />.
+          The review pane renders a flat list of "label + value" rows inside a
+          single SectionCard, skipping empty responses. The shared renderer
+          fans out per audience + person and emits one .kis-card per set,
+          which clashes with the review layout. Keeping the dedicated DataRow
+          path here is shorter than rebuilding that summary on top of the
+          renderer's per-input markup. */}
       {allQuestions.length > 0 && Object.keys(questions || {}).length > 0 && (
         <SectionCard title={t('step.questions')} icon="bi-chat-square-text-fill">
           {Object.entries(questions || {}).map(([key, val], i) => {
