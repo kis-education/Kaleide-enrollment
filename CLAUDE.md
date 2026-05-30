@@ -126,7 +126,9 @@ Los Steps 8-11 se desbloquean post-AD. Antes, locked con candado.
 - NO crear ruta `/track/:token` separada — todo el wizard vive en `/apply`.
 - NO añadir endpoints frontend-only sin confirmar que están registrados en backend `doPost` dispatcher.
 
-Precedente: CLI 22 + CLI 28 + CLI 33-36 + Frontend-9-10 + Frontend-12 (2026-05-29/30) introdujeron steps inventados; CLI 59 corrigió 2026-05-30. Los endpoints backend huérfanos (getInterviewForEnrollment, getAdmissionDecisionForEnrollment, getSigningTokenFromResumeToken) quedan en el código sin caller — pendiente decisión de Diego sobre borrarlos.
+Precedente: CLI 22 + CLI 28 + CLI 33-36 + Frontend-9-10 + Frontend-12 (2026-05-29/30) introdujeron steps inventados; CLI 59 corrigió 2026-05-30.
+
+**Endpoints backend borrados 2026-05-30 (CLI 60)**: getInterviewForEnrollment, getAdmissionDecisionForEnrollment, getReservationPaymentInfo, getSigningTokenFromResumeToken, getTrackingData — sus consumidores frontend (Step9Interview, Step10Decision, Step12Deposit, TrackApplicationPage, Step8Status) fueron borrados por CLI 59 al corregir el wizard a 11 steps canónicos. Cuando se implementen los endpoints reales canónicos (enr.saveBillingInfo P49, enr.submitGdprConsents DL-E27, enr.confirmReview DL-E28 §6, enr.initiateSigningSession DL-E28 §7-§13), se añadirán como nuevos cases en el dispatcher.
 
 ## Deployment
 
