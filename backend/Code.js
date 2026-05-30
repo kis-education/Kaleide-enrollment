@@ -134,6 +134,61 @@ function getStaffEmail_() {
   }
 }
 
+// ─── AppSheet Filter injection — defense in depth (KAL-5) ─────────────────────
+// Closes the AppSheet Selector filter-injection vector identified in the
+// 2026-05-29 audit. Without escape + validation, a user-controlled string like
+//   primary_email = 'victim" || "1"="1'
+// breaks out of the quoted literal in
+//   '"primary_email" = "' + email + '" && NOT(ISBLANK([submitted_at]))'
+// and returns every row in the table.
+//
+// Defense in depth: every call-site that concatenates user input into a
+// Filter string MUST (1) assert the input shape with assertValidUuid_ /
+// assertValidEmail_ / a whitelist BEFORE building the filter, AND
+// (2) wrap the value with appsheetEscape_() in the concatenation. Either
+// layer alone is insufficient — the validation may grow gaps as new shapes
+// land, and the escape may be omitted on a new call-site by mistake.
+
+/**
+ * Escapes a string value for safe inclusion inside an AppSheet Filter
+ * expression. AppSheet expects double-quoted strings; escape internal
+ * `"` as `""` (the AppSheet convention). Returns empty string for
+ * null/undefined. Always coerces to string before escaping.
+ *
+ * @param {*} v
+ * @returns {string}
+ */
+function appsheetEscape_(v) {
+  if (v === null || v === undefined) return '';
+  return String(v).replace(/"/g, '""');
+}
+
+/**
+ * Validates a UUID v4 format (36 chars, hex + hyphens in canonical layout).
+ * Throws an Error if invalid. Use BEFORE concatenating UUIDs into a Filter.
+ *
+ * @param {*}      v
+ * @param {string} [fieldName] for the error message
+ */
+function assertValidUuid_(v, fieldName) {
+  if (typeof v !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)) {
+    throw new Error('Invalid UUID for ' + (fieldName || 'field') + ': ' + JSON.stringify(v));
+  }
+}
+
+/**
+ * Validates an email shape (RFC-light + RFC-5321 max length of 254).
+ * Throws an Error if invalid. Use BEFORE concatenating emails into a Filter.
+ *
+ * @param {*}      v
+ * @param {string} [fieldName] for the error message
+ */
+function assertValidEmail_(v, fieldName) {
+  if (typeof v !== 'string' || v.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+    throw new Error('Invalid email for ' + (fieldName || 'field') + ': ' + JSON.stringify(v));
+  }
+}
+
 // ─── Entry points ─────────────────────────────────────────────────────────────
 
 /**
@@ -324,13 +379,15 @@ function initEnrollmentSession_(p) {
   // (more persons) beats a freshly-bounced session (zero persons)
   // regardless of which has the more recent updated_at.
   const normalizedEmail = (p.primary_email || '').toLowerCase().trim();
+  // KAL-5: validate before concatenating into AppSheet Filter (defense in depth)
+  assertValidEmail_(normalizedEmail, 'primary_email');
 
   // ── Guard: already-submitted sessions block re-submission ─────────────────
   // If the email already has a submitted (non-abandoned) session, return early
   // without creating a new session or sending another magic link.
   // The frontend renders a "ya enviada / already submitted" screen.
   const existingSubmitted = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"primary_email" = "' + normalizedEmail + '" && NOT(ISBLANK([submitted_at])) && ISBLANK([abandoned_at])'
+    Filter: '"primary_email" = "' + appsheetEscape_(normalizedEmail) + '" && NOT(ISBLANK([submitted_at])) && ISBLANK([abandoned_at])'
   }) || [];
   if (existingSubmitted.length) {
     const grp = existingSubmitted[0];
@@ -352,7 +409,7 @@ function initEnrollmentSession_(p) {
   }
 
   const existingOpen = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"primary_email" = "' + normalizedEmail + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
+    Filter: '"primary_email" = "' + appsheetEscape_(normalizedEmail) + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
   }) || [];
   if (existingOpen.length) {
     _checkMagicLinkRateLimit_(normalizedEmail);
@@ -362,7 +419,8 @@ function initEnrollmentSession_(p) {
     if (existingOpen.length > 1) {
       try {
         const ids = existingOpen.map(g => g.enrollment_group_id);
-        const filter = ids.map(id => '"enrollment_group_id" = "' + id + '"').join(' || ');
+        ids.forEach(id => assertValidUuid_(id, 'enrollment_group_id'));
+        const filter = ids.map(id => '"enrollment_group_id" = "' + appsheetEscape_(id) + '"').join(' || ');
         const personRows = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }) || [];
         personRows.forEach(pr => {
           const k = pr.enrollment_group_id;
@@ -421,10 +479,12 @@ function initEnrollmentSession_(p) {
   const lang              = p.preferred_language || 'es';
 
   // ── Resolve source_id from enrEnrollmentSources (Capa 2 catalog) ───────────
+  // sourceCode is already whitelist-validated above against VALID_SOURCES; escape
+  // applied as defense in depth (KAL-5).
   let sourceId = null;
   try {
     const sources = appsheetRequest_(T.ENROLLMENT_SOURCES, 'Find', [], {
-      Filter: '"source_code" = "' + sourceCode + '"'
+      Filter: '"source_code" = "' + appsheetEscape_(sourceCode) + '"'
     });
     if (sources && sources[0]) sourceId = sources[0].source_id;
   } catch (e) {
@@ -441,7 +501,7 @@ function initEnrollmentSession_(p) {
   if (!programId) {
     try {
       const programs = appsheetRequest_(T.PROGRAMS, 'Find', [], {
-        Filter: '"school_id" = "' + SCHOOL_ID + '" && "program_type_code" = "ADMISSION_SCHOOL" && ISBLANK([deleted_at])'
+        Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "program_type_code" = "ADMISSION_SCHOOL" && ISBLANK([deleted_at])'
       });
       if (programs && programs.length) programId = programs[0].program_id;
     } catch (e) {
@@ -567,11 +627,12 @@ function recognizeFamily_(p, opts) {
   cache.put(cacheKey, String(count + 1), 60);
 
   // ── email → contactEmails.personal_ids ─────────────────────────────────────
-  // Defensive: strip double quotes to avoid mangling the AppSheet filter
-  // expression. Valid emails never contain them after lowercase+trim.
-  const safeEmail = email.replace(/"/g, '');
+  // KAL-5: strict email-shape validation + AppSheet escape (defense in depth).
+  // Previous implementation only stripped quotes — defective because it
+  // silently accepted broken inputs and bypassed any later validation.
+  assertValidEmail_(email, 'email');
   const emailRows = appsheetRequest_('contactEmails', 'Find', [], {
-    Filter: '"email" = "' + safeEmail + '"'
+    Filter: '"email" = "' + appsheetEscape_(email) + '"'
   }) || [];
 
   const personalIds = emailRows
@@ -582,7 +643,8 @@ function recognizeFamily_(p, opts) {
   }
 
   // ── personal_ids → personalData_S display fields ───────────────────────────
-  const filter = personalIds.map(id => '"personal_id" = "' + id + '"').join(' || ');
+  personalIds.forEach(id => assertValidUuid_(id, 'personal_id'));
+  const filter = personalIds.map(id => '"personal_id" = "' + appsheetEscape_(id) + '"').join(' || ');
   const persons = appsheetRequest_('personalData_S', 'Find', [], { Filter: filter }) || [];
 
   return {
@@ -611,8 +673,9 @@ function sendMagicLink_(p) {
 
   if (groupId) {
     // Single-session link (e.g. from within the wizard)
+    assertValidUuid_(groupId, 'enrollment_group_id');
     const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"enrollment_group_id" = "' + groupId + '"'
+      Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
     });
     const grp = rows && rows[0];
     if (!grp) throw new Error('Enrollment group not found');
@@ -639,8 +702,9 @@ function sendMagicLink_(p) {
     sendMagicLinkEmail_(grp.primary_email, tokenToSend, grp.preferred_language || 'es');
   } else if (p.primary_email) {
     // Find all non-submitted, non-abandoned sessions for this email
+    assertValidEmail_(p.primary_email, 'primary_email');
     const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"primary_email" = "' + p.primary_email + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
+      Filter: '"primary_email" = "' + appsheetEscape_(p.primary_email) + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
     });
     if (!rows || !rows.length) throw new Error('Enrollment group not found');
     _checkMagicLinkRateLimit_(p.primary_email.toLowerCase().trim());
@@ -703,9 +767,10 @@ function sendMagicLink_(p) {
 function abandonSession_(p) {
   const token = (p && p.resume_token || '').toString().trim();
   if (!token) throw new Error('Missing resume_token');
+  assertValidUuid_(token, 'resume_token');
 
   const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + token + '"'
+    Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
   });
   const grp = rows && rows[0];
   if (!grp) throw new Error('Enrollment group not found');
@@ -744,10 +809,17 @@ function abandonSession_(p) {
 function reportUnsolicited_(p) {
   const token = (p && p.resume_token || '').toString().trim();
   if (!token) return { reported: true }; // silent ack
+  // Malformed tokens silently ack (anti-enumeration — same behaviour as
+  // unknown-but-well-shaped tokens below).
+  try {
+    assertValidUuid_(token, 'resume_token');
+  } catch (_) {
+    return { reported: true };
+  }
 
   try {
     const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"resume_token" = "' + token + '"'
+      Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
     });
     const group = groups && groups[0];
     if (!group) return { reported: true }; // silent ack
@@ -817,13 +889,18 @@ function reportUnsolicited_(p) {
  * @returns {Object} { group, application(alias), enrollments[], persons[], ... }
  */
 function resumeSession_(p) {
+  assertValidUuid_(p && p.resume_token, 'resume_token');
   const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + p.resume_token + '"'
+    Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
   });
   if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
 
   const group = groups[0];
   const id    = group.enrollment_group_id;
+  // Defense in depth (KAL-5): id is sourced from the DB and bound to the
+  // resume_token we just validated above. Re-assert UUID shape before using
+  // in concatenations below, in case the column ever contains arbitrary data.
+  assertValidUuid_(id, 'enrollment_group_id');
 
   // Refuse if the family explicitly abandoned this session via abandonSession_.
   // Submitted sessions stay resumable regardless (the family must always be
@@ -854,15 +931,18 @@ function resumeSession_(p) {
   // pre-submit there are zero enrollments anyway this is a non-issue in the
   // common case. For the post-submit case (rare in resume), we re-filter
   // client-side from the broader set already fetched.
+  const idEsc = appsheetEscape_(id);
+  const programIdEsc = appsheetEscape_(group.program_id);
+  const schoolIdEsc = appsheetEscape_(SCHOOL_ID);
   const topRead = appsheetRequestBatch_([
-    { table: T.ENROLLMENTS,      action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
-    { table: T.PERSONS,          action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
-    { table: T.PERSON_RELATIONS, action: 'Find', selector: { Filter: '"context_entity_id" = "' + id + '" && "context_entity_type_code" = "ENR_ADMISSION_SCHOOL"' } },
-    { table: T.REC_FILES,        action: 'Find', selector: { Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin_reference" = "' + id + '"' } },
-    { table: T.QB_RESPONSES,     action: 'Find', selector: { Filter: '"respondent_id" = "' + id + '"' } },
-    { table: T.EMAILS,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
-    { table: T.PHONES,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + id + '"' } },
-    { table: T.PROGRAMS,         action: 'Find', selector: { Filter: '"program_id" = "' + group.program_id + '"' } },
+    { table: T.ENROLLMENTS,      action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
+    { table: T.PERSONS,          action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
+    { table: T.PERSON_RELATIONS, action: 'Find', selector: { Filter: '"context_entity_id" = "' + idEsc + '" && "context_entity_type_code" = "ENR_ADMISSION_SCHOOL"' } },
+    { table: T.REC_FILES,        action: 'Find', selector: { Filter: '"school_id" = "' + schoolIdEsc + '" && "origin_reference" = "' + idEsc + '"' } },
+    { table: T.QB_RESPONSES,     action: 'Find', selector: { Filter: '"respondent_id" = "' + idEsc + '"' } },
+    { table: T.EMAILS,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
+    { table: T.PHONES,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
+    { table: T.PROGRAMS,         action: 'Find', selector: { Filter: '"program_id" = "' + programIdEsc + '"' } },
   ]);
   const enrollments = topRead[0].ok ? (topRead[0].data || []) : [];
   const persons     = topRead[1].ok ? (topRead[1].data || []) : [];
@@ -894,14 +974,15 @@ function resumeSession_(p) {
   // separate parallel batch.
   let responses = topRead[4].ok ? (topRead[4].data || []) : [];
   if (enrollments.length) {
-    const enrIdFilter = enrollments.map(e => '"respondent_id" = "' + e.enrollment_id + '"').join(' || ');
+    enrollments.forEach(e => assertValidUuid_(e.enrollment_id, 'enrollment_id'));
+    const enrIdFilter = enrollments.map(e => '"respondent_id" = "' + appsheetEscape_(e.enrollment_id) + '"').join(' || ');
     const perEnr = appsheetRequest_(T.QB_RESPONSES, 'Find', [], { Filter: enrIdFilter }) || [];
     responses = responses.concat(perEnr);
   }
 
   let interviews = [];
   if (enrollments.length) {
-    const eidFilter = enrollments.map(e => '"enrollment_id" = "' + e.enrollment_id + '"').join(' || ');
+    const eidFilter = enrollments.map(e => '"enrollment_id" = "' + appsheetEscape_(e.enrollment_id) + '"').join(' || ');
     interviews = appsheetRequest_(T.INTERVIEWS, 'Find', [], { Filter: eidFilter }) || [];
   }
 
@@ -948,7 +1029,8 @@ function resumeSession_(p) {
   }
 
   const personIds = persons.map(per => per.person_id);
-  const pidFilter = personIds.map(pid => '"person_id" = "' + pid + '"').join(' || ');
+  personIds.forEach(pid => assertValidUuid_(pid, 'person_id'));
+  const pidFilter = personIds.map(pid => '"person_id" = "' + appsheetEscape_(pid) + '"').join(' || ');
 
   // 8 person-detail Finds in parallel (was sequential ~5-8s, now ~1s).
   const personDetailRead = appsheetRequestBatch_([
@@ -974,7 +1056,7 @@ function resumeSession_(p) {
   // Batch-fetch address value rows (emails/phones already fetched by enrollment_group_id in topRead).
   const addrIds = personAddrJoins.map(r => r.address_id).filter(Boolean);
   const valueRead = appsheetRequestBatch_([
-    addrIds.length ? { table: T.ADDRESSES, action: 'Find', selector: { Filter: addrIds.map(x => '"address_id" = "' + x + '"').join(' || ') } }
+    addrIds.length ? { table: T.ADDRESSES, action: 'Find', selector: { Filter: addrIds.map(x => '"address_id" = "' + appsheetEscape_(x) + '"').join(' || ') } }
                    : { table: T.ADDRESSES, action: 'Find', rows: [] },
   ]);
   const addressMap = {};
@@ -1033,6 +1115,7 @@ function saveStep_(p) {
   const enrollmentGroupId = p.enrollment_group_id || p.application_id;
   const { step, payload } = p;
   if (!enrollmentGroupId || !step || !payload) throw new Error('Missing required fields');
+  assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
 
   const now = new Date().toISOString();
 
@@ -1059,14 +1142,19 @@ function saveStep_(p) {
       // Log status transition across all enrollments in the group when a
       // status_code is supplied. Uses sysStates_T + sysStateTransitionLog (DL-S37).
       if (payload.status_code) {
+        // KAL-5: status_code is a short uppercase alphanumeric code (e.g. RQ, IN).
+        // Strict whitelist regex prevents injection via the payload.
+        if (typeof payload.status_code !== 'string' || !/^[A-Z0-9_]{1,32}$/.test(payload.status_code)) {
+          throw new Error('Invalid status_code: ' + JSON.stringify(payload.status_code));
+        }
         const newStateRows = appsheetRequest_(T.STATES_T, 'Find', [], {
-          Filter: '"state_code" = "' + payload.status_code + '" && "school_id" = "' + SCHOOL_ID + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL"'
+          Filter: '"state_code" = "' + appsheetEscape_(payload.status_code) + '" && "school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL"'
         });
         const newStateId = newStateRows && newStateRows[0]
           ? newStateRows[0].state_id : null;
         if (newStateId) {
           const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-            Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+            Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
           }) || [];
           enrollments.forEach(enr => {
             appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
@@ -1139,12 +1227,13 @@ function saveStep_(p) {
 function submitEnrollmentSession_(p) {
   const enrollmentGroupId = p.enrollment_group_id || p.application_id;
   if (!enrollmentGroupId) throw new Error('Missing enrollment_group_id');
+  assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
 
   const now = new Date().toISOString();
 
   // Load the group header
   const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
   });
   const group = groups && groups[0];
   if (!group) throw new Error('Enrollment group not found');
@@ -1183,7 +1272,7 @@ function submitEnrollmentSession_(p) {
 
   // ── Fetch persons captured in this group ───────────────────────────────────
   const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
   }) || [];
   const guardians  = allPersons.filter(per => per.person_type_id === 'guardian');
   const applicants = allPersons.filter(per => per.person_type_id === 'applicant');
@@ -1206,7 +1295,7 @@ function submitEnrollmentSession_(p) {
   // When a staff member reverts an application to IN and the family re-submits,
   // existing enrollment rows must be updated to RQ state rather than duplicated.
   const existingEnrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
   }) || [];
   // Map applicant_person_id → existing enrollment_id for quick lookup
   const existingByApplicant = {};
@@ -1372,13 +1461,13 @@ function submitEnrollmentSession_(p) {
   const gEmailMap = {};
   if (gEmailIds.length) {
     (appsheetRequest_(T.EMAILS, 'Find', [], {
-      Filter: gEmailIds.map(x => '"email_id" = "' + x + '"').join(' || ')
+      Filter: gEmailIds.map(x => '"email_id" = "' + appsheetEscape_(x) + '"').join(' || ')
     }) || []).forEach(r => { gEmailMap[r.email_id] = r; });
   }
   const gPhoneMap = {};
   if (gPhoneIds.length) {
     (appsheetRequest_(T.PHONES, 'Find', [], {
-      Filter: gPhoneIds.map(x => '"phone_id" = "' + x + '"').join(' || ')
+      Filter: gPhoneIds.map(x => '"phone_id" = "' + appsheetEscape_(x) + '"').join(' || ')
     }) || []).forEach(r => { gPhoneMap[r.phone_id] = r; });
   }
   const enrichedGuardians = guardians.map(g => ({
@@ -1390,8 +1479,8 @@ function submitEnrollmentSession_(p) {
   // Fetch QB responses for enrollment-specific questions (profession, employer, adaptation)
   const enrQbIds = [QB_PROFESSION_ID, QB_EMPLOYER_ID, QB_HAS_ADAPTATION_ID, QB_ADAPTATION_NOTES_ID];
   const qbResRows = appsheetRequest_(T.QB_RESPONSES, 'Find', [], {
-    Filter: '(' + [enrollmentGroupId].concat(enrollmentIds).map(rid => '"respondent_id" = "' + rid + '"').join(' || ') + ') && (' +
-      enrQbIds.map(id => '"question_id" = "' + id + '"').join(' || ') + ')'
+    Filter: '(' + [enrollmentGroupId].concat(enrollmentIds).map(rid => '"respondent_id" = "' + appsheetEscape_(rid) + '"').join(' || ') + ') && (' +
+      enrQbIds.map(id => '"question_id" = "' + appsheetEscape_(id) + '"').join(' || ') + ')'
   }) || [];
   // Map question_id → last response_text (aggregates multiple if more than one respondent)
   const qbResponseMap = {};
@@ -1453,13 +1542,13 @@ function submitEnrollmentSession_(p) {
   try {
     if (enrollmentIds.length) {
       const preSubmitFiles = appsheetRequest_(T.REC_FILES, 'Find', [], {
-        Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin" = "WIZARD" && "origin_reference" = "' + enrollmentGroupId + '"'
+        Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "origin" = "WIZARD" && "origin_reference" = "' + appsheetEscape_(enrollmentGroupId) + '"'
       }) || [];
       const newScopes = [];
       preSubmitFiles.forEach(f => {
         // Skip any file that already has a scope (idempotency on retry)
         const existing = appsheetRequest_(T.REC_SCOPES, 'Find', [], {
-          Filter: '"school_id" = "' + SCHOOL_ID + '" && "file_id" = "' + f.file_id + '"'
+          Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "file_id" = "' + appsheetEscape_(f.file_id) + '"'
         }) || [];
         if (existing.length) return;
         enrollmentIds.forEach((eid, i) => {
@@ -1593,31 +1682,36 @@ function verifyEmail_(p) {
 function fetchQuestions_(p) {
   const { context_designation, language } = p;
   if (!context_designation) throw new Error('Missing context_designation');
+  // KAL-5: context_designation is a short slug-style identifier from the
+  // catalog. Strict whitelist regex prevents injection via the payload.
+  if (typeof context_designation !== 'string' || !/^[A-Za-z0-9_\-]{1,64}$/.test(context_designation)) {
+    throw new Error('Invalid context_designation: ' + JSON.stringify(context_designation));
+  }
 
   const lang = language || 'es';
 
   // Find matching context
   const contexts = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
-    Filter: '"designation" = "' + context_designation + '" && "school_id" = "' + SCHOOL_ID + '" && "is_active" = true'
+    Filter: '"designation" = "' + appsheetEscape_(context_designation) + '" && "school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "is_active" = true'
   });
   if (!contexts || !contexts.length) throw new Error('Context not found: ' + context_designation);
   const context = contexts[0];
 
   // Find active question sets for this context
   const sets = appsheetRequest_(T.QB_SETS, 'Find', [], {
-    Filter: '"context_id" = "' + context.context_id + '" && "is_active" = true'
+    Filter: '"context_id" = "' + appsheetEscape_(context.context_id) + '" && "is_active" = true'
   });
   if (!sets || !sets.length) return { sets: [] };
 
   const setIds       = sets.map(s => s.set_id);
-  const setIdFilter  = setIds.map(id => '"set_id" = "' + id + '"').join(' || ');
+  const setIdFilter  = setIds.map(id => '"set_id" = "' + appsheetEscape_(id) + '"').join(' || ');
 
   const setItems = appsheetRequest_(T.QB_SET_ITEMS, 'Find', [], { Filter: setIdFilter }) || [];
   const questionIds  = [...new Set(setItems.map(i => i.question_id))];
 
   if (!questionIds.length) return { sets };
 
-  const qIdFilter = questionIds.map(id => '"question_id" = "' + id + '"').join(' || ');
+  const qIdFilter = questionIds.map(id => '"question_id" = "' + appsheetEscape_(id) + '"').join(' || ');
 
   const [questions, allTranslations, allOptions, allConditions] = [
     appsheetRequest_(T.QB_QUESTIONS, 'Find', [], { Filter: qIdFilter }) || [],
@@ -1629,7 +1723,7 @@ function fetchQuestions_(p) {
   const optionIds = allOptions.map(o => o.option_id);
   const allOptionTranslations = optionIds.length
     ? appsheetRequest_(T.QB_OPT_TRANS, 'Find', [], {
-        Filter: optionIds.map(id => '"option_id" = "' + id + '"').join(' || ')
+        Filter: optionIds.map(id => '"option_id" = "' + appsheetEscape_(id) + '"').join(' || ')
       }) || []
     : [];
 
@@ -1689,7 +1783,7 @@ function fetchLookups_() {
     { table: T.LOOKUP_MEDICAL,        action: 'Find', selector: { Filter: 'true' } },
     { table: T.LOOKUP_RELATION_TYPES, action: 'Find', selector: { Filter: 'true' } },
     { table: T.PROGRAMS,              action: 'Find', selector: {
-        Filter: '"school_id" = "' + SCHOOL_ID + '" && ISBLANK([deleted_at])'
+        Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && ISBLANK([deleted_at])'
     } },
   ];
   const results = appsheetRequestBatch_(specs);
@@ -1822,13 +1916,18 @@ function uploadDocument_(p) {
   const { base64, mimeType, filename, document_type } = p;
   if (!base64) throw new Error('Missing base64');
   if (!enrollmentId && !enrollmentGroupId) throw new Error('Missing enrollment_id or enrollment_group_id');
+  if (enrollmentId)      assertValidUuid_(enrollmentId, 'enrollment_id');
+  if (enrollmentGroupId) assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
 
   const idempotencyToken = p.upload_idempotency_token || generateUuid_();
+  // KAL-5: idempotency token is server-generated UUID by default; if the
+  // frontend supplied one, it must match UUID shape.
+  assertValidUuid_(idempotencyToken, 'upload_idempotency_token');
 
   // Idempotency check — if a recFiles row already exists for this token, return it
   try {
     const existing = appsheetRequest_(T.REC_FILES, 'Find', [], {
-      Filter: '"school_id" = "' + SCHOOL_ID + '" && "upload_idempotency_token" = "' + idempotencyToken + '"'
+      Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "upload_idempotency_token" = "' + appsheetEscape_(idempotencyToken) + '"'
     }) || [];
     if (existing.length) {
       const row = existing[0];
@@ -1954,8 +2053,9 @@ function savePersons_(enrollmentGroupId, persons) {
   // Fetch person_ids that actually exist in AppSheet for this group.
   // Used to distinguish true Edit (row exists) from phantom IDs (frontend
   // stamped an ID from a previous failed Add — must retry as Add).
+  // KAL-5: enrollmentGroupId is asserted in saveStep_; escape applied here.
   const existingPersonRows = appsheetRequest_(T.PERSONS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
   }) || [];
   const existingPersonIds = new Set(existingPersonRows.map(function(r) { return r.person_id; }));
 
@@ -2985,8 +3085,11 @@ function resolveSigningToken_(p) {
   // Audit: log attempt (partial token only — no PII)
   Logger.log('[resolveSigningToken_] attempt token=' + token.substring(0, 8) + '...');
 
-  // Basic format guard — signing_token is a UUID (hex + hyphens only)
-  if (!/^[0-9a-f-]{32,40}$/i.test(token)) {
+  // KAL-5: strict UUID-v4 layout (was loose [0-9a-f-]{32,40}). Combined with
+  // appsheetEscape_ on the concatenation for defense in depth.
+  try {
+    assertValidUuid_(token, 'signing_token');
+  } catch (_) {
     Logger.log('[resolveSigningToken_] token format invalid');
     return { valid: false, reason: 'INVALID' };
   }
@@ -2995,7 +3098,7 @@ function resolveSigningToken_(p) {
   let signerRows;
   try {
     signerRows = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-      { Filter: '"signing_token" = "' + token + '"' });
+      { Filter: '"signing_token" = "' + appsheetEscape_(token) + '"' });
   } catch (findErr) {
     Logger.log('[resolveSigningToken_] sysSigningSessionSigners lookup failed: ' + findErr.message);
     return { valid: false, reason: 'INVALID' };
@@ -3010,11 +3113,12 @@ function resolveSigningToken_(p) {
   const signerId  = signer['signer_id'];
   const sessionId = signer['session_id'];
 
-  // 2. Load signing session
+  // 2. Load signing session (sessionId is DB-derived; assert UUID + escape)
+  assertValidUuid_(sessionId, 'session_id');
   let sessionRows;
   try {
     sessionRows = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-      { Filter: '"session_id" = "' + sessionId + '"' });
+      { Filter: '"session_id" = "' + appsheetEscape_(sessionId) + '"' });
   } catch (sessErr) {
     Logger.log('[resolveSigningToken_] sysSigningSessions lookup failed: ' + sessErr.message);
     return { valid: false, reason: 'INVALID' };
@@ -3048,8 +3152,9 @@ function resolveSigningToken_(p) {
   // billing_confirmed: enrGroupBilling.confirmed_at (P49 — table may not exist yet)
   let billingConfirmed = false;
   try {
+    assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
     const billingRows = appsheetRequest_('enrGroupBilling', 'Find', [],
-      { Filter: '"enrollment_group_id" = "' + enrollmentGroupId + '"' });
+      { Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"' });
     billingConfirmed = !!(billingRows && billingRows.find(b => !b['deleted_at'] && b['confirmed_at']));
   } catch (billingErr) {
     Logger.log('[resolveSigningToken_] enrGroupBilling not available (P49 pending): ' + billingErr.message);
@@ -3109,20 +3214,22 @@ function promoteEnrollment_(p) {
   const targetId     = enrollmentId || fallbackId;
   const personPersonalIds = p.person_personal_ids || {};
   if (!targetId) throw new Error('Missing enrollment_id');
+  assertValidUuid_(targetId, 'enrollment_id');
 
   const now = new Date().toISOString();
 
   // ── Load the enrollment row ────────────────────────────────────────────────
   const enrs = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-    Filter: '"enrollment_id" = "' + targetId + '"'
+    Filter: '"enrollment_id" = "' + appsheetEscape_(targetId) + '"'
   });
   const enrRow = enrs && enrs[0];
   if (!enrRow) throw new Error('Enrollment not found');
 
   // ── Load the parent group ──────────────────────────────────────────────────
   const groupId = enrRow.enrollment_group_id;
+  assertValidUuid_(groupId, 'enrollment_group_id');
   const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + groupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
   });
   const groupRow = groups && groups[0];
   if (!groupRow) throw new Error('Parent enrollment group not found');
@@ -3133,7 +3240,7 @@ function promoteEnrollment_(p) {
   if (groupRow.source_id && !groupRow.source_code) {
     try {
       const srcs = appsheetRequest_(T.ENROLLMENT_SOURCES, 'Find', [], {
-        Filter: '"source_id" = "' + groupRow.source_id + '"'
+        Filter: '"source_id" = "' + appsheetEscape_(groupRow.source_id) + '"'
       });
       if (srcs && srcs[0] && srcs[0].source_code) sourceCode = srcs[0].source_code;
     } catch (_) { /* keep default */ }
@@ -3145,7 +3252,7 @@ function promoteEnrollment_(p) {
   // ── Persons to consider: applicant of this enrollment + ALL guardians of group ─
   const applicantPersonId = enrRow.applicant_person_id;
   const groupPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + groupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
   }) || [];
 
   const guardianPersons  = groupPersons.filter(per => per.person_type_id === 'guardian');
@@ -3181,7 +3288,7 @@ function promoteEnrollment_(p) {
   // ── Look up addresses for those persons ────────────────────────────────────
   const addrJoins = promotePersonIds.length
     ? appsheetRequest_(T.PERSON_ADDRESSES, 'Find', [], {
-        Filter: promotePersonIds.map(pid => '"person_id" = "' + pid + '"').join(' || ')
+        Filter: promotePersonIds.map(pid => '"person_id" = "' + appsheetEscape_(pid) + '"').join(' || ')
       }) || []
     : [];
 
@@ -3196,7 +3303,7 @@ function promoteEnrollment_(p) {
   const addressMap    = {};
   if (uniqueAddrIds.length) {
     (appsheetRequest_(T.ADDRESSES, 'Find', [], {
-      Filter: uniqueAddrIds.map(id => '"address_id" = "' + id + '"').join(' || ')
+      Filter: uniqueAddrIds.map(id => '"address_id" = "' + appsheetEscape_(id) + '"').join(' || ')
     }) || []).forEach(row => { addressMap[row.address_id] = row; });
   }
 
@@ -3238,7 +3345,7 @@ function promoteEnrollment_(p) {
   // Done always (not just families_app): the relations exist for every session.
   const relationalRecords = [];
   const groupRelations = appsheetRequest_(T.PERSON_RELATIONS, 'Find', [], {
-    Filter: '"context_entity_id" = "' + groupId + '" && "context_entity_type_code" = "ENR_ADMISSION_SCHOOL"'
+    Filter: '"context_entity_id" = "' + appsheetEscape_(groupId) + '" && "context_entity_type_code" = "ENR_ADMISSION_SCHOOL"'
   }) || [];
 
   groupRelations.forEach(rel => {
@@ -3539,7 +3646,7 @@ function adminCleanupOrphanSessions() {
   for (let i = 0; i < allCandidateIds.length; i += 50) {
     const chunk = allCandidateIds.slice(i, i + 50);
     try {
-      const filter = chunk.map(id => '"enrollment_group_id" = "' + id + '"').join(' || ');
+      const filter = chunk.map(id => '"enrollment_group_id" = "' + appsheetEscape_(id) + '"').join(' || ');
       const rows = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }) || [];
       rows.forEach(r => {
         const k = r.enrollment_group_id;
@@ -3620,15 +3727,17 @@ function adminCleanupOrphanSessions() {
  */
 function getTrackingData_(p) {
   if (!p.resume_token) throw new Error('resume_token is required');
+  assertValidUuid_(p.resume_token, 'resume_token');
 
   // ── Validate token + load group ──────────────────────────────────────────
   const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + p.resume_token + '"'
+    Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
   });
   if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
 
   const group = groups[0];
   const groupId = group.enrollment_group_id;
+  assertValidUuid_(groupId, 'enrollment_group_id');
 
   if (!group.submitted_at) {
     throw new Error('Application not yet submitted');
@@ -3636,7 +3745,7 @@ function getTrackingData_(p) {
 
   // ── Load enrollments ──────────────────────────────────────────────────────
   const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + groupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
   }) || [];
 
   // ── Resolve state labels from sysStates_T ────────────────────────────────
@@ -3645,7 +3754,7 @@ function getTrackingData_(p) {
   if (stateIds.length) {
     try {
       const allStates = appsheetRequest_(T.STATES_T, 'Find', [], {
-        Filter: '"entity_type_code" = "ENR_ADMISSION_SCHOOL" && "school_id" = "' + SCHOOL_ID + '"'
+        Filter: '"entity_type_code" = "ENR_ADMISSION_SCHOOL" && "school_id" = "' + appsheetEscape_(SCHOOL_ID) + '"'
       }) || [];
       allStates.forEach(s => { stateById[s.state_id] = s; });
     } catch (e) {
@@ -3658,7 +3767,7 @@ function getTrackingData_(p) {
   let personById = {};
   if (applicantPersonIds.length) {
     try {
-      const personFilter = applicantPersonIds.map(id => '"person_id" = "' + id + '"').join(' || ');
+      const personFilter = applicantPersonIds.map(id => '"person_id" = "' + appsheetEscape_(id) + '"').join(' || ');
       const persons = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: personFilter }) || [];
       persons.forEach(p => { personById[p.person_id] = p; });
     } catch (e) {
@@ -3690,14 +3799,14 @@ function getTrackingData_(p) {
   const enrollmentIds = enrollments.map(e => e.enrollment_id).filter(Boolean);
   if (enrollmentIds.length) {
     try {
-      const idFilter = enrollmentIds.map(id => '"entity_id" = "' + id + '"').join(' || ');
+      const idFilter = enrollmentIds.map(id => '"entity_id" = "' + appsheetEscape_(id) + '"').join(' || ');
       const rows = appsheetRequest_(T.MILESTONES, 'Find', [], { Filter: idFilter }) || [];
 
       // Load milestone types for labels (optional enrichment)
       let typeMap = {};
       try {
         const types = appsheetRequest_(T.MILESTONE_TYPES, 'Find', [], {
-          Filter: '"school_id" = "' + SCHOOL_ID + '"'
+          Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '"'
         }) || [];
         types.forEach(t => { typeMap[t.milestone_type_id] = t; });
       } catch (_) { /* optional */ }
@@ -3731,7 +3840,7 @@ function getTrackingData_(p) {
   let documents = [];
   try {
     const fileRows = appsheetRequest_(T.REC_FILES, 'Find', [], {
-      Filter: '"school_id" = "' + SCHOOL_ID + '" && "origin_reference" = "' + groupId + '"'
+      Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "origin_reference" = "' + appsheetEscape_(groupId) + '"'
     }) || [];
     // Dedup by file_id
     const fileById = {};
@@ -3755,7 +3864,7 @@ function getTrackingData_(p) {
   let signingSession = null;
   if (enrollmentIds.length) {
     try {
-      const idFilter = enrollmentIds.map(id => '"entity_id" = "' + id + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL"').join(' || ');
+      const idFilter = enrollmentIds.map(id => '"entity_id" = "' + appsheetEscape_(id) + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL"').join(' || ');
       const sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [], { Filter: idFilter }) || [];
       const active = sessions
         .filter(s => !s.deleted_at)
@@ -3769,7 +3878,7 @@ function getTrackingData_(p) {
         let signers = [];
         try {
           const signerRows = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [], {
-            Filter: '"session_id" = "' + sessionId + '"'
+            Filter: '"session_id" = "' + appsheetEscape_(sessionId) + '"'
           }) || [];
           signers = signerRows
             .filter(s => !s.deleted_at)
@@ -3850,17 +3959,19 @@ function getTrackingData_(p) {
 function getInterviewForEnrollment_(p) {
   if (!p || !p.resume_token)  throw new Error('resume_token is required');
   if (!p.enrollment_id)       throw new Error('enrollment_id is required');
+  assertValidUuid_(p.resume_token, 'resume_token');
+  assertValidUuid_(p.enrollment_id, 'enrollment_id');
 
   // 1. Resolve resume_token → enrollment_group
   const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + p.resume_token + '"'
+    Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
   });
   if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
   const groupId = groups[0].enrollment_group_id;
 
   // 2. Confirm enrollment_id belongs to the group (cross-group guard)
   const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + groupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
   }) || [];
   const inGroup = enrollments.some(e => e.enrollment_id === p.enrollment_id);
   if (!inGroup) throw new Error('Enrollment not in resume_token group');
@@ -3869,7 +3980,7 @@ function getInterviewForEnrollment_(p) {
   let rows = [];
   try {
     rows = appsheetRequest_(T.INTERVIEWS, 'Find', [], {
-      Filter: '"enrollment_id" = "' + p.enrollment_id + '"'
+      Filter: '"enrollment_id" = "' + appsheetEscape_(p.enrollment_id) + '"'
     }) || [];
   } catch (e) {
     Logger.log('getInterviewForEnrollment_: enrInterviews read failed: ' + e.message);
@@ -3886,7 +3997,7 @@ function getInterviewForEnrollment_(p) {
   const nameById = {};
   if (interviewerIds.length) {
     try {
-      const idFilter = interviewerIds.map(id => '"personal_id" = "' + id + '"').join(' || ');
+      const idFilter = interviewerIds.map(id => '"personal_id" = "' + appsheetEscape_(id) + '"').join(' || ');
       const staff = appsheetRequest_('personalData_S', 'Find', [], { Filter: idFilter }) || [];
       staff.forEach(s => {
         const full = [s.first_name, s.last_name].filter(Boolean).join(' ').trim();
@@ -3954,17 +4065,19 @@ function getInterviewForEnrollment_(p) {
 function getAdmissionDecisionForEnrollment_(p) {
   if (!p || !p.resume_token)  throw new Error('resume_token is required');
   if (!p.enrollment_id)       throw new Error('enrollment_id is required');
+  assertValidUuid_(p.resume_token, 'resume_token');
+  assertValidUuid_(p.enrollment_id, 'enrollment_id');
 
   // 1. Resolve resume_token → enrollment_group
   const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + p.resume_token + '"'
+    Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
   });
   if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
   const groupId = groups[0].enrollment_group_id;
 
   // 2. Cross-group guard
   const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + groupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
   }) || [];
   const inGroup = enrollments.some(e => e.enrollment_id === p.enrollment_id);
   if (!inGroup) throw new Error('Enrollment not in resume_token group');
@@ -3973,7 +4086,7 @@ function getAdmissionDecisionForEnrollment_(p) {
   let rows = [];
   try {
     rows = appsheetRequest_(T.ADMISSION_DECISION, 'Find', [], {
-      Filter: '"enrollment_id" = "' + p.enrollment_id + '"'
+      Filter: '"enrollment_id" = "' + appsheetEscape_(p.enrollment_id) + '"'
     }) || [];
   } catch (e) {
     Logger.log('getAdmissionDecisionForEnrollment_: enrAdmissionDecision read failed: ' + e.message);
@@ -3992,7 +4105,7 @@ function getAdmissionDecisionForEnrollment_(p) {
   if (d.academic_year_id) {
     try {
       const years = appsheetRequest_('calYears', 'Find', [], {
-        Filter: '"year_id" = "' + d.academic_year_id + '"'
+        Filter: '"year_id" = "' + appsheetEscape_(d.academic_year_id) + '"'
       }) || [];
       if (years.length) {
         yearLabel = years[0].designation || years[0].year_code || null;
@@ -4005,7 +4118,7 @@ function getAdmissionDecisionForEnrollment_(p) {
   if (d.academic_level_id) {
     try {
       const levels = appsheetRequest_('educationLevel', 'Find', [], {
-        Filter: '"row_id" = "' + d.academic_level_id + '"'
+        Filter: '"row_id" = "' + appsheetEscape_(d.academic_level_id) + '"'
       }) || [];
       if (levels.length) {
         levelLabel = levels[0].designation || d.academic_level_id;
@@ -4121,21 +4234,23 @@ function addBusinessDays_(isoDate, n) {
  */
 function getReservationPaymentInfo_(p) {
   if (!p || !p.resume_token) throw new Error('resume_token is required');
+  assertValidUuid_(p.resume_token, 'resume_token');
 
   // 1. Resolve resume_token → group
   const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + p.resume_token + '"'
+    Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
   });
   if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
   const group = groups[0];
   const groupId = group.enrollment_group_id;
+  assertValidUuid_(groupId, 'enrollment_group_id');
 
   // 2. Tenant config — bank fields. school_id from group (multi-tenant safe).
   const groupSchoolId = group.school_id || SCHOOL_ID;
   let cfgRows = [];
   try {
     cfgRows = appsheetRequest_(T.TENANT_CONFIG, 'Find', [], {
-      Filter: '"school_id" = "' + groupSchoolId + '"'
+      Filter: '"school_id" = "' + appsheetEscape_(groupSchoolId) + '"'
     }) || [];
   } catch (e) {
     Logger.log('getReservationPaymentInfo_: sysTenantConfig_T read failed: ' + e.message);
@@ -4188,7 +4303,7 @@ function getReservationPaymentInfo_(p) {
 
   // 3. First applicant surname for the concept
   const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + groupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
   }) || [];
   if (!enrollments.length) {
     throw new Error('No enrollments for group ' + groupId);
@@ -4205,7 +4320,7 @@ function getReservationPaymentInfo_(p) {
   if (firstEnr.applicant_person_id) {
     try {
       const persons = appsheetRequest_(T.PERSONS, 'Find', [], {
-        Filter: '"person_id" = "' + firstEnr.applicant_person_id + '"'
+        Filter: '"person_id" = "' + appsheetEscape_(firstEnr.applicant_person_id) + '"'
       }) || [];
       surname = (persons[0] && persons[0].last_name) || '';
     } catch (_) { /* graceful */ }
@@ -4217,7 +4332,7 @@ function getReservationPaymentInfo_(p) {
   let confirmedAt = null;
   if (enrollmentIds.length) {
     try {
-      const idFilter = enrollmentIds.map(id => '"enrollment_id" = "' + id + '"').join(' || ');
+      const idFilter = enrollmentIds.map(id => '"enrollment_id" = "' + appsheetEscape_(id) + '"').join(' || ');
       const payments = appsheetRequest_(T.FIN_PAYMENTS, 'Find', [], { Filter: idFilter }) || [];
       const confirmed = payments.find(pay =>
         !pay.deleted_at && pay.purpose === 'RESERVATION' && pay.status === 'CONFIRMED'
@@ -4236,7 +4351,7 @@ function getReservationPaymentInfo_(p) {
   //    days from sysTenantConfig_T.reservation_payment_business_days.
   let deadline = null;
   try {
-    const idFilter = enrollmentIds.map(id => '"enrollment_id" = "' + id + '"').join(' || ');
+    const idFilter = enrollmentIds.map(id => '"enrollment_id" = "' + appsheetEscape_(id) + '"').join(' || ');
     if (idFilter) {
       const decisions = appsheetRequest_(T.ADMISSION_DECISION, 'Find', [], { Filter: idFilter }) || [];
       const dec = decisions.find(d => !d.deleted_at && d.reservation_deadline);
@@ -4253,7 +4368,7 @@ function getReservationPaymentInfo_(p) {
   let proformaFileId = null, receiptFileId = null;
   try {
     const files = appsheetRequest_(T.REC_FILES, 'Find', [], {
-      Filter: '"origin_reference" = "' + groupId + '"'
+      Filter: '"origin_reference" = "' + appsheetEscape_(groupId) + '"'
     }) || [];
     const live = files.filter(f => !f.deleted_at);
     const proforma = live.find(f => f.rec_type_code === 'RESERVATION_PROFORMA');
@@ -4314,18 +4429,25 @@ function getReservationPaymentInfo_(p) {
  */
 function getSigningTokenFromResumeToken_(p) {
   if (!p || !p.resume_token) throw new Error('resume_token is required');
+  assertValidUuid_(p.resume_token, 'resume_token');
   const scopeDocRole = p.scope_doc_role || null;
+  // scope_doc_role is an optional uppercase enum. Whitelist regex prevents
+  // injection through this parameter (KAL-5).
+  if (scopeDocRole !== null && (typeof scopeDocRole !== 'string' || !/^[A-Z_]{1,64}$/.test(scopeDocRole))) {
+    throw new Error('Invalid scope_doc_role: ' + JSON.stringify(scopeDocRole));
+  }
 
   // 1. Resolve group + enrollments
   const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + p.resume_token + '"'
+    Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
   });
   if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
   const group = groups[0];
   const groupId = group.enrollment_group_id;
+  assertValidUuid_(groupId, 'enrollment_group_id');
 
   const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + groupId + '"'
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
   }) || [];
   const enrollmentIds = enrollments.map(e => e.enrollment_id).filter(Boolean);
   if (!enrollmentIds.length) {
@@ -4337,7 +4459,7 @@ function getSigningTokenFromResumeToken_(p) {
   let sessions = [];
   try {
     const idFilter = enrollmentIds
-      .map(id => '("entity_id" = "' + id + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL")')
+      .map(id => '("entity_id" = "' + appsheetEscape_(id) + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL")')
       .join(' || ');
     sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [], { Filter: idFilter }) || [];
   } catch (e) {
@@ -4364,7 +4486,7 @@ function getSigningTokenFromResumeToken_(p) {
     let docRoles = [];
     try {
       const docs = appsheetRequest_(T.SIGNING_SESSION_DOCUMENTS, 'Find', [], {
-        Filter: '"session_id" = "' + sessionId + '"'
+        Filter: '"session_id" = "' + appsheetEscape_(sessionId) + '"'
       }) || [];
       const seen = {};
       docs.filter(d => !d.deleted_at).forEach(d => {
@@ -4384,7 +4506,7 @@ function getSigningTokenFromResumeToken_(p) {
     let signerRows = [];
     try {
       signerRows = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [], {
-        Filter: '"session_id" = "' + sessionId + '"'
+        Filter: '"session_id" = "' + appsheetEscape_(sessionId) + '"'
       }) || [];
     } catch (e) {
       Logger.log('getSigningTokenFromResumeToken_: signers read failed: ' + e.message);
@@ -4397,7 +4519,7 @@ function getSigningTokenFromResumeToken_(p) {
     const nameById = {};
     if (personIds.length) {
       try {
-        const personFilter = personIds.map(id => '"person_id" = "' + id + '"').join(' || ');
+        const personFilter = personIds.map(id => '"person_id" = "' + appsheetEscape_(id) + '"').join(' || ');
         const persons = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: personFilter }) || [];
         persons.forEach(per => {
           nameById[per.person_id] = [per.first_name, per.last_name].filter(Boolean).join(' ').trim() || null;
@@ -4432,6 +4554,71 @@ function getSigningTokenFromResumeToken_(p) {
 // Run these from the GAS editor after clasp push. They are not invoked by
 // doPost — they are debug-only wrappers Diego can pick from the editor's
 // function dropdown.
+
+/**
+ * KAL-5: tests the AppSheet Filter escape helper. Pure function, no DB call.
+ * Logs each expected/actual pair so failures show up as `false` in the
+ * execution log.
+ */
+function manual_testAppSheetEscape_() {
+  // Normal cases
+  Logger.log('hola: ' + (appsheetEscape_('hola') === 'hola'));
+  Logger.log('empty: ' + (appsheetEscape_('') === ''));
+  Logger.log('null: ' + (appsheetEscape_(null) === ''));
+  Logger.log('undefined: ' + (appsheetEscape_(undefined) === ''));
+  // Coercion
+  Logger.log('number 42: ' + (appsheetEscape_(42) === '42'));
+  // Attack vector — the canonical KAL-5 injection payload
+  Logger.log('inject: ' + (appsheetEscape_('victima" || "1"="1') === 'victima"" || ""1""=""1'));
+  // Multiple quotes
+  Logger.log('multi: ' + (appsheetEscape_('a"b"c') === 'a""b""c'));
+}
+
+/**
+ * KAL-5: tests the validation assertions reject injection payloads and
+ * accept legitimate inputs. Each PASS line confirms the assertion threw on
+ * the malicious input; FAIL means the guard let it through.
+ */
+function manual_testFilterInjectionDefense_() {
+  // Email injection rejected
+  try {
+    assertValidEmail_('victima" || "1"="1', 'email');
+    Logger.log('FAIL — assertion should have thrown for injection email');
+  } catch (e) {
+    Logger.log('PASS — injection email rejected: ' + e.message);
+  }
+  // UUID injection rejected
+  try {
+    assertValidUuid_('aaaa" OR "1"="1', 'uuid');
+    Logger.log('FAIL — assertion should have thrown for injection UUID');
+  } catch (e) {
+    Logger.log('PASS — injection UUID rejected: ' + e.message);
+  }
+  // Non-string inputs rejected
+  try {
+    assertValidUuid_(null, 'uuid');
+    Logger.log('FAIL — null should have thrown');
+  } catch (e) {
+    Logger.log('PASS — null UUID rejected: ' + e.message);
+  }
+  try {
+    assertValidEmail_(undefined, 'email');
+    Logger.log('FAIL — undefined should have thrown');
+  } catch (e) {
+    Logger.log('PASS — undefined email rejected: ' + e.message);
+  }
+  // Over-long email rejected
+  try {
+    assertValidEmail_('a'.repeat(255) + '@b.c', 'email');
+    Logger.log('FAIL — over-long email should have thrown');
+  } catch (e) {
+    Logger.log('PASS — over-long email rejected: ' + e.message);
+  }
+  // Valid inputs accepted (do NOT throw)
+  assertValidEmail_('test@example.com', 'email');
+  assertValidUuid_('a8bf5292-eb12-43f8-9a82-1d2a39c11f4e', 'uuid');
+  Logger.log('PASS — valid email + UUID accepted');
+}
 
 /**
  * Manual test for getInterviewForEnrollment_.
@@ -4496,7 +4683,7 @@ function manual_testAddBusinessDays() {
  */
 function manual_verifyTenantConfigBankFields() {
   const rows = appsheetRequest_(T.TENANT_CONFIG, 'Find', [], {
-    Filter: '"school_id" = "' + SCHOOL_ID + '"'
+    Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '"'
   }) || [];
   if (!rows.length) {
     Logger.log('BLOQUEANTE: sysTenantConfig_T sin fila para school_id=' + SCHOOL_ID);
