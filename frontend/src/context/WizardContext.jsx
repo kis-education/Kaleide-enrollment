@@ -16,23 +16,33 @@ function normYN(v) {
 
 const WizardContext = createContext(null);
 
+// Wizard canónico — 11 steps per roadmap (docs/kms/plan/wizard-admissions-roadmap.md
+// líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28). NO inventar pasos extra. CLI 22 + CLI 28
+// + Frontend-9-10 + Frontend-12 introdujeron "Status/Interview/Decision/Deposit/..."
+// inventados; CLI 59 (2026-05-30) revirtió a este canon.
+//
+// 1-7 pre-AD (admisión decisión): ya implementados, formularios reales.
+// 8-11 post-AD: placeholders informativos hasta que tengan backend.
+//
+// Endpoints futuros para 8-11 (no existen todavía):
+//   8 S-BILLING  → enr.saveBillingInfo       (P49)
+//   9 S-GDPR     → enr.submitGdprConsents    (DL-E27)
+//  10 S-REVIEW   → enr.confirmReview         (DL-E28 §6)
+//  11 S-SIGN     → enr.initiateSigningSession (DL-E28 §7-§13, P50)
 export const STEPS = [
-  // Steps 1-7: enrollment wizard
-  { key: 'email',       labelKey: 'step.email'       },
-  { key: 'persons',     labelKey: 'step.persons'     },
-  { key: 'relations',   labelKey: 'step.relations'   },
-  { key: 'health',      labelKey: 'step.health'      },
-  { key: 'questions',   labelKey: 'step.questions'   },
-  { key: 'documents',   labelKey: 'step.documents'   },
-  { key: 'review',      labelKey: 'step.review'      },
-  // Steps 8-14: post-submission journey
-  { key: 'status',      labelKey: 'step.status'      },
-  { key: 'interview',   labelKey: 'step.interview'   },
-  { key: 'decision',    labelKey: 'step.decision'    },
-  { key: 'contract',    labelKey: 'step.contract'    },
-  { key: 'payment',     labelKey: 'step.payment'     },
-  { key: 'orientation', labelKey: 'step.orientation' },
-  { key: 'welcome',     labelKey: 'step.welcome'     },
+  // Steps 1-7: enrollment wizard pre-AD
+  { key: 'email',       labelKey: 'step.email'           },
+  { key: 'persons',     labelKey: 'step.persons'         },
+  { key: 'relations',   labelKey: 'step.relations'       },
+  { key: 'health',      labelKey: 'step.health'          },
+  { key: 'questions',   labelKey: 'step.questions'       },
+  { key: 'documents',   labelKey: 'step.documents'       },
+  { key: 'review',      labelKey: 'step.review'          },
+  // Steps 8-11: post-AD (locked hasta que admisiones acepte la solicitud).
+  { key: 's_billing',   labelKey: 'step.billing.title'         },
+  { key: 's_gdpr',      labelKey: 'step.gdpr.title'            },
+  { key: 's_review',    labelKey: 'step.signing_review.title'  },
+  { key: 's_sign',      labelKey: 'step.signing.title'         },
 ];
 
 const initialStepData = {
@@ -449,8 +459,10 @@ export function WizardProvider({ children }) {
     saveSession({ completedSteps: [...completed] });
 
     // Land on the first incomplete step, or Review if everything's filled.
-    // Submitted sessions go to Review (read-only view of what was sent).
-    if (submitted) { setCurrentStep(7); return; }
+    // Submitted sessions land on Step 7 Review (index 6) — read-only view of what
+    // was sent. The post-AD steps 8-11 (indices 7-10) stay locked until admisión
+    // decisión flips them open (future feature; backend not implemented yet — CLI 59).
+    if (submitted) { setCurrentStep(6); return; }
     const STEP_COUNT = 7; // only wizard steps 0-6 considered for non-submitted resume
     let target = STEP_COUNT - 1; // default to Review
     for (let i = 0; i < STEP_COUNT; i++) {

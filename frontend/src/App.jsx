@@ -7,7 +7,6 @@ import WizardPage       from './pages/WizardPage'
 import ResumePage       from './pages/ResumePage'
 import ReportUnsolicitedPage from './pages/ReportUnsolicitedPage'
 import ConfirmationPage       from './pages/ConfirmationPage'
-import TrackApplicationPage  from './pages/TrackApplicationPage'
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
 import SigningWizardPage from './pages/SigningWizardPage'
 import DevLogger        from './components/DevLogger'
@@ -59,7 +58,6 @@ function App() {
           <Route path="/confirmation"    element={<ConfirmationPage />}   />
           <Route path="/privacy"         element={<PrivacyPolicyPage />} />
           <Route path="/sign"            element={<SigningWizardPage />} />
-          <Route path="/track/:token"   element={<TrackApplicationPage />} />
           <Route path="*"               element={<LandingPage />}        />
         </Routes>
       </Suspense>

@@ -9,36 +9,34 @@ import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
 import { Toast, useToast } from '../components/Toast';
 
-import Step1Email            from './steps/Step1Email';
-import Step2Persons          from './steps/Step2Persons';
-import Step3Relations        from './steps/Step3Relations';
-import Step4Health           from './steps/Step4Health';
-import Step5Questions        from './steps/Step5Questions';
-import Step6Documents        from './steps/Step6Documents';
-import Step7Review           from './steps/Step7Review';
-import Step8Status           from './steps/Step8Status';
-import Step9Interview        from './steps/Step9Interview';
-import Step10Decision        from './steps/Step10Decision';
-import Step12Deposit         from './steps/Step12Deposit';
-import WizardStepPlaceholder from './steps/WizardStepPlaceholder';
+import Step1Email      from './steps/Step1Email';
+import Step2Persons    from './steps/Step2Persons';
+import Step3Relations  from './steps/Step3Relations';
+import Step4Health     from './steps/Step4Health';
+import Step5Questions  from './steps/Step5Questions';
+import Step6Documents  from './steps/Step6Documents';
+import Step7Review     from './steps/Step7Review';
+import Step8Billing    from './steps/Step8Billing';
+import Step9Gdpr       from './steps/Step9Gdpr';
+import Step10Review    from './steps/Step10Review';
+import Step11Sign      from './steps/Step11Sign';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
+// 11 steps canónicos (CLI 59 — roadmap líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28).
+// Steps 1-7 reales pre-AD, 8-11 placeholders locked post-AD.
 const STEP_COMPONENTS = [
-  Step1Email,            // 1
-  Step2Persons,          // 2
-  Step3Relations,        // 3
-  Step4Health,           // 4
-  Step5Questions,        // 5
-  Step6Documents,        // 6
-  Step7Review,           // 7
-  Step8Status,           // 8 — Estado de solicitud
-  Step9Interview,        // 9 — Entrevista
-  Step10Decision,        // 10 — Decisión de admisión
-  WizardStepPlaceholder, // 11
-  Step12Deposit,         // 12 — Pago de reserva (transferencia bancaria)
-  WizardStepPlaceholder, // 13
-  WizardStepPlaceholder, // 14
+  Step1Email,     // 1
+  Step2Persons,   // 2
+  Step3Relations, // 3
+  Step4Health,    // 4
+  Step5Questions, // 5
+  Step6Documents, // 6
+  Step7Review,    // 7
+  Step8Billing,   // 8  — S-BILLING (placeholder hasta P49 + enr.saveBillingInfo)
+  Step9Gdpr,      // 9  — S-GDPR    (placeholder hasta DL-E27 + enr.submitGdprConsents)
+  Step10Review,   // 10 — S-REVIEW  (placeholder hasta DL-E28 §6 + enr.confirmReview)
+  Step11Sign,     // 11 — S-SIGN    (placeholder hasta DL-E28 §7-§13 + enr.initiateSigningSession)
 ];
 
 export default function WizardPage() {

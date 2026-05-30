@@ -71,7 +71,7 @@ export default function ConfirmationPage() {
                 fontSize: '0.95rem',
               }}
             >
-              {t('confirmation.track_cta')}
+              {t('confirmation.view_cta')}
             </Link>
           </div>
         )}

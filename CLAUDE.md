@@ -107,6 +107,27 @@ Para tokens donde un prefix estable es útil para cross-referencing trace, usar 
 
 Call-sites redactados 2026-05-30 (backend): `initEnrollmentSession_` auto-abandon, `sendMagicLink_` renew/failure, `reportUnsolicited_` abandon, `resumeSession_` unlock, `appsheetRequest_` HTTP trace (trimmed 600→200 chars), `[resolveSigningToken_]` NOT_FOUND/COMPLETED/valid, `adminUnblockEmail`, `adminCleanupOrphanSessions` summary + abandon, `fetchLookups_` row-level dumps colapsados a counts. Tests: `manual_testLogRedaction`.
 
+## Wizard structure
+
+### Wizard steps canónicos — NO inventar (regla 2026-05-30)
+
+El wizard tiene **11 steps**, todos en `/apply` (continuación, sin ruta separada). Los nombres y propósito vienen de `docs/kms/plan/wizard-admissions-roadmap.md` líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28:
+
+1-7: Email, Persons, Relations, Health, Questions, Documents, Review (pre-AD, ya implementados).
+8 S-BILLING: datos fiscales pagador (P49, endpoint `enr.saveBillingInfo`).
+9 S-GDPR: 7 consentimientos GDPR por guardian + TSA (DL-E27, endpoint `enr.submitGdprConsents`).
+10 S-REVIEW: revisión Carta + Contrato + confirmación lectura (DL-E28 §6, endpoint `enr.confirmReview`).
+11 S-SIGN: firma Click & Sign (DL-E28 §7-§13, P50).
+
+Los Steps 8-11 se desbloquean post-AD. Antes, locked con candado.
+
+**Anti-patrones a NO repetir**:
+- NO inventar pasos como "Status", "Interview", "Decision", "Deposit", "Sign contract", "Enrolled". Si una sesión cloud cree que un step debería existir, primero verificar en el roadmap canónico.
+- NO crear ruta `/track/:token` separada — todo el wizard vive en `/apply`.
+- NO añadir endpoints frontend-only sin confirmar que están registrados en backend `doPost` dispatcher.
+
+Precedente: CLI 22 + CLI 28 + CLI 33-36 + Frontend-9-10 + Frontend-12 (2026-05-29/30) introdujeron steps inventados; CLI 59 corrigió 2026-05-30. Los endpoints backend huérfanos (getInterviewForEnrollment, getAdmissionDecisionForEnrollment, getSigningTokenFromResumeToken) quedan en el código sin caller — pendiente decisión de Diego sobre borrarlos.
+
 ## Deployment
 
 The wizard is served from a **fixed deployment URL**. `clasp push` only updates Head — users hit the deployment URL, which is frozen until redeployed.
