@@ -22,7 +22,15 @@ export default function ReportUnsolicitedPage() {
       setState('done');
       return;
     }
-    log.info('ReportUnsolicitedPage: reporting', { token });
+    // KAL-7: strip the token from the URL bar before doing anything else.
+    // The token is held in the closure for the gasCall below.
+    try {
+      const cleanUrl = window.location.pathname + window.location.search + '#/';
+      window.history.replaceState(null, '', cleanUrl);
+    } catch { /* non-fatal */ }
+    // KAL-11: log only a token preview, never the full bearer secret.
+    const tokenPreview = String(token).slice(0, 8) + '...';
+    log.info('ReportUnsolicitedPage: reporting', { resume_token_preview: tokenPreview });
     gasCall('reportUnsolicited', { resume_token: token })
       .then(() => setState('done'))
       .catch(err => {

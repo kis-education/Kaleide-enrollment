@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="apple-mobile-web-app-title" content="KIS Admissions" />
+    <!-- KAL-7: prevent leaking resume_token in Referer header when the wizard
+         loads third-party resources (CDN fonts, icons) or when the user clicks
+         an external link. no-referrer strips the Referer entirely. -->
+    <meta name="referrer" content="no-referrer" />
     <title>Kaleide International School — Admissions</title>
     <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png" />
     <link

@@ -137,6 +137,37 @@ function getStaffEmail_() {
   }
 }
 
+// ─── Log redaction (KAL-11) ───────────────────────────────────────────────────
+// Closes the PII-in-logs vector identified in the 2026-05-29 audit. Apps Script
+// Logger.log lines are persisted in Stackdriver (Google Cloud Logging) for the
+// project owner — anyone with project access to the Cloud project can see them.
+// Logging full emails / resume_tokens / UUIDs in clear is a GDPR pitfall and a
+// leak of bearer secrets to anyone who later browses the logs.
+//
+// Use redact_() on any user-controlled or PII-bearing string BEFORE concatenating
+// into Logger.log. Emails become `[EMAIL]`, UUIDs become `[UUID]`. For tokens
+// where a stable prefix is useful for cross-referencing (e.g. resolveSigningToken_
+// debug trace), prefer `token.substring(0,8) + '...'` directly — already in use.
+
+/**
+ * Redacts emails and UUIDs from a string so it is safe to write to Logger.log.
+ * - Emails  → `[EMAIL]`
+ * - UUIDs   → `[UUID]`  (matches 36-char canonical layout, hex + hyphens)
+ * Returns the input unchanged for null/undefined.
+ *
+ * Idempotent: redacting an already-redacted string is a no-op.
+ *
+ * @param {*} s
+ * @returns {string}
+ */
+function redact_(s) {
+  if (s === null || s === undefined) return s;
+  var v = String(s);
+  v = v.replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[EMAIL]');
+  v = v.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '[UUID]');
+  return v;
+}
+
 // ─── AppSheet Filter injection — defense in depth (KAL-5) ─────────────────────
 // Closes the AppSheet Selector filter-injection vector identified in the
 // 2026-05-29 audit. Without escape + validation, a user-controlled string like
@@ -502,11 +533,12 @@ function initEnrollmentSession_(p) {
           abandoned_at:        nowIso,
           updated_at:          nowIso,
         }]);
-        Logger.log('initEnrollmentSession_: auto-abandoned ' + loser.enrollment_group_id +
+        // KAL-11: redact UUID + email.
+        Logger.log(redact_('initEnrollmentSession_: auto-abandoned ' + loser.enrollment_group_id +
                    ' (lower-progress parallel session for ' + normalizedEmail +
-                   '; person_count=' + (personCountByGroup[loser.enrollment_group_id] || 0) + ')');
+                   '; person_count=' + (personCountByGroup[loser.enrollment_group_id] || 0) + ')'));
       } catch (e) {
-        Logger.log('initEnrollmentSession_: failed to auto-abandon ' + loser.enrollment_group_id + ': ' + e.message);
+        Logger.log(redact_('initEnrollmentSession_: failed to auto-abandon ' + loser.enrollment_group_id + ': ' + e.message));
       }
     });
     const lang = winner.preferred_language || (p.preferred_language || 'es');
@@ -685,6 +717,22 @@ function recognizeFamily_(p, opts) {
   const personalIds = emailRows
     .map(r => r.personal_id)
     .filter((id, i, arr) => id && arr.indexOf(id) === i);
+
+  // KAL-10 (anti-enumeration): public callers receive a constant shape that
+  // does NOT distinguish "matched" from "not matched". The dispatched public
+  // endpoint sees only `{ matched: false, persons: [] }` regardless of the
+  // actual lookup result. An attacker brute-forcing emails through the
+  // public `recognizeFamily` action cannot tell which addresses belong to
+  // an existing Kaleide family.
+  //
+  // The internal call from initEnrollmentSession_ (opts.internal === true)
+  // still receives the real `{matched, persons[]}` payload because the
+  // caller is already an authenticated session-creation flow: the family
+  // explicitly typed that email into the wizard and we want to offer the
+  // "we recognised you — prefill?" banner on Step 2. The recognition data
+  // never leaves the backend except in the initEnrollmentSession response,
+  // which only the family that just provided the email can see (and they
+  // already know it).
   if (!personalIds.length) {
     return { matched: false, persons: [] };
   }
@@ -693,6 +741,11 @@ function recognizeFamily_(p, opts) {
   personalIds.forEach(id => assertValidUuid_(id, 'personal_id'));
   const filter = personalIds.map(id => '"personal_id" = "' + appsheetEscape_(id) + '"').join(' || ');
   const persons = appsheetRequest_('personalData_S', 'Find', [], { Filter: filter }) || [];
+
+  // Public callers: silent ack, identical shape to "no match" — anti-enum.
+  if (!internal) {
+    return { matched: false, persons: [] };
+  }
 
   return {
     matched: persons.length > 0,
@@ -743,7 +796,8 @@ function sendMagicLink_(p) {
         updated_at:          nowIso,
       }]);
       tokenToSend = newToken;
-      Logger.log('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id);
+      // KAL-11: redact group_id UUID before persisting to Stackdriver.
+      Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
     }
 
     sendMagicLinkEmail_(grp.primary_email, tokenToSend, grp.preferred_language || 'es');
@@ -771,7 +825,8 @@ function sendMagicLink_(p) {
           }]);
           return { ...g, resume_token: newToken };
         } catch (e) {
-          Logger.log('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message);
+          // KAL-11: redact group_id UUID.
+          Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message));
           return g; // fall back to original token on error
         }
       });
@@ -894,9 +949,10 @@ function reportUnsolicited_(p) {
           abandoned_at:        nowIso,
           updated_at:          nowIso,
         }]);
-        Logger.log('reportUnsolicited_: abandoned ' + group.enrollment_group_id);
+        // KAL-11: redact UUID.
+        Logger.log(redact_('reportUnsolicited_: abandoned ' + group.enrollment_group_id));
       } catch (abandonErr) {
-        Logger.log('reportUnsolicited_: failed to abandon ' + group.enrollment_group_id + ': ' + abandonErr.message);
+        Logger.log(redact_('reportUnsolicited_: failed to abandon ' + group.enrollment_group_id + ': ' + abandonErr.message));
       }
     }
 
@@ -1062,7 +1118,8 @@ function resumeSession_(p) {
     });
     if (inState && enrollments.every(function(e) { return e.current_state_id === inState.state_id; })) {
       group.submitted_at = null;
-      Logger.log('resumeSession_: all enrollments in IN — wizard unlocked (submitted_at overridden in response for group ' + group.enrollment_group_id + ')');
+      // KAL-11: redact group_id UUID.
+      Logger.log(redact_('resumeSession_: all enrollments in IN — wizard unlocked (submitted_at overridden in response for group ' + group.enrollment_group_id + ')'));
     }
   }
 
@@ -1861,11 +1918,14 @@ function fetchLookups_() {
   const relationTypes = pick(3);
   const programs      = pick(4);
 
-  Logger.log('fetchLookups_ allergies[0]: '     + JSON.stringify(allergies[0]));
-  Logger.log('fetchLookups_ dietary[0]: '       + JSON.stringify(dietary[0]));
-  Logger.log('fetchLookups_ medical[0]: '       + JSON.stringify(medical[0]));
-  Logger.log('fetchLookups_ relationTypes[0]: ' + JSON.stringify(relationTypes[0]));
-  Logger.log('fetchLookups_ programs: '         + programs.length + ' rows');
+  // KAL-11: reference rows shouldn't carry PII but UUIDs from joined tables can
+  // leak. Reduce to counts — the [0] dumps were only useful for the initial
+  // schema verification and are not needed in steady-state logs.
+  Logger.log('fetchLookups_ allergies: '     + allergies.length     + ' rows');
+  Logger.log('fetchLookups_ dietary: '       + dietary.length       + ' rows');
+  Logger.log('fetchLookups_ medical: '       + medical.length       + ' rows');
+  Logger.log('fetchLookups_ relationTypes: ' + relationTypes.length + ' rows');
+  Logger.log('fetchLookups_ programs: '      + programs.length      + ' rows');
 
   return {
     allergies:     allergies.map(r =>     ({ id: r['Row ID'] || r.row_id, label: r.food_allergy_designation })),
@@ -2862,7 +2922,11 @@ function appsheetRequest_(table, action, rows, selector, debugOut) {
   const statusCode = response.getResponseCode();
   const text       = response.getContentText();
 
-  Logger.log('AppSheet ' + action + ' ' + table + ' → HTTP ' + statusCode + ' | ' + text.slice(0, 600));
+  // KAL-11: response body can contain emails / UUIDs / PII verbatim (Add/Edit
+  // echoes the row back). Redact before persisting to Stackdriver. Also trim
+  // from 600 → 200 chars — enough for diagnostic HTTP errors, less surface
+  // for PII to slip through the redactor.
+  Logger.log('AppSheet ' + action + ' ' + table + ' → HTTP ' + statusCode + ' | ' + redact_(text.slice(0, 200)));
   if (debugOut) { debugOut.http = statusCode; debugOut.body = text.slice(0, 800); }
 
   if (statusCode < 200 || statusCode >= 300) {
@@ -3212,14 +3276,14 @@ function resolveSigningToken_(p) {
 
   const session = sessionRows && sessionRows.find(s => !s['deleted_at']);
   if (!session) {
-    Logger.log('[resolveSigningToken_] SESSION_NOT_FOUND session=' + sessionId);
+    Logger.log(redact_('[resolveSigningToken_] SESSION_NOT_FOUND session=' + sessionId));
     return { valid: false, reason: 'INVALID' };
   }
 
   // 3. Check terminal states
   const stateCode = session['current_state_code'] || '';
   if (stateCode === 'COMPLETED') {
-    Logger.log('[resolveSigningToken_] SESSION_COMPLETED signer=' + signerId);
+    Logger.log(redact_('[resolveSigningToken_] SESSION_COMPLETED signer=' + signerId));
     return { valid: false, reason: 'REVOKED', state: stateCode };
   }
   if (stateCode === 'CANCELLED' || stateCode === 'EXPIRED') {
@@ -3246,7 +3310,7 @@ function resolveSigningToken_(p) {
     Logger.log('[resolveSigningToken_] enrGroupBilling not available (P49 pending): ' + billingErr.message);
   }
 
-  Logger.log('[resolveSigningToken_] valid=true signer=' + signerId + ' group=' + enrollmentGroupId);
+  Logger.log(redact_('[resolveSigningToken_] valid=true signer=' + signerId + ' group=' + enrollmentGroupId));
 
   return {
     valid:               true,
@@ -3700,7 +3764,8 @@ function adminUnblockEmail() {
   const countKey = 'magic_count_'   + Utilities.base64EncodeWebSafe(email);
   cache.remove(blockKey);
   cache.remove(countKey);
-  Logger.log('adminUnblockEmail: cleared block + count for ' + email);
+  // KAL-11: redact email — even admin tools shouldn't write plaintext PII to Stackdriver.
+  Logger.log(redact_('adminUnblockEmail: cleared block + count for ' + email));
   return { ok: true, email: email };
 }
 
@@ -3775,10 +3840,11 @@ function adminCleanupOrphanSessions() {
         abandoned_at:        now.toISOString(),
         updated_at:          now.toISOString(),
       }]);
-      Logger.log('abandoned: ' + s.enrollment_group_id + ' email=' + s.primary_email + ' age_days=' + Math.round((now - new Date(s.created_at)) / 86400000));
+      // KAL-11: redact group_id (UUID) and email before persisting to Stackdriver.
+      Logger.log(redact_('abandoned: ' + s.enrollment_group_id + ' email=' + s.primary_email) + ' age_days=' + Math.round((now - new Date(s.created_at)) / 86400000));
       actuallyAbandoned++;
     } catch (e) {
-      Logger.log('FAILED to abandon ' + s.enrollment_group_id + ': ' + e.message);
+      Logger.log(redact_('FAILED to abandon ' + s.enrollment_group_id + ': ' + e.message));
       failures.push({ id: s.enrollment_group_id, error: e.message.slice(0, 200) });
     }
   });
@@ -3791,7 +3857,9 @@ function adminCleanupOrphanSessions() {
     kept:       kept.length,
     failures:   failures,
   };
-  Logger.log('adminCleanupOrphanSessions summary: ' + JSON.stringify(summary));
+  // KAL-11: summary.failures contains per-row {id: enrollment_group_id, error}.
+  // Redact the UUIDs before persisting to Stackdriver.
+  Logger.log(redact_('adminCleanupOrphanSessions summary: ' + JSON.stringify(summary)));
   return summary;
 }
 
@@ -5000,6 +5068,68 @@ function manual_testGetSigningTokenScopedAdmission() {
     scope_doc_role: 'ADMISSION_LETTER'
   });
   Logger.log(JSON.stringify(out, null, 2));
+}
+
+/**
+ * KAL-11: tests the redact_ helper covers emails + UUIDs and is idempotent.
+ * Pure function, no DB call. Each PASS line confirms the substitution worked.
+ */
+function manual_testLogRedaction() {
+  // Email basic
+  Logger.log('PASS email: ' + (redact_('user@example.com saved row') === '[EMAIL] saved row'));
+  // Email with plus alias + subdomain
+  Logger.log('PASS email plus: ' + (redact_('a.b+tag@mail.kaleide.org logged in') === '[EMAIL] logged in'));
+  // UUID lowercase
+  Logger.log('PASS uuid lower: ' + (redact_('group=a8bf5292-eb12-43f8-9a82-1d2a39c11f4e') === 'group=[UUID]'));
+  // UUID uppercase
+  Logger.log('PASS uuid upper: ' + (redact_('id=A8BF5292-EB12-43F8-9A82-1D2A39C11F4E done') === 'id=[UUID] done'));
+  // Both at once
+  Logger.log('PASS both: ' + (redact_('foo@bar.com 11111111-2222-3333-4444-555555555555 ok') === '[EMAIL] [UUID] ok'));
+  // Idempotent — re-redacting a redacted string is a no-op
+  Logger.log('PASS idempotent: ' + (redact_(redact_('foo@bar.com')) === '[EMAIL]'));
+  // null / undefined preserved
+  Logger.log('PASS null: ' + (redact_(null) === null));
+  Logger.log('PASS undef: ' + (redact_(undefined) === undefined));
+  // Number coerced to string
+  Logger.log('PASS number: ' + (redact_(42) === '42'));
+  // No false positives on plain text
+  Logger.log('PASS plain: ' + (redact_('nothing sensitive here') === 'nothing sensitive here'));
+}
+
+/**
+ * KAL-10: tests that recognizeFamily_ returns the silent-ack constant shape
+ * for public callers regardless of whether the email exists. Requires a known
+ * existing email and a known non-existing email — Diego: fill the constants
+ * below before running, or leave the shape-only assertions which require no DB.
+ */
+function manual_testRecognizeFamilyAntiEnum() {
+  // Shape assertion — public response is ALWAYS {matched: false, persons: []}.
+  // We can't easily test the matched case without a real email, but we can
+  // verify the shape on a confirmed-non-existing email (no DB row required —
+  // the contactEmails Find returns []).
+  try {
+    var out = recognizeFamily_({
+      primary_email:   'no-such-email-' + Date.now() + '@example.invalid',
+      recaptcha_token: '_bypass_' // RECAPTCHA_SECRET unset in dev → skips check
+    });
+    var shapeOk = out && out.matched === false && Array.isArray(out.persons) && out.persons.length === 0;
+    Logger.log('PASS public shape (no-match): ' + shapeOk + ' (' + JSON.stringify(out) + ')');
+  } catch (e) {
+    Logger.log('SKIP public shape — reCAPTCHA configured: ' + e.message);
+  }
+
+  // Diego: descomenta y rellena con un email REAL conocido de Kaleide para
+  // verificar que la respuesta pública aún es {matched: false, persons: []}
+  // (el internal: true SÍ devolvería matched: true con nombres).
+  // try {
+  //   var publicOut = recognizeFamily_({ primary_email: '<EMAIL_REAL_KIS>', recaptcha_token: '_bypass_' });
+  //   Logger.log('PASS anti-enum: ' + (publicOut.matched === false && publicOut.persons.length === 0) +
+  //              ' (' + JSON.stringify(publicOut) + ')');
+  //   var internalOut = recognizeFamily_({ primary_email: '<EMAIL_REAL_KIS>' }, { internal: true });
+  //   Logger.log('PASS internal still gets names: ' + (internalOut.matched === true && internalOut.persons.length > 0));
+  // } catch (e) {
+  //   Logger.log('FAIL — recognizeFamily_ threw: ' + e.message);
+  // }
 }
 
 /**
