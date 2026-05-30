@@ -104,7 +104,7 @@ export default function Step7Review({ onBack }) {
         medical:       data.medical       || [],
       }))
       .catch(() => {});
-    gasCall('fetchQuestions', { context_designation: 'Enrollment', language: lang })
+    gasCall('fetchQuestions', { context_code: 'ENROLLMENT', language: lang })
       .then(data => setQuestionSets(data.sets || []))
       .catch(() => {});
   }, []); // eslint-disable-line

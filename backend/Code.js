@@ -1782,25 +1782,36 @@ function verifyEmail_(p) {
 
 /**
  * Fetches a question set with all translations, options, and conditions.
- * @param {Object} p - { context_designation, language }
+ *
+ * Lookup uses qbContexts.context_code (stable UPPER_SNAKE id), not designation
+ * (human-readable string subject to renaming/casing drift). Input is normalized
+ * to UPPER + trim before the AppSheet Filter so case mismatches are impossible.
+ * For backwards compat the legacy param name `context_designation` is still
+ * accepted but treated as a code (must satisfy UPPER_SNAKE whitelist post-norm).
+ *
+ * @param {Object} p - { context_code, language } (legacy: context_designation)
  * @returns {Object} Nested question set structure
  */
 function fetchQuestions_(p) {
-  const { context_designation, language } = p;
-  if (!context_designation) throw new Error('Missing context_designation');
-  // KAL-5: context_designation is a short slug-style identifier from the
-  // catalog. Strict whitelist regex prevents injection via the payload.
-  if (typeof context_designation !== 'string' || !/^[A-Za-z0-9_\-]{1,64}$/.test(context_designation)) {
-    throw new Error('Invalid context_designation: ' + JSON.stringify(context_designation));
+  const raw = p.context_code != null ? p.context_code : p.context_designation;
+  if (raw == null || raw === '') throw new Error('Missing context_code');
+  if (typeof raw !== 'string') {
+    throw new Error('Invalid context_code: ' + JSON.stringify(raw));
+  }
+  const contextCode = raw.trim().toUpperCase();
+  // KAL-5: whitelist regex prevents injection. UPPER_SNAKE: 1-64 chars,
+  // starts with letter, then letters/digits/underscore.
+  if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(contextCode)) {
+    throw new Error('Invalid context_code: ' + JSON.stringify(raw));
   }
 
-  const lang = language || 'es';
+  const lang = p.language || 'es';
 
-  // Find matching context
+  // Find matching context by stable code (case-insensitive at the boundary).
   const contexts = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
-    Filter: '"designation" = "' + appsheetEscape_(context_designation) + '" && "school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "is_active" = true'
+    Filter: '"context_code" = "' + appsheetEscape_(contextCode) + '" && "school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "is_active" = true'
   });
-  if (!contexts || !contexts.length) throw new Error('Context not found: ' + context_designation);
+  if (!contexts || !contexts.length) throw new Error('Context not found: ' + contextCode);
   const context = contexts[0];
 
   // Find active question sets for this context

@@ -123,7 +123,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
 
   useEffect(() => {
-    gasCall('fetchQuestions', { context_designation: 'Enrollment', language: i18n.language })
+    gasCall('fetchQuestions', { context_code: 'ENROLLMENT', language: i18n.language })
       .then(data => setSets(data.sets || []))
       .catch(() => setSets([]))
       .finally(() => setLoading(false));
