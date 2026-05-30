@@ -1873,9 +1873,13 @@ function fetchQuestions_(p) {
   if (!contexts || !contexts.length) throw new Error('Context not found: ' + contextCode);
   const context = contexts[0];
 
-  // Find active question sets for this context
+  // Find question sets for this context. NOTE: qbQuestionSets fue refactorizada
+  // (DL-Q01: drop is_active → current_state_id). Filtramos por deleted_at (no
+  // borrado), idéntico al motor canónico qb-core.gs (kms-server/qb/qb-core.gs
+  // línea 130-133). NO filtrar por is_active — esa columna ya no existe en la
+  // tabla y el filtro devolvía 0 sets aunque estuvieran sembrados.
   const sets = appsheetRequest_(T.QB_SETS, 'Find', [], {
-    Filter: '"context_id" = "' + appsheetEscape_(context.context_id) + '" && "is_active" = true'
+    Filter: '"context_id" = "' + appsheetEscape_(context.context_id) + '" && "deleted_at" = ""'
   });
   if (!sets || !sets.length) return { sets: [] };
 
