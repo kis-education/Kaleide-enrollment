@@ -3384,11 +3384,26 @@ function normalizeDate_(dateStr) {
   return dateStr;
 }
 
+/**
+ * Generates a v4 UUID using Apps Script's crypto-grade SecureRandom-backed generator.
+ *
+ * Replaces previous Math.random()-based implementation (KAL-1 audit 2026-05-29):
+ * Math.random() is a non-cryptographic PRNG whose internal state can be inferred
+ * from a few observed outputs in V8, allowing prediction of subsequent tokens.
+ * Critical because the same helper generates resume_token (auth secret of the
+ * magic-link). Predictable tokens → attacker forges magic links of arbitrary
+ * families and reads/modifies their submission.
+ *
+ * Utilities.getUuid() delegates to Google's SecureRandom (Java backend) —
+ * cryptographically secure, same UUID v4 format, no consumer changes needed.
+ *
+ * Future canonical cleanup (roadmap item P???, Vía B): omit PK from Add payloads
+ * entirely and rely on AppSheet's UNIQUEID() Initial Value per Diego 2026-05-30
+ * observation. UNIQUEID is honored only when payload PK is absent; this helper's
+ * value is currently sent explicitly, overriding AppSheet's secure generator.
+ */
 function generateUuid_() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = Math.random() * 16 | 0;
-    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-  });
+  return Utilities.getUuid();
 }
 
 /**
