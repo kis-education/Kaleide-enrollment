@@ -205,8 +205,6 @@ function doPost(e) {
         result = getReservationPaymentInfo_(payload);                       break;
       case 'getSigningTokenFromResumeToken':
         result = getSigningTokenFromResumeToken_(payload);                  break;
-      case 'diagTable':            result = diagTable_(payload);            break;
-      case 'diagAllTables':        result = diagAllTables_();               break;
       default:
         return jsonResponse_({ ok: false, error: 'Unknown action: ' + action }, 400);
     }
@@ -3587,60 +3585,6 @@ function adminCleanupOrphanSessions() {
   };
   Logger.log('adminCleanupOrphanSessions summary: ' + JSON.stringify(summary));
   return summary;
-}
-
-/**
- * Diagnostic: tests Find on every enr* and sys* table used by the wizard.
- * Returns http_status + body_length per table so misconfigurations are visible.
- */
-function diagAllTables_() {
-  var props  = PropertiesService.getScriptProperties();
-  var appId  = props.getProperty('APPSHEET_APP_ID');
-  var apiKey = props.getProperty('APPSHEET_ACCESS_KEY');
-  var tables = Object.values(T);
-  var results = {};
-  tables.forEach(function(table) {
-    var url = APPSHEET_BASE_URL + appId + '/tables/' + encodeURIComponent(table) + '/Action';
-    var res = UrlFetchApp.fetch(url, {
-      method: 'post', contentType: 'application/json',
-      headers: { ApplicationAccessKey: apiKey },
-      payload: JSON.stringify({ Action: 'Find', Properties: { Locale: 'en-US' } }),
-      muteHttpExceptions: true,
-    });
-    var status = res.getResponseCode();
-    var text   = res.getContentText();
-    results[table] = { http: status, len: text.length, ok: status >= 200 && status < 300 && text.length > 0, preview: text.slice(0, 120) };
-  });
-  return results;
-}
-
-/**
- * Diagnostic: returns raw AppSheet HTTP status + body for a table action.
- * Used to debug 200-with-empty-body responses without the JSON-parse wrapper.
- * @param {Object} p - { table, action? }
- */
-function diagTable_(p) {
-  const table  = p.table  || 'enrEnrollmentGroups';
-  // Use p.appsheet_action to avoid collision with the outer routing p.action field
-  const asAction = p.appsheet_action || 'Find';
-  const props  = PropertiesService.getScriptProperties();
-  const appId  = props.getProperty('APPSHEET_APP_ID');
-  const apiKey = props.getProperty('APPSHEET_ACCESS_KEY');
-  const url    = APPSHEET_BASE_URL + appId + '/tables/' + encodeURIComponent(table) + '/Action';
-  const rowToAdd = p.row || null;
-  const body   = { Action: asAction, Properties: { Locale: 'en-US' } };
-  if (rowToAdd) body.Rows = [rowToAdd];
-  const res    = UrlFetchApp.fetch(url, {
-    method: 'post', contentType: 'application/json',
-    headers: { ApplicationAccessKey: apiKey },
-    payload: JSON.stringify(body),
-    muteHttpExceptions: true,
-  });
-  const status = res.getResponseCode();
-  const text   = res.getContentText();
-  Logger.log('diagTable_ ' + table + '/' + asAction + ' → HTTP ' + status + ' | body(' + text.length + '): ' + text.slice(0, 800));
-  Logger.log('curl: POST ' + url + ' | key prefix: ' + (apiKey || '').slice(0, 8) + '...');
-  return { table, appsheet_action: asAction, http_status: status, body_length: text.length, body_preview: text.slice(0, 500), app_id: appId };
 }
 
 // ─── Tracking ─────────────────────────────────────────────────────────────────
