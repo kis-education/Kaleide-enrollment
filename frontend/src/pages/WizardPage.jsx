@@ -17,6 +17,9 @@ import Step5Questions        from './steps/Step5Questions';
 import Step6Documents        from './steps/Step6Documents';
 import Step7Review           from './steps/Step7Review';
 import Step8Status           from './steps/Step8Status';
+import Step9Interview        from './steps/Step9Interview';
+import Step10Decision        from './steps/Step10Decision';
+import Step12Deposit         from './steps/Step12Deposit';
 import WizardStepPlaceholder from './steps/WizardStepPlaceholder';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
@@ -30,10 +33,10 @@ const STEP_COMPONENTS = [
   Step6Documents,        // 6
   Step7Review,           // 7
   Step8Status,           // 8 — Estado de solicitud
-  WizardStepPlaceholder, // 9
-  WizardStepPlaceholder, // 10
+  Step9Interview,        // 9 — Entrevista
+  Step10Decision,        // 10 — Decisión de admisión
   WizardStepPlaceholder, // 11
-  WizardStepPlaceholder, // 12
+  Step12Deposit,         // 12 — Pago de reserva (transferencia bancaria)
   WizardStepPlaceholder, // 13
   WizardStepPlaceholder, // 14
 ];
