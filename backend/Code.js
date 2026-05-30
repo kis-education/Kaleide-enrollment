@@ -4708,7 +4708,7 @@ function getSigningTokenFromResumeToken_(p) {
  * Logs each expected/actual pair so failures show up as `false` in the
  * execution log.
  */
-function manual_testAppSheetEscape_() {
+function manual_testAppSheetEscape() {
   // Normal cases
   Logger.log('hola: ' + (appsheetEscape_('hola') === 'hola'));
   Logger.log('empty: ' + (appsheetEscape_('') === ''));
@@ -4727,7 +4727,7 @@ function manual_testAppSheetEscape_() {
  * accept legitimate inputs. Each PASS line confirms the assertion threw on
  * the malicious input; FAIL means the guard let it through.
  */
-function manual_testFilterInjectionDefense_() {
+function manual_testFilterInjectionDefense() {
   // Email injection rejected
   try {
     assertValidEmail_('victima" || "1"="1', 'email');
@@ -4773,7 +4773,7 @@ function manual_testFilterInjectionDefense_() {
  * Pure-shape checks (no DB) for malformed/missing inputs; the DB-backed
  * cases are gated to allow Diego to plug real tokens.
  */
-function manual_testRequireResumeToken_() {
+function manual_testRequireResumeToken() {
   // Caso 1: token válido → resuelve group_id correctamente
   // Diego: descomenta con un resume_token real conocido y verifica que retorna su group_id.
   // const groupId = requireResumeToken_({ resume_token: '<RESUME_TOKEN_REAL>' });
@@ -4820,7 +4820,7 @@ function manual_testRequireResumeToken_() {
  * KAL-4: end-to-end IDOR defense smoke test for saveStep_.
  * Requires Diego to plug a real resume_token and a foreign group_id.
  */
-function manual_testIdorDefenseSaveStep_() {
+function manual_testIdorDefenseSaveStep() {
   // Caso 1: saveStep con token y group_id matching → OK (sólo group-level edit).
   // Diego: descomenta con datos reales.
   // const ok = saveStep_({
