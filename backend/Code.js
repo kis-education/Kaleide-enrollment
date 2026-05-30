@@ -1781,6 +1781,16 @@ function verifyEmail_(p) {
 }
 
 /**
+ * AppSheet almacena booleanos como "Y"/"N" (no true/false). Normaliza a boolean
+ * JS los valores que AppSheet devuelve para columnas Yes/No. Usar SIEMPRE para
+ * evaluar is_active y similares en memoria — nunca filtrar `= true` server-side.
+ * @private
+ */
+function qbTruthy_(v) {
+  return v === true || v === 'Y' || v === 'true' || v === 'TRUE' || v === '1';
+}
+
+/**
  * Fetches a question set with all translations, options, and conditions.
  *
  * Lookup uses qbContexts.context_code (stable UPPER_SNAKE id), not designation
@@ -1866,22 +1876,26 @@ function fetchQuestions_(p) {
   // el motor qb-core de Q05-S1 — su existencia es transitional.
   // ─────────────────────────────────────────────────────────────────────────
 
-  // Find matching context by stable code (case-insensitive at the boundary).
-  const contexts = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
-    Filter: '"context_code" = "' + appsheetEscape_(contextCode) + '" && "school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "is_active" = true'
-  });
-  if (!contexts || !contexts.length) throw new Error('Context not found: ' + contextCode);
-  const context = contexts[0];
+  // qbContexts / qbQuestionSets: filtramos server-side SOLO por igualdades de
+  // string fiables (context_code, context_id). is_active/deleted_at se evalúan
+  // EN MEMORIA porque AppSheet corrompe el Selector con comparaciones de
+  // booleano/blank: `"is_active" = true` (booleano vs "Y" almacenado) devuelve
+  // TODAS las filas, y `"deleted_at" = ""` sobre un campo null devuelve 0.
+  // Confirmado vía manual_diagFetchQuestions 2026-05-30. Mismo enfoque que el
+  // motor canónico qb-core.gs (kms-server) que filtra in-memory con db_find.
+  const ctxRows = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
+    Filter: '"context_code" = "' + appsheetEscape_(contextCode) + '"'
+  }) || [];
+  const context = ctxRows.find(c =>
+    c.school_id === SCHOOL_ID && qbTruthy_(c.is_active) && !c.deleted_at);
+  if (!context) throw new Error('Context not found: ' + contextCode);
 
-  // Find question sets for this context. NOTE: qbQuestionSets fue refactorizada
-  // (DL-Q01: drop is_active → current_state_id). Filtramos por deleted_at (no
-  // borrado), idéntico al motor canónico qb-core.gs (kms-server/qb/qb-core.gs
-  // línea 130-133). NO filtrar por is_active — esa columna ya no existe en la
-  // tabla y el filtro devolvía 0 sets aunque estuvieran sembrados.
-  const sets = appsheetRequest_(T.QB_SETS, 'Find', [], {
-    Filter: '"context_id" = "' + appsheetEscape_(context.context_id) + '" && "deleted_at" = ""'
-  });
-  if (!sets || !sets.length) return { sets: [] };
+  // Find question sets for this context (deleted_at filtrado en memoria).
+  const allSets = appsheetRequest_(T.QB_SETS, 'Find', [], {
+    Filter: '"context_id" = "' + appsheetEscape_(context.context_id) + '"'
+  }) || [];
+  const sets = allSets.filter(s => !s.deleted_at);
+  if (!sets.length) return { sets: [] };
 
   const setIds       = sets.map(s => s.set_id);
   const setIdFilter  = setIds.map(id => '"set_id" = "' + appsheetEscape_(id) + '"').join(' || ');
