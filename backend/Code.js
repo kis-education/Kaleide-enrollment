@@ -1950,6 +1950,61 @@ function fetchQuestions_(p) {
 }
 
 /**
+ * Diagnostic — replica fetchQuestions_ paso a paso con logs + variantes de
+ * filtro para localizar por qué Step 4 sale vacío. Ejecutar desde el GAS editor
+ * del wizard (NO registrado en el dispatcher público — JSDoc Diagnostic).
+ * Loguea el valor real de is_active/deleted_at para detectar quirks de filtro
+ * server-side AppSheet (null vs "").
+ */
+function manual_diagFetchQuestions() {
+  const cc = 'ENROLLMENT';
+  Logger.log('=== manual_diagFetchQuestions (context_code=' + cc + ', school=' + SCHOOL_ID + ') ===');
+
+  // ── Paso 1: qbContexts con el filtro completo del wizard ──────────────────
+  const ctxFull = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
+    Filter: '"context_code" = "' + cc + '" && "school_id" = "' + SCHOOL_ID + '" && "is_active" = true'
+  }) || [];
+  Logger.log('[1] qbContexts (context_code + school_id + is_active=true): ' + ctxFull.length + ' rows');
+
+  // ── Paso 1b: qbContexts SOLO por context_code (sin is_active) ─────────────
+  const ctxCodeOnly = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
+    Filter: '"context_code" = "' + cc + '"'
+  }) || [];
+  Logger.log('[1b] qbContexts (context_code solo): ' + ctxCodeOnly.length + ' rows');
+
+  // ── Paso 1c: TODOS los contexts, volcar valores reales ────────────────────
+  const ctxAll = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {}) || [];
+  Logger.log('[1c] qbContexts TODOS: ' + ctxAll.length + ' rows');
+  ctxAll.forEach(c => Logger.log('     code=' + c.context_code + ' school=' + c.school_id +
+    ' is_active=' + JSON.stringify(c.is_active) + ' deleted_at=' + JSON.stringify(c.deleted_at) +
+    ' context_id=' + c.context_id));
+
+  if (!ctxCodeOnly.length) { Logger.log('STOP: no context matches context_code — fin.'); return; }
+  const contextId = ctxCodeOnly[0].context_id;
+
+  // ── Paso 2: qbQuestionSets con el filtro actual del wizard (deleted_at="") ─
+  const setsDeleted = appsheetRequest_(T.QB_SETS, 'Find', [], {
+    Filter: '"context_id" = "' + contextId + '" && "deleted_at" = ""'
+  }) || [];
+  Logger.log('[2] qbQuestionSets (context_id + deleted_at=""): ' + setsDeleted.length + ' rows');
+
+  // ── Paso 2b: qbQuestionSets SOLO por context_id ───────────────────────────
+  const setsCtxOnly = appsheetRequest_(T.QB_SETS, 'Find', [], {
+    Filter: '"context_id" = "' + contextId + '"'
+  }) || [];
+  Logger.log('[2b] qbQuestionSets (context_id solo): ' + setsCtxOnly.length + ' rows');
+
+  // ── Paso 2c: TODOS los sets, volcar context_id + deleted_at reales ────────
+  const setsAll = appsheetRequest_(T.QB_SETS, 'Find', [], {}) || [];
+  Logger.log('[2c] qbQuestionSets TODOS: ' + setsAll.length + ' rows');
+  setsAll.forEach(s => Logger.log('     set_code=' + s.set_code + ' context_id=' + s.context_id +
+    ' deleted_at=' + JSON.stringify(s.deleted_at) + ' current_state_id=' + JSON.stringify(s.current_state_id)));
+
+  Logger.log('=== fin diag ===');
+}
+
+
+/**
  * Adapta la response del motor qb-core del KMS al shape legacy que el
  * frontend `QbSetRenderer` ya consume hoy (Step5Questions + Step7Review).
  *
