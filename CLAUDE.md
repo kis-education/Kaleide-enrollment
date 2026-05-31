@@ -60,7 +60,7 @@ Handlers blindados 2026-05-30: saveStep_, submitEnrollmentSession_, saveResponse
 
 ### Excepción promoteEnrollment_ resuelta — operación movida al KMS (KAL-3 cerrado 2026-05-30)
 
-`promoteEnrollment_` fue eliminada del wizard backend 2026-05-30 (CLI 63). La operación canónica de promover candidatos de `enr*` a `personalData_S` (SMS principal) vive en el KMS como `enr.promoteToCore` (`kis-app/kms-server/enr/promote.gs`), registrada en `API_ROUTES`. El KMS tiene auth real (DOMAIN restricted, `@kaleide.org` only) — el staff lo invoca desde allí. El wizard, anónimo, ya no necesita exponer ese endpoint.
+`promoteEnrollment_` fue eliminada del wizard backend 2026-05-30 (CLI 63). La operación canónica de promover candidatos de `enr*` a `personalData_S` (SMS principal) vive en el KMS como `enr.promoteToCore` (`kis-app/kms-server/enr/promote.gs`), registrada en `API_ROUTES`. El KMS tiene auth real (`access: ANYONE` + identidad resuelta server-side via `Session.getActiveUser` + roles via `contactEmails_T` lookup — Stage 1 verificado 2026-05-31; ver `kis-app/docs/kms/handbook/01-system-overview.md` §3.1 + `kis-app/docs/kms/handbook/05-deploy-pipeline.md` §9.1) — el staff lo invoca desde allí. El wizard, anónimo, ya no necesita exponer ese endpoint.
 
 Migración:
 - CLI 50 (2026-05-29 + REINTERPRETADO 2026-05-30) portó los 4 side-effects legacy del wizard al KMS (`addresses_S`, `addressLog`, `relationalRecords`, `personCategoriesLog`).
