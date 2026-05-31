@@ -4188,3 +4188,30 @@ function setCorsHeaders_(output) {
   // origin-checking logic in doPost if needed.
   return output;
 }
+
+/**
+ * Diagnostic complementario — vuelca columnas reales de qbConditions_T y
+ * qbDimensions_T (necesarias para aplanar conditions intra-set en el fix
+ * del Step 5). §0.bis: dato real antes de asumir nombres de columna.
+ */
+function manual_diagQbConditionTables() {
+  Logger.log('=== manual_diagQbConditionTables ===');
+
+  const conds = appsheetRequest_('qbConditions_T', 'Find', [], {}) || [];
+  Logger.log('[A] qbConditions_T: ' + conds.length + ' rows');
+  if (conds[0]) Logger.log('     KEYS=' + Object.keys(conds[0]).join(',') + ' | ROW0=' + JSON.stringify(conds[0]));
+
+  const dims = appsheetRequest_('qbDimensions_T', 'Find', [], {}) || [];
+  Logger.log('[B] qbDimensions_T: ' + dims.length + ' rows');
+  if (dims[0]) Logger.log('     KEYS=' + Object.keys(dims[0]).join(',') + ' | ROW0=' + JSON.stringify(dims[0]));
+
+  const items = appsheetRequest_('qbConditionGroupItems_T', 'Find', [], {}) || [];
+  Logger.log('[C] qbConditionGroupItems_T: ' + items.length + ' rows');
+  if (items[0]) Logger.log('     KEYS=' + Object.keys(items[0]).join(',') + ' | ROW0=' + JSON.stringify(items[0]));
+
+  const intraSetDims = dims.filter(d => (d.dimension_code || '').indexOf('question_response__') === 0);
+  Logger.log('[D] Intra-set dimensions (code empieza con question_response__): ' + intraSetDims.length);
+  intraSetDims.slice(0, 3).forEach(d => Logger.log('     ' + d.dimension_code));
+
+  Logger.log('=== fin diag ===');
+}
