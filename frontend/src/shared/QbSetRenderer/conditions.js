@@ -66,6 +66,14 @@ function evalFlatCondition(c, { person, responses, personKey, codeToId, initiato
       // Sin date_of_birth no se puede evaluar → permissive (no blanquea).
       if (!person?.date_of_birth) return true;
       const age = computeAge(person.date_of_birth);
+      // BETWEEN: el backend lo descompone en GTE+LTE, pero soportamos también el
+      // shape sin descomponer ([lo, hi]) por si llega de otro consumidor.
+      if (op === 'BETWEEN') {
+        const lo = parseFloat(Array.isArray(c.value) ? c.value[0] : c.value_min);
+        const hi = parseFloat(Array.isArray(c.value) ? c.value[1] : c.value_max);
+        if (Number.isNaN(lo) && Number.isNaN(hi)) return true; // permissive
+        return (Number.isNaN(lo) || age >= lo) && (Number.isNaN(hi) || age <= hi);
+      }
       const target = parseFloat(c.value);
       if (Number.isNaN(target)) return true;
       switch (op) {

@@ -1951,6 +1951,34 @@ function fetchQuestions_(p) {
     try { return JSON.parse(raw); } catch (e) { return raw; }
   };
 
+  // participant_age: el catálogo guarda el rango de audiencia como UN operator
+  // 'BETWEEN' con value_json = [lo, hi] (confirmado en datos reales — 26 de las
+  // 50 conditions). Lo descomponemos en GTE lo + LTE hi para que el helper —
+  // que sólo conoce comparadores escalares — lo evalúe sin ambigüedad. Soporta
+  // también shapes alternativos (objeto {min,max}/{lo,hi}/{from,to} o string
+  // "lo,hi"/"lo-hi") por robustez. GTE/LTE/EQ/NEQ escalares pasan tal cual.
+  const qbAgeConditions_ = (op, rawVal) => {
+    if (op === 'BETWEEN') {
+      let lo = NaN, hi = NaN;
+      if (Array.isArray(rawVal)) {
+        lo = parseFloat(rawVal[0]); hi = parseFloat(rawVal[1]);
+      } else if (rawVal && typeof rawVal === 'object') {
+        lo = parseFloat(rawVal.min != null ? rawVal.min : (rawVal.lo != null ? rawVal.lo : rawVal.from));
+        hi = parseFloat(rawVal.max != null ? rawVal.max : (rawVal.hi != null ? rawVal.hi : rawVal.to));
+      } else {
+        const parts = String(rawVal).split(/[,;:|\-]/).map(s => parseFloat(s));
+        lo = parts[0]; hi = parts[1];
+      }
+      const out = [];
+      if (!isNaN(lo)) out.push({ kind: 'AGE', operator: 'GTE', value: lo });
+      if (!isNaN(hi)) out.push({ kind: 'AGE', operator: 'LTE', value: hi });
+      // Si no pudimos extraer el rango → permissive (no oculta la pregunta).
+      if (out.length) return out;
+      return [{ kind: 'UNKNOWN', dimension_code: 'participant_age', operator: op, value: rawVal }];
+    }
+    return [{ kind: 'AGE', operator: op, value: parseFloat(rawVal) }];
+  };
+
   // Aplana UNA condition atómica (qbConditions_T row) al shape plano que consume
   // el helper meetsConditions del frontend, resolviendo su dimensión.
   const qbFlattenAtomic_ = (atomic) => {
@@ -1961,7 +1989,7 @@ function fetchQuestions_(p) {
     const rawVal  = qbParseValueJson_(atomic.value_json);
 
     if (dimCode === 'participant_age') {
-      return [{ kind: 'AGE', operator: op, value: parseFloat(rawVal) }];
+      return qbAgeConditions_(op, rawVal);
     }
     if (dimCode.indexOf('question_response__') === 0) {
       const parentCode = dimCode.slice('question_response__'.length);
