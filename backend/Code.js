@@ -2054,6 +2054,12 @@ function fetchQuestions_(p) {
       question_text:   translation?.question_text   || '',
       help_text:       translation?.help_text        || '',
       placeholder_text: translation?.placeholder_text || '',
+      // STOPGAP P116 (también en legacy): qbQuestions no expone audience_category_id
+      // usable (el spread `...q` arrastra "" crudo de AppSheet). Lo derivamos del
+      // question_code igual que el adapter KMS, para que QbSetRenderer haga el
+      // fan-out per applicant/guardian y el filtro AGE evalúe contra una persona
+      // real. Se elimina cuando Q05-S6 cierre. Ver deriveAudienceCategoryId_.
+      audience_category_id: deriveAudienceCategoryId_(q.question_code),
       options,
       // Conditions polimórficas aplanadas al shape plano que consume
       // meetsConditions (AGE / PARENT_ANSWER / INITIATOR_EMAIL / UNKNOWN).
