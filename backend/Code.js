@@ -4331,3 +4331,75 @@ function manual_diagQbConditionTables() {
 
   Logger.log('=== fin diag ===');
 }
+
+/**
+ * Diagnostic — vuelca el estado completo de la fila enrEnrollmentGroups para un
+ * resume_token concreto, para entender por qué resumeSession_ lanza
+ * "Invalid or expired resume token" (= el Find por resume_token devuelve 0 filas,
+ * Code.js L987). NO registrado en el dispatcher público (JSDoc Diagnostic):
+ * se ejecuta a mano desde el editor GAS. §0.bis: dato real antes de fix.
+ *
+ * USO: Diego pega el token completo en `var token` abajo y ejecuta desde el
+ * dropdown de funciones del editor GAS. Pega el log de [A][B][C] en el reporte.
+ */
+function manual_diagResumeToken() {
+  var token = '9cb5883a-PEGA-EL-RESTO-AQUI';  // Diego completará desde el log
+  Logger.log('=== manual_diagResumeToken (token preview: ' + token.slice(0, 8) + ') ===');
+
+  // [A] Find por token exacto (lo que hace resumeSession_)
+  try {
+    var rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+      Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
+    });
+    Logger.log('[A] Find por token: ' + (rows ? rows.length : 'null') + ' rows');
+    if (rows && rows.length) {
+      var grp = rows[0];
+      Logger.log('     enrollment_group_id=' + grp.enrollment_group_id);
+      Logger.log('     primary_email=' + redact_(grp.primary_email));
+      Logger.log('     created_at=' + grp.created_at);
+      Logger.log('     submitted_at=' + JSON.stringify(grp.submitted_at));
+      Logger.log('     abandoned_at=' + JSON.stringify(grp.abandoned_at));
+      Logger.log('     deleted_at=' + JSON.stringify(grp.deleted_at));
+      // TTL check
+      var TTL = 7 * 24 * 60 * 60 * 1000;
+      if (grp.created_at) {
+        var age = Date.now() - new Date(grp.created_at).getTime();
+        Logger.log('     edad: ' + Math.round(age / 1000 / 3600) + 'h (TTL 168h) — ' + (age > TTL ? 'EXPIRADO' : 'dentro de TTL'));
+      }
+    }
+  } catch (e) {
+    Logger.log('[A] ERROR: ' + e.message);
+  }
+
+  // [B] Find TODAS las filas con token similar (por si hay typo/encoding)
+  try {
+    var all = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {}) || [];
+    Logger.log('[B] enrEnrollmentGroups total rows: ' + all.length);
+    var matching = all.filter(function (r) {
+      return (r.resume_token || '').toLowerCase().indexOf(token.slice(0, 8).toLowerCase()) >= 0;
+    });
+    Logger.log('[B] filas con token-preview matching: ' + matching.length);
+    matching.forEach(function (r) {
+      Logger.log('     resume_token=' + r.resume_token + ' group_id=' + r.enrollment_group_id);
+    });
+  } catch (e) {
+    Logger.log('[B] ERROR: ' + e.message);
+  }
+
+  // [C] Buscar por email de Diego (ground.contact@gmail.com) — la sesión de prueba debería ser suya
+  try {
+    var byEmail = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+      Filter: '"primary_email" = "ground.contact@gmail.com"'
+    }) || [];
+    Logger.log('[C] sessions de Diego: ' + byEmail.length);
+    byEmail.forEach(function (g) {
+      Logger.log('     group_id=' + g.enrollment_group_id + ' token=' + (g.resume_token || '').slice(0, 8) + '...' +
+        ' created=' + g.created_at + ' submitted=' + (g.submitted_at ? 'Y' : 'N') +
+        ' abandoned=' + (g.abandoned_at ? 'Y' : 'N'));
+    });
+  } catch (e) {
+    Logger.log('[C] ERROR: ' + e.message);
+  }
+
+  Logger.log('=== fin diag ===');
+}
