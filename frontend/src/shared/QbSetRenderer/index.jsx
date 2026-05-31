@@ -42,9 +42,24 @@ export default function QbSetRenderer({
   readOnly = false,
   locale,
   t,
+  initiatorEmail,
 }) {
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
+
+  // Map question_code → question_id, derivado de las preguntas recibidas. Lo
+  // necesita meetsConditions para resolver las conditions PARENT_ANSWER (que
+  // sólo traen parent_question_code) a la clave de respuesta `${id}__${personKey}`.
+  const codeToId = {};
+  sets.forEach(set => (set.items || []).forEach(item => {
+    const q = item.question;
+    if (q && q.question_code) codeToId[q.question_code] = q.question_id;
+  }));
+
+  // Email del iniciador (Step 1). El consumidor lo pasa explícito; como red de
+  // seguridad para otros consumidores, lo leemos de la sesión del wizard.
+  const effectiveInitiatorEmail = initiatorEmail != null ? initiatorEmail : readInitiatorEmail();
+  const condCtx = { codeToId, initiatorEmail: effectiveInitiatorEmail };
 
   const setResponse = (key, val) => {
     if (readOnly || typeof onResponse !== 'function') return;
@@ -70,7 +85,7 @@ export default function QbSetRenderer({
             if (isParticipantQ) {
               return applicants.map((a, ai) => {
                 const personKey = a.person_id || a._uid;
-                if (!meetsConditions(q, a, responses, personKey)) return null;
+                if (!meetsConditions(q, a, responses, personKey, condCtx)) return null;
                 const key = `${q.question_id}__${personKey}`;
                 const name = [a.first_name, a.last_name].filter(Boolean).join(' ')
                   || `${tr('applicant.title', { n: ai + 1 }) || 'Applicant'} ${ai + 1}`;
@@ -93,7 +108,7 @@ export default function QbSetRenderer({
             if (isClientQ) {
               return guardians.map((g, gi) => {
                 const personKey = g.person_id || g._uid;
-                if (!meetsConditions(q, g, responses, personKey)) return null;
+                if (!meetsConditions(q, g, responses, personKey, condCtx)) return null;
                 const key = `${q.question_id}__${personKey}`;
                 const name = [g.first_name, g.last_name].filter(Boolean).join(' ')
                   || `${tr('guardian.title', { n: gi + 1 }) || 'Guardian'} ${gi + 1}`;
@@ -114,6 +129,8 @@ export default function QbSetRenderer({
             }
 
             // General question (no audience filter) — keyed to the group id.
+            // Conditions (INITIATOR_EMAIL, etc.) se evalúan con la clave de grupo.
+            if (!meetsConditions(q, null, responses, groupId, condCtx)) return null;
             const key = `${q.question_id}__${groupId}`;
             return (
               <div key={key} className="mb-4">
@@ -132,10 +149,25 @@ export default function QbSetRenderer({
   );
 }
 
+// Lee el email del iniciador desde la sesión del wizard (sessionStorage
+// 'kis_wizard_session' → stepData.email.primary_email). Fallback cuando el
+// consumidor no pasa initiatorEmail como prop. Ver WizardContext SESSION_KEY.
+function readInitiatorEmail() {
+  try {
+    const s = JSON.parse(sessionStorage.getItem('kis_wizard_session') || 'null');
+    return (s && s.email && s.email.primary_email) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
 // ─── Internal: single input renderer ─────────────────────────────────────────
 
 function QuestionField({ question, value, onChange, readOnly }) {
-  const type = question.response_type_id?.toLowerCase?.() || 'text';
+  // response_type_code es el code legible resuelto en el backend (JOIN
+  // response_type_id→code). El OR con response_type_id queda como backup si un
+  // backend antiguo aún no envía el code.
+  const type = (question.response_type_code || question.response_type_id || 'text').toString().toLowerCase();
 
   // ── readOnly path: render value as plain text, regardless of type ──────────
   if (readOnly) {
@@ -239,7 +271,7 @@ function QuestionField({ question, value, onChange, readOnly }) {
 
 function formatReadOnlyValue(question, value) {
   if (value === null || value === undefined || value === '') return '';
-  const type = question.response_type_id?.toLowerCase?.() || 'text';
+  const type = (question.response_type_code || question.response_type_id || 'text').toString().toLowerCase();
 
   if (type === 'boolean') {
     return value ? '✓' : '✗';

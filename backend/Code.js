@@ -1921,6 +1921,89 @@ function fetchQuestions_(p) {
       }) || []
     : [];
 
+  // ── Q05-S5 fix Step 5 — catálogos auxiliares para el render del frontend ────
+  // (1) qbResponseTypes: AppSheet guarda response_type_id como UUID; el render
+  //     necesita el code legible ('select'|'boolean'|'long_text'|...) para
+  //     elegir el widget. Resolvemos el JOIN aquí.
+  const allResponseTypes = appsheetRequest_('qbResponseTypes', 'Find', [], {}) || [];
+  const responseTypeCodeById = {};
+  allResponseTypes.forEach(rt => { responseTypeCodeById[rt.response_type_id] = rt.response_type_code || 'text'; });
+
+  // (2) Grafo de conditions polimórficas (groups → items → conditions atómicas →
+  //     dimensions). qbQuestionConditions apunta vía condition_ref_table/_id a
+  //     qbConditionGroups_T (grupo lógico) o a qbConditions_T (atómica). El
+  //     helper frontend espera shape plano — aplanamos aquí. Schemas confirmados
+  //     vía manual_diagQbConditionTables (commit 3ae741a).
+  const allGroups      = appsheetRequest_('qbConditionGroups_T', 'Find', [], {}) || [];
+  const allItems       = appsheetRequest_('qbConditionGroupItems_T', 'Find', [], {}) || [];
+  const allAtomicConds = appsheetRequest_('qbConditions_T', 'Find', [], {}) || [];
+  const allDims        = appsheetRequest_('qbDimensions_T', 'Find', [], {}) || [];
+
+  const groupById = {};      allGroups.forEach(g => { groupById[g.group_id] = g; });
+  const itemsByGroupId = {}; allItems.forEach(i => { (itemsByGroupId[i.group_id] = itemsByGroupId[i.group_id] || []).push(i); });
+  const atomicById = {};     allAtomicConds.forEach(c => { atomicById[c.condition_id] = c; });
+  const dimById = {};        allDims.forEach(d => { dimById[d.dimension_id] = d; });
+
+  // Parseo robusto de value_json (string serializado en qbConditions_T.value_json):
+  // intenta JSON.parse; si falla toma el string crudo (sin comillas).
+  const qbParseValueJson_ = (raw) => {
+    if (raw === null || raw === undefined) return raw;
+    try { return JSON.parse(raw); } catch (e) { return raw; }
+  };
+
+  // Aplana UNA condition atómica (qbConditions_T row) al shape plano que consume
+  // el helper meetsConditions del frontend, resolviendo su dimensión.
+  const qbFlattenAtomic_ = (atomic) => {
+    if (!atomic) return [];
+    const dim     = dimById[atomic.dimension_id] || {};
+    const dimCode = dim.dimension_code || '';
+    const op      = atomic.operator_code || 'EQ';  // 'GTE'|'LTE'|'EQ'|'NEQ' canónico
+    const rawVal  = qbParseValueJson_(atomic.value_json);
+
+    if (dimCode === 'participant_age') {
+      return [{ kind: 'AGE', operator: op, value: parseFloat(rawVal) }];
+    }
+    if (dimCode.indexOf('question_response__') === 0) {
+      const parentCode = dimCode.slice('question_response__'.length);
+      let value = rawVal;
+      if (dim.value_type === 'BOOLEAN') value = (String(rawVal).toLowerCase() === 'true');
+      return [{ kind: 'PARENT_ANSWER', parent_question_code: parentCode, operator: op, value: value }];
+    }
+    if (dimCode === 'primary_email_initiator') {
+      return [{ kind: 'INITIATOR_EMAIL', operator: op, value: rawVal }];
+    }
+    // Dimensión desconocida → fallback permissive (no oculta la pregunta).
+    return [{ kind: 'UNKNOWN', dimension_code: dimCode, operator: op, value: rawVal }];
+  };
+
+  // Expande UNA condition polimórfica (qbQuestionConditions row) a un array
+  // plano. Recursión segura sobre grupos (profundidad máx 5 anti-ciclos).
+  const qbExpandCondition_ = (qc, depth) => {
+    depth = depth || 0;
+    if (!qc || depth > 5) return [];
+    const refTable = qc.condition_ref_table;
+    const refId    = qc.condition_ref_id;
+
+    if (refTable === 'qbConditions_T') {
+      return qbFlattenAtomic_(atomicById[refId]);
+    }
+    if (refTable === 'qbConditionGroups_T') {
+      const items = (itemsByGroupId[refId] || []).slice()
+        .sort((a, b) => (Number(a.sequence) || 0) - (Number(b.sequence) || 0));
+      const out = [];
+      items.forEach(it => {
+        if (it.child_condition_id) {
+          qbFlattenAtomic_(atomicById[it.child_condition_id]).forEach(f => out.push(f));
+        } else if (it.child_group_id) {
+          qbExpandCondition_({ condition_ref_table: 'qbConditionGroups_T', condition_ref_id: it.child_group_id }, depth + 1)
+            .forEach(f => out.push(f));
+        }
+      });
+      return out;
+    }
+    return [];
+  };
+
   // Build enriched question objects
   const enrichedQuestions = questions.map(q => {
     const translation = allTranslations.find(t => t.question_id === q.question_id && t.language === lang)
@@ -1935,15 +2018,20 @@ function fetchQuestions_(p) {
           || allOptionTranslations.find(t => t.option_id === o.option_id))?.option_text || o.option_value,
       }));
 
-    const conditions = allConditions.filter(c => c.question_id === q.question_id);
-
     return {
       ...q,
+      // response_type_id es UUID de AppSheet; el render del frontend hace
+      // .toLowerCase() sobre response_type_code para elegir el widget.
+      response_type_code: responseTypeCodeById[q.response_type_id] || 'text',
       question_text:   translation?.question_text   || '',
       help_text:       translation?.help_text        || '',
       placeholder_text: translation?.placeholder_text || '',
       options,
-      conditions,
+      // Conditions polimórficas aplanadas al shape plano que consume
+      // meetsConditions (AGE / PARENT_ANSWER / INITIATOR_EMAIL / UNKNOWN).
+      conditions: allConditions
+        .filter(c => c.question_id === q.question_id && !c.deleted_at)
+        .flatMap(c => qbExpandCondition_(c)),
     };
   });
 

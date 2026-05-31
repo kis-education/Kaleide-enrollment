@@ -98,6 +98,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
           onResponse={setResponse}
           t={t}
           locale={i18n.language}
+          initiatorEmail={stepData.email?.primary_email}
         />
       </fieldset>
       </div>
