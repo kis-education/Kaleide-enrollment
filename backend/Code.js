@@ -2177,6 +2177,43 @@ function manual_diagFetchQuestions() {
 
 
 /**
+ * STOPGAP P116 — deriva `audience_category_id` desde el `question_code`.
+ *
+ * Limitación documentada Q05-S5 (ver `fetchQuestions_adaptKmsResponse_` infra):
+ * el motor qb-core NO emite audience todavía, así que el adapter hardcodeaba
+ * `audience_category_id: null`. Eso hacía que QbSetRenderer renderizara TODA
+ * pregunta en la rama "general" (`meetsConditions(q, null, ...)`), y como AGE
+ * sin `person.date_of_birth` retorna permissive `true`, el filtro de edad
+ * quedaba inerte (bug: applicant 4yo veía preguntas AGE>=7).
+ *
+ * Mapeo por prefijo de `question_code`, derivado de los 5 sets KIS sembrados en
+ * `kis-app/kms-server/qb/seeds-kis-admission.gs` (DL-Q04 header):
+ *   - hygiene_*        → participant (KIS_HYGIENE_PROTOCOL, applicant_age 3-11)
+ *   - voice_*          → participant (KIS_APPLICANT_VOICE, applicant_age >= 7)
+ *   - family_values_*  → client      (KIS_FAMILY_VALUES, guardians)
+ *   - applicant_*      → client      (KIS_APPLICANT_BACKGROUND — guardians SOBRE el applicant)
+ *   - resto (dev_test_*, etc.) → null (general scope; INITIATOR_EMAIL evalúa OK sin persona)
+ *
+ * Q05-S6 (P116) sustituye esto con el campo canónico desde qb-core + qbAudienceRules.
+ * NO inventar prefijos sin evidencia en el seeder.
+ *
+ * @param {string} code  question_code de la pregunta
+ * @returns {string|null} 'participant' | 'client' | null
+ * @private
+ */
+function deriveAudienceCategoryId_(code) {
+  if (!code) return null;
+  var c = String(code).toLowerCase();
+  // Participant-scoped (preguntas sobre/del niño/a — su edad gobierna el filtro AGE):
+  if (/^(hygiene_|voice_)/.test(c)) return 'participant';
+  // Client-scoped (las responde el guardián adulto):
+  if (/^(family_values_|applicant_)/.test(c)) return 'client';
+  // Default null (general / unscoped — comportamiento previo).
+  return null;
+}
+
+
+/**
  * Adapta la response del motor qb-core del KMS al shape legacy que el
  * frontend `QbSetRenderer` ya consume hoy (Step5Questions + Step7Review).
  *
@@ -2244,11 +2281,11 @@ function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
         response_type_id:   q.response_type_code || 'text',
         response_type_code: q.response_type_code || null,
         is_required:        !!q.is_required,
-        // Q05-S5: audience fan-out no soportado todavía via KMS — todas las
-        // preguntas se renderizan como "general" (group-scope). Q05-S6 lo
-        // levantará. NO ponemos 'participant' / 'client' aquí porque el
-        // engine no lo expone aún.
-        audience_category_id: null,
+        // STOPGAP P116: el engine qb-core no emite audience todavía (Q05-S6 lo
+        // levantará con qbAudienceRules). Mientras tanto derivamos el scope del
+        // `question_code` para que el fan-out per applicant/guardian funcione y
+        // el filtro AGE evalúe contra una persona real. Ver deriveAudienceCategoryId_.
+        audience_category_id: deriveAudienceCategoryId_(q.question_code),
         question_text:    q.designation  || '',
         help_text:        q.description  || '',
         placeholder_text: '',

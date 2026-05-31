@@ -1,5 +1,3 @@
-import * as log from '../../logger';
-
 /**
  * QbSetRenderer — conditions helper (DL-Q05 §5 qb-render).
  *
@@ -32,19 +30,6 @@ import * as log from '../../logger';
  * @param {string} [ctx.initiatorEmail]          email del iniciador (INITIATOR_EMAIL)
  */
 export function meetsConditions(question, person, responses, personKey, ctx = {}) {
-  // [AGE-DIAG] TEMPORARY instrumentation (bug post-b597a7e, root cause unknown) — un CLI futuro lo quita.
-  // Solo diagnóstico: no altera la evaluación (cases GTE/LTE/etc. intactos). log.info redacta PII per KAL-11.
-  log.info('[AGE-DIAG] meetsConditions eval', {
-    question_id: question?.question_id || question?.id,
-    question_code: question?.question_code,
-    audience_category_id: question?.audience_category_id,
-    conditions: question?.conditions,
-    person_type_id: person?.person_type_id,
-    date_of_birth: person?.date_of_birth,
-    birth_date: person?.birth_date,
-    personKey: personKey,
-    person_keys: person ? Object.keys(person) : null
-  });
   if (!question?.conditions?.length) return true;
   const codeToId = ctx.codeToId || {};
   const initiatorEmail = ctx.initiatorEmail || '';

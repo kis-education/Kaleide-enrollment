@@ -23,11 +23,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
 
   useEffect(() => {
     gasCall('fetchQuestions', { context_code: 'ENROLLMENT', language: i18n.language })
-      .then(data => {
-        // [AGE-DIAG] TEMPORARY (bug post-b597a7e, root cause unknown) — respuesta cruda del backend.
-        log.info('[AGE-DIAG] fetchQuestions response', { data });
-        setSets(data.sets || []);
-      })
+      .then(data => setSets(data.sets || []))
       .catch(() => setSets([]))
       .finally(() => setLoading(false));
   }, [i18n.language]); // eslint-disable-line

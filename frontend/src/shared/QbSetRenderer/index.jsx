@@ -1,5 +1,4 @@
 import { meetsConditions } from './conditions';
-import * as log from '../../logger';
 
 /**
  * QbSetRenderer — shared question-set renderer (DL-Q05 §5 Capa D qb-render).
@@ -47,16 +46,6 @@ export default function QbSetRenderer({
 }) {
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
-
-  // [AGE-DIAG] TEMPORARY (bug post-b597a7e, root cause unknown) — un CLI futuro lo quita.
-  // Qué applicants/guardians ve el renderer + qué sets llegaron. log.info redacta PII per KAL-11.
-  log.info('[AGE-DIAG] render', {
-    persons: persons || [],
-    applicants: applicants || [],
-    guardians: guardians || [],
-    sets_count: (sets || []).length,
-    set_keys: (sets || []).map(s => ({ set_id: s?.set_id, items: (s?.items || []).length }))
-  });
 
   // Map question_code → question_id, derivado de las preguntas recibidas. Lo
   // necesita meetsConditions para resolver las conditions PARENT_ANSWER (que
