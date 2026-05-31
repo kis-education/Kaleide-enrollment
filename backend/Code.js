@@ -2007,7 +2007,8 @@ function manual_diagQbRenderShape() {
   Logger.log('=== fin diag ===');
 }
 
- * del wizard (NO registrado en el dispatcher público — JSDoc Diagnostic).
+/**
+ * Diagnostic del wizard (NO registrado en el dispatcher público — JSDoc Diagnostic).
  * Loguea el valor real de is_active/deleted_at para detectar quirks de filtro
  * server-side AppSheet (null vs "").
  */
