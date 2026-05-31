@@ -1964,8 +1964,49 @@ function fetchQuestions_(p) {
 }
 
 /**
- * Diagnostic — replica fetchQuestions_ paso a paso con logs + variantes de
- * filtro para localizar por qué Step 4 sale vacío. Ejecutar desde el GAS editor
+ * Diagnostic — vuelca el shape REAL que devuelve fetchQuestions_ para confirmar:
+ *   - response_type_id es UUID o code legible (afecta render del tipo).
+ *   - qbQuestionConditions guarda condition_operator/value plano O polimórfico
+ *     (condition_ref_table/condition_ref_id → qbConditions / qbConditionGroups_T).
+ *   - qbResponseTypes shape (qué columna tiene el code: 'response_type_code', 'code'...).
+ * Aplica protocolo §0.bis del plan: dato real antes de fix.
+ */
+function manual_diagQbRenderShape() {
+  Logger.log('=== manual_diagQbRenderShape ===');
+
+  // [A] qbResponseTypes — necesitamos saber la columna que guarda el code legible.
+  const rt = appsheetRequest_('qbResponseTypes', 'Find', [], {}) || [];
+  Logger.log('[A] qbResponseTypes: ' + rt.length + ' rows');
+  if (rt[0]) Logger.log('     KEYS=' + Object.keys(rt[0]).join(',') + ' | ROW0=' + JSON.stringify(rt[0]));
+
+  // [B] qbQuestions — qué guarda response_type_id (uuid o code).
+  const q = appsheetRequest_(T.QB_QUESTIONS, 'Find', [], {
+    Filter: '"school_id" = "' + SCHOOL_ID + '"'
+  }) || [];
+  Logger.log('[B] qbQuestions: ' + q.length + ' rows');
+  if (q[0]) Logger.log('     KEYS=' + Object.keys(q[0]).join(',') + ' | response_type_id=' + JSON.stringify(q[0].response_type_id) + ' | question_code=' + q[0].question_code);
+
+  // [C] qbQuestionConditions — shape (polimórfico o plano).
+  const cond = appsheetRequest_(T.QB_CONDITIONS, 'Find', [], {}) || [];
+  Logger.log('[C] qbQuestionConditions: ' + cond.length + ' rows');
+  if (cond[0]) Logger.log('     KEYS=' + Object.keys(cond[0]).join(',') + ' | ROW0=' + JSON.stringify(cond[0]));
+
+  // [D] Si C tiene condition_ref_table, qué hay al otro lado:
+  if (cond[0] && cond[0].condition_ref_table) {
+    const refTable = cond[0].condition_ref_table;
+    const refId = cond[0].condition_ref_id;
+    Logger.log('[D] condition es polimórfica → resolver ' + refTable + ' id=' + refId);
+    try {
+      const ref = appsheetRequest_(refTable, 'Find', [], {}) || [];
+      const match = ref.find(r => r[Object.keys(r)[0]] === refId || JSON.stringify(r).indexOf(refId) >= 0);
+      if (match) Logger.log('     RESOLVED=' + JSON.stringify(match));
+      else Logger.log('     no match en ' + refTable + ' (' + ref.length + ' filas totales)');
+    } catch (e) { Logger.log('     error: ' + e.message); }
+  }
+
+  Logger.log('=== fin diag ===');
+}
+
  * del wizard (NO registrado en el dispatcher público — JSDoc Diagnostic).
  * Loguea el valor real de is_active/deleted_at para detectar quirks de filtro
  * server-side AppSheet (null vs "").
