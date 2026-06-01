@@ -261,15 +261,25 @@ const handleNext = async (stepKey, data) => {
       {/* Progress */}
       <WizardProgress currentStep={currentStep} />
 
-      {/* Submitted notice — replaces Save-later bar when session is read-only */}
+      {/* Submitted notice — replaces Save-later bar when session is read-only.
+          CLI 26 (2026-06-01): expanded copy to point families to admissions email
+          when they need changes — the wizard cannot reopen a submitted
+          application; only KMS staff can transition it back to NEEDS_MORE_INFO. */}
       {isSubmitted ? (
         <div style={{
           background: '#e8f5e9', borderBottom: '2px solid #43a047',
-          padding: '10px 20px', display: 'flex', alignItems: 'center', gap: 10,
-          color: '#1b5e20', fontSize: '0.9rem', fontWeight: 600,
+          padding: '12px 20px', display: 'flex', alignItems: 'flex-start', gap: 12,
+          color: '#1b5e20', fontSize: '0.9rem',
         }}>
-          <i className="bi bi-check-circle-fill" style={{ fontSize: '1.1rem' }} />
-          {t('wizard.submitted_readonly_banner', 'Solicitud enviada — los campos están bloqueados.')}
+          <i className="bi bi-check-circle-fill" style={{ fontSize: '1.2rem', marginTop: 2 }} />
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: 2 }}>
+              {t('submitted.locked.title')}
+            </div>
+            <div style={{ fontWeight: 400 }}>
+              {t('submitted.locked.body')}
+            </div>
+          </div>
         </div>
       ) : (
         /* Save-later bar */

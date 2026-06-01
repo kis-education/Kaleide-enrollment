@@ -88,6 +88,8 @@
   "step7.submitted_title": "Solicitud enviada",
   "step7.submitted_note": "Tu solicitud está siendo revisada. El equipo de admisiones se pondrá en contacto contigo en breve.",
   "wizard.submitted_readonly_banner": "Solicitud enviada — los campos están bloqueados.",
+  "submitted.locked.title": "Solicitud en revisión",
+  "submitted.locked.body": "Tu solicitud está en revisión. Si necesitas modificar algo, contacta con admisiones en admissions@kaleide.org.",
   "step7.legal_title": "Declaración legal y consentimiento",
   "step7.esig_label": "Firma electrónica",
   "step7.esig_instructions": "Escribe tu nombre completo como firma electrónica.",

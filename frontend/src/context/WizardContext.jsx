@@ -146,8 +146,24 @@ export function WizardProvider({ children }) {
       return next;
     });
   }, []);
-  // True once hydrateFromResume detects submitted_at IS NOT NULL.
-  // Drives read-only wizard mode: fields locked, no saves, no abandon.
+  // True once hydrateFromResume detects submitted_at IS NOT NULL, OR
+  // Step7Review's handleSubmit succeeds.
+  //
+  // Drives read-only wizard mode: fields locked, no Edit button in
+  // LockedBanner, no abandon. Conceptually this is the negation of
+  // `isApplicationEditable_()` server-side — see backend Code.js for the
+  // canonical editable-states list.
+  //
+  // Editability semantics — CLI 26 (2026-06-01):
+  //   - Application is EDITABLE when `current_state_code ∈ EDITABLE_STATES`.
+  //   - EDITABLE_STATES = ['DRAFT', 'NEEDS_MORE_INFO'] (frontend hardcoded;
+  //     TODO mover a catálogo dinámico vía sysStateTransitions_T).
+  //   - The wizard maps `current_state_code` to `submitted_at` boolean:
+  //       submitted_at IS NULL  → DRAFT (editable)
+  //       submitted_at IS NOT NULL → RQ/IN/etc (not editable)
+  //     The KMS-driven "reopen to NEEDS_MORE_INFO" path is handled server-side
+  //     in resumeSession_ (it overrides submitted_at to null when all
+  //     enrollments are back in IN), so `isSubmitted=false` already covers it.
   const [isSubmitted, setIsSubmittedRaw] = useState(session.isSubmitted || false);
   const setIsSubmitted = useCallback((val) => {
     setIsSubmittedRaw(val);
@@ -482,7 +498,7 @@ export function WizardProvider({ children }) {
       isStepDirty, markStepSaved,
       setPendingSave, awaitPendingSave, hasPendingSave,
       hydrateFromResume, clearSession,
-      isSubmitted,
+      isSubmitted, setIsSubmitted,
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>
       {children}

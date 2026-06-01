@@ -88,6 +88,8 @@
   "step7.submitted_title": "Application Submitted",
   "step7.submitted_note": "Your application is under review. The admissions team will be in touch with you shortly.",
   "wizard.submitted_readonly_banner": "Application submitted — fields are locked.",
+  "submitted.locked.title": "Application under review",
+  "submitted.locked.body": "Your application is being reviewed. If you need to change anything, please contact admissions at admissions@kaleide.org.",
   "step7.legal_title": "Legal Statement & Consent",
   "step7.esig_label": "Electronic Signature",
   "step7.esig_instructions": "Type your full name below as your electronic signature.",

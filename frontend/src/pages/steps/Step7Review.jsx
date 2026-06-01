@@ -77,7 +77,7 @@ export default function Step7Review({ onBack }) {
   const { t, i18n }  = useTranslation();
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
-  const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted } = useWizard();
+  const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted, setIsSubmitted } = useWizard();
 
   const { email, persons, documents, relations, health, questions } = stepData;
   const guardians  = (persons || []).filter(p => p.person_type_id === 'guardian');
@@ -164,6 +164,15 @@ export default function Step7Review({ onBack }) {
           { type: 'legal', accepted: consentLegal, consent_text_shown: CONSENT_TEXTS.legal[lang] },
         ],
       });
+
+      // CLI 26 (2026-06-01) — flip isSubmitted=true so that if the user later
+      // navigates back to /apply (e.g. via Confirmation's "Ver mi solicitud"
+      // CTA) without a full page reload, the wizard renders in read-only mode
+      // (LockedBanner Edit button hidden, fields disabled). Without this,
+      // hydrateFromResume only runs on full reload — so the in-memory
+      // isSubmitted stays false after submit and the Edit button reappears,
+      // letting the family edit a submitted application. Reportado por Diego.
+      setIsSubmitted(true);
 
       navigate('/confirmation');
     } catch (e) {

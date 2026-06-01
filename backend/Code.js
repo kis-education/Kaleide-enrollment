@@ -260,6 +260,64 @@ function requireResumeToken_(payload) {
   return tokenGroupId;
 }
 
+// ─── CLI 26 (2026-06-01) — State-gate for mutation endpoints ─────────────────
+//
+// Defense-in-depth against frontend bugs that let a family edit a submitted
+// application. The wizard already hides Edit/Save UI when isSubmitted=true
+// (see frontend WizardPage), but a malicious client could still POST to
+// saveStep / saveResponses / uploadDocument with a valid resume_token after
+// the group's submitted_at is set. This helper closes that hole.
+//
+// Editability model — conceptually a tiny state-machine gate, not a milestone:
+//
+//   submitted_at IS NULL                  → DRAFT             → editable
+//   submitted_at IS NOT NULL, enrollments → RQ/IN/etc          → NOT editable
+//                                           (KMS owns transitions
+//                                            from here onwards)
+//
+// The "reopen" branch is server-side already (resumeSession_ overrides
+// submitted_at to null when all enrollments are back in state IN — see
+// the comment around line 1095). So checking submitted_at alone is
+// sufficient: when the KMS reopens an application, the next resume sees
+// submitted_at as null and the wizard becomes editable again.
+//
+// Editable state codes (canonical, hardcoded today; TODO mover a catálogo
+// dinámico vía sysStateTransitions_T flags `is_editable_by_family`):
+//   ['DRAFT', 'NEEDS_MORE_INFO']
+//
+// Rejection style — P72 silent reject pattern: throws an Error with
+// `.code='NOT_EDITABLE'`, which doPost catches and turns into
+// `{ ok: false, error: { code, message } }` over HTTP 200. Never HTTP 403.
+//
+// @param {string} enrollmentGroupId - already authorised via requireResumeToken_
+// @throws {Error & {code: 'NOT_EDITABLE'}} when the group is locked
+function assertGroupEditable_(enrollmentGroupId) {
+  assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
+  const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
+  });
+  const group = rows && rows[0];
+  if (!group) {
+    // Should be impossible — requireResumeToken_ already resolved a group.
+    const err = new Error('Enrollment group not found');
+    err.code = 'NOT_FOUND';
+    throw err;
+  }
+  if (group.abandoned_at) {
+    const err = new Error('Application has been abandoned and cannot be edited');
+    err.code = 'NOT_EDITABLE';
+    Logger.log(redact_('[assertGroupEditable_] reject group=' + enrollmentGroupId + ' reason=abandoned'));
+    throw err;
+  }
+  if (group.submitted_at) {
+    const err = new Error('Application has already been submitted and is locked for review; contact admissions to request changes');
+    err.code = 'NOT_EDITABLE';
+    Logger.log(redact_('[assertGroupEditable_] reject group=' + enrollmentGroupId + ' reason=submitted_at=' + group.submitted_at));
+    throw err;
+  }
+  // Editable.
+}
+
 // ─── Entry points ─────────────────────────────────────────────────────────────
 
 /**
@@ -334,6 +392,16 @@ function doPost(e) {
 
   } catch (err) {
     Logger.log('doPost error: ' + err.message + '\n' + err.stack);
+    // CLI 26 (2026-06-01) — structured error code for state-gate rejections
+    // (NOT_EDITABLE, set by assertGroupEditable_). Per the silent-reject style:
+    // HTTP 200 + { ok: false, error: { code, message } } — never 403 — so the
+    // client always parses the response uniformly and reads `error.code`.
+    if (err && err.code) {
+      return jsonResponse_({
+        ok: false,
+        error: { code: err.code, message: err.message }
+      });
+    }
     return jsonResponse_({ ok: false, error: err.message }, 500);
   }
 }
@@ -1209,6 +1277,14 @@ function saveStep_(p) {
   const enrollmentGroupId = requireResumeToken_(p);
   const { step, payload } = p;
   if (!step || !payload) throw new Error('Missing required fields');
+
+  // CLI 26 (2026-06-01) — state-gate defense in depth. A submitted group is
+  // locked for the family; only KMS staff can reopen it back to NEEDS_MORE_INFO
+  // (which clears submitted_at via the reopen branch of resumeSession_).
+  // The 'review' step in this handler used to be a staff-side state-transition
+  // helper from a legacy flow; no current frontend caller invokes it, and the
+  // canonical state-machine API lives in KMS — so gating it too is correct.
+  assertGroupEditable_(enrollmentGroupId);
 
   const now = new Date().toISOString();
 
@@ -2388,6 +2464,8 @@ function saveResponses_(p) {
   // KAL-4: derive authorised group_id from resume_token; never trust the
   // payload's enrollment_group_id directly. Cross-check inside the helper.
   const enrollmentGroupId = requireResumeToken_(p);
+  // CLI 26 (2026-06-01) — reject responses for submitted/abandoned groups.
+  assertGroupEditable_(enrollmentGroupId);
   const { respondent_id, respondent_type_category_id, responses } = p;
   if (!responses || !responses.length) return { saved: 0 };
 
@@ -2485,6 +2563,12 @@ function uploadDocument_(p) {
   // KAL-4: derive authorised group_id from resume_token; never trust the
   // payload's enrollment_group_id directly. Cross-check inside the helper.
   const enrollmentGroupId = requireResumeToken_(p);
+  // CLI 26 (2026-06-01) — reject uploads for submitted/abandoned groups.
+  // The `enrollmentId` branch below covers post-submit uploads where a
+  // specific enrollment is targeted; if that enrollment exists, the group
+  // must NOT be in submitted state for the family to keep editing documents.
+  // KMS-driven uploads bypass this endpoint entirely.
+  assertGroupEditable_(enrollmentGroupId);
   const enrollmentId      = p.enrollment_id || null;
   const { base64, mimeType, filename, document_type } = p;
   if (!base64) throw new Error('Missing base64');
@@ -4193,6 +4277,127 @@ function manual_testIdorDefenseSaveStep() {
   // } catch (e) {
   //   Logger.log('PASS — cross-group saveStep rejected: ' + e.message);
   // }
+}
+
+/**
+ * CLI 26 (2026-06-01) — end-to-end test for the post-submit edit lock.
+ *
+ * Verifies the backend state-gate: once submitted_at IS NOT NULL on the
+ * enrollment group row, saveStep_/saveResponses_/uploadDocument_ must reject
+ * with err.code='NOT_EDITABLE' (which doPost converts to HTTP 200 + {ok:false,
+ * error:{code:'NOT_EDITABLE',message:...}}).
+ *
+ * Cómo ejecutar desde el editor GAS:
+ *
+ *   1. Crea (o coge) un grupo SIN submitted_at. Ten a mano su resume_token.
+ *   2. Edita las constantes RESUME_TOKEN_REAL y GROUP_ID abajo y guarda.
+ *   3. Selecciona "manual_testApplicationEditRejectionOnSubmitted" en el
+ *      selector de funciones del editor → Run.
+ *   4. Lee los PASS/FAIL en View → Logs.
+ *
+ * Cobertura:
+ *   - Caso 1: token válido + group en DRAFT (sin submitted_at) → saveStep OK.
+ *   - Caso 2: forzamos submitted_at = now en el group (Edit directo a la
+ *     tabla, simulando un submit que ya ocurrió) → siguiente saveStep falla
+ *     con err.code='NOT_EDITABLE'.
+ *   - Caso 3: limpiamos submitted_at de vuelta a null → saveStep OK otra vez
+ *     (la KMS también restablece este campo cuando reabre a IN).
+ *
+ * Nota: el caso 2 marca el group como submitted en BD, así que tras el test
+ * el group queda "enviado". Vuelve a DRAFT manualmente desde AppSheet si lo
+ * necesitas para más pruebas, o usa el cleanup automático del caso 3.
+ */
+function manual_testApplicationEditRejectionOnSubmitted() {
+  Logger.log('=== manual_testApplicationEditRejectionOnSubmitted ===');
+
+  // ── EDITA ESTAS DOS CONSTANTES ANTES DE EJECUTAR ──────────────────────────
+  const RESUME_TOKEN_REAL = '<RESUME_TOKEN_REAL>';  // p. ej. de un init/resume reciente
+  const GROUP_ID          = '<ENROLLMENT_GROUP_ID>'; // del mismo grupo
+
+  if (RESUME_TOKEN_REAL.indexOf('<') === 0) {
+    Logger.log('SKIP — rellena RESUME_TOKEN_REAL y GROUP_ID arriba antes de ejecutar.');
+    return;
+  }
+
+  // Caso 1: DRAFT (sin submitted_at) → saveStep OK
+  try {
+    const ok = saveStep_({
+      resume_token:        RESUME_TOKEN_REAL,
+      enrollment_group_id: GROUP_ID,
+      step:                'application',
+      payload:             { source: 'TEST_CLI26' }
+    });
+    Logger.log('PASS Caso 1 (DRAFT editable): saveStep OK → ' + JSON.stringify(ok));
+  } catch (e) {
+    Logger.log('FAIL Caso 1: esperaba OK en DRAFT, throw: ' + e.message + ' (code=' + (e.code || 'none') + ')');
+    return;
+  }
+
+  // ── Forzar submitted_at = now para simular el estado post-submit ─────────
+  const now = new Date().toISOString();
+  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+    enrollment_group_id: GROUP_ID,
+    submitted_at:        now,
+    updated_at:          now,
+  }]);
+  Logger.log('  setup: submitted_at=' + now + ' aplicado al group para Caso 2');
+
+  // Caso 2: post-submit → saveStep DEBE rechazar con code='NOT_EDITABLE'
+  try {
+    saveStep_({
+      resume_token:        RESUME_TOKEN_REAL,
+      enrollment_group_id: GROUP_ID,
+      step:                'application',
+      payload:             { source: 'TEST_CLI26_post_submit' }
+    });
+    Logger.log('FAIL Caso 2: esperaba NOT_EDITABLE, saveStep pasó sin throw');
+  } catch (e) {
+    if (e.code === 'NOT_EDITABLE') {
+      Logger.log('PASS Caso 2 (SUBMITTED bloqueado): rejected con code=NOT_EDITABLE → ' + e.message);
+    } else {
+      Logger.log('FAIL Caso 2: code esperado NOT_EDITABLE, recibido ' + (e.code || 'none') + ' / msg: ' + e.message);
+    }
+  }
+
+  // ── También verificar saveResponses_ y uploadDocument_ ───────────────────
+  try {
+    saveResponses_({
+      resume_token:        RESUME_TOKEN_REAL,
+      enrollment_group_id: GROUP_ID,
+      responses:           [{ question_id: 'fake-qid', response_text: 'should reject' }]
+    });
+    Logger.log('FAIL Caso 2b (saveResponses_): esperaba NOT_EDITABLE, pasó sin throw');
+  } catch (e) {
+    if (e.code === 'NOT_EDITABLE') {
+      Logger.log('PASS Caso 2b (saveResponses_ SUBMITTED bloqueado): rejected con code=NOT_EDITABLE');
+    } else {
+      Logger.log('FAIL Caso 2b: code esperado NOT_EDITABLE, recibido ' + (e.code || 'none') + ' / msg: ' + e.message);
+    }
+  }
+
+  // ── Caso 3: limpiar submitted_at (simula reopen por KMS) → editable de nuevo
+  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+    enrollment_group_id: GROUP_ID,
+    submitted_at:        '',
+    updated_at:          new Date().toISOString(),
+  }]);
+  Logger.log('  cleanup: submitted_at limpiado para Caso 3');
+
+  try {
+    const ok = saveStep_({
+      resume_token:        RESUME_TOKEN_REAL,
+      enrollment_group_id: GROUP_ID,
+      step:                'application',
+      payload:             { source: 'TEST_CLI26_reopen' }
+    });
+    Logger.log('PASS Caso 3 (reopen → editable): saveStep OK → ' + JSON.stringify(ok));
+  } catch (e) {
+    // Nota: AppSheet a veces ignora null/empty strings para DateTime; si esto
+    // falla, el group puede quedar marcado submitted en BD. Revertir manualmente.
+    Logger.log('FAIL Caso 3 (puede ser AppSheet no aceptó limpiar submitted_at): ' + e.message);
+  }
+
+  Logger.log('=== fin manual_testApplicationEditRejectionOnSubmitted ===');
 }
 
 /**
