@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
 import LangToggle from '../components/LangToggle';
 import * as log from '../logger';
+import SigningSteps from './signing/SigningSteps';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 const ADMISSIONS_EMAIL = 'admissions@kaleide.org';
@@ -66,49 +67,26 @@ function GateScreen({ icon, iconColor, title, body, showContact }) {
   );
 }
 
-function ReadyView({ signerCtx }) {
+function ReadyView({ signerCtx, signingToken }) {
   const { t } = useTranslation();
-  const steps = signerCtx.steps || {};
 
   return (
     <div className="wizard-layout">
       <Header />
-      <div style={{ maxWidth: 640, margin: '40px auto', padding: '0 16px' }}>
+      <div style={{ maxWidth: 680, margin: '40px auto', padding: '0 16px' }}>
         <h1 style={{ color: 'var(--teal-dk)', fontWeight: 800, marginBottom: 4 }}>
           {t('signing.ready_title')}
         </h1>
-        <p style={{ color: 'var(--muted)', marginBottom: 28 }}>
+        <p style={{ color: 'var(--muted)', marginBottom: 24 }}>
           {t('signing.ready_subtitle')}
         </p>
 
-        {/* Step status summary */}
-        <div className="kis-card" style={{ marginBottom: 16 }}>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0, lineHeight: 2 }}>
-            <StepRow label={t('signing.step_billing')}  done={steps.billing_confirmed} />
-            <StepRow label={t('signing.step_gdpr')}     done={steps.gdpr_completed}    />
-            <StepRow label={t('signing.step_review')}   done={steps.review_completed}  />
-            <StepRow label={t('signing.step_sign')}     done={steps.signed}            />
-          </ul>
-        </div>
-
-        <div className="kis-card" style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '0.9rem' }}>
-          <i className="bi bi-tools" style={{ fontSize: '1.5rem', display: 'block', marginBottom: 8 }} />
-          {t('signing.steps_coming')}
-        </div>
+        {/* WS5 (CLI 45) — flujo funcional de firma billing → gdpr → review → sign.
+            Vive aquí (/sign), NO en el wizard /apply. signingToken viene del query
+            param resuelto por resolveSigningToken (signerCtx). */}
+        <SigningSteps signingToken={signingToken} signerCtx={signerCtx} />
       </div>
     </div>
-  );
-}
-
-function StepRow({ label, done }) {
-  return (
-    <li style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      <i
-        className={`bi ${done ? 'bi-check-circle-fill' : 'bi-circle'}`}
-        style={{ color: done ? 'var(--teal-dk)' : 'var(--muted)', fontSize: '1rem', flexShrink: 0 }}
-      />
-      <span style={{ color: done ? 'var(--text)' : 'var(--muted)' }}>{label}</span>
-    </li>
   );
 }
 
@@ -116,6 +94,7 @@ export default function SigningWizardPage() {
   const [searchParams]        = useSearchParams();
   const [gate, setGate]       = useState(GATE.LOADING);
   const [signerCtx, setSignerCtx] = useState(null);
+  const [signingToken, setSigningToken] = useState(null);
   const { t }                 = useTranslation();
 
   useEffect(() => {
@@ -128,6 +107,7 @@ export default function SigningWizardPage() {
     }
 
     log.info('SigningWizardPage: resolving signing_token', { token: token.substring(0, 8) + '...' });
+    setSigningToken(token);
 
     gasCall('resolveSigningToken', { signing_token: token })
       .then(data => {
@@ -234,6 +214,6 @@ export default function SigningWizardPage() {
     );
   }
 
-  // READY — render signing step router
-  return <ReadyView signerCtx={signerCtx} />;
+  // READY — render signing step router (WS5 — billing → gdpr → review → sign)
+  return <ReadyView signerCtx={signerCtx} signingToken={signingToken} />;
 }

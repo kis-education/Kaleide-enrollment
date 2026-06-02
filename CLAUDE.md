@@ -69,6 +69,21 @@ Patrón obligatorio para nuevos handlers de mutación:
 
 Handlers blindados 2026-05-30: saveStep_, submitEnrollmentSession_, saveResponses_, uploadDocument_. Los handlers de lectura (getTrackingData_, getInterviewForEnrollment_, etc.) ya usan este patrón desde CLI 12+33-36.
 
+### Dos bearer tokens canónicos del wizard — resume_token (/apply) + signing_token (/sign) (CLI 45, 2026-06-02)
+
+El wizard tiene **dos flujos con dos bearer secrets distintos**, ambos UUID v4 emitidos server-side (no enumerables). Cada uno tiene su gate canónico:
+
+| Token | Flujo | Gate helper | Endpoints |
+|---|---|---|---|
+| `resume_token` | `/apply` (wizard de inscripción, familia anónima) | `requireResumeToken_` | saveStep_, saveResponses_, uploadDocument_, submitEnrollmentSession_, … |
+| `signing_token` | `/sign` (SigningWizardPage, guardian firmante post-AD) | `requireSigningToken_` | saveBillingInfo_, submitGdprConsents_, confirmReview_, initiateSigningSession_ |
+
+`requireSigningToken_(payload)` (CLI 45): extrae `signing_token`, `assertValidUuid_`, lo valida server-side vía `resolveSigningToken_` (existencia en `sysSigningSessionSigners` + estado no terminal), y devuelve `{ signing_token, signer_id, session_id, enrollment_group_id, guardian_person_id }`. Throw `BAD_REQUEST` (UUID malformado) o `UNAUTHORIZED` (inexistente/expirado/revocado).
+
+**KAL-4 IDOR mantenida**: el `enrollment_group_id` autorizado se deriva del token (server-side), NUNCA del payload. El signing_token es defensa equivalente al resume_token. El requisito de `resume_token` en los 4 proxies de firma (CLI 40) era inercia de copy-paste del patrón /apply, no decisión deliberada — corregido en CLI 45 porque el flujo /sign no tiene resume_token (solo signing_token de la URL). `requireResumeToken_` permanece intacto como gate de los endpoints /apply.
+
+Test: `manual_testSigningTokenAuth` (casos a-d: UUID malformado → BAD_REQUEST, UUID inexistente → UNAUTHORIZED, token real → contexto resuelto).
+
 ### Excepción promoteEnrollment_ resuelta — operación movida al KMS (KAL-3 cerrado 2026-05-30)
 
 `promoteEnrollment_` fue eliminada del wizard backend 2026-05-30 (CLI 63). La operación canónica de promover candidatos de `enr*` a `personalData_S` (SMS principal) vive en el KMS como `enr.promoteToCore` (`kis-app/kms-server/enr/promote.gs`), registrada en `API_ROUTES`. El KMS tiene auth real (`access: ANYONE` + identidad resuelta server-side via `Session.getActiveUser` + roles via `contactEmails_T` lookup — Stage 1 verificado 2026-05-31; ver `kis-app/docs/kms/handbook/01-system-overview.md` §3.1 + `kis-app/docs/kms/handbook/05-deploy-pipeline.md` §9.1) — el staff lo invoca desde allí. El wizard, anónimo, ya no necesita exponer ese endpoint.

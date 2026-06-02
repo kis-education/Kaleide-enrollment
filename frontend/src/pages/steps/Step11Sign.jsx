@@ -9,9 +9,10 @@ import { useTranslation } from 'react-i18next';
  * La transferencia bancaria de reserva es una acción POST-firma (no un step del
  * wizard) — CLI 22/Frontend-12 lo inventaron erróneamente como Step 12 Deposit.
  *
- * TODO: implementación real cuando exista el endpoint backend `enr.initiateSigningSession`
- * y el driver `enr_clickAndSign_createEnvelope_` (tabla `sysSigningSessions`). Por ahora
- * placeholder informativo locked.
+ * Placeholder PERMANENTE — el flujo real de firma Click & Sign (signerUrls +
+ * polling de estado) vive en SigningWizardPage (`/sign?signing_token=X`,
+ * pages/signing/SigningSteps.jsx → SignSign). Estos steps de `/apply` son
+ * post-submit y NUNCA se desbloquean por diseño (DL-E15 + CLI 45).
  */
 export default function Step11Sign({ onBack }) {
   const { t } = useTranslation();

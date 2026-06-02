@@ -8,9 +8,10 @@ import { useTranslation } from 'react-i18next';
  * Incluye visualización de la decisión de admisión dentro del propio step (NO existe
  * un "Step Decision" separado — CLI 22/Frontend-9-10 lo inventaron erróneamente).
  *
- * TODO: implementación real cuando exista el endpoint backend `enr.confirmReview`
- * — viewer PDF de la Carta de Admisión y del Contrato + checkbox "He leído y comprendo
- * el contenido de ambos documentos". Por ahora placeholder informativo locked.
+ * Placeholder PERMANENTE — el flujo real de revisión (viewer PDF Carta + Contrato +
+ * confirmación de lectura) vive en SigningWizardPage (`/sign?signing_token=X`,
+ * pages/signing/SigningSteps.jsx → SignReview). Estos steps de `/apply` son
+ * post-submit y NUNCA se desbloquean por diseño (DL-E15 + CLI 45).
  */
 export default function Step10Review({ onBack }) {
   const { t } = useTranslation();

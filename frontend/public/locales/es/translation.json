@@ -277,5 +277,51 @@
   "signing.step_gdpr": "Protección de datos",
   "signing.step_review": "Revisión del expediente",
   "signing.step_sign": "Firma electrónica",
-  "signing.steps_coming": "Los pasos de firma estarán disponibles próximamente."
+  "signing.steps_coming": "Los pasos de firma estarán disponibles próximamente.",
+
+  "signing.saving": "Guardando…",
+  "signing.generic_error": "Ha ocurrido un error. Inténtalo de nuevo.",
+
+  "signing.billing.title": "Datos de facturación",
+  "signing.billing.subtitle": "Datos fiscales del responsable del pago de la matrícula.",
+  "signing.billing.submit": "Guardar y continuar",
+  "signing.billing.err_name": "Indica el nombre o razón social del titular.",
+  "signing.billing.err_email": "Indica un correo de facturación válido.",
+  "signing.billing.err_locked": "La solicitud ya no es editable.",
+  "signing.billing.field.fiscal_name": "Nombre / Razón social del titular",
+  "signing.billing.field.fiscal_tax_id": "NIF / CIF",
+  "signing.billing.field.fiscal_address_line1": "Domicilio fiscal",
+  "signing.billing.field.fiscal_address_city": "Localidad",
+  "signing.billing.field.fiscal_postal_code": "Código postal",
+  "signing.billing.field.billing_email": "Correo de facturación",
+  "signing.billing.field.billing_phone": "Teléfono (opcional)",
+
+  "signing.gdpr.title": "Consentimientos de protección de datos",
+  "signing.gdpr.subtitle": "Marca los consentimientos que autorizas. El primero (RGPD) es obligatorio para continuar.",
+  "signing.gdpr.submit": "Confirmar y continuar",
+  "signing.gdpr.must_accept_blocking": "Debes aceptar el tratamiento de datos (RGPD) para continuar.",
+  "signing.gdpr.blocked": "Al rechazar el tratamiento de datos no es posible continuar con la firma. Contacta con admisiones.",
+
+  "signing.review.title": "Revisión de documentos",
+  "signing.review.subtitle": "Revisa la Carta de Admisión y el Contrato antes de firmarlos.",
+  "signing.review.submit": "Confirmar y proceder a la firma",
+  "signing.review.docs_loading": "Cargando documentos…",
+  "signing.review.package_loading": "Paquete contractual en preparación. Vuelve en unos minutos.",
+  "signing.review.open_doc": "Abrir documento",
+  "signing.review.confirm_label": "He leído y comprendo el contenido de los documentos.",
+  "signing.review.must_read": "Confirma que has leído los documentos para continuar.",
+  "signing.review.document": "Documento",
+
+  "signing.doc.ADMISSION_LETTER": "Carta de Admisión",
+  "signing.doc.CONTRACT": "Contrato Escolar",
+
+  "signing.signing.title": "Firma electrónica",
+  "signing.signing.subtitle": "Firma los documentos con Click & Sign. La página se actualizará automáticamente al completarse.",
+  "signing.signing.sign_as": "Firmar como {{name}}",
+  "signing.signing.sign_as_generic": "Firmante",
+  "signing.signing.waiting": "Preparando el enlace de firma…",
+  "signing.signing.polling": "Esperando la firma…",
+  "signing.signing.completed_title": "Solicitud firmada",
+  "signing.signing.completed_body": "Gracias. Hemos recibido tu firma. El equipo de admisiones continuará con el proceso.",
+  "signing.signing.finish": "Finalizar"
 }

@@ -5,9 +5,10 @@ import { useTranslation } from 'react-i18next';
  *
  * Canónico per DL-E27 + roadmap. Se desbloquea post-AD.
  *
- * TODO: implementación real cuando exista el endpoint backend `enr.submitGdprConsents`
- * (helper `sys_recordConsent_`) — checklist de 7 consentimientos por cada tutor más
- * stamp TSA timestamp. Por ahora placeholder informativo locked.
+ * Placeholder PERMANENTE — el flujo real de firma (7 consentimientos GDPR) vive en
+ * SigningWizardPage (`/sign?signing_token=X`, pages/signing/SigningSteps.jsx →
+ * SignGdpr). Estos steps de `/apply` son post-submit y NUNCA se desbloquean por
+ * diseño (DL-E15 + CLI 45): el guardian firma vía un signing magic-link separado.
  */
 export default function Step9Gdpr({ onBack }) {
   const { t } = useTranslation();

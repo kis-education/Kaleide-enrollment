@@ -6,9 +6,11 @@ import { useTranslation } from 'react-i18next';
  * Canónico per roadmap (docs/kms/plan/wizard-admissions-roadmap.md líneas 17-27)
  * + DL-E27 §2/§4 + P49. Se desbloquea post-AD (admisión decisión).
  *
- * TODO: implementación real cuando exista el endpoint backend `enr.saveBillingInfo`
- * y la hoja `enrGroupBilling` (P49) — formulario con razón social, CIF/NIF, domicilio
- * fiscal y datos del pagador. Por ahora placeholder informativo locked.
+ * Placeholder PERMANENTE — el flujo real de firma vive en SigningWizardPage
+ * (`/sign?signing_token=X`, ver pages/signing/SigningSteps.jsx). Estos steps de
+ * `/apply` son post-submit y NUNCA se desbloquean por diseño (DL-E15 + CLI 45):
+ * el guardian firma vía un signing magic-link separado, no continuando el wizard
+ * `/apply`. Se mantiene este card locked como documentación del flujo.
  */
 export default function Step8Billing({ onBack }) {
   const { t } = useTranslation();

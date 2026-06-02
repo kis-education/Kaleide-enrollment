@@ -277,5 +277,51 @@
   "signing.step_gdpr": "Data protection",
   "signing.step_review": "Application review",
   "signing.step_sign": "Electronic signature",
-  "signing.steps_coming": "Signing steps will be available soon."
+  "signing.steps_coming": "Signing steps will be available soon.",
+
+  "signing.saving": "Saving…",
+  "signing.generic_error": "Something went wrong. Please try again.",
+
+  "signing.billing.title": "Billing details",
+  "signing.billing.subtitle": "Tax details of the person responsible for the enrolment payment.",
+  "signing.billing.submit": "Save and continue",
+  "signing.billing.err_name": "Please enter the holder's name or company name.",
+  "signing.billing.err_email": "Please enter a valid billing email.",
+  "signing.billing.err_locked": "This application is no longer editable.",
+  "signing.billing.field.fiscal_name": "Holder name / Company name",
+  "signing.billing.field.fiscal_tax_id": "Tax ID (NIF / CIF)",
+  "signing.billing.field.fiscal_address_line1": "Billing address",
+  "signing.billing.field.fiscal_address_city": "City",
+  "signing.billing.field.fiscal_postal_code": "Postal code",
+  "signing.billing.field.billing_email": "Billing email",
+  "signing.billing.field.billing_phone": "Phone (optional)",
+
+  "signing.gdpr.title": "Data protection consents",
+  "signing.gdpr.subtitle": "Tick the consents you authorise. The first (GDPR) is required to continue.",
+  "signing.gdpr.submit": "Confirm and continue",
+  "signing.gdpr.must_accept_blocking": "You must accept personal data processing (GDPR) to continue.",
+  "signing.gdpr.blocked": "Rejecting data processing means signing cannot continue. Please contact admissions.",
+
+  "signing.review.title": "Document review",
+  "signing.review.subtitle": "Review the Admission Letter and the Contract before signing them.",
+  "signing.review.submit": "Confirm and proceed to signing",
+  "signing.review.docs_loading": "Loading documents…",
+  "signing.review.package_loading": "The contract package is being prepared. Please come back in a few minutes.",
+  "signing.review.open_doc": "Open document",
+  "signing.review.confirm_label": "I have read and understand the content of the documents.",
+  "signing.review.must_read": "Please confirm you have read the documents to continue.",
+  "signing.review.document": "Document",
+
+  "signing.doc.ADMISSION_LETTER": "Admission Letter",
+  "signing.doc.CONTRACT": "School Contract",
+
+  "signing.signing.title": "Electronic signature",
+  "signing.signing.subtitle": "Sign the documents with Click & Sign. This page will refresh automatically when complete.",
+  "signing.signing.sign_as": "Sign as {{name}}",
+  "signing.signing.sign_as_generic": "Signer",
+  "signing.signing.waiting": "Preparing the signing link…",
+  "signing.signing.polling": "Waiting for signature…",
+  "signing.signing.completed_title": "Application signed",
+  "signing.signing.completed_body": "Thank you. We have received your signature. The admissions team will continue the process.",
+  "signing.signing.finish": "Finish"
 }

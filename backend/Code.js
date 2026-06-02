@@ -260,6 +260,50 @@ function requireResumeToken_(payload) {
   return tokenGroupId;
 }
 
+/**
+ * Canonical bearer-token gate for the SIGNING flow (`/sign` SigningWizardPage).
+ * Parallel a `requireResumeToken_` (gate del wizard `/apply`).
+ *
+ * El wizard tiene DOS bearer secrets canónicos, ambos UUID v4 emitidos
+ * server-side (no enumerables):
+ *   - `resume_token`  → mutaciones de `/apply` (saveStep_, saveResponses_,
+ *                       uploadDocument_, submitEnrollmentSession_). Resuelve el
+ *                       enrollment_group_id desde enrEnrollmentGroups.
+ *   - `signing_token` → mutaciones de `/sign` (saveBillingInfo_, submitGdprConsents_,
+ *                       confirmReview_, initiateSigningSession_). Resuelve
+ *                       signer + session + grupo vía `resolveSigningToken_`.
+ *
+ * KAL-4 IDOR: el signing_token se valida server-side (`resolveSigningToken_`
+ * comprueba existencia en sysSigningSessionSigners + estado no terminal +
+ * UUID estricto + appsheetEscape_). Defensa equivalente al resume_token —
+ * ambos son UUID no enumerables. El `enrollment_group_id` autorizado se deriva
+ * del token, NUNCA del payload.
+ *
+ * @param {Object} payload  debe contener `{ signing_token }`.
+ * @returns {{ signing_token, signer_id, session_id, enrollment_group_id, guardian_person_id }}
+ * @throws {Error} `BAD_REQUEST` si el signing_token no es UUID válido;
+ *                 `UNAUTHORIZED` si no existe / expirado / revocado.
+ */
+function requireSigningToken_(payload) {
+  const token = payload && payload.signing_token;
+  assertValidUuid_(token, 'signing_token'); // throw BAD_REQUEST si malformado
+
+  const resolved = resolveSigningToken_({ signing_token: token });
+  if (!resolved || !resolved.valid) {
+    const reason = (resolved && resolved.reason) || 'INVALID';
+    const err = new Error('Unauthorized: signing_token ' + reason);
+    err.code = 'UNAUTHORIZED';
+    throw err;
+  }
+  return {
+    signing_token:       String(token).trim(),
+    signer_id:           resolved.signer_id           || null,
+    session_id:          resolved.session_id          || null,
+    enrollment_group_id: resolved.enrollment_group_id || null,
+    guardian_person_id:  resolved.guardian_person_id  || null,
+  };
+}
+
 // ─── CLI 26 (2026-06-01) — State-gate for mutation endpoints ─────────────────
 //
 // Defense-in-depth against frontend bugs that let a family edit a submitted
@@ -3868,8 +3912,10 @@ function resolveSigningToken_(p) {
 // puente anónimo↔KMS sin reimplementar lógica canónica.
 //
 // Cada proxy:
-//   1. Valida el `resume_token` family-facing (autenticación del wizard).
-//   2. Reenvía `signing_token` (gate post-AD del KMS para Steps 8-11).
+//   1. Valida el `signing_token` (flujo /sign) vía requireSigningToken_ (CLI 45).
+//      El signing_token es el bearer canónico de las mutaciones /sign (paralelo
+//      a resume_token para /apply). Resuelve signer/session/grupo server-side.
+//   2. Reenvía `signing_token` al KMS (gate post-AD para Steps 8-11).
 //   3. Construye envelope `{action, payload, requestId}` per contrato KMS
 //      (apiCall en kms-server/_api.gs).
 //   4. Devuelve la `data` del envelope (o re-lanza `error` para que el
@@ -3976,16 +4022,12 @@ function kmsProxy_(action, payload) {
  * @returns {Object} `data` del KMS (`{ billing_id, confirmed_at, already_confirmed? }`).
  */
 function saveBillingInfo_(p) {
-  const groupId = requireResumeToken_(p);
-  assertValidUuid_(groupId, 'enrollment_group_id');
-
-  if (!p || !p.signing_token) throw new Error('signing_token required');
-  const signingToken = String(p.signing_token).trim();
-  assertValidUuid_(signingToken, 'signing_token');
+  // CLI 45 — auth por signing_token (flujo /sign). requireSigningToken_ valida el
+  // token server-side (resolveSigningToken_) y resuelve signer/session/grupo.
+  const sctx = requireSigningToken_(p);
 
   return kmsProxy_('enr.saveBillingInfo', {
-    signing_token:        signingToken,
-    enrollment_group_id:  groupId,
+    signing_token:        sctx.signing_token,
     payer_type:           p.payer_type           || null,
     payer_person_id:      p.payer_person_id      || null,
     fiscal_name:          p.fiscal_name          || null,
@@ -4023,12 +4065,8 @@ function saveBillingInfo_(p) {
  * @returns {Object} `data` del KMS (`{ blocked, milestone?, consents_recorded, ... }`).
  */
 function submitGdprConsents_(p) {
-  const groupId = requireResumeToken_(p);
-  assertValidUuid_(groupId, 'enrollment_group_id');
-
-  if (!p || !p.signing_token) throw new Error('signing_token required');
-  const signingToken = String(p.signing_token).trim();
-  assertValidUuid_(signingToken, 'signing_token');
+  // CLI 45 — auth por signing_token (flujo /sign).
+  const sctx = requireSigningToken_(p);
 
   if (!Array.isArray(p.consents) || !p.consents.length) {
     throw new Error('consents must be a non-empty array');
@@ -4038,7 +4076,7 @@ function submitGdprConsents_(p) {
   // estructura per-guardian adicional. El handler KMS lo persiste como un
   // set para el signer del iniciador.
   return kmsProxy_('enr.submitGdprConsents', {
-    signing_token: signingToken,
+    signing_token: sctx.signing_token,
     signer_ip:     p.signer_ip || null,
     consents:      p.consents,
   });
@@ -4058,15 +4096,11 @@ function submitGdprConsents_(p) {
  * @returns {Object} `data` del KMS (`{ idempotent, milestone }`).
  */
 function confirmReview_(p) {
-  const groupId = requireResumeToken_(p);
-  assertValidUuid_(groupId, 'enrollment_group_id');
-
-  if (!p || !p.signing_token) throw new Error('signing_token required');
-  const signingToken = String(p.signing_token).trim();
-  assertValidUuid_(signingToken, 'signing_token');
+  // CLI 45 — auth por signing_token (flujo /sign).
+  const sctx = requireSigningToken_(p);
 
   return kmsProxy_('enr.confirmReview', {
-    signing_token: signingToken,
+    signing_token: sctx.signing_token,
   });
 }
 
@@ -4092,20 +4126,14 @@ function confirmReview_(p) {
  * @returns {Object} `data` del KMS (`{ session_id, envelopeId, signerUrls, state }`).
  */
 function initiateSigningSession_(p) {
-  const groupId = requireResumeToken_(p);
-  assertValidUuid_(groupId, 'enrollment_group_id');
+  // CLI 45 — auth por signing_token (flujo /sign). El KMS resuelve guardians,
+  // documentos y proveedor de firma desde el grupo (derivado del signing_token).
+  const sctx = requireSigningToken_(p);
 
-  // signing_token es opcional aquí — la sesión la crea el KMS por
-  // enrollment_group_id; el signing_token se devuelve en signerUrls.
-  // Si el frontend ya tiene uno previo (re-init), lo reenvía para idempotencia.
-  const payload = { enrollment_group_id: groupId };
-  if (p && p.signing_token) {
-    const signingToken = String(p.signing_token).trim();
-    assertValidUuid_(signingToken, 'signing_token');
-    payload.signing_token = signingToken;
-  }
-
-  return kmsProxy_('enr.initiateSigningSession', payload);
+  return kmsProxy_('enr.initiateSigningSession', {
+    signing_token:       sctx.signing_token,
+    enrollment_group_id: sctx.enrollment_group_id,
+  });
 }
 
 // ─── Promotion logic ──────────────────────────────────────────────────────────
@@ -4951,6 +4979,58 @@ function manual_testWs4ProxyDryRun() {
   });
 
   Logger.log('=== fin manual_testWs4ProxyDryRun ===');
+}
+
+/**
+ * Test de `requireSigningToken_` (CLI 45) — bearer gate canónico del flujo /sign.
+ *
+ * Casos (a-b automáticos; c-d requieren SIGNING_TOKEN_REAL):
+ *   a) UUID malformado → throw BAD_REQUEST.
+ *   b) UUID válido pero NO en sysSigningSessionSigners → throw UNAUTHORIZED.
+ *   c) token expirado/revocado → throw UNAUTHORIZED (sesión COMPLETED/CANCELLED).
+ *   d) token válido → returns { signing_token, signer_id, session_id,
+ *      enrollment_group_id, guardian_person_id }.
+ *
+ * KAL-4 IDOR: el enrollment_group_id autorizado se deriva del token (server-side
+ * via resolveSigningToken_), nunca del payload. Defensa equivalente al
+ * resume_token — ambos UUID no enumerables validados server-side.
+ */
+function manual_testSigningTokenAuth() {
+  Logger.log('=== manual_testSigningTokenAuth (CLI 45) ===');
+
+  // a) UUID malformado → BAD_REQUEST
+  try {
+    requireSigningToken_({ signing_token: 'not-a-uuid' });
+    Logger.log('  a) ✗ FAIL — should have thrown for malformed UUID');
+  } catch (e) {
+    var okA = (e.code === 'BAD_REQUEST') || /uuid/i.test(e.message);
+    Logger.log('  a) ' + (okA ? '✓ PASS' : '✗ FAIL') + ' — threw: ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+
+  // b) UUID válido pero inexistente → UNAUTHORIZED
+  try {
+    requireSigningToken_({ signing_token: '00000000-0000-4000-8000-000000000000' });
+    Logger.log('  b) ✗ FAIL — should have thrown for unknown token');
+  } catch (e) {
+    var okB = (e.code === 'UNAUTHORIZED');
+    Logger.log('  b) ' + (okB ? '✓ PASS' : '✗ FAIL') + ' — threw: ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+
+  // c) + d) token real (rellenar)
+  var SIGNING_TOKEN_REAL = 'REPLACE-WITH-REAL-SIGNING-TOKEN';
+  if (SIGNING_TOKEN_REAL.indexOf('REPLACE-') === 0) {
+    Logger.log('  c/d) (skip) — rellenar SIGNING_TOKEN_REAL para ejercer token válido / revocado.');
+    Logger.log('=== fin manual_testSigningTokenAuth ===');
+    return;
+  }
+  try {
+    var ctx = requireSigningToken_({ signing_token: SIGNING_TOKEN_REAL });
+    Logger.log('  d) ✓ resolved — signer_id=' + ctx.signer_id + ' session_id=' + ctx.session_id +
+               ' group=' + ctx.enrollment_group_id);
+  } catch (e) {
+    Logger.log('  c/d) threw (token revocado/expirado/ inválido): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+  Logger.log('=== fin manual_testSigningTokenAuth ===');
 }
 
 /**
