@@ -376,14 +376,21 @@ function doPost(e) {
       case 'reportUnsolicited':    result = reportUnsolicited_(payload);    break;
       case 'abandonSession':       result = abandonSession_(payload);       break;
       case 'resolveSigningToken':  result = resolveSigningToken_(payload);  break;
+      // ── CLI 40 (2026-06-02) — WS4 4 endpoints firma proxy a KMS (P118, HC-1) ──
+      // PROXIES finos al KMS con service token (patrón fetchQuestions_).
+      // GATE-D resuelto (proxy vs directa) → proxy. GATE-B modo conservador en
+      // submitGdprConsents (un set por sesión, sin fan-out per-guardian).
+      // Implementación en sección "WS4 — Wizard pre-firma proxies a KMS".
+      case 'saveBillingInfo':         result = saveBillingInfo_(payload);         break;
+      case 'submitGdprConsents':      result = submitGdprConsents_(payload);      break;
+      case 'confirmReview':           result = confirmReview_(payload);           break;
+      case 'initiateSigningSession':  result = initiateSigningSession_(payload);  break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
       // getTrackingData, getInterviewForEnrollment, getAdmissionDecisionForEnrollment,
       // getReservationPaymentInfo, getSigningTokenFromResumeToken eliminados —
       // sus consumidores frontend (TrackApplicationPage, Step8Status, Step9Interview,
       // Step10Decision, Step12Deposit) fueron borrados por CLI 59 al corregir el
-      // wizard a 11 steps canónicos. Los nuevos endpoints canónicos pendientes
-      // de implementar: enr.saveBillingInfo (P49), enr.submitGdprConsents (DL-E27),
-      // enr.confirmReview (DL-E28 §6), enr.initiateSigningSession (DL-E28 §7-§13).
+      // wizard a 11 steps canónicos.
       default:
         return jsonResponse_({ ok: false, error: 'Unknown action: ' + action }, 400);
     }
@@ -3850,6 +3857,257 @@ function resolveSigningToken_(p) {
   };
 }
 
+// ─── WS4 — Wizard pre-firma proxies a KMS (CLI 40, P118, GATE-D resuelto) ────
+//
+// Los 4 endpoints de firma (saveBillingInfo, submitGdprConsents, confirmReview,
+// initiateSigningSession) son PROXIES finos al KMS con service token (patrón
+// canónico fetchQuestions_, líneas ~1881-1945). El wizard family-facing es
+// anónimo (`access: ANYONE_ANONYMOUS`) y NO puede llamar al KMS directamente
+// — el KMS exige login Google (`Session.getActiveUser()`). Service token vía
+// Script Properties `KMS_DEPLOYMENT_URL` + `QB_SERVICE_TOKEN` resuelve el
+// puente anónimo↔KMS sin reimplementar lógica canónica.
+//
+// Cada proxy:
+//   1. Valida el `resume_token` family-facing (autenticación del wizard).
+//   2. Reenvía `signing_token` (gate post-AD del KMS para Steps 8-11).
+//   3. Construye envelope `{action, payload, requestId}` per contrato KMS
+//      (apiCall en kms-server/_api.gs).
+//   4. Devuelve la `data` del envelope (o re-lanza `error` para que el
+//      wizard `doPost` lo mapee al `{ok:false, error:...}` canónico).
+//
+// MODO CONSERVADOR GATE-B (submitGdprConsents): un set de consentimientos por
+// sesión / iniciador único, sin fan-out per-guardian. El estudio dual-parent
+// (`docs/kms/research/dual-parent-question-respondent-model-2026-06.md`) sigue
+// abierto — los proxies se ampliarán cuando GATE-B se resuelva.
+//
+// Cierra: P118 (4 endpoints firma) + HC-1 audit NIGHT-2.
+
+/**
+ * Helper común de proxy al KMS — réplica fina del patrón `fetchQuestions_`
+ * (líneas ~1903-1945). Lee Script Properties, construye request al endpoint
+ * `apiCall` del KMS y devuelve `envelope.data` o re-lanza `envelope.error`.
+ *
+ * @param {string} action — acción canónica del API_ROUTES del KMS
+ *                          (`enr.saveBillingInfo`, `enr.submitGdprConsents`,
+ *                          `enr.confirmReview`, `enr.initiateSigningSession`).
+ * @param {Object} payload — payload del request KMS (sin envelope).
+ * @returns {Object} `envelope.data` del KMS.
+ * @throws {Error} con `.code` = código del KMS, `.message` = mensaje detallado.
+ * @private
+ */
+function kmsProxy_(action, payload) {
+  const props        = PropertiesService.getScriptProperties();
+  const kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
+  const serviceToken = props.getProperty('QB_SERVICE_TOKEN');
+
+  if (!kmsUrl || !serviceToken) {
+    const err = new Error(
+      'KMS proxy no configurado: Script Properties KMS_DEPLOYMENT_URL y QB_SERVICE_TOKEN requeridas'
+    );
+    err.code = 'KMS_NOT_CONFIGURED';
+    throw err;
+  }
+
+  const envelope = {
+    action:    action,
+    payload:   Object.assign({ service_token: serviceToken }, payload || {}),
+    requestId: generateUuid_(),
+  };
+
+  let httpResp;
+  try {
+    httpResp = UrlFetchApp.fetch(kmsUrl, {
+      method:             'post',
+      contentType:        'text/plain',
+      payload:            JSON.stringify(envelope),
+      followRedirects:    true,
+      muteHttpExceptions: true,
+    });
+  } catch (netErr) {
+    const err = new Error('KMS proxy network error: ' + netErr.message);
+    err.code = 'KMS_NETWORK_ERROR';
+    throw err;
+  }
+
+  const status = httpResp.getResponseCode();
+  const text   = httpResp.getContentText();
+  if (status !== 200) {
+    const err = new Error('KMS proxy HTTP ' + status + ': ' + redact_(text.slice(0, 200)));
+    err.code = 'KMS_HTTP_ERROR';
+    throw err;
+  }
+
+  let resp;
+  try {
+    resp = JSON.parse(text);
+  } catch (parseErr) {
+    const err = new Error('KMS proxy non-JSON response: ' + redact_(text.slice(0, 200)));
+    err.code = 'KMS_BAD_RESPONSE';
+    throw err;
+  }
+
+  // Propaga el error del KMS tal cual al frontend (shape canónica
+  // `{success:false, error:{code, message}}`).
+  if (!resp || resp.success !== true) {
+    const errPayload = resp && resp.error ? resp.error : { code: 'KMS_UNKNOWN', message: 'no error object' };
+    const err = new Error(errPayload.message || ('KMS error: ' + errPayload.code));
+    err.code = errPayload.code || 'KMS_UNKNOWN';
+    throw err;
+  }
+
+  Logger.log('[kmsProxy_] action=' + action + ' ok requestId=' + envelope.requestId.substring(0, 8) + '...');
+  return resp.data;
+}
+
+/**
+ * Step 8 S-BILLING — datos fiscales pagador (P49 — DL-E28 §4.3).
+ *
+ * Proxy fino al KMS `enr.saveBillingInfo`. El wizard valida el resume_token
+ * de la familia (auth family-facing) y reenvía signing_token + datos
+ * fiscales. El KMS persiste en `enrGroupBilling` y marca el milestone
+ * de billing.
+ *
+ * Payload esperado (del frontend Step8Billing):
+ *   { resume_token, signing_token, payer_type, payer_person_id?, fiscal_name,
+ *     fiscal_tax_id?, fiscal_address_line1?, fiscal_address_city?,
+ *     fiscal_postal_code?, fiscal_country?, billing_email }
+ *
+ * @param {Object} p
+ * @returns {Object} `data` del KMS (`{ billing_id, confirmed_at, already_confirmed? }`).
+ */
+function saveBillingInfo_(p) {
+  const groupId = requireResumeToken_(p);
+  assertValidUuid_(groupId, 'enrollment_group_id');
+
+  if (!p || !p.signing_token) throw new Error('signing_token required');
+  const signingToken = String(p.signing_token).trim();
+  assertValidUuid_(signingToken, 'signing_token');
+
+  return kmsProxy_('enr.saveBillingInfo', {
+    signing_token:        signingToken,
+    enrollment_group_id:  groupId,
+    payer_type:           p.payer_type           || null,
+    payer_person_id:      p.payer_person_id      || null,
+    fiscal_name:          p.fiscal_name          || null,
+    fiscal_tax_id:        p.fiscal_tax_id        || null,
+    fiscal_address_line1: p.fiscal_address_line1 || null,
+    fiscal_address_city:  p.fiscal_address_city  || null,
+    fiscal_postal_code:   p.fiscal_postal_code   || null,
+    fiscal_country:       p.fiscal_country       || 'ES',
+    billing_email:        p.billing_email        || null,
+  });
+}
+
+/**
+ * Step 9 S-GDPR — submit 7 consents GDPR (DL-E27 §2 reformulado per DL-S64 §2.4).
+ *
+ * MODO CONSERVADOR GATE-B (acordado 2026-06-01): un set de consentimientos por
+ * sesión de firma / iniciador único, sin fan-out per-guardian. El estudio
+ * dual-parent (`docs/kms/research/dual-parent-question-respondent-model-2026-06.md`)
+ * sigue abierto — cuando GATE-B se resuelva, el proxy se ampliará per-guardian.
+ *
+ * Proxy fino al KMS `enr.submitGdprConsents`. El KMS:
+ *   - Inserta N filas en sysConsentsLog (1 por consent).
+ *   - Obtiene sello FreeTSA por consent (graceful fallback si TSA falla).
+ *   - Si GDPR_SCHOOL rechazado → `{blocked:true}` SIN completar milestone.
+ *   - Si no bloqueado → completa milestone GDPR_CONSENTS_SUBMITTED per signer.
+ *
+ * Payload esperado:
+ *   { resume_token, signing_token, signer_ip?, consents: [
+ *     { consent_type_code, consent_use?, consented, consent_text_shown,
+ *       consent_text_version?, language?, signed_method?, user_agent?,
+ *       evidence_metadata_json? }, ...
+ *   ] }
+ *
+ * @param {Object} p
+ * @returns {Object} `data` del KMS (`{ blocked, milestone?, consents_recorded, ... }`).
+ */
+function submitGdprConsents_(p) {
+  const groupId = requireResumeToken_(p);
+  assertValidUuid_(groupId, 'enrollment_group_id');
+
+  if (!p || !p.signing_token) throw new Error('signing_token required');
+  const signingToken = String(p.signing_token).trim();
+  assertValidUuid_(signingToken, 'signing_token');
+
+  if (!Array.isArray(p.consents) || !p.consents.length) {
+    throw new Error('consents must be a non-empty array');
+  }
+
+  // GATE-B modo conservador: pasamos el array consents[] tal cual sin
+  // estructura per-guardian adicional. El handler KMS lo persiste como un
+  // set para el signer del iniciador.
+  return kmsProxy_('enr.submitGdprConsents', {
+    signing_token: signingToken,
+    signer_ip:     p.signer_ip || null,
+    consents:      p.consents,
+  });
+}
+
+/**
+ * Step 10 S-REVIEW — confirma lectura de documentos (DL-E28 §6.2 reformulado
+ * per DL-S64 §2.4).
+ *
+ * Proxy fino al KMS `enr.confirmReview`. El KMS completa el milestone
+ * `REVIEW_CONFIRMED` para el signer (idempotente — si ya estaba COMPLETED
+ * devuelve `{idempotent:true}`).
+ *
+ * Payload esperado: `{ resume_token, signing_token }`.
+ *
+ * @param {Object} p
+ * @returns {Object} `data` del KMS (`{ idempotent, milestone }`).
+ */
+function confirmReview_(p) {
+  const groupId = requireResumeToken_(p);
+  assertValidUuid_(groupId, 'enrollment_group_id');
+
+  if (!p || !p.signing_token) throw new Error('signing_token required');
+  const signingToken = String(p.signing_token).trim();
+  assertValidUuid_(signingToken, 'signing_token');
+
+  return kmsProxy_('enr.confirmReview', {
+    signing_token: signingToken,
+  });
+}
+
+/**
+ * Step 11 S-SIGN — inicia sesión de firma (DL-E28 §7-§13, §9.1).
+ *
+ * Proxy fino al KMS `enr.initiateSigningSession`. El KMS orquesta:
+ *   (a) Genera/obtiene `pre_sign_file_id` de Carta + Contrato (CLI 32,
+ *       `enr_generateSigningPackage_`).
+ *   (b) Crea UNA sesión multi-documento vía `sys_createSigningSession_`
+ *       (WS1b, framework DL-S46 §6) anclada a
+ *       `(ENR_ADMISSION_SCHOOL, enrollment_group_id)`.
+ *   (c) Invoca `sys_initiateSigningSession_` que dispatcha al driver
+ *       Click & Sign real (CLI 25) — si las credenciales sandbox no están,
+ *       el driver puede operar en modo mock via `is_mock=true` en
+ *       `sysTenantServiceProviders_T`.
+ *   (d) Devuelve signing_url + envelope_id + estado de la sesión.
+ *
+ * Payload esperado: `{ resume_token, signing_token? }`. El KMS resuelve
+ * guardians, documentos y proveedor de firma desde el tenant config.
+ *
+ * @param {Object} p
+ * @returns {Object} `data` del KMS (`{ session_id, envelopeId, signerUrls, state }`).
+ */
+function initiateSigningSession_(p) {
+  const groupId = requireResumeToken_(p);
+  assertValidUuid_(groupId, 'enrollment_group_id');
+
+  // signing_token es opcional aquí — la sesión la crea el KMS por
+  // enrollment_group_id; el signing_token se devuelve en signerUrls.
+  // Si el frontend ya tiene uno previo (re-init), lo reenvía para idempotencia.
+  const payload = { enrollment_group_id: groupId };
+  if (p && p.signing_token) {
+    const signingToken = String(p.signing_token).trim();
+    assertValidUuid_(signingToken, 'signing_token');
+    payload.signing_token = signingToken;
+  }
+
+  return kmsProxy_('enr.initiateSigningSession', payload);
+}
+
 // ─── Promotion logic ──────────────────────────────────────────────────────────
 // promoteEnrollment_ removed 2026-05-30 (CLI 63 — KAL-3 closed). The canonical
 // operation lives in the KMS as enr.promoteToCore (kis-app/kms-server/enr/
@@ -4650,4 +4908,138 @@ function manual_diagResumeToken() {
   }
 
   Logger.log('=== fin diag ===');
+}
+
+/**
+ * Smoke test wrapper para los 4 proxies WS4 (CLI 40).
+ *
+ * Verifica que kmsProxy_ está bien configurado (Script Properties presentes)
+ * y que cada proxy lanza el código de error esperado cuando recibe un payload
+ * inválido (resume_token vacío, signing_token mal formado, etc.). NO ejerce
+ * el flujo end-to-end — para eso ver `manual_testWs4ProxyFromWizard`.
+ *
+ * Salida esperada: 4 secciones (saveBilling / submitGdpr / confirmReview /
+ * initiateSigning), cada una con PASS si el handler rechaza el payload inválido
+ * con el código esperado (`Missing resume_token` o `Invalid UUID`).
+ */
+function manual_testWs4ProxyDryRun() {
+  Logger.log('=== manual_testWs4ProxyDryRun — 4 proxies WS4 (CLI 40) ===');
+
+  const props        = PropertiesService.getScriptProperties();
+  const kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
+  const serviceToken = props.getProperty('QB_SERVICE_TOKEN');
+  Logger.log('[CFG] KMS_DEPLOYMENT_URL set=' + !!kmsUrl + ' QB_SERVICE_TOKEN set=' + !!serviceToken);
+  if (!kmsUrl || !serviceToken) {
+    Logger.log('  ⚠ Script Properties faltantes — kmsProxy_ devolverá KMS_NOT_CONFIGURED.');
+  }
+
+  const cases = [
+    { name: 'saveBillingInfo_',        fn: saveBillingInfo_,        payload: {} },
+    { name: 'submitGdprConsents_',     fn: submitGdprConsents_,     payload: {} },
+    { name: 'confirmReview_',          fn: confirmReview_,          payload: {} },
+    { name: 'initiateSigningSession_', fn: initiateSigningSession_, payload: {} },
+  ];
+
+  cases.forEach(function(c) {
+    Logger.log('--- ' + c.name + ' empty payload ---');
+    try {
+      c.fn(c.payload);
+      Logger.log('  ✗ FAIL — should have thrown for empty payload');
+    } catch (e) {
+      Logger.log('  ✓ PASS — threw: ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+    }
+  });
+
+  Logger.log('=== fin manual_testWs4ProxyDryRun ===');
+}
+
+/**
+ * Documentación operativa (no ejecutable directamente — Diego debe rellenar
+ * los placeholders con datos reales). Simula la invocación de los 4 proxies
+ * WS4 desde el wizard con un resume_token + signing_token reales.
+ *
+ * PRE-REQUISITOS:
+ *   1. Una sesión DRAFT en enrEnrollmentGroups con resume_token conocido.
+ *   2. Una signing_session ACTIVE asociada al grupo con un signer + signing_token.
+ *   3. Script Properties KMS_DEPLOYMENT_URL + QB_SERVICE_TOKEN configuradas.
+ *
+ * USO:
+ *   1. Rellenar RESUME_TOKEN_REAL y SIGNING_TOKEN_REAL abajo con valores
+ *      del entorno de prueba.
+ *   2. Ejecutar desde el editor GAS.
+ *   3. Leer los logs paso a paso — cada proxy debe devolver `data` del KMS
+ *      o lanzar un error con código KMS legible.
+ */
+function manual_testWs4ProxyFromWizard() {
+  const RESUME_TOKEN_REAL  = 'REPLACE-WITH-REAL-RESUME-TOKEN';
+  const SIGNING_TOKEN_REAL = 'REPLACE-WITH-REAL-SIGNING-TOKEN';
+
+  if (RESUME_TOKEN_REAL.indexOf('REPLACE-') === 0) {
+    Logger.log('manual_testWs4ProxyFromWizard: rellenar RESUME_TOKEN_REAL + SIGNING_TOKEN_REAL antes de ejecutar.');
+    return;
+  }
+
+  Logger.log('=== manual_testWs4ProxyFromWizard ===');
+  Logger.log('  resume_token=' + RESUME_TOKEN_REAL.slice(0, 8) + '...');
+  Logger.log('  signing_token=' + SIGNING_TOKEN_REAL.slice(0, 8) + '...');
+
+  const tries = [
+    {
+      name: 'saveBillingInfo (Step 8)',
+      fn: function() {
+        return saveBillingInfo_({
+          resume_token:  RESUME_TOKEN_REAL,
+          signing_token: SIGNING_TOKEN_REAL,
+          payer_type:    'GUARDIAN',
+          fiscal_name:   'TEST — manual_testWs4ProxyFromWizard',
+          fiscal_tax_id: '12345678Z',
+          billing_email: 'test@example.org',
+        });
+      },
+    },
+    {
+      name: 'submitGdprConsents (Step 9) — modo conservador GATE-B',
+      fn: function() {
+        return submitGdprConsents_({
+          resume_token:  RESUME_TOKEN_REAL,
+          signing_token: SIGNING_TOKEN_REAL,
+          consents: [{
+            consent_type_code:  'GDPR_SCHOOL',
+            consented:          true,
+            consent_text_shown: 'TEST consent text',
+          }],
+        });
+      },
+    },
+    {
+      name: 'confirmReview (Step 10)',
+      fn: function() {
+        return confirmReview_({
+          resume_token:  RESUME_TOKEN_REAL,
+          signing_token: SIGNING_TOKEN_REAL,
+        });
+      },
+    },
+    {
+      name: 'initiateSigningSession (Step 11)',
+      fn: function() {
+        return initiateSigningSession_({
+          resume_token:  RESUME_TOKEN_REAL,
+          signing_token: SIGNING_TOKEN_REAL,
+        });
+      },
+    },
+  ];
+
+  tries.forEach(function(t) {
+    Logger.log('--- ' + t.name + ' ---');
+    try {
+      const result = t.fn();
+      Logger.log('  ✓ OK — data=' + JSON.stringify(result).slice(0, 300));
+    } catch (e) {
+      Logger.log('  ✗ THREW: ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+    }
+  });
+
+  Logger.log('=== fin manual_testWs4ProxyFromWizard ===');
 }
