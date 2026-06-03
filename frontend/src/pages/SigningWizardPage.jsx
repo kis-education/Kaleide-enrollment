@@ -106,6 +106,22 @@ export default function SigningWizardPage() {
       return;
     }
 
+    // === KAL-7 pattern (CLI 81 / S4 SIGN-URL): strip the signing_token from the
+    // URL bar / history BEFORE any await — same regression fix already applied to
+    // ResumePage (resume_token). HashRouter keeps the route + query in
+    // location.hash, so replacing the hash with '#/sign' drops the signing_token
+    // from the address bar, browser history, screen shares and the Referer header
+    // (combined with the no-referrer meta in index.html). The token survives in
+    // React state (setSigningToken below) for the resolve + signing API calls.
+    try {
+      const cleanUrl = window.location.pathname + window.location.search + '#/sign';
+      window.history.replaceState(null, '', cleanUrl);
+    } catch (e) {
+      // replaceState can throw in very old browsers / sandboxed iframes — non-fatal.
+      log.warn('SigningWizardPage: history.replaceState failed (non-fatal)', { message: e.message });
+    }
+
+    // KAL-11: log only an 8-char preview, never the full bearer token.
     log.info('SigningWizardPage: resolving signing_token', { token: token.substring(0, 8) + '...' });
     setSigningToken(token);
 

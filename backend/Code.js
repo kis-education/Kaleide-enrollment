@@ -250,7 +250,32 @@ function requireResumeToken_(payload) {
   if (!rows || !rows.length) {
     throw new Error('Unauthorized: resume_token not recognized');
   }
-  const tokenGroupId = rows[0].enrollment_group_id;
+  const group = rows[0];
+
+  // === CLI 81 (S8 / KAL-NEW-7): TTL + abandoned_at gate ──────────────────────
+  // Before this fix, an expired or phished-then-abandoned resume_token was
+  // rejected by resumeSession_ (the read gate) but still ACCEPTED by every
+  // mutation handler that derives its group via requireResumeToken_
+  // (saveStep_, saveResponses_, uploadDocument_, submitEnrollmentSession_).
+  // We mirror the exact canonical logic from resumeSession_ (~line 1118) so the
+  // write gate and the read gate agree on what "valid token" means. No
+  // expires_at column exists — the TTL is derived from created_at (7-day
+  // window), and submitted groups are exempt (they must stay accessible so the
+  // family can always view / be reopened for what they sent).
+  if (group.abandoned_at) {
+    Logger.log(redact_('[requireResumeToken_] reject: abandoned group=' + group.enrollment_group_id));
+    throw new Error('Unauthorized: resume_token abandoned');
+  }
+  if (!group.submitted_at) {
+    const RESUME_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+    const createdAt = group.created_at ? new Date(group.created_at).getTime() : 0;
+    if (createdAt && (Date.now() - createdAt) > RESUME_TOKEN_TTL_MS) {
+      Logger.log(redact_('[requireResumeToken_] reject: expired group=' + group.enrollment_group_id));
+      throw new Error('Unauthorized: resume_token expired (7 days)');
+    }
+  }
+
+  const tokenGroupId = group.enrollment_group_id;
   // Cross-group guard: if payload also provides group_id (legacy alias
   // `application_id` included), it MUST match the one resolved from token.
   const payloadGroupId = payload && (payload.enrollment_group_id || payload.application_id);
@@ -1461,6 +1486,14 @@ function submitEnrollmentSession_(p) {
   // KAL-4: derive authorised group_id from resume_token; never trust the
   // payload's enrollment_group_id directly. Cross-check inside the helper.
   const enrollmentGroupId = requireResumeToken_(p);
+
+  // CLI 81 (S9 / SUBMIT-REPLAY): block re-submit of an already-submitted (or
+  // abandoned) group. Without this gate a re-POST re-stamps submitted_at,
+  // regenerates the PDF and re-sends the confirmation emails. The other three
+  // mutation handlers (saveStep_, saveResponses_, uploadDocument_) already call
+  // this guard since CLI 26 — submit was the one that slipped through. Throws
+  // Error{code:'NOT_EDITABLE'} → doPost maps it to HTTP 200 {ok:false,error}.
+  assertGroupEditable_(enrollmentGroupId);
 
   const now = new Date().toISOString();
 
@@ -3792,9 +3825,13 @@ function generateConsentPdf_(applicationId, app, guardians, applicants, consentR
  *
  * Per roadmap §4.2 (wizard-admissions-roadmap.md) + DL-E24 §6.
  *
+ * CLI 81 (S5 / KAL-NEW-1): the return shape NO LONGER includes signing_url —
+ * the pre-auth resolve must not disclose the provider signing URL with only the
+ * bearer token. signing_url[] is materialised by initiateSigningSession_.
+ *
  * @param {{ signing_token: string }} p
  * @returns {{ valid: true, signer_id, session_id, enrollment_group_id,
- *             guardian_person_id, signer_role, signer_status, steps, signing_url }
+ *             guardian_person_id, signer_role, signer_status, steps }
  *        | { valid: false, reason: 'INVALID'|'EXPIRED'|'REVOKED', state?: string }}
  */
 function resolveSigningToken_(p) {
@@ -3897,7 +3934,13 @@ function resolveSigningToken_(p) {
       review_completed:  reviewCompleted,
       signed:            signed,
     },
-    signing_url: signer['signing_url'] || null,
+    // signing_url removed (CLI 81 / S5 / KAL-NEW-1 mitigation Stage 1): the
+    // pre-auth resolve must NOT disclose the materialised provider signing URL
+    // with only the bearer token. The signing_url[] is returned exclusively by
+    // initiateSigningSession_ (session.signerUrls) once the guardian is inside
+    // the S-SIGN step and the token has already been stripped from the URL (S4).
+    // SigningSteps.jsx reads signerUrls from initiateSigningSession, never from
+    // resolveSigningToken — verified CLI 81.
   };
 }
 
@@ -5122,4 +5165,75 @@ function manual_testWs4ProxyFromWizard() {
   });
 
   Logger.log('=== fin manual_testWs4ProxyFromWizard ===');
+}
+
+// ─── CLI 81 — Wizard signing_token URL clean + disclosure + TTL ──────────────
+// Tests para S4 (frontend, verificable por grep) + S5 + S8 + S9. Ejecutar desde
+// el GAS editor tras `clasp push --force`. Convención: sin trailing `_` para que
+// aparezcan en el selector de funciones (CLAUDE.md §funciones manual_*).
+
+/**
+ * CLI 81 (S5 / KAL-NEW-1): verifica que resolveSigningToken_ ya no devuelve
+ * signing_url en su shape de respuesta. El signing_url solo debe materializarse
+ * desde initiateSigningSession_ (session.signerUrls).
+ */
+function manual_testResolveSigningTokenNoSigningUrl() {
+  const TOKEN = 'REPLACE-WITH-REAL-SIGNING-TOKEN';
+  if (TOKEN.indexOf('REPLACE-') === 0) {
+    Logger.log('manual_testResolveSigningTokenNoSigningUrl: rellenar TOKEN con un signing_token real antes de ejecutar.');
+    return;
+  }
+  Logger.log('=== manual_testResolveSigningTokenNoSigningUrl ===');
+  const res = resolveSigningToken_({ signing_token: TOKEN });
+  Logger.log('  resolved keys: ' + Object.keys(res).join(','));
+  if ('signing_url' in res) {
+    Logger.log('  ✗ FAIL: signing_url leaked from resolveSigningToken_');
+  } else {
+    Logger.log('  ✓ PASS: signing_url not present in resolveSigningToken_ response');
+  }
+}
+
+/**
+ * CLI 81 (S8 / KAL-NEW-7): verifica que requireResumeToken_ rechaza un
+ * resume_token cuyo grupo está expirado (created_at > 7 días, sin submitted_at)
+ * o abandonado. Rellena con un resume_token cuyo grupo cumpla esa condición —
+ * o usa manual_diagResumeToken para inspeccionar created_at/abandoned_at antes.
+ */
+function manual_testResumeTokenExpired() {
+  const TOKEN = 'REPLACE-WITH-EXPIRED-OR-ABANDONED-RESUME-TOKEN';
+  if (TOKEN.indexOf('REPLACE-') === 0) {
+    Logger.log('manual_testResumeTokenExpired: rellenar TOKEN con un resume_token expirado/abandonado antes de ejecutar.');
+    return;
+  }
+  Logger.log('=== manual_testResumeTokenExpired ===');
+  try {
+    const groupId = requireResumeToken_({ resume_token: TOKEN });
+    Logger.log('  ✗ FAIL: expired/abandoned token accepted, group=' + groupId);
+  } catch (e) {
+    Logger.log('  ✓ PASS: token rejected, error=' + e.message);
+  }
+}
+
+/**
+ * CLI 81 (S9 / SUBMIT-REPLAY): verifica que submitEnrollmentSession_ rechaza un
+ * re-submit de un grupo ya enviado (submitted_at IS NOT NULL) con NOT_EDITABLE,
+ * vía assertGroupEditable_. Rellena con un resume_token de un grupo ya submitted.
+ */
+function manual_testSubmitReplayRejected() {
+  const TOKEN = 'REPLACE-WITH-RESUME-TOKEN-OF-SUBMITTED-GROUP';
+  if (TOKEN.indexOf('REPLACE-') === 0) {
+    Logger.log('manual_testSubmitReplayRejected: rellenar TOKEN con un resume_token de un grupo ya submitted antes de ejecutar.');
+    return;
+  }
+  Logger.log('=== manual_testSubmitReplayRejected ===');
+  try {
+    const res = submitEnrollmentSession_({ resume_token: TOKEN });
+    Logger.log('  ✗ FAIL: re-submit accepted, res=' + JSON.stringify(res).slice(0, 200));
+  } catch (e) {
+    if (e.code === 'NOT_EDITABLE') {
+      Logger.log('  ✓ PASS: re-submit rejected with NOT_EDITABLE');
+    } else {
+      Logger.log('  ? UNEXPECTED error (not NOT_EDITABLE): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+    }
+  }
 }
