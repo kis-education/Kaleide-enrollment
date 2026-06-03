@@ -439,6 +439,10 @@ function doPost(e) {
       case 'fetchQuestions':       result = fetchQuestions_(payload);       break;
       case 'saveResponses':        result = saveResponses_(payload);        break;
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
+      // CLI 82 (KAL-NEW-5 / Anexo A Opción A): proxy de bytes. Sirve documentos
+      // PRIVADOS de Drive bajo gate de token (resume_token O signing_token) +
+      // guard IDOR de propiedad. Sustituye los enlaces públicos de Drive.
+      case 'getDocument':          result = getDocument_(payload);          break;
       case 'verifyRecaptcha':      result = verifyRecaptcha_(payload);      break;
       case 'fetchLookups':         result = fetchLookups_(payload);         break;
       case 'recognizeFamily':      result = recognizeFamily_(payload);      break;
@@ -1186,7 +1190,10 @@ function resumeSession_(p) {
   const relations   = (topRead[2].ok ? (topRead[2].data || []) : [])
     .map(r => ({ ...r, guardian_person_id: r.from_person_id, applicant_person_id: r.to_person_id }));
 
-  // Documents: dedup by file_id + shape for frontend (drive_url, document_type)
+  // Documents: dedup by file_id + shape for frontend.
+  // CLI 82 / KAL-NEW-5: NO drive_url. Sólo metadatos + file_id; los bytes se
+  // resuelven on-demand vía getDocument (proxy gateado por token). El enlace
+  // público de Drive desaparece del shape — nunca llega al cliente.
   let documents = [];
   if (topRead[3].ok) {
     const fileById = {};
@@ -1195,7 +1202,8 @@ function resumeSession_(p) {
       document_id:   f.file_id,
       file_id:       f.file_id,
       document_type: _docTypeFromRecType_(f.rec_type_code),
-      drive_url:     f.drive_file_id ? ('https://drive.google.com/file/d/' + f.drive_file_id + '/view') : '',
+      file_name:     f.file_name,
+      mimeType:      f.mime_type,
       uploaded_at:   f.created_at,
       rec_type_code: f.rec_type_code,
       status:        f.status,
@@ -2640,8 +2648,10 @@ function _docTypeFromRecType_(recTypeCode) {
  * @param {Object} p - { enrollment_id?|enrollment_group_id?|application_id?,
  *                       base64, mimeType, filename, document_type,
  *                       upload_idempotency_token? }
- * @returns {{ file_id: string, drive_url: string, document_id: string }}
+ * @returns {{ file_id: string, document_id: string }}
  *   (document_id is a legacy alias = file_id, kept for frontend compat)
+ *   CLI 82 / KAL-NEW-5: drive_url removed — read-back is served on-demand via
+ *   getDocument_ (proxy de bytes), never a public Drive link.
  */
 function uploadDocument_(p) {
   // KAL-4: derive authorised group_id from resume_token; never trust the
@@ -2682,20 +2692,57 @@ function uploadDocument_(p) {
       const row = existing[0];
       return {
         file_id:     row.file_id,
-        document_id: row.file_id,
-        drive_url:   row.drive_file_id ? ('https://drive.google.com/file/d/' + row.drive_file_id + '/view') : '',
+        document_id: row.file_id, // legacy alias
       };
     }
   } catch (_) { /* non-fatal: lookup might fail on first run if cache cold */ }
 
+  // === CLI 82 / KAL-NEW-5 segunda parte: validación server-side =================
+  // Allowlist MIME + magic-bytes + tope de tamaño. Cierra la segunda mitad de
+  // KAL-NEW-5 (el sharing era sólo la primera). Los magic-bytes se comparan a
+  // nivel de BYTE (no string): Utilities.base64Decode devuelve bytes con signo
+  // (Java byte[], 0xFF → -1) y getDataAsString() los mutaría con UTF-8 — un
+  // JPEG/PNG válido daría un falso MIME_MAGIC_MISMATCH. Por eso enmascaramos
+  // con `& 0xFF` y comparamos contra el prefijo esperado.
+  const ALLOWED_MIMES = {
+    'application/pdf': [0x25, 0x50, 0x44, 0x46], // %PDF
+    'image/jpeg':      [0xFF, 0xD8, 0xFF],
+    'image/png':       [0x89, 0x50, 0x4E, 0x47], // \x89PNG
+  };
+  const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+
+  if (!ALLOWED_MIMES[mimeType]) {
+    const err = new Error('UNSUPPORTED_MIME: ' + mimeType);
+    err.code = 'UNSUPPORTED_MIME';
+    throw err;
+  }
+  const decoded = Utilities.base64Decode(base64);
+  if (decoded.length > MAX_BYTES) {
+    const err = new Error('FILE_TOO_LARGE: ' + decoded.length + ' bytes (max ' + MAX_BYTES + ')');
+    err.code = 'FILE_TOO_LARGE';
+    throw err;
+  }
+  const expectedMagic = ALLOWED_MIMES[mimeType];
+  let magicOk = decoded.length >= expectedMagic.length;
+  for (let mi = 0; magicOk && mi < expectedMagic.length; mi++) {
+    if ((decoded[mi] & 0xFF) !== expectedMagic[mi]) magicOk = false;
+  }
+  if (!magicOk) {
+    const err = new Error('MIME_MAGIC_MISMATCH: declared=' + mimeType);
+    err.code = 'MIME_MAGIC_MISMATCH';
+    throw err;
+  }
+
   // ── Drive upload ───────────────────────────────────────────────────────────
-  const blob   = Utilities.newBlob(Utilities.base64Decode(base64), mimeType, filename);
+  // CLI 82 / KAL-NEW-5: el fichero NO se comparte públicamente. El default de
+  // Drive es privado al dueño del deployment (executeAs: USER_DEPLOYING). El
+  // read-back se sirve vía getDocument_ (proxy de bytes gateado por token +
+  // guard de propiedad).
+  const blob   = Utilities.newBlob(decoded, mimeType, filename);
   const folder = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
   const file   = folder.createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
   const driveFileId   = file.getId();
-  const driveUrl      = file.getUrl();
   const fileId        = generateUuid_();
   const now           = new Date().toISOString();
   const recTypeCode   = REC_TYPE_BY_DOCUMENT_TYPE[document_type] || 'OTHER';
@@ -2748,7 +2795,79 @@ function uploadDocument_(p) {
   return {
     file_id:     fileId,
     document_id: fileId, // legacy alias for frontends still reading document_id
-    drive_url:   driveUrl,
+  };
+}
+
+/**
+ * CLI 82 / KAL-NEW-5 / Anexo A Opción A: proxy de bytes de un documento.
+ *
+ * El frontend llama getDocument({resume_token|signing_token, file_id}) y recibe
+ * los bytes base64. El backend (manifest executeAs: USER_DEPLOYING → corre con
+ * la identidad y el scope `drive` completo del dueño) lee el fichero PRIVADO de
+ * Drive y lo entrega él mismo. Los ficheros ya NO son públicos (el sharing
+ * público se eliminó en uploadDocument_ y generateConsentPdf_).
+ *
+ * Acepta los DOS gates canónicos del wizard (ver CLAUDE.md §"Dos bearer tokens
+ * canónicos del wizard"):
+ *   - resume_token  → flujo /apply (familia pre-firma). Grupo vía requireResumeToken_.
+ *   - signing_token → flujo /sign (guardian firmante post-AD). Grupo vía requireSigningToken_.
+ *
+ * ⚠️ Guard IDOR de LECTURA obligatorio: como el backend corre como dueño puede
+ * leer CUALQUIER fichero del dueño. Verificamos que el recFiles del file_id
+ * pertenece al grupo del token (origin_reference == groupId). Sin esa
+ * comprobación esto sería un IDOR de lectura de todo Drive. Mismo patrón KAL-4
+ * aplicado a la lectura (CLAUDE.md §"IDOR — token enforcement obligatorio").
+ *
+ * @param {{ resume_token?: string, signing_token?: string, file_id: string }} p
+ * @returns {{ filename: string, mimeType: string, base64: string }}
+ */
+function getDocument_(p) {
+  // ── Gate dual: resume_token (/apply) O signing_token (/sign) ────────────────
+  // El enrollment_group_id autorizado se deriva SIEMPRE del token server-side,
+  // NUNCA del payload (KAL-4 IDOR).
+  let groupId;
+  if (p && p.resume_token) {
+    groupId = requireResumeToken_(p);
+  } else if (p && p.signing_token) {
+    const sctx = requireSigningToken_(p);
+    groupId = sctx.enrollment_group_id;
+  } else {
+    const err = new Error('resume_token or signing_token required');
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
+  if (!groupId) {
+    const err = new Error('Unauthorized: token resolved to no group');
+    err.code = 'UNAUTHORIZED';
+    throw err;
+  }
+
+  const fileId = p.file_id;
+  assertValidUuid_(fileId, 'file_id');
+
+  // ── Guard IDOR de lectura: el recFiles debe pertenecer al grupo del token ───
+  const rows = appsheetRequest_(T.REC_FILES, 'Find', [], {
+    Filter: '"file_id" = "' + appsheetEscape_(fileId) +
+            '" && "origin_reference" = "' + appsheetEscape_(groupId) + '"',
+  }) || [];
+  const row = rows.find(r => r && !r['deleted_at']);
+  if (!row) {
+    Logger.log(redact_('[getDocument_] UNAUTHORIZED file=' + fileId + ' group=' + groupId));
+    const err = new Error('Unauthorized: file not in token group');
+    err.code = 'UNAUTHORIZED';
+    throw err;
+  }
+  if (!row.drive_file_id) {
+    const err = new Error('Document has no drive file');
+    err.code = 'NOT_FOUND';
+    throw err;
+  }
+
+  const blob = DriveApp.getFileById(row.drive_file_id).getBlob();
+  return {
+    filename: row.file_name,
+    mimeType: row.mime_type,
+    base64:   Utilities.base64Encode(blob.getBytes()),
   };
 }
 
@@ -3800,12 +3919,13 @@ function generateConsentPdf_(applicationId, app, guardians, applicants, consentR
 
   const folder  = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
   const pdfFile = folder.createFile(pdfBlob);
-  pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  // CLI 82 / KAL-NEW-5: el PDF NO se comparte públicamente. El consentimiento firmado (PII de
+  // menores + firma) queda privado al dueño del deployment. El read-back para
+  // revisión se sirve vía getDocument_ (proxy de bytes gateado por token).
 
   docFile.setTrashed(true);
 
   return {
-    drive_url:       pdfFile.getUrl(),
     drive_file_id:   pdfFile.getId(),
     drive_folder_id: folder.getId(),
     mime_type:       'application/pdf',
@@ -5236,4 +5356,119 @@ function manual_testSubmitReplayRejected() {
       Logger.log('  ? UNEXPECTED error (not NOT_EDITABLE): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
     }
   }
+}
+
+// ─── CLI 82 — Wizard Drive privado + proxy bytes + MIME guard ────────────────
+// Tests para S6 / KAL-NEW-5 (Anexo A Opción A). Ejecutar desde el GAS editor
+// tras `clasp push --force`. Convención: sin trailing `_` para que aparezcan en
+// el selector de funciones (CLAUDE.md §funciones manual_*).
+
+/**
+ * CLI 82 (KAL-NEW-5): guard IDOR de lectura de getDocument_.
+ *
+ * Caso 1 (automático con tokens reales): resume_token válido + file_id de OTRO
+ *   grupo → UNAUTHORIZED (origin_reference != groupId del token).
+ * Caso 2 (automático): file_id malformado → BAD_REQUEST (assertValidUuid_).
+ * Caso 3 (automático): ni resume_token ni signing_token → BAD_REQUEST.
+ *
+ * Rellena MY_TOKEN con un resume_token real y OTHER_FILE_ID con un file_id
+ * (UUID v4) que pertenezca a OTRO grupo familiar para ejercer el guard real.
+ */
+function manual_testGetDocumentIdorGuard() {
+  Logger.log('=== manual_testGetDocumentIdorGuard (CLI 82 / KAL-NEW-5) ===');
+
+  // Caso 3 — sin token → BAD_REQUEST
+  try {
+    getDocument_({ file_id: '00000000-0000-4000-8000-000000000000' });
+    Logger.log('  ✗ FAIL Caso 3: aceptó llamada sin token');
+  } catch (e) {
+    Logger.log((e.code === 'BAD_REQUEST' ? '  ✓ PASS' : '  ? UNEXPECTED') +
+      ' Caso 3 (sin token): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+
+  // Caso 2 — file_id malformado → BAD_REQUEST (vía assertValidUuid_)
+  const MY_TOKEN = 'REPLACE-WITH-REAL-RESUME-TOKEN';
+  if (MY_TOKEN.indexOf('REPLACE-') === 0) {
+    Logger.log('  (Casos 1-2 requieren MY_TOKEN real — rellena MY_TOKEN + OTHER_FILE_ID y re-ejecuta.)');
+    Logger.log('=== fin manual_testGetDocumentIdorGuard ===');
+    return;
+  }
+  try {
+    getDocument_({ resume_token: MY_TOKEN, file_id: 'not-a-uuid' });
+    Logger.log('  ✗ FAIL Caso 2: aceptó file_id malformado');
+  } catch (e) {
+    Logger.log((/uuid/i.test(e.message) ? '  ✓ PASS' : '  ? UNEXPECTED') +
+      ' Caso 2 (file_id malformado): ' + e.message);
+  }
+
+  // Caso 1 — file_id de OTRO grupo con MY_TOKEN → UNAUTHORIZED
+  const OTHER_FILE_ID = 'REPLACE-WITH-FILE-ID-FROM-ANOTHER-GROUP';
+  if (OTHER_FILE_ID.indexOf('REPLACE-') === 0) {
+    Logger.log('  (Caso 1 requiere OTHER_FILE_ID real de otro grupo — rellénalo y re-ejecuta.)');
+    Logger.log('=== fin manual_testGetDocumentIdorGuard ===');
+    return;
+  }
+  try {
+    getDocument_({ resume_token: MY_TOKEN, file_id: OTHER_FILE_ID });
+    Logger.log('  ✗ FAIL Caso 1: cross-group file ACEPTADO (IDOR de lectura abierto!)');
+  } catch (e) {
+    Logger.log((e.code === 'UNAUTHORIZED' ? '  ✓ PASS' : '  ? UNEXPECTED') +
+      ' Caso 1 (cross-group): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+  Logger.log('=== fin manual_testGetDocumentIdorGuard ===');
+}
+
+/**
+ * CLI 82 (KAL-NEW-5 segunda parte): allowlist MIME + magic-bytes + tope server-
+ * side en uploadDocument_.
+ *
+ * Requiere un RESUME_TOKEN real de un grupo EDITABLE (DRAFT) porque la
+ * validación corre tras requireResumeToken_ + assertGroupEditable_. La
+ * validación lanza ANTES de cualquier escritura a Drive — los casos negativos
+ * no dejan side-effects.
+ *
+ * Caso A: mimeType 'text/html'        → UNSUPPORTED_MIME.
+ * Caso B: PDF con magic-bytes inválidos → MIME_MAGIC_MISMATCH.
+ * Caso C: PDF (magic OK) > 10 MB        → FILE_TOO_LARGE.
+ */
+function manual_testUploadDocumentMimeGuard() {
+  Logger.log('=== manual_testUploadDocumentMimeGuard (CLI 82 / KAL-NEW-5) ===');
+  const RESUME_TOKEN = 'REPLACE-WITH-EDITABLE-DRAFT-RESUME-TOKEN';
+  if (RESUME_TOKEN.indexOf('REPLACE-') === 0) {
+    Logger.log('manual_testUploadDocumentMimeGuard: rellenar RESUME_TOKEN con un resume_token de un grupo DRAFT editable.');
+    return;
+  }
+  const b64 = function(s) { return Utilities.base64Encode(Utilities.newBlob(s).getBytes()); };
+
+  // Caso A — UNSUPPORTED_MIME
+  try {
+    uploadDocument_({ resume_token: RESUME_TOKEN, base64: b64('<html></html>'),
+      mimeType: 'text/html', filename: 'evil.html', document_type: 'passport' });
+    Logger.log('  ✗ FAIL Caso A: text/html ACEPTADO');
+  } catch (e) {
+    Logger.log((e.code === 'UNSUPPORTED_MIME' ? '  ✓ PASS' : '  ? UNEXPECTED') +
+      ' Caso A (text/html): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+
+  // Caso B — MIME_MAGIC_MISMATCH (declara PDF pero los bytes no empiezan por %PDF)
+  try {
+    uploadDocument_({ resume_token: RESUME_TOKEN, base64: b64('NOT-A-REAL-PDF-FILE'),
+      mimeType: 'application/pdf', filename: 'fake.pdf', document_type: 'passport' });
+    Logger.log('  ✗ FAIL Caso B: PDF con magic inválido ACEPTADO');
+  } catch (e) {
+    Logger.log((e.code === 'MIME_MAGIC_MISMATCH' ? '  ✓ PASS' : '  ? UNEXPECTED') +
+      ' Caso B (magic mismatch): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+
+  // Caso C — FILE_TOO_LARGE (magic OK '%PDF' + relleno > 10 MB)
+  try {
+    const big = '%PDF-1.4\n' + new Array(11 * 1024 * 1024).join('A'); // ~11 MB
+    uploadDocument_({ resume_token: RESUME_TOKEN, base64: b64(big),
+      mimeType: 'application/pdf', filename: 'huge.pdf', document_type: 'passport' });
+    Logger.log('  ✗ FAIL Caso C: PDF > 10 MB ACEPTADO');
+  } catch (e) {
+    Logger.log((e.code === 'FILE_TOO_LARGE' ? '  ✓ PASS' : '  ? UNEXPECTED') +
+      ' Caso C (>10MB): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+  Logger.log('=== fin manual_testUploadDocumentMimeGuard ===');
 }

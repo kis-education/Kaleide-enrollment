@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../../api';
+import { fetchDocumentObjectUrl } from '../../utils/documentProxy';
 import { SIGNING_CONSENTS, SIGNING_CONSENT_TEXT_VERSION } from '../../signingConsentTexts';
 import * as log from '../../logger';
 
@@ -190,6 +191,10 @@ function SignReview({ signingToken, onDone, onBack }) {
   const [read, setRead] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
+  // CLI 82 / KAL-NEW-5: file_id → object URL (bytes vía getDocument + signing_token).
+  // Sustituye los enlaces públicos de Drive (m.drive_view_url) por previews
+  // servidas desde el proxy de bytes. Privados al dueño del deployment.
+  const [docUrls, setDocUrls] = useState({});
 
   useEffect(() => {
     let alive = true;
@@ -201,6 +206,25 @@ function SignReview({ signingToken, onDone, onBack }) {
       });
     return () => { alive = false; };
   }, [signingToken]); // eslint-disable-line
+
+  // Resuelve los bytes de cada documento del paquete vía el proxy y construye
+  // object URLs en memoria. Revoca todas las URLs al desmontar.
+  useEffect(() => {
+    if (!members || !members.length) return undefined;
+    let alive = true;
+    const created = [];
+    members.forEach(m => {
+      if (!m.file_id) return;
+      fetchDocumentObjectUrl({ file_id: m.file_id, signing_token: signingToken })
+        .then(({ url }) => {
+          if (!alive) { URL.revokeObjectURL(url); return; }
+          created.push(url);
+          setDocUrls(prev => ({ ...prev, [m.file_id]: url }));
+        })
+        .catch(e => log.error('SignReview: getDocument failed', { file_id: m.file_id, message: e.message }));
+    });
+    return () => { alive = false; created.forEach(u => URL.revokeObjectURL(u)); };
+  }, [members, signingToken]); // eslint-disable-line
 
   const confirm = async () => {
     if (!read) { setErr(t('signing.review.must_read')); return; }
@@ -244,26 +268,33 @@ function SignReview({ signingToken, onDone, onBack }) {
 
       {!loadErr && members && members.length > 0 && (
         <>
-          {members.map((m, i) => (
+          {members.map((m, i) => {
+            const docUrl = m.file_id ? docUrls[m.file_id] : null;
+            return (
             <div key={m.file_id || i} style={{ marginBottom: 18 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <strong style={{ color: 'var(--teal-dk)', fontSize: '0.92rem' }}>{docLabel(m)}</strong>
-                {m.drive_view_url && (
-                  <a href={m.drive_view_url} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem', color: 'var(--teal-dk)' }}>
+                {docUrl && (
+                  <a href={docUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem', color: 'var(--teal-dk)' }}>
                     {t('signing.review.open_doc')} <i className="bi bi-box-arrow-up-right ms-1" />
                   </a>
                 )}
               </div>
-              {m.drive_view_url && (
+              {docUrl ? (
                 <iframe
                   title={docLabel(m)}
-                  src={m.drive_view_url.replace('/view', '/preview')}
+                  src={docUrl}
                   style={{ width: '100%', height: 480, border: '1px solid var(--border)', borderRadius: 8 }}
                   sandbox="allow-scripts allow-same-origin allow-popups"
                 />
-              )}
+              ) : m.file_id ? (
+                <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>
+                  <span className="spinner-border spinner-border-sm me-2" />{t('signing.review.docs_loading')}
+                </div>
+              ) : null}
             </div>
-          ))}
+            );
+          })}
           <div className="form-check mt-2">
             <input type="checkbox" className="form-check-input" id="review_read"
               checked={read} onChange={e => setRead(e.target.checked)} />

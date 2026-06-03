@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
+import { openDocument } from '../../utils/documentProxy';
 import LockedBanner from '../../components/LockedBanner';
 import * as log from '../../logger';
 
@@ -25,8 +26,11 @@ function fileToBase64(file) {
 function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded, existing }) {
   const { t }    = useTranslation();
   const [status, setStatus] = useState(existing ? 'success' : '');
-  const [url,    setUrl]    = useState(existing?.drive_url || '');
+  // CLI 82 / KAL-NEW-5: ya no guardamos una drive_url pública; guardamos el
+  // file_id interno y resolvemos los bytes on-demand vía getDocument.
+  const [fileId, setFileId] = useState(existing?.file_id || '');
   const [err,    setErr]    = useState('');
+  const [viewing, setViewing] = useState(false);
 
   const handleFile = async (file) => {
     if (!file) return;
@@ -44,12 +48,25 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
         filename:      file.name,
         document_type: docType,
       });
-      setUrl(data.drive_url);
+      setFileId(data.file_id);
       setStatus('success');
-      onUploaded({ document_type: docType, drive_url: data.drive_url });
+      onUploaded({ document_type: docType, file_id: data.file_id });
     } catch (e) {
       setStatus('error');
       setErr(e.message);
+    }
+  };
+
+  const handleView = async () => {
+    if (!fileId || viewing) return;
+    setViewing(true);
+    try {
+      await openDocument({ file_id: fileId, resume_token: resumeToken });
+    } catch (e) {
+      log.error('Step6: getDocument failed', { message: e.message });
+      setErr(e.message);
+    } finally {
+      setViewing(false);
     }
   };
 
@@ -85,7 +102,19 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
         <div className="upload-status success">
           <i className="bi bi-check-circle me-1" />
           {t('doc.uploaded')} &nbsp;
-          <a href={url} target="_blank" rel="noreferrer">{t('doc.view')}</a>
+          {fileId && (
+            <button
+              type="button"
+              className="btn btn-link p-0"
+              style={{ fontSize: 'inherit', verticalAlign: 'baseline' }}
+              onClick={handleView}
+              disabled={viewing}
+            >
+              {viewing
+                ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.8em', height: '0.8em' }} />{t('doc.view')}</>
+                : t('doc.view')}
+            </button>
+          )}
         </div>
       )}
       {status === 'error' && (

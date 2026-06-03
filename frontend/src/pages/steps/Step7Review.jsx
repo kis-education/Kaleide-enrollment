@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall, fetchLookups } from '../../api';
+import { openDocument } from '../../utils/documentProxy';
 import { CONSENT_TEXTS } from '../../consentTexts';
 import * as log from '../../logger';
 
@@ -452,11 +453,15 @@ export default function Step7Review({ onBack }) {
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <i className="bi bi-check-circle-fill" style={{ color: '#2e7d32', fontSize: '0.9rem' }} />
                   <span style={{ color: 'var(--text)', fontWeight: 500 }}>{t('doc.uploaded')}</span>
-                  {d.drive_url && (
-                    <a href={d.drive_url} target="_blank" rel="noreferrer"
-                      style={{ fontSize: '0.8rem', color: 'var(--teal-dk)' }}>
+                  {/* CLI 82 / KAL-NEW-5: ver el documento vía proxy de bytes
+                      (getDocument + resume_token), nunca un enlace público. */}
+                  {d.file_id && (
+                    <button type="button" className="btn btn-link p-0"
+                      style={{ fontSize: '0.8rem', color: 'var(--teal-dk)', verticalAlign: 'baseline' }}
+                      onClick={() => openDocument({ file_id: d.file_id, resume_token: resumeToken })
+                        .catch(e => log.error('Step7: getDocument failed', { message: e.message }))}>
                       <i className="bi bi-box-arrow-up-right ms-1" />
-                    </a>
+                    </button>
                   )}
                 </span>
               </div>
