@@ -192,19 +192,24 @@ Para cambios que SÍ afectan la URL pública (refactor de dispatcher, nuevos end
 
 ### Wizard steps canónicos — NO inventar (regla 2026-05-30)
 
-El wizard tiene **11 steps**, todos en `/apply` (continuación, sin ruta separada). Los nombres y propósito vienen de `docs/kms/plan/wizard-admissions-roadmap.md` líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28:
+El wizard tiene **11 steps canónicos** (no inventar otros — ver anti-patrones abajo). Lo que cambió respecto a la redacción previa de esta sección: **el flujo NO es todo `/apply`**. El código vivo (CLI 45, 2026-06-02) separó la firma en una ruta propia. **El código ganó la discusión** y el roadmap §3 ola 4 ya lo describía bien — esta sección se corrige para reflejarlo (M5 readiness-2026-06-03; ver §"Dos bearer tokens canónicos del wizard" arriba + `Code.js:272`):
 
-1-7: Email, Persons, Relations, Health, Questions, Documents, Review (pre-AD, ya implementados).
-8 S-BILLING: datos fiscales pagador (P49, endpoint `enr.saveBillingInfo`).
-9 S-GDPR: 7 consentimientos GDPR por guardian + TSA (DL-E27, endpoint `enr.submitGdprConsents`).
-10 S-REVIEW: revisión Carta + Contrato + confirmación lectura (DL-E28 §6, endpoint `enr.confirmReview`).
-11 S-SIGN: firma Click & Sign (DL-E28 §7-§13, P50).
+- **Steps 1-7 (pre-AD) → ruta `/apply`** (continuación con `resume_token`, familia anónima): Email, Persons, Relations, Health, Questions, Documents, Review. Ya implementados.
+- **Steps 8-11 (firma, post-AD) → ruta SEPARADA `/sign?signing_token=…`** (`SigningWizardPage`, guardian firmante, autenticado con `signing_token`, no `resume_token`):
+  - 8 S-BILLING: datos fiscales pagador (endpoint `enr.saveBillingInfo`). *(Nota: P49/`enrGroupBilling` CANCELADO 2026-06-03 — billing canónico via `finBillingParties`, refactor del handler en CLI 84.)*
+  - 9 S-GDPR: 7 consentimientos GDPR por guardian + TSA (DL-E27, endpoint `enr.submitGdprConsents`).
+  - 10 S-REVIEW: revisión Carta + Contrato + confirmación lectura (DL-E28 §6, endpoint `enr.confirmReview`).
+  - 11 S-SIGN: firma Click & Sign (DL-E28 §7-§13, endpoint `enr.initiateSigningSession`).
 
-Los Steps 8-11 se desbloquean post-AD. Antes, locked con candado.
+Los nombres y propósito vienen de `docs/kms/plan/wizard-admissions-roadmap.md` líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28.
+
+**Dónde vive el código funcional de firma (CLI 45):** los Steps 8-11 funcionales se renderizan desde `frontend/src/pages/signing/SigningSteps.jsx` (bajo `/sign`). Los componentes homónimos bajo `/apply` (`frontend/src/pages/steps/Step8Billing.jsx`, etc.) son **placeholders permanentes** — NO contienen el trabajo funcional; no confundirlos al buscar la lógica de firma.
+
+Los Steps 8-11 se desbloquean post-AD (la sesión de firma se inicia staff-side con `enr.initiateSigningSession`, que emite el `signing_token`). El `/apply` pre-AD muestra los placeholders locked con candado hasta entonces.
 
 **Anti-patrones a NO repetir**:
 - NO inventar pasos como "Status", "Interview", "Decision", "Deposit", "Sign contract", "Enrolled". Si una sesión cloud cree que un step debería existir, primero verificar en el roadmap canónico.
-- NO crear ruta `/track/:token` separada — todo el wizard vive en `/apply`.
+- NO crear ruta `/track/:token` separada — el seguimiento de solicitud NO tiene ruta propia. **(Excepción legítima: la firma SÍ tiene ruta propia `/sign?signing_token` — Steps 8-11 post-AD, CLI 45. Es la ÚNICA ruta separada canónica del wizard; no confundirla con rutas inventadas tipo `/track`.)**
 - NO añadir endpoints frontend-only sin confirmar que están registrados en backend `doPost` dispatcher.
 
 Precedente: CLI 22 + CLI 28 + CLI 33-36 + Frontend-9-10 + Frontend-12 (2026-05-29/30) introdujeron steps inventados; CLI 59 corrigió 2026-05-30.
