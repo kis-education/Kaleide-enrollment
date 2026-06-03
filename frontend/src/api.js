@@ -82,7 +82,13 @@ export async function gasCall(action, payload = {}) {
 
   if (!data.ok) {
     log.error(`gasCall ${action}: server returned ok=false`, { error: data.error, full: data });
-    throw new Error(data.error || 'Unknown server error');
+    // data.error may be a string (err.message) or a structured object {code, message}
+    // (NOT_EDITABLE, KMS_NOT_CONFIGURED, FORBIDDEN, …). Normalize so Error.message is
+    // human-readable instead of "[object Object]" (M1 readiness-2026-06-03).
+    const msg = (data.error && typeof data.error === 'object')
+      ? (data.error.message || data.error.code)
+      : data.error;
+    throw new Error(msg || 'Unknown server error');
   }
 
   log.success(`✓ ${action} OK`, data);
