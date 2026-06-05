@@ -62,7 +62,7 @@ function App() {
         </Routes>
       </Suspense>
       </ErrorBoundary>
-      <DevLogger />
+      {!import.meta.env.PROD && <DevLogger />}
     </WizardProvider>
   )
 }
