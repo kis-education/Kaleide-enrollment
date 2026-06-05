@@ -10,6 +10,13 @@
  *
  * Mirrors the backend `redact_` helper in backend/Code.js. Keep regexes in
  * sync — they target the same shapes (RFC-light email, canonical UUIDv4).
+ *
+ * KAL-NEW-11 (security audit 2026-05-30): the shape-based regexes above only
+ * catch emails/UUIDs/token-keys. The wizard pushes whole step-data objects
+ * (persons, health) whose values are minors' names, dates of birth, allergies
+ * and medical conditions — Art. 9 GDPR special-category data with no universal
+ * regex shape. These are redacted by KEY NAME via PII_KEY_PATTERNS below.
+ * TODO Stage 2: add per-key parity to the backend `redact_` helper.
  */
 
 // KAL-11: was 500 — reduced to 50. The wizard generates ~5-10 log entries per
@@ -33,10 +40,48 @@ function redact(s) {
   return String(s).replace(EMAIL_RE, '[EMAIL]').replace(UUID_RE, '[UUID]');
 }
 
+// KAL-NEW-11: keys whose VALUE is PII (names, DOB, medical, address…) — not
+// detectable by a shape regex. Matched against object keys in redactDeep and
+// collapsed to a constant '[PII]' marker (NOT a preview — "Mar..." still
+// identifies a minor). Keep in sync with the backend redact_ when it gains
+// per-key support (TODO Stage 2).
+const PII_KEY_PATTERNS = [
+  /^first_name$/i,
+  /^last_name$/i,
+  /^full_name$/i,
+  /^name$/i,          // generic
+  /^dob$/i,
+  /^birth_date$/i,
+  /^date_of_birth$/i,
+  /^nationality(?:_.*)?$/i,
+  /^passport(?:_.*)?$/i,
+  /^national_id(?:_.*)?$/i,
+  /^id_number$/i,
+  /^address(?:_.*)?$/i,
+  /^street$/i,
+  /^postal_code$/i,
+  /^city$/i,
+  /^phone(?:_.*)?$/i,
+  /^medical/i,        // medical_condition, medical_notes, medical_cert, …
+  /^allerg/i,         // allergies, allergy_*
+  /^dietary/i,        // dietary_requirements, dietary_*
+  /^health(?:_.*)?$/i,
+  /^condition(?:_.*)?$/i,
+  /^school_history(?:_.*)?$/i,
+];
+
+function isPiiKey(k) {
+  return PII_KEY_PATTERNS.some(re => re.test(k));
+}
+
 /**
  * Walks a value (string/array/object) and returns a redacted clone.
- * Keys that look like tokens (`token`, `resume_token`, `*_token`) get
- * collapsed to a `<first8>...` preview to avoid leaking bearer secrets.
+ * - Keys matching PII_KEY_PATTERNS (names, DOB, medical, address…) →
+ *   collapsed to the constant '[PII]' marker (KAL-NEW-11). null/undefined
+ *   values are preserved as-is (no '[PII]' for absent data).
+ * - Keys that look like tokens (`token`, `resume_token`, `*_token`) →
+ *   collapsed to a `<first8>...` preview to avoid leaking bearer secrets.
+ * - Everything else → recursed + string values shape-redacted (email/UUID).
  */
 function redactDeep(value) {
   if (value === null || value === undefined) return value;
@@ -47,8 +92,12 @@ function redactDeep(value) {
     const out = {};
     for (const k of Object.keys(value)) {
       const v = value[k];
-      // Token-shaped keys → preview only.
-      if (/token$/i.test(k) && typeof v === 'string' && v.length > 8) {
+      // KAL-NEW-11: PII keys → constant marker (no preview). Preserve null/undefined.
+      if (isPiiKey(k)) {
+        out[k] = (v === null || v === undefined) ? v : '[PII]';
+      }
+      // KAL-11: token-shaped keys → preview only.
+      else if (/token$/i.test(k) && typeof v === 'string' && v.length > 8) {
         out[k] = v.slice(0, 8) + '...';
       } else {
         out[k] = redactDeep(v);
@@ -58,6 +107,10 @@ function redactDeep(value) {
   }
   return value;
 }
+
+// KAL-NEW-11: internal export for verification (see docs/prompts test cases).
+// Underscore prefix marks it as not part of the public logging API.
+export const _redactDeepForTest = redactDeep;
 
 function push(level, message, data) {
   // KAL-11: redact PII from both the message string and the data payload.
