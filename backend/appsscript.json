@@ -5,6 +5,9 @@
     "access": "ANYONE_ANONYMOUS",
     "executeAs": "USER_DEPLOYING"
   },
+  "executionApi": {
+    "access": "MYSELF"
+  },
   "dependencies": {
     "enabledAdvancedServices": [
       { "userSymbol": "Gmail", "serviceId": "gmail", "version": "v1" }
