@@ -520,12 +520,38 @@ function _checkMagicLinkRateLimit_(email) {
   }
   const countKey = 'magic_count_' + Utilities.base64EncodeWebSafe(email);
   const count = parseInt(cache.get(countKey) || '0', 10);
-  if (count >= 10) {
+  // KAL-NEW-12: cap bajado de 10 → 5 (el JSDoc/doc decían 3-5; 10 era demasiado
+  // permisivo). 5 deja margen para typos sin reabrir UX a abuso.
+  if (count >= 5) {
     const err = new Error('Too many magic-link requests for this email; try again in 1 hour');
     err.code = 'RATE_LIMITED';
     throw err;
   }
   cache.put(countKey, String(count + 1), 3600); // 1h TTL — sliding within window
+}
+
+/**
+ * KAL-6 / KAL-NEW-12: rate-limit por-IP/global (complementa el límite por-email).
+ * Bucket `magic_count_ip_<ip>` cap 20/hora.
+ *
+ * IMPORTANTE: GAS NO expone la IP del caller desde `doPost(e)`. Mientras no haya
+ * una fuente de IP real (proxy frontal o header `X-Forwarded-For` propagado), este
+ * helper recibe `null` y vuelve SIN tocar el cache (noop, sin throw) — queda visible
+ * y listo para wire-up futuro. NO inventes una fuente de IP que no exista.
+ *
+ * @param {string|null} ip - IP del caller, o null si no disponible (noop).
+ */
+function _checkMagicLinkRateLimitIp_(ip) {
+  if (!ip) return; // IP no disponible en GAS doPost — noop hasta que haya proxy/XFF.
+  const cache = CacheService.getScriptCache();
+  const countKey = 'magic_count_ip_' + Utilities.base64EncodeWebSafe(String(ip));
+  const count = parseInt(cache.get(countKey) || '0', 10);
+  if (count >= 20) {
+    const err = new Error('Too many requests from this network; try again in 1 hour');
+    err.code = 'RATE_LIMITED';
+    throw err;
+  }
+  cache.put(countKey, String(count + 1), 3600); // 1h TTL
 }
 
 // ─── Action handlers ──────────────────────────────────────────────────────────
@@ -562,10 +588,25 @@ function initEnrollmentSession_(p) {
     throw new Error('Invalid source_code: ' + sourceCode);
   }
 
-  // Verify reCAPTCHA before writing anything to the database.
-  // KMS_INTERNAL skips reCAPTCHA — staff is already authenticated upstream.
+  // KAL-NEW-4 (audit 2026-05-30): reCAPTCHA fail-CLOSED + gate de KMS_INTERNAL.
+  // El wizard es anónimo (access: ANYONE_ANONYMOUS) → cualquier caller de internet
+  // podía pasar source_code:'KMS_INTERNAL' para saltar reCAPTCHA. Ahora:
+  //  - KMS_INTERNAL exige un shared secret (Script Property KMS_INTERNAL_SHARED_SECRET);
+  //    si no coincide → rechazo (NO degradar silenciosamente a bypass).
+  //  - WEB_PUBLIC es fail-closed: exige RECAPTCHA_SECRET configurado (antes, si la
+  //    Script Property faltaba, la validación se saltaba — fail-open).
   const secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
-  if (secret && sourceCode === 'WEB_PUBLIC') {
+  if (sourceCode === 'KMS_INTERNAL') {
+    const expectedInternal = PropertiesService.getScriptProperties().getProperty('KMS_INTERNAL_SHARED_SECRET');
+    if (!expectedInternal || p.kms_internal_secret !== expectedInternal) {
+      throw new Error('Unauthorized source_code: KMS_INTERNAL');
+    }
+  } else if (sourceCode === 'WEB_PUBLIC') {
+    if (!secret) {
+      const err = new Error('reCAPTCHA not configured — contact admin');
+      err.code = 'RECAPTCHA_NOT_CONFIGURED';
+      throw err;
+    }
     if (!p.recaptcha_token) throw new Error('Missing reCAPTCHA token');
     const rcResult = verifyRecaptcha_({ token: p.recaptcha_token });
     if (!rcResult.pass) throw new Error('reCAPTCHA verification failed');
@@ -627,6 +668,7 @@ function initEnrollmentSession_(p) {
   }) || [];
   if (existingOpen.length) {
     _checkMagicLinkRateLimit_(normalizedEmail);
+    _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
 
     // Resolve person counts for all candidates in ONE query (filtered by OR).
     let personCountByGroup = {};
@@ -822,14 +864,20 @@ function recognizeFamily_(p, opts) {
   const email = (p && p.primary_email || '').toString().toLowerCase().trim();
   if (!email) throw new Error('Missing primary_email');
 
-  // ── reCAPTCHA gate for public calls ───────────────────────────────────────
+  // ── reCAPTCHA gate for public calls (KAL-NEW-4: fail-CLOSED) ──────────────
+  // Antes era fail-open (`if (secret)`): sin RECAPTCHA_SECRET la validación se
+  // saltaba. Ahora el caller público exige el secret configurado. El call interno
+  // (opts.internal — la familia ya pasó reCAPTCHA en init) sigue exento.
   if (!internal) {
     const secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
-    if (secret) {
-      if (!p.recaptcha_token) throw new Error('Missing reCAPTCHA token');
-      const rc = verifyRecaptcha_({ token: p.recaptcha_token });
-      if (!rc.pass) throw new Error('reCAPTCHA verification failed');
+    if (!secret) {
+      const err = new Error('reCAPTCHA not configured — contact admin');
+      err.code = 'RECAPTCHA_NOT_CONFIGURED';
+      throw err;
     }
+    if (!p.recaptcha_token) throw new Error('Missing reCAPTCHA token');
+    const rc = verifyRecaptcha_({ token: p.recaptcha_token });
+    if (!rc.pass) throw new Error('reCAPTCHA verification failed');
   }
 
   // ── Rate limit: 5/min per email (applies to internal and external) ─────────
@@ -917,6 +965,7 @@ function sendMagicLink_(p) {
     if (!grp) throw new Error('Enrollment group not found');
     if (grp.abandoned_at) throw new Error('This application was abandoned');
     _checkMagicLinkRateLimit_((grp.primary_email || '').toLowerCase().trim());
+    _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
 
     // Renew token + created_at for non-submitted sessions so the new link is
     // always valid for a fresh 7-day window regardless of when the session was
@@ -1858,7 +1907,16 @@ function sendVerificationCode_(p) {
   const primary_email     = p.primary_email;
   if (!enrollmentGroupId || !primary_email) throw new Error('Missing enrollment_group_id or primary_email');
 
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  // KAL-NEW-2.c: rate-limit el dispatcher sendVerificationCode (mismo bucket que magic-link
+  // — un email no puede pedir >N códigos/hora). Throw RATE_LIMITED antes de generar/enviar.
+  _checkMagicLinkRateLimit_(primary_email.toLowerCase().trim());
+
+  // KAL-NEW-2.a (audit 2026-05-30): código de 6 dígitos CSPRNG-grade. Math.random() es un
+  // PRNG no-criptográfico cuyo estado se puede inferir; Utilities.getUuid() es crypto-grade
+  // (mismo criterio que KAL-1 generateUuid_). Tomamos 8 hex chars → módulo al rango 6-díg
+  // manteniendo la forma UX (XXXXXX).
+  const uuidHex = Utilities.getUuid().replace(/-/g, '').slice(0, 8);
+  const code = (100000 + (parseInt(uuidHex, 16) % 900000)).toString();
   const cache = CacheService.getScriptCache();
   cache.put('verify_' + enrollmentGroupId, code, 600); // 10 min TTL
 
@@ -1893,11 +1951,26 @@ function verifyEmail_(p) {
   if (!enrollmentGroupId || !code) throw new Error('Missing enrollment_group_id or code');
 
   const cache    = CacheService.getScriptCache();
-  const stored   = cache.get('verify_' + enrollmentGroupId);
 
+  // KAL-NEW-2.b: lockout de intentos (anti fuerza-bruta 10^6). 5 intentos fallidos
+  // por group → TOO_MANY_ATTEMPTS sin revelar si el código era correcto. TTL 10 min
+  // (mismo que el código). Acierto → borra contador + código.
+  const attemptsKey = 'verify_attempts_' + enrollmentGroupId;
+  const attempts = parseInt(cache.get(attemptsKey) || '0', 10);
+  if (attempts >= 5) {
+    const errLock = new Error('Too many verification attempts; request a new code');
+    errLock.code = 'TOO_MANY_ATTEMPTS';
+    throw errLock;
+  }
+
+  const stored = cache.get('verify_' + enrollmentGroupId);
   if (!stored) throw new Error('Verification code expired or not found');
-  if (stored !== code.toString()) throw new Error('Invalid verification code');
+  if (stored !== code.toString()) {
+    cache.put(attemptsKey, String(attempts + 1), 600);
+    throw new Error('Invalid verification code');
+  }
 
+  cache.remove(attemptsKey);
   cache.remove('verify_' + enrollmentGroupId);
 
   // No DB write — `email_confirmed` columns are removed in DL-E15. The
@@ -2838,6 +2911,11 @@ function verifyRecaptcha_(p) {
   if (!token) throw new Error('Missing reCAPTCHA token');
 
   const secret   = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
+  // KAL-NEW-4: fail-closed — sin secret no se puede verificar → pass:false explícito
+  // (evita la llamada de red con secret vacío que Google rechazaría igualmente).
+  if (!secret) {
+    return { success: false, score: 0, pass: false };
+  }
   const response = UrlFetchApp.fetch('https://www.google.com/recaptcha/api/siteverify', {
     method:  'post',
     payload: { secret, response: token },
@@ -5456,4 +5534,106 @@ function manual_testReviewStepRejected() {
       (e.code ? ' (code=' + e.code + ')' : ''));
   }
   Logger.log('=== fin manual_testReviewStepRejected ===');
+}
+
+/**
+ * KAL-NEW-2.b — verifica el lockout de verifyEmail_ (5 intentos fallidos → 6º
+ * TOO_MANY_ATTEMPTS). Self-contained: usa un group_id sintético en ScriptCache,
+ * sin tocar BD. Limpia el cache al final. Ejecutar desde el editor GAS.
+ */
+function manual_testVerifyEmailLockout() {
+  const cache = CacheService.getScriptCache();
+  const gid = 'TEST-LOCKOUT-' + Utilities.getUuid().slice(0, 8);
+  cache.put('verify_' + gid, '123456', 600);
+  cache.remove('verify_attempts_' + gid);
+  let pass = true;
+  for (let i = 1; i <= 5; i++) {
+    try {
+      verifyEmail_({ enrollment_group_id: gid, code: '000000' });
+      Logger.log('FAIL: intento %s debió lanzar', i); pass = false;
+    } catch (e) {
+      if (e.code === 'TOO_MANY_ATTEMPTS') { Logger.log('FAIL: bloqueó demasiado pronto (intento %s)', i); pass = false; }
+      else Logger.log('intento %s → "%s" (esperado Invalid)', i, e.message);
+    }
+  }
+  try {
+    verifyEmail_({ enrollment_group_id: gid, code: '000000' });
+    Logger.log('FAIL: 6º intento debió bloquear'); pass = false;
+  } catch (e) {
+    if (e.code === 'TOO_MANY_ATTEMPTS') Logger.log('PASS: 6º intento → TOO_MANY_ATTEMPTS');
+    else { Logger.log('FAIL: 6º intento lanzó "%s" (esperado TOO_MANY_ATTEMPTS)', e.code || e.message); pass = false; }
+  }
+  cache.remove('verify_' + gid); cache.remove('verify_attempts_' + gid);
+  Logger.log('=== manual_testVerifyEmailLockout: %s ===', pass ? 'PASS' : 'FAIL');
+}
+
+/**
+ * KAL-NEW-4 — verifica reCAPTCHA fail-CLOSED. Temporalmente BORRA RECAPTCHA_SECRET
+ * (backup + restore en finally), invoca initEnrollmentSession_ WEB_PUBLIC → debe
+ * throw RECAPTCHA_NOT_CONFIGURED. ⚠️ Ejecutar SOLO desde el editor GAS (manipula una
+ * Script Property de producción durante <1s; el finally garantiza el restore).
+ */
+function manual_testRecaptchaFailClosed() {
+  const props = PropertiesService.getScriptProperties();
+  const backup = props.getProperty('RECAPTCHA_SECRET');
+  let pass = true;
+  try {
+    props.deleteProperty('RECAPTCHA_SECRET');
+    try {
+      initEnrollmentSession_({ source_code: 'WEB_PUBLIC', primary_email: 'test@kaleide.org' });
+      Logger.log('FAIL: debió lanzar RECAPTCHA_NOT_CONFIGURED'); pass = false;
+    } catch (e) {
+      if (e.code === 'RECAPTCHA_NOT_CONFIGURED') Logger.log('PASS: WEB_PUBLIC sin secret → RECAPTCHA_NOT_CONFIGURED (fail-closed)');
+      else { Logger.log('FAIL: lanzó "%s" (code=%s; esperado RECAPTCHA_NOT_CONFIGURED)', e.message, e.code); pass = false; }
+    }
+  } finally {
+    if (backup == null) props.deleteProperty('RECAPTCHA_SECRET'); else props.setProperty('RECAPTCHA_SECRET', backup);
+    Logger.log('RECAPTCHA_SECRET restaurado (%s)', backup == null ? 'estaba vacío' : 'OK');
+  }
+  Logger.log('=== manual_testRecaptchaFailClosed: %s ===', pass ? 'PASS' : 'FAIL');
+}
+
+/**
+ * KAL-NEW-4 — verifica el gate de KMS_INTERNAL. Caso1: sin secret configurado →
+ * Unauthorized. Caso2: secret configurado pero payload sin coincidir → Unauthorized.
+ * Caso3: secret correcto → PASA el gate (falla después en email inválido, SIN escribir
+ * BD). Backup+restore de KMS_INTERNAL_SHARED_SECRET en finally. Ejecutar desde editor GAS.
+ */
+function manual_testKmsInternalGate() {
+  const props = PropertiesService.getScriptProperties();
+  const KEY = 'KMS_INTERNAL_SHARED_SECRET';
+  const backup = props.getProperty(KEY);
+  let pass = true;
+  try {
+    // Caso 1 — sin secret configurado
+    props.deleteProperty(KEY);
+    try {
+      initEnrollmentSession_({ source_code: 'KMS_INTERNAL', primary_email: 'x@kaleide.org' });
+      Logger.log('FAIL caso1: debió lanzar Unauthorized'); pass = false;
+    } catch (e) {
+      if (/Unauthorized source_code: KMS_INTERNAL/.test(e.message)) Logger.log('PASS caso1: KMS_INTERNAL sin secret → Unauthorized');
+      else { Logger.log('FAIL caso1: lanzó "%s"', e.message); pass = false; }
+    }
+    // Caso 2 — secret configurado, payload sin coincidir
+    const testSecret = 'test-secret-' + Utilities.getUuid();
+    props.setProperty(KEY, testSecret);
+    try {
+      initEnrollmentSession_({ source_code: 'KMS_INTERNAL', primary_email: 'x@kaleide.org' });
+      Logger.log('FAIL caso2: debió lanzar Unauthorized'); pass = false;
+    } catch (e) {
+      if (/Unauthorized source_code: KMS_INTERNAL/.test(e.message)) Logger.log('PASS caso2: secret no coincide → Unauthorized');
+      else { Logger.log('FAIL caso2: lanzó "%s"', e.message); pass = false; }
+    }
+    // Caso 3 — secret correcto: pasa el gate, falla después en email inválido (sin BD)
+    try {
+      initEnrollmentSession_({ source_code: 'KMS_INTERNAL', kms_internal_secret: testSecret, primary_email: 'not-an-email' });
+      Logger.log('NOTE caso3: no lanzó — gate pasó (revisar si creó sesión)');
+    } catch (e) {
+      if (/Unauthorized source_code/.test(e.message)) { Logger.log('FAIL caso3: gate bloqueó secret válido: %s', e.message); pass = false; }
+      else Logger.log('PASS caso3: gate pasó secret válido (falló después en "%s" — sin escribir BD)', e.message);
+    }
+  } finally {
+    if (backup == null) props.deleteProperty(KEY); else props.setProperty(KEY, backup);
+  }
+  Logger.log('=== manual_testKmsInternalGate: %s ===', pass ? 'PASS' : 'FAIL');
 }
