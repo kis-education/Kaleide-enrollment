@@ -1383,7 +1383,6 @@ function saveStep_(p) {
     if (payload.desired_start_date) groupRow.desired_start_date = normalizeDate_(payload.desired_start_date);
     if (payload.source)            groupRow.source_locale     = payload.source;
   }
-  // Note: `review` step no longer writes to the group — it walks enrollments below.
   appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [groupRow]);
 
   let extra = null;
@@ -1391,52 +1390,10 @@ function saveStep_(p) {
     case 'application':
       // Group-level fields already written above
       break;
-    case 'review': {
-      // Log status transition across all enrollments in the group when a
-      // status_code is supplied. Uses sysStates_T + sysStateTransitionLog (DL-S37).
-      if (payload.status_code) {
-        // KAL-5: status_code is a short uppercase alphanumeric code (e.g. RQ, IN).
-        // Strict whitelist regex prevents injection via the payload.
-        if (typeof payload.status_code !== 'string' || !/^[A-Z0-9_]{1,32}$/.test(payload.status_code)) {
-          throw new Error('Invalid status_code: ' + JSON.stringify(payload.status_code));
-        }
-        const newStateRows = appsheetRequest_(T.STATES_T, 'Find', [], {
-          Filter: '"state_code" = "' + appsheetEscape_(payload.status_code) + '" && "school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "entity_type_code" = "ENR_ADMISSION_SCHOOL"'
-        });
-        const newStateId = newStateRows && newStateRows[0]
-          ? newStateRows[0].state_id : null;
-        if (newStateId) {
-          const enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-            Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-          }) || [];
-          enrollments.forEach(enr => {
-            appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
-              log_id:              generateUuid_(),
-              school_id:           SCHOOL_ID,
-              entity_type_code:    'ENR_ADMISSION_SCHOOL',
-              entity_id:           enr.enrollment_id,
-              transition_id:       null,
-              from_state_id:       enr.current_state_id || null,
-              to_state_id:         newStateId,
-              mode_actually_used:  'MANUAL',
-              transitioned_by:     getStaffEmail_() || 'SYSTEM:WIZARD',
-              transitioned_at:     now,
-              notes:               payload.reason || null,
-              created_at:          now,
-              created_by:          getStaffEmail_() || 'SYSTEM:WIZARD',
-            }]);
-            appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
-              enrollment_id:    enr.enrollment_id,
-              current_state_id: newStateId,
-              reviewed_by:      getStaffEmail_(),
-              review_notes:     payload.review_notes || null,
-              updated_at:       now,
-            }]);
-          });
-        }
-      }
-      break;
-    }
+    // KAL-NEW-3 (2026-06-05): `case 'review'` eliminado. Las transiciones de estado
+    // ADMISSION (RQ/IN/AD/...) viven en el KMS (operación staff autenticada),
+    // NUNCA en el wizard anónimo. El cierre del wizard usa submitEnrollmentSession_.
+    // Un step='review' cae ahora al `default:` y lanza 'Unknown step: review'.
     case 'persons':
       extra = savePersons_(enrollmentGroupId, payload);
       break;
@@ -5471,4 +5428,32 @@ function manual_testUploadDocumentMimeGuard() {
       ' Caso C (>10MB): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
   }
   Logger.log('=== fin manual_testUploadDocumentMimeGuard ===');
+}
+
+/**
+ * KAL-NEW-3 test — saveStep_ ya NO acepta step='review' (sacado del dispatcher).
+ * Un step='review' debe caer al `default:` del switch y lanzar 'Unknown step: review'.
+ *
+ * Pre-requisito: rellenar RESUME_TOKEN con el resume_token de un grupo en DRAFT
+ * (submitted_at IS NULL), porque saveStep_ valida requireResumeToken_ +
+ * assertGroupEditable_ ANTES de llegar al switch. Con un token inválido el throw
+ * vendría de requireResumeToken_ (BAD_REQUEST/UNAUTHORIZED), no del default que
+ * queremos verificar. Ejecutar desde el editor GAS y leer PASS/FAIL en Logs.
+ */
+function manual_testReviewStepRejected() {
+  const RESUME_TOKEN = 'RELLENAR_CON_RESUME_TOKEN_DRAFT_REAL';
+  Logger.log('=== manual_testReviewStepRejected ===');
+  if (RESUME_TOKEN === 'RELLENAR_CON_RESUME_TOKEN_DRAFT_REAL') {
+    Logger.log('  ? SKIP: rellena RESUME_TOKEN con un resume_token de un grupo DRAFT real.');
+    return;
+  }
+  try {
+    saveStep_({ resume_token: RESUME_TOKEN, step: 'review', payload: { status_code: 'RQ' } });
+    Logger.log('  ✗ FAIL: saveStep_(step=review) NO lanzó — el case sigue vivo.');
+  } catch (e) {
+    const ok = /Unknown step:\s*review/.test(e.message || '');
+    Logger.log((ok ? '  ✓ PASS' : '  ? UNEXPECTED') + ': ' + e.message +
+      (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+  Logger.log('=== fin manual_testReviewStepRejected ===');
 }
