@@ -2252,11 +2252,17 @@ function fetchQuestions_(p) {
       question_text:   translation?.question_text   || '',
       help_text:       translation?.help_text        || '',
       placeholder_text: translation?.placeholder_text || '',
-      // STOPGAP P116 (también en legacy): qbQuestions no expone audience_category_id
-      // usable (el spread `...q` arrastra "" crudo de AppSheet). Lo derivamos del
-      // question_code igual que el adapter KMS, para que QbSetRenderer haga el
-      // fan-out per applicant/guardian y el filtro AGE evalúe contra una persona
-      // real. Se elimina cuando Q05-S6 cierre. Ver deriveAudienceCategoryId_.
+      // STOPGAP P116 SOBREVIVIENTE — path legacy SIN runtime filtering.
+      // El path canónico KMS retiró el adapter equivalente cuando P116 cerró
+      // (kis-app deploy @283, runtime filtering qbAudienceRules a nivel de set),
+      // pero este path legacy NO consume el motor — lee qbQuestionSets/qbQuestions
+      // directamente vía AppSheet API. Sin un engine que filtre arriba, el
+      // workaround inline por question_code prefix sigue siendo necesario para
+      // que QbSetRenderer haga fan-out participant/client y el filtro AGE
+      // evalúe contra una persona real. Eliminar SOLO cuando: (a) Script
+      // Properties KMS_DEPLOYMENT_URL + QB_SERVICE_TOKEN estén siempre seteadas
+      // en prod, y (b) el path legacy se borre por completo, o (c) Q05-S6 / CLI
+      // QB-4 hagan que qbQuestions exponga audience_category_id canónica.
       audience_category_id: deriveAudienceCategoryId_(q.question_code),
       options,
       // Conditions polimórficas aplanadas al shape plano que consume
@@ -2398,7 +2404,12 @@ function manual_diagFetchQuestions() {
  *   - applicant_*      → client      (KIS_APPLICANT_BACKGROUND — guardians SOBRE el applicant)
  *   - resto (dev_test_*, etc.) → null (general scope; INITIATOR_EMAIL evalúa OK sin persona)
  *
- * Q05-S6 (P116) sustituye esto con el campo canónico desde qb-core + qbAudienceRules.
+ * P116 cerrado (kis-app deploy @283, runtime filtering qbAudienceRules a nivel de
+ * set) retiró la necesidad de este helper en el path canónico KMS. Este helper
+ * SOBREVIVE porque el path legacy AppSheet sigue activo cuando las Script Properties
+ * KMS_DEPLOYMENT_URL/QB_SERVICE_TOKEN no están seteadas (sin engine que filtre arriba).
+ * Eliminar cuando el path legacy desaparezca o cuando qbQuestions exponga
+ * audience_category_id canónica (Q05-S6 / CLI QB-4).
  * NO inventar prefijos sin evidencia en el seeder.
  *
  * @param {string} code  question_code de la pregunta
@@ -2485,11 +2496,14 @@ function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
         response_type_id:   q.response_type_code || 'text',
         response_type_code: q.response_type_code || null,
         is_required:        !!q.is_required,
-        // STOPGAP P116: el engine qb-core no emite audience todavía (Q05-S6 lo
-        // levantará con qbAudienceRules). Mientras tanto derivamos el scope del
-        // `question_code` para que el fan-out per applicant/guardian funcione y
-        // el filtro AGE evalúe contra una persona real. Ver deriveAudienceCategoryId_.
-        audience_category_id: deriveAudienceCategoryId_(q.question_code),
+        // P116 cerrado (KMS deploy @283 commit kis-app e9a424a): el engine
+        // qb_resolveSetForConsumer aplica runtime filtering qbAudienceRules a
+        // nivel de SET server-side, por lo que el filtro AGE ya descarta sets
+        // no-aplicables antes de llegar al frontend. Aquí pasamos el campo
+        // canónico que emita el KMS (puede ser null mientras Q05-S6 / CLI QB-4
+        // no añadan audience_category_id per pregunta — informativo, no
+        // determinante para filtrado).
+        audience_category_id: q.audience_category_id || null,
         question_text:    q.designation  || '',
         help_text:        q.description  || '',
         placeholder_text: '',
