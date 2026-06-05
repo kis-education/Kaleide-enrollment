@@ -161,6 +161,28 @@ function redact_(s) {
   return v;
 }
 
+/**
+ * KAL-NEW-10: sanitiza un mensaje de error antes de enviarlo al cliente anónimo
+ * del wizard. Aplica redact_() (emails/UUIDs) y además colapsa nombres de columna
+ * + valores rechazados de AppSheet y Drive file IDs que pueden filtrarse en errores
+ * de Add/Edit, y recorta a 200 chars.
+ *
+ * Para diagnóstico interno usa Logger.log con el err.message COMPLETO (Stackdriver
+ * es interno) — solo el OUTPUT al cliente se sanitiza. El `code` estructurado
+ * (NOT_EDITABLE, RATE_LIMITED, UNAUTHORIZED, BAD_REQUEST...) se conserva aparte.
+ */
+function sanitizeErrorForClient_(err) {
+  if (!err) return 'Internal error';
+  var msg = String((err && err.message) || err);
+  msg = redact_(msg);  // emails → [EMAIL], UUIDs → [UUID]
+  // Colapsa leaks de nombre de columna AppSheet: "Column 'foo_bar' rejected value 'xyz'"
+  msg = msg.replace(/Column\s+'[^']*'\s+rejected value\s+'[^']*'/gi, 'Validation error');
+  // Colapsa Drive file IDs y tokens largos alfanuméricos (≥40 chars; UUIDs ya van a [UUID]=36)
+  msg = msg.replace(/[A-Za-z0-9_-]{40,80}/g, '[ID]');
+  if (msg.length > 200) msg = msg.slice(0, 200) + '…';
+  return msg;
+}
+
 // ─── AppSheet Filter injection — defense in depth (KAL-5) ─────────────────────
 // Closes the AppSheet Selector filter-injection vector identified in the
 // 2026-05-29 audit. Without escape + validation, a user-controlled string like
@@ -471,18 +493,21 @@ function doPost(e) {
     return jsonResponse_({ ok: true, ...result });
 
   } catch (err) {
-    Logger.log('doPost error: ' + err.message + '\n' + err.stack);
+    // KAL-11: log full message internally with email/UUID redaction (Stackdriver interno).
+    Logger.log('doPost error: ' + redact_(err.message) + '\nstack: ' + (err.stack || 'n/a'));
     // CLI 26 (2026-06-01) — structured error code for state-gate rejections
     // (NOT_EDITABLE, set by assertGroupEditable_). Per the silent-reject style:
     // HTTP 200 + { ok: false, error: { code, message } } — never 403 — so the
     // client always parses the response uniformly and reads `error.code`.
+    // KAL-NEW-10: el `message` libre se SANITIZA (nunca exponer nombres de columna
+    // AppSheet, file IDs, ni PII cruda); el `code` se conserva para el i18n del frontend.
     if (err && err.code) {
       return jsonResponse_({
         ok: false,
-        error: { code: err.code, message: err.message }
+        error: { code: err.code, message: sanitizeErrorForClient_(err) }
       });
     }
-    return jsonResponse_({ ok: false, error: err.message }, 500);
+    return jsonResponse_({ ok: false, error: sanitizeErrorForClient_(err) }, 500);
   }
 }
 
@@ -5650,4 +5675,30 @@ function manual_testKmsInternalGate() {
     if (backup == null) props.deleteProperty(KEY); else props.setProperty(KEY, backup);
   }
   Logger.log('=== manual_testKmsInternalGate: %s ===', pass ? 'PASS' : 'FAIL');
+}
+
+/**
+ * KAL-NEW-10 test — sanitizeErrorForClient_ no filtra PII/internals al cliente.
+ * Función pura, ejecutable desde el editor GAS sin tokens. Lee PASS/FAIL en Logs.
+ */
+function manual_testSanitizeErrorPII() {
+  Logger.log('=== manual_testSanitizeErrorPII ===');
+  var cases = [
+    { name: 'email',        err: new Error('Add failed for user@kaleide.org row'),                 expect: function(o){ return o.indexOf('@') === -1 && o.indexOf('[EMAIL]') !== -1; } },
+    { name: 'uuid',         err: new Error('group a8bf5292-eb12-43f8-9a82-1d2a39c11f4e not found'), expect: function(o){ return o.indexOf('[UUID]') !== -1; } },
+    { name: 'column leak',  err: new Error("AppSheet: Column 'medical_notes' rejected value 'asthma'"), expect: function(o){ return /Validation error/.test(o) && o.indexOf('medical_notes') === -1 && o.indexOf('asthma') === -1; } },
+    { name: 'file id',      err: new Error('Drive 1A2b3C4d5E6f7G8h9I0jK1l2M3n4O5p6Q7r8S9t0 denied'), expect: function(o){ return o.indexOf('[ID]') !== -1; } },
+    { name: 'truncate',     err: new Error('palabra '.repeat(40)),                                  expect: function(o){ return o.length <= 201 && o.slice(-1) === '…'; } },
+    { name: 'clean passes', err: new Error('Missing required fields'),                              expect: function(o){ return o === 'Missing required fields'; } },
+    { name: 'null safe',    err: null,                                                              expect: function(o){ return o === 'Internal error'; } },
+  ];
+  var allPass = true;
+  cases.forEach(function(c) {
+    var out = sanitizeErrorForClient_(c.err);
+    var ok = false;
+    try { ok = c.expect(out); } catch (e) { ok = false; }
+    if (!ok) allPass = false;
+    Logger.log('  ' + (ok ? '✓ PASS' : '✗ FAIL') + ' [' + c.name + '] → ' + out);
+  });
+  Logger.log('=== manual_testSanitizeErrorPII: ' + (allPass ? 'PASS' : 'FAIL') + ' ===');
 }
