@@ -15,7 +15,7 @@ const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 export default function LandingPage() {
   const { t } = useTranslation();
   const [searchParams] = useSearchParams();
-  const { setEnrollmentGroupId, setResumeToken, updateStep, setRecognition } = useWizard();
+  const { setEnrollmentGroupId, setResumeToken, updateStep, setRecognition, setRecoveredEmail } = useWizard();
 
   useEffect(() => {
     if (!RECAPTCHA_SITE_KEY || document.querySelector('#recaptcha-script')) return;
@@ -47,6 +47,11 @@ export default function LandingPage() {
     setEmailErr('');
     setErr('');
     setSubmitting(true);
+
+    // DL-E38 a1: remember the email the family typed as the per-guardian
+    // discriminator. Persisted in sessionStorage so the magic-link resume
+    // (ResumePage) can re-send it → backend re-resolves the guardian server-side.
+    setRecoveredEmail(email);
 
     try {
       let recaptcha_token = null;

@@ -170,6 +170,22 @@ export function WizardProvider({ children }) {
     saveSession({ isSubmitted: val });
   }, []);
 
+  // ── DL-E38 / P216 — admission state + per-guardian signing context ──────────
+  // `admissionState` (P215 `admission` block) + `signingContext` are re-fetched
+  // by resumeSession_ on every resume, so they live in React state only (NOT
+  // persisted — avoids stashing the signing_token bearer secret in sessionStorage;
+  // prompt §2.5 "solo el email"). `recoveredEmail` IS persisted: it's the a1
+  // discriminator the frontend re-sends so the backend re-resolves the guardian
+  // server-side on each call. Only the email is stored; never the token.
+  const [admissionState, setAdmissionState] = useState(null);
+  const [signingContext, setSigningContext] = useState(null);
+  const [recoveredEmail, setRecoveredEmailRaw] = useState(session.recoveredEmail || null);
+  const setRecoveredEmail = useCallback((e) => {
+    const v = e ? String(e).toLowerCase().trim() : null;
+    setRecoveredEmailRaw(v);
+    saveSession({ recoveredEmail: v });
+  }, []);
+
   // D-E18: recognition result from initEnrollmentSession. Survives reloads via
   // sessionStorage so Step2 can show the "we recognised your family" banner
   // even after the family resumes from magic link.
@@ -207,6 +223,9 @@ export function WizardProvider({ children }) {
     setCompletedStepsRaw(new Set());
     setSavedBaseline(initialStepData);
     setIsSubmittedRaw(false);
+    setAdmissionState(null);
+    setSigningContext(null);
+    setRecoveredEmailRaw(null);
   }, []);
 
   /**
@@ -449,6 +468,14 @@ export function WizardProvider({ children }) {
     // sessions always go straight to Review (step 6).
     const submitted = !!group.submitted_at;
     setIsSubmitted(submitted);
+
+    // P216: store the real admission state + per-guardian signing context the
+    // backend resolved (additive block). Re-fetched on every resume → React
+    // state only. The Step 7 banner reads admissionState.state_label; the
+    // "continue to sign" advance reads signingContext (Phase 3).
+    const adm = data.admission || null;
+    setAdmissionState(adm);
+    setSigningContext(adm && adm.signing_context ? adm.signing_context : null);
     const hasGuardians     = persons.some(p => p.person_type_id === 'guardian');
     const hasApplicants    = persons.some(p => p.person_type_id === 'applicant');
     // desired_start_date lives on enrEnrollments (not the group row), so check
@@ -499,6 +526,8 @@ export function WizardProvider({ children }) {
       setPendingSave, awaitPendingSave, hasPendingSave,
       hydrateFromResume, clearSession,
       isSubmitted, setIsSubmitted,
+      admissionState, signingContext,           // P216 (DL-E38)
+      recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>
       {children}

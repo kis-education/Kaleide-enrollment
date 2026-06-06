@@ -52,6 +52,7 @@ export default function WizardPage() {
     isStepDirty, markStepSaved,
     setPendingSave, awaitPendingSave, hasPendingSave,
     isSubmitted,
+    admissionState, signingContext,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -274,7 +275,11 @@ const handleNext = async (stepKey, data) => {
           <i className="bi bi-check-circle-fill" style={{ fontSize: '1.2rem', marginTop: 2 }} />
           <div>
             <div style={{ fontWeight: 700, marginBottom: 2 }}>
-              {t('submitted.locked.title')}
+              {/* P216: real admission state (sysStates_T designation), not the
+                  binary "enviada". Falls back to the legacy title pre-resume. */}
+              {admissionState?.state_label
+                ? t('submitted.real_state', { state: admissionState.state_label })
+                : t('submitted.locked.title')}
             </div>
             <div style={{ fontWeight: 400 }}>
               {t('submitted.locked.body')}

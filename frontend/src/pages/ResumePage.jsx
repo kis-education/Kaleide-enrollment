@@ -29,7 +29,7 @@ export default function ResumePage() {
   const { token } = useParams();
   const navigate  = useNavigate();
   const { t }     = useTranslation();
-  const { hydrateFromResume } = useWizard();
+  const { hydrateFromResume, recoveredEmail } = useWizard();
 
   useEffect(() => {
     if (!token) {
@@ -53,7 +53,10 @@ export default function ResumePage() {
 
     const tokenPreview = String(token).slice(0, 8) + '...';
     log.info('ResumePage: calling resumeSession', { resume_token_preview: tokenPreview });
-    gasCall('resumeSession', { resume_token: token })
+    // DL-E38 a1: re-send the email the family typed (persisted in sessionStorage)
+    // as the per-guardian discriminator. The backend re-resolves the guardian
+    // server-side from it (KAL-4); absent (e.g. cross-device) → group-scoped.
+    gasCall('resumeSession', { resume_token: token, recovered_email: recoveredEmail || undefined })
       .then(data => {
         // Post-DL-E15 shape uses `group`; legacy responses still use `application`.
         const grp = data.group || data.application;
