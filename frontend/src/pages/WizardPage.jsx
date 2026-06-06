@@ -284,6 +284,31 @@ const handleNext = async (stepKey, data) => {
             <div style={{ fontWeight: 400 }}>
               {t('submitted.locked.body')}
             </div>
+
+            {/* P217: state-driven advance to signing. The button only appears on
+                the Review step when the backend (P215) reports the file is AD
+                (admitted) AND a signing session is ready for THIS guardian. The
+                bridge navigates to the /sign host carrying the signing_token via
+                react-router state — NEVER in the URL (KAL-7). The signing_token
+                was resolved server-side by resumeSession_ for the guardian that
+                recovered (a1), not declared in-app. */}
+            {currentStep === 6
+              && admissionState?.state_code === 'AD'
+              && admissionState?.signing_available
+              && signingContext?.signing_token && (
+              <div style={{ marginTop: 12 }}>
+                <button
+                  onClick={() => navigate('/sign', { state: { signing_token: signingContext.signing_token } })}
+                  style={{
+                    background: '#2e7d32', color: '#fff', border: 'none',
+                    borderRadius: 8, padding: '10px 18px', fontWeight: 700,
+                    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
+                  }}
+                >
+                  <i className="bi bi-pen-fill" /> {t('wizard.continue_to_sign')}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       ) : (

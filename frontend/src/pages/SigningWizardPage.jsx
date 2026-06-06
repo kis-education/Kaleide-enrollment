@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
 import LangToggle from '../components/LangToggle';
@@ -92,13 +92,20 @@ function ReadyView({ signerCtx, signingToken }) {
 
 export default function SigningWizardPage() {
   const [searchParams]        = useSearchParams();
+  const location              = useLocation();
   const [gate, setGate]       = useState(GATE.LOADING);
   const [signerCtx, setSignerCtx] = useState(null);
   const [signingToken, setSigningToken] = useState(null);
   const { t }                 = useTranslation();
 
   useEffect(() => {
-    const token = searchParams.get('signing_token');
+    // P217 (DL-E38): /sign is reachable two ways now —
+    //   1. Email deeplink: ?signing_token=… in the URL (existing).
+    //   2. Recovery bridge: internal navigation from Step 7 ("Continuar a la
+    //      firma"), which carries the signing_token in react-router location.state
+    //      (NEVER in the URL → no KAL-7 leak to strip). The token was resolved
+    //      server-side by resumeSession_ for the guardian that recovered (a1).
+    const token = searchParams.get('signing_token') || (location.state && location.state.signing_token);
 
     if (!token) {
       log.warn('SigningWizardPage: no signing_token in URL');
