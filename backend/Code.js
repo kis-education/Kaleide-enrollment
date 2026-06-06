@@ -1997,9 +1997,6 @@ function saveStep_(p) {
     case 'health':
       saveHealth_(enrollmentGroupId, payload);
       break;
-    case 'interviews':
-      saveInterviews_(enrollmentGroupId, payload);
-      break;
     case 'questions':
       // Responses are saved individually via saveResponses_ — nothing to do here
       break;
@@ -3935,49 +3932,12 @@ function saveHealth_(enrollmentGroupId, healthData) {  // eslint-disable-line no
   });
 }
 
-/**
- * Upserts interview records for the enrollments in a session.
- *
- * DL-E15: enrInterviews FKs to enrollment_id (per-applicant). Each incoming
- * interview row must carry its own `enrollment_id`. Rows lacking one are
- * skipped (staff UI should always set it after submit).
- *
- * interview_type must be one of: family_interview | child_observation | follow_up
- * interviewer_id is a plain email string — written directly, no FK resolution.
- *
- * @param {string} enrollmentGroupId  (kept for signature symmetry, not written)
- * @param {Array}  interviews - array of interview objects (must include enrollment_id)
- */
-function saveInterviews_(enrollmentGroupId, interviews) {  // eslint-disable-line no-unused-vars
-  if (!Array.isArray(interviews)) return;
-
-  const staffEmail = getStaffEmail_();
-  const now        = new Date().toISOString();
-
-  const VALID_TYPES = ['family_interview', 'child_observation', 'follow_up'];
-
-  const rowBase_ = (i) => ({
-    enrollment_id:  i.enrollment_id || null,
-    interview_type: VALID_TYPES.includes(i.interview_type) ? i.interview_type : null,
-    interview_date: i.interview_date  || null,
-    interviewer_id: i.interviewer_id  || staffEmail,  // plain email — no FK resolution
-    format:         i.format          || null,
-    risk_rating:    i.risk_rating     || null,
-    notes:          i.notes           || null,
-    flags:          i.flags           || null,
-  });
-
-  const newInterviews = interviews
-    .filter(i => !i.interview_id && i.enrollment_id)
-    .map(i => Object.assign({ interview_id: generateUuid_(), created_at: now }, rowBase_(i)));
-
-  const existingInterviews = interviews
-    .filter(i => i.interview_id)
-    .map(i => Object.assign({ interview_id: i.interview_id }, rowBase_(i)));
-
-  if (newInterviews.length)      appsheetRequest_(T.INTERVIEWS, 'Add',  newInterviews);
-  if (existingInterviews.length) appsheetRequest_(T.INTERVIEWS, 'Edit', existingInterviews);
-}
+// ENR-E6 (2026-06-06): saveInterviews_ + case 'interviews' eliminados del
+// dispatcher anónimo. Las entrevistas son KMS staff-side (DL-E19), NO un step
+// canónico del wizard (los 11 steps no incluyen 'interviews'); la función no
+// tenía callers (0 hits frontend) y, bajo manifest ANYONE_ANONYMOUS, todo case
+// es superficie de ataque sin auth. Paridad con la limpieza de case 'review'
+// (KAL-NEW-3). Las entrevistas se gestionan en el KMS sobre tablas core.
 
 // ─── Email helpers ────────────────────────────────────────────────────────────
 
@@ -4716,20 +4676,20 @@ function resolveSigningToken_(p) {
   const enrollmentGroupId = session['entity_id'];
 
   // 5. Step completion states from signer fields (DL-S47 §5 + roadmap §4.2)
+  // TODO P237: review_step_completed_at / gdpr_step_completed_at son cols
+  // DEROGADAS (tombstone DL-E27/E28). Fuente canónica = milestones
+  // GDPR_CONSENTS_SUBMITTED / REVIEW_CONFIRMED. No se refactoriza aquí (fuera de
+  // scope ENR-E6) — se preserva el comportamiento y el shape de respuesta.
   const gdprCompleted   = !!(signer['gdpr_step_completed_at']);
   const reviewCompleted = !!(signer['review_step_completed_at']);
   const signed          = !!(signer['signed_at']);
 
-  // billing_confirmed: enrGroupBilling.confirmed_at (P49 — table may not exist yet)
-  let billingConfirmed = false;
-  try {
-    assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
-    const billingRows = appsheetRequest_('enrGroupBilling', 'Find', [],
-      { Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"' });
-    billingConfirmed = !!(billingRows && billingRows.find(b => !b['deleted_at'] && b['confirmed_at']));
-  } catch (billingErr) {
-    Logger.log('[resolveSigningToken_] enrGroupBilling not available (P49 pending): ' + billingErr.message);
-  }
+  // billing_confirmed: enrGroupBilling DEROGADA (DL-E28 §4/§12, P49 CANCELADO
+  // 2026-06-03). El billing canónico vive en finBillingParties + milestone
+  // BILLING_STEP_COMPLETED, derivado server-side por el KMS en saveBillingInfo;
+  // el wizard anónimo no lo resuelve aquí. ENR-E6: eliminado el Find a la tabla
+  // muerta (ruido de logs + siempre false). Se preserva el shape (false).
+  const billingConfirmed = false;
 
   Logger.log(redact_('[resolveSigningToken_] valid=true signer=' + signerId + ' group=' + enrollmentGroupId));
 
