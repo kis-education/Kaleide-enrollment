@@ -16,6 +16,12 @@ function normYN(v) {
 
 const WizardContext = createContext(null);
 
+// DL-E39 (PII-primero) — step-up re-auth + inactivity window.
+// La PII sensible de menores (salud Art.9 RGPD, DNI, DOB, dirección) se muestra
+// ENMASCARADA por defecto y se revela en claro solo tras un step-up (código
+// fresco al buzón). El step-up "fresco" caduca a los 10 min de INACTIVIDAD.
+export const STEPUP_WINDOW_MS = 10 * 60 * 1000; // 10 minutos
+
 // Wizard canónico — 11 steps per roadmap (docs/kms/plan/wizard-admissions-roadmap.md
 // líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28). NO inventar pasos extra. CLI 22 + CLI 28
 // + Frontend-9-10 + Frontend-12 introdujeron "Status/Interview/Decision/Deposit/..."
@@ -179,6 +185,38 @@ export function WizardProvider({ children }) {
   // server-side on each call. Only the email is stored; never the token.
   const [admissionState, setAdmissionState] = useState(null);
   const [signingContext, setSigningContext] = useState(null);
+
+  // ── DL-E39 — step-up re-auth state (NO persistido) ───────────────────────────
+  // `stepUpVerifiedUntil`: timestamp (ms) hasta el que el step-up se considera
+  // fresco. `lastActivityAt`: última interacción del usuario; tras 10 min sin
+  // actividad el step-up vuelve a expirar aunque la ventana absoluta no haya
+  // pasado. Ambos viven SOLO en memoria — un reload exige re-verificar (más
+  // seguro: nunca se persiste evidencia de "puedo ver PII" en sessionStorage).
+  const [stepUpVerifiedUntil, setStepUpVerifiedUntil] = useState(0);
+  const [lastActivityAt, setLastActivityAt] = useState(() => Date.now());
+
+  // Marca actividad del usuario (resetea el contador de inactividad).
+  const touchActivity = useCallback(() => {
+    setLastActivityAt(Date.now());
+  }, []);
+
+  // Tras un verifyEmail({stepup:true}) OK → step-up fresco durante 10 min.
+  const markStepUpFresh = useCallback(() => {
+    const now = Date.now();
+    setStepUpVerifiedUntil(now + STEPUP_WINDOW_MS);
+    setLastActivityAt(now);
+    log.success('step-up: verificación fresca registrada (10 min)');
+  }, []);
+
+  // True si el step-up sigue fresco: dentro de la ventana absoluta Y sin haber
+  // superado 10 min de inactividad. Función pura (no usa estado obsoleto por
+  // closure porque lee Date.now() en el momento de llamarse).
+  const isStepUpFresh = useCallback(() => {
+    const now = Date.now();
+    return !!stepUpVerifiedUntil
+      && now < stepUpVerifiedUntil
+      && (now - lastActivityAt) < STEPUP_WINDOW_MS;
+  }, [stepUpVerifiedUntil, lastActivityAt]);
   const [recoveredEmail, setRecoveredEmailRaw] = useState(session.recoveredEmail || null);
   const setRecoveredEmail = useCallback((e) => {
     const v = e ? String(e).toLowerCase().trim() : null;
@@ -226,6 +264,8 @@ export function WizardProvider({ children }) {
     setAdmissionState(null);
     setSigningContext(null);
     setRecoveredEmailRaw(null);
+    setStepUpVerifiedUntil(0);
+    setLastActivityAt(Date.now());
   }, []);
 
   /**
@@ -528,6 +568,7 @@ export function WizardProvider({ children }) {
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
+      isStepUpFresh, markStepUpFresh, touchActivity, // DL-E39 step-up PII-primero
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>
       {children}

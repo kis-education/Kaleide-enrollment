@@ -7,6 +7,7 @@ import { gasCall, prefetchLookups } from '../api';
 import LangToggle from '../components/LangToggle';
 import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
+import StepUpReverify from '../components/StepUpReverify';
 import { Toast, useToast } from '../components/Toast';
 
 import Step1Email      from './steps/Step1Email';
@@ -53,12 +54,17 @@ export default function WizardPage() {
     setPendingSave, awaitPendingSave, hasPendingSave,
     isSubmitted,
     admissionState, signingContext,
+    markStepUpFresh,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
   const [sendingMagicLink,  setSendingMagicLink]  = useState(false);
   const [rehydrating,       setRehydrating]       = useState(false);
   const [abandoning,        setAbandoning]        = useState(false);
+  // DL-E39: si saveStep (PII) devuelve STEPUP_REQUIRED, guardamos la acción
+  // pendiente (re-lanzar handleNext con los mismos args) para reintentar tras
+  // verificar. null | { stepKey, data }.
+  const [stepUpPending,     setStepUpPending]     = useState(null);
 
   // Kick off lookup prefetch immediately so Step3/Step4 get cached data.
   useEffect(() => { prefetchLookups(); }, []); // eslint-disable-line
@@ -136,6 +142,13 @@ const handleNext = async (stepKey, data) => {
           log.debug(`WizardPage: calling markStepSaved("${stepKey}") with saved data`, data);
           markStepSaved(stepKey, data);
         } catch (err) {
+          // DL-E39: el backend exige step-up fresco para guardar PII →
+          // mostrar StepUpReverify y reintentar este mismo paso tras verificar.
+          if (err?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(err?.message || '')) {
+            log.warn(`WizardPage: saveStep "${stepKey}" requires step-up`);
+            setStepUpPending({ stepKey, data });
+            throw err;
+          }
           log.warn(`WizardPage: saveStep "${stepKey}" failed (background)`, { message: err.message });
           showToast(t('wizard.save_failed'));
           throw err; // surface to the awaiter — handleNext / submit handle gracefully
@@ -153,6 +166,43 @@ const handleNext = async (stepKey, data) => {
     log.info(`WizardPage: advancing to step ${nextStep}`);
     setCurrentStep(nextStep);
     window.scrollTo(0, 0);
+  };
+
+  // DL-E39: reintenta el saveStep que disparó STEPUP_REQUIRED, ahora que el
+  // step-up está fresco server-side. NO re-avanza la UI (handleNext ya avanzó
+  // optimistamente); sólo re-emite la persistencia del paso pendiente.
+  const retryStepUpSave = async () => {
+    if (!stepUpPending) return;
+    const { stepKey, data } = stepUpPending;
+    setStepUpPending(null);
+    if (!(enrollmentGroupId && stepKey)) return;
+    const savePromise = (async () => {
+      try {
+        const saveResult = await gasCall('saveStep', {
+          resume_token:        resumeToken,
+          enrollment_group_id: enrollmentGroupId,
+          application_id:      enrollmentGroupId,
+          step:                stepKey,
+          payload:             data,
+        });
+        log.success(`WizardPage: saveStep "${stepKey}" OK (step-up retry)`, saveResult?._debug || {});
+        if (stepKey === 'persons' && saveResult?._debug?.personIdMap?.length) {
+          const map = {};
+          saveResult._debug.personIdMap.forEach(({ _uid, person_id }) => { if (_uid) map[_uid] = person_id; });
+          const updated = data.map(p => ({ ...p, person_id: p.person_id || (p._uid && map[p._uid]) || undefined }));
+          updateStep('persons', updated);
+        }
+        markStepSaved(stepKey, data);
+      } catch (err) {
+        if (err?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(err?.message || '')) {
+          setStepUpPending({ stepKey, data });
+          return;
+        }
+        log.warn(`WizardPage: saveStep "${stepKey}" failed (step-up retry)`, { message: err.message });
+        showToast(t('wizard.save_failed'));
+      }
+    })();
+    setPendingSave(savePromise);
   };
 
   const handleBack = () => {
@@ -256,6 +306,35 @@ const handleNext = async (stepKey, data) => {
           <p style={{ marginTop: 16, color: 'var(--teal-dk)', fontWeight: 600, fontSize: '1rem' }}>
             {sendingMagicLink ? t('wizard.sending_magic_link') : t('wizard.saving')}
           </p>
+        </div>
+      )}
+
+      {/* DL-E39: step-up requerido al guardar PII (saveStep → STEPUP_REQUIRED).
+          Modal de re-verificación; al verificar, markStepUpFresh + reintento. */}
+      {stepUpPending && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 10000,
+          background: 'rgba(20,30,30,0.55)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+          backdropFilter: 'blur(2px)',
+        }}>
+          <div style={{ maxWidth: 460, width: '100%' }}>
+            <StepUpReverify
+              tokenPayload={{ resume_token: resumeToken }}
+              prompt={t('stepup.save_prompt')}
+              onVerified={() => { markStepUpFresh(); retryStepUpSave(); }}
+            />
+            <div style={{ textAlign: 'center', marginTop: 10 }}>
+              <button
+                type="button"
+                className="btn btn-link btn-sm"
+                style={{ color: '#fff' }}
+                onClick={() => setStepUpPending(null)}
+              >
+                {t('stepup.cancel')}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

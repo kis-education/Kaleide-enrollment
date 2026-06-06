@@ -4,7 +4,9 @@ import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
 import { openDocument } from '../../utils/documentProxy';
 import LockedBanner from '../../components/LockedBanner';
+import StepUpReverify from '../../components/StepUpReverify';
 import * as log from '../../logger';
+import { maskText } from '../../utils/mask';
 
 const DOCUMENT_TYPES = [
   { key: 'passport',        labelKey: 'doc.passport'        },
@@ -23,7 +25,7 @@ function fileToBase64(file) {
   });
 }
 
-function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded, existing }) {
+function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded, existing, piiRevealed, onStepUpVerified, onActivity }) {
   const { t }    = useTranslation();
   const [status, setStatus] = useState(existing ? 'success' : '');
   // CLI 82 / KAL-NEW-5: ya no guardamos una drive_url pública; guardamos el
@@ -31,10 +33,13 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
   const [fileId, setFileId] = useState(existing?.file_id || '');
   const [err,    setErr]    = useState('');
   const [viewing, setViewing] = useState(false);
+  // DL-E39: una acción gateada (subir/ver) puede devolver STEPUP_REQUIRED.
+  // Guardamos la acción pendiente para reintentarla tras verificar.
+  const [stepUpRetry, setStepUpRetry] = useState(null); // null | () => void
 
-  const handleFile = async (file) => {
-    if (!file) return;
-    if (file.size > 10 * 1024 * 1024) { setErr(t('error.file_too_large')); return; }
+  const isStepUpError = (e) => e?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(e?.message || '');
+
+  const doUpload = async (file) => {
     setStatus('uploading');
     setErr('');
     try {
@@ -52,9 +57,23 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
       setStatus('success');
       onUploaded({ document_type: docType, file_id: data.file_id });
     } catch (e) {
+      // DL-E39: el backend exige step-up fresco → mostrar StepUpReverify + reintentar.
+      if (isStepUpError(e)) {
+        log.warn('Step6: uploadDocument requires step-up');
+        setStatus('');
+        setStepUpRetry(() => () => doUpload(file));
+        return;
+      }
+      log.error('Step6: uploadDocument failed', { message: e.message });
       setStatus('error');
       setErr(e.message);
     }
+  };
+
+  const handleFile = (file) => {
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) { setErr(t('error.file_too_large')); return; }
+    doUpload(file);
   };
 
   const handleView = async () => {
@@ -63,6 +82,12 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
     try {
       await openDocument({ file_id: fileId, resume_token: resumeToken });
     } catch (e) {
+      // DL-E39: getDocument gateado → step-up + reintento.
+      if (isStepUpError(e)) {
+        log.warn('Step6: getDocument requires step-up');
+        setStepUpRetry(() => () => handleView());
+        return;
+      }
       log.error('Step6: getDocument failed', { message: e.message });
       setErr(e.message);
     } finally {
@@ -77,8 +102,8 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
       <div
         className="upload-zone"
         onDragOver={e => e.preventDefault()}
-        onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
-        onClick={() => document.getElementById(`file_${docType}`).click()}
+        onDrop={e => { e.preventDefault(); onActivity && onActivity(); handleFile(e.dataTransfer.files[0]); }}
+        onClick={() => { onActivity && onActivity(); document.getElementById(`file_${docType}`).click(); }}
       >
         <i className="bi bi-cloud-arrow-up" style={{ fontSize: '1.5rem', color: 'var(--teal)' }} />
         <p style={{ margin: '6px 0 0', color: 'var(--muted)', fontSize: '0.88rem' }}>
@@ -102,7 +127,11 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
         <div className="upload-status success">
           <i className="bi bi-check-circle me-1" />
           {t('doc.uploaded')} &nbsp;
-          {fileId && (
+          {/* DL-E39 PII-primero: la referencia/preview del documento sensible no
+              se revela sin step-up fresco. Si está fresco mostramos "Ver"; si no,
+              un marcador enmascarado — al pulsar Ver el backend puede además
+              devolver STEPUP_REQUIRED (manejado en handleView). */}
+          {fileId && (piiRevealed ? (
             <button
               type="button"
               className="btn btn-link p-0"
@@ -114,7 +143,11 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
                 ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.8em', height: '0.8em' }} />{t('doc.view')}</>
                 : t('doc.view')}
             </button>
-          )}
+          ) : (
+            <span style={{ color: 'var(--muted)' }} title={t('stepup.doc_masked')}>
+              <i className="bi bi-eye-slash me-1" />{maskText()}
+            </span>
+          ))}
         </div>
       )}
       {status === 'error' && (
@@ -122,14 +155,34 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
           <i className="bi bi-exclamation-circle me-1" />{err}
         </div>
       )}
+
+      {/* DL-E39: la acción (subir/ver) devolvió STEPUP_REQUIRED → re-verificar y
+          reintentar automáticamente la acción pendiente. */}
+      {stepUpRetry && (
+        <StepUpReverify
+          tokenPayload={{ resume_token: resumeToken }}
+          prompt={t('stepup.doc_reveal_prompt')}
+          onVerified={() => {
+            onStepUpVerified && onStepUpVerified();
+            const retry = stepUpRetry;
+            setStepUpRetry(null);
+            retry();
+          }}
+        />
+      )}
     </div>
   );
 }
 
 export default function Step6Documents({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t }  = useTranslation();
-  const { enrollmentGroupId, resumeToken, stepData, updateStep } = useWizard();
+  const {
+    enrollmentGroupId, resumeToken, stepData, updateStep,
+    isStepUpFresh, markStepUpFresh, touchActivity,
+  } = useWizard();
   const [documents, setDocuments] = useState(stepData.documents || []);
+  // DL-E39 PII-primero: previews/refs de documentos sensibles ocultos salvo step-up.
+  const piiRevealed = isStepUpFresh();
 
   const handleUploaded = (doc) => {
     setDocuments(prev => {
@@ -167,6 +220,9 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
             resumeToken={resumeToken}
             onUploaded={handleUploaded}
             existing={documents.find(d => d.document_type === doc.key)}
+            piiRevealed={piiRevealed}
+            onStepUpVerified={markStepUpFresh}
+            onActivity={touchActivity}
           />
         ))}
       </div>

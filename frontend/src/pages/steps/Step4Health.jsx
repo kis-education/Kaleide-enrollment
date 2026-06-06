@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
+import StepUpReverify from '../../components/StepUpReverify';
 import * as log from '../../logger';
 
 function TagSelect({ options, selected, onChange, placeholder }) {
@@ -139,8 +140,17 @@ function ApplicantHealthSection({ applicant, health, onChange, allergiesOpts, di
 
 export default function Step4Health({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t } = useTranslation();
-  const { stepData, updateStep } = useWizard();
+  const {
+    stepData, updateStep, resumeToken,
+    isStepUpFresh, markStepUpFresh, touchActivity,
+  } = useWizard();
   const applicants = (stepData.persons || []).filter(p => p.person_type_id === 'applicant');
+
+  // DL-E39 PII-primero: los datos de salud son Art.9 RGPD (la exposición más
+  // sensible). OCULTOS por completo salvo step-up fresco — no enmascarado
+  // parcial, ocultación total tras un cartel "verifica para ver".
+  const healthRevealed = isStepUpFresh();
+  const [revealRequested, setRevealRequested] = useState(false);
 
   const [highlightEdit, setHighlightEdit] = useState(false);
   const [healthData, setHealthData] = useState(() =>
@@ -203,7 +213,31 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
 
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
-      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
+      {/* DL-E39 PII-primero: salud Art.9 oculta hasta step-up fresco. */}
+      {!healthRevealed ? (
+        <div className="kis-card" style={{ background: 'var(--bg)' }}>
+          <div className="d-flex align-items-start gap-2">
+            <i className="bi bi-heart-pulse" style={{ fontSize: '1.4rem', color: 'var(--teal-dk)' }} />
+            <div className="flex-grow-1">
+              <strong style={{ fontSize: '0.95rem' }}>{t('stepup.health_masked_title')}</strong>
+              <p className="mb-2" style={{ fontSize: '0.86rem', color: 'var(--muted)' }}>{t('stepup.health_masked_body')}</p>
+              {!revealRequested ? (
+                <button type="button" className="btn btn-outline-primary btn-sm"
+                  onClick={() => setRevealRequested(true)}>
+                  <i className="bi bi-eye me-1" />{t('stepup.reveal')}
+                </button>
+              ) : (
+                <StepUpReverify
+                  tokenPayload={{ resume_token: resumeToken }}
+                  onVerified={() => { markStepUpFresh(); setRevealRequested(false); }}
+                  prompt={t('stepup.health_reveal_prompt')}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : touchActivity}>
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
         {applicants.map((a, i) => (
           <ApplicantHealthSection
@@ -224,6 +258,7 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
         )}
       </fieldset>
       </div>
+      )}
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>

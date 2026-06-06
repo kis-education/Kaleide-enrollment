@@ -44,6 +44,18 @@ const QB_EMPLOYER_ID         = 'a1b2c3d4-0021-0000-0000-000000000000';
 const QB_HAS_ADAPTATION_ID   = 'a1b2c3d4-0022-0000-0000-000000000000';
 const QB_ADAPTATION_NOTES_ID = 'a1b2c3d4-0023-0000-0000-000000000000';
 
+// ─── DL-E39 PII-primero — step-up re-auth (Fase A) ──────────────────────────
+// Step-up = prueba-de-acceso-al-inbox (código fresco 6-díg al buzón) que
+// compensa el resume_token largo (7 días, reutilizable). Una ventana de
+// inactividad: tras un verifyEmail_ con stepup=true marcamos el grupo como
+// "fresco" durante STEPUP_INACTIVITY_MS; los handlers que revelan/mutan PII
+// sensible exigen esa marca fresca (assertStepUpFresh_). Reutiliza
+// sendVerificationCode_/verifyEmail_ (endurecidos KAL-NEW-2) — NO hay token
+// ni endpoint nuevo. (El resume_token TTL de 7 días sigue siendo el TTL de
+// sesión; este es un TTL de inactividad mucho más corto que se renueva con
+// cada step-up.)
+const STEPUP_INACTIVITY_MS = 10 * 60 * 1000; // 10 min
+
 // AppSheet table names matching the enr* / qb* schema (post DL-E15)
 //
 // DL-E15 reorganisation:
@@ -434,6 +446,76 @@ function assertGroupEditable_(enrollmentGroupId) {
     throw err;
   }
   // Editable.
+}
+
+// ─── DL-E39 PII-primero — step-up re-auth helpers (Fase A) ──────────────────
+//
+// El step-up re-verifica acceso-al-inbox antes de revelar/mutar PII sensible.
+// El resume_token (7 días, reutilizable) autoriza la SESIÓN; el step-up añade
+// una prueba fresca de que quien opera AHORA controla el buzón. Reutilizamos
+// el dispatcher sendVerificationCode_/verifyEmail_ (endurecido KAL-NEW-2:
+// CSPRNG, rate-limit 5/h, TTL 10 min, lockout 5 intentos) — NO hay token nuevo.
+//
+// KAL-4 IDOR: el enrollment_group_id (y el signer en /sign) SIEMPRE se derivan
+// del bearer token server-side, NUNCA del payload.
+
+/**
+ * Deriva el contexto autorizado (grupo + firmante si aplica) del bearer token
+ * presente en el payload. Si hay signing_token (flujo /sign) → contexto de
+ * firma (incluye guardian_person_id); si no → resume_token (flujo /apply).
+ * KAL-4: el group SIEMPRE sale del token.
+ *
+ * @param {Object} p - payload con signing_token o resume_token
+ * @returns {{ enrollment_group_id, ... }} contexto autorizado.
+ *   - /sign: el objeto completo de requireSigningToken_
+ *   - /apply: { enrollment_group_id } normalizado desde requireResumeToken_
+ *     (que devuelve el group_id como string)
+ * @private
+ */
+function _resolveStepUpGroup_(p) {
+  if (p && p.signing_token) {
+    return requireSigningToken_(p); // { enrollment_group_id, guardian_person_id, ... }
+  }
+  // requireResumeToken_ devuelve el enrollment_group_id como string.
+  return { enrollment_group_id: requireResumeToken_(p) };
+}
+
+/**
+ * Marca el grupo como "step-up fresco" durante STEPUP_INACTIVITY_MS. Guarda el
+ * timestamp de EXPIRACIÓN (Date.now()+ventana) en el ScriptCache; el gate
+ * compara contra Date.now(). El TTL del cache se alinea a la misma ventana.
+ *
+ * @param {string} enrollmentGroupId - ya derivado del token (KAL-4)
+ * @private
+ */
+function _markStepUpFresh_(enrollmentGroupId) {
+  CacheService.getScriptCache().put(
+    'stepup_ok_' + enrollmentGroupId,
+    String(Date.now() + STEPUP_INACTIVITY_MS),
+    Math.ceil(STEPUP_INACTIVITY_MS / 1000)
+  );
+}
+
+/**
+ * Gate de step-up (molde de assertGroupEditable_). Exige que el grupo tenga una
+ * marca de step-up fresca (`stepup_ok_<group>` presente y no expirada). Si no →
+ * throw Error con .code='STEPUP_REQUIRED'. El doPost mapea genéricamente
+ * cualquier err.code → HTTP 200 { ok:false, error:{ code, message } } (líneas
+ * ~531-535), así que NO se añade case nuevo en el dispatcher.
+ *
+ * @param {string} enrollmentGroupId - ya derivado del token (KAL-4)
+ * @throws {Error & {code: 'STEPUP_REQUIRED'}} cuando falta marca o expiró
+ * @private
+ */
+function assertStepUpFresh_(enrollmentGroupId) {
+  const val = CacheService.getScriptCache().get('stepup_ok_' + enrollmentGroupId);
+  if (!val || Number(val) < Date.now()) {
+    var err = new Error('Step-up re-verification required');
+    err.code = 'STEPUP_REQUIRED';
+    Logger.log(redact_('[assertStepUpFresh_] reject group=' + enrollmentGroupId));
+    throw err;
+  }
+  // Fresco.
 }
 
 // ─── Entry points ─────────────────────────────────────────────────────────────
@@ -1726,6 +1808,17 @@ function saveStep_(p) {
   // canonical state-machine API lives in KMS — so gating it too is correct.
   assertGroupEditable_(enrollmentGroupId);
 
+  // ── DL-E39 step-up gate (PII-primero) ──────────────────────────────────────
+  // Los steps que mutan PII sensible (Persons / Relations / Health) exigen un
+  // step-up fresco. El step 'application' es de campos a nivel de grupo
+  // (program_id, fechas, source) — no PII de personas — y NO se gatea para no
+  // romper el avance temprano del wizard. 'questions'/'documents' no escriben
+  // aquí (lo hacen saveResponses_/uploadDocument_, gateados por separado).
+  // KAL-4: enrollmentGroupId ya viene de requireResumeToken_ (token), no payload.
+  if (p.step === 'persons' || p.step === 'relations' || p.step === 'health') {
+    assertStepUpFresh_(enrollmentGroupId);
+  }
+
   const now = new Date().toISOString();
 
   // ── Update the GROUP row for session-level fields ──────────────────────────
@@ -2210,9 +2303,38 @@ function sendAsAlias_(toEmail, subject, htmlBody, replyTo) {
 }
 
 function sendVerificationCode_(p) {
-  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
-  const primary_email     = p.primary_email;
-  if (!enrollmentGroupId || !primary_email) throw new Error('Missing enrollment_group_id or primary_email');
+  let enrollmentGroupId;
+  let primary_email;
+
+  if (p && p.stepup === true) {
+    // ── DL-E39 step-up: re-verifica acceso-al-inbox antes de revelar/mutar PII.
+    // KAL-4: el grupo SIEMPRE se deriva del bearer token (resume_token o
+    // signing_token), NUNCA del payload. El email destino se resuelve
+    // server-side leyendo el grupo — NUNCA del payload, para que un atacante
+    // no pueda redirigir el código a su propio buzón.
+    const ctx = _resolveStepUpGroup_(p);
+    enrollmentGroupId = ctx.enrollment_group_id;
+    if (!enrollmentGroupId) {
+      const errBad = new Error('Unauthorized: token resolved to no group');
+      errBad.code = 'UNAUTHORIZED';
+      throw errBad;
+    }
+    const grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+      Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
+    });
+    primary_email = grpRows && grpRows[0] && grpRows[0].primary_email;
+    if (!primary_email) {
+      const errNoEmail = new Error('No primary_email on file for this group');
+      errNoEmail.code = 'BAD_REQUEST';
+      throw errNoEmail;
+    }
+  } else {
+    // ── Flujo NO-stepup (signup inicial): comportamiento intacto. El grupo y el
+    // email vienen del payload (la familia aún no tiene token de sesión).
+    enrollmentGroupId = p.enrollment_group_id || p.application_id;
+    primary_email     = p.primary_email;
+    if (!enrollmentGroupId || !primary_email) throw new Error('Missing enrollment_group_id or primary_email');
+  }
 
   // KAL-NEW-2.c: rate-limit el dispatcher sendVerificationCode (mismo bucket que magic-link
   // — un email no puede pedir >N códigos/hora). Throw RATE_LIMITED antes de generar/enviar.
@@ -2253,7 +2375,20 @@ function sendVerificationCode_(p) {
  * @param {Object} p - { enrollment_group_id?|application_id?, code }
  */
 function verifyEmail_(p) {
-  const enrollmentGroupId = p.enrollment_group_id || p.application_id;
+  // DL-E39 step-up: si p.stepup, el group se deriva del bearer token server-side
+  // (KAL-4), ignorando el group del payload. El cache de código/lockout ya quedó
+  // emitido bajo ese mismo group por sendVerificationCode_ (rama stepup).
+  let enrollmentGroupId;
+  if (p && p.stepup === true) {
+    enrollmentGroupId = _resolveStepUpGroup_(p).enrollment_group_id;
+    if (!enrollmentGroupId) {
+      const errBad = new Error('Unauthorized: token resolved to no group');
+      errBad.code = 'UNAUTHORIZED';
+      throw errBad;
+    }
+  } else {
+    enrollmentGroupId = p.enrollment_group_id || p.application_id;
+  }
   const code = p.code;
   if (!enrollmentGroupId || !code) throw new Error('Missing enrollment_group_id or code');
 
@@ -2279,6 +2414,13 @@ function verifyEmail_(p) {
 
   cache.remove(attemptsKey);
   cache.remove('verify_' + enrollmentGroupId);
+
+  // DL-E39 step-up: acierto en flujo step-up → marca el grupo como fresco
+  // durante STEPUP_INACTIVITY_MS. Los handlers de PII (assertStepUpFresh_)
+  // pasarán hasta que la ventana expire. (Flujo NO-stepup intacto.)
+  if (p && p.stepup === true) {
+    _markStepUpFresh_(enrollmentGroupId);
+  }
 
   // No DB write — `email_confirmed` columns are removed in DL-E15. The
   // EMAIL_VERIFICATION milestone (sysMilestones) will replace this when wired.
@@ -2909,6 +3051,9 @@ function saveResponses_(p) {
   const enrollmentGroupId = requireResumeToken_(p);
   // CLI 26 (2026-06-01) — reject responses for submitted/abandoned groups.
   assertGroupEditable_(enrollmentGroupId);
+  // DL-E39 step-up gate: las respuestas del cuestionario son PII del expediente.
+  // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
+  assertStepUpFresh_(enrollmentGroupId);
   const { respondent_id, respondent_type_category_id, responses } = p;
   if (!responses || !responses.length) return { saved: 0 };
 
@@ -3014,6 +3159,9 @@ function uploadDocument_(p) {
   // must NOT be in submitted state for the family to keep editing documents.
   // KMS-driven uploads bypass this endpoint entirely.
   assertGroupEditable_(enrollmentGroupId);
+  // DL-E39 step-up gate: subir documentos del expediente es PII sensible.
+  // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
+  assertStepUpFresh_(enrollmentGroupId);
   const enrollmentId      = p.enrollment_id || null;
   const { base64, mimeType, filename, document_type } = p;
   if (!base64) throw new Error('Missing base64');
@@ -3192,6 +3340,10 @@ function getDocument_(p) {
     err.code = 'UNAUTHORIZED';
     throw err;
   }
+
+  // DL-E39 step-up gate: servir el documento en CLARO (bytes) revela PII.
+  // groupId ya viene del token (resume_token o signing_token), nunca del payload.
+  assertStepUpFresh_(groupId);
 
   const fileId = p.file_id;
   assertValidUuid_(fileId, 'file_id');
@@ -4646,15 +4798,40 @@ function confirmReview_(p) {
  * @param {Object} p
  * @returns {Object} `data` del KMS (`{ session_id, envelopeId, signerUrls, state }`).
  */
+/**
+ * Inicia la sesión de firma (acto legal) vía el KMS.
+ *
+ * DL-E39 step-up: el acto de firma exige step-up fresco SIEMPRE (incondicional,
+ * independiente de la ventana de inactividad) — firmar es la operación más
+ * sensible del flujo. El enrollment_group_id se deriva del signing_token
+ * (KAL-4), nunca del payload.
+ *
+ * @param {Object} p - { signing_token, client_ip? }
+ *   - client_ip: EVIDENCIA forense del acto, NUNCA un gate. Es auto-reportada
+ *     por el cliente y por tanto spoofable; se adjunta a la metadata del acto
+ *     (KMS enr.initiateSigningSession) solo como pista, jamás para autorizar.
+ */
 function initiateSigningSession_(p) {
   // CLI 45 — auth por signing_token (flujo /sign). El KMS resuelve guardians,
   // documentos y proveedor de firma desde el grupo (derivado del signing_token).
   const sctx = requireSigningToken_(p);
 
-  return kmsProxy_('enr.initiateSigningSession', {
+  // DL-E39: step-up INCONDICIONAL antes de iniciar el acto de firma.
+  // enrollment_group_id derivado del signing_token (KAL-4), nunca del payload.
+  assertStepUpFresh_(sctx.enrollment_group_id);
+
+  // IP forense (best-effort): adjunta client_ip a la metadata del acto si el
+  // cliente la reporta. KAL-11: redacta la IP en logs locales (no la imprimimos
+  // aquí; la pasamos al KMS, que registra el acto en sysLegalActsLog).
+  const clientIp = (p && typeof p.client_ip === 'string') ? p.client_ip.trim() : null;
+
+  const proxyPayload = {
     signing_token:       sctx.signing_token,
     enrollment_group_id: sctx.enrollment_group_id,
-  });
+  };
+  if (clientIp) proxyPayload.client_ip = clientIp; // evidencia forense, NUNCA gate
+
+  return kmsProxy_('enr.initiateSigningSession', proxyPayload);
 }
 
 // ─── Promotion logic ──────────────────────────────────────────────────────────
@@ -6090,4 +6267,78 @@ function manual_testRecoveryPerGuardian() {
   Logger.log('[manual_testRecoveryPerGuardian] ' + JSON.stringify(out, null, 2));
   Logger.log('=== fin manual_testRecoveryPerGuardian ===');
   return out;
+}
+
+/**
+ * DL-E39 PII-primero — test del gate de step-up (Fase A).
+ *
+ * Ejecutar desde el editor GAS. Verifica la mecánica del gate
+ * assertStepUpFresh_ + _markStepUpFresh_ contra el ScriptCache (NO toca BD):
+ *   (a) sin marca           → assertStepUpFresh_ lanza STEPUP_REQUIRED.
+ *   (b) tras _markStepUpFresh_(g) → pasa (no lanza).
+ *   (c) marca EXPIRADA (timestamp en el pasado) → lanza STEPUP_REQUIRED.
+ *   (d) NOTA: la firma (initiateSigningSession_) exige step-up INCONDICIONAL,
+ *       independiente de la ventana de inactividad — no se cubre con cache aquí
+ *       (requiere signing_token real); se documenta como recordatorio.
+ *
+ * GROUP_ID: cualquier UUID v4 sirve para el test de cache (no se lee de BD en
+ * estos casos). RESUME_TOKEN: NO lo usa este test directamente — el gate opera
+ * sobre el group ya derivado; se deja como nota para tests de integración.
+ *
+ * Lee PASS/FAIL en los Logs.
+ */
+function manual_testStepUpGate() {
+  Logger.log('=== manual_testStepUpGate (DL-E39 Fase A) ===');
+  var GROUP_ID     = 'REPLACE-WITH-REAL-GROUP-ID'; // UUID v4 cualquiera vale para el cache
+  // var RESUME_TOKEN = 'REPLACE-WITH-REAL-RESUME-TOKEN'; // no usado por estos casos de cache
+  if (GROUP_ID.indexOf('REPLACE-') === 0) {
+    GROUP_ID = Utilities.getUuid(); // fallback: el gate de cache no necesita un grupo real
+    Logger.log('  (info) GROUP_ID no rellenado → usando UUID efímero ' + GROUP_ID.slice(0, 8) + '...');
+  }
+
+  var cache = CacheService.getScriptCache();
+  var key = 'stepup_ok_' + GROUP_ID;
+  var pass = true;
+
+  // Estado limpio
+  cache.remove(key);
+
+  // (a) sin marca → STEPUP_REQUIRED
+  try {
+    assertStepUpFresh_(GROUP_ID);
+    Logger.log('  a) sin marca → ✗ FAIL (no lanzó)'); pass = false;
+  } catch (e) {
+    if (e && e.code === 'STEPUP_REQUIRED') Logger.log('  a) sin marca → ✓ PASS (STEPUP_REQUIRED)');
+    else { Logger.log('  a) sin marca → ✗ FAIL (code=' + (e && e.code) + ')'); pass = false; }
+  }
+
+  // (b) tras _markStepUpFresh_ → pasa
+  _markStepUpFresh_(GROUP_ID);
+  try {
+    assertStepUpFresh_(GROUP_ID);
+    Logger.log('  b) tras _markStepUpFresh_ → ✓ PASS (no lanzó)');
+  } catch (e) {
+    Logger.log('  b) tras _markStepUpFresh_ → ✗ FAIL (lanzó code=' + (e && e.code) + ')'); pass = false;
+  }
+
+  // (c) marca expirada → STEPUP_REQUIRED
+  cache.put(key, String(Date.now() - 1), 600);
+  try {
+    assertStepUpFresh_(GROUP_ID);
+    Logger.log('  c) marca expirada → ✗ FAIL (no lanzó)'); pass = false;
+  } catch (e) {
+    if (e && e.code === 'STEPUP_REQUIRED') Logger.log('  c) marca expirada → ✓ PASS (STEPUP_REQUIRED)');
+    else { Logger.log('  c) marca expirada → ✗ FAIL (code=' + (e && e.code) + ')'); pass = false; }
+  }
+
+  // (d) recordatorio firma incondicional
+  Logger.log('  d) NOTA: initiateSigningSession_ exige step-up INCONDICIONAL ' +
+             '(assertStepUpFresh_ siempre antes de iniciar el acto), independiente ' +
+             'de la ventana de inactividad — verificar con signing_token real en integración.');
+
+  // Limpieza
+  cache.remove(key);
+
+  Logger.log('=== manual_testStepUpGate: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
+  return { pass: pass };
 }

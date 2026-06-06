@@ -5,7 +5,9 @@ import * as log from '../../logger';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
 import LockedBanner from '../../components/LockedBanner';
+import StepUpReverify from '../../components/StepUpReverify';
 import { generateUuid } from '../../utils/uuid';
+import { maskDob, maskId } from '../../utils/mask';
 
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
@@ -185,7 +187,7 @@ function PreviousSchoolRow({ school, onChange, onRemove, birthYear }) {
   );
 }
 
-function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail }) {
+function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, piiRevealed }) {
   const { t } = useTranslation();
   const u = (f, v) => onChange({ ...person, [f]: v });
   const isGuardian  = person.person_type_id === 'guardian';
@@ -264,8 +266,17 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         </div>
         <div className="col-md-3">
           <label className="form-label">{t('field.date_of_birth')}{isApplicant && ' *'}</label>
-          <input type="date" className="form-control" value={person.date_of_birth} onChange={e => u('date_of_birth', e.target.value)} />
-          {isApplicant && person.date_of_birth && (() => {
+          {/* DL-E39 PII-primero: DOB enmascarado salvo step-up fresco. */}
+          {piiRevealed ? (
+            <input type="date" className="form-control" value={person.date_of_birth} onChange={e => u('date_of_birth', e.target.value)} />
+          ) : (
+            <input type="text" className="form-control" readOnly tabIndex={-1}
+              value={person.date_of_birth ? maskDob(person.date_of_birth) : ''}
+              placeholder={maskDob('x')}
+              aria-label={t('field.date_of_birth')}
+              style={{ background: 'var(--bg)', letterSpacing: '0.15em' }} />
+          )}
+          {piiRevealed && isApplicant && person.date_of_birth && (() => {
             const ms = Date.now() - new Date(person.date_of_birth);
             const yrs = Math.floor(ms / (365.25 * 24 * 3600 * 1000));
             const mos = Math.floor((ms % (365.25 * 24 * 3600 * 1000)) / (30.44 * 24 * 3600 * 1000));
@@ -305,7 +316,15 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         </div>
         <div className="col-md-4">
           <label className="form-label">{t('field.id_number')}</label>
-          <input className="form-control" value={person.id_number} onChange={e => u('id_number', e.target.value)} />
+          {/* DL-E39 PII-primero: nº de identidad enmascarado salvo step-up fresco. */}
+          {piiRevealed ? (
+            <input className="form-control" value={person.id_number} onChange={e => u('id_number', e.target.value)} />
+          ) : (
+            <input className="form-control" readOnly tabIndex={-1}
+              value={person.id_number ? maskId(person.id_number) : ''}
+              aria-label={t('field.id_number')}
+              style={{ background: 'var(--bg)' }} />
+          )}
         </div>
       </div>
 
@@ -394,10 +413,17 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           )}
         </div>
         {!person._sameAddress && (
-          <AddressForm
-            address={person.address || emptyAddress()}
-            onChange={addr => u('address', addr)}
-          />
+          piiRevealed ? (
+            <AddressForm
+              address={person.address || emptyAddress()}
+              onChange={addr => u('address', addr)}
+            />
+          ) : (
+            /* DL-E39 PII-primero: dirección oculta salvo step-up fresco. */
+            <div className="p-2 rounded" style={{ background: 'var(--bg)', color: 'var(--muted)', fontSize: '0.86rem' }}>
+              <i className="bi bi-eye-slash me-1" />{t('stepup.address_masked')}
+            </div>
+          )
         )}
       </div>
 
@@ -561,8 +587,19 @@ function transformPersonForSave(person) {
 
 export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t } = useTranslation();
-  const { stepData, updateStep, recognition } = useWizard();
+  const {
+    stepData, updateStep, recognition, resumeToken,
+    isStepUpFresh, markStepUpFresh, touchActivity,
+  } = useWizard();
   const primaryEmail = stepData.email?.primary_email || '';
+
+  // DL-E39 PII-primero — minimización por defecto. Sólo revelamos DOB / nº de
+  // identidad en claro si el step-up está fresco (código fresco verificado en
+  // los últimos 10 min sin inactividad). `revealRequested` muestra el inline
+  // StepUpReverify; tras verificar, markStepUpFresh hace que isStepUpFresh()
+  // pase a true y el dato aparezca.
+  const piiRevealed = isStepUpFresh();
+  const [revealRequested, setRevealRequested] = useState(false);
 
   const [persons, setPersons] = useState(() => {
     if (stepData.persons?.length) {
@@ -716,7 +753,36 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         </div>
       )}
 
-      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
+      {/* DL-E39 PII-primero: banner de minimización + reveal step-up. Cuando el
+          step-up NO está fresco, ofrecemos revelar DOB / nº de identidad tras
+          re-verificar con un código fresco al buzón (no se re-teclea el email). */}
+      {!piiRevealed && (
+        <div className="alert alert-light d-flex align-items-start gap-2 mb-3" style={{ border: '1px solid var(--border)' }}>
+          <i className="bi bi-eye-slash" style={{ fontSize: '1.2rem', color: 'var(--muted)' }} />
+          <div className="flex-grow-1">
+            <strong style={{ fontSize: '0.92rem' }}>{t('stepup.pii_masked_title')}</strong>
+            <p className="mb-2" style={{ fontSize: '0.86rem', color: 'var(--muted)' }}>{t('stepup.pii_masked_body')}</p>
+            {!revealRequested ? (
+              <button type="button" className="btn btn-outline-primary btn-sm"
+                onClick={() => setRevealRequested(true)}>
+                <i className="bi bi-eye me-1" />{t('stepup.reveal')}
+              </button>
+            ) : (
+              <StepUpReverify
+                tokenPayload={{ resume_token: resumeToken }}
+                onVerified={() => { markStepUpFresh(); setRevealRequested(false); }}
+                prompt={t('stepup.reveal_prompt')}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      <div
+        onClick={locked
+          ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); }
+          : touchActivity}
+      >
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
         {/* Guardians */}
         <h5 style={{ color: 'var(--teal-dk)', marginTop: 16, marginBottom: 8 }}>
@@ -735,6 +801,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               onRemove={() => removePerson(i)}
               firstPersonId={firstPersonId}
               primaryEmail={primaryEmail}
+              piiRevealed={piiRevealed}
             />
           );
         })}
@@ -759,6 +826,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               onRemove={() => removePerson(i)}
               firstPersonId={firstPersonId}
               primaryEmail={primaryEmail}
+              piiRevealed={piiRevealed}
             />
           );
         })}

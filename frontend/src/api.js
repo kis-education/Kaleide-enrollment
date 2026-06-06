@@ -88,7 +88,15 @@ export async function gasCall(action, payload = {}) {
     const msg = (data.error && typeof data.error === 'object')
       ? (data.error.message || data.error.code)
       : data.error;
-    throw new Error(msg || 'Unknown server error');
+    const err = new Error(msg || 'Unknown server error');
+    // Preserve the structured error code (STEPUP_REQUIRED, NOT_EDITABLE,
+    // TOO_MANY_ATTEMPTS, RATE_LIMITED, …) on the Error so callers can branch on
+    // err.code without string-matching the human-readable message. The message
+    // already collapses code→message for display; this keeps the machine code too.
+    if (data.error && typeof data.error === 'object' && data.error.code) {
+      err.code = data.error.code;
+    }
+    throw err;
   }
 
   log.success(`✓ ${action} OK`, data);
