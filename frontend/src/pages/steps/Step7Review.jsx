@@ -5,6 +5,7 @@ import { useWizard } from '../../context/WizardContext';
 import { gasCall, fetchLookups } from '../../api';
 import { openDocument } from '../../utils/documentProxy';
 import { CONSENT_TEXTS } from '../../consentTexts';
+import StepUpReverify from '../../components/StepUpReverify';
 import * as log from '../../logger';
 
 const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
@@ -78,7 +79,18 @@ export default function Step7Review({ onBack }) {
   const { t, i18n }  = useTranslation();
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
-  const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted, setIsSubmitted } = useWizard();
+  const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted, setIsSubmitted,
+          isStepUpFresh, markStepUpFresh } = useWizard();
+
+  // DL-E39 PII-primero — el Step 7 (Revisión) es la VISTA AGREGADA de toda la
+  // PII sensible de menores (DOB, DNI, dirección, salud Art.9). Es exactamente
+  // donde aterriza una familia que recupera su solicitud por magic-link, así que
+  // debe respetar la misma minimización por defecto que Step2/4/6: el resumen
+  // permanece OCULTO salvo step-up fresco (código fresco al buzón). Sin esto, la
+  // PII queda visible en claro tras un resume aunque Step2/4/6 enmascaren — la
+  // fuga real reportada por Diego 2026-06-06.
+  const piiRevealed = isStepUpFresh();
+  const [revealRequested, setRevealRequested] = useState(false);
 
   const { email, persons, documents, relations, health, questions } = stepData;
   const guardians  = (persons || []).filter(p => p.person_type_id === 'guardian');
@@ -314,6 +326,33 @@ export default function Step7Review({ onBack }) {
         <DataRow label={t('field.start_date')} value={email?.desired_start_date} />
       </SectionCard>
 
+      {/* DL-E39 PII-primero: el resumen completo (DOB/DNI/dirección/salud Art.9)
+          queda OCULTO salvo step-up fresco. Sin step-up se muestra el cartel de
+          re-verificación (código fresco al buzón, NO re-teclear email). */}
+      {!piiRevealed ? (
+        <div className="kis-card mb-3" style={{ background: 'var(--bg)' }}>
+          <div className="d-flex align-items-start gap-2">
+            <i className="bi bi-shield-lock" style={{ fontSize: '1.4rem', color: 'var(--teal-dk)' }} />
+            <div className="flex-grow-1">
+              <strong style={{ fontSize: '0.95rem' }}>{t('stepup.review_masked_title')}</strong>
+              <p className="mb-2" style={{ fontSize: '0.86rem', color: 'var(--muted)' }}>{t('stepup.review_masked_body')}</p>
+              {!revealRequested ? (
+                <button type="button" className="btn btn-outline-primary btn-sm"
+                  onClick={() => setRevealRequested(true)}>
+                  <i className="bi bi-eye me-1" />{t('stepup.reveal')}
+                </button>
+              ) : (
+                <StepUpReverify
+                  tokenPayload={{ resume_token: resumeToken }}
+                  onVerified={() => { markStepUpFresh(); setRevealRequested(false); }}
+                  prompt={t('stepup.review_reveal_prompt')}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+      <>
       {/* ── Guardians ── */}
       {guardians.map((g, i) => renderGuardian(g, i))}
 
@@ -468,6 +507,8 @@ export default function Step7Review({ onBack }) {
             );
           })}
         </SectionCard>
+      )}
+      </>
       )}
 
       {isSubmitted ? (
