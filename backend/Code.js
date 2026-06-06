@@ -665,6 +665,38 @@ function _checkMagicLinkRateLimit_(email) {
 }
 
 /**
+ * KAL-NEW-13 (2026-06-06): rate-limit DEDICADO para los códigos OTP del step-up
+ * (DL-E39), separado del bucket de magic-link.
+ *
+ * Antes, `sendVerificationCode_` (rama stepup) compartía el bucket
+ * `magic_count_<email>` (cap 5/h) con el envío de magic-links. En una sesión real
+ * la familia recupera por magic-link (consume 1-2) y luego pulsa "enviar código"
+ * varias veces para revelar PII / firmar — agotando el cupo compartido en
+ * segundos. El resultado: el OTP deja de enviarse (RATE_LIMITED) y el usuario
+ * percibe "el código no llega". El step-up es una acción intra-sesión legítima y
+ * frecuente; merece su propio cupo, más holgado, sin contaminar el bucket
+ * anti-abuso de magic-link (que protege contra spam de enlaces a terceros).
+ *
+ * Bucket `stepup_count_<group>` cap 8/h, scoped al GRUPO (ya derivado del token,
+ * KAL-4) — no al email — porque el destino siempre es el primary_email del grupo
+ * y el group viene del bearer token, no es enumerable.
+ *
+ * @param {string} groupId - enrollment_group_id ya derivado del token.
+ */
+function _checkStepUpCodeRateLimit_(groupId) {
+  if (!groupId) return;
+  const cache = CacheService.getScriptCache();
+  const countKey = 'stepup_count_' + groupId;
+  const count = parseInt(cache.get(countKey) || '0', 10);
+  if (count >= 8) {
+    const err = new Error('Too many verification-code requests; try again in 1 hour');
+    err.code = 'RATE_LIMITED';
+    throw err;
+  }
+  cache.put(countKey, String(count + 1), 3600); // 1h TTL — sliding within window
+}
+
+/**
  * KAL-6 / KAL-NEW-12: rate-limit por-IP/global (complementa el límite por-email).
  * Bucket `magic_count_ip_<ip>` cap 20/hora.
  *
@@ -2399,20 +2431,52 @@ function submitEnrollmentSession_(p) {
  * Gmail can locate the body correctly.
  */
 function sendAsAlias_(toEmail, subject, htmlBody, replyTo) {
-  const encodedBody = Utilities.base64Encode(htmlBody, Utilities.Charset.UTF_8);
-  const headers = [
-    'From: ' + FROM_NAME + ' <' + ADMISSIONS_EMAIL + '>',
-    'To: ' + toEmail,
-    ...(replyTo ? ['Reply-To: ' + replyTo] : []),
-    'Subject: =?UTF-8?B?' + Utilities.base64Encode(subject, Utilities.Charset.UTF_8) + '?=',
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-  ];
-  const raw = Utilities.base64EncodeWebSafe(
-    headers.join('\r\n') + '\r\n\r\n' + encodedBody
-  ).replace(/=+$/, '');
-  Gmail.Users.Messages.send({ raw: raw }, 'me');
+  // KAL-NEW-13 (2026-06-06): robust delivery. The OTP step-up (DL-E39) surfaced
+  // that a single un-caught failure inside the Gmail Advanced Service (alias not
+  // configured as "Send mail as", advanced service disabled, transient Gmail
+  // error) made the *whole* email silently fail to arrive — the family clicks
+  // "send code" and nothing reaches the inbox. We now: (1) try the canonical
+  // admissions@ alias send, (2) on ANY failure fall back to MailApp.sendEmail
+  // from the deployer account so the message STILL gets delivered, and (3) log
+  // the outcome (redacted, KAL-11) so the path is observable in Stackdriver.
+  // Throw only if BOTH paths fail, so the dispatcher returns a clear error
+  // instead of a happy { ok:true } over a message that never left.
+  try {
+    const encodedBody = Utilities.base64Encode(htmlBody, Utilities.Charset.UTF_8);
+    const headers = [
+      'From: ' + FROM_NAME + ' <' + ADMISSIONS_EMAIL + '>',
+      'To: ' + toEmail,
+      ...(replyTo ? ['Reply-To: ' + replyTo] : []),
+      'Subject: =?UTF-8?B?' + Utilities.base64Encode(subject, Utilities.Charset.UTF_8) + '?=',
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+    ];
+    const raw = Utilities.base64EncodeWebSafe(
+      headers.join('\r\n') + '\r\n\r\n' + encodedBody
+    ).replace(/=+$/, '');
+    Gmail.Users.Messages.send({ raw: raw }, 'me');
+    Logger.log(redact_('[sendAsAlias_] sent via alias to=' + toEmail + ' subject=' + subject));
+  } catch (aliasErr) {
+    Logger.log(redact_('[sendAsAlias_] alias send FAILED (' + (aliasErr && aliasErr.message) +
+      ') — falling back to MailApp deployer account for to=' + toEmail));
+    try {
+      MailApp.sendEmail({
+        to: toEmail,
+        subject: subject,
+        htmlBody: htmlBody,
+        name: FROM_NAME,
+        ...(replyTo ? { replyTo: replyTo } : {}),
+      });
+      Logger.log(redact_('[sendAsAlias_] sent via MailApp fallback to=' + toEmail));
+    } catch (fallbackErr) {
+      Logger.log(redact_('[sendAsAlias_] BOTH alias and MailApp send failed for to=' + toEmail +
+        ' — alias:' + (aliasErr && aliasErr.message) + ' fallback:' + (fallbackErr && fallbackErr.message)));
+      const err = new Error('Email could not be delivered (alias + fallback both failed)');
+      err.code = 'EMAIL_SEND_FAILED';
+      throw err;
+    }
+  }
 }
 
 function sendVerificationCode_(p) {
@@ -2449,9 +2513,16 @@ function sendVerificationCode_(p) {
     if (!enrollmentGroupId || !primary_email) throw new Error('Missing enrollment_group_id or primary_email');
   }
 
-  // KAL-NEW-2.c: rate-limit el dispatcher sendVerificationCode (mismo bucket que magic-link
-  // — un email no puede pedir >N códigos/hora). Throw RATE_LIMITED antes de generar/enviar.
-  _checkMagicLinkRateLimit_(primary_email.toLowerCase().trim());
+  // Rate-limit antes de generar/enviar (throw RATE_LIMITED).
+  // KAL-NEW-13 (2026-06-06): el step-up usa su PROPIO bucket (`stepup_count_<group>`,
+  // cap 8/h) — NO el de magic-link. Compartirlo agotaba el cupo (5/h) tras un par de
+  // recuperaciones + revelados y el OTP dejaba de llegar ("el código no llega"). El
+  // signup inicial mantiene el bucket de magic-link por-email (anti-abuso de enlaces).
+  if (p && p.stepup === true) {
+    _checkStepUpCodeRateLimit_(enrollmentGroupId);
+  } else {
+    _checkMagicLinkRateLimit_(primary_email.toLowerCase().trim());
+  }
 
   // KAL-NEW-2.a (audit 2026-05-30): código de 6 dígitos CSPRNG-grade. Math.random() es un
   // PRNG no-criptográfico cuyo estado se puede inferir; Utilities.getUuid() es crypto-grade

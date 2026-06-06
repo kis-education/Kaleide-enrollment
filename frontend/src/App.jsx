@@ -36,7 +36,39 @@ function RouteLogger() {
   return null
 }
 
+/**
+ * KAL-NEW-6 + restauración 2026-06-06: el DevLogger se rinde SIEMPRE en dev, y
+ * en producción SOLO cuando se opta-in explícitamente. Esto restaura el panel
+ * que "desapareció" (gateado a dev-only por KAL-NEW-6 commit 889e117, invisible
+ * en el build de producción que sirve admissions.kaleide.org) sin reabrir la
+ * exposición por defecto a cualquier familia anónima en un screen-share.
+ *
+ * Opt-in en producción (cualquiera de los dos):
+ *   - URL `?debug=1` (o `#…?debug=1`) — persiste en localStorage para reloads.
+ *   - localStorage `kis_devlog = '1'` (set una vez; sobrevive navegación).
+ * Desactivar: `?debug=0` o borrar la clave de localStorage.
+ *
+ * El panel ya redacta PII (KAL-11 + KAL-NEW-11) y arranca colapsado, así que el
+ * riesgo residual es bajo; el opt-in lo deja invisible para el tráfico normal.
+ */
+function shouldShowDevLogger() {
+  if (!import.meta.env.PROD) return true; // dev: siempre visible
+  try {
+    const qs = new URLSearchParams(
+      window.location.search || (window.location.hash.split('?')[1] || '')
+    );
+    const q = qs.get('debug');
+    if (q === '1') { localStorage.setItem('kis_devlog', '1'); return true; }
+    if (q === '0') { localStorage.removeItem('kis_devlog'); return false; }
+    return localStorage.getItem('kis_devlog') === '1';
+  } catch (_) {
+    return false;
+  }
+}
+
 function App() {
+  const showDevLogger = shouldShowDevLogger()
+
   useEffect(() => {
     log.info('App mounted', {
       endpoint: import.meta.env.VITE_GAS_ENDPOINT ? '✓ set' : '✗ MISSING',
@@ -62,7 +94,7 @@ function App() {
         </Routes>
       </Suspense>
       </ErrorBoundary>
-      {!import.meta.env.PROD && <DevLogger />}
+      {showDevLogger && <DevLogger />}
     </WizardProvider>
   )
 }
