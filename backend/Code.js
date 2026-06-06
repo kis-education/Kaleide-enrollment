@@ -704,7 +704,11 @@ function initEnrollmentSession_(p) {
     try {
       _checkMagicLinkRateLimit_(normalizedEmail);
       const lang = grp.preferred_language || (p.preferred_language || 'es');
-      sendMagicLinkEmail_(grp.primary_email, grp.resume_token, lang, false);
+      // DL-E38 a1: send to the email the family typed (per-guardian). In the
+      // init path the group was located by primary_email==normalizedEmail, so
+      // these coincide; non-primary-guardian recovery is served by the magic-link
+      // recovery service (sendMagicLink_ → findOpenGroupsByGuardianEmail_).
+      sendMagicLinkEmail_(normalizedEmail, grp.resume_token, lang, false);
     } catch (e) {
       Logger.log('initEnrollmentSession_: could not send magic link for submitted session: ' + e.message);
     }
@@ -772,7 +776,9 @@ function initEnrollmentSession_(p) {
       }
     });
     const lang = winner.preferred_language || (p.preferred_language || 'es');
-    sendMagicLinkEmail_(winner.primary_email, winner.resume_token, lang, false);
+    // DL-E38 a1: send to the email the family typed (per-guardian); coincides with
+    // winner.primary_email in the init path (group located by primary_email).
+    sendMagicLinkEmail_(normalizedEmail, winner.resume_token, lang, false);
     return {
       resumed:             true,
       count:               1,                // post-abandon: only the winner remains addressable
@@ -1016,7 +1022,16 @@ function sendMagicLink_(p) {
     const grp = rows && rows[0];
     if (!grp) throw new Error('Enrollment group not found');
     if (grp.abandoned_at) throw new Error('This application was abandoned');
-    _checkMagicLinkRateLimit_((grp.primary_email || '').toLowerCase().trim());
+    // DL-E38 a1: per-guardian destination — if the family is recovering with a
+    // specific guardian email (matched server-side against enrEmails of the
+    // group), send the link to THAT guardian; else fallback to the group
+    // primary_email (GAP-2 / pre-Step-2). KAL-4: groupId derived from token-path
+    // caller, recovered_email only ever a discriminator validated against real rows.
+    let destEmail = grp.primary_email;
+    if (p.recovered_email && resolveGuardianForRecovery_(grp.enrollment_group_id, p.recovered_email)) {
+      destEmail = String(p.recovered_email).toLowerCase().trim();
+    }
+    _checkMagicLinkRateLimit_((destEmail || '').toLowerCase().trim());
     _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
 
     // Renew token + created_at for non-submitted sessions so the new link is
@@ -1037,13 +1052,20 @@ function sendMagicLink_(p) {
       Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
     }
 
-    sendMagicLinkEmail_(grp.primary_email, tokenToSend, grp.preferred_language || 'es');
+    sendMagicLinkEmail_(destEmail, tokenToSend, grp.preferred_language || 'es');
   } else if (p.primary_email) {
     // Find all non-submitted, non-abandoned sessions for this email
     assertValidEmail_(p.primary_email, 'primary_email');
-    const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    let rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
       Filter: '"primary_email" = "' + appsheetEscape_(p.primary_email) + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
     });
+    // DL-E38 a1: a non-primary guardian recovers with their OWN email — locate
+    // open group(s) via enrEmails (guardians) when primary_email doesn't match.
+    // The link is sent to the typed email (p.primary_email) below, i.e. to the
+    // guardian's own inbox.
+    if (!rows || !rows.length) {
+      rows = findOpenGroupsByGuardianEmail_(p.primary_email);
+    }
     if (!rows || !rows.length) throw new Error('Enrollment group not found');
     _checkMagicLinkRateLimit_(p.primary_email.toLowerCase().trim());
 
@@ -1212,6 +1234,223 @@ function reportUnsolicited_(p) {
   return { reported: true };
 }
 
+// ─── DL-E38 REFINADO — recuperación única per-guardian (P215, GAP-1 a1) ──────
+//
+// La recuperación pasa de group-scoped a guardian-scoped SIN esquema nuevo:
+// el `resume_token` sigue siendo de GRUPO (gate KAL-4 intacto), y el guardian
+// que recupera se identifica server-side por el EMAIL que la familia tecleó,
+// matcheado contra `enrEmails` del grupo filtrado a guardians. NUNCA se confía
+// en un `guardian_person_id` crudo del payload. Los emails por-guardian ya
+// viven en `enrEmails` (fuente canónica) — no se añade columna ad-hoc.
+
+/**
+ * Resuelve el guardian que recuperó el magic link a partir del email tecleado
+ * (GAP-1 a1). Matchea `recoveredEmail` contra `enrEmails` del grupo, filtrado a
+ * personas `person_type_id === 'guardian'`. KAL-5: assertValidEmail_ + lower/trim
+ * antes; appsheetEscape_ en cualquier Filter. KAL-4: el groupId ya viene derivado
+ * del token, nunca del payload.
+ *
+ * @param {string} groupId         enrollment_group_id (ya derivado del token)
+ * @param {string} recoveredEmail  email que tecleó la familia (discriminador)
+ * @param {Array}  [emailsHint]    filas enrEmails del grupo ya leídas (evita re-query)
+ * @param {Array}  [personsHint]   filas enrPersons del grupo ya leídas (evita re-query)
+ * @returns {string|null} guardian person_id, o null si ningún email de guardian matchea
+ *                        (GAP-2: pre-Step-2 no hay filas → fallback group-scoped).
+ */
+function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, personsHint) {
+  if (!recoveredEmail) return null;
+  var email;
+  try {
+    assertValidEmail_(recoveredEmail, 'recovered_email');
+    email = String(recoveredEmail).toLowerCase().trim();
+  } catch (e) {
+    return null; // discriminador malformado → no-match (fallback group-scoped)
+  }
+  try {
+    assertValidUuid_(groupId, 'enrollment_group_id');
+  } catch (e) {
+    return null;
+  }
+  var idEsc = appsheetEscape_(groupId);
+
+  var emails = Array.isArray(emailsHint) ? emailsHint
+    : (appsheetRequest_(T.EMAILS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || []);
+  var persons = Array.isArray(personsHint) ? personsHint
+    : (appsheetRequest_(T.PERSONS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || []);
+
+  var guardianIds = {};
+  persons.forEach(function(per) {
+    if (per && per.person_type_id === 'guardian' && per.person_id) guardianIds[per.person_id] = true;
+  });
+
+  var match = emails.find(function(e) {
+    return e && guardianIds[e.person_id] &&
+           String(e.value || '').toLowerCase().trim() === email;
+  });
+  return match ? match.person_id : null;
+}
+
+/**
+ * DL-E38 a1: localiza grupos abiertos (no enviados, no abandonados) cuyo email
+ * de GUARDIAN coincide con el tecleado — para que un guardian no-primario pueda
+ * recuperar con SU propio email (no solo el `primary_email` del grupo). El
+ * magic link se envía al email tecleado (que es el del guardian dueño del buzón),
+ * nunca al atacante. KAL-5: assertValidEmail_ + appsheetEscape_. Devuelve filas
+ * de grupo completas (con resume_token/primary_email/preferred_language).
+ *
+ * @param {string} rawEmail
+ * @returns {Array} filas enrEnrollmentGroups abiertas con guardian match
+ */
+function findOpenGroupsByGuardianEmail_(rawEmail) {
+  var email;
+  try { assertValidEmail_(rawEmail, 'primary_email'); email = String(rawEmail).toLowerCase().trim(); }
+  catch (e) { return []; }
+
+  var emailRows = appsheetRequest_(T.EMAILS, 'Find', [],
+    { Filter: '"value" = "' + appsheetEscape_(rawEmail) + '"' }) || [];
+  var matched = emailRows.filter(function(e) {
+    return String(e.value || '').toLowerCase().trim() === email && e.enrollment_group_id;
+  });
+  if (!matched.length) return [];
+
+  var groupIds = {};
+  matched.forEach(function(e) { groupIds[e.enrollment_group_id] = true; });
+  var ids = Object.keys(groupIds);
+  try { ids.forEach(function(id) { assertValidUuid_(id, 'enrollment_group_id'); }); }
+  catch (e) { return []; }
+  var grpFilter = ids.map(function(id) { return '"enrollment_group_id" = "' + appsheetEscape_(id) + '"'; }).join(' || ');
+
+  var groups  = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], { Filter: grpFilter }) || [];
+  var persons = appsheetRequest_(T.PERSONS,           'Find', [], { Filter: grpFilter }) || [];
+
+  // Solo enviar si el email matcheado pertenece a un GUARDIAN del grupo (no a un
+  // applicant) — evita mandar recuperación al email de un menor.
+  var guardianEmailGroups = {};
+  var guardianIdsByGroup = {};
+  persons.forEach(function(per) {
+    if (per.person_type_id === 'guardian') {
+      (guardianIdsByGroup[per.enrollment_group_id] = guardianIdsByGroup[per.enrollment_group_id] || {})[per.person_id] = true;
+    }
+  });
+  matched.forEach(function(e) {
+    var g = guardianIdsByGroup[e.enrollment_group_id];
+    if (g && g[e.person_id]) guardianEmailGroups[e.enrollment_group_id] = true;
+  });
+
+  return groups.filter(function(g) {
+    return !g.submitted_at && !g.abandoned_at && guardianEmailGroups[g.enrollment_group_id];
+  });
+}
+
+/**
+ * GAP-3 / P215: resuelve el estado real del expediente + (si Aprobado) el
+ * contexto de firma del guardian que recuperó. Bloque ADITIVO — no rompe las
+ * claves existentes de la respuesta de resumeSession_.
+ *
+ * Regla multi-enrollment (GAP step 1.1, default fijado): si las enrollments del
+ * grupo divergen de estado, se elige el MENOS avanzado (menor display_order en
+ * sysStates_T) para no exponer "Aprobada"/desbloquear firma mientras un hermano
+ * sigue en revisión. Grupos de una sola enrollment (caso común) no se ven
+ * afectados. La firma se ancla al GRUPO (sysSigningSessions.entity_id == group),
+ * así que el gate AD es a nivel de grupo.
+ *
+ * @param {string} groupId
+ * @param {Array}  enrollments         filas enrEnrollments del grupo
+ * @param {string|null} guardianPersonId  guardian resuelto server-side (a1)
+ * @returns {{state_code, state_label, signing_available, signing_context}}
+ */
+function buildAdmissionContext_(groupId, enrollments, guardianPersonId) {
+  var out = { state_code: null, state_label: null, signing_available: false, signing_context: null };
+  if (!enrollments || !enrollments.length) return out;
+
+  // Catálogo de estados ENR_ADMISSION_SCHOOL del tenant (mismo patrón que el
+  // reopen-check de resumeSession_).
+  var allStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
+  var statesById = {};
+  allStates.forEach(function(s) {
+    if (s && s.school_id === SCHOOL_ID && s.entity_type_code === 'ENR_ADMISSION_SCHOOL' && !s.deleted_at) {
+      statesById[s.state_id] = s;
+    }
+  });
+
+  var enrStates = enrollments
+    .map(function(e) { return statesById[e.current_state_id] || null; })
+    .filter(Boolean);
+  if (!enrStates.length) return out;
+
+  enrStates.sort(function(a, b) {
+    return (Number(a.display_order) || 0) - (Number(b.display_order) || 0);
+  });
+  var chosen = enrStates[0];
+  out.state_code  = chosen.state_code  || null;
+  out.state_label = chosen.designation || null; // 'designation' = label canónico (DL-S34)
+
+  if (out.state_code === 'AD' && guardianPersonId) {
+    out.signing_context   = resolveGuardianSigningContext_(groupId, guardianPersonId);
+    out.signing_available = !!out.signing_context;
+  }
+  return out;
+}
+
+/**
+ * GAP-3 / P215: lookup INVERSO (lo que hacía `getSigningTokenFromResumeToken_`
+ * borrado en CLI 60, ahora PER-GUARDIAN): dado {grupo, guardian} → encuentra la
+ * fila signer en una sesión de firma no-terminal anclada al grupo y devuelve su
+ * `signing_token`. Read-only, gateado por el resume_token ya validado aguas
+ * arriba. KAL-5: assertValidUuid_ + appsheetEscape_ en cada Filter.
+ *
+ * @param {string} groupId
+ * @param {string} guardianPersonId
+ * @returns {{signer_id, session_id, guardian_person_id, signing_token}|null}
+ */
+function resolveGuardianSigningContext_(groupId, guardianPersonId) {
+  try {
+    assertValidUuid_(groupId, 'enrollment_group_id');
+    assertValidUuid_(guardianPersonId, 'guardian_person_id');
+  } catch (e) { return null; }
+
+  var sessions;
+  try {
+    sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
+  } catch (e) {
+    Logger.log('[resolveGuardianSigningContext_] sessions lookup failed: ' + e.message);
+    return null;
+  }
+  var TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
+  var session = sessions.find(function(s) {
+    return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
+  });
+  if (!session) return null;
+  try {
+    assertValidUuid_(session.session_id, 'session_id');
+  } catch (e) { return null; }
+
+  var signers;
+  try {
+    signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+      { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
+  } catch (e) {
+    Logger.log('[resolveGuardianSigningContext_] signers lookup failed: ' + e.message);
+    return null;
+  }
+  var signer = signers.find(function(r) {
+    return r && !r.deleted_at && r.signer_person_id === guardianPersonId;
+  });
+  if (!signer || !signer.signing_token) return null;
+
+  // KAL-7/11: nunca loguear el token completo.
+  Logger.log(redact_('[resolveGuardianSigningContext_] signing_token resuelto para guardian=' +
+             guardianPersonId + ' grupo=' + groupId + ' token=' + String(signer.signing_token).substring(0, 8) + '...'));
+
+  return {
+    signer_id:          signer.signer_id || null,
+    session_id:         session.session_id || null,
+    guardian_person_id: guardianPersonId,
+    signing_token:      signer.signing_token,
+  };
+}
+
 /**
  * Accepts a resume_token and returns the full session state — DL-E15.
  *
@@ -1291,6 +1530,18 @@ function resumeSession_(p) {
   const relations   = (topRead[2].ok ? (topRead[2].data || []) : [])
     .map(r => ({ ...r, guardian_person_id: r.from_person_id, applicant_person_id: r.to_person_id }));
 
+  // ── DL-E38 / P215 (GAP-1 a1): per-guardian recovery ────────────────────────
+  // The guardian that recovered is resolved SERVER-SIDE from the email the
+  // family typed (p.recovered_email), matched against enrEmails of the group
+  // filtered to guardians — NEVER from a raw payload field (KAL-4). The
+  // resume_token gate above already authorised the group; the guardian is an
+  // ADDITIONAL discriminator re-resolved against real data on every call.
+  const recoveredGuardianId = resolveGuardianForRecovery_(id, p && p.recovered_email, allEmails, persons);
+
+  // P215: real admission state + (if AD) per-guardian signing context. Additive
+  // block — existing keys untouched so current consumers keep working.
+  const admission = buildAdmissionContext_(id, enrollments, recoveredGuardianId);
+
   // Documents: dedup by file_id + shape for frontend.
   // CLI 82 / KAL-NEW-5: NO drive_url. Sólo metadatos + file_id; los bytes se
   // resuelven on-demand vía getDocument (proxy gateado por token). El enlace
@@ -1369,7 +1620,9 @@ function resumeSession_(p) {
       group,
       application: group, // legacy alias — TODO: drop once frontend uses `group`
       enrollments,
-      persons: [], relations, documents, responses, interviews
+      persons: [], relations, documents, responses, interviews,
+      admission,                                      // P215 (additive)
+      recovered_guardian_person_id: recoveredGuardianId, // P215 (server-resolved, a1)
     };
   }
 
@@ -1437,6 +1690,8 @@ function resumeSession_(p) {
     documents,
     responses,
     interviews,
+    admission,                                      // P215 (additive)
+    recovered_guardian_person_id: recoveredGuardianId, // P215 (server-resolved, a1)
   };
 }
 
@@ -5764,5 +6019,75 @@ function manual_verifyP211Token(token) {
   }
 
   Logger.log('[manual_verifyP211Token] ' + JSON.stringify(out, null, 2));
+  return out;
+}
+
+/**
+ * DL-E38 / P215 — verifica la recuperación per-guardian (GAP-1 a1).
+ *
+ * Rellenar abajo con datos reales de una sesión de prueba:
+ *   - RESUME_TOKEN_REAL: resume_token de un grupo con ≥1 guardian guardado (Step 2+).
+ *   - GUARDIAN_EMAIL_REAL: email de uno de los guardians del grupo (debe existir en enrEmails).
+ *
+ * Verifica:
+ *   (a) resolveGuardianForRecovery_ matchea el email → guardian_person_id.
+ *   (b) resumeSession_({resume_token, recovered_email}) devuelve `admission`
+ *       con state_code + state_label resueltos desde sysStates_T.
+ *   (c) si el expediente está en AD, `admission.signing_available` + signing_context
+ *       (con signing_token) resueltos para ESE guardian.
+ *   (d) un email que NO es de guardian del grupo → guardian null (fallback).
+ *
+ * Lee PASS/FAIL en los Logs.
+ */
+function manual_testRecoveryPerGuardian() {
+  Logger.log('=== manual_testRecoveryPerGuardian (DL-E38 / P215) ===');
+  var RESUME_TOKEN_REAL   = 'REPLACE-WITH-REAL-RESUME-TOKEN';
+  var GUARDIAN_EMAIL_REAL = 'REPLACE-WITH-REAL-GUARDIAN-EMAIL';
+
+  if (RESUME_TOKEN_REAL.indexOf('REPLACE-') === 0 || GUARDIAN_EMAIL_REAL.indexOf('REPLACE-') === 0) {
+    Logger.log('  (skip) — rellenar RESUME_TOKEN_REAL + GUARDIAN_EMAIL_REAL con datos reales.');
+    Logger.log('=== fin manual_testRecoveryPerGuardian ===');
+    return { skipped: true };
+  }
+
+  var out = {};
+  // Resolver el grupo desde el token (como hace resumeSession_).
+  var groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"resume_token" = "' + appsheetEscape_(RESUME_TOKEN_REAL) + '"'
+  }) || [];
+  if (!groups.length) {
+    Logger.log('  ✗ FAIL — resume_token no resuelve a ningún grupo.');
+    return { error: 'TOKEN_NOT_FOUND' };
+  }
+  var groupId = groups[0].enrollment_group_id;
+
+  // (a) matching email → guardian
+  var gId = resolveGuardianForRecovery_(groupId, GUARDIAN_EMAIL_REAL);
+  out.a_guardian_matched = gId;
+  Logger.log('  a) guardian_person_id=' + gId + ' → ' + (gId ? '✓ PASS' : '✗ FAIL (¿es guardian + email en enrEmails?)'));
+
+  // (b)+(c) resumeSession_ con recovered_email
+  var res = resumeSession_({ resume_token: RESUME_TOKEN_REAL, recovered_email: GUARDIAN_EMAIL_REAL });
+  out.b_admission = res.admission || null;
+  out.b_recovered_guardian = res.recovered_guardian_person_id || null;
+  var bOk = !!(res.admission && (res.admission.state_code || res.enrollments.length === 0));
+  Logger.log('  b) admission=' + JSON.stringify(res.admission) + ' recovered_guardian=' + out.b_recovered_guardian +
+             ' → ' + (bOk ? '✓ PASS' : '✗ FAIL'));
+  if (res.admission && res.admission.state_code === 'AD') {
+    var cOk = !!(res.admission.signing_available && res.admission.signing_context && res.admission.signing_context.signing_token);
+    Logger.log('  c) AD → signing_available=' + res.admission.signing_available +
+               ' signing_context=' + JSON.stringify(res.admission.signing_context ? { signer_id: res.admission.signing_context.signer_id, has_token: !!res.admission.signing_context.signing_token } : null) +
+               ' → ' + (cOk ? '✓ PASS' : '✗ FAIL (¿signer para este guardian en sesión no-terminal?)'));
+  } else {
+    Logger.log('  c) (n/a) — expediente no está en AD (state_code=' + (res.admission && res.admission.state_code) + '); signing_available debe ser false: ' + (res.admission && res.admission.signing_available));
+  }
+
+  // (d) email no-guardian → null
+  var dId = resolveGuardianForRecovery_(groupId, 'definitely-not-a-guardian-' + Date.now() + '@example.com');
+  out.d_nonguardian = dId;
+  Logger.log('  d) email no-guardian → ' + dId + ' → ' + (dId === null ? '✓ PASS' : '✗ FAIL'));
+
+  Logger.log('[manual_testRecoveryPerGuardian] ' + JSON.stringify(out, null, 2));
+  Logger.log('=== fin manual_testRecoveryPerGuardian ===');
   return out;
 }
