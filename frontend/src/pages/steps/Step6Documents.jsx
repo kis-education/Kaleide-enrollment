@@ -6,7 +6,6 @@ import { openDocument } from '../../utils/documentProxy';
 import LockedBanner from '../../components/LockedBanner';
 import StepUpReverify from '../../components/StepUpReverify';
 import * as log from '../../logger';
-import { maskText } from '../../utils/mask';
 
 const DOCUMENT_TYPES = [
   { key: 'passport',        labelKey: 'doc.passport'        },
@@ -25,7 +24,7 @@ function fileToBase64(file) {
   });
 }
 
-function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded, existing, piiRevealed, onStepUpVerified, onActivity }) {
+function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded, existing, onStepUpVerified, onActivity }) {
   const { t }    = useTranslation();
   const [status, setStatus] = useState(existing ? 'success' : '');
   // CLI 82 / KAL-NEW-5: ya no guardamos una drive_url pública; guardamos el
@@ -127,11 +126,11 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
         <div className="upload-status success">
           <i className="bi bi-check-circle me-1" />
           {t('doc.uploaded')} &nbsp;
-          {/* DL-E39 PII-primero: la referencia/preview del documento sensible no
-              se revela sin step-up fresco. Si está fresco mostramos "Ver"; si no,
-              un marcador enmascarado — al pulsar Ver el backend puede además
-              devolver STEPUP_REQUIRED (manejado en handleView). */}
-          {fileId && (piiRevealed ? (
+          {/* DL-E39 ENMIENDA (gate de entrada): "Ver" siempre disponible — la PII
+              está protegida por el gate de entrada del wizard. Al pulsar Ver el
+              backend aún puede devolver STEPUP_REQUIRED si la frescura server-side
+              expiró (defensa en profundidad, manejado en handleView). */}
+          {fileId && (
             <button
               type="button"
               className="btn btn-link p-0"
@@ -143,11 +142,7 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
                 ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.8em', height: '0.8em' }} />{t('doc.view')}</>
                 : t('doc.view')}
             </button>
-          ) : (
-            <span style={{ color: 'var(--muted)' }} title={t('stepup.doc_masked')}>
-              <i className="bi bi-eye-slash me-1" />{maskText()}
-            </span>
-          ))}
+          )}
         </div>
       )}
       {status === 'error' && (
@@ -178,11 +173,13 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   const { t }  = useTranslation();
   const {
     enrollmentGroupId, resumeToken, stepData, updateStep,
-    isStepUpFresh, markStepUpFresh, touchActivity,
+    markStepUpFresh, touchActivity,
   } = useWizard();
   const [documents, setDocuments] = useState(stepData.documents || []);
-  // DL-E39 PII-primero: previews/refs de documentos sensibles ocultos salvo step-up.
-  const piiRevealed = isStepUpFresh();
+  // DL-E39 ENMIENDA (gate de entrada): sin enmascarado per-campo. La PII está
+  // protegida por el gate de entrada del wizard; aquí los documentos se muestran
+  // con normalidad. markStepUpFresh/touchActivity siguen para el retry server-side
+  // de subir/ver y para el reset del contador de inactividad.
 
   const handleUploaded = (doc) => {
     setDocuments(prev => {
@@ -220,7 +217,6 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
             resumeToken={resumeToken}
             onUploaded={handleUploaded}
             existing={documents.find(d => d.document_type === doc.key)}
-            piiRevealed={piiRevealed}
             onStepUpVerified={markStepUpFresh}
             onActivity={touchActivity}
           />

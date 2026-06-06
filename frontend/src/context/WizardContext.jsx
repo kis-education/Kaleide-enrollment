@@ -195,6 +195,32 @@ export function WizardProvider({ children }) {
   const [stepUpVerifiedUntil, setStepUpVerifiedUntil] = useState(0);
   const [lastActivityAt, setLastActivityAt] = useState(() => Date.now());
 
+  // DL-E39 ENMIENDA (gate de ENTRADA, Diego 2026-06-06): el step-up deja de ser
+  // per-campo (verificar-para-ver) y pasa a ser un GATE DE ACCESO al wizard. Una
+  // sesión RECUPERADA por magic-link (resume_token → expediente con PII existente)
+  // exige superar el gate OTP antes de mostrar NINGÚN paso. `recoveredViaMagicLink`
+  // marca exactamente esas sesiones; un arranque nuevo (/apply sin PII todavía, la
+  // familia teclea+verifica su email en sesión) NO se gatea con OTP de datos.
+  // Se persiste para que un reload de una sesión recuperada siga exigiendo el gate
+  // (el flag NO es PII ni secreto — solo dice "esta sesión cargó datos existentes").
+  const [recoveredViaMagicLink, setRecoveredViaMagicLinkRaw] = useState(
+    !!session.recoveredViaMagicLink
+  );
+  const setRecoveredViaMagicLink = useCallback((v) => {
+    setRecoveredViaMagicLinkRaw(!!v);
+    saveSession({ recoveredViaMagicLink: !!v });
+  }, []);
+
+  // Tick reactivo: fuerza re-render periódico para que el gate de entrada vuelva
+  // a aparecer cuando expira la frescura por inactividad (isStepUpFresh() es una
+  // función pura que lee Date.now(), pero sin un cambio de estado React no se
+  // re-evalúa). El ticker corre cada 30s; barato y suficiente (la ventana es 10min).
+  const [, setFreshnessTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setFreshnessTick(n => n + 1), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
   // Marca actividad del usuario (resetea el contador de inactividad).
   const touchActivity = useCallback(() => {
     setLastActivityAt(Date.now());
@@ -266,6 +292,7 @@ export function WizardProvider({ children }) {
     setRecoveredEmailRaw(null);
     setStepUpVerifiedUntil(0);
     setLastActivityAt(Date.now());
+    setRecoveredViaMagicLinkRaw(false);
   }, []);
 
   /**
@@ -368,6 +395,12 @@ export function WizardProvider({ children }) {
     const group = data.group || data.application;
     setEnrollmentGroupId(group.enrollment_group_id || group.application_id);
     setResumeToken(group.resume_token);
+    // DL-E39 gate de entrada: esta sesión cargó PII existente (recuperación por
+    // magic-link, o rehidratación tras reload de una sesión ya recuperada). Marca
+    // que el wizard debe quedar tras el gate OTP hasta que se verifique un código
+    // fresco. NO marcamos step-up fresco aquí — el gate se muestra precisamente
+    // porque isStepUpFresh() es false al recuperar.
+    setRecoveredViaMagicLink(true);
     // The magic link token itself proves email ownership — treat as verified regardless
     // of the email_confirmed DB flag (which may lag or not have been written yet).
     const persons   = data.persons   || [];
@@ -569,6 +602,7 @@ export function WizardProvider({ children }) {
       admissionState, signingContext,           // P216 (DL-E38)
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       isStepUpFresh, markStepUpFresh, touchActivity, // DL-E39 step-up PII-primero
+      recoveredViaMagicLink, setRecoveredViaMagicLink, // DL-E39 gate de entrada
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>
       {children}

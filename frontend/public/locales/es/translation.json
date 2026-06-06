@@ -329,6 +329,9 @@
 
   "stepup.title": "Verificación de seguridad",
   "stepup.subtitle": "Para proteger los datos, te enviaremos un código de verificación a tu correo. No necesitas volver a escribir tu email.",
+  "stepup.gate_title": "Verifica tu identidad",
+  "stepup.gate_subtitle": "Para acceder a tu solicitud, introduce el código de verificación que acabamos de enviar a tu correo. No necesitas volver a escribir tu email.",
+  "stepup.gate_enter": "Acceder",
   "stepup.send_code": "Enviar código",
   "stepup.sending": "Enviando…",
   "stepup.code_sent": "Te hemos enviado un código a tu correo.",

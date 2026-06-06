@@ -329,6 +329,9 @@
 
   "stepup.title": "Security verification",
   "stepup.subtitle": "To protect this data, we'll send a verification code to your email. You don't need to re-enter your email.",
+  "stepup.gate_title": "Verify your identity",
+  "stepup.gate_subtitle": "To access your application, enter the verification code we just sent to your email. You don't need to re-enter your email.",
+  "stepup.gate_enter": "Enter",
   "stepup.send_code": "Send code",
   "stepup.sending": "Sending…",
   "stepup.code_sent": "We've sent a code to your email.",

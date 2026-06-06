@@ -8,6 +8,7 @@ import LangToggle from '../components/LangToggle';
 import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
 import StepUpReverify from '../components/StepUpReverify';
+import StepUpGate from '../components/StepUpGate';
 import { Toast, useToast } from '../components/Toast';
 
 import Step1Email      from './steps/Step1Email';
@@ -55,6 +56,7 @@ export default function WizardPage() {
     isSubmitted,
     admissionState, signingContext,
     markStepUpFresh,
+    isStepUpFresh, recoveredViaMagicLink,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -262,6 +264,23 @@ const handleNext = async (stepKey, data) => {
   };
 
   const StepComponent = STEP_COMPONENTS[currentStep];
+
+  // DL-E39 ENMIENDA — GATE DE ENTRADA (Diego 2026-06-06). Una sesión recuperada
+  // por magic-link (resume_token → expediente con PII existente) NO muestra NINGÚN
+  // paso ni dato hasta superar el OTP de entrada. El gate reaparece tras 10 min de
+  // inactividad (isStepUpFresh() pasa a false; el ticker de WizardContext fuerza
+  // el re-render). NO aplica a un arranque nuevo (/apply sin PII, la familia
+  // verifica su email en sesión): esos no son recoveredViaMagicLink. El gate
+  // espera a que termine la rehidratación (necesita el resumeToken del expediente).
+  const mustPassEntryGate = recoveredViaMagicLink && !rehydrating && resumeToken && !isStepUpFresh();
+  if (mustPassEntryGate) {
+    return (
+      <StepUpGate
+        tokenPayload={{ resume_token: resumeToken }}
+        onVerified={markStepUpFresh}
+      />
+    );
+  }
 
   return (
     <div className="wizard-layout">
