@@ -1441,7 +1441,7 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
  * @param {string|null} guardianPersonId  guardian resuelto server-side (a1)
  * @returns {{state_code, state_label, signing_available, signing_context}}
  */
-function buildAdmissionContext_(groupId, enrollments, guardianPersonId) {
+function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons) {
   var out = { state_code: null, state_label: null, signing_available: false, signing_context: null };
   if (!enrollments || !enrollments.length) return out;
 
@@ -1467,11 +1467,124 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId) {
   out.state_code  = chosen.state_code  || null;
   out.state_label = chosen.designation || null; // 'designation' = label canónico (DL-S34)
 
-  if (out.state_code === 'AD' && guardianPersonId) {
-    out.signing_context   = resolveGuardianSigningContext_(groupId, guardianPersonId);
+  if (out.state_code === 'AD') {
+    // Path 1 — guardian resolved from the email the family typed (a1, KAL-4).
+    if (guardianPersonId) {
+      out.signing_context = resolveGuardianSigningContext_(groupId, guardianPersonId);
+    }
+    // Path 2 (DL-E38 cross-device fix) — the magic link carries NO guardian
+    // discriminator (recovered_email is empty when the link is clicked on a
+    // device where the family never typed their email, e.g. the email inbox on
+    // the phone). Without a fallback, signing_available stays false forever and
+    // the Step 7 → signing bridge never unlocks even though the file is AD and
+    // a signing_token exists. Resolve the signer DETERMINISTICALLY from the
+    // active signing session anchored to THIS group (entity_id == groupId),
+    // which is itself authorised by the resume_token validated upstream. KAL-4
+    // is preserved: the guardian/signer is derived server-side from real DB
+    // rows tied to the token's group, NEVER from a free payload field. The
+    // signing act protections (single-use/TTL/binding, P222) still live on the
+    // signing endpoints — this only unlocks the entry bridge.
+    if (!out.signing_context) {
+      out.signing_context = resolveSigningContextFromSession_(groupId, persons);
+    }
     out.signing_available = !!out.signing_context;
   }
   return out;
+}
+
+/**
+ * DL-E38 cross-device fallback: resolve the per-guardian signing context WITHOUT
+ * a recovered_email discriminator, by reading the active (non-terminal) signing
+ * session anchored to the group and its signer rows. Deterministic only — never
+ * guesses among ambiguous signers:
+ *
+ *   - exactly ONE non-deleted signer with a signing_token → use it (the common
+ *     single-guardian family, and the unambiguous multi-signer-but-one-pending
+ *     case once others have signed).
+ *   - multiple eligible signers BUT the group has exactly one guardian person →
+ *     match the signer for that guardian.
+ *   - otherwise (genuinely ambiguous: ≥2 guardians, ≥2 pending signers) → return
+ *     null; the in-app signer selection (P215 sub-decision) handles that case and
+ *     the family can still recover per-guardian by typing their own email.
+ *
+ * KAL-4: groupId is the token-authorised group; nothing comes from the payload.
+ * KAL-5: assertValidUuid_ + appsheetEscape_ on every Filter.
+ *
+ * @param {string} groupId
+ * @param {Array}  persons  enrPersons rows of the group (to count guardians)
+ * @returns {{signer_id, session_id, guardian_person_id, signing_token}|null}
+ */
+function resolveSigningContextFromSession_(groupId, persons) {
+  try {
+    assertValidUuid_(groupId, 'enrollment_group_id');
+  } catch (e) { return null; }
+
+  var sessions;
+  try {
+    sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
+  } catch (e) {
+    Logger.log('[resolveSigningContextFromSession_] sessions lookup failed: ' + e.message);
+    return null;
+  }
+  var TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
+  var session = sessions.find(function(s) {
+    return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
+  });
+  if (!session) return null;
+  try {
+    assertValidUuid_(session.session_id, 'session_id');
+  } catch (e) { return null; }
+
+  var signers;
+  try {
+    signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+      { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
+  } catch (e) {
+    Logger.log('[resolveSigningContextFromSession_] signers lookup failed: ' + e.message);
+    return null;
+  }
+  // Eligible = not soft-deleted, has a token, not already signed.
+  var eligible = signers.filter(function(r) {
+    return r && !r.deleted_at && r.signing_token && !r.signed_at;
+  });
+  if (!eligible.length) {
+    // Everyone already signed (or no tokens) — nothing to unlock.
+    return null;
+  }
+
+  var chosen = null;
+  if (eligible.length === 1) {
+    chosen = eligible[0];
+  } else {
+    // Ambiguous among signers → disambiguate only if the group has a single
+    // guardian person (then the eligible signer for that guardian is the one).
+    var guardianIds = {};
+    var guardianCount = 0;
+    (persons || []).forEach(function(per) {
+      if (per && per.person_type_id === 'guardian' && per.person_id && !guardianIds[per.person_id]) {
+        guardianIds[per.person_id] = true;
+        guardianCount++;
+      }
+    });
+    if (guardianCount === 1) {
+      var onlyGuardian = Object.keys(guardianIds)[0];
+      chosen = eligible.find(function(r) { return r.signer_person_id === onlyGuardian; }) || null;
+    }
+  }
+  if (!chosen) return null; // genuinely ambiguous — let in-app selection handle it
+
+  // KAL-7/11: never log the full token.
+  Logger.log(redact_('[resolveSigningContextFromSession_] signing_token resuelto (cross-device) signer=' +
+             chosen.signer_person_id + ' grupo=' + groupId + ' token=' +
+             String(chosen.signing_token).substring(0, 8) + '...'));
+
+  return {
+    signer_id:          chosen.signer_id || null,
+    session_id:         session.session_id || null,
+    guardian_person_id: chosen.signer_person_id || null,
+    signing_token:      chosen.signing_token,
+  };
 }
 
 /**
@@ -1622,7 +1735,7 @@ function resumeSession_(p) {
 
   // P215: real admission state + (if AD) per-guardian signing context. Additive
   // block — existing keys untouched so current consumers keep working.
-  const admission = buildAdmissionContext_(id, enrollments, recoveredGuardianId);
+  const admission = buildAdmissionContext_(id, enrollments, recoveredGuardianId, persons);
 
   // Documents: dedup by file_id + shape for frontend.
   // CLI 82 / KAL-NEW-5: NO drive_url. Sólo metadatos + file_id; los bytes se
