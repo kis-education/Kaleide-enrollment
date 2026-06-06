@@ -238,6 +238,33 @@ function assertValidEmail_(v, fieldName) {
   }
 }
 
+/**
+ * Validates a SIGNING_TOKEN format. Unlike assertValidUuid_, accepts BOTH:
+ *   - canonical UUID v4 with hyphens (36 chars)
+ *   - dashless 32-hex (PackedUUID-style) — the format the KMS actually emits per
+ *     signer (`_signing_generateSignerToken_`, e.g. 019c2aa3dc5243ef8633e00dd47644b3).
+ *
+ * P211 fix: the KMS emits signing_tokens dashless, but requireSigningToken_ /
+ * resolveSigningToken_ validated with the STRICT assertValidUuid_ (KAL-5) → every
+ * real token was rejected ("token no válido o caducado"). Mirrors the KMS-side
+ * fix `sys_resolveRecipientEmailLoose_` (relax FORMAT only). Still hex-only, so the
+ * appsheetEscape_ layer-2 on the Filter concatenation (KAL-5) remains the security
+ * boundary — UNTOUCHED. Throws on anything that is not one of the two hex shapes.
+ *
+ * @param {*}      v
+ * @param {string} [fieldName] for the error message
+ */
+function assertValidSigningToken_(v, fieldName) {
+  if (typeof v === 'string') {
+    var s = v.trim();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ||
+        /^[0-9a-f]{32}$/i.test(s)) {
+      return;
+    }
+  }
+  throw new Error('Invalid signing_token for ' + (fieldName || 'field') + ': ' + JSON.stringify(v));
+}
+
 // ─── IDOR defense (KAL-4) ─────────────────────────────────────────────────────
 // Closes the Insecure Direct Object Reference vector identified in the
 // 2026-05-29 audit. Mutation handlers (saveStep_, submitEnrollmentSession_,
@@ -333,7 +360,7 @@ function requireResumeToken_(payload) {
  */
 function requireSigningToken_(payload) {
   const token = payload && payload.signing_token;
-  assertValidUuid_(token, 'signing_token'); // throw BAD_REQUEST si malformado
+  assertValidSigningToken_(token, 'signing_token'); // P211: acepta UUID v4 o dashless 32-hex (formato KMS); throw BAD_REQUEST si malformado
 
   const resolved = resolveSigningToken_({ signing_token: token });
   if (!resolved || !resolved.valid) {
@@ -4036,10 +4063,12 @@ function resolveSigningToken_(p) {
   // Audit: log attempt (partial token only — no PII)
   Logger.log('[resolveSigningToken_] attempt token=' + token.substring(0, 8) + '...');
 
-  // KAL-5: strict UUID-v4 layout (was loose [0-9a-f-]{32,40}). Combined with
-  // appsheetEscape_ on the concatenation for defense in depth.
+  // P211: el KMS emite signing_tokens dashless (32-hex); el layout estricto UUID-v4
+  // (KAL-5) los rechazaba todos. assertValidSigningToken_ acepta v4-con-guiones Y
+  // dashless 32-hex (sigue hex-only). El appsheetEscape_ en la concatenación del
+  // Filter (capa 2 KAL-5) permanece intacto como frontera de seguridad.
   try {
-    assertValidUuid_(token, 'signing_token');
+    assertValidSigningToken_(token, 'signing_token');
   } catch (_) {
     Logger.log('[resolveSigningToken_] token format invalid');
     return { valid: false, reason: 'INVALID' };
@@ -5701,4 +5730,39 @@ function manual_testSanitizeErrorPII() {
     Logger.log('  ' + (ok ? '✓ PASS' : '✗ FAIL') + ' [' + c.name + '] → ' + out);
   });
   Logger.log('=== manual_testSanitizeErrorPII: ' + (allPass ? 'PASS' : 'FAIL') + ' ===');
+}
+
+/**
+ * Verificación P211 — antes/después del fix de formato del signing_token.
+ * Toma el token real (dashless 32-hex emitido por el KMS) y muestra:
+ *   - before: assertValidUuid_ (estricto KAL-5) lo RECHAZA.
+ *   - after:  assertValidSigningToken_ lo ACEPTA + resolveSigningToken_ → {valid:true}.
+ * Pasa el token por parámetro o usa el de prueba conocido.
+ */
+function manual_verifyP211Token(token) {
+  var REAL = token || '019c2aa3dc5243ef8633e00dd47644b3';
+  var out = { token: REAL };
+
+  // BEFORE: validación estricta anterior (assertValidUuid_) → rechaza dashless
+  try { assertValidUuid_(REAL, 'signing_token'); out.before_strictUuid = 'ACCEPTED (inesperado)'; }
+  catch (e) { out.before_strictUuid = 'REJECTED → ' + e.message; }
+
+  // AFTER: nueva validación de formato
+  try { assertValidSigningToken_(REAL, 'signing_token'); out.after_looseFormat = 'ACCEPTED'; }
+  catch (e) { out.after_looseFormat = 'REJECTED → ' + e.message; }
+
+  // AFTER: resolución real contra sysSigningSessionSigners
+  var res = resolveSigningToken_({ signing_token: REAL });
+  out.resolve = res;
+
+  // AFTER: el gate completo de los 4 proxies
+  try {
+    var sctx = requireSigningToken_({ signing_token: REAL });
+    out.gate = { ok: true, enrollment_group_id: sctx.enrollment_group_id, signer_id: sctx.signer_id, session_id: sctx.session_id };
+  } catch (e) {
+    out.gate = { ok: false, error: e.message, code: e.code || null };
+  }
+
+  Logger.log('[manual_verifyP211Token] ' + JSON.stringify(out, null, 2));
+  return out;
 }
