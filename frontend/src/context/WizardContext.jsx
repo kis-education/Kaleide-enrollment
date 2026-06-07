@@ -587,6 +587,24 @@ export function WizardProvider({ children }) {
     setCurrentStep(target);
   }, []);
 
+  // ── Admission-state PULSE (realtime bug, Diego 2026-06-07) ───────────────────
+  // Refresca SOLO el sub-bloque de admisión (admissionState/signingContext/
+  // isSubmitted) desde una respuesta de resumeSession, SIN tocar stepData /
+  // savedBaseline / completedSteps / currentStep. Lo llama el poll de WizardPage
+  // (~30s + focus) para que un cambio de estado en el KMS (admisión, reopen) se
+  // refleje con el wizard abierto sin recargar — y SIN pisar la edición en curso
+  // (no es hydrateFromResume; no reseed). Mismo cálculo de submitted_at que la
+  // hidratación (línea ~542): importante para el caso reopen (KMS→IN deja
+  // submitted_at=null) y para el caso admitida.
+  const refreshAdmissionState = useCallback((data) => {
+    if (!data) return;
+    const group = data.group || data.application || {};
+    setIsSubmitted(!!group.submitted_at);
+    const adm = data.admission || null;
+    setAdmissionState(adm);
+    setSigningContext(adm && adm.signing_context ? adm.signing_context : null);
+  }, []);
+
   return (
     <WizardContext.Provider value={{
       enrollmentGroupId, setEnrollmentGroupId,
@@ -597,7 +615,7 @@ export function WizardProvider({ children }) {
       completedSteps, addCompletedStep, removeCompletedStep,
       isStepDirty, markStepSaved,
       setPendingSave, awaitPendingSave, hasPendingSave,
-      hydrateFromResume, clearSession,
+      hydrateFromResume, refreshAdmissionState, clearSession,
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)

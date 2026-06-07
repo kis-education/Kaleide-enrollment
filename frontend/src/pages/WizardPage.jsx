@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
@@ -49,7 +49,7 @@ export default function WizardPage() {
     enrollmentGroupId, resumeToken,
     currentStep, setCurrentStep,
     stepData, updateStep,
-    hydrateFromResume, needsHydration,
+    hydrateFromResume, refreshAdmissionState, needsHydration,
     clearSession,
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
@@ -78,6 +78,36 @@ export default function WizardPage() {
   // lookups and Step5/Step7 get the cached question catalog (keyed by language) —
   // no re-fetch when the user reaches Questions or navigates back/forward.
   useEffect(() => { prefetchLookups(); prefetchQuestions(i18n.language); }, []); // eslint-disable-line
+
+  // ── Admission-state PULSE (realtime bug, Diego 2026-06-07) ───────────────────
+  // El estado de admisión (admissionState/signingContext/isSubmitted) solo se
+  // poblaba vía hydrateFromResume, que corre únicamente tras reload (needsHydration).
+  // Con el wizard abierto, un cambio en el KMS (admisión, reopen) nunca se reflejaba.
+  // Pulso: cada ~30s + al recuperar foco la ventana, re-llamamos resumeSession y
+  // actualizamos SOLO el bloque de admisión (refreshAdmissionState NO toca stepData/
+  // savedBaseline/completedSteps/currentStep → no pisa la edición en curso).
+  // Guardas: requiere resumeToken; SALTA si hay un save en vuelo (no competir) o si
+  // la pestaña está oculta (ahorra cuota GAS). Las últimas guardas/valores se leen
+  // por ref para que el interval (effect []) no se recree en cada toggle de save.
+  // KAL-7/KAL-11: el resume_token viaja en el body POST (no en URL), y los logs solo
+  // emiten err.message — nunca el token.
+  const pulseRef = useRef({ resumeToken: null, recoveredEmail: null, hasPendingSave: false });
+  pulseRef.current = { resumeToken, recoveredEmail, hasPendingSave };
+  useEffect(() => {
+    const tick = () => {
+      const { resumeToken: rt, recoveredEmail: re, hasPendingSave: pending } = pulseRef.current;
+      if (!rt) return;                                    // sin sesión → nada que sincronizar
+      if (pending) return;                                // save en vuelo → saltar este tick
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return; // pestaña oculta → saltar
+      gasCall('resumeSession', { resume_token: rt, recovered_email: re || undefined })
+        .then(data => refreshAdmissionState(data))
+        .catch(err => log.warn('WizardPage: admission pulse failed', { message: err.message }));
+    };
+    const id = setInterval(tick, 30 * 1000);
+    const onFocus = () => tick();
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(id); window.removeEventListener('focus', onFocus); };
+  }, []); // eslint-disable-line
 
   // On page reload, enrollmentGroupId is restored from sessionStorage but stepData is empty.
   // Auto-resume from the server to restore full wizard state.
