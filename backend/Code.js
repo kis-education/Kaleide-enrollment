@@ -580,10 +580,9 @@ function doPost(e) {
       case 'reportUnsolicited':    result = reportUnsolicited_(payload);    break;
       case 'abandonSession':       result = abandonSession_(payload);       break;
       case 'resolveSigningToken':  result = resolveSigningToken_(payload);  break;
-      // P215 in-app signer selection: family picks their identity from the
-      // signing_candidates list → resolve THAT signer's signing_token
-      // server-side (group derived from resume_token, KAL-4).
-      case 'selectSigner':         result = selectSigner_(payload);         break;
+      // P215 opción (b) ELIMINADA (CLI AD-SPLIT): el selector in-app de firmante
+      // ('selectSigner' + signing_candidates) queda descartado por razón legal —
+      // la identidad se deriva server-side por recovery link per-guardian (Vía 1).
       // ── CLI 40 (2026-06-02) — WS4 4 endpoints firma proxy a KMS (P118, HC-1) ──
       // PROXIES finos al KMS con service token (patrón fetchQuestions_).
       // GATE-D resuelto (proxy vs directa) → proxy. GATE-B modo conservador en
@@ -1525,31 +1524,24 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
     }
     out.signing_available = !!out.signing_context;
 
-    // P215 in-app signer selection — when neither Path 1 nor Path 2 could
-    // resolve a single signer (genuinely ambiguous: ≥2 guardians, ≥2 pending
-    // signers, and no recovered_email discriminator), DON'T dead-end the family
-    // with a silent signing_available=false. Expose the LIST of eligible signers
-    // so the frontend can render a "who are you?" selector (DL-E38 REFINADO
-    // sub-decision). KAL-4/KAL-7: the list NEVER includes the signing_token —
-    // only signer_id + guardian_person_id + display name. The token is handed
-    // out only after the user picks their identity and the frontend re-recovers
-    // per-guardian (resumeSession with that guardian's email), which re-resolves
-    // server-side via Path 1. The signing-act protections (P222) stay on the
-    // signing endpoints.
-    if (!out.signing_available) {
-      out.signing_candidates = resolveSigningCandidates_(groupId, persons);
-    }
+    // P215 opción (a) RESUELTA (CLI AD-SPLIT, decisión Diego 2026-06-07): la
+    // identidad de firma se deriva SOLO server-side — Path 1 (Vía 1, recovery link
+    // per-guardian: guardian del recovered_email) o Path 2 (determinista cuando es
+    // inequívoco). La opción (b) (selector in-app "¿quién eres?" / signing_candidates)
+    // queda ELIMINADA: una auto-declaración de identidad in-app ANTES del acto de
+    // firma debilita el binding legal del firmante. Familias con ≥2 guardians se
+    // resuelven por el recovery link per-guardian (cada guardian recupera con SU
+    // email → Path 1 deriva su signing_token, sin selector). CERO auto-declaración.
 
     // WIZARD-STEP7-COMPLETED (2026-06-07): terminal signing state. With both
-    // guardians already signed, the deterministic/candidate paths above ALL
-    // resolve empty (eligible signers filtered by !signed_at → 0; terminal
-    // session filtered out by the non-terminal filter) → signing_available=false
-    // + signing_candidates=[] → the family fell through to the "firma en
-    // preparación" banner forever, looking stuck even though signing is DONE.
-    // Expose an ADDITIVE signing_status ∈ {NOT_INITIATED, IN_PROGRESS, COMPLETED}
-    // so the frontend can render a terminal success state. Does NOT touch
-    // signing_available / signing_candidates (the entry-bridge gate). KAL-4: the
-    // group is token-authorised; nothing comes from the payload.
+    // guardians already signed, the deterministic paths above ALL resolve empty
+    // (eligible signers filtered by !signed_at → 0; terminal session filtered out
+    // by the non-terminal filter) → signing_available=false → the family fell
+    // through to the "firma en preparación" banner forever, looking stuck even
+    // though signing is DONE. Expose an ADDITIVE signing_status ∈
+    // {NOT_INITIATED, IN_PROGRESS, COMPLETED} so the frontend can render a terminal
+    // success state. Does NOT touch signing_available (the entry-bridge gate).
+    // KAL-4: the group is token-authorised; nothing comes from the payload.
     out.signing_status = resolveSigningStatus_(groupId);
   }
   return out;
@@ -1632,127 +1624,6 @@ function resolveSigningStatus_(groupId) {
 }
 
 /**
- * P215: lists the eligible (non-deleted, token-issued, not-yet-signed) signers
- * of the active signing session anchored to the group, WITHOUT exposing the
- * signing_token. Used to drive an in-app "who are you?" selector when the
- * guardian identity could not be derived deterministically (cross-device,
- * multi-guardian, no recovered_email). Returns [] when nothing to select (no
- * active session, no eligible signers, or the deterministic path already
- * resolved it). KAL-4: groupId is token-authorised; KAL-5: assertValidUuid_ +
- * appsheetEscape_; KAL-7: never returns the token.
- *
- * @param {string} groupId
- * @param {Array}  persons  enrPersons rows of the group (to resolve names)
- * @returns {Array<{signer_id, guardian_person_id, guardian_display_name}>}
- */
-function resolveSigningCandidates_(groupId, persons) {
-  try {
-    assertValidUuid_(groupId, 'enrollment_group_id');
-  } catch (e) { return []; }
-
-  var sessions;
-  try {
-    sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
-  } catch (e) {
-    Logger.log('[resolveSigningCandidates_] sessions lookup failed: ' + e.message);
-    return [];
-  }
-  var TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
-  var session = sessions.find(function(s) {
-    return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
-  });
-  if (!session) return [];
-  try {
-    assertValidUuid_(session.session_id, 'session_id');
-  } catch (e) { return []; }
-
-  var signers;
-  try {
-    signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-      { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
-  } catch (e) {
-    Logger.log('[resolveSigningCandidates_] signers lookup failed: ' + e.message);
-    return [];
-  }
-  var eligible = signers.filter(function(r) {
-    return r && !r.deleted_at && r.signing_token && !r.signed_at;
-  });
-
-  // Name lookup from the group's persons.
-  var nameById = {};
-  (persons || []).forEach(function(per) {
-    if (per && per.person_id) {
-      nameById[per.person_id] = [per.first_name, per.last_name].filter(Boolean).join(' ').trim();
-    }
-  });
-
-  return eligible.map(function(r) {
-    return {
-      signer_id:             r.signer_id || null,
-      guardian_person_id:    r.signer_person_id || null,
-      guardian_display_name: nameById[r.signer_person_id] || null,
-      // KAL-7: NO signing_token — the token is only handed out after the user
-      // selects their identity and re-recovers per-guardian (Path 1).
-    };
-  });
-}
-
-/**
- * P215 in-app signer selection bridge: given {resume_token, signer_id}, returns
- * that signer's signing_token so the wizard can navigate to /sign. Used only
- * when the guardian identity could NOT be derived deterministically (the
- * `signing_candidates` selector case). KAL-4: the authorised group is derived
- * SERVER-SIDE from the resume_token (NEVER from a payload group field); the
- * requested signer_id is validated to belong to an active (non-terminal)
- * signing session anchored to THAT group, and to be eligible (token issued,
- * not signed, not deleted). KAL-5: assertValidUuid_ + appsheetEscape_ on every
- * Filter. KAL-7: token is returned over the API body only (the frontend keeps
- * it out of the URL) — never logged in full (KAL-11).
- *
- * @param {Object} p - { resume_token, signer_id }
- * @returns {{signer_id, session_id, guardian_person_id, signing_token}}
- */
-function selectSigner_(p) {
-  const groupId = requireResumeToken_(p);
-  const signerId = p && p.signer_id;
-  assertValidUuid_(signerId, 'signer_id');
-  assertValidUuid_(groupId, 'enrollment_group_id');
-
-  // Active signing session anchored to the token-authorised group.
-  const sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-    { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
-  const TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
-  const session = sessions.find(function(s) {
-    return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
-  });
-  if (!session) throw new Error('No active signing session for this application');
-  assertValidUuid_(session.session_id, 'session_id');
-
-  const signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-    { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
-  // KAL-4: the requested signer MUST belong to the session anchored to the
-  // token's group — anything else is an IDOR attempt.
-  const signer = signers.find(function(r) {
-    return r && !r.deleted_at && r.signer_id === signerId;
-  });
-  if (!signer)        throw new Error('Unauthorized: signer does not belong to this application');
-  if (signer.signed_at)        throw new Error('This signer has already signed');
-  if (!signer.signing_token)   throw new Error('Signing not ready for this signer');
-
-  Logger.log(redact_('[selectSigner_] signing_token entregado tras selección in-app signer=' +
-    signer.signer_person_id + ' grupo=' + groupId + ' token=' +
-    String(signer.signing_token).substring(0, 8) + '...'));
-
-  return {
-    signer_id:          signer.signer_id,
-    session_id:         session.session_id,
-    guardian_person_id: signer.signer_person_id || null,
-    signing_token:      signer.signing_token,
-  };
-}
-
-/**
  * DL-E38 cross-device fallback: resolve the per-guardian signing context WITHOUT
  * a recovered_email discriminator, by reading the active (non-terminal) signing
  * session anchored to the group and its signer rows. Deterministic only — never
@@ -1764,8 +1635,9 @@ function selectSigner_(p) {
  *   - multiple eligible signers BUT the group has exactly one guardian person →
  *     match the signer for that guardian.
  *   - otherwise (genuinely ambiguous: ≥2 guardians, ≥2 pending signers) → return
- *     null; the in-app signer selection (P215 sub-decision) handles that case and
- *     the family can still recover per-guardian by typing their own email.
+ *     null. P215 opción (a): cada guardian recupera con SU email (recovery link
+ *     per-guardian) → Path 1 deriva su signing_token. SIN selector in-app
+ *     (opción b descartada por razón legal — CERO auto-declaración de identidad).
  *
  * KAL-4: groupId is the token-authorised group; nothing comes from the payload.
  * KAL-5: assertValidUuid_ + appsheetEscape_ on every Filter.
@@ -1832,7 +1704,7 @@ function resolveSigningContextFromSession_(groupId, persons) {
       chosen = eligible.find(function(r) { return r.signer_person_id === onlyGuardian; }) || null;
     }
   }
-  if (!chosen) return null; // genuinely ambiguous — let in-app selection handle it
+  if (!chosen) return null; // ambiguo → recovery link per-guardian (Vía 1), sin selector in-app
 
   // KAL-7/11: never log the full token.
   Logger.log(redact_('[resolveSigningContextFromSession_] signing_token resuelto (cross-device) signer=' +
@@ -6780,19 +6652,14 @@ function manual_diagWizardSigningGate() {
     }
   });
 
-  // Vías de resolución.
+  // Vías de resolución (opción a: SOLO server-side; opción b in-app eliminada).
   var via1 = recoveredGuardianId ? resolveGuardianSigningContext_(GROUP_ID, recoveredGuardianId) : null;
   var via2 = resolveSigningContextFromSession_(GROUP_ID, persons);
-  var candidates = resolveSigningCandidates_(GROUP_ID, persons);
 
   Logger.log('  Vía 1 (per-guardian a1): ' + (via1 ? 'RESUELTA (token=' +
              String(via1.signing_token).substring(0, 8) + '...)' : 'null'));
   Logger.log('  Vía 2 (cross-device determinista): ' + (via2 ? 'RESUELTA (token=' +
              String(via2.signing_token).substring(0, 8) + '...)' : 'null'));
-  Logger.log('  signing_candidates (selector in-app): ' + candidates.length +
-             (candidates.length ? ' → ' + candidates.map(function(c) {
-               return (c.guardian_display_name || c.guardian_person_id);
-             }).join(', ') : ''));
 
   // WIZARD-STEP7-COMPLETED: estado de firma incl. terminal COMPLETED.
   var signingStatus = resolveSigningStatus_(GROUP_ID);
@@ -6803,7 +6670,6 @@ function manual_diagWizardSigningGate() {
   Logger.log('  >>> buildAdmissionContext_: state_code=' + admission.state_code +
              ' signing_available=' + admission.signing_available +
              ' signing_context=' + (admission.signing_context ? 'sí' : 'no') +
-             ' candidates=' + ((admission.signing_candidates || []).length) +
              ' signing_status=' + admission.signing_status);
   Logger.log('=== fin manual_diagWizardSigningGate ===');
   return admission;
