@@ -134,13 +134,13 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
 
   // Titular (default payer) fiscal fields — prefilled from the signing guardian.
   const [f, setF] = useState({ ...BLANK_PAYER_FIELDS, billing_phone: '' });
-  // Reparto: one row per group guardian (GUARDIAN payer_type) + any OTHER payers
-  // added manually. Each row carries a `split_percentage`. Default: signing guardian
-  // 100%, the rest 0% (sums to 100). The titular's own fiscal data lives in `f`
-  // (the first GUARDIAN row mirrors `f`); other guardian rows only need a % (their
-  // fiscal data is already in core from onboarding — the KMS resolves it by
-  // payer_person_id). OTHER rows carry their own fiscal fields.
-  const [payers, setPayers] = useState([]); // [{ key, payer_type, payer_person_id, name, split, ...fiscal }]
+  // Reparto: one row per group guardian (GUARDIAN payer_type only — NO third-party
+  // billing per Diego's decision). Each row carries a `split_percentage`. Default:
+  // signing guardian 100%, the rest 0% (sums to 100). The titular's own fiscal data
+  // lives in `f` (the first GUARDIAN row mirrors `f`); other guardian rows only need
+  // a % (their fiscal data is already in core from onboarding — the KMS resolves it
+  // by payer_person_id).
+  const [payers, setPayers] = useState([]); // [{ key, payer_type:'GUARDIAN', payer_person_id, name, split, ...fiscal }]
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
@@ -211,36 +211,21 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
     const n = raw === '' ? 0 : Math.max(0, Math.min(100, Number(raw) || 0));
     setPayers(prev => prev.map(p => p.key === key ? { ...p, split: n } : p));
   };
-  const setPayerField = (key, fieldName) => (e) => {
-    const val = e.target.value;
-    setPayers(prev => prev.map(p => p.key === key ? { ...p, [fieldName]: val } : p));
-  };
-  const addOtherPayer = () => {
-    setPayers(prev => [...prev, {
-      key: 'other_' + Date.now(),
-      payer_type: 'OTHER',
-      payer_person_id: null,
-      name: '',
-      split: 0,
-      ...BLANK_PAYER_FIELDS,
-    }]);
-  };
-  const removePayer = (key) => setPayers(prev => prev.filter(p => p.key !== key));
-
   const totalSplit = payers.reduce((s, p) => s + (Number(p.split) || 0), 0);
 
   // Build the canonical payers[] contract (THIS shape is mirrored by the parallel
-  // KMS agent). The titular's fiscal data (`f`) feeds the signing-guardian row so a
-  // single-payer family still sends complete data; OTHER rows carry their own.
+  // KMS agent). All rows are GUARDIAN payers (no third-party billing). The titular's
+  // fiscal data (`f`) feeds the signing-guardian row so a single-payer family still
+  // sends complete data; other guardian rows carry only a % (the KMS resolves their
+  // fiscal data from core by payer_person_id).
   const buildPayersPayload = () => payers
     .filter(p => (Number(p.split) || 0) > 0 || payers.length === 1)
     .map(p => {
-      const isTitular = p.payer_type === 'GUARDIAN'
-        && (guardianPersonId ? p.payer_person_id === guardianPersonId : p.split === 100);
+      const isTitular = guardianPersonId ? p.payer_person_id === guardianPersonId : p.split === 100;
       const fiscal = isTitular ? f : p;
       return {
-        payer_type:           p.payer_type,
-        payer_person_id:      p.payer_type === 'GUARDIAN' ? (p.payer_person_id || null) : null,
+        payer_type:           'GUARDIAN',
+        payer_person_id:      p.payer_person_id || null,
         fiscal_name:          (fiscal.fiscal_name || p.name || '').trim() || null,
         fiscal_tax_id:        (fiscal.fiscal_tax_id || '').trim() || null,
         fiscal_address_line1: (fiscal.fiscal_address_line1 || '').trim() || null,
@@ -254,13 +239,6 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   const submit = async () => {
     if (!f.fiscal_name.trim())  { setErr(t('signing.billing.err_name')); return; }
     if (!EMAIL_RE.test(f.billing_email.trim())) { setErr(t('signing.billing.err_email')); return; }
-    // Validate any OTHER payer rows with a share have at least a name + email.
-    for (const p of payers) {
-      if (p.payer_type === 'OTHER' && (Number(p.split) || 0) > 0) {
-        if (!(p.fiscal_name || '').trim()) { setErr(t('signing.billing.split.err_other_name')); return; }
-        if (!EMAIL_RE.test((p.billing_email || '').trim())) { setErr(t('signing.billing.split.err_other_email')); return; }
-      }
-    }
     if (Math.round(totalSplit) !== 100) { setErr(t('signing.billing.split.err_sum', { total: totalSplit })); return; }
 
     setErr(''); setSubmitting(true);
@@ -286,7 +264,7 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
         fiscal_postal_code:   f.fiscal_postal_code.trim() || null,
         billing_email:        f.billing_email.trim(),
         // Titular's split (for proxies that read split_percentage at top level).
-        split_percentage:     (payersPayload.find(p => p.payer_type === 'GUARDIAN' && p.payer_person_id === (guardianPersonId || null)) || payersPayload[0] || {}).split_percentage,
+        split_percentage:     (payersPayload.find(p => p.payer_person_id === (guardianPersonId || null)) || payersPayload[0] || {}).split_percentage,
       });
       onDone();
     } catch (e) {
@@ -345,18 +323,7 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
         {payers.map(p => (
           <div key={p.key} style={{ marginBottom: 12, padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              {p.payer_type === 'OTHER' ? (
-                <input
-                  type="text"
-                  className="form-control"
-                  style={{ flex: 1 }}
-                  placeholder={t('signing.billing.split.other_name_placeholder')}
-                  value={p.fiscal_name}
-                  onChange={setPayerField(p.key, 'fiscal_name')}
-                />
-              ) : (
-                <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</span>
-              )}
+              <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 110 }}>
                 <input
                   type="number" min="0" max="100"
@@ -367,40 +334,9 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
                 />
                 <span style={{ fontWeight: 600, color: 'var(--muted)' }}>%</span>
               </div>
-              {p.payer_type === 'OTHER' && (
-                <button
-                  type="button"
-                  className="btn btn-link p-0"
-                  style={{ color: '#a02020', fontSize: '0.85rem' }}
-                  onClick={() => removePayer(p.key)}
-                  aria-label={t('signing.billing.split.remove')}
-                >
-                  <i className="bi bi-trash" />
-                </button>
-              )}
             </div>
-            {/* OTHER payer fiscal fields (name lives above) */}
-            {p.payer_type === 'OTHER' && (Number(p.split) || 0) > 0 && (
-              <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <input type="text" className="form-control" placeholder={t('signing.billing.field.fiscal_tax_id')}
-                  value={p.fiscal_tax_id} onChange={setPayerField(p.key, 'fiscal_tax_id')} />
-                <input type="email" className="form-control" placeholder={t('signing.billing.field.billing_email')}
-                  value={p.billing_email} onChange={setPayerField(p.key, 'billing_email')} />
-                <input type="text" className="form-control" placeholder={t('signing.billing.field.fiscal_address_line1')}
-                  style={{ gridColumn: '1 / 3' }}
-                  value={p.fiscal_address_line1} onChange={setPayerField(p.key, 'fiscal_address_line1')} />
-                <input type="text" className="form-control" placeholder={t('signing.billing.field.fiscal_address_city')}
-                  value={p.fiscal_address_city} onChange={setPayerField(p.key, 'fiscal_address_city')} />
-                <input type="text" className="form-control" placeholder={t('signing.billing.field.fiscal_postal_code')}
-                  value={p.fiscal_postal_code} onChange={setPayerField(p.key, 'fiscal_postal_code')} />
-              </div>
-            )}
           </div>
         ))}
-
-        <button type="button" className="btn-secondary-kis btn-sm" onClick={addOtherPayer} style={{ marginTop: 4 }}>
-          <i className="bi bi-plus-lg me-1" />{t('signing.billing.split.add_other')}
-        </button>
 
         <div style={{
           marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center',

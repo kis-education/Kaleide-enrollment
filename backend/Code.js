@@ -5088,7 +5088,13 @@ function kmsProxy_(action, payload) {
  * Payload esperado (del frontend Step8Billing):
  *   { resume_token, signing_token, payer_type, payer_person_id?, fiscal_name,
  *     fiscal_tax_id?, fiscal_address_line1?, fiscal_address_city?,
- *     fiscal_postal_code?, fiscal_country?, billing_email }
+ *     fiscal_postal_code?, fiscal_country?, billing_email,
+ *     payers?: [{ payer_type:'GUARDIAN', payer_person_id, fiscal_name,
+ *       fiscal_tax_id, fiscal_address_line1, fiscal_address_city,
+ *       fiscal_postal_code, billing_email, split_percentage }] }
+ * El reparto (`payers[]`) es solo entre tutores del grupo (sin facturación a
+ * terceros). Se reenvía cuando el frontend lo manda; los campos single-payer
+ * top-level se conservan por backwards-compat.
  *
  * @param {Object} p
  * @returns {Object} `data` del KMS (`{ billing_id, confirmed_at, already_confirmed? }`).
@@ -5100,6 +5106,11 @@ function saveBillingInfo_(p) {
 
   return kmsProxy_('enr.saveBillingInfo', {
     signing_token:        sctx.signing_token,
+    // Canonical multi-payer reparto entre tutores (GUARDIAN only — sin facturación
+    // a terceros). Se reenvía cuando el frontend lo manda; el KMS deriva grupo+signer
+    // del token (KAL-4). Los campos single-payer top-level se mantienen por
+    // backwards-compat con proxies/handlers que aún no leen `payers`.
+    payers:               (p.payers && p.payers.length) ? p.payers : undefined,
     payer_type:           p.payer_type           || null,
     payer_person_id:      p.payer_person_id      || null,
     fiscal_name:          p.fiscal_name          || null,
