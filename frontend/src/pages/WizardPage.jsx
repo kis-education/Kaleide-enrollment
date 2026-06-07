@@ -164,6 +164,14 @@ const handleNext = async (stepKey, data) => {
             setStepUpPending({ stepKey, data });
             throw err;
           }
+          // CLI PHONE-E164: rechazo estructurado de formato de teléfono (defensa
+          // backend). El gate primario es el frontend (Step2 handleNext); esto cubre
+          // el caso de que el formato inválido llegue igualmente al backend.
+          if (err?.code === 'INVALID_PHONE') {
+            log.warn(`WizardPage: saveStep "${stepKey}" rejected — INVALID_PHONE`);
+            showToast(t('step2.phone.invalid'));
+            throw err;
+          }
           log.warn(`WizardPage: saveStep "${stepKey}" failed (background)`, { message: err.message });
           showToast(t('wizard.save_failed'));
           throw err; // surface to the awaiter — handleNext / submit handle gracefully

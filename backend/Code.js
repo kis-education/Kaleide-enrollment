@@ -256,6 +256,25 @@ function assertValidEmail_(v, fieldName) {
 }
 
 /**
+ * CLI PHONE-E164 — valida formato E.164 canónico (`+<dialcode><national>`).
+ * Defensa en profundidad: la fuente de verdad es el input validado/normalizado
+ * del wizard (Step 2 + utils/phone.js); esto es la red de seguridad server-side.
+ * Lanza Error con `code='INVALID_PHONE'` → doPost lo mapea a HTTP 200
+ * {ok:false,error:{code,message}}. KAL-11: el message NO incluye el número (PII);
+ * el frontend usa el `code` para el i18n.
+ *
+ * @param {*}      v
+ * @param {string} [fieldName] para el message (sin el valor)
+ */
+function assertValidPhoneE164_(v, fieldName) {
+  if (typeof v !== 'string' || !/^\+[1-9]\d{6,14}$/.test(v)) {
+    var e = new Error('Invalid phone (E.164 required) for ' + (fieldName || 'field'));
+    e.code = 'INVALID_PHONE';
+    throw e;
+  }
+}
+
+/**
  * Validates a SIGNING_TOKEN format. Unlike assertValidUuid_, accepts BOTH:
  *   - canonical UUID v4 with hyphens (36 chars)
  *   - dashless 32-hex (PackedUUID-style) — the format the KMS actually emits per
@@ -2403,6 +2422,21 @@ function submitEnrollmentSession_(p) {
     phones: gPhoneJoins.filter(r => r.person_id === g.person_id).map(r => ({ ...r, ...(gPhoneMap[r.phone_id] || {}) })),
   }));
 
+  // CLI PHONE-E164: defensa final al cerrar el wizard — cada guardian (firmante;
+  // Click&Sign lo exige en el Step 11) debe tener ≥1 teléfono E.164 válido. Reusa
+  // los phones ya cargados en enrichedGuardians (sin lectura extra). El gate
+  // primario es el frontend (handleNext); saveStep_ valida solo formato (DRAFT).
+  // Estructurado: code='INVALID_PHONE' → doPost HTTP 200 {ok:false,error}.
+  enrichedGuardians.forEach(g => {
+    const hasValidPhone = (g.phones || []).some(ph =>
+      /^\+[1-9]\d{6,14}$/.test(String(ph.value || ph.phone_number || '').trim()));
+    if (!hasValidPhone) {
+      const e = new Error('Each guardian needs at least one valid E.164 phone');
+      e.code = 'INVALID_PHONE';
+      throw e;
+    }
+  });
+
   // Fetch QB responses for enrollment-specific questions (profession, employer, adaptation)
   const enrQbIds = [QB_PROFESSION_ID, QB_EMPLOYER_ID, QB_HAS_ADAPTATION_ID, QB_ADAPTATION_NOTES_ID];
   const qbResRows = appsheetRequest_(T.QB_RESPONSES, 'Find', [], {
@@ -3825,6 +3859,13 @@ function savePersons_(enrollmentGroupId, persons) {
     // ── Phones ────────────────────────────────────────────────────────────────
     if (Array.isArray(person.phones)) {
       person.phones.filter(ph => !ph.phone_id).forEach(ph => {
+        // CLI PHONE-E164: valida el FORMATO de cada teléfono no vacío (defensa en
+        // profundidad). saveStep_ guarda DRAFTs, así que NO se exige "≥1 por
+        // guardian" aquí (eso vive en el gate del frontend + submitEnrollmentSession_).
+        const phoneVal = ph.phone_number || ph.value;
+        if (phoneVal && String(phoneVal).trim()) {
+          assertValidPhoneE164_(String(phoneVal).trim(), 'phone_number');
+        }
         const phoneId = generateUuid_();
         phones.push({ phone_id: phoneId, enrollment_group_id: enrollmentGroupId, person_id: personId, phone_nr_type_id: ph.phone_type_id || ph.phone_nr_type_id || null, value: ph.phone_number || ph.value, is_default: ph.is_default || false, is_emergency: ph.is_emergency || false, is_whatsapp: ph.is_whatsapp || false, is_telegram: ph.is_telegram || false, is_sms: ph.is_sms || false, created_at: now });
       });

@@ -6,6 +6,7 @@ import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
 import LockedBanner from '../../components/LockedBanner';
 import { generateUuid } from '../../utils/uuid';
+import { validatePhone } from '../../utils/phone';
 
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
@@ -68,9 +69,25 @@ const emptySchool = () => ({
   language_of_instruction: '',
 });
 
-function PhoneRow({ phone, idx, onChange, onRemove }) {
+function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
   const { t } = useTranslation();
+  const [touched, setTouched] = useState(false);
   const update = (fields) => onChange({ ...phone, ...fields });
+
+  // CLI PHONE-E164: validación en el punto de entrada. El error inline solo se
+  // muestra tras blur (touched) y si el campo NO está vacío.
+  const res = validatePhone(phone.phone_number, countryISO || '');
+  const showError = touched && (phone.phone_number || '').trim() && !res.valid;
+  const errKey = res.needCountry ? 'step2.phone.country_needed' : 'step2.phone.invalid';
+
+  const handleBlur = () => {
+    setTouched(true);
+    // Al salir del campo, si es válido persistimos el valor NORMALIZADO a E.164.
+    if (res.valid && res.e164 && res.e164 !== phone.phone_number) {
+      update({ phone_number: res.e164 });
+    }
+  };
+
   return (
     <div className="border rounded p-2 mb-2" style={{ background: 'var(--bg)' }}>
       <div className="row g-2 align-items-center mb-2">
@@ -82,10 +99,13 @@ function PhoneRow({ phone, idx, onChange, onRemove }) {
           </select>
         </div>
         <div className="col">
-          <input type="tel" className="form-control form-control-sm"
+          <input type="tel"
+            className={'form-control form-control-sm' + (showError ? ' is-invalid' : '')}
             placeholder="+34 600 000 000"
             value={phone.phone_number}
-            onChange={e => update({ phone_number: e.target.value })} />
+            onChange={e => update({ phone_number: e.target.value })}
+            onBlur={handleBlur} />
+          {showError && <div className="field-error" style={{ fontSize: '0.78rem' }}>{t(errKey)}</div>}
         </div>
         <div className="col-auto">
           <button className="remove-btn" onClick={onRemove}>&times;</button>
@@ -366,6 +386,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
             key={ph._uid || i}
             phone={ph}
             idx={`${idx}_${i}`}
+            countryISO={person.address?.country_id || ''}
             onChange={val => updatePhone(i, val)}
             onRemove={() => {
               const next = [...person.phones];
@@ -659,6 +680,28 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         return;
       }
     }
+    // CLI PHONE-E164: gate de teléfono. (a) cualquier teléfono NO vacío debe ser
+    // E.164 válido; (b) cada guardian (firmante — Click&Sign lo exige) necesita ≥1
+    // teléfono válido. Applicants: teléfono opcional, pero si está, válido.
+    for (const p of persons) {
+      const countryISO = p.address?.country_id || '';
+      const phones = p.phones || [];
+      for (const ph of phones) {
+        const raw = (ph.phone_number || ph.value || '').trim();
+        if (raw && !validatePhone(raw, countryISO).valid) {
+          setErr(t('step2.phone.invalid'));
+          return;
+        }
+      }
+      if (p.person_type_id === 'guardian') {
+        const hasValid = phones.some(ph =>
+          validatePhone((ph.phone_number || ph.value || '').trim(), countryISO).valid);
+        if (!hasValid) {
+          setErr(t('step2.phone.guardian_required'));
+          return;
+        }
+      }
+    }
     setErr('');
     // Inject primary email BEFORE transformPersonForSave so the injected entry
     // goes through the same normalization as existing emails. Doing it after
@@ -680,7 +723,18 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       }
       return p;
     });
-    const transformed = withPrimaryEmail.map(transformPersonForSave);
+    // CLI PHONE-E164: normaliza los teléfonos válidos a E.164 antes de persistir
+    // (cubre el caso de pulsar Continuar sin haber hecho blur en algún campo).
+    const withE164 = withPrimaryEmail.map(p => ({
+      ...p,
+      phones: (p.phones || []).map(ph => {
+        const raw = (ph.phone_number || '').trim();
+        if (!raw) return ph;
+        const r = validatePhone(raw, p.address?.country_id || '');
+        return r.valid && r.e164 ? { ...ph, phone_number: r.e164 } : ph;
+      }),
+    }));
+    const transformed = withE164.map(transformPersonForSave);
     log.info('Step2: onNext persons (transformed)', transformed);
     updateStep('persons', transformed);
     onNext('persons', transformed);
