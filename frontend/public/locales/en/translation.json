@@ -343,6 +343,8 @@
   "stepup.send_code": "Send code",
   "stepup.sending": "Sending…",
   "stepup.code_sent": "We've sent a code to your email.",
+  "stepup.send": "Send code",
+  "stepup.press_to_send": "Press to receive your access code in your email.",
   "stepup.resend": "Resend code",
   "stepup.verify": "Verify",
   "stepup.verifying": "Verifying…",

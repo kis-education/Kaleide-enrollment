@@ -343,6 +343,8 @@
   "stepup.send_code": "Enviar código",
   "stepup.sending": "Enviando…",
   "stepup.code_sent": "Te hemos enviado un código a tu correo.",
+  "stepup.send": "Enviar código",
+  "stepup.press_to_send": "Pulsa para recibir tu código de acceso en tu correo.",
   "stepup.resend": "Reenviar código",
   "stepup.verify": "Verificar",
   "stepup.verifying": "Verificando…",

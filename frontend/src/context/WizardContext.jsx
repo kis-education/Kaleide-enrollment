@@ -212,6 +212,19 @@ export function WizardProvider({ children }) {
     saveSession({ recoveredViaMagicLink: !!v });
   }, []);
 
+  // OTP-TRIGGER (Diego 2026-06-07): marca "ya auto-enviamos el OTP de entrada UNA
+  // vez para esta sesión recuperada". Persiste en sessionStorage → solo la PRIMERA
+  // recuperación auto-envía el código (req. b); un reload de la sesión recuperada o
+  // una re-expiración de frescura NO re-auto-envían (req. c — el usuario pulsa "enviar
+  // código"). NO es PII ni secreto. Se resetea en clearSession (logout/clear/expiry).
+  const [otpAutoSentForRecovery, setOtpAutoSentForRecoveryRaw] = useState(
+    !!session.otpAutoSentForRecovery
+  );
+  const markOtpAutoSentForRecovery = useCallback(() => {
+    setOtpAutoSentForRecoveryRaw(true);
+    saveSession({ otpAutoSentForRecovery: true });
+  }, []);
+
   // Tick reactivo: fuerza re-render periódico para que el gate de entrada vuelva
   // a aparecer cuando expira la frescura por inactividad (isStepUpFresh() es una
   // función pura que lee Date.now(), pero sin un cambio de estado React no se
@@ -294,6 +307,7 @@ export function WizardProvider({ children }) {
     setStepUpVerifiedUntil(0);
     setLastActivityAt(Date.now());
     setRecoveredViaMagicLinkRaw(false);
+    setOtpAutoSentForRecoveryRaw(false);
     // WIZARD-PERF-CACHE-SKELETON: el catálogo cacheado de preguntas NUNCA debe
     // sobrevivir al ciclo de auth — purgar al limpiar sesión (logout/clear/expiry).
     purgeQuestionsCache();
@@ -625,6 +639,7 @@ export function WizardProvider({ children }) {
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       isStepUpFresh, markStepUpFresh, touchActivity, // DL-E39 step-up PII-primero
       recoveredViaMagicLink, setRecoveredViaMagicLink, // DL-E39 gate de entrada
+      otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER: auto-send solo 1ª recuperación
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>
       {children}

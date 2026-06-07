@@ -58,6 +58,7 @@ export default function WizardPage() {
     admissionState, signingContext,
     markStepUpFresh,
     isStepUpFresh, recoveredViaMagicLink,
+    otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER
     recoveredEmail, setRecoveredEmail,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
@@ -332,6 +333,8 @@ const handleNext = async (stepKey, data) => {
       <StepUpGate
         tokenPayload={{ resume_token: resumeToken }}
         onVerified={markStepUpFresh}
+        shouldAutoSend={!otpAutoSentForRecovery}
+        onAutoSent={markOtpAutoSentForRecovery}
       />
     );
   }

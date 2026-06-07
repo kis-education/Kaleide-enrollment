@@ -16,9 +16,11 @@ const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favico
  * los datos visibles con normalidad (sin enmascarado per-campo).
  *
  * Esta pantalla:
- *   1. Al montar, envía un código fresco (sendVerificationCode, {stepup:true}).
- *      El backend deriva email+group del bearer token SERVER-SIDE (KAL-4) — NUNCA
- *      mandamos el email del payload. El destinatario es el buzón del expediente.
+ *   1. Al montar, envía un código fresco SOLO si shouldAutoSend=true (la PRIMERA
+ *      recuperación de la sesión, req. b). En reload/re-expiración (shouldAutoSend
+ *      =false) NO auto-envía — muestra el botón "enviar código" para que el usuario
+ *      lo pida (req. c, Diego 2026-06-07). El backend deriva email+group del bearer
+ *      token SERVER-SIDE (KAL-4) — NUNCA mandamos el email del payload.
  *   2. Input de 6 dígitos + "Verificar" (verifyEmail, {stepup:true}). En éxito
  *      invoca onVerified() → el padre marca step-up fresco (10 min) y renderiza
  *      el wizard.
@@ -27,11 +29,15 @@ const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favico
  * completo.
  *
  * @param {Object}   props
- * @param {Function} props.onVerified   Callback tras verificación OK.
- * @param {Object}   props.tokenPayload Bearer token a reenviar ({ resume_token }).
+ * @param {Function} props.onVerified     Callback tras verificación OK.
+ * @param {Object}   props.tokenPayload   Bearer token a reenviar ({ resume_token }).
  *                   El backend deriva email+group del token; NUNCA mandamos email.
+ * @param {boolean}  props.shouldAutoSend Auto-enviar el código al montar (true solo
+ *                   la 1ª recuperación). Default true (retrocompat).
+ * @param {Function} [props.onAutoSent]   Callback tras el auto-envío (el padre marca
+ *                   la sesión como "ya auto-enviada" para no repetir en reloads).
  */
-export default function StepUpGate({ onVerified, tokenPayload = {} }) {
+export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSend = true, onAutoSent }) {
   const { t } = useTranslation();
   const [sending,   setSending]   = useState(false);
   const [verifying, setVerifying] = useState(false);
@@ -68,12 +74,17 @@ export default function StepUpGate({ onVerified, tokenPayload = {} }) {
     }
   };
 
-  // Auto-envío al montar el gate (el código llega al buzón sin que la familia
-  // pulse nada). Si falla, dejamos el botón "reenviar" para reintentar.
+  // Auto-envío al montar SOLO la primera recuperación (shouldAutoSend). En reload de
+  // una sesión recuperada o re-expiración de frescura (shouldAutoSend=false) NO se
+  // auto-envía: el gate aparece con el botón "enviar código" para que el usuario lo
+  // pida (req. c). autoSentRef cubre el StrictMode double-mount.
   useEffect(() => {
     if (autoSentRef.current) return;
     autoSentRef.current = true;
-    sendCode();
+    if (shouldAutoSend) {
+      sendCode();
+      if (onAutoSent) onAutoSent();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -116,6 +127,14 @@ export default function StepUpGate({ onVerified, tokenPayload = {} }) {
           <i className="bi bi-clock me-1" />{t('stepup.gate_duration_note')}
         </p>
 
+        {/* OTP-TRIGGER: cuando NO se auto-envió (reload / re-expiración), invita a
+            pedir el código manualmente. Se oculta en cuanto se envía uno. */}
+        {!codeSent && !sending && (
+          <p style={{ color: 'var(--teal-dk)', fontSize: '0.85rem', marginBottom: 16 }}>
+            <i className="bi bi-envelope me-1" />{t('stepup.press_to_send')}
+          </p>
+        )}
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center' }}>
           <input
             type="text"
@@ -149,7 +168,7 @@ export default function StepUpGate({ onVerified, tokenPayload = {} }) {
           >
             {sending
               ? <><span className="spinner-border spinner-border-sm me-1" />{t('stepup.sending')}</>
-              : t('stepup.resend')}
+              : (codeSent ? t('stepup.resend') : t('stepup.send'))}
           </button>
         </div>
 
