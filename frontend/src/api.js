@@ -26,6 +26,40 @@ export function fetchLookups() {
   return _lookupsFlight;
 }
 
+// ─── Questions cache ──────────────────────────────────────────────────────────
+// The question DEFINITION catalog (fetchQuestions → { sets: [...] }) is static for
+// the lifetime of the page, mirror of the lookups cache — but KEYED BY LANGUAGE
+// because questions are localized (fetchQuestions receives language: i18n.language).
+// This caches ONLY the catalog of questions, NOT the user's RESPONSES (those live
+// in WizardContext / stepData.questions and are unaffected). context_code is fixed
+// to 'ENROLLMENT' exactly as the call-sites used inline.
+// WIZARD-UX (Diego 2026-06-07): Step5 + Step7 used to fetch this independently on
+// every mount → re-fetched on every back/forward. Now they share the cache.
+const _questionsCache  = {};   // { [lang]: data }
+const _questionsFlight = {};   // { [lang]: promise }
+
+function _doFetchQuestions(lang) {
+  return gasCall('fetchQuestions', { context_code: 'ENROLLMENT', language: lang });
+}
+
+export function prefetchQuestions(lang) {
+  const key = lang || 'es';
+  if (_questionsCache[key] || _questionsFlight[key]) return;
+  _questionsFlight[key] = _doFetchQuestions(key)
+    .then(data  => { _questionsCache[key] = data; delete _questionsFlight[key]; return data; })
+    .catch(_err => { delete _questionsFlight[key]; });
+}
+
+export function fetchQuestions(lang) {
+  const key = lang || 'es';
+  if (_questionsCache[key])  return Promise.resolve(_questionsCache[key]);
+  if (_questionsFlight[key]) return _questionsFlight[key];
+  _questionsFlight[key] = _doFetchQuestions(key)
+    .then(data  => { _questionsCache[key] = data; delete _questionsFlight[key]; return data; })
+    .catch(err  => { delete _questionsFlight[key]; throw err; });
+  return _questionsFlight[key];
+}
+
 import * as log from './logger';
 
 const GAS_ENDPOINT = import.meta.env.VITE_GAS_ENDPOINT;

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
+import StepNav from '../../components/StepNav';
 import * as log from '../../logger';
 
 function parseBool(val) {
@@ -139,6 +140,7 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
         <div className="mb-2">
           <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.relations')}</h2>
         </div>
+        <StepNav position="top" onBack={handleBack} onNext={handleNext} savePending={savePending} />
         <div className="kis-card">
           <p style={{ color: 'var(--muted)' }}>{t('step4.no_applicants')}</p>
         </div>
@@ -166,6 +168,9 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.relations')}</h2>
         <p style={{ color: 'var(--muted)' }}>{t('step3.subtitle')}</p>
       </div>
+
+      <StepNav position="top" onBack={handleBack} onNext={handleNext} savePending={savePending}
+        nextDisabled={!locked && relations.length > 0 && !validationOk} />
 
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 

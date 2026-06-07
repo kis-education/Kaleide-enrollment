@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
-import { gasCall, fetchLookups } from '../../api';
+import { gasCall, fetchLookups, fetchQuestions } from '../../api';
+import StepNav from '../../components/StepNav';
 import { openDocument } from '../../utils/documentProxy';
 import { CONSENT_TEXTS } from '../../consentTexts';
 import * as log from '../../logger';
@@ -111,7 +112,8 @@ export default function Step7Review({ onBack }) {
         medical:       data.medical       || [],
       }))
       .catch(() => {});
-    gasCall('fetchQuestions', { context_code: 'ENROLLMENT', language: lang })
+    // WIZARD-UX: cached question catalog shared with Step5 (keyed by language).
+    fetchQuestions(lang)
       .then(data => setQuestionSets(data.sets || []))
       .catch(() => {});
   }, []); // eslint-disable-line
@@ -312,6 +314,10 @@ export default function Step7Review({ onBack }) {
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step7.title')}</h2>
         <p style={{ color: 'var(--muted)' }}>{t('step7.subtitle')}</p>
       </div>
+
+      {/* WIZARD-UX: navegación arriba en Step7 = SOLO "Atrás" (el submit es el botón
+          terminal de abajo — no se convierte en StepNav genérico, KAL/edit-lock intactos). */}
+      <StepNav position="top" onBack={onBack} hideNext />
 
       {/* ── Email / Start Date ── */}
       <SectionCard title={t('review.email')} icon="bi-envelope-fill">

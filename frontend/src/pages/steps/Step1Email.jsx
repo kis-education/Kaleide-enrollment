@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
+import StepNav from '../../components/StepNav';
 import * as log from '../../logger';
 
 export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
@@ -81,6 +82,9 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
       )}
 
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
+
+      {/* WIZARD-UX: navegación arriba (Step1 = primer paso → solo "Continuar"). */}
+      <StepNav position="top" hideBack onNext={handleContinue} nextDisabled={!canContinue} savePending={savePending} />
 
       <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>

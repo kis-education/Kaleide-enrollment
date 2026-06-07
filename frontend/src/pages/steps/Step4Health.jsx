@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
+import StepNav from '../../components/StepNav';
 import * as log from '../../logger';
 
 function TagSelect({ options, selected, onChange, placeholder }) {
@@ -208,6 +209,8 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.health')}</h2>
         <p style={{ color: 'var(--muted)' }}>{t('step4.subtitle')}</p>
       </div>
+
+      <StepNav position="top" onBack={handleBack} onNext={handleNext} savePending={savePending} />
 
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 

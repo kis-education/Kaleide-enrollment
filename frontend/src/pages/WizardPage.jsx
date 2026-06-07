@@ -3,8 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
-import { gasCall, prefetchLookups } from '../api';
+import { gasCall, prefetchLookups, prefetchQuestions } from '../api';
 import LangToggle from '../components/LangToggle';
+import LoadingSpinner from '../components/LoadingSpinner';
 import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
 import StepUpReverify from '../components/StepUpReverify';
@@ -42,7 +43,7 @@ const STEP_COMPONENTS = [
 ];
 
 export default function WizardPage() {
-  const { t }                           = useTranslation();
+  const { t, i18n }                     = useTranslation();
   const navigate                        = useNavigate();
   const {
     enrollmentGroupId, resumeToken,
@@ -73,8 +74,10 @@ export default function WizardPage() {
   // identidad de firma se deriva SOLO server-side (recovery link per-guardian,
   // Vía 1; o resolución determinista, Vía 2). CERO auto-declaración de identidad.
 
-  // Kick off lookup prefetch immediately so Step3/Step4 get cached data.
-  useEffect(() => { prefetchLookups(); }, []); // eslint-disable-line
+  // Kick off lookup + question prefetch immediately so Step3/Step4 get cached
+  // lookups and Step5/Step7 get the cached question catalog (keyed by language) —
+  // no re-fetch when the user reaches Questions or navigates back/forward.
+  useEffect(() => { prefetchLookups(); prefetchQuestions(i18n.language); }, []); // eslint-disable-line
 
   // On page reload, enrollmentGroupId is restored from sessionStorage but stepData is empty.
   // Auto-resume from the server to restore full wizard state.
@@ -317,7 +320,7 @@ const handleNext = async (stepKey, data) => {
         <LangToggle />
       </header>
 
-      {/* Rehydrating overlay (page reload) */}
+      {/* Rehydrating overlay (page reload). WIZARD-UX: rotating reassuring copy. */}
       {rehydrating && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 9999,
@@ -325,15 +328,11 @@ const handleNext = async (stepKey, data) => {
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           backdropFilter: 'blur(3px)',
         }}>
-          <div className="spinner-border" role="status"
-            style={{ color: 'var(--teal)', width: '3rem', height: '3rem' }} />
-          <p style={{ marginTop: 16, color: 'var(--teal-dk)', fontWeight: 600, fontSize: '1rem' }}>
-            {t('resume.loading')}
-          </p>
+          <LoadingSpinner messages={['resume.loading', 'loading.rotating.2', 'loading.rotating.3', 'loading.rotating.4']} />
         </div>
       )}
 
-      {/* Saving overlay */}
+      {/* Saving overlay. WIZARD-UX: rotating reassuring copy (context-specific first). */}
       {(saving || sendingMagicLink) && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 9999,
@@ -341,11 +340,11 @@ const handleNext = async (stepKey, data) => {
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           backdropFilter: 'blur(3px)',
         }}>
-          <div className="spinner-border" role="status"
-            style={{ color: 'var(--teal)', width: '3rem', height: '3rem' }} />
-          <p style={{ marginTop: 16, color: 'var(--teal-dk)', fontWeight: 600, fontSize: '1rem' }}>
-            {sendingMagicLink ? t('wizard.sending_magic_link') : t('wizard.saving')}
-          </p>
+          <LoadingSpinner messages={
+            sendingMagicLink
+              ? ['wizard.sending_magic_link', 'loading.rotating.2', 'loading.rotating.3']
+              : ['wizard.saving', 'loading.rotating.2', 'loading.rotating.4']
+          } />
         </div>
       )}
 

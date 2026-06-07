@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
-import { gasCall } from '../../api';
+import { gasCall, fetchQuestions } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
+import LoadingSpinner from '../../components/LoadingSpinner';
+import StepNav from '../../components/StepNav';
 import QbSetRenderer from '../../shared/QbSetRenderer';
 import * as log from '../../logger';
 
@@ -22,7 +24,11 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
   const persons = stepData.persons || [];
 
   useEffect(() => {
-    gasCall('fetchQuestions', { context_code: 'ENROLLMENT', language: i18n.language })
+    // WIZARD-UX: shared module cache in api.js (keyed by language) — pasar por
+    // Preguntas o adelante/atrás ya NO re-fetchea. Solo cacheamos el CATÁLOGO de
+    // preguntas; las respuestas del usuario siguen en stepData/WizardContext.
+    setLoading(true);
+    fetchQuestions(i18n.language)
       .then(data => setSets(data.sets || []))
       .catch(() => setSets([]))
       .finally(() => setLoading(false));
@@ -61,24 +67,12 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
     onNext('questions', responses);
   };
 
-  if (loading) return <div className="spinner" />;
-  if (!sets.length) return (
-    <>
-      <div className="kis-card">
-        <p style={{ color: 'var(--muted)' }}>{t('step5.no_questions')}</p>
-      </div>
-      <div className="d-flex justify-content-between mt-4">
-        <button className="btn-secondary-kis" onClick={handleBack}><i className="bi bi-arrow-left me-1" />{t('nav.back')}</button>
-        <button className="btn-primary-kis" onClick={() => { updateStep('questions', {}); onNext('questions', {}); }} disabled={savePending}>
-          {savePending
-            ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.9em', height: '0.9em', borderWidth: '0.12em' }} />{t('wizard.saving_in_background')}</>
-            : <>{t('nav.continue')}<i className="bi bi-arrow-right ms-1" /></>
-          }
-        </button>
-      </div>
-    </>
-  );
+  // When there are no questions, Continue persists an empty dict and advances.
+  const handleContinueEmpty = () => { updateStep('questions', {}); onNext('questions', {}); };
+  const nextHandler = sets.length ? handleNext : handleContinueEmpty;
 
+  // Mejora 3a: la CABECERA se pinta SIEMPRE (incluso durante la carga); el spinner
+  // vive SOLO en el área de contenido — la página ya no parece vacía/rota al esperar.
   return (
     <>
       <div className="mb-2">
@@ -86,34 +80,34 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
         <p style={{ color: 'var(--muted)' }}>{t('step5.subtitle')}</p>
       </div>
 
+      <StepNav position="top" onBack={handleBack} onNext={nextHandler} savePending={savePending} nextDisabled={loading} />
+
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
-      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
-      <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
-        <QbSetRenderer
-          sets={sets}
-          responses={responses}
-          persons={persons}
-          groupId={enrollmentGroupId}
-          onResponse={setResponse}
-          t={t}
-          locale={i18n.language}
-          initiatorEmail={stepData.email?.primary_email}
-        />
-      </fieldset>
-      </div>
+      {loading ? (
+        <LoadingSpinner variant="inline" />
+      ) : !sets.length ? (
+        <div className="kis-card">
+          <p style={{ color: 'var(--muted)' }}>{t('step5.no_questions')}</p>
+        </div>
+      ) : (
+        <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
+          <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
+            <QbSetRenderer
+              sets={sets}
+              responses={responses}
+              persons={persons}
+              groupId={enrollmentGroupId}
+              onResponse={setResponse}
+              t={t}
+              locale={i18n.language}
+              initiatorEmail={stepData.email?.primary_email}
+            />
+          </fieldset>
+        </div>
+      )}
 
-      <div className="d-flex justify-content-between mt-4">
-        <button className="btn-secondary-kis" onClick={handleBack}>
-          <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
-        </button>
-        <button className="btn-primary-kis" onClick={handleNext} disabled={savePending}>
-          {savePending
-            ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.9em', height: '0.9em', borderWidth: '0.12em' }} />{t('wizard.saving_in_background')}</>
-            : <>{t('nav.continue')} <i className="bi bi-arrow-right ms-1" /></>
-          }
-        </button>
-      </div>
+      <StepNav onBack={handleBack} onNext={nextHandler} savePending={savePending} nextDisabled={loading} />
     </>
   );
 }

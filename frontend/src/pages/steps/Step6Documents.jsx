@@ -4,6 +4,7 @@ import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
 import { openDocument } from '../../utils/documentProxy';
 import LockedBanner from '../../components/LockedBanner';
+import StepNav from '../../components/StepNav';
 import StepUpReverify from '../../components/StepUpReverify';
 import * as log from '../../logger';
 
@@ -205,6 +206,8 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.documents')}</h2>
         <p style={{ color: 'var(--muted)' }}>{t('step6.subtitle')}</p>
       </div>
+
+      <StepNav position="top" onBack={handleBack} onNext={handleNext} savePending={savePending} />
 
       {locked && <LockedBanner onUnlock={onUnlock} />}
 

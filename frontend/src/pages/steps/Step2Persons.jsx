@@ -5,6 +5,7 @@ import * as log from '../../logger';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
 import LockedBanner from '../../components/LockedBanner';
+import StepNav from '../../components/StepNav';
 import { generateUuid } from '../../utils/uuid';
 import { validatePhone } from '../../utils/phone';
 
@@ -746,6 +747,8 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.persons')}</h2>
         <p style={{ color: 'var(--muted)' }}>{t('step2.subtitle')}</p>
       </div>
+
+      <StepNav position="top" onBack={handleBack} onNext={handleNext} savePending={savePending} />
 
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
