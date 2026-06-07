@@ -419,6 +419,17 @@ export function WizardProvider({ children }) {
     // fresco. NO marcamos step-up fresco aquí — el gate se muestra precisamente
     // porque isStepUpFresh() es false al recuperar.
     setRecoveredViaMagicLink(true);
+    // Magic-link grace (UX): si el backend consumió un nonce single-use válido (<10
+    // min del envío), devuelve step_up_fresh=true → el inbox ya está probado por ESE
+    // envío, así que NO exigimos OTP: marcamos step-up fresco (pasa el gate de
+    // entrada) y marcamos el auto-send como ya hecho (no dispares el OTP proactivo).
+    // Si step_up_fresh es false (link >10 min, reusado, sin nonce, o filtrado/KAL-7),
+    // NO tocamos nada → el gate OTP normal se aplica.
+    if (data.step_up_fresh) {
+      markStepUpFresh();
+      markOtpAutoSentForRecovery();
+      log.info('hydrateFromResume: magic-link grace activa (nonce válido <10min) — sin OTP');
+    }
     // The magic link token itself proves email ownership — treat as verified regardless
     // of the email_confirmed DB flag (which may lag or not have been written yet).
     const persons   = data.persons   || [];

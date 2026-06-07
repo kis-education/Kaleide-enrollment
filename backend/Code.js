@@ -56,6 +56,13 @@ const QB_ADAPTATION_NOTES_ID = 'a1b2c3d4-0023-0000-0000-000000000000';
 // cada step-up.)
 const STEPUP_INACTIVITY_MS = 10 * 60 * 1000; // 10 min
 
+// Magic-link grace (UX, no urgente): un magic link recién enviado NO exige OTP si
+// se usa dentro de esta ventana. La gracia se vincula a un NONCE single-use de ESE
+// envío (cache `mlnonce_<nonce>` = enrollment_group_id), NO al grupo — así un link
+// filtrado/reusado/expirado SÍ cae al flujo OTP normal (KAL-7 intacto). El nonce se
+// consume (borra) en el primer recovery. Ventana = 10 min exactos (TTL del nonce).
+const MAGIC_LINK_GRACE_MS = 10 * 60 * 1000; // 10 min
+
 // AppSheet table names matching the enr* / qb* schema (post DL-E15)
 //
 // DL-E15 reorganisation:
@@ -518,6 +525,54 @@ function _markStepUpFresh_(enrollmentGroupId) {
     String(Date.now() + STEPUP_INACTIVITY_MS),
     Math.ceil(STEPUP_INACTIVITY_MS / 1000)
   );
+}
+
+/**
+ * Acuña un nonce single-use para la gracia del magic-link (ver MAGIC_LINK_GRACE_MS).
+ * Guarda `mlnonce_<nonce>` = enrollment_group_id en ScriptCache con TTL = ventana de
+ * gracia (10 min). El nonce viaja en la URL del magic link (`?n=<nonce>`) y se consume
+ * en el primer recovery. NO se loguea el nonce completo (KAL-7: preview ≤8 chars).
+ *
+ * @param {string} enrollmentGroupId - ya derivado/validado server-side (KAL-4)
+ * @returns {string} nonce UUID v4
+ * @private
+ */
+function _mintMagicLinkNonce_(enrollmentGroupId) {
+  const nonce = Utilities.getUuid();
+  CacheService.getScriptCache().put(
+    'mlnonce_' + nonce,
+    enrollmentGroupId,
+    Math.ceil(MAGIC_LINK_GRACE_MS / 1000)
+  );
+  return nonce;
+}
+
+/**
+ * Consume (single-use) un nonce de magic-link: si existe en cache y mapea al grupo
+ * esperado, lo BORRA y devuelve true (gracia válida → sin OTP). Si no existe (expiró,
+ * ya usado, nunca emitido) o mapea a otro grupo → false (flujo OTP normal). El grupo
+ * esperado se deriva SIEMPRE del resume_token server-side (KAL-4), nunca del payload;
+ * el nonce solo confirma "este click viene de un envío reciente de ESTE grupo".
+ *
+ * @param {string} nonce             - candidato (de la URL del link, validado UUID)
+ * @param {string} expectedGroupId   - group derivado del resume_token
+ * @returns {boolean}
+ * @private
+ */
+function _consumeMagicLinkNonce_(nonce, expectedGroupId) {
+  if (!nonce) return false;
+  try { assertValidUuid_(nonce, 'magic_link_nonce'); } catch (e) { return false; }
+  const cache = CacheService.getScriptCache();
+  const key   = 'mlnonce_' + nonce;
+  const mappedGroup = cache.get(key);
+  if (!mappedGroup || mappedGroup !== expectedGroupId) {
+    // Inexistente/expirado/usado o de otro grupo → sin gracia. KAL-7: preview ≤8.
+    Logger.log(redact_('[_consumeMagicLinkNonce_] miss nonce=' + String(nonce).slice(0, 8) + '… group=' + expectedGroupId));
+    return false;
+  }
+  cache.remove(key); // single-use: un solo click
+  Logger.log(redact_('[_consumeMagicLinkNonce_] grace OK nonce=' + String(nonce).slice(0, 8) + '… group=' + expectedGroupId));
+  return true;
 }
 
 /**
@@ -1193,7 +1248,8 @@ function sendMagicLink_(p) {
       Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
     }
 
-    sendMagicLinkEmail_(destEmail, tokenToSend, grp.preferred_language || 'es');
+    const graceNonce = _mintMagicLinkNonce_(grp.enrollment_group_id);
+    sendMagicLinkEmail_(destEmail, tokenToSend, grp.preferred_language || 'es', undefined, graceNonce);
   } else if (p.primary_email) {
     // Find all non-submitted, non-abandoned sessions for this email
     assertValidEmail_(p.primary_email, 'primary_email');
@@ -1236,9 +1292,13 @@ function sendMagicLink_(p) {
       // Use the single-link template (with full security footer + GDPR block)
       // instead of the abridged multi template when there's actually only one
       // open session — which is the common case under the new single-session policy.
-      sendMagicLinkEmail_(p.primary_email, grps[0].resume_token, lang, false);
+      const graceNonce = _mintMagicLinkNonce_(grps[0].enrollment_group_id);
+      sendMagicLinkEmail_(p.primary_email, grps[0].resume_token, lang, false, graceNonce);
     } else {
-      sendMagicLinkMultiEmail_(p.primary_email, grps.map(g => g.resume_token), lang);
+      // Un nonce single-use por grupo (paralelo a los tokens), para que cada link
+      // tenga su propia gracia de 10 min vinculada a SU grupo.
+      const graceNonces = grps.map(g => _mintMagicLinkNonce_(g.enrollment_group_id));
+      sendMagicLinkMultiEmail_(p.primary_email, grps.map(g => g.resume_token), lang, graceNonces);
     }
   } else {
     throw new Error('Missing enrollment_group_id or primary_email');
@@ -1851,6 +1911,16 @@ function resumeSession_(p) {
   // in concatenations below, in case the column ever contains arbitrary data.
   assertValidUuid_(id, 'enrollment_group_id');
 
+  // ── Magic-link grace (UX, sin urgencia) ────────────────────────────────────
+  // Si el link traía un nonce de gracia (`?n=`) válido, no usado y de ESTE grupo,
+  // lo consumimos (single-use) y marcamos el grupo step-up fresco → el recovery NO
+  // exigirá OTP durante los 10 min. KAL-4: el grupo (id) se deriva del resume_token
+  // server-side; el nonce solo confirma "este click viene de un envío reciente de
+  // ESTE grupo", nunca decide el grupo. KAL-7: un token filtrado/reusado/expirado
+  // NO trae un nonce válido → step_up_fresh=false → flujo OTP normal intacto.
+  const stepUpFresh = _consumeMagicLinkNonce_(p && p.n, id);
+  if (stepUpFresh) _markStepUpFresh_(id);
+
   // Refuse if the family explicitly abandoned this session via abandonSession_.
   // Submitted sessions stay resumable regardless (the family must always be
   // able to view what they sent), but an abandon-before-submit is final.
@@ -2023,6 +2093,7 @@ function resumeSession_(p) {
       persons: [], relations, documents, responses, interviews,
       admission,                                      // P215 (additive)
       recovered_guardian_person_id: recoveredGuardianId, // P215 (server-resolved, a1)
+      step_up_fresh: stepUpFresh,                     // magic-link grace (no OTP si true)
     };
   }
 
@@ -2092,6 +2163,7 @@ function resumeSession_(p) {
     interviews,
     admission,                                      // P215 (additive)
     recovered_guardian_person_id: recoveredGuardianId, // P215 (server-resolved, a1)
+    step_up_fresh: stepUpFresh,                     // magic-link grace (no OTP si true)
   };
 }
 
@@ -4151,8 +4223,11 @@ function sendInternalEmail_(subject, bodyHtml) {
  * @param {string} resumeToken
  * @param {string} lang - 'en' or 'es'
  */
-function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp) {
-  const resumeUrl = RESUME_BASE_URL + resumeToken;
+function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, graceNonce) {
+  // El nonce de gracia (single-use, 10 min) viaja SOLO en la URL de resume, NO en la
+  // de report. El frontend lo strippea de la URL al instante (KAL-7) y lo manda a
+  // resumeSession para saltar el OTP si sigue válido.
+  const resumeUrl = RESUME_BASE_URL + resumeToken + (graceNonce ? '?n=' + graceNonce : '');
   const reportUrl = REPORT_BASE_URL + resumeToken;
   const isEn = lang === 'en';
 
@@ -4211,7 +4286,7 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp) {
 /**
  * Sends a resume email with one link per open application (for families with multiple apps).
  */
-function sendMagicLinkMultiEmail_(email, resumeTokens, lang) {
+function sendMagicLinkMultiEmail_(email, resumeTokens, lang, graceNonces) {
   const isEn = lang === 'en';
 
   const subject = isEn
@@ -4219,7 +4294,9 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang) {
     : 'Tus enlaces de solicitud de Kaleide';
 
   const linkItems = resumeTokens.map((token, idx) => {
-    const url = RESUME_BASE_URL + token;
+    // Nonce de gracia paralelo a este token (si se proveyó); single-use, 10 min.
+    const nonce = (graceNonces && graceNonces[idx]) || null;
+    const url = RESUME_BASE_URL + token + (nonce ? '?n=' + nonce : '');
     const label = isEn
       ? 'Application ' + (idx + 1)
       : 'Solicitud ' + (idx + 1);

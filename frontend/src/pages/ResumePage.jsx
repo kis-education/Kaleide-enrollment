@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
 import { useWizard } from '../context/WizardContext';
@@ -27,9 +27,16 @@ import * as log from '../logger';
  */
 export default function ResumePage() {
   const { token } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate  = useNavigate();
   const { t }     = useTranslation();
   const { hydrateFromResume, recoveredEmail } = useWizard();
+
+  // Magic-link grace (UX): nonce single-use de 10 min que viajó en `?n=<nonce>` del
+  // link. Se captura aquí (en el hash, antes del scrub KAL-7 que reemplaza el hash
+  // por #/apply y lo elimina de la barra). Si el backend lo valida, el recovery NO
+  // exige OTP. Capturado al montar; no se persiste ni se loguea entero (KAL-7).
+  const graceNonce = searchParams.get('n') || null;
 
   useEffect(() => {
     if (!token) {
@@ -56,7 +63,7 @@ export default function ResumePage() {
     // DL-E38 a1: re-send the email the family typed (persisted in sessionStorage)
     // as the per-guardian discriminator. The backend re-resolves the guardian
     // server-side from it (KAL-4); absent (e.g. cross-device) → group-scoped.
-    gasCall('resumeSession', { resume_token: token, recovered_email: recoveredEmail || undefined })
+    gasCall('resumeSession', { resume_token: token, recovered_email: recoveredEmail || undefined, n: graceNonce || undefined })
       .then(data => {
         // Post-DL-E15 shape uses `group`; legacy responses still use `application`.
         const grp = data.group || data.application;
