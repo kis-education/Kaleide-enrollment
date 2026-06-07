@@ -85,8 +85,14 @@ export function Progress({ current }) {
 
 // ─── Step 8 — Billing ───────────────────────────────────────────────────────
 
-export function SignBilling({ signingToken, onDone, onBack }) {
+export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   const { t } = useTranslation();
+  const { stepData } = useWizard();
+  // Default payer = signing guardian (DL-E38: identity derived server-side from the
+  // signing_token; client only echoes guardian_person_id for the KMS to disambiguate
+  // which guardian pays in a multi-guardian family). KAL-4 stays intact — the KMS
+  // re-derives enrollment_group_id + signer from the token, never from this payload.
+  const guardianPersonId = signerCtx && signerCtx.guardian_person_id;
   const [f, setF] = useState({
     fiscal_name: '', fiscal_tax_id: '', fiscal_address_line1: '',
     fiscal_address_city: '', fiscal_postal_code: '', billing_email: '', billing_phone: '',
@@ -94,6 +100,32 @@ export function SignBilling({ signingToken, onDone, onBack }) {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
+
+  // Prefill from the signing guardian's already-captured fiscal data (Persons step).
+  // Best-effort: if the person record or any field isn't available client-side, the
+  // field stays blank and remains editable. The /sign host (SigningSteps) has no
+  // wizard stepData → prefill is a no-op there, which is acceptable (the family can
+  // type the data); the critical payer_person_id is still sent from signerCtx.
+  useEffect(() => {
+    if (!guardianPersonId) return;
+    const persons = (stepData && stepData.persons) || [];
+    const g = persons.find(p => (p.person_id || p._uid) === guardianPersonId);
+    if (!g) return;
+    const addr = g.address || {};
+    const fullName = [g.first_name, g.middle_name, g.last_name]
+      .filter(x => x && String(x).trim()).join(' ').trim();
+    const primaryEmail = (stepData && stepData.email && stepData.email.primary_email) || '';
+    setF(prev => ({
+      ...prev,
+      fiscal_name:          prev.fiscal_name          || fullName,
+      fiscal_tax_id:        prev.fiscal_tax_id        || (g.id_number || ''),
+      fiscal_address_line1: prev.fiscal_address_line1 || (addr.address_line_1 || ''),
+      fiscal_address_city:  prev.fiscal_address_city  || (addr.city || ''),
+      fiscal_postal_code:   prev.fiscal_postal_code   || (addr.zip || ''),
+      billing_email:        prev.billing_email        || primaryEmail,
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guardianPersonId]);
 
   const submit = async () => {
     if (!f.fiscal_name.trim())  { setErr(t('signing.billing.err_name')); return; }
@@ -103,6 +135,10 @@ export function SignBilling({ signingToken, onDone, onBack }) {
       await gasCall('saveBillingInfo', {
         signing_token:        signingToken,
         payer_type:           'GUARDIAN',
+        // Default payer = the signing guardian. The KMS handler
+        // (fin_saveBillingPartyFromWizard) REQUIRES payer_person_id for a GUARDIAN
+        // payer to disambiguate which guardian pays in a multi-guardian family.
+        payer_person_id:      guardianPersonId || undefined,
         fiscal_name:          f.fiscal_name.trim(),
         fiscal_tax_id:        f.fiscal_tax_id.trim() || null,
         fiscal_address_line1: f.fiscal_address_line1.trim() || null,
@@ -543,7 +579,7 @@ export default function SigningSteps({ signingToken, signerCtx }) {
   return (
     <>
       <Progress current={sub} />
-      {sub === 0 && <SignBilling signingToken={signingToken} onDone={() => setSub(1)} />}
+      {sub === 0 && <SignBilling signingToken={signingToken} signerCtx={signerCtx} onDone={() => setSub(1)} />}
       {sub === 1 && <SignGdpr signingToken={signingToken} lang={lang} onDone={() => setSub(2)} onBack={() => setSub(0)} />}
       {sub === 2 && <SignReview signingToken={signingToken} onDone={() => setSub(3)} onBack={() => setSub(1)} />}
       {sub === 3 && <SignSign signingToken={signingToken} signerCtx={signerCtx} onDone={() => { /* terminal — stays on success screen */ }} />}

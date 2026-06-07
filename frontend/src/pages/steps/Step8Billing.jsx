@@ -12,7 +12,7 @@ import { SignBilling } from '../signing/SigningSteps';
  *
  * El trabajo funcional vive en pages/signing/SigningSteps.jsx — NO se duplica aquí.
  */
-export default function Step8Billing({ onAdvance, onBack, signingToken }) {
+export default function Step8Billing({ onAdvance, onBack, signingToken, signerCtx }) {
   const { t } = useTranslation();
 
   if (!signingToken) {
@@ -32,6 +32,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken }) {
   return (
     <SignBilling
       signingToken={signingToken}
+      signerCtx={signerCtx}
       onDone={onAdvance}
       onBack={onBack}
     />
