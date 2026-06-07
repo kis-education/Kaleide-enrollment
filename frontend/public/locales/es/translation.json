@@ -92,6 +92,7 @@
   "submitted.locked.title": "Solicitud en revisión",
   "submitted.locked.body": "Tu solicitud está en revisión. Si necesitas modificar algo, contacta con admisiones en admissions@kaleide.org.",
   "submitted.real_state": "Estado de tu solicitud: {{state}}",
+  "submitted.signing_preparing": "Tu plaza está admitida. La documentación de firma se está preparando; recibirás acceso en breve.",
   "wizard.continue_to_sign": "Continuar a la firma",
   "step7.legal_title": "Declaración legal y consentimiento",
   "step7.esig_label": "Firma electrónica",
@@ -281,10 +282,8 @@
   "signing.step_review": "Revisión del expediente",
   "signing.step_sign": "Firma electrónica",
   "signing.steps_coming": "Los pasos de firma estarán disponibles próximamente.",
-
   "signing.saving": "Guardando…",
   "signing.generic_error": "Ha ocurrido un error. Inténtalo de nuevo.",
-
   "signing.billing.title": "Datos de facturación",
   "signing.billing.subtitle": "Datos fiscales del responsable del pago de la matrícula.",
   "signing.billing.submit": "Guardar y continuar",
@@ -298,13 +297,11 @@
   "signing.billing.field.fiscal_postal_code": "Código postal",
   "signing.billing.field.billing_email": "Correo de facturación",
   "signing.billing.field.billing_phone": "Teléfono (opcional)",
-
   "signing.gdpr.title": "Consentimientos de protección de datos",
   "signing.gdpr.subtitle": "Marca los consentimientos que autorizas. El primero (RGPD) es obligatorio para continuar.",
   "signing.gdpr.submit": "Confirmar y continuar",
   "signing.gdpr.must_accept_blocking": "Debes aceptar el tratamiento de datos (RGPD) para continuar.",
   "signing.gdpr.blocked": "Al rechazar el tratamiento de datos no es posible continuar con la firma. Contacta con admisiones.",
-
   "signing.review.title": "Revisión de documentos",
   "signing.review.subtitle": "Revisa la Carta de Admisión y el Contrato antes de firmarlos.",
   "signing.review.submit": "Confirmar y proceder a la firma",
@@ -314,10 +311,8 @@
   "signing.review.confirm_label": "He leído y comprendo el contenido de los documentos.",
   "signing.review.must_read": "Confirma que has leído los documentos para continuar.",
   "signing.review.document": "Documento",
-
   "signing.doc.ADMISSION_LETTER": "Carta de Admisión",
   "signing.doc.CONTRACT": "Contrato Escolar",
-
   "signing.signing.title": "Firma electrónica",
   "signing.signing.subtitle": "Firma los documentos con Click & Sign. La página se actualizará automáticamente al completarse.",
   "signing.signing.sign_as": "Firmar como {{name}}",
@@ -327,7 +322,6 @@
   "signing.signing.completed_title": "Solicitud firmada",
   "signing.signing.completed_body": "Gracias. Hemos recibido tu firma. El equipo de admisiones continuará con el proceso.",
   "signing.signing.finish": "Finalizar",
-
   "stepup.title": "Verificación de seguridad",
   "stepup.subtitle": "Para proteger los datos, te enviaremos un código de verificación a tu correo. No necesitas volver a escribir tu email.",
   "stepup.gate_title": "Verifica tu identidad",

@@ -92,6 +92,7 @@
   "submitted.locked.title": "Application under review",
   "submitted.locked.body": "Your application is being reviewed. If you need to change anything, please contact admissions at admissions@kaleide.org.",
   "submitted.real_state": "Your application status: {{state}}",
+  "submitted.signing_preparing": "Your place has been admitted. The signing documents are being prepared; you will receive access shortly.",
   "wizard.continue_to_sign": "Continue to signing",
   "step7.legal_title": "Legal Statement & Consent",
   "step7.esig_label": "Electronic Signature",
@@ -281,10 +282,8 @@
   "signing.step_review": "Application review",
   "signing.step_sign": "Electronic signature",
   "signing.steps_coming": "Signing steps will be available soon.",
-
   "signing.saving": "Saving…",
   "signing.generic_error": "Something went wrong. Please try again.",
-
   "signing.billing.title": "Billing details",
   "signing.billing.subtitle": "Tax details of the person responsible for the enrolment payment.",
   "signing.billing.submit": "Save and continue",
@@ -298,13 +297,11 @@
   "signing.billing.field.fiscal_postal_code": "Postal code",
   "signing.billing.field.billing_email": "Billing email",
   "signing.billing.field.billing_phone": "Phone (optional)",
-
   "signing.gdpr.title": "Data protection consents",
   "signing.gdpr.subtitle": "Tick the consents you authorise. The first (GDPR) is required to continue.",
   "signing.gdpr.submit": "Confirm and continue",
   "signing.gdpr.must_accept_blocking": "You must accept personal data processing (GDPR) to continue.",
   "signing.gdpr.blocked": "Rejecting data processing means signing cannot continue. Please contact admissions.",
-
   "signing.review.title": "Document review",
   "signing.review.subtitle": "Review the Admission Letter and the Contract before signing them.",
   "signing.review.submit": "Confirm and proceed to signing",
@@ -314,10 +311,8 @@
   "signing.review.confirm_label": "I have read and understand the content of the documents.",
   "signing.review.must_read": "Please confirm you have read the documents to continue.",
   "signing.review.document": "Document",
-
   "signing.doc.ADMISSION_LETTER": "Admission Letter",
   "signing.doc.CONTRACT": "School Contract",
-
   "signing.signing.title": "Electronic signature",
   "signing.signing.subtitle": "Sign the documents with Click & Sign. This page will refresh automatically when complete.",
   "signing.signing.sign_as": "Sign as {{name}}",
@@ -327,7 +322,6 @@
   "signing.signing.completed_title": "Application signed",
   "signing.signing.completed_body": "Thank you. We have received your signature. The admissions team will continue the process.",
   "signing.signing.finish": "Finish",
-
   "stepup.title": "Security verification",
   "stepup.subtitle": "To protect this data, we'll send a verification code to your email. You don't need to re-enter your email.",
   "stepup.gate_title": "Verify your identity",

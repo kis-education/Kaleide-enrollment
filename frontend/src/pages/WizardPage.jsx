@@ -407,6 +407,28 @@ const handleNext = async (stepKey, data) => {
                 </button>
               </div>
             )}
+
+            {/* fix-step7-signing-init (2026-06-07): expediente Admitido (AD) pero la
+                firma todavía NO está lista para este guardian (signing_available=false
+                o aún sin signing_token resuelto). Sin este mensaje, el banner quedaba
+                "mudo" — la familia veía "Admitida" pero ningún botón ni explicación,
+                y parecía que el wizard estaba roto. Mostramos un aviso claro de que la
+                documentación de firma se está preparando. NO toca el modelo de
+                autorización (KAL-4: el signing_token sigue derivándose server-side). */}
+            {currentStep === 6
+              && admissionState?.state_code === 'AD'
+              && !(admissionState?.signing_available && signingContext?.signing_token) && (
+              <div
+                style={{
+                  marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 8,
+                  background: '#fff8e1', border: '1px solid #ffe082', borderRadius: 8,
+                  padding: '10px 12px', color: '#7a5c00', fontSize: '0.85rem',
+                }}
+              >
+                <i className="bi bi-hourglass-split" style={{ marginTop: 2 }} />
+                <span>{t('submitted.signing_preparing')}</span>
+              </div>
+            )}
           </div>
         </div>
       ) : (
