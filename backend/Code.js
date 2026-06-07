@@ -5026,9 +5026,17 @@ function kmsProxy_(action, payload) {
 
   let httpResp;
   try {
+    // El KMS es `access: ANYONE` → Google exige login a nivel de plataforma
+    // ANTES de llegar al doPost. Un POST anónimo se redirige a la página de
+    // sign-in (HTML) y nunca ejecuta el dispatcher → HTTP 401. El header
+    // `Authorization: Bearer <OAuth token>` autentica la request como la
+    // cuenta deployadora del wizard, pasando ese gate de plataforma. La
+    // auth a nivel de aplicación sigue siendo el `service_token` en el
+    // payload (DL-Q05 / QB_SERVICE_TOKEN) — el bearer solo abre la puerta.
     httpResp = UrlFetchApp.fetch(kmsUrl, {
       method:             'post',
       contentType:        'text/plain',
+      headers:            { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
       payload:            JSON.stringify(envelope),
       followRedirects:    true,
       muteHttpExceptions: true,
