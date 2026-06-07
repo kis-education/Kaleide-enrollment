@@ -34,6 +34,7 @@ export default function Step11Sign({ onBack, signingToken, signerCtx }) {
     <SignSign
       signingToken={signingToken}
       signerCtx={signerCtx || {}}
+      onBack={onBack}
       onDone={() => { /* terminal — stays on success screen */ }}
     />
   );

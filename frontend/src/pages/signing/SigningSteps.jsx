@@ -83,7 +83,42 @@ export function Progress({ current }) {
   );
 }
 
-// ─── Step 8 — Billing ───────────────────────────────────────────────────────
+// ─── Signing-step nav (top + bottom) ─────────────────────────────────────────
+// WIZARD-UX (Diego 2026-06-07): "los botones de avanzar deben aparecer arriba y
+// abajo, en las mismas ubicaciones que los paneles anteriores". The signing steps
+// (8-11) are NOT plain StepNav steps — their "Next" is a per-step submit (async,
+// with its own spinner/label and validation), so we render a dedicated nav block
+// that mirrors StepNav's markup/styles but drives the step's own submit handler.
+// It is rendered TWICE per step (top + bottom) sharing the same handlers/state.
+export function SigningNav({ onBack, onSubmit, submitting, submitLabel, savingLabel, position = 'bottom', hideBack = false, submitDisabled = false }) {
+  const { t } = useTranslation();
+  const wrapClass = position === 'top'
+    ? 'd-flex justify-content-between mb-3'
+    : 'd-flex justify-content-between mt-3';
+  return (
+    <div className={wrapClass}>
+      {hideBack || !onBack
+        ? <span />
+        : (
+          <button className="btn-secondary-kis" onClick={onBack} disabled={submitting}>
+            <i className="bi bi-arrow-left me-1" />{t('nav.back')}
+          </button>
+        )}
+      <button className="btn-primary-kis" onClick={onSubmit} disabled={submitting || submitDisabled}>
+        {submitting
+          ? <><span className="spinner-border spinner-border-sm me-2" />{savingLabel}</>
+          : submitLabel}
+      </button>
+    </div>
+  );
+}
+
+// ─── Step 8 — Billing (+ reparto entre pagadores) ─────────────────────────────
+
+const BLANK_PAYER_FIELDS = {
+  fiscal_name: '', fiscal_tax_id: '', fiscal_address_line1: '',
+  fiscal_address_city: '', fiscal_postal_code: '', billing_email: '',
+};
 
 export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   const { t } = useTranslation();
@@ -93,13 +128,25 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   // which guardian pays in a multi-guardian family). KAL-4 stays intact — the KMS
   // re-derives enrollment_group_id + signer from the token, never from this payload.
   const guardianPersonId = signerCtx && signerCtx.guardian_person_id;
-  const [f, setF] = useState({
-    fiscal_name: '', fiscal_tax_id: '', fiscal_address_line1: '',
-    fiscal_address_city: '', fiscal_postal_code: '', billing_email: '', billing_phone: '',
-  });
+  const persons = (stepData && stepData.persons) || [];
+  const guardians = persons.filter(p => p.person_type_id === 'guardian');
+  const primaryEmail = (stepData && stepData.email && stepData.email.primary_email) || '';
+
+  // Titular (default payer) fiscal fields — prefilled from the signing guardian.
+  const [f, setF] = useState({ ...BLANK_PAYER_FIELDS, billing_phone: '' });
+  // Reparto: one row per group guardian (GUARDIAN payer_type) + any OTHER payers
+  // added manually. Each row carries a `split_percentage`. Default: signing guardian
+  // 100%, the rest 0% (sums to 100). The titular's own fiscal data lives in `f`
+  // (the first GUARDIAN row mirrors `f`); other guardian rows only need a % (their
+  // fiscal data is already in core from onboarding — the KMS resolves it by
+  // payer_person_id). OTHER rows carry their own fiscal fields.
+  const [payers, setPayers] = useState([]); // [{ key, payer_type, payer_person_id, name, split, ...fiscal }]
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
+
+  const fullNameOf = (g) => [g.first_name, g.middle_name, g.last_name]
+    .filter(x => x && String(x).trim()).join(' ').trim();
 
   // Prefill from the signing guardian's already-captured fiscal data (Persons step).
   // Best-effort: if the person record or any field isn't available client-side, the
@@ -108,16 +155,12 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   // type the data); the critical payer_person_id is still sent from signerCtx.
   useEffect(() => {
     if (!guardianPersonId) return;
-    const persons = (stepData && stepData.persons) || [];
     const g = persons.find(p => (p.person_id || p._uid) === guardianPersonId);
     if (!g) return;
     const addr = g.address || {};
-    const fullName = [g.first_name, g.middle_name, g.last_name]
-      .filter(x => x && String(x).trim()).join(' ').trim();
-    const primaryEmail = (stepData && stepData.email && stepData.email.primary_email) || '';
     setF(prev => ({
       ...prev,
-      fiscal_name:          prev.fiscal_name          || fullName,
+      fiscal_name:          prev.fiscal_name          || fullNameOf(g),
       fiscal_tax_id:        prev.fiscal_tax_id        || (g.id_number || ''),
       fiscal_address_line1: prev.fiscal_address_line1 || (addr.address_line_1 || ''),
       fiscal_address_city:  prev.fiscal_address_city  || (addr.city || ''),
@@ -127,13 +170,110 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guardianPersonId]);
 
+  // Seed the reparto rows from the group guardians: signing guardian 100%, rest 0%.
+  // Runs once when guardians become available (prefer the signing guardian as the
+  // 100% default; if it can't be identified — e.g. the /sign host with no stepData —
+  // fall back to a single synthetic GUARDIAN row at 100% echoing signerCtx).
+  useEffect(() => {
+    if (payers.length) return;
+    if (guardians.length) {
+      const rows = guardians.map((g, i) => {
+        const pid = g.person_id || g._uid;
+        const isSigner = guardianPersonId ? pid === guardianPersonId : i === 0;
+        return {
+          key: 'g_' + (pid || i),
+          payer_type: 'GUARDIAN',
+          payer_person_id: pid || (isSigner ? guardianPersonId : null) || null,
+          name: fullNameOf(g) || t('signing.billing.split.guardian_fallback', { n: i + 1 }),
+          split: isSigner ? 100 : 0,
+          ...BLANK_PAYER_FIELDS,
+        };
+      });
+      // Guarantee exactly one 100% default even if the signer wasn't matched.
+      if (!rows.some(r => r.split === 100) && rows.length) rows[0].split = 100;
+      setPayers(rows);
+    } else {
+      // /sign host or no stepData: single synthetic GUARDIAN row (the signer) at 100%.
+      setPayers([{
+        key: 'signer',
+        payer_type: 'GUARDIAN',
+        payer_person_id: guardianPersonId || null,
+        name: t('signing.billing.split.you'),
+        split: 100,
+        ...BLANK_PAYER_FIELDS,
+      }]);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guardians.length, guardianPersonId]);
+
+  const setSplit = (key) => (e) => {
+    const raw = e.target.value;
+    const n = raw === '' ? 0 : Math.max(0, Math.min(100, Number(raw) || 0));
+    setPayers(prev => prev.map(p => p.key === key ? { ...p, split: n } : p));
+  };
+  const setPayerField = (key, fieldName) => (e) => {
+    const val = e.target.value;
+    setPayers(prev => prev.map(p => p.key === key ? { ...p, [fieldName]: val } : p));
+  };
+  const addOtherPayer = () => {
+    setPayers(prev => [...prev, {
+      key: 'other_' + Date.now(),
+      payer_type: 'OTHER',
+      payer_person_id: null,
+      name: '',
+      split: 0,
+      ...BLANK_PAYER_FIELDS,
+    }]);
+  };
+  const removePayer = (key) => setPayers(prev => prev.filter(p => p.key !== key));
+
+  const totalSplit = payers.reduce((s, p) => s + (Number(p.split) || 0), 0);
+
+  // Build the canonical payers[] contract (THIS shape is mirrored by the parallel
+  // KMS agent). The titular's fiscal data (`f`) feeds the signing-guardian row so a
+  // single-payer family still sends complete data; OTHER rows carry their own.
+  const buildPayersPayload = () => payers
+    .filter(p => (Number(p.split) || 0) > 0 || payers.length === 1)
+    .map(p => {
+      const isTitular = p.payer_type === 'GUARDIAN'
+        && (guardianPersonId ? p.payer_person_id === guardianPersonId : p.split === 100);
+      const fiscal = isTitular ? f : p;
+      return {
+        payer_type:           p.payer_type,
+        payer_person_id:      p.payer_type === 'GUARDIAN' ? (p.payer_person_id || null) : null,
+        fiscal_name:          (fiscal.fiscal_name || p.name || '').trim() || null,
+        fiscal_tax_id:        (fiscal.fiscal_tax_id || '').trim() || null,
+        fiscal_address_line1: (fiscal.fiscal_address_line1 || '').trim() || null,
+        fiscal_address_city:  (fiscal.fiscal_address_city || '').trim() || null,
+        fiscal_postal_code:   (fiscal.fiscal_postal_code || '').trim() || null,
+        billing_email:        (fiscal.billing_email || (isTitular ? f.billing_email : '') || '').trim() || null,
+        split_percentage:     Number(p.split) || 0,
+      };
+    });
+
   const submit = async () => {
     if (!f.fiscal_name.trim())  { setErr(t('signing.billing.err_name')); return; }
     if (!EMAIL_RE.test(f.billing_email.trim())) { setErr(t('signing.billing.err_email')); return; }
+    // Validate any OTHER payer rows with a share have at least a name + email.
+    for (const p of payers) {
+      if (p.payer_type === 'OTHER' && (Number(p.split) || 0) > 0) {
+        if (!(p.fiscal_name || '').trim()) { setErr(t('signing.billing.split.err_other_name')); return; }
+        if (!EMAIL_RE.test((p.billing_email || '').trim())) { setErr(t('signing.billing.split.err_other_email')); return; }
+      }
+    }
+    if (Math.round(totalSplit) !== 100) { setErr(t('signing.billing.split.err_sum', { total: totalSplit })); return; }
+
     setErr(''); setSubmitting(true);
+    const payersPayload = buildPayersPayload();
     try {
       await gasCall('saveBillingInfo', {
         signing_token:        signingToken,
+        // Canonical multi-payer contract (parallel KMS agent implements the same).
+        payers:               payersPayload,
+        // ── Backwards-compat single-payer fields (titular = default payer) ──
+        // The current wizard proxy forwards these top-level fields; the new `payers`
+        // array is forwarded once the proxy/KMS gain multi-payer support. Sending
+        // both keeps today's single-payer flow working through the unmodified proxy.
         payer_type:           'GUARDIAN',
         // Default payer = the signing guardian. The KMS handler
         // (fin_saveBillingPartyFromWizard) REQUIRES payer_person_id for a GUARDIAN
@@ -145,6 +285,8 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
         fiscal_address_city:  f.fiscal_address_city.trim() || null,
         fiscal_postal_code:   f.fiscal_postal_code.trim() || null,
         billing_email:        f.billing_email.trim(),
+        // Titular's split (for proxies that read split_percentage at top level).
+        split_percentage:     (payersPayload.find(p => p.payer_type === 'GUARDIAN' && p.payer_person_id === (guardianPersonId || null)) || payersPayload[0] || {}).split_percentage,
       });
       onDone();
     } catch (e) {
@@ -163,8 +305,22 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
     </div>
   );
 
+  const nav = (position) => (
+    <SigningNav
+      position={position}
+      onBack={onBack}
+      onSubmit={submit}
+      submitting={submitting}
+      submitLabel={t('signing.billing.submit')}
+      savingLabel={t('signing.saving')}
+    />
+  );
+
+  const sumOk = Math.round(totalSplit) === 100;
+
   return (
     <div className="kis-card">
+      {nav('top')}
       <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.billing.title')}</h2>
       <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.billing.subtitle')}</p>
       {field('fiscal_name', 'text', true)}
@@ -176,17 +332,93 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
       </div>
       {field('billing_email', 'email', true)}
       {field('billing_phone', 'tel')}
-      {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
-      <div className={onBack ? 'd-flex justify-content-between mt-3' : 'd-flex justify-content-end mt-3'}>
-        {onBack && (
-          <button className="btn-secondary-kis" onClick={onBack} disabled={submitting}>
-            <i className="bi bi-arrow-left me-1" />{t('nav.back')}
-          </button>
-        )}
-        <button className="btn-primary-kis" onClick={submit} disabled={submitting}>
-          {submitting ? <><span className="spinner-border spinner-border-sm me-2" />{t('signing.saving')}</> : t('signing.billing.submit')}
+
+      {/* ── Reparto entre pagadores (split) ──────────────────────────────────── */}
+      <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+        <h3 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '0.98rem', marginBottom: 4 }}>
+          {t('signing.billing.split.title')}
+        </h3>
+        <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 12 }}>
+          {t('signing.billing.split.subtitle')}
+        </p>
+
+        {payers.map(p => (
+          <div key={p.key} style={{ marginBottom: 12, padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {p.payer_type === 'OTHER' ? (
+                <input
+                  type="text"
+                  className="form-control"
+                  style={{ flex: 1 }}
+                  placeholder={t('signing.billing.split.other_name_placeholder')}
+                  value={p.fiscal_name}
+                  onChange={setPayerField(p.key, 'fiscal_name')}
+                />
+              ) : (
+                <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</span>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 110 }}>
+                <input
+                  type="number" min="0" max="100"
+                  className="form-control"
+                  style={{ width: 72, textAlign: 'right' }}
+                  value={p.split}
+                  onChange={setSplit(p.key)}
+                />
+                <span style={{ fontWeight: 600, color: 'var(--muted)' }}>%</span>
+              </div>
+              {p.payer_type === 'OTHER' && (
+                <button
+                  type="button"
+                  className="btn btn-link p-0"
+                  style={{ color: '#a02020', fontSize: '0.85rem' }}
+                  onClick={() => removePayer(p.key)}
+                  aria-label={t('signing.billing.split.remove')}
+                >
+                  <i className="bi bi-trash" />
+                </button>
+              )}
+            </div>
+            {/* OTHER payer fiscal fields (name lives above) */}
+            {p.payer_type === 'OTHER' && (Number(p.split) || 0) > 0 && (
+              <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <input type="text" className="form-control" placeholder={t('signing.billing.field.fiscal_tax_id')}
+                  value={p.fiscal_tax_id} onChange={setPayerField(p.key, 'fiscal_tax_id')} />
+                <input type="email" className="form-control" placeholder={t('signing.billing.field.billing_email')}
+                  value={p.billing_email} onChange={setPayerField(p.key, 'billing_email')} />
+                <input type="text" className="form-control" placeholder={t('signing.billing.field.fiscal_address_line1')}
+                  style={{ gridColumn: '1 / 3' }}
+                  value={p.fiscal_address_line1} onChange={setPayerField(p.key, 'fiscal_address_line1')} />
+                <input type="text" className="form-control" placeholder={t('signing.billing.field.fiscal_address_city')}
+                  value={p.fiscal_address_city} onChange={setPayerField(p.key, 'fiscal_address_city')} />
+                <input type="text" className="form-control" placeholder={t('signing.billing.field.fiscal_postal_code')}
+                  value={p.fiscal_postal_code} onChange={setPayerField(p.key, 'fiscal_postal_code')} />
+              </div>
+            )}
+          </div>
+        ))}
+
+        <button type="button" className="btn-secondary-kis btn-sm" onClick={addOtherPayer} style={{ marginTop: 4 }}>
+          <i className="bi bi-plus-lg me-1" />{t('signing.billing.split.add_other')}
         </button>
+
+        <div style={{
+          marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          fontSize: '0.88rem', fontWeight: 700,
+          color: sumOk ? '#1b5e20' : '#a02020',
+        }}>
+          <span>{t('signing.billing.split.total')}</span>
+          <span>{totalSplit}%</span>
+        </div>
+        {!sumOk && (
+          <div className="field-error mt-1 p-2 rounded" style={{ background: '#ffeaea', fontSize: '0.82rem' }}>
+            {t('signing.billing.split.err_sum', { total: totalSplit })}
+          </div>
+        )}
       </div>
+
+      {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
+      {nav('bottom')}
     </div>
   );
 }
@@ -231,8 +463,20 @@ export function SignGdpr({ signingToken, lang, onDone, onBack }) {
     }
   };
 
+  const nav = (position) => (
+    <SigningNav
+      position={position}
+      onBack={onBack}
+      onSubmit={submit}
+      submitting={submitting}
+      submitLabel={t('signing.gdpr.submit')}
+      savingLabel={t('signing.saving')}
+    />
+  );
+
   return (
     <div className="kis-card">
+      {nav('top')}
       <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.gdpr.title')}</h2>
       <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.gdpr.subtitle')}</p>
       {SIGNING_CONSENTS.map(c => (
@@ -248,14 +492,7 @@ export function SignGdpr({ signingToken, lang, onDone, onBack }) {
         </div>
       ))}
       {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
-      <div className="d-flex justify-content-between mt-3">
-        <button className="btn-secondary-kis" onClick={onBack} disabled={submitting}>
-          <i className="bi bi-arrow-left me-1" />{t('nav.back')}
-        </button>
-        <button className="btn-primary-kis" onClick={submit} disabled={submitting}>
-          {submitting ? <><span className="spinner-border spinner-border-sm me-2" />{t('signing.saving')}</> : t('signing.gdpr.submit')}
-        </button>
-      </div>
+      {nav('bottom')}
     </div>
   );
 }
@@ -334,10 +571,33 @@ export function SignReview({ signingToken, onDone, onBack }) {
 
   const docLabel = (m) => t('signing.doc.' + (m.purpose_code || ''), { defaultValue: m.designation || m.purpose_code || t('signing.review.document') });
 
+  // Top/bottom nav for the review step. `read` gates the submit (mirrors the
+  // inline "must read" check); the spinner/label swap matches the other steps.
+  const nav = (position) => (
+    <SigningNav
+      position={position}
+      onBack={onBack}
+      onSubmit={confirm}
+      submitting={submitting}
+      submitDisabled={!read}
+      submitLabel={t('signing.review.submit')}
+      savingLabel={t('signing.saving')}
+    />
+  );
+
   // DL-E39: gate step-up antes de revelar el paquete contractual (docs sensibles).
   if (needStepUp) {
+    const backOnly = (position) => (
+      <div className={position === 'top' ? 'd-flex justify-content-between mb-3' : 'd-flex justify-content-between mt-3'}>
+        <button className="btn-secondary-kis" onClick={onBack}>
+          <i className="bi bi-arrow-left me-1" />{t('nav.back')}
+        </button>
+        <span />
+      </div>
+    );
     return (
       <div className="kis-card">
+        {backOnly('top')}
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.review.title')}</h2>
         <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('stepup.review_gate_body')}</p>
         <StepUpReverify
@@ -351,17 +611,14 @@ export function SignReview({ signingToken, onDone, onBack }) {
             setReloadKey(k => k + 1);
           }}
         />
-        <div className="d-flex justify-content-between mt-3">
-          <button className="btn-secondary-kis" onClick={onBack}>
-            <i className="bi bi-arrow-left me-1" />{t('nav.back')}
-          </button>
-        </div>
+        {backOnly('bottom')}
       </div>
     );
   }
 
   return (
     <div className="kis-card">
+      {nav('top')}
       <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.review.title')}</h2>
       <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.review.subtitle')}</p>
 
@@ -422,14 +679,7 @@ export function SignReview({ signingToken, onDone, onBack }) {
             </label>
           </div>
           {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
-          <div className="d-flex justify-content-between mt-3">
-            <button className="btn-secondary-kis" onClick={onBack} disabled={submitting}>
-              <i className="bi bi-arrow-left me-1" />{t('nav.back')}
-            </button>
-            <button className="btn-primary-kis" onClick={confirm} disabled={submitting}>
-              {submitting ? <><span className="spinner-border spinner-border-sm me-2" />{t('signing.saving')}</> : t('signing.review.submit')}
-            </button>
-          </div>
+          {nav('bottom')}
         </>
       )}
     </div>
@@ -438,9 +688,24 @@ export function SignReview({ signingToken, onDone, onBack }) {
 
 // ─── Step 11 — Sign (Click & Sign + polling) ─────────────────────────────────
 
-export function SignSign({ signingToken, signerCtx, onDone }) {
+export function SignSign({ signingToken, signerCtx, onDone, onBack }) {
   const { t } = useTranslation();
   const { isStepUpFresh, markStepUpFresh } = useWizard();
+  // Back-only nav (top + bottom). The Sign step's "advance" is the signing act
+  // itself (launched from the per-signer buttons / polled to completion), so the
+  // nav only carries "Atrás" → Review. Hidden once the session is COMPLETED (the
+  // terminal success screen has its own Finish button). Mirrors StepNav spacing.
+  const backNav = (position) => {
+    if (!onBack) return null;
+    return (
+      <div className={position === 'top' ? 'd-flex justify-content-between mb-3' : 'd-flex justify-content-between mt-3'}>
+        <button className="btn-secondary-kis" onClick={onBack}>
+          <i className="bi bi-arrow-left me-1" />{t('nav.back')}
+        </button>
+        <span />
+      </div>
+    );
+  };
   const [session, setSession] = useState(null); // { signerUrls, state }
   const [err, setErr] = useState('');
   // DL-E39: gate INCONDICIONAL de firma — SIEMPRE exigimos step-up fresco antes
@@ -494,6 +759,7 @@ export function SignSign({ signingToken, signerCtx, onDone }) {
   if (needStepUp) {
     return (
       <div className="kis-card">
+        {backNav('top')}
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.signing.title')}</h2>
         <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('stepup.sign_gate_body')}</p>
         <StepUpReverify
@@ -501,6 +767,7 @@ export function SignSign({ signingToken, signerCtx, onDone }) {
           prompt={t('stepup.sign_prompt')}
           onVerified={() => { markStepUpFresh(); setNeedStepUp(false); startSigning(); }}
         />
+        {backNav('bottom')}
       </div>
     );
   }
@@ -508,8 +775,10 @@ export function SignSign({ signingToken, signerCtx, onDone }) {
   if (err) {
     return (
       <div className="kis-card">
+        {backNav('top')}
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.signing.title')}</h2>
         <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>
+        {backNav('bottom')}
       </div>
     );
   }
@@ -532,6 +801,7 @@ export function SignSign({ signingToken, signerCtx, onDone }) {
 
   return (
     <div className="kis-card">
+      {backNav('top')}
       <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.signing.title')}</h2>
       <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.signing.subtitle')}</p>
 
@@ -565,6 +835,7 @@ export function SignSign({ signingToken, signerCtx, onDone }) {
         <span className="spinner-border spinner-border-sm me-2" style={{ width: 12, height: 12 }} />
         {t('signing.signing.polling')}
       </p>
+      {backNav('bottom')}
     </div>
   );
 }
@@ -582,7 +853,7 @@ export default function SigningSteps({ signingToken, signerCtx }) {
       {sub === 0 && <SignBilling signingToken={signingToken} signerCtx={signerCtx} onDone={() => setSub(1)} />}
       {sub === 1 && <SignGdpr signingToken={signingToken} lang={lang} onDone={() => setSub(2)} onBack={() => setSub(0)} />}
       {sub === 2 && <SignReview signingToken={signingToken} onDone={() => setSub(3)} onBack={() => setSub(1)} />}
-      {sub === 3 && <SignSign signingToken={signingToken} signerCtx={signerCtx} onDone={() => { /* terminal — stays on success screen */ }} />}
+      {sub === 3 && <SignSign signingToken={signingToken} signerCtx={signerCtx} onBack={() => setSub(2)} onDone={() => { /* terminal — stays on success screen */ }} />}
     </>
   );
 }

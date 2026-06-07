@@ -75,7 +75,7 @@ function loadRecaptcha(siteKey) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function Step7Review({ onBack }) {
+export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSigning }) {
   const { t, i18n }  = useTranslation();
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
@@ -315,9 +315,18 @@ export default function Step7Review({ onBack }) {
         <p style={{ color: 'var(--muted)' }}>{t('step7.subtitle')}</p>
       </div>
 
-      {/* WIZARD-UX: navegación arriba en Step7 = SOLO "Atrás" (el submit es el botón
-          terminal de abajo — no se convierte en StepNav genérico, KAL/edit-lock intactos). */}
-      <StepNav position="top" onBack={onBack} hideNext />
+      {/* WIZARD-UX: navegación arriba en Step7. Por defecto SOLO "Atrás" (el submit
+          es el botón terminal de abajo — no se convierte en StepNav genérico,
+          KAL/edit-lock intactos). DL-E38 merge (Diego 2026-06-07): cuando el
+          expediente está Aprobado y la firma del grupo está lista
+          (canAdvanceToSigning), el "Siguiente" del Step 7 AVANZA a la firma inline —
+          mismo botón arriba Y abajo, en las ubicaciones de los pasos 1-6. */}
+      <StepNav
+        position="top"
+        onBack={onBack}
+        onNext={onAdvanceToSigning}
+        hideNext={!canAdvanceToSigning}
+      />
 
       {/* ── Email / Start Date ── */}
       <SectionCard title={t('review.email')} icon="bi-envelope-fill">
@@ -506,11 +515,14 @@ export default function Step7Review({ onBack }) {
               <li>{t('confirmation.next_3')}</li>
             </ul>
           </div>
-          <div className="d-flex mt-4">
-            <button className="btn-secondary-kis" onClick={onBack}>
-              <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
-            </button>
-          </div>
+          {/* DL-E38 merge: bottom nav mirrors the top — Back + (state-driven)
+              advance-to-signing "Continuar". Same positions as steps 1-6. */}
+          <StepNav
+            position="bottom"
+            onBack={onBack}
+            onNext={onAdvanceToSigning}
+            hideNext={!canAdvanceToSigning}
+          />
         </>
       ) : (
         <>

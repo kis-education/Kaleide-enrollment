@@ -524,16 +524,12 @@ const handleNext = async (stepKey, data) => {
                 KAL-7: el token NUNCA va en la URL — vive en React state + props. La
                 identidad legalmente vinculante sigue en el ACTO de firma
                 (requireSigningToken_, P222) — sin cambios. */}
-            {currentStep === 6
-              && admissionState?.state_code === 'AD'
-              && admissionState?.signing_ready
-              && admissionState?.signing_status !== 'COMPLETED' && (
-              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-                <button className="btn-primary-kis" onClick={enterSigning}>
-                  {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
-                </button>
-              </div>
-            )}
+            {/* WIZARD — nav arriba/abajo (Diego 2026-06-07): el botón de avance a
+                la firma ya NO vive en este banner. Ahora lo renderiza el panel del
+                Step 7 (Step7Review) ARRIBA y ABAJO, en las mismas ubicaciones que
+                los StepNav de los pasos 1-6 (via onAdvanceToSigning + canAdvance
+                ToSigning, gobernado por estado AD + signing_ready). Evita el botón
+                suelto descolocado en el banner. */}
 
             {/* P215 opción (b) ELIMINADA (CLI AD-SPLIT): el selector in-app
                 "¿quién eres?" queda descartado por razón legal (auto-declaración de
@@ -656,6 +652,19 @@ const handleNext = async (stepKey, data) => {
           onAdvance={advanceSigningStep}
           signingToken={signingContext?.signing_token || null}
           signerCtx={signerCtx}
+          /* DL-E38 merge: Step 7 advance-to-signing (state-driven). The Step 7
+             panel renders the same "Continuar" action TOP and BOTTOM (mirroring the
+             standard StepNav positions of steps 1-6) when the file is Approved (AD),
+             the group signing session exists (signing_ready) and is not COMPLETED.
+             enterSigning resolves the per-guardian signing_token server-side (KAL-4)
+             and advances INLINE to Step 8. */
+          onAdvanceToSigning={enterSigning}
+          canAdvanceToSigning={
+            currentStep === 6
+            && admissionState?.state_code === 'AD'
+            && admissionState?.signing_ready
+            && admissionState?.signing_status !== 'COMPLETED'
+          }
         />
       </div>
 
