@@ -97,6 +97,7 @@
   "submitted.real_state": "Estado de tu solicitud: {{state}}",
   "submitted.signing_preparing": "Tu plaza está admitida. La documentación de firma se está preparando; recibirás acceso en breve.",
   "wizard.continue_to_sign": "Continuar a la firma",
+  "wizard.signing_confirm_email": "Para continuar a la firma, confirma tu email recuperando tu solicitud desde el enlace que te enviamos a tu correo.",
   "wizard.signer_select_prompt": "Tu plaza está admitida. ¿Quién eres, para continuar a la firma?",
   "wizard.signer_select_unnamed": "Continuar a la firma",
   "wizard.signer_select_error": "No se pudo abrir el proceso de firma. Inténtalo de nuevo.",

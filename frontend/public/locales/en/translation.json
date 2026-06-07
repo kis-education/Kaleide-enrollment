@@ -97,6 +97,7 @@
   "submitted.real_state": "Your application status: {{state}}",
   "submitted.signing_preparing": "Your place has been admitted. The signing documents are being prepared; you will receive access shortly.",
   "wizard.continue_to_sign": "Continue to signing",
+  "wizard.signing_confirm_email": "To continue to signing, confirm your email by recovering your application from the link we sent to your inbox.",
   "wizard.signer_select_prompt": "Your place has been admitted. Who are you, to continue to signing?",
   "wizard.signer_select_unnamed": "Continue to signing",
   "wizard.signer_select_error": "Could not open the signing flow. Please try again.",

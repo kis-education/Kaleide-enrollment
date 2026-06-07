@@ -92,11 +92,24 @@ export default function WizardPage() {
   // por ref para que el interval (effect []) no se recree en cada toggle de save.
   // KAL-7/KAL-11: el resume_token viaja en el body POST (no en URL), y los logs solo
   // emiten err.message — nunca el token.
-  const pulseRef = useRef({ resumeToken: null, recoveredEmail: null, hasPendingSave: false });
-  pulseRef.current = { resumeToken, recoveredEmail, hasPendingSave };
+  // DL-E38 a1 / P215: discriminador de guardian. Precedencia: el email tecleado
+  // en la recuperación per-guardian (`recoveredEmail`) MANDA; si no existe (p.ej.
+  // sesión normal sin recovery link), caemos al email VERIFICADO de la sesión
+  // (`stepData.email.primary_email`, una vez `verified`). Así Path 1 del backend
+  // (resolveGuardianForRecovery_) resuelve DETERMINISTAMENTE el guardian que está
+  // ACCEDIENDO — desambiguando grupos multi-guardian por el email que la familia
+  // realmente usa. KAL-4 intacta: el backend re-resuelve el guardian server-side
+  // contra enrEmails del grupo; este email es solo un discriminador, nunca un claim
+  // de autorización.
+  const verifiedSessionEmail =
+    (stepData?.email?.verified && stepData.email.primary_email) ? stepData.email.primary_email : null;
+  const effectiveRecoveredEmail = recoveredEmail || verifiedSessionEmail || undefined;
+
+  const pulseRef = useRef({ resumeToken: null, effectiveRecoveredEmail: undefined, hasPendingSave: false });
+  pulseRef.current = { resumeToken, effectiveRecoveredEmail, hasPendingSave };
   useEffect(() => {
     const tick = () => {
-      const { resumeToken: rt, recoveredEmail: re, hasPendingSave: pending } = pulseRef.current;
+      const { resumeToken: rt, effectiveRecoveredEmail: re, hasPendingSave: pending } = pulseRef.current;
       if (!rt) return;                                    // sin sesión → nada que sincronizar
       if (pending) return;                                // save en vuelo → saltar este tick
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return; // pestaña oculta → saltar
@@ -124,7 +137,7 @@ export default function WizardPage() {
       // families even though a signing_token existed — Step 7 → /sign bridge
       // never unlocked. Mirrors ResumePage:59. Absent (cross-device) → falls
       // back to the deterministic session-anchored resolution / signer selector.
-      gasCall('resumeSession', { resume_token: resumeToken, recovered_email: recoveredEmail || undefined })
+      gasCall('resumeSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail })
         .then(data => {
           // hydrateFromResume now seeds completedSteps in context based on
           // which steps have data — no need to override here.
@@ -458,9 +471,24 @@ const handleNext = async (stepKey, data) => {
               && admissionState?.signing_status !== 'COMPLETED' && (
               <div style={{ marginTop: 12 }}>
                 <button
-                  onClick={() => navigate('/sign', signingContext?.signing_token
-                    ? { state: { signing_token: signingContext.signing_token } }
-                    : undefined)}
+                  onClick={() => {
+                    // CORRECTIVE (Diego 2026-06-07): la identidad per-guardian se
+                    // establece AL ENTRAR, nunca diferida al acto de firma. El
+                    // botón es visible en AD (signing_ready), pero el CLICK EXIGE
+                    // el signing_token per-guardian YA resuelto server-side
+                    // (admission.signing_context). Sin él, NO entramos a /sign con
+                    // un flujo de firma roto (el step 9 GDPR registra 7
+                    // consentimientos POR guardian → necesita el guardian conocido
+                    // desde el inicio de los steps 8-11). Si el token no se pudo
+                    // resolver (el email de acceso no matcheó ningún guardian del
+                    // grupo), mostramos un mensaje recuperable. KAL-7: el token
+                    // viaja por react-router state, NUNCA en la URL.
+                    if (signingContext?.signing_token) {
+                      navigate('/sign', { state: { signing_token: signingContext.signing_token } });
+                    } else {
+                      showToast(t('wizard.signing_confirm_email'));
+                    }
+                  }}
                   style={{
                     background: '#2e7d32', color: '#fff', border: 'none',
                     borderRadius: 8, padding: '10px 18px', fontWeight: 700,
