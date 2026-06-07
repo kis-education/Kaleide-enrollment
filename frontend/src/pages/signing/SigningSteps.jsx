@@ -40,13 +40,26 @@ const isStepUpRequiredError = (e) =>
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-const SUBS = ['billing', 'gdpr', 'review', 'sign'];
+export const SUBS = ['billing', 'gdpr', 'review', 'sign'];
 
-function lang_(i18n) { return i18n.language && i18n.language.indexOf('en') === 0 ? 'en' : 'es'; }
+export function lang_(i18n) { return i18n.language && i18n.language.indexOf('en') === 0 ? 'en' : 'es'; }
+
+/**
+ * DL-E38 merge — initial sub-step derived from signerCtx.steps. Shared by the
+ * /sign orchestrator (SigningSteps) and the inline wizard merge (WizardPage):
+ * a family who already did billing lands on GDPR, etc. Returns 0..3.
+ */
+export function initialSubStep(steps) {
+  const s = steps || {};
+  return !s.billing_confirmed ? 0
+       : !s.gdpr_completed   ? 1
+       : !s.review_completed ? 2
+       : 3;
+}
 
 // ─── Progress bar ───────────────────────────────────────────────────────────
 
-function Progress({ current }) {
+export function Progress({ current }) {
   const { t } = useTranslation();
   const labels = [
     t('signing.step_billing'), t('signing.step_gdpr'),
@@ -72,7 +85,7 @@ function Progress({ current }) {
 
 // ─── Step 8 — Billing ───────────────────────────────────────────────────────
 
-function SignBilling({ signingToken, onDone }) {
+export function SignBilling({ signingToken, onDone, onBack }) {
   const { t } = useTranslation();
   const [f, setF] = useState({
     fiscal_name: '', fiscal_tax_id: '', fiscal_address_line1: '',
@@ -128,7 +141,12 @@ function SignBilling({ signingToken, onDone }) {
       {field('billing_email', 'email', true)}
       {field('billing_phone', 'tel')}
       {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
-      <div className="d-flex justify-content-end mt-3">
+      <div className={onBack ? 'd-flex justify-content-between mt-3' : 'd-flex justify-content-end mt-3'}>
+        {onBack && (
+          <button className="btn-secondary-kis" onClick={onBack} disabled={submitting}>
+            <i className="bi bi-arrow-left me-1" />{t('nav.back')}
+          </button>
+        )}
         <button className="btn-primary-kis" onClick={submit} disabled={submitting}>
           {submitting ? <><span className="spinner-border spinner-border-sm me-2" />{t('signing.saving')}</> : t('signing.billing.submit')}
         </button>
@@ -139,7 +157,7 @@ function SignBilling({ signingToken, onDone }) {
 
 // ─── Step 9 — GDPR (modo conservador GATE-B: UN set, sin fan-out per-guardian) ─
 
-function SignGdpr({ signingToken, lang, onDone, onBack }) {
+export function SignGdpr({ signingToken, lang, onDone, onBack }) {
   const { t } = useTranslation();
   // default: blocking consent unchecked, optional ones unchecked.
   const [state, setState] = useState(() => {
@@ -208,7 +226,7 @@ function SignGdpr({ signingToken, lang, onDone, onBack }) {
 
 // ─── Step 10 — Review (paquete contractual + confirmación lectura) ────────────
 
-function SignReview({ signingToken, onDone, onBack }) {
+export function SignReview({ signingToken, onDone, onBack }) {
   const { t } = useTranslation();
   const { isStepUpFresh, markStepUpFresh } = useWizard();
   const [members, setMembers] = useState(null); // null=loading, []=empty
@@ -384,7 +402,7 @@ function SignReview({ signingToken, onDone, onBack }) {
 
 // ─── Step 11 — Sign (Click & Sign + polling) ─────────────────────────────────
 
-function SignSign({ signingToken, signerCtx, onDone }) {
+export function SignSign({ signingToken, signerCtx, onDone }) {
   const { t } = useTranslation();
   const { isStepUpFresh, markStepUpFresh } = useWizard();
   const [session, setSession] = useState(null); // { signerUrls, state }
@@ -520,12 +538,7 @@ function SignSign({ signingToken, signerCtx, onDone }) {
 export default function SigningSteps({ signingToken, signerCtx }) {
   const { i18n } = useTranslation();
   const lang = lang_(i18n);
-  const steps = signerCtx.steps || {};
-  const initial = !steps.billing_confirmed ? 0
-                : !steps.gdpr_completed   ? 1
-                : !steps.review_completed ? 2
-                : 3;
-  const [sub, setSub] = useState(initial);
+  const [sub, setSub] = useState(initialSubStep(signerCtx.steps));
 
   return (
     <>

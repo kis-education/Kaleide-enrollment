@@ -23,6 +23,7 @@ import Step8Billing    from './steps/Step8Billing';
 import Step9Gdpr       from './steps/Step9Gdpr';
 import Step10Review    from './steps/Step10Review';
 import Step11Sign      from './steps/Step11Sign';
+import { initialSubStep } from './signing/SigningSteps';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
@@ -70,6 +71,13 @@ export default function WizardPage() {
   // pendiente (re-lanzar handleNext con los mismos args) para reintentar tras
   // verificar. null | { stepKey, data }.
   const [stepUpPending,     setStepUpPending]     = useState(null);
+  // DL-E38 merge (flujo continuo 1→11): contexto del firmante (steps
+  // billing_confirmed/gdpr_completed/review_completed/signed) resuelto vía
+  // resolveSigningToken cuando la familia entra a los Steps 8-11 inline. Permite
+  // (a) aterrizar en el sub-paso correcto al reanudar a mitad de firma y (b) que
+  // SignSign detecte el estado terminal. NO persistido (vive en React state; el
+  // signing_token bearer no se guarda en sessionStorage — KAL-7).
+  const [signerCtx,         setSignerCtx]         = useState(null);
   // P215 opción (b) ELIMINADA (CLI AD-SPLIT): el selector in-app de firmante
   // ('selectSigner' + signing_candidates) queda descartado por razón legal — la
   // identidad de firma se deriva SOLO server-side (recovery link per-guardian,
@@ -283,6 +291,60 @@ const handleNext = async (stepKey, data) => {
     window.scrollTo(0, 0);
   };
 
+  // DL-E38 merge — STEP_FIRST_SIGNING = índice 0-based del primer paso de firma
+  // (Step 8 = índice 7). Los Steps 8-11 (índices 7-10) NO usan saveStep (PII /apply);
+  // cada uno persiste vía su propio endpoint de firma (saveBillingInfo / submitGdpr
+  // Consents / confirmReview / initiateSigningSession) con el signing_token. Su
+  // "Siguiente" es el submit del componente funcional, que al completar llama a
+  // advanceSigningStep para mover currentStep — SIN pasar por handleNext (que
+  // dispararía un saveStep erróneo contra los endpoints /apply).
+  const STEP_FIRST_SIGNING = 7;
+
+  const advanceSigningStep = () => {
+    addCompletedStep(currentStep);
+    const nextStep = Math.min(currentStep + 1, STEP_COMPONENTS.length - 1);
+    log.info(`WizardPage: advancing signing step ${currentStep} → ${nextStep}`);
+    setCurrentStep(nextStep);
+    window.scrollTo(0, 0);
+  };
+
+  // DL-E38 merge — puente Step 7 → firma INLINE (antes navigate('/sign')).
+  // Resuelve el signing_context per-guardian (signing_token ya server-side, KAL-4),
+  // llama resolveSigningToken para obtener `steps` (billing/gdpr/review/signed) y
+  // aterriza en el sub-paso correcto: una familia que ya hizo billing entra en GDPR,
+  // etc. (resume mid-signing). Marca completados los pasos previos al de aterrizaje
+  // para que el top-nav resalte coherente. Si el token aún no se resolvió (caso raro
+  // multi-guardian ambiguo), muestra el toast recuperable — NUNCA entra a firmar sin
+  // identidad (los consentimientos GDPR son per-guardian). KAL-7: el token NUNCA va
+  // en la URL — vive en signingContext (React state) + se pasa por props a los steps.
+  const enterSigning = () => {
+    const token = signingContext?.signing_token;
+    if (!token) {
+      showToast(t('wizard.signing_confirm_email'));
+      return;
+    }
+    // Marca el Step 7 (índice 6) completado y entra al primer paso de firma de
+    // inmediato (Billing por defecto). resolveSigningToken refina el aterrizaje en
+    // background si la familia ya avanzó parte de la firma.
+    addCompletedStep(6);
+    setCurrentStep(STEP_FIRST_SIGNING);
+    window.scrollTo(0, 0);
+    gasCall('resolveSigningToken', { signing_token: token })
+      .then(ctx => {
+        if (!ctx || !ctx.valid) {
+          log.warn('WizardPage: resolveSigningToken not valid on signing entry', { reason: ctx && ctx.reason });
+          return;
+        }
+        setSignerCtx(ctx);
+        // Aterriza en el sub-paso correcto según el progreso ya registrado.
+        const sub = initialSubStep(ctx.steps);       // 0..3
+        const target = STEP_FIRST_SIGNING + sub;       // 7..10
+        for (let i = STEP_FIRST_SIGNING; i < target; i++) addCompletedStep(i);
+        setCurrentStep(target);
+      })
+      .catch(err => log.warn('WizardPage: resolveSigningToken failed on signing entry', { message: err.message }));
+  };
+
   const handleUnlock = () => {
     removeCompletedStep(currentStep);
   };
@@ -449,53 +511,26 @@ const handleNext = async (stepKey, data) => {
               {t('submitted.locked.body')}
             </div>
 
-            {/* WIZARD — AD unlocks step 8 (state-driven, Option A; Diego 2026-06-07).
-                The DOOR to step 8 is the AD admission state + the existence of a
-                signing session for the group (`signing_ready`) — NOT the
-                per-guardian token resolution. The old gate also required
-                `signing_available && signing_token`, so genuinely-ambiguous
-                multi-guardian groups (where the group-scoped session can't pick a
-                guardian) never showed the button and stayed stuck on the
-                "preparándose" banner forever even when admitted. The per-guardian
-                resolution was being enforced at the wrong place (the door); the
-                door is now the AD state. The bridge carries the resolved
-                signing_token via react-router state when available (NEVER in the
-                URL — KAL-7); when it isn't resolved (the rare ambiguous case), it
-                still opens /sign, whose token gate is the sensible fallback (use
-                your per-guardian recovery link / contact admissions). The
-                per-guardian, legally-binding identity stays at the signing ACT
-                (/sign endpoints, requireSigningToken_, P222) — unchanged. */}
+            {/* DL-E38 merge (flujo continuo 1→11, Diego 2026-06-07): el avance a la
+                firma deja de ser un salto a /sign con un botón verde especial. Ahora
+                es el "Siguiente" estándar del wizard que avanza currentStep 7→8 INLINE
+                (Steps 8-11 renderizan los componentes funcionales de firma dentro del
+                propio wizard — ver Step8Billing..Step11Sign). La PUERTA al Step 8 sigue
+                siendo state-driven: estado AD + sesión de firma del grupo existe
+                (`signing_ready`) + no COMPLETED. El CLICK resuelve el signing_token
+                per-guardian (signingContext, server-side, KAL-4) y entra a la firma;
+                si no está resuelto (raro multi-guardian ambiguo) muestra el toast
+                recuperable — NUNCA entra a firmar sin identidad (GDPR es per-guardian).
+                KAL-7: el token NUNCA va en la URL — vive en React state + props. La
+                identidad legalmente vinculante sigue en el ACTO de firma
+                (requireSigningToken_, P222) — sin cambios. */}
             {currentStep === 6
               && admissionState?.state_code === 'AD'
               && admissionState?.signing_ready
               && admissionState?.signing_status !== 'COMPLETED' && (
-              <div style={{ marginTop: 12 }}>
-                <button
-                  onClick={() => {
-                    // CORRECTIVE (Diego 2026-06-07): la identidad per-guardian se
-                    // establece AL ENTRAR, nunca diferida al acto de firma. El
-                    // botón es visible en AD (signing_ready), pero el CLICK EXIGE
-                    // el signing_token per-guardian YA resuelto server-side
-                    // (admission.signing_context). Sin él, NO entramos a /sign con
-                    // un flujo de firma roto (el step 9 GDPR registra 7
-                    // consentimientos POR guardian → necesita el guardian conocido
-                    // desde el inicio de los steps 8-11). Si el token no se pudo
-                    // resolver (el email de acceso no matcheó ningún guardian del
-                    // grupo), mostramos un mensaje recuperable. KAL-7: el token
-                    // viaja por react-router state, NUNCA en la URL.
-                    if (signingContext?.signing_token) {
-                      navigate('/sign', { state: { signing_token: signingContext.signing_token } });
-                    } else {
-                      showToast(t('wizard.signing_confirm_email'));
-                    }
-                  }}
-                  style={{
-                    background: '#2e7d32', color: '#fff', border: 'none',
-                    borderRadius: 8, padding: '10px 18px', fontWeight: 700,
-                    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
-                  }}
-                >
-                  <i className="bi bi-pen-fill" /> {t('wizard.continue_to_sign')}
+              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                <button className="btn-primary-kis" onClick={enterSigning}>
+                  {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
                 </button>
               </div>
             )}
@@ -614,6 +649,13 @@ const handleNext = async (stepKey, data) => {
           locked={completedSteps.has(currentStep)}
           onUnlock={isSubmitted ? null : handleUnlock}
           savePending={hasPendingSave}
+          /* DL-E38 merge: props para los Steps 8-11 de firma inline. onAdvance
+             mueve currentStep SIN saveStep (cada step de firma persiste vía su
+             propio endpoint). signingToken/signerCtx alimentan los componentes
+             funcionales reutilizados de SigningSteps. Ignorados por los Steps 1-7. */
+          onAdvance={advanceSigningStep}
+          signingToken={signingContext?.signing_token || null}
+          signerCtx={signerCtx}
         />
       </div>
 
