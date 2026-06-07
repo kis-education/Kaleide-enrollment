@@ -97,6 +97,8 @@
   "wizard.signer_select_prompt": "Your place has been admitted. Who are you, to continue to signing?",
   "wizard.signer_select_unnamed": "Continue to signing",
   "wizard.signer_select_error": "Could not open the signing flow. Please try again.",
+  "wizard.signing_completed_title": "Application admitted and documents signed",
+  "wizard.signing_completed_body": "The enrolment documents have been signed. The process is complete — there is nothing more to do here.",
   "step7.legal_title": "Legal Statement & Consent",
   "step7.esig_label": "Electronic Signature",
   "step7.esig_instructions": "Type your full name below as your electronic signature.",

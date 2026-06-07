@@ -1539,8 +1539,96 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
     if (!out.signing_available) {
       out.signing_candidates = resolveSigningCandidates_(groupId, persons);
     }
+
+    // WIZARD-STEP7-COMPLETED (2026-06-07): terminal signing state. With both
+    // guardians already signed, the deterministic/candidate paths above ALL
+    // resolve empty (eligible signers filtered by !signed_at → 0; terminal
+    // session filtered out by the non-terminal filter) → signing_available=false
+    // + signing_candidates=[] → the family fell through to the "firma en
+    // preparación" banner forever, looking stuck even though signing is DONE.
+    // Expose an ADDITIVE signing_status ∈ {NOT_INITIATED, IN_PROGRESS, COMPLETED}
+    // so the frontend can render a terminal success state. Does NOT touch
+    // signing_available / signing_candidates (the entry-bridge gate). KAL-4: the
+    // group is token-authorised; nothing comes from the payload.
+    out.signing_status = resolveSigningStatus_(groupId);
   }
   return out;
+}
+
+/**
+ * WIZARD-STEP7-COMPLETED (2026-06-07): coarse signing lifecycle of the group,
+ * INCLUDING the terminal COMPLETED case (which the entry-bridge resolvers
+ * deliberately ignore — they only unlock pending signers). Returns one of:
+ *
+ *   - 'NOT_INITIATED' — no signing session anchored to the group at all.
+ *   - 'COMPLETED'     — the relevant session is terminal COMPLETED, OR every
+ *                       expected signer has a signed_at (the robust signal:
+ *                       current_state_code may be unseeded, so signed_at takes
+ *                       precedence).
+ *   - 'IN_PROGRESS'   — a session exists with expected signers but not all have
+ *                       signed yet (and it is not terminal-completed).
+ *
+ * Unlike the entry-bridge resolvers, this does NOT filter out terminal sessions
+ * (COMPLETED is terminal, and that's exactly what we need to detect). Defensive:
+ * any lookup failure logs (redacted, KAL-11) and degrades to the safest default
+ * ('NOT_INITIATED'), never throwing. KAL-5: assertValidUuid_ + appsheetEscape_.
+ *
+ * @param {string} groupId  token-authorised enrollment_group_id (KAL-4)
+ * @returns {'NOT_INITIATED'|'IN_PROGRESS'|'COMPLETED'}
+ */
+function resolveSigningStatus_(groupId) {
+  try {
+    assertValidUuid_(groupId, 'enrollment_group_id');
+  } catch (e) { return 'NOT_INITIATED'; }
+
+  var sessions;
+  try {
+    sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
+  } catch (e) {
+    Logger.log('[resolveSigningStatus_] sessions lookup failed: ' + e.message);
+    return 'NOT_INITIATED';
+  }
+  var live = sessions.filter(function(s) { return s && !s.deleted_at; });
+  if (!live.length) return 'NOT_INITIATED';
+
+  // Prefer a COMPLETED session if one exists; otherwise the most recent live
+  // session (by created_at when available, else just the last one found).
+  var completedSession = live.find(function(s) {
+    return (s.current_state_code || '') === 'COMPLETED';
+  });
+  var session = completedSession || live.slice().sort(function(a, b) {
+    return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+  })[0];
+
+  // current_state_code is the cheap signal but may be unseeded — fall through to
+  // the robust signed_at check below before trusting it for COMPLETED.
+  var stateSaysCompleted = (session.current_state_code || '') === 'COMPLETED';
+
+  var signers;
+  try {
+    signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+      { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
+  } catch (e) {
+    Logger.log('[resolveSigningStatus_] signers lookup failed: ' + e.message);
+    // Session exists but signers unreadable: trust the state code if it says so,
+    // else assume in progress (a session is anchored).
+    return stateSaysCompleted ? 'COMPLETED' : 'IN_PROGRESS';
+  }
+
+  // Expected signers = not soft-deleted, expected_to_sign not explicitly false
+  // (column may be unseeded → undefined, which we treat as "expected").
+  var expected = signers.filter(function(r) {
+    return r && !r.deleted_at && r.expected_to_sign !== false;
+  });
+  if (!expected.length) {
+    // No expected signers known: trust the state code only.
+    return stateSaysCompleted ? 'COMPLETED' : 'IN_PROGRESS';
+  }
+
+  var allSigned = expected.every(function(r) { return !!r.signed_at; });
+  if (allSigned || stateSaysCompleted) return 'COMPLETED';
+  return 'IN_PROGRESS';
 }
 
 /**
@@ -6706,12 +6794,17 @@ function manual_diagWizardSigningGate() {
                return (c.guardian_display_name || c.guardian_person_id);
              }).join(', ') : ''));
 
+  // WIZARD-STEP7-COMPLETED: estado de firma incl. terminal COMPLETED.
+  var signingStatus = resolveSigningStatus_(GROUP_ID);
+  Logger.log('  signing_status (lifecycle): ' + signingStatus);
+
   // Resultado final del gate tal como lo ve el frontend.
   var admission = buildAdmissionContext_(GROUP_ID, enrollments, recoveredGuardianId, persons);
   Logger.log('  >>> buildAdmissionContext_: state_code=' + admission.state_code +
              ' signing_available=' + admission.signing_available +
              ' signing_context=' + (admission.signing_context ? 'sí' : 'no') +
-             ' candidates=' + ((admission.signing_candidates || []).length));
+             ' candidates=' + ((admission.signing_candidates || []).length) +
+             ' signing_status=' + admission.signing_status);
   Logger.log('=== fin manual_diagWizardSigningGate ===');
   return admission;
 }

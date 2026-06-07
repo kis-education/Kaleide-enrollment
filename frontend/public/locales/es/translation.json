@@ -97,6 +97,8 @@
   "wizard.signer_select_prompt": "Tu plaza está admitida. ¿Quién eres, para continuar a la firma?",
   "wizard.signer_select_unnamed": "Continuar a la firma",
   "wizard.signer_select_error": "No se pudo abrir el proceso de firma. Inténtalo de nuevo.",
+  "wizard.signing_completed_title": "Solicitud admitida y documentación firmada",
+  "wizard.signing_completed_body": "La documentación de matrícula ha sido firmada. El proceso está completo — no hay nada más que hacer aquí.",
   "step7.legal_title": "Declaración legal y consentimiento",
   "step7.esig_label": "Firma electrónica",
   "step7.esig_instructions": "Escribe tu nombre completo como firma electrónica.",

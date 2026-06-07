@@ -484,18 +484,49 @@ const handleNext = async (stepKey, data) => {
               </div>
             )}
 
-            {/* fix-step7-signing-init (2026-06-07): expediente Admitido (AD) pero la
-                firma todavía NO está lista para este guardian (signing_available=false
-                o aún sin signing_token resuelto) Y no hay candidatos elegibles que
-                ofrecer (firma aún no iniciada server-side). Sin este mensaje, el banner
-                quedaba "mudo" — la familia veía "Admitida" pero ningún botón ni
-                explicación, y parecía que el wizard estaba roto. Mostramos un aviso
-                claro de que la documentación de firma se está preparando. NO toca el
-                modelo de autorización (KAL-4: el signing_token sigue server-side). */}
+            {/* WIZARD-STEP7-COMPLETED (2026-06-07): expediente Admitido (AD) y la
+                firma YA COMPLETADA (todos los guardians firmaron / sesión terminal
+                COMPLETED). Antes este caso caía al banner "firma en preparación"
+                para siempre, porque los resolvers del puente de entrada filtran
+                signers !signed_at → 0 elegibles y la sesión terminal por el filtro
+                non-terminal → signing_available=false + sin candidatos. El backend
+                ahora expone admission.signing_status='COMPLETED' (aditivo) y aquí
+                mostramos un estado terminal de ÉXITO en lugar del banner mudo. NO
+                toca el modelo de autorización (KAL-4). */}
             {currentStep === 6
               && admissionState?.state_code === 'AD'
               && !(admissionState?.signing_available && signingContext?.signing_token)
-              && !(admissionState?.signing_candidates?.length > 0) && (
+              && !(admissionState?.signing_candidates?.length > 0)
+              && admissionState?.signing_status === 'COMPLETED' && (
+              <div
+                style={{
+                  marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 8,
+                  background: '#e8f5e9', border: '1px solid #a5d6a7', borderRadius: 8,
+                  padding: '10px 12px', color: '#1b5e20', fontSize: '0.88rem',
+                }}
+              >
+                <i className="bi bi-check-circle-fill" style={{ marginTop: 2, color: '#2e7d32' }} />
+                <div>
+                  <div style={{ fontWeight: 700 }}>{t('wizard.signing_completed_title')}</div>
+                  <div style={{ marginTop: 2 }}>{t('wizard.signing_completed_body')}</div>
+                </div>
+              </div>
+            )}
+
+            {/* fix-step7-signing-init (2026-06-07): expediente Admitido (AD) pero la
+                firma todavía NO está lista para este guardian (signing_available=false
+                o aún sin signing_token resuelto) Y no hay candidatos elegibles que
+                ofrecer (firma aún no iniciada server-side) Y NO está completada. Sin
+                este mensaje, el banner quedaba "mudo" — la familia veía "Admitida"
+                pero ningún botón ni explicación, y parecía que el wizard estaba roto.
+                Mostramos un aviso claro de que la documentación de firma se está
+                preparando. NO toca el modelo de autorización (KAL-4: el signing_token
+                sigue server-side). */}
+            {currentStep === 6
+              && admissionState?.state_code === 'AD'
+              && !(admissionState?.signing_available && signingContext?.signing_token)
+              && !(admissionState?.signing_candidates?.length > 0)
+              && admissionState?.signing_status !== 'COMPLETED' && (
               <div
                 style={{
                   marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 8,
