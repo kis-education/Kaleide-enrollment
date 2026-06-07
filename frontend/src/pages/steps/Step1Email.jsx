@@ -71,8 +71,15 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
   const canContinue = selectedProgramId && (startType === 'september' ? true : !!desiredStartDate);
 
   return (
-    <div className="kis-card">
-      <h2>{t('step.email')}</h2>
+    <>
+      <div className="mb-2">
+        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.email')}</h2>
+      </div>
+
+      {/* WIZARD-UX: navegación arriba (Step1 = primer paso → solo "Continuar"). */}
+      <StepNav position="top" hideBack onNext={handleContinue} nextDisabled={!canContinue} savePending={savePending} />
+
+      {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
       {email && (
         <div className="alert alert-success d-flex align-items-center gap-2 mb-4">
@@ -80,11 +87,6 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
           {t('step1.verified', { email })}
         </div>
       )}
-
-      {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
-
-      {/* WIZARD-UX: navegación arriba (Step1 = primer paso → solo "Continuar"). */}
-      <StepNav position="top" hideBack onNext={handleContinue} nextDisabled={!canContinue} savePending={savePending} />
 
       <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
@@ -157,6 +159,6 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
           }
         </button>
       </div>
-    </div>
+    </>
   );
 }
