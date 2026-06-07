@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import * as log from '../logger';
+import { purgeQuestionsCache } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -293,6 +294,9 @@ export function WizardProvider({ children }) {
     setStepUpVerifiedUntil(0);
     setLastActivityAt(Date.now());
     setRecoveredViaMagicLinkRaw(false);
+    // WIZARD-PERF-CACHE-SKELETON: el catálogo cacheado de preguntas NUNCA debe
+    // sobrevivir al ciclo de auth — purgar al limpiar sesión (logout/clear/expiry).
+    purgeQuestionsCache();
   }, []);
 
   /**

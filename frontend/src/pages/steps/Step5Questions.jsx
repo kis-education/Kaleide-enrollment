@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
-import { gasCall, fetchQuestions } from '../../api';
+import { gasCall, fetchQuestions, readQuestionsCacheSync } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
-import LoadingSpinner from '../../components/LoadingSpinner';
+import StepSkeleton from '../../components/StepSkeleton';
 import StepNav from '../../components/StepNav';
 import QbSetRenderer from '../../shared/QbSetRenderer';
 import * as log from '../../logger';
@@ -12,8 +12,12 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
   const { t, i18n }  = useTranslation();
   const { enrollmentGroupId, resumeToken, stepData, updateStep } = useWizard();
 
-  const [sets,     setSets]     = useState([]);
-  const [loading,  setLoading]  = useState(true);
+  // WIZARD-PERF-CACHE-SKELETON: paint instantáneo (stale-while-revalidate). Si hay
+  // catálogo en sessionStorage (mismo idioma, no expirado) lo mostramos sin spinner
+  // y revalidamos en background; si no, arrancamos en loading como antes.
+  const _cached = readQuestionsCacheSync(i18n.language);
+  const [sets,     setSets]     = useState(_cached?.sets || []);
+  const [loading,  setLoading]  = useState(!_cached);
   // stepData.questions is normalized to a dict by hydrateFromResume; fall back to {}
   // (never to [] — the dirty check compares against the dict shape).
   const [responses, setResponses] = useState(
@@ -24,14 +28,19 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
   const persons = stepData.persons || [];
 
   useEffect(() => {
-    // WIZARD-UX: shared module cache in api.js (keyed by language) — pasar por
-    // Preguntas o adelante/atrás ya NO re-fetchea. Solo cacheamos el CATÁLOGO de
-    // preguntas; las respuestas del usuario siguen en stepData/WizardContext.
-    setLoading(true);
+    // WIZARD-UX: shared module cache in api.js (keyed by language). Solo cacheamos
+    // el CATÁLOGO de preguntas; las respuestas del usuario siguen en stepData.
+    // WIZARD-PERF-CACHE-SKELETON: SWR — si ya hay cache fresco (sessionStorage del
+    // mismo idioma) NO mostramos spinner; revalidamos en background y reconciliamos.
+    let alive = true;
+    const cached = readQuestionsCacheSync(i18n.language);
+    if (cached) { setSets(cached.sets || []); setLoading(false); }
+    else { setLoading(true); }
     fetchQuestions(i18n.language)
-      .then(data => setSets(data.sets || []))
-      .catch(() => setSets([]))
-      .finally(() => setLoading(false));
+      .then(data => { if (alive) setSets(data.sets || []); })
+      .catch(() => { if (alive && !cached) setSets([]); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
   }, [i18n.language]); // eslint-disable-line
 
   const setResponse = (key, val) => setResponses(prev => ({ ...prev, [key]: val }));
@@ -85,7 +94,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
       {loading ? (
-        <LoadingSpinner variant="inline" />
+        <StepSkeleton rows={5} />
       ) : !sets.length ? (
         <div className="kis-card">
           <p style={{ color: 'var(--muted)' }}>{t('step5.no_questions')}</p>
