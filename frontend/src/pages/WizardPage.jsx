@@ -115,15 +115,25 @@ export default function WizardPage() {
 
   const pulseRef = useRef({ resumeToken: null, effectiveRecoveredEmail: undefined, hasPendingSave: false });
   pulseRef.current = { resumeToken, effectiveRecoveredEmail, hasPendingSave };
+  // PERF (2026-06-08): guard anti-concurrencia. getAdmissionState es ligero pero el
+  // ticker + focus + un tick lento podrían solapar llamadas; si ya hay una en vuelo,
+  // NO disparamos otra (era una causa de la saturación con resumeSession de 30-40s).
+  const pulseInFlightRef = useRef(false);
   useEffect(() => {
     const tick = () => {
       const { resumeToken: rt, effectiveRecoveredEmail: re, hasPendingSave: pending } = pulseRef.current;
       if (!rt) return;                                    // sin sesión → nada que sincronizar
       if (pending) return;                                // save en vuelo → saltar este tick
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return; // pestaña oculta → saltar
-      gasCall('resumeSession', { resume_token: rt, recovered_email: re || undefined })
+      if (pulseInFlightRef.current) return;               // ya hay un pulse en vuelo → no solapar
+      // PERF: endpoint LIGERO (solo estado admisión + signing), NO resumeSession
+      // (que relee TODO el expediente, 30-40s). La hidratación completa corre UNA
+      // vez al cargar (el efecto needsHydration de abajo), no en cada pulse.
+      pulseInFlightRef.current = true;
+      gasCall('getAdmissionState', { resume_token: rt, recovered_email: re || undefined })
         .then(data => refreshAdmissionState(data))
-        .catch(err => log.warn('WizardPage: admission pulse failed', { message: err.message }));
+        .catch(err => log.warn('WizardPage: admission pulse failed', { message: err.message }))
+        .finally(() => { pulseInFlightRef.current = false; });
     };
     const id = setInterval(tick, 30 * 1000);
     const onFocus = () => tick();

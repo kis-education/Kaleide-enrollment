@@ -627,11 +627,30 @@ export function WizardProvider({ children }) {
   // submitted_at=null) y para el caso admitida.
   const refreshAdmissionState = useCallback((data) => {
     if (!data) return;
-    const group = data.group || data.application || {};
-    setIsSubmitted(!!group.submitted_at);
-    const adm = data.admission || null;
+    // Dos shapes posibles:
+    //  (a) PESADO — resumeSession_: { group/application, admission:{...} }. Trae
+    //      submitted_at → actualiza isSubmitted (incluye el override de reopen).
+    //  (b) LIGERO — getAdmissionState_ (PERF, el pulse): plano { ok, state_code,
+    //      state_label, signing_* }. NO trae submitted_at → no tocamos isSubmitted
+    //      (el pulse solo refresca el bloque de admisión + signing context).
+    if (data.group || data.application || data.admission) {
+      const group = data.group || data.application || {};
+      setIsSubmitted(!!group.submitted_at);
+      const adm = data.admission || null;
+      setAdmissionState(adm);
+      setSigningContext(adm && adm.signing_context ? adm.signing_context : null);
+      return;
+    }
+    const adm = {
+      state_code:        data.state_code,
+      state_label:       data.state_label,
+      signing_available: data.signing_available,
+      signing_ready:     data.signing_ready,
+      signing_status:    data.signing_status,
+      signing_context:   data.signing_context,
+    };
     setAdmissionState(adm);
-    setSigningContext(adm && adm.signing_context ? adm.signing_context : null);
+    setSigningContext(data.signing_context || null);
   }, []);
 
   return (

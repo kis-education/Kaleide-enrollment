@@ -586,9 +586,21 @@ function _consumeMagicLinkNonce_(nonce, expectedGroupId) {
  * @throws {Error & {code: 'STEPUP_REQUIRED'}} cuando falta marca o expiró
  * @private
  */
-function assertStepUpFresh_(enrollmentGroupId) {
+/**
+ * Versión booleana del gate de step-up: ¿el grupo tiene una marca fresca y no
+ * expirada? No lanza — para call-sites que solo quieren REPORTAR la frescura (p.ej.
+ * el endpoint ligero getAdmissionState_). assertStepUpFresh_ la reusa.
+ * @param {string} enrollmentGroupId - ya derivado del token (KAL-4)
+ * @returns {boolean}
+ * @private
+ */
+function _isStepUpFresh_(enrollmentGroupId) {
   const val = CacheService.getScriptCache().get('stepup_ok_' + enrollmentGroupId);
-  if (!val || Number(val) < Date.now()) {
+  return !!val && Number(val) >= Date.now();
+}
+
+function assertStepUpFresh_(enrollmentGroupId) {
+  if (!_isStepUpFresh_(enrollmentGroupId)) {
     var err = new Error('Step-up re-verification required');
     err.code = 'STEPUP_REQUIRED';
     Logger.log(redact_('[assertStepUpFresh_] reject group=' + enrollmentGroupId));
@@ -637,6 +649,9 @@ function doPost(e) {
 
       case 'resumeApplication':       // legacy alias
       case 'resumeSession':           result = resumeSession_(payload);           break;
+
+      // PERF: estado de admisión LIGERO para el pulse de firma (no relee el expediente).
+      case 'getAdmissionState':       result = getAdmissionState_(payload);       break;
 
       case 'submitApplication':       // legacy alias
       case 'submitEnrollmentSession': result = submitEnrollmentSession_(payload); break;
@@ -2164,6 +2179,62 @@ function resumeSession_(p) {
     admission,                                      // P215 (additive)
     recovered_guardian_person_id: recoveredGuardianId, // P215 (server-resolved, a1)
     step_up_fresh: stepUpFresh,                     // magic-link grace (no OTP si true)
+  };
+}
+
+/**
+ * PERF (2026-06-08): endpoint LIGERO de estado de admisión para el pulse de la
+ * página de firma. `resumeSession_` relee TODO el expediente (persons + sub-reads
+ * por persona + relations + documents + responses + interviews → ~20+ reads, 30-40s)
+ * y el pulse lo disparaba repetidamente solapado → saturación. El pulse SOLO necesita
+ * el estado de admisión + el contexto de firma, NO el expediente completo.
+ *
+ * Lee solo: grupo (vía token), enrollments del grupo, persons del grupo (para Path 2
+ * de buildAdmissionContext_), y emails (lazy, solo si hay recovered_email) — más los
+ * pocos reads internos de buildAdmissionContext_ (sysStates_T + signing session). NO
+ * lee relations/documents/responses/interviews ni los sub-reads por persona.
+ *
+ * KAL-4: el grupo se deriva del resume_token server-side (requireResumeToken_), nunca
+ * del payload. El guardian (Path 1) se re-resuelve del recovered_email contra datos
+ * reales del grupo. step_up_fresh: si llega un nonce de magic-link válido lo consume
+ * y marca fresco; si no, REPORTA la frescura actual del grupo (_isStepUpFresh_).
+ *
+ * @param {{ resume_token: string, recovered_email?: string, n?: string }} p
+ * @returns {{ ok, state_code, state_label, signing_ready, signing_status, signing_context, signing_available, step_up_fresh }}
+ */
+function getAdmissionState_(p) {
+  // KAL-4: grupo autorizado derivado del token (valida UUID + TTL + abandoned_at).
+  const id = requireResumeToken_(p);
+
+  // Magic-link grace: un nonce válido (single-use, 10 min) consume + marca fresco.
+  // Si no hay nonce, REPORTAMOS la frescura vigente del grupo (no la cambiamos).
+  let stepUpFresh = _consumeMagicLinkNonce_(p && p.n, id);
+  if (stepUpFresh) _markStepUpFresh_(id);
+  else stepUpFresh = _isStepUpFresh_(id);
+
+  const idEsc = appsheetEscape_(id);
+  const lightRead = appsheetRequestBatch_([
+    { table: T.ENROLLMENTS, action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
+    { table: T.PERSONS,     action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
+  ]);
+  const enrollments = lightRead[0].ok ? (lightRead[0].data || []) : [];
+  const persons     = lightRead[1].ok ? (lightRead[1].data || []) : [];
+
+  // Guardian (Path 1) re-resuelto del recovered_email contra datos reales (KAL-4).
+  // emails se leen lazy dentro del resolver (solo si hay recovered_email).
+  const guardianId = resolveGuardianForRecovery_(id, p && p.recovered_email, null, persons);
+
+  const admission = buildAdmissionContext_(id, enrollments, guardianId, persons);
+
+  return {
+    ok:                true,
+    state_code:        admission.state_code,
+    state_label:       admission.state_label,
+    signing_ready:     admission.signing_ready,
+    signing_status:    admission.signing_status || null,
+    signing_available: admission.signing_available,
+    signing_context:   admission.signing_context,
+    step_up_fresh:     stepUpFresh,
   };
 }
 
