@@ -115,11 +115,16 @@ const T = {
   SMS_PERSON_CATEGORIES:  'personCategoriesLog',
   // Signing session tables (DL-S46, DL-S47 — Ola 4 P37)
   // SIGNING_SESSION_DOCUMENTS borrado CLI 60 (sólo usado por getSigningTokenFromResumeToken_).
-  // MILESTONES, MILESTONE_TYPES, ADMISSION_DECISION, TENANT_CONFIG, FIN_PAYMENTS,
-  // BANK_ACCOUNTS, SUBSCRIPTION_TYPES también borrados CLI 60 (sólo usados por los
-  // endpoints huérfanos post CLI 59).
+  // ADMISSION_DECISION, TENANT_CONFIG, FIN_PAYMENTS, BANK_ACCOUNTS, SUBSCRIPTION_TYPES
+  // borrados CLI 60 (sólo usados por los endpoints huérfanos post CLI 59).
+  // MILESTONES / MILESTONE_TYPES RE-AÑADIDOS por P237: resolveSigningToken_ deriva
+  // los flags de steps (BILLING/GDPR/REVIEW) desde sysMilestones reales (estado
+  // COMPLETED), resueltos vía el catálogo sysMilestoneTypes (invariante: la fila de
+  // sysMilestones NO lleva milestone_type_code, solo milestone_type_id).
   SIGNING_SESSION_SIGNERS:   'sysSigningSessionSigners',
   SIGNING_SESSIONS:          'sysSigningSessions',
+  MILESTONES:                'sysMilestones',
+  MILESTONE_TYPES:           'sysMilestoneTypes',
   // Lookup / reference tables
   LOOKUP_ALLERGIES:       'foodAllergies',
   LOOKUP_DIETARY:         'dietaryRequirements',
@@ -4689,6 +4694,59 @@ function generateConsentPdf_(applicationId, app, guardians, applicants, consentR
 // ─── Signing token resolution (Ola 4 — P37) ──────────────────────────────────
 
 /**
+ * P237 — Devuelve true si existe un milestone COMPLETED del type/anchor dados.
+ * Fuente canónica de los flags de steps del wizard de firma.
+ *
+ * Resuelve `milestone_type_code` vía el catálogo `sysMilestoneTypes` (invariante
+ * kis-app: la fila de `sysMilestones` NO lleva `milestone_type_code`, solo
+ * `milestone_type_id` FK). `entity_type_code` y `entity_id` SÍ viven en la fila
+ * (anchor escrito directo por el KMS).
+ *
+ * KAL-5: assertValidUuid_(entityId) + appsheetEscape_ en el Filter. entityTypeCode
+ * y milestoneTypeCode son constantes server-side (no user input) → no requieren
+ * escape. Defensa P72/KAL-11: ante read vacío/error devuelve false (no lanza),
+ * loguea redactado.
+ *
+ * @param {string} entityTypeCode   'ENR_ADMISSION_SCHOOL' | 'SYS_SIGNING_SESSION_SIGNER'
+ * @param {string} entityId         enrollment_group_id (BILLING) | signer_id (GDPR/REVIEW)
+ * @param {string} milestoneTypeCode 'BILLING_STEP_COMPLETED' | 'GDPR_CONSENTS_SUBMITTED' | 'REVIEW_CONFIRMED'
+ * @returns {boolean}
+ */
+function isMilestoneCompleted_(entityTypeCode, entityId, milestoneTypeCode) {
+  try {
+    assertValidUuid_(entityId, 'entityId');
+  } catch (e) {
+    Logger.log(redact_('[isMilestoneCompleted_] entityId inválido para ' + milestoneTypeCode + ': ' + e.message));
+    return false;
+  }
+
+  try {
+    var milestones = appsheetRequest_(T.MILESTONES, 'Find', [],
+      { Filter: '"entity_id" = "' + appsheetEscape_(entityId) + '"' }) || [];
+    if (!milestones.length) return false;
+
+    // Catálogo: milestone_type_id → milestone_type_code (invariante: la fila NO lo lleva).
+    var typeRows = appsheetRequest_(T.MILESTONE_TYPES, 'Find', [], {}) || [];
+    var codeByTypeId = {};
+    typeRows.forEach(function(t) {
+      if (t && t['milestone_type_id']) codeByTypeId[t['milestone_type_id']] = t['milestone_type_code'];
+    });
+
+    return milestones.some(function(m) {
+      if (!m || m['deleted_at']) return false;
+      if (m['status'] !== 'COMPLETED') return false;
+      if (m['entity_type_code'] !== entityTypeCode) return false;
+      return codeByTypeId[m['milestone_type_id']] === milestoneTypeCode;
+    });
+  } catch (e) {
+    // P72 / tabla no sembrada / columna ausente → no bloquear la resolución del token.
+    Logger.log(redact_('[isMilestoneCompleted_] read defensivo (' + milestoneTypeCode +
+      ' anchor=' + entityTypeCode + ') devuelve false: ' + e.message));
+    return false;
+  }
+}
+
+/**
  * Validates a guardian's signing_token against sysSigningSessionSigners and
  * resolves the associated signing session state.
  *
@@ -4775,21 +4833,20 @@ function resolveSigningToken_(p) {
   // 4. entity_id = enrollment_group_id (DL-S46 polymorphic anchor)
   const enrollmentGroupId = session['entity_id'];
 
-  // 5. Step completion states from signer fields (DL-S47 §5 + roadmap §4.2)
-  // TODO P237: review_step_completed_at / gdpr_step_completed_at son cols
-  // DEROGADAS (tombstone DL-E27/E28). Fuente canónica = milestones
-  // GDPR_CONSENTS_SUBMITTED / REVIEW_CONFIRMED. No se refactoriza aquí (fuera de
-  // scope ENR-E6) — se preserva el comportamiento y el shape de respuesta.
-  const gdprCompleted   = !!(signer['gdpr_step_completed_at']);
-  const reviewCompleted = !!(signer['review_step_completed_at']);
-  const signed          = !!(signer['signed_at']);
-
-  // billing_confirmed: enrGroupBilling DEROGADA (DL-E28 §4/§12, P49 CANCELADO
-  // 2026-06-03). El billing canónico vive en finBillingParties + milestone
-  // BILLING_STEP_COMPLETED, derivado server-side por el KMS en saveBillingInfo;
-  // el wizard anónimo no lo resuelve aquí. ENR-E6: eliminado el Find a la tabla
-  // muerta (ruido de logs + siempre false). Se preserva el shape (false).
-  const billingConfirmed = false;
+  // 5. Step completion states — P237 CERRADO: fuente canónica = milestones reales
+  // en sysMilestones (estado COMPLETED), resueltos vía catálogo sysMilestoneTypes
+  // (invariante kis-app: la fila NO lleva milestone_type_code). Anchors EXACTOS
+  // según cómo los completa el KMS:
+  //   BILLING_STEP_COMPLETED  → ENR_ADMISSION_SCHOOL    / enrollment_group_id (per-grupo)
+  //   GDPR_CONSENTS_SUBMITTED → SYS_SIGNING_SESSION_SIGNER / signer_id        (per-firmante)
+  //   REVIEW_CONFIRMED        → SYS_SIGNING_SESSION_SIGNER / signer_id        (per-firmante)
+  // Ya NO se leen las cols DEROGADAS gdpr_step_completed_at / review_step_completed_at
+  // (tombstone DL-E27/E28) ni el hardcode billing_confirmed=false (enrGroupBilling
+  // CANCELADO DL-E28 §4/§12 — el billing canónico es finBillingParties + el milestone).
+  const billingConfirmed = isMilestoneCompleted_('ENR_ADMISSION_SCHOOL', enrollmentGroupId, 'BILLING_STEP_COMPLETED');
+  const gdprCompleted    = isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', signerId, 'GDPR_CONSENTS_SUBMITTED');
+  const reviewCompleted  = isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', signerId, 'REVIEW_CONFIRMED');
+  const signed           = !!(signer['signed_at']);  // válido: campo real de la fila del signer
 
   Logger.log(redact_('[resolveSigningToken_] valid=true signer=' + signerId + ' group=' + enrollmentGroupId));
 
@@ -6673,4 +6730,32 @@ function manual_diagWizardSigningGate() {
              ' signing_status=' + admission.signing_status);
   Logger.log('=== fin manual_diagWizardSigningGate ===');
   return admission;
+}
+
+/**
+ * P237 — Verifica los 4 flags de steps que resolveSigningToken_ deriva desde
+ * sysMilestones reales. Rellena GROUP_ID + SIGNER_ID (reales) arriba e imprime en
+ * Logs cada flag + el anchor usado. KAL-11: ids redactados con redact_().
+ */
+function manual_testSigningStepsFromMilestones() {
+  var GROUP_ID  = 'REPLACE-WITH-REAL-GROUP-ID';   // enrollment_group_id (anchor BILLING)
+  var SIGNER_ID = 'REPLACE-WITH-REAL-SIGNER-ID';  // signer_id (anchor GDPR/REVIEW)
+
+  Logger.log('=== manual_testSigningStepsFromMilestones ===');
+  if (GROUP_ID.indexOf('REPLACE-') === 0 || SIGNER_ID.indexOf('REPLACE-') === 0) {
+    Logger.log('  ✗ Rellena GROUP_ID y SIGNER_ID reales antes de ejecutar.');
+    return;
+  }
+
+  var billing = isMilestoneCompleted_('ENR_ADMISSION_SCHOOL', GROUP_ID, 'BILLING_STEP_COMPLETED');
+  var gdpr    = isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', SIGNER_ID, 'GDPR_CONSENTS_SUBMITTED');
+  var review  = isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', SIGNER_ID, 'REVIEW_CONFIRMED');
+
+  Logger.log(redact_('  group=' + GROUP_ID + ' signer=' + SIGNER_ID));
+  Logger.log('  billing_confirmed (BILLING_STEP_COMPLETED @ ENR_ADMISSION_SCHOOL/grupo): ' + billing);
+  Logger.log('  gdpr_completed    (GDPR_CONSENTS_SUBMITTED @ SYS_SIGNING_SESSION_SIGNER/signer): ' + gdpr);
+  Logger.log('  review_completed  (REVIEW_CONFIRMED @ SYS_SIGNING_SESSION_SIGNER/signer): ' + review);
+  Logger.log('  (signed se deriva de signer.signed_at en resolveSigningToken_, no de milestone)');
+  Logger.log('=== fin manual_testSigningStepsFromMilestones ===');
+  return { billing_confirmed: billing, gdpr_completed: gdpr, review_completed: review };
 }
