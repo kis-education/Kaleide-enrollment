@@ -309,7 +309,7 @@ export default function Step7Review({ onBack }) {
   return (
     <>
       <div className="mb-3">
-        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.review')}</h2>
+        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step7.title')}</h2>
         <p style={{ color: 'var(--muted)' }}>{t('step7.subtitle')}</p>
       </div>
 

@@ -50,6 +50,9 @@ export default function StepUpGate({ onVerified, tokenPayload = {} }) {
   };
 
   const sendCode = async () => {
+    // Limpiamos el input al pedir un código nuevo — el código anterior ya no es
+    // válido, así que no dejamos el valor erróneo en pantalla (Diego 2026-06-07).
+    setCode('');
     setErr(''); setInfo(''); setSending(true);
     try {
       // NO mandamos email — el backend lo deriva del token (server-side, KAL-4).
@@ -106,8 +109,11 @@ export default function StepUpGate({ onVerified, tokenPayload = {} }) {
             {t('stepup.gate_title')}
           </strong>
         </div>
-        <p style={{ color: 'var(--muted)', fontSize: '0.9rem', marginBottom: 18 }}>
+        <p style={{ color: 'var(--muted)', fontSize: '0.9rem', marginBottom: 10 }}>
           {t('stepup.gate_subtitle')}
+        </p>
+        <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: 18 }}>
+          <i className="bi bi-clock me-1" />{t('stepup.gate_duration_note')}
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center' }}>
