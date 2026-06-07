@@ -580,6 +580,10 @@ function doPost(e) {
       case 'reportUnsolicited':    result = reportUnsolicited_(payload);    break;
       case 'abandonSession':       result = abandonSession_(payload);       break;
       case 'resolveSigningToken':  result = resolveSigningToken_(payload);  break;
+      // P215 in-app signer selection: family picks their identity from the
+      // signing_candidates list → resolve THAT signer's signing_token
+      // server-side (group derived from resume_token, KAL-4).
+      case 'selectSigner':         result = selectSigner_(payload);         break;
       // ── CLI 40 (2026-06-02) — WS4 4 endpoints firma proxy a KMS (P118, HC-1) ──
       // PROXIES finos al KMS con service token (patrón fetchQuestions_).
       // GATE-D resuelto (proxy vs directa) → proxy. GATE-B modo conservador en
@@ -1520,8 +1524,144 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
       out.signing_context = resolveSigningContextFromSession_(groupId, persons);
     }
     out.signing_available = !!out.signing_context;
+
+    // P215 in-app signer selection — when neither Path 1 nor Path 2 could
+    // resolve a single signer (genuinely ambiguous: ≥2 guardians, ≥2 pending
+    // signers, and no recovered_email discriminator), DON'T dead-end the family
+    // with a silent signing_available=false. Expose the LIST of eligible signers
+    // so the frontend can render a "who are you?" selector (DL-E38 REFINADO
+    // sub-decision). KAL-4/KAL-7: the list NEVER includes the signing_token —
+    // only signer_id + guardian_person_id + display name. The token is handed
+    // out only after the user picks their identity and the frontend re-recovers
+    // per-guardian (resumeSession with that guardian's email), which re-resolves
+    // server-side via Path 1. The signing-act protections (P222) stay on the
+    // signing endpoints.
+    if (!out.signing_available) {
+      out.signing_candidates = resolveSigningCandidates_(groupId, persons);
+    }
   }
   return out;
+}
+
+/**
+ * P215: lists the eligible (non-deleted, token-issued, not-yet-signed) signers
+ * of the active signing session anchored to the group, WITHOUT exposing the
+ * signing_token. Used to drive an in-app "who are you?" selector when the
+ * guardian identity could not be derived deterministically (cross-device,
+ * multi-guardian, no recovered_email). Returns [] when nothing to select (no
+ * active session, no eligible signers, or the deterministic path already
+ * resolved it). KAL-4: groupId is token-authorised; KAL-5: assertValidUuid_ +
+ * appsheetEscape_; KAL-7: never returns the token.
+ *
+ * @param {string} groupId
+ * @param {Array}  persons  enrPersons rows of the group (to resolve names)
+ * @returns {Array<{signer_id, guardian_person_id, guardian_display_name}>}
+ */
+function resolveSigningCandidates_(groupId, persons) {
+  try {
+    assertValidUuid_(groupId, 'enrollment_group_id');
+  } catch (e) { return []; }
+
+  var sessions;
+  try {
+    sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
+  } catch (e) {
+    Logger.log('[resolveSigningCandidates_] sessions lookup failed: ' + e.message);
+    return [];
+  }
+  var TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
+  var session = sessions.find(function(s) {
+    return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
+  });
+  if (!session) return [];
+  try {
+    assertValidUuid_(session.session_id, 'session_id');
+  } catch (e) { return []; }
+
+  var signers;
+  try {
+    signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+      { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
+  } catch (e) {
+    Logger.log('[resolveSigningCandidates_] signers lookup failed: ' + e.message);
+    return [];
+  }
+  var eligible = signers.filter(function(r) {
+    return r && !r.deleted_at && r.signing_token && !r.signed_at;
+  });
+
+  // Name lookup from the group's persons.
+  var nameById = {};
+  (persons || []).forEach(function(per) {
+    if (per && per.person_id) {
+      nameById[per.person_id] = [per.first_name, per.last_name].filter(Boolean).join(' ').trim();
+    }
+  });
+
+  return eligible.map(function(r) {
+    return {
+      signer_id:             r.signer_id || null,
+      guardian_person_id:    r.signer_person_id || null,
+      guardian_display_name: nameById[r.signer_person_id] || null,
+      // KAL-7: NO signing_token — the token is only handed out after the user
+      // selects their identity and re-recovers per-guardian (Path 1).
+    };
+  });
+}
+
+/**
+ * P215 in-app signer selection bridge: given {resume_token, signer_id}, returns
+ * that signer's signing_token so the wizard can navigate to /sign. Used only
+ * when the guardian identity could NOT be derived deterministically (the
+ * `signing_candidates` selector case). KAL-4: the authorised group is derived
+ * SERVER-SIDE from the resume_token (NEVER from a payload group field); the
+ * requested signer_id is validated to belong to an active (non-terminal)
+ * signing session anchored to THAT group, and to be eligible (token issued,
+ * not signed, not deleted). KAL-5: assertValidUuid_ + appsheetEscape_ on every
+ * Filter. KAL-7: token is returned over the API body only (the frontend keeps
+ * it out of the URL) — never logged in full (KAL-11).
+ *
+ * @param {Object} p - { resume_token, signer_id }
+ * @returns {{signer_id, session_id, guardian_person_id, signing_token}}
+ */
+function selectSigner_(p) {
+  const groupId = requireResumeToken_(p);
+  const signerId = p && p.signer_id;
+  assertValidUuid_(signerId, 'signer_id');
+  assertValidUuid_(groupId, 'enrollment_group_id');
+
+  // Active signing session anchored to the token-authorised group.
+  const sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+    { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
+  const TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
+  const session = sessions.find(function(s) {
+    return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
+  });
+  if (!session) throw new Error('No active signing session for this application');
+  assertValidUuid_(session.session_id, 'session_id');
+
+  const signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+    { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
+  // KAL-4: the requested signer MUST belong to the session anchored to the
+  // token's group — anything else is an IDOR attempt.
+  const signer = signers.find(function(r) {
+    return r && !r.deleted_at && r.signer_id === signerId;
+  });
+  if (!signer)        throw new Error('Unauthorized: signer does not belong to this application');
+  if (signer.signed_at)        throw new Error('This signer has already signed');
+  if (!signer.signing_token)   throw new Error('Signing not ready for this signer');
+
+  Logger.log(redact_('[selectSigner_] signing_token entregado tras selección in-app signer=' +
+    signer.signer_person_id + ' grupo=' + groupId + ' token=' +
+    String(signer.signing_token).substring(0, 8) + '...'));
+
+  return {
+    signer_id:          signer.signer_id,
+    session_id:         session.session_id,
+    guardian_person_id: signer.signer_person_id || null,
+    signing_token:      signer.signing_token,
+  };
 }
 
 /**
@@ -6485,4 +6625,93 @@ function manual_testStepUpGate() {
 
   Logger.log('=== manual_testStepUpGate: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
   return { pass: pass };
+}
+
+/**
+ * P215 / WIZARD-STEP7-GATE — diagnóstico del gate de firma del Step 7.
+ *
+ * Rellena GROUP_ID (y opcionalmente RECOVERED_EMAIL) abajo, ejecuta desde el
+ * editor GAS y lee los Logs. Vuelca, REDACTADO (KAL-11, token solo first-8):
+ *   - state_code del expediente (vía buildAdmissionContext_).
+ *   - si RECOVERED_EMAIL resuelve un guardian (Vía 1).
+ *   - todas las sesiones de firma del grupo (entity_id, current_state_code, deleted_at).
+ *   - todos los signers por sesión (¿tiene signing_token?, signed_at, deleted_at, person).
+ *   - conteo de guardians del grupo.
+ *   - resultado de Vía 1 (per-guardian) y Vía 2 (cross-device determinista) + candidatos.
+ *
+ * NO es un endpoint del dispatcher — solo se ejecuta desde el editor (auth owner).
+ */
+function manual_diagWizardSigningGate() {
+  var GROUP_ID        = 'REPLACE-WITH-REAL-GROUP-ID';
+  var RECOVERED_EMAIL = ''; // opcional: email tecleado por la familia (discriminador a1)
+
+  Logger.log('=== manual_diagWizardSigningGate ===');
+  if (GROUP_ID.indexOf('REPLACE-') === 0) {
+    Logger.log('  ✗ Rellena GROUP_ID con un enrollment_group_id real antes de ejecutar.');
+    return;
+  }
+
+  var idEsc = appsheetEscape_(GROUP_ID);
+
+  // Enrollments + persons + emails del grupo.
+  var enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+  var persons = appsheetRequest_(T.PERSONS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+  var emails = appsheetRequest_(T.EMAILS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+
+  var guardianCount = 0;
+  persons.forEach(function(p) { if (p && p.person_type_id === 'guardian') guardianCount++; });
+  Logger.log('  enrollments=' + enrollments.length + ' persons=' + persons.length +
+             ' guardians=' + guardianCount);
+
+  // Vía 1: ¿RECOVERED_EMAIL resuelve guardian?
+  var recoveredGuardianId = resolveGuardianForRecovery_(GROUP_ID, RECOVERED_EMAIL || null, emails, persons);
+  Logger.log(redact_('  recovered_email=' + (RECOVERED_EMAIL || '(vacío)') +
+             ' → guardian=' + (recoveredGuardianId || 'null')));
+
+  // Sesiones de firma del grupo.
+  var sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+    { Filter: '"entity_id" = "' + idEsc + '"' }) || [];
+  Logger.log('  sesiones de firma ancladas al grupo: ' + sessions.length);
+  sessions.forEach(function(s, i) {
+    Logger.log('    [sesión ' + i + '] session_id=' + String(s.session_id || '').substring(0, 8) +
+               '... state=' + (s.current_state_code || '(null)') +
+               ' deleted_at=' + (s.deleted_at || '(no)'));
+    if (s.session_id) {
+      var signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+        { Filter: '"session_id" = "' + appsheetEscape_(s.session_id) + '"' }) || [];
+      signers.forEach(function(r) {
+        Logger.log(redact_('       signer person=' + (r.signer_person_id || '(null)') +
+                   ' hasToken=' + (!!r.signing_token) +
+                   ' tokenPrev=' + (r.signing_token ? String(r.signing_token).substring(0, 8) + '...' : '(none)') +
+                   ' signed_at=' + (r.signed_at || '(no)') +
+                   ' deleted_at=' + (r.deleted_at || '(no)')));
+      });
+    }
+  });
+
+  // Vías de resolución.
+  var via1 = recoveredGuardianId ? resolveGuardianSigningContext_(GROUP_ID, recoveredGuardianId) : null;
+  var via2 = resolveSigningContextFromSession_(GROUP_ID, persons);
+  var candidates = resolveSigningCandidates_(GROUP_ID, persons);
+
+  Logger.log('  Vía 1 (per-guardian a1): ' + (via1 ? 'RESUELTA (token=' +
+             String(via1.signing_token).substring(0, 8) + '...)' : 'null'));
+  Logger.log('  Vía 2 (cross-device determinista): ' + (via2 ? 'RESUELTA (token=' +
+             String(via2.signing_token).substring(0, 8) + '...)' : 'null'));
+  Logger.log('  signing_candidates (selector in-app): ' + candidates.length +
+             (candidates.length ? ' → ' + candidates.map(function(c) {
+               return (c.guardian_display_name || c.guardian_person_id);
+             }).join(', ') : ''));
+
+  // Resultado final del gate tal como lo ve el frontend.
+  var admission = buildAdmissionContext_(GROUP_ID, enrollments, recoveredGuardianId, persons);
+  Logger.log('  >>> buildAdmissionContext_: state_code=' + admission.state_code +
+             ' signing_available=' + admission.signing_available +
+             ' signing_context=' + (admission.signing_context ? 'sí' : 'no') +
+             ' candidates=' + ((admission.signing_candidates || []).length));
+  Logger.log('=== fin manual_diagWizardSigningGate ===');
+  return admission;
 }

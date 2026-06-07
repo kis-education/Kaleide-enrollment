@@ -57,6 +57,7 @@ export default function WizardPage() {
     admissionState, signingContext,
     markStepUpFresh,
     isStepUpFresh, recoveredViaMagicLink,
+    recoveredEmail, setRecoveredEmail,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -67,6 +68,28 @@ export default function WizardPage() {
   // pendiente (re-lanzar handleNext con los mismos args) para reintentar tras
   // verificar. null | { stepKey, data }.
   const [stepUpPending,     setStepUpPending]     = useState(null);
+  // P215 in-app signer selection: when the file is AD but the guardian identity
+  // could not be derived (cross-device, ≥2 guardians) the backend returns
+  // admission.signing_candidates. While the user picks, we hold the busy state.
+  const [selectingSigner,   setSelectingSigner]   = useState(false);
+
+  // P215 / P217: the family picked their identity from signing_candidates →
+  // resolve THAT signer's signing_token server-side (KAL-4: group derived from
+  // resume_token; KAL-7: token comes back in the API body, then navigated via
+  // react-router state, NEVER in the URL) and bridge to the /sign host.
+  const handleSelectSigner = async (signerId) => {
+    if (!signerId || selectingSigner) return;
+    setSelectingSigner(true);
+    try {
+      const res = await gasCall('selectSigner', { resume_token: resumeToken, signer_id: signerId });
+      if (!res || !res.signing_token) throw new Error('No signing_token returned');
+      navigate('/sign', { state: { signing_token: res.signing_token } });
+    } catch (e) {
+      log.error('WizardPage: selectSigner failed', { message: e.message });
+      showToast(t('wizard.signer_select_error'));
+      setSelectingSigner(false);
+    }
+  };
 
   // Kick off lookup prefetch immediately so Step3/Step4 get cached data.
   useEffect(() => { prefetchLookups(); }, []); // eslint-disable-line
@@ -77,7 +100,15 @@ export default function WizardPage() {
     if (needsHydration && resumeToken) {
       setRehydrating(true);
       log.info('WizardPage: rehydrating session after reload', { enrollmentGroupId });
-      gasCall('resumeSession', { resume_token: resumeToken })
+      // DL-E38 a1 / P215: re-send the email the family typed (persisted in
+      // WizardContext as `recoveredEmail`) so the backend re-resolves WHICH
+      // guardian recovered (server-side, KAL-4) and can unlock the per-guardian
+      // signing context. Without it, every wizard rehydration was group-scoped
+      // and `admission.signing_available` stayed false for multi-guardian
+      // families even though a signing_token existed — Step 7 → /sign bridge
+      // never unlocked. Mirrors ResumePage:59. Absent (cross-device) → falls
+      // back to the deterministic session-anchored resolution / signer selector.
+      gasCall('resumeSession', { resume_token: resumeToken, recovered_email: recoveredEmail || undefined })
         .then(data => {
           // hydrateFromResume now seeds completedSteps in context based on
           // which steps have data — no need to override here.
@@ -415,9 +446,56 @@ const handleNext = async (stepKey, data) => {
                 y parecía que el wizard estaba roto. Mostramos un aviso claro de que la
                 documentación de firma se está preparando. NO toca el modelo de
                 autorización (KAL-4: el signing_token sigue derivándose server-side). */}
+            {/* P215 in-app signer selection: AD + signing not auto-resolved for a
+                single guardian, BUT the backend reports eligible signers (≥1).
+                This happens cross-device with ≥2 guardians where neither the
+                typed email (Path 1) nor the deterministic session resolution
+                (Path 2) could pick one. Instead of dead-ending, let the user
+                say "who am I" → selectSigner resolves their signing_token
+                server-side (KAL-4) and bridges to /sign. No token is exposed in
+                this list (KAL-7) — only after the explicit selection. */}
             {currentStep === 6
               && admissionState?.state_code === 'AD'
-              && !(admissionState?.signing_available && signingContext?.signing_token) && (
+              && !(admissionState?.signing_available && signingContext?.signing_token)
+              && (admissionState?.signing_candidates?.length > 0) && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 600, marginBottom: 8, fontSize: '0.88rem' }}>
+                  {t('wizard.signer_select_prompt')}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {admissionState.signing_candidates.map((c) => (
+                    <button
+                      key={c.signer_id}
+                      onClick={() => handleSelectSigner(c.signer_id)}
+                      disabled={selectingSigner}
+                      style={{
+                        background: '#2e7d32', color: '#fff', border: 'none',
+                        borderRadius: 8, padding: '10px 18px', fontWeight: 700,
+                        cursor: selectingSigner ? 'wait' : 'pointer',
+                        display: 'inline-flex', alignItems: 'center', gap: 8,
+                        opacity: selectingSigner ? 0.7 : 1,
+                      }}
+                    >
+                      <i className="bi bi-pen-fill" />
+                      {c.guardian_display_name || t('wizard.signer_select_unnamed')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* fix-step7-signing-init (2026-06-07): expediente Admitido (AD) pero la
+                firma todavía NO está lista para este guardian (signing_available=false
+                o aún sin signing_token resuelto) Y no hay candidatos elegibles que
+                ofrecer (firma aún no iniciada server-side). Sin este mensaje, el banner
+                quedaba "mudo" — la familia veía "Admitida" pero ningún botón ni
+                explicación, y parecía que el wizard estaba roto. Mostramos un aviso
+                claro de que la documentación de firma se está preparando. NO toca el
+                modelo de autorización (KAL-4: el signing_token sigue server-side). */}
+            {currentStep === 6
+              && admissionState?.state_code === 'AD'
+              && !(admissionState?.signing_available && signingContext?.signing_token)
+              && !(admissionState?.signing_candidates?.length > 0) && (
               <div
                 style={{
                   marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 8,
