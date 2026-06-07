@@ -37,32 +37,34 @@ function RouteLogger() {
 }
 
 /**
- * KAL-NEW-6 + restauración 2026-06-06: el DevLogger se rinde SIEMPRE en dev, y
- * en producción SOLO cuando se opta-in explícitamente. Esto restaura el panel
- * que "desapareció" (gateado a dev-only por KAL-NEW-6 commit 889e117, invisible
- * en el build de producción que sirve admissions.kaleide.org) sin reabrir la
- * exposición por defecto a cualquier familia anónima en un screen-share.
+ * DevLogger visible POR DEFECTO en dev Y en producción (restauración 2026-06-07).
  *
- * Opt-in en producción (cualquiera de los dos):
- *   - URL `?debug=1` (o `#…?debug=1`) — persiste en localStorage para reloads.
- *   - localStorage `kis_devlog = '1'` (set una vez; sobrevive navegación).
- * Desactivar: `?debug=0` o borrar la clave de localStorage.
+ * Contexto: KAL-NEW-6 (commit 889e117) gateó el panel a dev-only / opt-in en
+ * producción como "hardening" de seguridad que Diego nunca pidió. Esta app es
+ * un PROTOTIPO en depuración activa (no un servicio vivo para familias reales);
+ * Diego necesita el logger visible por defecto para depurar los muchos bugs
+ * abiertos. Por eso revertimos el gating no solicitado y dejamos el panel ON.
  *
- * El panel ya redacta PII (KAL-11 + KAL-NEW-11) y arranca colapsado, así que el
- * riesgo residual es bajo; el opt-in lo deja invisible para el tráfico normal.
+ * Default: ON (dev y prod). Interruptor explícito de OFF preservado para cuando
+ * la app salga a producción con familias reales — entonces se re-gatea a opt-in.
+ * Apagar (cualquiera de los dos):
+ *   - URL `?debug=0` (o `#…?debug=0`) — persiste el OFF en localStorage.
+ *   - localStorage `kis_devlog = '0'` (set una vez; sobrevive navegación).
+ * Volver a encender: `?debug=1` o borrar la clave de localStorage.
+ *
+ * El panel ya redacta PII (KAL-11 + KAL-NEW-11) y arranca colapsado.
  */
 function shouldShowDevLogger() {
-  if (!import.meta.env.PROD) return true; // dev: siempre visible
   try {
     const qs = new URLSearchParams(
       window.location.search || (window.location.hash.split('?')[1] || '')
     );
     const q = qs.get('debug');
-    if (q === '1') { localStorage.setItem('kis_devlog', '1'); return true; }
-    if (q === '0') { localStorage.removeItem('kis_devlog'); return false; }
-    return localStorage.getItem('kis_devlog') === '1';
+    if (q === '0') { localStorage.setItem('kis_devlog', '0'); return false; }
+    if (q === '1') { localStorage.removeItem('kis_devlog'); return true; }
+    return localStorage.getItem('kis_devlog') !== '0';
   } catch (_) {
-    return false;
+    return true; // default ON incluso si localStorage falla
   }
 }
 
