@@ -1915,16 +1915,46 @@ function resumeSession_(p) {
     Logger.log('resumeSession_: recFiles read failed (non-fatal): ' + topRead[3].error);
   }
 
-  // qbResponses: backfill per-enrollment respondent_ids post-submit. Cheap
-  // — appended to the group-scoped result rather than re-issued as a
-  // separate parallel batch.
+  // qbResponses (RESP-FIX 2026-06-07): el read del batch (topRead[4]) trae SOLO las
+  // guardadas bajo el group_id, pero saveResponses_ distribuye respondent_id de forma
+  // polimórfica (Code.js:3399 `respondent_id || enrollmentGroupId`): preguntas
+  // por-aplicante → bajo person_id; por-enrollment → bajo enrollment_id; por-grupo →
+  // bajo group_id. El backfill anterior solo añadía enrollment_id y solo post-submit,
+  // perdiendo las respuestas por-aplicante (la mayoría) al recuperar. Ampliamos a la
+  // UNIÓN { group_id (ya traído) ∪ person_id ∪ enrollment_id } y corre SIEMPRE (las
+  // respuestas por-person existen pre-submit). KAL-4: todos los ids salen de datos del
+  // grupo derivados del token (persons/enrollments del topRead), nunca del payload.
   let responses = topRead[4].ok ? (topRead[4].data || []) : [];
-  if (enrollments.length) {
-    enrollments.forEach(e => assertValidUuid_(e.enrollment_id, 'enrollment_id'));
-    const enrIdFilter = enrollments.map(e => '"respondent_id" = "' + appsheetEscape_(e.enrollment_id) + '"').join(' || ');
-    const perEnr = appsheetRequest_(T.QB_RESPONSES, 'Find', [], { Filter: enrIdFilter }) || [];
-    responses = responses.concat(perEnr);
-  }
+  (function () {
+    var seen = {};
+    responses.forEach(function (r) { if (r && r.response_id) seen[r.response_id] = true; });
+    // KAL-5 capa 1: assertValidUuid_ por id; defensivo (salta inválidos, no rompe).
+    var extraIds = [];
+    persons.forEach(function (pr) {
+      if (pr && pr.person_id) {
+        try { assertValidUuid_(pr.person_id, 'person_id'); extraIds.push(pr.person_id); } catch (e) { /* skip id no-UUID */ }
+      }
+    });
+    enrollments.forEach(function (e) {
+      if (e && e.enrollment_id) {
+        try { assertValidUuid_(e.enrollment_id, 'enrollment_id'); extraIds.push(e.enrollment_id); } catch (e2) { /* skip */ }
+      }
+    });
+    if (!extraIds.length) return;
+    try {
+      // KAL-5 capa 2: appsheetEscape_ en cada id (patrón del reader correcto :2443).
+      var orFilter = '(' + extraIds.map(function (rid) {
+        return '"respondent_id" = "' + appsheetEscape_(rid) + '"';
+      }).join(' || ') + ')';
+      var extra = appsheetRequest_(T.QB_RESPONSES, 'Find', [], { Filter: orFilter }) || [];
+      extra.forEach(function (r) {
+        if (r && r.response_id && !seen[r.response_id]) { seen[r.response_id] = true; responses.push(r); }
+      });
+    } catch (e) {
+      // P72 / defensivo: no romper la recuperación por esto (KAL-11: log redactado).
+      Logger.log(redact_('resumeSession_: qbResponses union read failed (non-fatal): ' + e.message));
+    }
+  })();
 
   let interviews = [];
   if (enrollments.length) {
@@ -6799,4 +6829,41 @@ function manual_testSigningStepsFromMilestones() {
   Logger.log('  (signed se deriva de signer.signed_at en resolveSigningToken_, no de milestone)');
   Logger.log('=== fin manual_testSigningStepsFromMilestones ===');
   return { billing_confirmed: billing, gdpr_completed: gdpr, review_completed: review };
+}
+
+/**
+ * RESP-FIX — Diagnóstico: cuenta cuántas filas qbResponses hay bajo cada clase de
+ * respondent_id (group_id / person_id / enrollment_id) para un grupo real. Confirma
+ * que el read unión de resumeSession_ ya recupera las respuestas por-aplicante.
+ * Rellena GROUP_ID arriba. Read-only. NO registrado en doPost (diagnóstico). KAL-11.
+ */
+function manual_diagResponsesRetrieval() {
+  var GROUP_ID = 'REPLACE-WITH-REAL-GROUP-ID';
+  Logger.log('=== manual_diagResponsesRetrieval ===');
+  if (GROUP_ID.indexOf('REPLACE-') === 0) {
+    Logger.log('  ✗ Rellena GROUP_ID con un enrollment_group_id real.');
+    return;
+  }
+  var idEsc       = appsheetEscape_(GROUP_ID);
+  var persons     = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+  var enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+
+  var countFor = function (ids) {
+    var valid = [];
+    ids.forEach(function (rid) { if (rid) { try { assertValidUuid_(rid, 'id'); valid.push(rid); } catch (e) { /* skip */ } } });
+    if (!valid.length) return 0;
+    var f = '(' + valid.map(function (rid) { return '"respondent_id" = "' + appsheetEscape_(rid) + '"'; }).join(' || ') + ')';
+    return (appsheetRequest_(T.QB_RESPONSES, 'Find', [], { Filter: f }) || []).length;
+  };
+
+  var byGroup      = countFor([GROUP_ID]);
+  var byPerson     = countFor(persons.map(function (p) { return p.person_id; }));
+  var byEnrollment = countFor(enrollments.map(function (e) { return e.enrollment_id; }));
+
+  Logger.log(redact_('  group=' + GROUP_ID + ' persons=' + persons.length + ' enrollments=' + enrollments.length));
+  Logger.log('  qbResponses by group_id:      ' + byGroup);
+  Logger.log('  qbResponses by person_id:     ' + byPerson);
+  Logger.log('  qbResponses by enrollment_id: ' + byEnrollment);
+  Logger.log('=== fin manual_diagResponsesRetrieval ===');
+  return { group: byGroup, person: byPerson, enrollment: byEnrollment };
 }
