@@ -518,7 +518,9 @@ export function SignReview({ signingToken, onDone, onBack }) {
   useEffect(() => {
     if (needStepUp) return undefined;
     let alive = true;
-    gasCall('initiateSigningSession', { signing_token: signingToken })
+    // P-REVIEW-READONLY: Step 10 solo LEE los docs/members → create_only (NO despacha
+    // el envelope). El dispatch real del acto de firma vive SOLO en Step 11 (SignSign).
+    gasCall('initiateSigningSession', { signing_token: signingToken, create_only: true })
       .then(res => { if (alive) setMembers(Array.isArray(res.members) ? res.members : []); })
       .catch(e => {
         if (isStepUpRequiredError(e)) {

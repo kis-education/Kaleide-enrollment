@@ -5374,9 +5374,15 @@ function initiateSigningSession_(p) {
   // documentos y proveedor de firma desde el grupo (derivado del signing_token).
   const sctx = requireSigningToken_(p);
 
-  // DL-E39: step-up INCONDICIONAL antes de iniciar el acto de firma.
+  // P-REVIEW-READONLY: create_only sólo CREA/garantiza la sesión DRAFT + tokens y
+  // devuelve members/docs SIN despachar el envelope (KMS wizard-firma.gs:215-224).
+  // Es preparación/lectura del Step 10, NO el acto legal de firma → no exige el
+  // step-up INCONDICIONAL (ese gate es exclusivo del acto real, Step 11 sin create_only).
+  const createOnly = !!(p && (p.create_only === true || p.create_only === 'true'));
+
+  // DL-E39: step-up INCONDICIONAL antes de iniciar el ACTO de firma (Step 11).
   // enrollment_group_id derivado del signing_token (KAL-4), nunca del payload.
-  assertStepUpFresh_(sctx.enrollment_group_id);
+  if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id);
 
   // IP forense (best-effort): adjunta client_ip a la metadata del acto si el
   // cliente la reporta. KAL-11: redacta la IP en logs locales (no la imprimimos
@@ -5387,6 +5393,7 @@ function initiateSigningSession_(p) {
     signing_token:       sctx.signing_token,
     enrollment_group_id: sctx.enrollment_group_id,
   };
+  if (createOnly) proxyPayload.create_only = true; // P-REVIEW-READONLY: NO despacha envelope
   if (clientIp) proxyPayload.client_ip = clientIp; // evidencia forense, NUNCA gate
 
   return kmsProxy_('enr.initiateSigningSession', proxyPayload);
