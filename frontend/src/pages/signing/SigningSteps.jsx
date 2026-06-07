@@ -90,11 +90,25 @@ export function Progress({ current }) {
 // with its own spinner/label and validation), so we render a dedicated nav block
 // that mirrors StepNav's markup/styles but drives the step's own submit handler.
 // It is rendered TWICE per step (top + bottom) sharing the same handlers/state.
-export function SigningNav({ onBack, onSubmit, submitting, submitLabel, savingLabel, position = 'bottom', hideBack = false, submitDisabled = false }) {
+//
+// WIZARD — firma guardado background + avance optimista (Diego 2026-06-07): los
+// pasos 8-10 (SignBilling/SignGdpr/SignReview) ya NO bloquean el botón mientras
+// guardan. El submit dispara la persistencia en BACKGROUND (setPendingSave) y avanza
+// de inmediato (regla N+1 si N-1 guardado: el siguiente paso espera el save de este
+// vía awaitPendingSave). El indicador "Guardando…" lo gobierna `savePending`
+// (hasPendingSave del contexto) — NO inhabilita el avance. El paso 11 (SignSign) SÍ
+// sigue bloqueante: es el ACTO terminal de firma, no un avance. `submitting` se
+// reserva para ese bloqueo terminal; los pasos optimistas pasan submitting=false +
+// savePending para el label no-bloqueante.
+export function SigningNav({ onBack, onSubmit, submitting, savePending = false, submitLabel, savingLabel, position = 'bottom', hideBack = false, submitDisabled = false }) {
   const { t } = useTranslation();
   const wrapClass = position === 'top'
     ? 'd-flex justify-content-between mb-3'
     : 'd-flex justify-content-between mt-3';
+  // savePending → spinner + "Guardando…" label, pero el botón NO se inhabilita por
+  // ello (avance optimista). `submitting` (bloqueo terminal de SignSign) sí lo
+  // inhabilita; `submitDisabled` cubre las gates de validación per-step.
+  const showSpinner = submitting || savePending;
   return (
     <div className={wrapClass}>
       {hideBack || !onBack
@@ -105,7 +119,7 @@ export function SigningNav({ onBack, onSubmit, submitting, submitLabel, savingLa
           </button>
         )}
       <button className="btn-primary-kis" onClick={onSubmit} disabled={submitting || submitDisabled}>
-        {submitting
+        {showSpinner
           ? <><span className="spinner-border spinner-border-sm me-2" />{savingLabel}</>
           : submitLabel}
       </button>
@@ -122,7 +136,7 @@ const BLANK_PAYER_FIELDS = {
 
 export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   const { t } = useTranslation();
-  const { stepData } = useWizard();
+  const { stepData, setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
   // Default payer = signing guardian (DL-E38: identity derived server-side from the
   // signing_token; client only echoes guardian_person_id for the KMS to disambiguate
   // which guardian pays in a multi-guardian family). KAL-4 stays intact — the KMS
@@ -141,7 +155,6 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   // a % (their fiscal data is already in core from onboarding — the KMS resolves it
   // by payer_person_id).
   const [payers, setPayers] = useState([]); // [{ key, payer_type:'GUARDIAN', payer_person_id, name, split, ...fiscal }]
-  const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
 
@@ -236,42 +249,62 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
       };
     });
 
+  // WIZARD — guardado background + avance optimista (paso 8). Mirror del patrón
+  // /apply (WizardPage.handleNext): (1) await del save previo en vuelo
+  // (awaitPendingSave) para forzar el lag de un paso y SURFACEAR un fallo anterior
+  // antes de proceder; (2) disparar ESTE saveBillingInfo en BACKGROUND vía
+  // setPendingSave — sin bloquear; (3) avanzar de inmediato (onDone). Si el save de
+  // background rechaza, el error se surface en el SIGUIENTE gate (SignGdpr.submit →
+  // awaitPendingSave rechaza → no avanza). El indicador "Guardando…" lo gobierna
+  // hasPendingSave (no inhabilita el avance). KAL-4/KAL-7 + payload intactos.
   const submit = async () => {
     if (!f.fiscal_name.trim())  { setErr(t('signing.billing.err_name')); return; }
     if (!EMAIL_RE.test(f.billing_email.trim())) { setErr(t('signing.billing.err_email')); return; }
     if (Math.round(totalSplit) !== 100) { setErr(t('signing.billing.split.err_sum', { total: totalSplit })); return; }
 
-    setErr(''); setSubmitting(true);
-    const payersPayload = buildPayersPayload();
+    // Lag de un paso: espera el save previo (si lo hubiera). Billing es el primer
+    // paso de firma → normalmente no hay nada en vuelo (resuelve al instante). Si un
+    // save anterior falló, su rechazo se surface aquí antes de proceder.
     try {
-      await gasCall('saveBillingInfo', {
-        signing_token:        signingToken,
-        // Canonical multi-payer contract (parallel KMS agent implements the same).
-        payers:               payersPayload,
-        // ── Backwards-compat single-payer fields (titular = default payer) ──
-        // The current wizard proxy forwards these top-level fields; the new `payers`
-        // array is forwarded once the proxy/KMS gain multi-payer support. Sending
-        // both keeps today's single-payer flow working through the unmodified proxy.
-        payer_type:           'GUARDIAN',
-        // Default payer = the signing guardian. The KMS handler
-        // (fin_saveBillingPartyFromWizard) REQUIRES payer_person_id for a GUARDIAN
-        // payer to disambiguate which guardian pays in a multi-guardian family.
-        payer_person_id:      guardianPersonId || undefined,
-        fiscal_name:          f.fiscal_name.trim(),
-        fiscal_tax_id:        f.fiscal_tax_id.trim() || null,
-        fiscal_address_line1: f.fiscal_address_line1.trim() || null,
-        fiscal_address_city:  f.fiscal_address_city.trim() || null,
-        fiscal_postal_code:   f.fiscal_postal_code.trim() || null,
-        billing_email:        f.billing_email.trim(),
-        // Titular's split (for proxies that read split_percentage at top level).
-        split_percentage:     (payersPayload.find(p => p.payer_person_id === (guardianPersonId || null)) || payersPayload[0] || {}).split_percentage,
-      });
-      onDone();
+      await awaitPendingSave();
     } catch (e) {
-      log.error('SignBilling: saveBillingInfo failed', { message: e.message });
-      setErr(e.message === 'NOT_EDITABLE' ? t('signing.billing.err_locked') : (e.message || t('signing.generic_error')));
-      setSubmitting(false);
+      log.warn('SignBilling: previous signing-step save failed', { message: e.message });
+      setErr(e?.message === 'NOT_EDITABLE' ? t('signing.billing.err_locked') : (e?.message || t('signing.generic_error')));
+      return;
     }
+
+    setErr('');
+    const payersPayload = buildPayersPayload();
+    // Background save (NO await aquí). El siguiente paso lo espera vía awaitPendingSave.
+    const savePromise = gasCall('saveBillingInfo', {
+      signing_token:        signingToken,
+      // Canonical multi-payer contract (parallel KMS agent implements the same).
+      payers:               payersPayload,
+      // ── Backwards-compat single-payer fields (titular = default payer) ──
+      // The current wizard proxy forwards these top-level fields; the new `payers`
+      // array is forwarded once the proxy/KMS gain multi-payer support. Sending
+      // both keeps today's single-payer flow working through the unmodified proxy.
+      payer_type:           'GUARDIAN',
+      // Default payer = the signing guardian. The KMS handler
+      // (fin_saveBillingPartyFromWizard) REQUIRES payer_person_id for a GUARDIAN
+      // payer to disambiguate which guardian pays in a multi-guardian family.
+      payer_person_id:      guardianPersonId || undefined,
+      fiscal_name:          f.fiscal_name.trim(),
+      fiscal_tax_id:        f.fiscal_tax_id.trim() || null,
+      fiscal_address_line1: f.fiscal_address_line1.trim() || null,
+      fiscal_address_city:  f.fiscal_address_city.trim() || null,
+      fiscal_postal_code:   f.fiscal_postal_code.trim() || null,
+      billing_email:        f.billing_email.trim(),
+      // Titular's split (for proxies that read split_percentage at top level).
+      split_percentage:     (payersPayload.find(p => p.payer_person_id === (guardianPersonId || null)) || payersPayload[0] || {}).split_percentage,
+    }).catch(e => {
+      // El error se surface en el siguiente gate (awaitPendingSave del paso N+1).
+      // Logueamos aquí; el rechazo se propaga al awaiter (re-throw).
+      log.error('SignBilling: saveBillingInfo failed (background)', { message: e.message });
+      throw e;
+    });
+    setPendingSave(savePromise);
+    onDone(); // avance optimista inmediato
   };
 
   const field = (k, type = 'text', required = false) => (
@@ -283,12 +316,15 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
     </div>
   );
 
+  // Avance optimista: `submitting=false` (no bloqueamos el botón); el spinner
+  // "Guardando…" lo gobierna `savePending` (hasPendingSave del contexto).
   const nav = (position) => (
     <SigningNav
       position={position}
       onBack={onBack}
       onSubmit={submit}
-      submitting={submitting}
+      submitting={false}
+      savePending={hasPendingSave}
       submitLabel={t('signing.billing.submit')}
       savingLabel={t('signing.saving')}
     />
@@ -363,21 +399,37 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
 
 export function SignGdpr({ signingToken, lang, onDone, onBack }) {
   const { t } = useTranslation();
+  const { setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
   // default: blocking consent unchecked, optional ones unchecked.
   const [state, setState] = useState(() => {
     const init = {}; SIGNING_CONSENTS.forEach(c => { init[c.code] = false; }); return init;
   });
-  const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const toggle = (code) => setState(prev => ({ ...prev, [code]: !prev[code] }));
 
+  // WIZARD — guardado background + avance optimista (paso 9). Mirror del patrón
+  // /apply: (1) await del save de BILLING en vuelo (awaitPendingSave) — fuerza el lag
+  // de un paso y surface un fallo de billing antes de proceder; (2) disparar ESTE
+  // submitGdprConsents en BACKGROUND vía setPendingSave; (3) avanzar de inmediato.
+  // Si el save de background rechaza, se surface en el siguiente gate (SignReview).
   const submit = async () => {
     const gdprSchool = SIGNING_CONSENTS.find(c => c.blocking);
     if (gdprSchool && state[gdprSchool.code] !== true) {
       setErr(t('signing.gdpr.must_accept_blocking'));
       return;
     }
-    setErr(''); setSubmitting(true);
+
+    // Lag de un paso: espera el save de BILLING. Si falló, su rechazo se surface aquí
+    // y NO avanzamos a Review.
+    try {
+      await awaitPendingSave();
+    } catch (e) {
+      log.warn('SignGdpr: previous billing save failed', { message: e.message });
+      setErr(e?.message || t('signing.generic_error'));
+      return;
+    }
+
+    setErr('');
     const consents = SIGNING_CONSENTS.map(c => ({
       consent_type_code:    c.code,
       consent_use:          c.consent_use || null,
@@ -388,15 +440,24 @@ export function SignGdpr({ signingToken, lang, onDone, onBack }) {
       signed_method:        'WEB_CLICK',
       user_agent:           navigator.userAgent,
     }));
-    try {
-      const res = await gasCall('submitGdprConsents', { signing_token: signingToken, consents });
-      if (res.blocked) { setErr(t('signing.gdpr.blocked')); setSubmitting(false); return; }
-      onDone();
-    } catch (e) {
-      log.error('SignGdpr: submitGdprConsents failed', { message: e.message });
-      setErr(e.message || t('signing.generic_error'));
-      setSubmitting(false);
-    }
+    // Background save (NO await). `res.blocked` (rechazo de consentimiento bloqueante)
+    // se convierte en un rechazo de la promesa para que el siguiente gate lo surface
+    // — coherente con el resto de fallos de background. KAL-4/KAL-7 + payload intactos.
+    const savePromise = gasCall('submitGdprConsents', { signing_token: signingToken, consents })
+      .then(res => {
+        if (res && res.blocked) {
+          const blockErr = new Error('GDPR_BLOCKED');
+          blockErr.gdprBlocked = true;
+          throw blockErr;
+        }
+        return res;
+      })
+      .catch(e => {
+        log.error('SignGdpr: submitGdprConsents failed (background)', { message: e.message });
+        throw e;
+      });
+    setPendingSave(savePromise);
+    onDone(); // avance optimista inmediato
   };
 
   const nav = (position) => (
@@ -404,7 +465,8 @@ export function SignGdpr({ signingToken, lang, onDone, onBack }) {
       position={position}
       onBack={onBack}
       onSubmit={submit}
-      submitting={submitting}
+      submitting={false}
+      savePending={hasPendingSave}
       submitLabel={t('signing.gdpr.submit')}
       savingLabel={t('signing.saving')}
     />
@@ -437,7 +499,7 @@ export function SignGdpr({ signingToken, lang, onDone, onBack }) {
 
 export function SignReview({ signingToken, onDone, onBack }) {
   const { t } = useTranslation();
-  const { isStepUpFresh, markStepUpFresh } = useWizard();
+  const { isStepUpFresh, markStepUpFresh, setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
   const [members, setMembers] = useState(null); // null=loading, []=empty
   const [loadErr, setLoadErr] = useState('');
   const [read, setRead] = useState(false);
@@ -492,29 +554,56 @@ export function SignReview({ signingToken, onDone, onBack }) {
     return () => { alive = false; created.forEach(u => URL.revokeObjectURL(u)); };
   }, [members, signingToken]); // eslint-disable-line
 
+  // WIZARD — guardado background + avance optimista (paso 10). (1) await del save de
+  // GDPR en vuelo (awaitPendingSave) — fuerza el lag de un paso y surface un fallo de
+  // gdpr (incl. consentimiento bloqueante rechazado) antes de proceder; (2) disparar
+  // confirmReview en BACKGROUND vía setPendingSave; (3) avanzar de inmediato a Sign.
+  // SignSign hará a su vez await de ESTE confirmReview antes de iniciar el acto de
+  // firma (dependencia de milestone). `submitting` se mantiene como gate de "click ya
+  // procesado" para el await previo (puede tardar), pero NO bloquea el avance una vez
+  // disparado el background save.
   const confirm = async () => {
     if (!read) { setErr(t('signing.review.must_read')); return; }
     setErr(''); setSubmitting(true);
+
+    // Lag de un paso: espera el save de GDPR. Si falló (incl. bloqueante), su rechazo
+    // se surface aquí y NO avanzamos a Sign.
     try {
-      await gasCall('confirmReview', { signing_token: signingToken });
-      onDone();
+      await awaitPendingSave();
     } catch (e) {
-      log.error('SignReview: confirmReview failed', { message: e.message });
-      setErr(e.message || t('signing.generic_error'));
+      log.warn('SignReview: previous gdpr save failed', { message: e.message });
+      setErr(e?.gdprBlocked ? t('signing.gdpr.blocked') : (e?.message || t('signing.generic_error')));
       setSubmitting(false);
+      return;
     }
+
+    // Background save (NO await). SignSign lo espera vía awaitPendingSave antes de
+    // iniciar el acto de firma. KAL-4/KAL-7 + payload intactos.
+    const savePromise = gasCall('confirmReview', { signing_token: signingToken })
+      .catch(e => {
+        log.error('SignReview: confirmReview failed (background)', { message: e.message });
+        throw e;
+      });
+    setPendingSave(savePromise);
+    setSubmitting(false);
+    onDone(); // avance optimista inmediato
   };
 
   const docLabel = (m) => t('signing.doc.' + (m.purpose_code || ''), { defaultValue: m.designation || m.purpose_code || t('signing.review.document') });
 
   // Top/bottom nav for the review step. `read` gates the submit (mirrors the
   // inline "must read" check); the spinner/label swap matches the other steps.
+  // `submitting` cubre la ventana breve de await del save previo (gdpr) — bloquea el
+  // botón mientras esperamos que el lag se resuelva. `savePending` (hasPendingSave)
+  // muestra "Guardando…" no-bloqueante mientras confirmReview corre en background tras
+  // el avance optimista. `read` es la gate de validación (confirmación de lectura).
   const nav = (position) => (
     <SigningNav
       position={position}
       onBack={onBack}
       onSubmit={confirm}
       submitting={submitting}
+      savePending={hasPendingSave}
       submitDisabled={!read}
       submitLabel={t('signing.review.submit')}
       savingLabel={t('signing.saving')}
@@ -626,7 +715,7 @@ export function SignReview({ signingToken, onDone, onBack }) {
 
 export function SignSign({ signingToken, signerCtx, onDone, onBack }) {
   const { t } = useTranslation();
-  const { isStepUpFresh, markStepUpFresh } = useWizard();
+  const { isStepUpFresh, markStepUpFresh, awaitPendingSave } = useWizard();
   // Back-only nav (top + bottom). The Sign step's "advance" is the signing act
   // itself (launched from the per-signer buttons / polled to completion), so the
   // nav only carries "Atrás" → Review. Hidden once the session is COMPLETED (the
@@ -678,7 +767,19 @@ export function SignSign({ signingToken, signerCtx, onDone, onBack }) {
     }
   };
 
-  const startSigning = () => {
+  // WIZARD — paso 11 BLOQUEANTE (acto terminal de firma, no un avance). Antes de
+  // iniciar el sobre + polling, AWAIT del save de REVIEW (confirmReview) en vuelo:
+  // el acto de firma depende del milestone de revisión confirmada server-side, así
+  // que la firma NO debe iniciarse hasta que ese save haya terminado. Si confirmReview
+  // rechazó, surface el error y NO iniciamos.
+  const startSigning = async () => {
+    try {
+      await awaitPendingSave();
+    } catch (e) {
+      log.warn('SignSign: previous review save failed', { message: e.message });
+      setErr(e?.message || t('signing.generic_error'));
+      return;
+    }
     refresh(true);
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(() => refresh(false), 5000);
