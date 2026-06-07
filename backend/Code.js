@@ -1498,10 +1498,10 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
  * @param {string} groupId
  * @param {Array}  enrollments         filas enrEnrollments del grupo
  * @param {string|null} guardianPersonId  guardian resuelto server-side (a1)
- * @returns {{state_code, state_label, signing_available, signing_context}}
+ * @returns {{state_code, state_label, signing_available, signing_context, signing_ready, signing_status}}
  */
 function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons) {
-  var out = { state_code: null, state_label: null, signing_available: false, signing_context: null };
+  var out = { state_code: null, state_label: null, signing_available: false, signing_context: null, signing_ready: false };
   if (!enrollments || !enrollments.length) return out;
 
   // Catálogo de estados ENR_ADMISSION_SCHOOL del tenant (mismo patrón que el
@@ -1567,6 +1567,25 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
     // success state. Does NOT touch signing_available (the entry-bridge gate).
     // KAL-4: the group is token-authorised; nothing comes from the payload.
     out.signing_status = resolveSigningStatus_(groupId);
+
+    // WIZARD — AD unlocks step 8 (state-driven, Option A; decisión Diego 2026-06-07):
+    // the ENTRY DOOR to step 8 (signing) is the AD admission state — NOT the
+    // per-guardian signing_context resolution. The old door required
+    // signing_available (a resolved per-guardian signing_token), which for
+    // genuinely-ambiguous multi-guardian groups never resolved → the Step 7 banner
+    // showed "la documentación de firma se está preparando" FOREVER even though
+    // the file was AD. Per-guardian resolution was being enforced at the WRONG
+    // place (the door); the door must be the AD state plus the existence of a
+    // signing session anchored to the group. `signing_ready` is exactly that
+    // coarse, group-level gate (a session exists ⟺ signing_status !== NOT_INITIATED).
+    // The per-guardian, legally-binding identity still lives at the signing ACT
+    // (the /sign endpoints, requireSigningToken_, single-use/TTL/binding per P222);
+    // signing_context (when resolved) is just the convenience token the frontend
+    // carries into /sign. If it can't be resolved here, the door still opens on AD
+    // (signing_ready) and /sign resolves the signer from the email/link — never
+    // silently locked. KAL-4 intact: everything is derived server-side from the
+    // token's group, nothing from the payload.
+    out.signing_ready = (out.signing_status !== 'NOT_INITIATED');
   }
   return out;
 }

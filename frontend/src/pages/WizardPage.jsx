@@ -436,20 +436,31 @@ const handleNext = async (stepKey, data) => {
               {t('submitted.locked.body')}
             </div>
 
-            {/* P217: state-driven advance to signing. The button only appears on
-                the Review step when the backend (P215) reports the file is AD
-                (admitted) AND a signing session is ready for THIS guardian. The
-                bridge navigates to the /sign host carrying the signing_token via
-                react-router state — NEVER in the URL (KAL-7). The signing_token
-                was resolved server-side by resumeSession_ for the guardian that
-                recovered (a1), not declared in-app. */}
+            {/* WIZARD — AD unlocks step 8 (state-driven, Option A; Diego 2026-06-07).
+                The DOOR to step 8 is the AD admission state + the existence of a
+                signing session for the group (`signing_ready`) — NOT the
+                per-guardian token resolution. The old gate also required
+                `signing_available && signing_token`, so genuinely-ambiguous
+                multi-guardian groups (where the group-scoped session can't pick a
+                guardian) never showed the button and stayed stuck on the
+                "preparándose" banner forever even when admitted. The per-guardian
+                resolution was being enforced at the wrong place (the door); the
+                door is now the AD state. The bridge carries the resolved
+                signing_token via react-router state when available (NEVER in the
+                URL — KAL-7); when it isn't resolved (the rare ambiguous case), it
+                still opens /sign, whose token gate is the sensible fallback (use
+                your per-guardian recovery link / contact admissions). The
+                per-guardian, legally-binding identity stays at the signing ACT
+                (/sign endpoints, requireSigningToken_, P222) — unchanged. */}
             {currentStep === 6
               && admissionState?.state_code === 'AD'
-              && admissionState?.signing_available
-              && signingContext?.signing_token && (
+              && admissionState?.signing_ready
+              && admissionState?.signing_status !== 'COMPLETED' && (
               <div style={{ marginTop: 12 }}>
                 <button
-                  onClick={() => navigate('/sign', { state: { signing_token: signingContext.signing_token } })}
+                  onClick={() => navigate('/sign', signingContext?.signing_token
+                    ? { state: { signing_token: signingContext.signing_token } }
+                    : undefined)}
                   style={{
                     background: '#2e7d32', color: '#fff', border: 'none',
                     borderRadius: 8, padding: '10px 18px', fontWeight: 700,
@@ -461,13 +472,6 @@ const handleNext = async (stepKey, data) => {
               </div>
             )}
 
-            {/* fix-step7-signing-init (2026-06-07): expediente Admitido (AD) pero la
-                firma todavía NO está lista para este guardian (signing_available=false
-                o aún sin signing_token resuelto). Sin este mensaje, el banner quedaba
-                "mudo" — la familia veía "Admitida" pero ningún botón ni explicación,
-                y parecía que el wizard estaba roto. Mostramos un aviso claro de que la
-                documentación de firma se está preparando. NO toca el modelo de
-                autorización (KAL-4: el signing_token sigue derivándose server-side). */}
             {/* P215 opción (b) ELIMINADA (CLI AD-SPLIT): el selector in-app
                 "¿quién eres?" queda descartado por razón legal (auto-declaración de
                 identidad antes del acto de firma). Familias con ≥2 guardians se
@@ -485,7 +489,6 @@ const handleNext = async (stepKey, data) => {
                 toca el modelo de autorización (KAL-4). */}
             {currentStep === 6
               && admissionState?.state_code === 'AD'
-              && !(admissionState?.signing_available && signingContext?.signing_token)
               && admissionState?.signing_status === 'COMPLETED' && (
               <div
                 style={{
@@ -502,18 +505,21 @@ const handleNext = async (stepKey, data) => {
               </div>
             )}
 
-            {/* fix-step7-signing-init (2026-06-07): expediente Admitido (AD) pero la
-                firma todavía NO está lista para este guardian (signing_available=false
-                o aún sin signing_token resuelto) Y no hay candidatos elegibles que
-                ofrecer (firma aún no iniciada server-side) Y NO está completada. Sin
-                este mensaje, el banner quedaba "mudo" — la familia veía "Admitida"
-                pero ningún botón ni explicación, y parecía que el wizard estaba roto.
-                Mostramos un aviso claro de que la documentación de firma se está
-                preparando. NO toca el modelo de autorización (KAL-4: el signing_token
-                sigue server-side). */}
+            {/* WIZARD — AD unlocks step 8 (Option A, 2026-06-07): expediente Admitido
+                (AD) pero la sesión de firma TODAVÍA NO existe a nivel de grupo
+                (signing_ready=false ⟺ signing_status='NOT_INITIATED') y NO está
+                completada. Este es el ÚNICO caso en que el avance permanece bloqueado:
+                la firma aún no se ha iniciado server-side (P200/P201). Antes este
+                banner se mostraba también cuando la firma SÍ estaba lista pero el
+                token per-guardian no se había resuelto (multi-guardian ambiguo) →
+                puerta cerrada para siempre. Ahora el gate es la EXISTENCIA de la
+                sesión (la puerta = estado AD + sesión), no la resolución per-guardian
+                — esa identidad vive en el ACTO de firma (/sign, P222), no en la puerta.
+                NO toca el modelo de autorización (KAL-4: el signing_token sigue
+                server-side). */}
             {currentStep === 6
               && admissionState?.state_code === 'AD'
-              && !(admissionState?.signing_available && signingContext?.signing_token)
+              && !admissionState?.signing_ready
               && admissionState?.signing_status !== 'COMPLETED' && (
               <div
                 style={{
