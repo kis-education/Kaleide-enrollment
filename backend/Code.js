@@ -3693,17 +3693,33 @@ function saveResponses_(p) {
   const { respondent_id, respondent_type_category_id, responses } = p;
   if (!responses || !responses.length) return { saved: 0 };
 
-  // KAL-4: if respondent_id is supplied and differs from the group_id (i.e.
-  // the responder is a specific applicant person, not the group itself),
-  // verify that person belongs to this group.
-  if (respondent_id && respondent_id !== enrollmentGroupId) {
-    assertValidUuid_(respondent_id, 'respondent_id');
-    const persons = appsheetRequest_(T.PERSONS, 'Find', [], {
-      Filter: '"person_id" = "' + appsheetEscape_(respondent_id) + '" && "enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
+  // KAL-4 PER-FILA (RESP-FIX 2026-06-08): las respuestas son per-participante — cada
+  // fila lleva su propio `r.respondent_id` (el applicant). Validamos que CADA
+  // respondent distinto del group_id (top-level + por fila) pertenezca al grupo del
+  // token. El grupo SIEMPRE se deriva del resume_token (enrollmentGroupId), NUNCA del
+  // payload. Un solo Find del grupo (KAL-5: appsheetEscape_ en el group_id) + check de
+  // pertenencia contra el set de person_ids — evita N Finds y cubre todas las filas.
+  var distinctRespondents = {};
+  if (respondent_id && respondent_id !== enrollmentGroupId) distinctRespondents[respondent_id] = true;
+  responses.forEach(function(r) {
+    var rid = r && r.respondent_id;
+    if (rid && rid !== enrollmentGroupId) distinctRespondents[rid] = true;
+  });
+  var respList = Object.keys(distinctRespondents);
+  if (respList.length) {
+    respList.forEach(function(rid) { assertValidUuid_(rid, 'respondent_id'); });  // KAL-5 capa 1
+    var groupPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
+      Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'  // KAL-5 capa 2
     }) || [];
-    if (!persons.length) {
-      throw new Error('Unauthorized: respondent_id does not belong to token group');
-    }
+    var validPersonIds = {};
+    groupPersons.forEach(function(pp) { if (pp && pp.person_id) validPersonIds[pp.person_id] = true; });
+    respList.forEach(function(rid) {
+      if (!validPersonIds[rid]) {
+        var err = new Error('Unauthorized: respondent_id does not belong to token group');
+        err.code = 'UNAUTHORIZED';  // doPost → HTTP 200 {ok:false,error:{code,message}} (estructurado, no 403)
+        throw err;
+      }
+    });
   }
 
   const now  = new Date().toISOString();
@@ -3712,7 +3728,9 @@ function saveResponses_(p) {
     school_id:                    SCHOOL_ID,
     set_id:                       r.set_id || null,
     question_id:                  r.question_id,
-    respondent_id:                respondent_id || enrollmentGroupId,
+    // RESP-FIX: respondent PER-FILA (el applicant que el frontend manda en la key
+    // `${qid}__${applicant_id}`). Fallback: top-level respondent_id → group_id.
+    respondent_id:                r.respondent_id || respondent_id || enrollmentGroupId,
     respondent_type_category_id:  respondent_type_category_id || 'client',
     response_text:                r.response_text || null,
     response_option_id:           r.response_option_id || null,
