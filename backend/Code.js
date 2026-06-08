@@ -486,6 +486,59 @@ function requireSigningToken_(payload) {
   };
 }
 
+/**
+ * DL-A.3 — Gate UNIFICADO de identidad de firma (★ CANÓNICA DEFINITIVA, colapso del
+ * `signing_token`). El wizard es UN flujo de 11 pasos con UN solo token email-bound:
+ * el firmante se resuelve server-side de (resume_token → grupo, KAL-4) + (email tecleado
+ * → guardian, a1). El `signing_token` deja de ser un bearer del cliente.
+ *
+ * Acepta DOS formas (orden de preferencia canónica):
+ *   (a) { resume_token, recovered_email } → grupo (KAL-4) + guardian (a1). NO se resuelve
+ *       el signing_token localmente: se REENVÍA la identidad al KMS, que lo colapsa
+ *       server-side (enr_resolveSignerContext_). DL-E41: el wizard no computa firma.
+ *   (b) { signing_token } → back-compat (bearer legacy, aún soportado en la transición).
+ *
+ * Devuelve `{ enrollment_group_id, guardian_person_id?, signing_token?, identity }`.
+ * `identity` es el sub-objeto a reenviar al KMS (resume_token+recovered_email | signing_token).
+ *
+ * @param {Object} payload
+ * @returns {{enrollment_group_id:string, guardian_person_id:(string|null),
+ *            signing_token:(string|null), identity:Object}}
+ * @throws code='UNAUTHORIZED' | 'BAD_REQUEST'
+ */
+function requireSignerContext_(payload) {
+  payload = payload || {};
+
+  // (a) Path canónico — colapso del bearer (resume_token + email).
+  if (payload.resume_token && payload.recovered_email && !payload.signing_token) {
+    const groupId = requireResumeToken_(payload);   // KAL-4 + TTL 7d + abandoned gate
+    const guardianId = resolveGuardianForRecovery_(groupId, payload.recovered_email);
+    if (!guardianId) {
+      const err = new Error('Unauthorized: recovered_email no resuelve a un guardian del grupo');
+      err.code = 'UNAUTHORIZED';
+      throw err;
+    }
+    return {
+      enrollment_group_id: groupId,
+      guardian_person_id:  guardianId,
+      signing_token:       null,
+      identity: {
+        resume_token:    String(payload.resume_token).trim(),
+        recovered_email: String(payload.recovered_email).trim(),
+      },
+    };
+  }
+
+  // (b) Back-compat — bearer signing_token.
+  const sctx = requireSigningToken_(payload);
+  return {
+    enrollment_group_id: sctx.enrollment_group_id,
+    guardian_person_id:  sctx.guardian_person_id,
+    signing_token:       sctx.signing_token,
+    identity: { signing_token: sctx.signing_token },
+  };
+}
+
 // ─── CLI 26 (2026-06-01) — State-gate for mutation endpoints ─────────────────
 //
 // Defense-in-depth against frontend bugs that let a family edit a submitted
@@ -590,6 +643,41 @@ function _markStepUpFresh_(enrollmentGroupId) {
     String(Date.now() + STEPUP_INACTIVITY_MS),
     Math.ceil(STEPUP_INACTIVITY_MS / 1000)
   );
+}
+
+// ─── DL-A.5 (Opción A §2) — versión liveState por grupo (cheap-poll) ──────────
+//
+// El KMS hace doPost a `notifyLiveStateChange` cuando cambia estado/milestone de un
+// grupo → bumpamos un contador efímero en ScriptCache (NO BD de negocio). El browser
+// hace un poll ultra-ligero (`getLiveStateVersion`, solo lee este contador, SIN tocar
+// AppSheet ni el KMS) on-focus + intervalo; SOLO cuando la versión sube hace el fetch
+// de detalle del liveState (spec §2, push-half + cheap-poll-half). TTL 6h (máx del
+// ScriptCache); el valor por defecto 0 es seguro (un reset solo fuerza una re-lectura).
+
+var LIVE_VERSION_TTL_S_ = 21600;  // 6h — máximo del ScriptCache
+
+function _liveVersionKey_(enrollmentGroupId) { return 'livever_' + enrollmentGroupId; }
+
+/**
+ * @param {string} enrollmentGroupId
+ * @returns {number} versión actual (0 si no hay marca)
+ * @private
+ */
+function _getLiveStateVersion_(enrollmentGroupId) {
+  var v = CacheService.getScriptCache().get(_liveVersionKey_(enrollmentGroupId));
+  return v ? Number(v) : 0;
+}
+
+/**
+ * Incrementa la versión liveState del grupo (lo llama el notify del KMS). Best-effort.
+ * @param {string} enrollmentGroupId
+ * @returns {number} nueva versión
+ * @private
+ */
+function _bumpLiveStateVersion_(enrollmentGroupId) {
+  var next = _getLiveStateVersion_(enrollmentGroupId) + 1;
+  CacheService.getScriptCache().put(_liveVersionKey_(enrollmentGroupId), String(next), LIVE_VERSION_TTL_S_);
+  return next;
 }
 
 /**
@@ -759,6 +847,13 @@ function doPost(e) {
       // kmsProxy_('sys.drainJobQueue') (el KMS es el worker; el wizard es el puente
       // autenticado porque el KMS es USER_ACCESSING y no acepta el webhook directo).
       case 'drainJobQueue':           result = drainJobQueue_(payload);           break;
+      // ── DL-A — capa de datos del wizard (wizard-datalayer-spec §1/§2) ────────
+      // hydrateSession: hidratación consolidada (1 llamada = todo). DL-B la consume.
+      // notifyLiveStateChange: lo llama SOLO el KMS (gate WIZARD_NOTIFY_SECRET) → bumpa
+      //   la versión liveState del grupo. getLiveStateVersion: cheap-poll (solo versión).
+      case 'hydrateSession':          result = hydrateSession_(payload);          break;
+      case 'notifyLiveStateChange':   result = notifyLiveStateChange_(payload);   break;
+      case 'getLiveStateVersion':     result = getLiveStateVersion_(payload);     break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
       // getTrackingData, getInterviewForEnrollment, getAdmissionDecisionForEnrollment,
       // getReservationPaymentInfo, getSigningTokenFromResumeToken eliminados —
@@ -5421,13 +5516,13 @@ function kmsProxy_(action, payload) {
  * @returns {Object} `data` del KMS (`{ billing_id, confirmed_at, already_confirmed? }`).
  */
 function saveBillingInfo_(p) {
-  // CLI 45 — auth por signing_token (flujo /sign). requireSigningToken_ valida el
-  // token server-side (resolveSigningToken_) y resuelve signer/session/grupo.
-  const sctx = requireSigningToken_(p);
+  // DL-A.3 — identidad unificada (★ CANÓNICA: colapso del signing_token). Acepta
+  // (resume_token+recovered_email) [canónico] o signing_token [back-compat].
+  // DL-A.4 — endpoint encolado: el KMS devuelve al instante {queued,job_id}.
+  const sctx = requireSignerContext_(p);
   _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
-  return kmsProxy_('enr.saveBillingInfo', {
-    signing_token:        sctx.signing_token,
+  return kmsProxy_('enr.saveBillingInfoQueued', Object.assign({}, sctx.identity, {
     // Canonical multi-payer reparto entre tutores (GUARDIAN only — sin facturación
     // a terceros). Se reenvía cuando el frontend lo manda; el KMS deriva grupo+signer
     // del token (KAL-4). Los campos single-payer top-level se mantienen por
@@ -5448,7 +5543,7 @@ function saveBillingInfo_(p) {
     fiscal_postal_code:   p.fiscal_postal_code   || null,
     fiscal_country:       p.fiscal_country       || 'ES',
     billing_email:        p.billing_email        || null,
-  });
+  }));
 }
 
 /**
@@ -5462,8 +5557,10 @@ function saveBillingInfo_(p) {
  * @returns {Object} `data` del KMS.
  */
 function getSavedBillingSplits_(p) {
-  const sctx = requireSigningToken_(p);
-  return kmsProxy_('enr.getSavedBillingSplits', { signing_token: sctx.signing_token });
+  // DL-A.3 — identidad unificada (colapso del signing_token). El KMS resuelve el
+  // signer de (grupo+guardian) o del bearer legacy. Lectura → no se encola.
+  const sctx = requireSignerContext_(p);
+  return kmsProxy_('enr.getSavedBillingSplits', sctx.identity);
 }
 
 /**
@@ -5491,8 +5588,9 @@ function getSavedBillingSplits_(p) {
  * @returns {Object} `data` del KMS (`{ blocked, milestone?, consents_recorded, ... }`).
  */
 function submitGdprConsents_(p) {
-  // CLI 45 — auth por signing_token (flujo /sign).
-  const sctx = requireSigningToken_(p);
+  // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado
+  // (era ~95s síncrono): el KMS devuelve al instante {queued,job_id}.
+  const sctx = requireSignerContext_(p);
 
   if (!Array.isArray(p.consents) || !p.consents.length) {
     throw new Error('consents must be a non-empty array');
@@ -5502,11 +5600,10 @@ function submitGdprConsents_(p) {
   // GATE-B modo conservador: pasamos el array consents[] tal cual sin
   // estructura per-guardian adicional. El handler KMS lo persiste como un
   // set para el signer del iniciador.
-  return kmsProxy_('enr.submitGdprConsents', {
-    signing_token: sctx.signing_token,
+  return kmsProxy_('enr.submitGdprConsentsQueued', Object.assign({}, sctx.identity, {
     signer_ip:     p.signer_ip || null,
     consents:      p.consents,
-  });
+  }));
 }
 
 /**
@@ -5523,13 +5620,11 @@ function submitGdprConsents_(p) {
  * @returns {Object} `data` del KMS (`{ idempotent, milestone }`).
  */
 function confirmReview_(p) {
-  // CLI 45 — auth por signing_token (flujo /sign).
-  const sctx = requireSigningToken_(p);
+  // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado.
+  const sctx = requireSignerContext_(p);
   _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
-  return kmsProxy_('enr.confirmReview', {
-    signing_token: sctx.signing_token,
-  });
+  return kmsProxy_('enr.confirmReviewQueued', Object.assign({}, sctx.identity));
 }
 
 /**
@@ -5567,18 +5662,19 @@ function confirmReview_(p) {
  *     (KMS enr.initiateSigningSession) solo como pista, jamás para autorizar.
  */
 function initiateSigningSession_(p) {
-  // CLI 45 — auth por signing_token (flujo /sign). El KMS resuelve guardians,
-  // documentos y proveedor de firma desde el grupo (derivado del signing_token).
-  const sctx = requireSigningToken_(p);
+  // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado
+  // (era 54-65s síncrono) + de-dupe server-side de create_only. El KMS resuelve
+  // guardians/documentos/proveedor del grupo derivado de la identidad (KAL-4).
+  const sctx = requireSignerContext_(p);
 
   // P-REVIEW-READONLY: create_only sólo CREA/garantiza la sesión DRAFT + tokens y
-  // devuelve members/docs SIN despachar el envelope (KMS wizard-firma.gs:215-224).
+  // devuelve members/docs SIN despachar el envelope (KMS wizard-firma.gs).
   // Es preparación/lectura del Step 10, NO el acto legal de firma → no exige el
   // step-up INCONDICIONAL (ese gate es exclusivo del acto real, Step 11 sin create_only).
   const createOnly = !!(p && (p.create_only === true || p.create_only === 'true'));
 
   // DL-E39: step-up INCONDICIONAL antes de iniciar el ACTO de firma (Step 11).
-  // enrollment_group_id derivado del signing_token (KAL-4), nunca del payload.
+  // enrollment_group_id derivado de la identidad (KAL-4), nunca del payload.
   if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id);
   _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
@@ -5587,14 +5683,81 @@ function initiateSigningSession_(p) {
   // aquí; la pasamos al KMS, que registra el acto en sysLegalActsLog).
   const clientIp = (p && typeof p.client_ip === 'string') ? p.client_ip.trim() : null;
 
-  const proxyPayload = {
-    signing_token:       sctx.signing_token,
-    enrollment_group_id: sctx.enrollment_group_id,
-  };
+  const proxyPayload = Object.assign({}, sctx.identity);
   if (createOnly) proxyPayload.create_only = true; // P-REVIEW-READONLY: NO despacha envelope
   if (clientIp) proxyPayload.client_ip = clientIp; // evidencia forense, NUNCA gate
 
-  return kmsProxy_('enr.initiateSigningSession', proxyPayload);
+  return kmsProxy_('enr.initiateSigningSessionQueued', proxyPayload);
+}
+
+// ─── DL-A — capa de datos del wizard (hidratación consolidada + liveState) ────
+
+/**
+ * DL-A.1 (spec §1) — Hidratación consolidada: UNA llamada devuelve TODO (datos 11 pasos
+ * + lookups + qbResponses + contexto de firma + billing + versión liveState). Proxy fino
+ * al KMS `enr.wizardHydrate` (DL-E41: el KMS es la fuente de verdad de datos; el wizard
+ * transporta identidad y renderiza). KAL-4: el gate `requireResumeToken_` valida el
+ * resume_token (grupo server-side); el guardian que recupera se resuelve server-side del
+ * `recovered_email` (a1) — en el wizard para el gate, y de nuevo en el KMS.
+ *
+ * El frontend (DL-B) llena su store en memoria con este payload y NUNCA re-fetchea al
+ * navegar (elimina resumeSession+fetchLookups+getSavedBillingSplits+resolveSigningToken
+ * + los re-fetch por-navegación — causa raíz de la spec).
+ *
+ * @param {Object} p — { resume_token, recovered_email? }
+ * @returns {Object} payload consolidado del KMS.
+ */
+function hydrateSession_(p) {
+  const groupId = requireResumeToken_(p);  // KAL-4 + TTL 7d + abandoned gate
+  _markStepUpFresh_(groupId);              // recuperar es actividad real → desliza la ventana
+  return kmsProxy_('enr.wizardHydrate', {
+    resume_token:    String(p.resume_token).trim(),
+    recovered_email: (p && p.recovered_email) ? String(p.recovered_email).trim() : null,
+  });
+}
+
+/**
+ * DL-A.5 (Opción A §2) — Recibe el notify KMS→wizard de un cambio de estado/milestone y
+ * bumpa la versión liveState del grupo (ScriptCache). NO es un endpoint de usuario: lo
+ * llama SOLO el KMS (CALL_WEBHOOK_ASYNC). Gate por secreto compartido
+ * `WIZARD_NOTIFY_SECRET` (Script Property); secreto inválido/ausente → no-op estructurado
+ * `{ok:false}` (NUNCA 403, NUNCA revela si el grupo existe — patrón qb-public/drainJobQueue).
+ *
+ * @param {Object} p — { notify_secret, enrollment_group_id, reason? }
+ * @returns {{ok:boolean, bumped?:boolean, version?:number, reason?:string}}
+ */
+function notifyLiveStateChange_(p) {
+  p = p || {};
+  const expected = PropertiesService.getScriptProperties().getProperty('WIZARD_NOTIFY_SECRET');
+  const provided = p.notify_secret || '';
+  if (!expected || String(provided).trim() !== String(expected).trim()) {
+    Logger.log('[notifyLiveStateChange_] secreto inválido/ausente — no-op (estructurado, no 403)');
+    return { ok: false, reason: 'UNAUTHORIZED' };
+  }
+  const groupId = p.enrollment_group_id;
+  try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
+  const version = _bumpLiveStateVersion_(groupId);
+  Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (p.reason || '?') + ' -> v' + version));
+  return { ok: true, bumped: true, version: version };
+}
+
+/**
+ * DL-A.5 (Opción A §2) — Cheap-poll: devuelve SOLO la versión liveState del grupo. Lee el
+ * ScriptCache (efímero), SIN tocar AppSheet ni el KMS — diseñado para llamarse con alta
+ * frecuencia (on-focus + intervalo). El frontend solo hace el fetch de detalle del
+ * liveState (o re-hidrata) cuando la versión sube respecto a la que tiene en memoria.
+ *
+ * El `enrollment_group_id` lo aporta el frontend (lo obtuvo de la hidratación). El valor
+ * es un entero no sensible (cuenta de cambios); el bump exige el secreto del KMS, así que
+ * la lectura abierta no es un vector (no expone datos). assertValidUuid_ por higiene.
+ *
+ * @param {Object} p — { enrollment_group_id }
+ * @returns {{version:number}}
+ */
+function getLiveStateVersion_(p) {
+  const groupId = p && p.enrollment_group_id;
+  try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { version: 0 }; }
+  return { version: _getLiveStateVersion_(groupId) };
 }
 
 // ─── Promotion logic ──────────────────────────────────────────────────────────
