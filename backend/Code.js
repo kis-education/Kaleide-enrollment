@@ -5391,6 +5391,12 @@ function saveBillingInfo_(p) {
     // a terceros). Se reenvía cuando el frontend lo manda; el KMS deriva grupo+signer
     // del token (KAL-4). Los campos single-payer top-level se mantienen por
     // backwards-compat con proxies/handlers que aún no leen `payers`.
+    // CLI 10 (DL-E42 §3/§5): array de repartos PER-PARTICIPANTE (N subscriptions,
+    // solo %). El KMS deriva grupo+enrollments del token (KAL-4) y valida que cada
+    // enrollment_id ∈ grupo y cada pagador es guardian del grupo. Se reenvía solo en
+    // modo "personalizar por hijo"; el default (un pagador para todos) sigue por
+    // `payers`/single-payer (compat byte a byte con lo desplegado).
+    per_participant:      (p.per_participant && p.per_participant.length) ? p.per_participant : undefined,
     payers:               (p.payers && p.payers.length) ? p.payers : undefined,
     payer_type:           p.payer_type           || null,
     payer_person_id:      p.payer_person_id      || null,

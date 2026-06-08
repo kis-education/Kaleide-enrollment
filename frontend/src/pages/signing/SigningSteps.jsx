@@ -128,10 +128,115 @@ export function SigningNav({ onBack, onSubmit, submitting, savePending = false, 
   );
 }
 
-// ─── Step 8 — Reparto del pago entre pagadores (billing rediseño 2026-06-08) ───
+// ─── Editor de UN reparto (1 / 2 / N pagadores) ───────────────────────────────
+// Slider+presets (2 pagadores) o inputs con rebalanceo proporcional (>2) → la suma es
+// 100 POR CONSTRUCCIÓN. Reutilizado por el caso group-level (default colapsado) y por
+// cada hijo en modo per-participante (CLI 10). `payers`=[{ key, payer_person_id, name,
+// split }]. Controlado: recibe `payers` + `onChange(nextPayers)`.
+export function SplitEditor({ payers, onChange }) {
+  const { t } = useTranslation();
+  const two = payers.length === 2;
+  const sliderA = two ? (Number(payers[0].split) || 0) : 0;
+  const totalSplit = payers.reduce((s, p) => s + (Number(p.split) || 0), 0);
+
+  // 2 pagadores: un slider reparte entre ambos (p0=a, p1=100-a → suma 100 exacta).
+  const setSliderValue = (v) => {
+    const a = Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+    onChange(payers.length === 2
+      ? [{ ...payers[0], split: a }, { ...payers[1], split: 100 - a }]
+      : payers);
+  };
+
+  // >2 pagadores: input por pagador con REBALANCEO proporcional del resto → la suma se
+  // mantiene exactamente 100 (el drift de redondeo se corrige en el último "otro").
+  const setSplitRebalanced = (key) => (e) => {
+    const v = Math.max(0, Math.min(100, Math.round(Number(e.target.value) || 0)));
+    const others = payers.filter(p => p.key !== key);
+    const otherSum = others.reduce((s, p) => s + (Number(p.split) || 0), 0);
+    const remain = 100 - v;
+    let acc = 0;
+    const next = payers.map(p => {
+      if (p.key === key) return { ...p, split: v };
+      const share = others.length === 0 ? 0
+        : (otherSum > 0 ? Math.round((Number(p.split) || 0) / otherSum * remain)
+                        : Math.round(remain / others.length));
+      acc += share;
+      return { ...p, split: share };
+    });
+    const drift = 100 - (v + acc);
+    if (drift !== 0) {
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].key !== key) { next[i] = { ...next[i], split: Math.max(0, next[i].split + drift) }; break; }
+      }
+    }
+    onChange(next);
+  };
+
+  const presetBtn = (label, a) => (
+    <button type="button" className="btn btn-outline-secondary btn-sm" style={{ fontWeight: 600 }}
+      onClick={() => setSliderValue(a)}>{label}</button>
+  );
+
+  // 1 pagador: no hay reparto que ajustar (100%).
+  if (payers.length === 1) {
+    return (
+      <div style={{ padding: '12px 14px', background: 'var(--bg)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
+        <span>{payers[0].name}</span><span>100%</span>
+      </div>
+    );
+  }
+  // 2 pagadores: slider + presets, auto-balanceado a 100%.
+  if (two) {
+    return (
+      <div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          {presetBtn('100 / 0', 100)}
+          {presetBtn('50 / 50', 50)}
+          {presetBtn('0 / 100', 0)}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: '0.9rem', marginBottom: 6 }}>
+          <span>{payers[0].name}: {sliderA}%</span>
+          <span>{payers[1].name}: {100 - sliderA}%</span>
+        </div>
+        <input type="range" min="0" max="100" step="1" value={sliderA}
+          onChange={e => setSliderValue(e.target.value)} style={{ width: '100%' }}
+          aria-label={t('signing.billing.split.title')} />
+      </div>
+    );
+  }
+  // >2 pagadores: inputs con rebalanceo (suma 100 por construcción).
+  return (
+    <div>
+      {payers.map(p => (
+        <div key={p.key} style={{ marginBottom: 12, padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 110 }}>
+              <input type="number" min="0" max="100" className="form-control"
+                style={{ width: 72, textAlign: 'right' }} value={p.split}
+                onChange={setSplitRebalanced(p.key)} />
+              <span style={{ fontWeight: 600, color: 'var(--muted)' }}>%</span>
+            </div>
+          </div>
+        </div>
+      ))}
+      <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', fontSize: '0.88rem', fontWeight: 700, color: '#1b5e20' }}>
+        <span>{t('signing.billing.split.total')}</span>
+        <span>{totalSplit}%</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Step 8 — Reparto del pago (billing rediseño 2026-06-08 + CLI 10 per-participante) ─
 // El formulario fiscal se eliminó: los datos fiscales viven en el registro core del
 // pagador y el KMS los deriva por payer_person_id. Este paso muestra SOLO el reparto.
-
+// CLI 10 (DL-E42 §3/§5): el reparto es per-PARTICIPANTE (un reparto por hijo), solo %.
+//   · Default COLAPSADO = un único reparto para TODOS los hijos (= lo de hoy, group-level
+//     → payload `payers[]`, compat byte a byte).
+//   · "Personalizar por hijo" expande a N repartos, cada uno solo % entre tutores, suma
+//     100, un primario → payload `per_participant:[{ applicant_person_id, payers[] }]`.
+// El KMS deriva grupo+enrollments del token (KAL-4) y mapea cada hijo → su finSubscription.
 export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   const { t } = useTranslation();
   const { stepData, setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
@@ -141,23 +246,15 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   // re-derives enrollment_group_id + signer from the token, never from this payload.
   const guardianPersonId = signerCtx && signerCtx.guardian_person_id;
   const persons = (stepData && stepData.persons) || [];
-  const guardians = persons.filter(p => p.person_type_id === 'guardian');
-
-  // Billing rediseño (decisión Diego 2026-06-08): el Step 8 ya NO pide datos fiscales
-  // — el KMS (fin_saveBillingPartyFromWizard) los DERIVA del registro core del pagador
-  // por payer_person_id. El Step muestra SOLO el REPARTO del pago entre los tutores.
-  // payers: [{ key, payer_person_id, name, split }]. Default: firmante 100%, resto 0%
-  // (suma 100). La suma es 100 POR CONSTRUCCIÓN (slider para 2; rebalanceo para >2).
-  const [payers, setPayers] = useState([]);
-  const [err, setErr] = useState('');
+  const guardians  = persons.filter(p => p.person_type_id === 'guardian');
+  const applicants = persons.filter(p => p.person_type_id === 'applicant');
 
   const fullNameOf = (g) => [g.first_name, g.middle_name, g.last_name]
     .filter(x => x && String(x).trim()).join(' ').trim();
 
-  // Seed las filas de reparto desde los tutores del grupo: firmante 100%, resto 0%.
+  // Construye las filas de reparto por defecto: firmante 100%, resto 0% (suma 100).
   // Fallback (/sign host sin stepData): una sola fila GUARDIAN (el firmante) al 100%.
-  useEffect(() => {
-    if (payers.length) return;
+  const seedPayers = () => {
     if (guardians.length) {
       const rows = guardians.map((g, i) => {
         const pid = g.person_id || g._uid;
@@ -170,62 +267,51 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
         };
       });
       if (!rows.some(r => r.split === 100) && rows.length) rows[0].split = 100;
-      setPayers(rows);
-    } else {
-      setPayers([{
-        key: 'signer',
-        payer_person_id: guardianPersonId || null,
-        name: t('signing.billing.split.you'),
-        split: 100,
-      }]);
+      return rows;
+    }
+    return [{ key: 'signer', payer_person_id: guardianPersonId || null, name: t('signing.billing.split.you'), split: 100 }];
+  };
+
+  const [payers, setPayers]         = useState([]);    // group-level (default colapsado)
+  const [perChild, setPerChild]     = useState(false); // CLI 10: "personalizar por hijo"
+  const [childSplits, setChildSplits] = useState({});  // applicant_person_id → payers[]
+  const [err, setErr] = useState('');
+
+  // Seed group-level + per-hijo una sola vez (cuando hay tutores/hijos).
+  useEffect(() => {
+    if (payers.length) return;
+    setPayers(seedPayers());
+    if (applicants.length) {
+      const map = {};
+      applicants.forEach(a => { map[a.person_id || a._uid] = seedPayers(); });
+      setChildSplits(map);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [guardians.length, guardianPersonId]);
+  }, [guardians.length, applicants.length, guardianPersonId]);
 
-  const totalSplit = payers.reduce((s, p) => s + (Number(p.split) || 0), 0);
-  const two = payers.length === 2;
-  const sliderA = two ? (Number(payers[0].split) || 0) : 0;
+  const childKey = (a) => a.person_id || a._uid;
+  // Solo ofrecemos "personalizar por hijo" cuando tiene sentido: ≥2 hijos y ≥2 tutores
+  // (con 1 hijo el per-hijo es idéntico al group-level; con 1 tutor no hay reparto).
+  const canPerChild = applicants.length > 1 && guardians.length > 1;
 
-  // 2 pagadores: un solo slider reparte entre ambos (p0 = a, p1 = 100-a → suma 100
-  // exacta). Presets fijan `a` directamente.
-  const setSliderValue = (v) => {
-    const a = Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
-    setPayers(prev => prev.length === 2
-      ? [{ ...prev[0], split: a }, { ...prev[1], split: 100 - a }]
-      : prev);
+  // is_primary del reparto = el pagador con mayor %, el primero en empate (el KMS exige
+  // exactamente uno por reparto). Solo aplica al payload per-participante.
+  const withPrimary = (rows) => {
+    const active = rows.filter(r => (Number(r.split) || 0) > 0);
+    const list = active.length ? active : rows.slice(0, 1);
+    let primaryKey = list[0] && list[0].key, max = -1;
+    list.forEach(r => { const s = Number(r.split) || 0; if (s > max) { max = s; primaryKey = r.key; } });
+    return list.map(r => ({
+      payer_type:       'GUARDIAN',
+      payer_person_id:  r.payer_person_id || null,
+      split_percentage: Number(r.split) || 0,
+      is_primary:       r.key === primaryKey,
+    }));
   };
 
-  // >2 pagadores: input por pagador con REBALANCEO proporcional del resto → la suma
-  // se mantiene exactamente 100 (el drift de redondeo se corrige en el último "otro").
-  const setSplitRebalanced = (key) => (e) => {
-    const v = Math.max(0, Math.min(100, Math.round(Number(e.target.value) || 0)));
-    setPayers(prev => {
-      const others = prev.filter(p => p.key !== key);
-      const otherSum = others.reduce((s, p) => s + (Number(p.split) || 0), 0);
-      const remain = 100 - v;
-      let acc = 0;
-      const next = prev.map(p => {
-        if (p.key === key) return { ...p, split: v };
-        const share = others.length === 0 ? 0
-          : (otherSum > 0 ? Math.round((Number(p.split) || 0) / otherSum * remain)
-                          : Math.round(remain / others.length));
-        acc += share;
-        return { ...p, split: share };
-      });
-      const drift = 100 - (v + acc);  // corrige el redondeo en el último "otro"
-      if (drift !== 0) {
-        for (let i = next.length - 1; i >= 0; i--) {
-          if (next[i].key !== key) { next[i] = { ...next[i], split: Math.max(0, next[i].split + drift) }; break; }
-        }
-      }
-      return next;
-    });
-  };
-
-  // Contrato canónico payers[] — SOLO payer_person_id + split (SIN campos fiscales:
-  // el KMS los deriva de core por payer_person_id). KAL-4: la identidad/grupo los
-  // re-deriva el KMS del signing_token, este payload solo lleva el % de cada tutor.
-  const buildPayersPayload = () => payers
+  // Group-level payload (compat byte a byte con lo desplegado): SOLO payer_person_id +
+  // split (sin fiscales — el KMS los deriva de core; sin is_primary — el KMS lo deriva).
+  const buildGroupPayload = () => payers
     .filter(p => (Number(p.split) || 0) > 0 || payers.length === 1)
     .map(p => ({
       payer_type:       'GUARDIAN',
@@ -233,11 +319,37 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
       split_percentage: Number(p.split) || 0,
     }));
 
-  // WIZARD — guardado background + avance optimista (paso 8). (1) await del save
-  // previo en vuelo (surfacea un fallo anterior); (2) saveBillingInfo en BACKGROUND;
-  // (3) avance inmediato (onDone). Sin validación de formulario fiscal (eliminado) ni
-  // de suma (es 100 por construcción). KAL-4/KAL-7 intactos.
+  // Per-participante payload: un reparto por hijo (keyed por applicant_person_id; el KMS
+  // resuelve el enrollment + la finSubscription server-side, KAL-4) con su is_primary.
+  const buildPerParticipantPayload = () => applicants.map(a => ({
+    applicant_person_id: childKey(a),
+    payers:              withPrimary(childSplits[childKey(a)] || seedPayers()),
+  }));
+
+  // Gate de avance: cada reparto activo suma 100 (±0.5 redondeo) y tiene un primario
+  // (algún pagador con % > 0). Suma 100 por construcción — esto es red de seguridad.
+  const sumOk = (rows) => Math.abs(rows.reduce((s, r) => s + (Number(r.split) || 0), 0) - 100) <= 0.5;
+  const validate = () => {
+    if (perChild) {
+      for (const a of applicants) {
+        const rows = childSplits[childKey(a)] || [];
+        if (!rows.length || !sumOk(rows) || !rows.some(r => (Number(r.split) || 0) > 0)) {
+          return t('signing.billing.split.err_child', { name: fullNameOf(a) || t('signing.billing.split.child', { n: 1 }) });
+        }
+      }
+      return '';
+    }
+    return (payers.length && sumOk(payers) && payers.some(r => (Number(r.split) || 0) > 0))
+      ? '' : t('signing.billing.split.err_sum');
+  };
+
+  // WIZARD — guardado background + avance optimista (paso 8). (1) gate de validación;
+  // (2) await del save previo en vuelo (surfacea un fallo anterior); (3) saveBillingInfo
+  // en BACKGROUND; (4) avance inmediato (onDone). KAL-4/KAL-7 intactos: el KMS deriva
+  // grupo/signer del token; el payload solo lleva % (group-level o per-hijo).
   const submit = async () => {
+    const v = validate();
+    if (v) { setErr(v); return; }
     try {
       await awaitPendingSave();
     } catch (e) {
@@ -247,14 +359,12 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
     }
 
     setErr('');
-    const payersPayload = buildPayersPayload();
+    // Default (colapsado) → payers[] group-level; "personalizar por hijo" → per_participant.
+    const body = { signing_token: signingToken };
+    if (perChild && applicants.length) body.per_participant = buildPerParticipantPayload();
+    else body.payers = buildGroupPayload();
     // Background save (NO await aquí). El siguiente paso lo espera vía awaitPendingSave.
-    // SOLO signing_token + payers[] (sin fiscales — el KMS los deriva). El proxy
-    // saveBillingInfo_ ya forwarda payers[].
-    const savePromise = gasCall('saveBillingInfo', {
-      signing_token: signingToken,
-      payers:        payersPayload,
-    }).catch(e => {
+    const savePromise = gasCall('saveBillingInfo', body).catch(e => {
       log.error('SignBilling: saveBillingInfo failed (background)', { message: e.message });
       throw e; // se surface en el siguiente gate (awaitPendingSave del paso N+1)
     });
@@ -276,15 +386,6 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
     />
   );
 
-  const presetBtn = (label, a) => (
-    <button
-      type="button"
-      className="btn btn-outline-secondary btn-sm"
-      style={{ fontWeight: 600 }}
-      onClick={() => setSliderValue(a)}
-    >{label}</button>
-  );
-
   return (
     <div className="kis-card">
       {nav('top')}
@@ -300,61 +401,35 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
           {t('signing.billing.split.subtitle')}
         </p>
 
-        {/* 1 pagador: no hay reparto que ajustar (100%). */}
-        {payers.length === 1 && (
-          <div style={{ padding: '12px 14px', background: 'var(--bg)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
-            <span>{payers[0].name}</span><span>100%</span>
+        {/* CLI 10 — toggle "personalizar por hijo" (solo si ≥2 hijos y ≥2 tutores). */}
+        {canPerChild && (
+          <div className="form-check form-switch" style={{ marginBottom: 16 }}>
+            <input className="form-check-input" type="checkbox" id="perChildToggle"
+              checked={perChild} onChange={e => { setPerChild(e.target.checked); setErr(''); }} />
+            <label className="form-check-label" htmlFor="perChildToggle" style={{ fontSize: '0.86rem', fontWeight: 600 }}>
+              {t('signing.billing.split.per_child_toggle')}
+            </label>
+            <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 2 }}>
+              {t('signing.billing.split.per_child_hint')}
+            </div>
           </div>
         )}
 
-        {/* 2 pagadores: slider + presets, auto-balanceado a 100%. */}
-        {two && (
-          <div>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-              {presetBtn('100 / 0', 100)}
-              {presetBtn('50 / 50', 50)}
-              {presetBtn('0 / 100', 0)}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: '0.9rem', marginBottom: 6 }}>
-              <span>{payers[0].name}: {sliderA}%</span>
-              <span>{payers[1].name}: {100 - sliderA}%</span>
-            </div>
-            <input
-              type="range" min="0" max="100" step="1"
-              value={sliderA}
-              onChange={e => setSliderValue(e.target.value)}
-              style={{ width: '100%' }}
-              aria-label={t('signing.billing.split.title')}
+        {/* Default COLAPSADO: un único reparto para todos los hijos (group-level). */}
+        {!perChild && <SplitEditor payers={payers} onChange={setPayers} />}
+
+        {/* Personalizar por hijo: un reparto por participante. */}
+        {perChild && applicants.map(a => (
+          <div key={childKey(a)} style={{ marginBottom: 18, paddingBottom: 14, borderBottom: '1px solid var(--border)' }}>
+            <h4 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '0.9rem', marginBottom: 10 }}>
+              {fullNameOf(a) || t('signing.billing.split.child', { n: 1 })}
+            </h4>
+            <SplitEditor
+              payers={childSplits[childKey(a)] || []}
+              onChange={(next) => setChildSplits(prev => ({ ...prev, [childKey(a)]: next }))}
             />
           </div>
-        )}
-
-        {/* >2 pagadores: inputs con rebalanceo (suma 100 por construcción). */}
-        {payers.length > 2 && (
-          <div>
-            {payers.map(p => (
-              <div key={p.key} style={{ marginBottom: 12, padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 110 }}>
-                    <input
-                      type="number" min="0" max="100"
-                      className="form-control"
-                      style={{ width: 72, textAlign: 'right' }}
-                      value={p.split}
-                      onChange={setSplitRebalanced(p.key)}
-                    />
-                    <span style={{ fontWeight: 600, color: 'var(--muted)' }}>%</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-            <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', fontSize: '0.88rem', fontWeight: 700, color: '#1b5e20' }}>
-              <span>{t('signing.billing.split.total')}</span>
-              <span>{totalSplit}%</span>
-            </div>
-          </div>
-        )}
+        ))}
       </div>
 
       {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
