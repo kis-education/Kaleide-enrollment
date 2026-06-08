@@ -2308,8 +2308,18 @@ function getAdmissionState_(p) {
   // Magic-link grace: un nonce válido (single-use, 10 min) consume + marca fresco.
   // Si no hay nonce, REPORTAMOS la frescura vigente del grupo (no la cambiamos).
   let stepUpFresh = _consumeMagicLinkNonce_(p && p.n, id);
-  if (stepUpFresh) _markStepUpFresh_(id);
-  else stepUpFresh = _isStepUpFresh_(id);
+  if (stepUpFresh) {
+    _markStepUpFresh_(id);
+  } else {
+    stepUpFresh = _isStepUpFresh_(id);
+    // Data-layer pieza 6 (heartbeat, opción b): este pulso ya está throttled a 30s en
+    // el frontend; aquí RE-EXTIENDE la marca server-side stepup_ok_<group> SOLO si YA
+    // está fresca → un usuario activo con el wizard abierto no recibe STEPUP_REQUIRED
+    // en mitad de un save de PII (la frescura se desliza). NUNCA crea frescura de la
+    // nada (no convierte un grupo no-verificado en verificado): solo prorroga una
+    // sesión YA verificada. KAL-4: el grupo se deriva del resume_token (requireResumeToken_).
+    if (stepUpFresh) _markStepUpFresh_(id);
+  }
 
   const idEsc = appsheetEscape_(id);
   const lightRead = appsheetRequestBatch_([
