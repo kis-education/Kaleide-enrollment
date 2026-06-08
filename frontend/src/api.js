@@ -69,7 +69,7 @@ const _questionsFlight = {};   // { [lang]: promise }
 // para evitar import circular con WizardContext) + purga explícita en clearSession
 // (WizardContext llama purgeQuestionsCache()). Defensivo: parseo/quota fallan →
 // cache-miss silencioso, comportamiento idéntico al actual.
-const QCACHE_PREFIX = 'kis_wizard_qcache_';
+const QCACHE_PREFIX = 'kis_wizard_qcache_v2_'; // v2: invalida la caché vieja con códigos (pre QB-TRANS designation fix)
 const QCACHE_TTL_MS = 10 * 60 * 1000; // espejo de STEPUP_WINDOW_MS (WizardContext)
 
 /**
