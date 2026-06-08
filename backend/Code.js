@@ -748,6 +748,7 @@ function doPost(e) {
       // submitGdprConsents (un set por sesión, sin fan-out per-guardian).
       // Implementación en sección "WS4 — Wizard pre-firma proxies a KMS".
       case 'saveBillingInfo':         result = saveBillingInfo_(payload);         break;
+      case 'getSavedBillingSplits':   result = getSavedBillingSplits_(payload);   break;
       case 'submitGdprConsents':      result = submitGdprConsents_(payload);      break;
       case 'confirmReview':           result = confirmReview_(payload);           break;
       case 'initiateSigningSession':  result = initiateSigningSession_(payload);  break;
@@ -2157,6 +2158,18 @@ function resumeSession_(p) {
       // P72 / defensivo: no romper la recuperación por esto (KAL-11: log redactado).
       Logger.log(redact_('resumeSession_: qbResponses union read failed (non-fatal): ' + e.message));
     }
+    // WPERF-4 (bug 2): instrumentación de la recuperación de respuestas para diagnosticar
+    // el responses_n:0 pese a Step 5 completado. Si responses_n=0 aquí pero la familia
+    // respondió, la causa más probable es que Step 5 persiste ahora en el KMS (WPERF-3,
+    // qbAnswerSessions/qbAnswers u otro respondent model) y NO en la tabla qbResponses que
+    // lee esta unión {group ∪ person ∪ enrollment}. KAL-11: solo contamos, no volcamos PII.
+    try {
+      const respondentSet = {};
+      responses.forEach(function (r) { if (r && r.respondent_id) respondentSet[r.respondent_id] = true; });
+      Logger.log('resumeSession_: qbResponses recovered responses_n=' + responses.length +
+                 ' distinct_respondents=' + Object.keys(respondentSet).length +
+                 ' extra_ids_probed=' + extraIds.length);
+    } catch (eLog) { /* logging best-effort */ }
   })();
 
   let interviews = [];
@@ -5436,6 +5449,21 @@ function saveBillingInfo_(p) {
     fiscal_country:       p.fiscal_country       || 'ES',
     billing_email:        p.billing_email        || null,
   });
+}
+
+/**
+ * WPERF-4 (bug 1) — Lee el reparto de facturación YA GUARDADO para rehidratar el
+ * Step 8. Proxy fino a `enr.getSavedBillingSplits` (el KMS deriva grupo del token,
+ * KAL-4). Devuelve `{ payers:[{payer_person_id, split_percentage, is_primary}],
+ * per_participant:[{applicant_person_id, payers:[...]}] }`. Best-effort: si no hay
+ * reparto guardado, ambos arrays vienen vacíos y el frontend cae a su seed default.
+ *
+ * @param {Object} p — { signing_token }
+ * @returns {Object} `data` del KMS.
+ */
+function getSavedBillingSplits_(p) {
+  const sctx = requireSigningToken_(p);
+  return kmsProxy_('enr.getSavedBillingSplits', { signing_token: sctx.signing_token });
 }
 
 /**

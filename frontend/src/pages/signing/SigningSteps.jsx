@@ -252,21 +252,35 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   const fullNameOf = (g) => [g.first_name, g.middle_name, g.last_name]
     .filter(x => x && String(x).trim()).join(' ').trim();
 
-  // Construye las filas de reparto por defecto: firmante 100%, resto 0% (suma 100).
-  // Fallback (/sign host sin stepData): una sola fila GUARDIAN (el firmante) al 100%.
-  const seedPayers = () => {
+  // WPERF-4 (bug 1): rehidrata desde el reparto GUARDADO si existe (savedList =
+  // [{payer_person_id, split_percentage}] de enr.getSavedBillingSplits). Si no hay
+  // guardado, cae al default firmante 100% / resto 0%. Fallback (/sign sin stepData):
+  // una sola fila GUARDIAN (el firmante) al 100%.
+  const seedPayers = (savedList) => {
+    const savedByPid = {};
+    (savedList || []).forEach(s => {
+      if (s && s.payer_person_id != null) savedByPid[String(s.payer_person_id)] = Number(s.split_percentage) || 0;
+    });
+    const hasSaved = Object.keys(savedByPid).length > 0;
     if (guardians.length) {
       const rows = guardians.map((g, i) => {
         const pid = g.person_id || g._uid;
         const isSigner = guardianPersonId ? pid === guardianPersonId : i === 0;
+        const split = hasSaved
+          ? (savedByPid[String(pid)] != null ? savedByPid[String(pid)] : 0)
+          : (isSigner ? 100 : 0);
         return {
           key: 'g_' + (pid || i),
           payer_person_id: pid || (isSigner ? guardianPersonId : null) || null,
           name: fullNameOf(g) || t('signing.billing.split.guardian_fallback', { n: i + 1 }),
-          split: isSigner ? 100 : 0,
+          split,
         };
       });
-      if (!rows.some(r => r.split === 100) && rows.length) rows[0].split = 100;
+      // Si el guardado no casó con ningún tutor (o no había guardado), garantiza un 100%.
+      if (!rows.some(r => (Number(r.split) || 0) > 0) && rows.length) {
+        const si = rows.findIndex(r => guardianPersonId && r.payer_person_id === guardianPersonId);
+        rows[si >= 0 ? si : 0].split = 100;
+      }
       return rows;
     }
     return [{ key: 'signer', payer_person_id: guardianPersonId || null, name: t('signing.billing.split.you'), split: 100 }];
@@ -276,28 +290,57 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   const [perChild, setPerChild]     = useState(false); // CLI 10: "personalizar por hijo"
   const [childSplits, setChildSplits] = useState({});  // applicant_person_id → payers[]
   const [err, setErr] = useState('');
+  // WPERF-4 (bug 1): reparto YA GUARDADO (null = aún cargando; {payers,per_participant}).
+  const [savedSplits, setSavedSplits] = useState(null);
 
-  // Seed group-level + per-hijo una sola vez (cuando hay tutores/hijos).
+  // WPERF-4 (bug 1): lee el reparto guardado ANTES de sembrar, para rehidratar 50/50
+  // en vez de volver siempre a 100/0. Best-effort: si falla, sembramos el default.
   useEffect(() => {
-    if (payers.length) return;
-    const seeded = seedPayers();
-    // DBG-SESSION (bug 4a): seedPayers NO rehidrata el reparto guardado — siempre
-    // firmante 100%. Si signerCtx es null aún, el firmante cae al guardian[0].
+    let alive = true;
+    if (!signingToken) { setSavedSplits({ payers: [], per_participant: [] }); return undefined; }
+    gasCall('getSavedBillingSplits', { signing_token: signingToken })
+      .then(res => {
+        const norm = (res && typeof res === 'object')
+          ? { payers: res.payers || [], per_participant: res.per_participant || [] }
+          : { payers: [], per_participant: [] };
+        log.info('[DBG billing] saved splits', {
+          group_payers: norm.payers.map(p => ({ pid8: log.sid(p.payer_person_id), split: p.split_percentage })),
+          per_participant_n: norm.per_participant.length,
+        });
+        if (alive) setSavedSplits(norm);
+      })
+      .catch(e => {
+        log.warn('[DBG billing] getSavedBillingSplits failed', { message: e && e.message });
+        if (alive) setSavedSplits({ payers: [], per_participant: [] });
+      });
+    return () => { alive = false; };
+  }, [signingToken]);
+
+  // Seed group-level + per-hijo una sola vez, ESPERANDO a la lectura del reparto
+  // guardado (savedSplits !== null) para rehidratar 50/50 si lo había (WPERF-4 bug 1).
+  useEffect(() => {
+    if (payers.length || savedSplits === null) return;
+    const seeded = seedPayers(savedSplits.payers);
     log.info('[DBG billing] seed', {
       signer8:    guardianPersonId && log.sid(guardianPersonId),
       has_signerCtx: !!signerCtx,
+      has_saved:  (savedSplits.payers || []).length > 0,
       guardians:  guardians.length,
       applicants: applicants.length,
       payers:     seeded.map(p => ({ key: p.key, pid8: log.sid(p.payer_person_id), split: p.split })),
     });
     setPayers(seeded);
     if (applicants.length) {
+      const perChildSaved = {};
+      (savedSplits.per_participant || []).forEach(pp => {
+        if (pp && pp.applicant_person_id) perChildSaved[String(pp.applicant_person_id)] = pp.payers;
+      });
       const map = {};
-      applicants.forEach(a => { map[a.person_id || a._uid] = seedPayers(); });
+      applicants.forEach(a => { const k = a.person_id || a._uid; map[k] = seedPayers(perChildSaved[String(k)]); });
       setChildSplits(map);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [guardians.length, applicants.length, guardianPersonId]);
+  }, [guardians.length, applicants.length, guardianPersonId, savedSplits]);
 
   const childKey = (a) => a.person_id || a._uid;
   // Solo ofrecemos "personalizar por hijo" cuando tiene sentido: ≥2 hijos y ≥2 tutores
@@ -738,6 +781,10 @@ export function SignReview({ signingToken, onDone, onBack }) {
     const created = [];
     members.forEach(m => {
       if (!m.file_id) return;
+      // WPERF-4 (bug 4): si el member ya trae drive_view_url (carga bien, instantáneo),
+      // NO descargamos los bytes por GAS (getDocument tarda ~40s). El visor inline usa
+      // drive_view_url directamente; el blob queda solo como fallback cuando falta.
+      if (m.drive_view_url) { log.info('[DBG review] using drive_view_url (skip blob)', { file8: log.sid(m.file_id) }); return; }
       const _t0 = Date.now();                        // DBG-SESSION timing por doc (bug 7)
       log.info('[DBG review] getDocument start', { file8: log.sid(m.file_id) });
       fetchDocumentObjectUrl({ file_id: m.file_id, signing_token: signingToken })
@@ -765,20 +812,29 @@ export function SignReview({ signingToken, onDone, onBack }) {
   // procesado" para el await previo (puede tardar), pero NO bloquea el avance una vez
   // disparado el background save.
   const confirm = async () => {
+    log.info('[DBG review] confirm CLICK', { read, hasPendingSave });
     if (!read) { setErr(t('signing.review.must_read')); return; }
-    log.info('[DBG review] confirm click — esperando save previo (gdpr) antes de avanzar');
     setErr(''); setSubmitting(true);
 
     // Lag de un paso: espera el save de GDPR. Si falló (incl. bloqueante), su rechazo
     // se surface aquí y NO avanzamos a Sign.
+    // WPERF-4 (bug 3): un save previo COLGADO congelaba el avance para siempre (confirm
+    // se quedaba en este await y onDone nunca corría). Lo acotamos con un timeout: si el
+    // save no resuelve en 8s, avanzamos igual (SignSign re-espera el encadenado antes del
+    // acto de firma, así que no se pierde la red de seguridad del save). Compatible con la
+    // cola no-bloqueante de WPERF-1 (donde awaitPendingSave resuelve de inmediato).
     try {
-      await awaitPendingSave();
+      await Promise.race([
+        awaitPendingSave(),
+        new Promise((resolve) => setTimeout(() => { log.warn('[DBG review] awaitPendingSave timeout — avanzo igualmente'); resolve(); }, 8000)),
+      ]);
     } catch (e) {
       log.warn('SignReview: previous gdpr save failed', { message: e.message });
       setErr(e?.gdprBlocked ? t('signing.gdpr.blocked') : (e?.message || t('signing.generic_error')));
       setSubmitting(false);
       return;
     }
+    log.info('[DBG review] confirm — avanzando (confirmReview en background)');
 
     // Background save (NO await). SignSign lo espera vía awaitPendingSave antes de
     // iniciar el acto de firma. KAL-4/KAL-7 + payload intactos.
@@ -873,21 +929,27 @@ export function SignReview({ signingToken, onDone, onBack }) {
       {!loadErr && members && members.length > 0 && (
         <>
           {members.map((m, i) => {
-            const docUrl = m.file_id ? docUrls[m.file_id] : null;
+            // WPERF-4 (bug 4): preferimos drive_view_url (instantáneo). Para el iframe
+            // Drive necesita /preview (el /view deniega X-Frame). El blob por GAS queda
+            // como fallback cuando el member no trae drive_view_url.
+            const blobUrl = m.file_id ? docUrls[m.file_id] : null;
+            const embedDrive = (u) => u ? u.replace(/\/view(\?[^#]*)?(#.*)?$/, '/preview') : u;
+            const previewUrl = m.drive_view_url ? embedDrive(m.drive_view_url) : blobUrl;
+            const openUrl = m.drive_view_url || blobUrl;
             return (
             <div key={m.file_id || i} style={{ marginBottom: 18 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <strong style={{ color: 'var(--teal-dk)', fontSize: '0.92rem' }}>{docLabel(m)}</strong>
-                {docUrl && (
-                  <a href={docUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem', color: 'var(--teal-dk)' }}>
+                {openUrl && (
+                  <a href={openUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem', color: 'var(--teal-dk)' }}>
                     {t('signing.review.open_doc')} <i className="bi bi-box-arrow-up-right ms-1" />
                   </a>
                 )}
               </div>
-              {docUrl ? (
+              {previewUrl ? (
                 <iframe
                   title={docLabel(m)}
-                  src={docUrl}
+                  src={previewUrl}
                   style={{ width: '100%', height: 480, border: '1px solid var(--border)', borderRadius: 8 }}
                   sandbox="allow-scripts allow-same-origin allow-popups"
                 />
