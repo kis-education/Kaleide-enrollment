@@ -74,6 +74,11 @@ export function prefetchDocuments(signingToken) {
       const members = Array.isArray(res && res.members) ? res.members : [];
       members.forEach(m => {
         if (!m.file_id || _docBytesCache[m.file_id]) return;
+        // WPERF-INT (reconciliación con WPERF-4): el preview de S-REVIEW usa drive_view_url
+        // (instantáneo) cuando existe; los bytes (getDocument ~40s) son SOLO fallback. No
+        // malgastamos los 40s pre-calentando bytes que ya no son la vía principal — solo
+        // calentamos cuando el member NO trae drive_view_url (espejo de la lógica de SignReview).
+        if (m.drive_view_url) return;
         getDocumentBytes({ file_id: m.file_id, signing_token: signingToken }).catch(() => {});
       });
     })
