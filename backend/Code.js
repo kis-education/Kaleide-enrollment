@@ -3035,9 +3035,17 @@ function fetchQuestions_(p) {
       requestId: generateUuid_(),
     };
 
+    // El KMS es `access: ANYONE` → Google exige login de plataforma ANTES del
+    // doPost. Sin el header Authorization, el POST se redirige a la página de
+    // sign-in (HTML) → HTTP 401 y nunca llega al dispatcher qb-public. El Bearer
+    // OAuth token autentica como la cuenta deployadora del wizard y pasa ese gate;
+    // la auth de aplicación sigue siendo el service_token del payload. Mismo patrón
+    // que kmsProxy_ (commit 7851f2a) — fetchQuestions_ había quedado sin él, así que
+    // al activarse el path KMS (Script Properties puestas) las preguntas daban 401.
     const httpResp = UrlFetchApp.fetch(kmsUrl, {
       method:             'post',
       contentType:        'text/plain',
+      headers:            { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
       payload:            JSON.stringify(kmsPayload),
       followRedirects:    true,
       muteHttpExceptions: true,
