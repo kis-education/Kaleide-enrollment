@@ -751,6 +751,13 @@ function doPost(e) {
       case 'submitGdprConsents':      result = submitGdprConsents_(payload);      break;
       case 'confirmReview':           result = confirmReview_(payload);           break;
       case 'initiateSigningSession':  result = initiateSigningSession_(payload);  break;
+      // WPERF-2 — puente event-driven de drenado de la cola KMS. Lo dispara un bot
+      // AppSheet Automation (on-data-change sobre sys_JobQueue) vía 'Call a webhook' →
+      // POST aquí con { _secret }. Gateado por Script Property DRAIN_SHARED_SECRET
+      // (no-op silencioso si no coincide, NUNCA 403 — §funciones-debug). Reenvía a
+      // kmsProxy_('sys.drainJobQueue') (el KMS es el worker; el wizard es el puente
+      // autenticado porque el KMS es USER_ACCESSING y no acepta el webhook directo).
+      case 'drainJobQueue':           result = drainJobQueue_(payload);           break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
       // getTrackingData, getInterviewForEnrollment, getAdmissionDecisionForEnrollment,
       // getReservationPaymentInfo, getSigningTokenFromResumeToken eliminados —
@@ -5313,6 +5320,48 @@ function resolveSigningToken_(p) {
  * @throws {Error} con `.code` = código del KMS, `.message` = mensaje detallado.
  * @private
  */
+/**
+ * WPERF-2 — puente event-driven de drenado de la cola KMS sys_JobQueue.
+ *
+ * El wizard (backend PÚBLICO, ANYONE_ANONYMOUS) es el bridge AUTENTICADO entre el bot
+ * AppSheet y el KMS: el KMS es USER_ACCESSING (exige login Google a nivel plataforma),
+ * así que un webhook directo de AppSheet al KMS recibiría la página de login, NO el
+ * dispatcher. En cambio el wizard sí acepta POST anónimo y reenvía vía kmsProxy_
+ * (que adjunta el Bearer OAuth de la cuenta deployadora + el QB_SERVICE_TOKEN).
+ *
+ * GATE (§"funciones de diagnóstico/debug fuera del dispatcher público"): como CUALQUIER
+ * action de doPost es invocable desde internet sin auth, este endpoint se gatea con un
+ * secreto compartido en Script Property `DRAIN_SHARED_SECRET` comparado contra
+ * `payload._secret`. Si no coincide (o no está configurado) → NO-OP SILENCIOSO
+ * `{ drained:false }` (HTTP 200, NUNCA 403, NUNCA revela si el secreto existe). El
+ * secreto solo autoriza DISPARAR el drenado; el trabajo real (y su auth KAL-4) vive en
+ * el KMS (sys_drainJobQueue verifica además el QB_SERVICE_TOKEN). Red de seguridad si
+ * el bot/secret fallan: el trigger time-driven KMS `sys_runJobQueue` (~1 min).
+ *
+ * @param {{ _secret?: string, limit?: number, schoolId?: string }} payload
+ * @returns {{ drained: boolean, report?: Object }}
+ */
+function drainJobQueue_(payload) {
+  payload = payload || {};
+  const expected = PropertiesService.getScriptProperties().getProperty('DRAIN_SHARED_SECRET');
+  const provided = payload._secret || '';
+  if (!expected || String(provided) !== String(expected)) {
+    Logger.log('[drainJobQueue_] _secret inválido/ausente — no-op silencioso (no 403)');
+    return { drained: false };
+  }
+  try {
+    const report = kmsProxy_('sys.drainJobQueue', {
+      limit:    payload.limit || undefined,
+      schoolId: payload.schoolId || undefined,
+    });
+    return { drained: true, report: report };
+  } catch (e) {
+    // Degradación: si el KMS no responde, el trigger time-driven drena igual. No-op.
+    Logger.log('[drainJobQueue_] kmsProxy_ falló (red de seguridad: trigger ~1 min) — ' + redact_(e.message));
+    return { drained: false };
+  }
+}
+
 function kmsProxy_(action, payload) {
   const props        = PropertiesService.getScriptProperties();
   const kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
