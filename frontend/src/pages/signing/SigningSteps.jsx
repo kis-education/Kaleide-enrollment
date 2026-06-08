@@ -39,7 +39,6 @@ const isStepUpRequiredError = (e) =>
  * signerCtx.steps (billing_confirmed / gdpr_completed / review_completed / signed).
  */
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 export const SUBS = ['billing', 'gdpr', 'review', 'sign'];
 
 export function lang_(i18n) { return i18n.language && i18n.language.indexOf('en') === 0 ? 'en' : 'es'; }
@@ -127,12 +126,9 @@ export function SigningNav({ onBack, onSubmit, submitting, savePending = false, 
   );
 }
 
-// ─── Step 8 — Billing (+ reparto entre pagadores) ─────────────────────────────
-
-const BLANK_PAYER_FIELDS = {
-  fiscal_name: '', fiscal_tax_id: '', fiscal_address_line1: '',
-  fiscal_address_city: '', fiscal_postal_code: '', billing_email: '',
-};
+// ─── Step 8 — Reparto del pago entre pagadores (billing rediseño 2026-06-08) ───
+// El formulario fiscal se eliminó: los datos fiscales viven en el registro core del
+// pagador y el KMS los deriva por payer_person_id. Este paso muestra SOLO el reparto.
 
 export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   const { t } = useTranslation();
@@ -144,49 +140,20 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   const guardianPersonId = signerCtx && signerCtx.guardian_person_id;
   const persons = (stepData && stepData.persons) || [];
   const guardians = persons.filter(p => p.person_type_id === 'guardian');
-  const primaryEmail = (stepData && stepData.email && stepData.email.primary_email) || '';
 
-  // Titular (default payer) fiscal fields — prefilled from the signing guardian.
-  const [f, setF] = useState({ ...BLANK_PAYER_FIELDS, billing_phone: '' });
-  // Reparto: one row per group guardian (GUARDIAN payer_type only — NO third-party
-  // billing per Diego's decision). Each row carries a `split_percentage`. Default:
-  // signing guardian 100%, the rest 0% (sums to 100). The titular's own fiscal data
-  // lives in `f` (the first GUARDIAN row mirrors `f`); other guardian rows only need
-  // a % (their fiscal data is already in core from onboarding — the KMS resolves it
-  // by payer_person_id).
-  const [payers, setPayers] = useState([]); // [{ key, payer_type:'GUARDIAN', payer_person_id, name, split, ...fiscal }]
+  // Billing rediseño (decisión Diego 2026-06-08): el Step 8 ya NO pide datos fiscales
+  // — el KMS (fin_saveBillingPartyFromWizard) los DERIVA del registro core del pagador
+  // por payer_person_id. El Step muestra SOLO el REPARTO del pago entre los tutores.
+  // payers: [{ key, payer_person_id, name, split }]. Default: firmante 100%, resto 0%
+  // (suma 100). La suma es 100 POR CONSTRUCCIÓN (slider para 2; rebalanceo para >2).
+  const [payers, setPayers] = useState([]);
   const [err, setErr] = useState('');
-  const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
 
   const fullNameOf = (g) => [g.first_name, g.middle_name, g.last_name]
     .filter(x => x && String(x).trim()).join(' ').trim();
 
-  // Prefill from the signing guardian's already-captured fiscal data (Persons step).
-  // Best-effort: if the person record or any field isn't available client-side, the
-  // field stays blank and remains editable. The /sign host (SigningSteps) has no
-  // wizard stepData → prefill is a no-op there, which is acceptable (the family can
-  // type the data); the critical payer_person_id is still sent from signerCtx.
-  useEffect(() => {
-    if (!guardianPersonId) return;
-    const g = persons.find(p => (p.person_id || p._uid) === guardianPersonId);
-    if (!g) return;
-    const addr = g.address || {};
-    setF(prev => ({
-      ...prev,
-      fiscal_name:          prev.fiscal_name          || fullNameOf(g),
-      fiscal_tax_id:        prev.fiscal_tax_id        || (g.id_number || ''),
-      fiscal_address_line1: prev.fiscal_address_line1 || (addr.address_line_1 || ''),
-      fiscal_address_city:  prev.fiscal_address_city  || (addr.city || ''),
-      fiscal_postal_code:   prev.fiscal_postal_code   || (addr.zip || ''),
-      billing_email:        prev.billing_email        || primaryEmail,
-    }));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [guardianPersonId]);
-
-  // Seed the reparto rows from the group guardians: signing guardian 100%, rest 0%.
-  // Runs once when guardians become available (prefer the signing guardian as the
-  // 100% default; if it can't be identified — e.g. the /sign host with no stepData —
-  // fall back to a single synthetic GUARDIAN row at 100% echoing signerCtx).
+  // Seed las filas de reparto desde los tutores del grupo: firmante 100%, resto 0%.
+  // Fallback (/sign host sin stepData): una sola fila GUARDIAN (el firmante) al 100%.
   useEffect(() => {
     if (payers.length) return;
     if (guardians.length) {
@@ -195,76 +162,80 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
         const isSigner = guardianPersonId ? pid === guardianPersonId : i === 0;
         return {
           key: 'g_' + (pid || i),
-          payer_type: 'GUARDIAN',
           payer_person_id: pid || (isSigner ? guardianPersonId : null) || null,
           name: fullNameOf(g) || t('signing.billing.split.guardian_fallback', { n: i + 1 }),
           split: isSigner ? 100 : 0,
-          ...BLANK_PAYER_FIELDS,
         };
       });
-      // Guarantee exactly one 100% default even if the signer wasn't matched.
       if (!rows.some(r => r.split === 100) && rows.length) rows[0].split = 100;
       setPayers(rows);
     } else {
-      // /sign host or no stepData: single synthetic GUARDIAN row (the signer) at 100%.
       setPayers([{
         key: 'signer',
-        payer_type: 'GUARDIAN',
         payer_person_id: guardianPersonId || null,
         name: t('signing.billing.split.you'),
         split: 100,
-        ...BLANK_PAYER_FIELDS,
       }]);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guardians.length, guardianPersonId]);
 
-  const setSplit = (key) => (e) => {
-    const raw = e.target.value;
-    const n = raw === '' ? 0 : Math.max(0, Math.min(100, Number(raw) || 0));
-    setPayers(prev => prev.map(p => p.key === key ? { ...p, split: n } : p));
-  };
   const totalSplit = payers.reduce((s, p) => s + (Number(p.split) || 0), 0);
+  const two = payers.length === 2;
+  const sliderA = two ? (Number(payers[0].split) || 0) : 0;
 
-  // Build the canonical payers[] contract (THIS shape is mirrored by the parallel
-  // KMS agent). All rows are GUARDIAN payers (no third-party billing). The titular's
-  // fiscal data (`f`) feeds the signing-guardian row so a single-payer family still
-  // sends complete data; other guardian rows carry only a % (the KMS resolves their
-  // fiscal data from core by payer_person_id).
+  // 2 pagadores: un solo slider reparte entre ambos (p0 = a, p1 = 100-a → suma 100
+  // exacta). Presets fijan `a` directamente.
+  const setSliderValue = (v) => {
+    const a = Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+    setPayers(prev => prev.length === 2
+      ? [{ ...prev[0], split: a }, { ...prev[1], split: 100 - a }]
+      : prev);
+  };
+
+  // >2 pagadores: input por pagador con REBALANCEO proporcional del resto → la suma
+  // se mantiene exactamente 100 (el drift de redondeo se corrige en el último "otro").
+  const setSplitRebalanced = (key) => (e) => {
+    const v = Math.max(0, Math.min(100, Math.round(Number(e.target.value) || 0)));
+    setPayers(prev => {
+      const others = prev.filter(p => p.key !== key);
+      const otherSum = others.reduce((s, p) => s + (Number(p.split) || 0), 0);
+      const remain = 100 - v;
+      let acc = 0;
+      const next = prev.map(p => {
+        if (p.key === key) return { ...p, split: v };
+        const share = others.length === 0 ? 0
+          : (otherSum > 0 ? Math.round((Number(p.split) || 0) / otherSum * remain)
+                          : Math.round(remain / others.length));
+        acc += share;
+        return { ...p, split: share };
+      });
+      const drift = 100 - (v + acc);  // corrige el redondeo en el último "otro"
+      if (drift !== 0) {
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].key !== key) { next[i] = { ...next[i], split: Math.max(0, next[i].split + drift) }; break; }
+        }
+      }
+      return next;
+    });
+  };
+
+  // Contrato canónico payers[] — SOLO payer_person_id + split (SIN campos fiscales:
+  // el KMS los deriva de core por payer_person_id). KAL-4: la identidad/grupo los
+  // re-deriva el KMS del signing_token, este payload solo lleva el % de cada tutor.
   const buildPayersPayload = () => payers
     .filter(p => (Number(p.split) || 0) > 0 || payers.length === 1)
-    .map(p => {
-      const isTitular = guardianPersonId ? p.payer_person_id === guardianPersonId : p.split === 100;
-      const fiscal = isTitular ? f : p;
-      return {
-        payer_type:           'GUARDIAN',
-        payer_person_id:      p.payer_person_id || null,
-        fiscal_name:          (fiscal.fiscal_name || p.name || '').trim() || null,
-        fiscal_tax_id:        (fiscal.fiscal_tax_id || '').trim() || null,
-        fiscal_address_line1: (fiscal.fiscal_address_line1 || '').trim() || null,
-        fiscal_address_city:  (fiscal.fiscal_address_city || '').trim() || null,
-        fiscal_postal_code:   (fiscal.fiscal_postal_code || '').trim() || null,
-        billing_email:        (fiscal.billing_email || (isTitular ? f.billing_email : '') || '').trim() || null,
-        split_percentage:     Number(p.split) || 0,
-      };
-    });
+    .map(p => ({
+      payer_type:       'GUARDIAN',
+      payer_person_id:  p.payer_person_id || null,
+      split_percentage: Number(p.split) || 0,
+    }));
 
-  // WIZARD — guardado background + avance optimista (paso 8). Mirror del patrón
-  // /apply (WizardPage.handleNext): (1) await del save previo en vuelo
-  // (awaitPendingSave) para forzar el lag de un paso y SURFACEAR un fallo anterior
-  // antes de proceder; (2) disparar ESTE saveBillingInfo en BACKGROUND vía
-  // setPendingSave — sin bloquear; (3) avanzar de inmediato (onDone). Si el save de
-  // background rechaza, el error se surface en el SIGUIENTE gate (SignGdpr.submit →
-  // awaitPendingSave rechaza → no avanza). El indicador "Guardando…" lo gobierna
-  // hasPendingSave (no inhabilita el avance). KAL-4/KAL-7 + payload intactos.
+  // WIZARD — guardado background + avance optimista (paso 8). (1) await del save
+  // previo en vuelo (surfacea un fallo anterior); (2) saveBillingInfo en BACKGROUND;
+  // (3) avance inmediato (onDone). Sin validación de formulario fiscal (eliminado) ni
+  // de suma (es 100 por construcción). KAL-4/KAL-7 intactos.
   const submit = async () => {
-    if (!f.fiscal_name.trim())  { setErr(t('signing.billing.err_name')); return; }
-    if (!EMAIL_RE.test(f.billing_email.trim())) { setErr(t('signing.billing.err_email')); return; }
-    if (Math.round(totalSplit) !== 100) { setErr(t('signing.billing.split.err_sum', { total: totalSplit })); return; }
-
-    // Lag de un paso: espera el save previo (si lo hubiera). Billing es el primer
-    // paso de firma → normalmente no hay nada en vuelo (resuelve al instante). Si un
-    // save anterior falló, su rechazo se surface aquí antes de proceder.
     try {
       await awaitPendingSave();
     } catch (e) {
@@ -276,45 +247,18 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
     setErr('');
     const payersPayload = buildPayersPayload();
     // Background save (NO await aquí). El siguiente paso lo espera vía awaitPendingSave.
+    // SOLO signing_token + payers[] (sin fiscales — el KMS los deriva). El proxy
+    // saveBillingInfo_ ya forwarda payers[].
     const savePromise = gasCall('saveBillingInfo', {
-      signing_token:        signingToken,
-      // Canonical multi-payer contract (parallel KMS agent implements the same).
-      payers:               payersPayload,
-      // ── Backwards-compat single-payer fields (titular = default payer) ──
-      // The current wizard proxy forwards these top-level fields; the new `payers`
-      // array is forwarded once the proxy/KMS gain multi-payer support. Sending
-      // both keeps today's single-payer flow working through the unmodified proxy.
-      payer_type:           'GUARDIAN',
-      // Default payer = the signing guardian. The KMS handler
-      // (fin_saveBillingPartyFromWizard) REQUIRES payer_person_id for a GUARDIAN
-      // payer to disambiguate which guardian pays in a multi-guardian family.
-      payer_person_id:      guardianPersonId || undefined,
-      fiscal_name:          f.fiscal_name.trim(),
-      fiscal_tax_id:        f.fiscal_tax_id.trim() || null,
-      fiscal_address_line1: f.fiscal_address_line1.trim() || null,
-      fiscal_address_city:  f.fiscal_address_city.trim() || null,
-      fiscal_postal_code:   f.fiscal_postal_code.trim() || null,
-      billing_email:        f.billing_email.trim(),
-      // Titular's split (for proxies that read split_percentage at top level).
-      split_percentage:     (payersPayload.find(p => p.payer_person_id === (guardianPersonId || null)) || payersPayload[0] || {}).split_percentage,
+      signing_token: signingToken,
+      payers:        payersPayload,
     }).catch(e => {
-      // El error se surface en el siguiente gate (awaitPendingSave del paso N+1).
-      // Logueamos aquí; el rechazo se propaga al awaiter (re-throw).
       log.error('SignBilling: saveBillingInfo failed (background)', { message: e.message });
-      throw e;
+      throw e; // se surface en el siguiente gate (awaitPendingSave del paso N+1)
     });
     setPendingSave(savePromise);
     onDone(); // avance optimista inmediato
   };
-
-  const field = (k, type = 'text', required = false) => (
-    <div className="mb-3">
-      <label className="form-label fw-semibold" style={{ fontSize: '0.85rem' }}>
-        {t('signing.billing.field.' + k)}{required && ' *'}
-      </label>
-      <input type={type} className="form-control" value={f[k]} onChange={set(k)} />
-    </div>
-  );
 
   // Avance optimista: `submitting=false` (no bloqueamos el botón); el spinner
   // "Guardando…" lo gobierna `savePending` (hasPendingSave del contexto).
@@ -330,61 +274,83 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
     />
   );
 
-  const sumOk = Math.round(totalSplit) === 100;
+  const presetBtn = (label, a) => (
+    <button
+      type="button"
+      className="btn btn-outline-secondary btn-sm"
+      style={{ fontWeight: 600 }}
+      onClick={() => setSliderValue(a)}
+    >{label}</button>
+  );
 
   return (
     <div className="kis-card">
       {nav('top')}
       <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.billing.title')}</h2>
       <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.billing.subtitle')}</p>
-      {field('fiscal_name', 'text', true)}
-      {field('fiscal_tax_id')}
-      {field('fiscal_address_line1')}
-      <div style={{ display: 'flex', gap: 12 }}>
-        <div style={{ flex: 2 }}>{field('fiscal_address_city')}</div>
-        <div style={{ flex: 1 }}>{field('fiscal_postal_code')}</div>
-      </div>
-      {field('billing_email', 'email', true)}
-      {field('billing_phone', 'tel')}
 
-      {/* ── Reparto entre pagadores (split) ──────────────────────────────────── */}
-      <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+      {/* ── Reparto entre pagadores ──────────────────────────────────────────── */}
+      <div style={{ marginTop: 8 }}>
         <h3 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '0.98rem', marginBottom: 4 }}>
           {t('signing.billing.split.title')}
         </h3>
-        <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 12 }}>
+        <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 16 }}>
           {t('signing.billing.split.subtitle')}
         </p>
 
-        {payers.map(p => (
-          <div key={p.key} style={{ marginBottom: 12, padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 110 }}>
-                <input
-                  type="number" min="0" max="100"
-                  className="form-control"
-                  style={{ width: 72, textAlign: 'right' }}
-                  value={p.split}
-                  onChange={setSplit(p.key)}
-                />
-                <span style={{ fontWeight: 600, color: 'var(--muted)' }}>%</span>
-              </div>
-            </div>
+        {/* 1 pagador: no hay reparto que ajustar (100%). */}
+        {payers.length === 1 && (
+          <div style={{ padding: '12px 14px', background: 'var(--bg)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
+            <span>{payers[0].name}</span><span>100%</span>
           </div>
-        ))}
+        )}
 
-        <div style={{
-          marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          fontSize: '0.88rem', fontWeight: 700,
-          color: sumOk ? '#1b5e20' : '#a02020',
-        }}>
-          <span>{t('signing.billing.split.total')}</span>
-          <span>{totalSplit}%</span>
-        </div>
-        {!sumOk && (
-          <div className="field-error mt-1 p-2 rounded" style={{ background: '#ffeaea', fontSize: '0.82rem' }}>
-            {t('signing.billing.split.err_sum', { total: totalSplit })}
+        {/* 2 pagadores: slider + presets, auto-balanceado a 100%. */}
+        {two && (
+          <div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+              {presetBtn('100 / 0', 100)}
+              {presetBtn('50 / 50', 50)}
+              {presetBtn('0 / 100', 0)}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: '0.9rem', marginBottom: 6 }}>
+              <span>{payers[0].name}: {sliderA}%</span>
+              <span>{payers[1].name}: {100 - sliderA}%</span>
+            </div>
+            <input
+              type="range" min="0" max="100" step="1"
+              value={sliderA}
+              onChange={e => setSliderValue(e.target.value)}
+              style={{ width: '100%' }}
+              aria-label={t('signing.billing.split.title')}
+            />
+          </div>
+        )}
+
+        {/* >2 pagadores: inputs con rebalanceo (suma 100 por construcción). */}
+        {payers.length > 2 && (
+          <div>
+            {payers.map(p => (
+              <div key={p.key} style={{ marginBottom: 12, padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 110 }}>
+                    <input
+                      type="number" min="0" max="100"
+                      className="form-control"
+                      style={{ width: 72, textAlign: 'right' }}
+                      value={p.split}
+                      onChange={setSplitRebalanced(p.key)}
+                    />
+                    <span style={{ fontWeight: 600, color: 'var(--muted)' }}>%</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+            <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', fontSize: '0.88rem', fontWeight: 700, color: '#1b5e20' }}>
+              <span>{t('signing.billing.split.total')}</span>
+              <span>{totalSplit}%</span>
+            </div>
           </div>
         )}
       </div>
