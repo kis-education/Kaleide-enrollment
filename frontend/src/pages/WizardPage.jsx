@@ -527,7 +527,12 @@ const handleNext = async (stepKey, data) => {
                 : t('submitted.locked.title')}
             </div>
             <div style={{ fontWeight: 400 }}>
-              {t('submitted.locked.body')}
+              {/* P-BANNER: cuerpo state-aware (AD→sigue con la firma, IN→falta info,
+                  resto→genérico "en revisión"). Fallback i18n al body genérico para
+                  cualquier state_code sin copy dedicado. El título ya es state-aware (P216). */}
+              {admissionState?.state_code
+                ? t('submitted.body_by_state.' + admissionState.state_code, t('submitted.locked.body'))
+                : t('submitted.locked.body')}
             </div>
 
             {/* DL-E38 merge (flujo continuo 1→11, Diego 2026-06-07): el avance a la

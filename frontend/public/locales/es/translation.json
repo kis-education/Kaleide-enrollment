@@ -94,6 +94,8 @@
   "wizard.submitted_readonly_banner": "Solicitud enviada — los campos están bloqueados.",
   "submitted.locked.title": "Solicitud en revisión",
   "submitted.locked.body": "Tu solicitud está en revisión. Si necesitas modificar algo, contacta con admisiones en admissions@kaleide.org.",
+  "submitted.body_by_state.AD": "Tu plaza está admitida — continúa con la firma de tus documentos.",
+  "submitted.body_by_state.IN": "Necesitamos más información para continuar. Revisa tu solicitud o contacta con admisiones en admissions@kaleide.org.",
   "submitted.real_state": "Estado de tu solicitud: {{state}}",
   "submitted.signing_preparing": "Tu plaza está admitida. La documentación de firma se está preparando; recibirás acceso en breve.",
   "wizard.continue_to_sign": "Continuar a la firma",

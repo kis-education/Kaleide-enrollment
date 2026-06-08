@@ -94,6 +94,8 @@
   "wizard.submitted_readonly_banner": "Application submitted — fields are locked.",
   "submitted.locked.title": "Application under review",
   "submitted.locked.body": "Your application is being reviewed. If you need to change anything, please contact admissions at admissions@kaleide.org.",
+  "submitted.body_by_state.AD": "Your place has been admitted — continue with signing your documents.",
+  "submitted.body_by_state.IN": "We need more information to continue. Review your application or contact admissions at admissions@kaleide.org.",
   "submitted.real_state": "Your application status: {{state}}",
   "submitted.signing_preparing": "Your place has been admitted. The signing documents are being prepared; you will receive access shortly.",
   "wizard.continue_to_sign": "Continue to signing",
