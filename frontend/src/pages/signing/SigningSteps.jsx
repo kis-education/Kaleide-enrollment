@@ -933,7 +933,26 @@ export function SignSign({ signingToken, signerCtx, onDone, onBack }) {
 export default function SigningSteps({ signingToken, signerCtx }) {
   const { i18n } = useTranslation();
   const lang = lang_(i18n);
-  const [sub, setSub] = useState(initialSubStep(signerCtx.steps));
+
+  // El landing por estado (initialSubStep) gobierna SOLO la primera carga. En
+  // cuanto el usuario navega (atrás/adelante), su posición tiene PREVALENCIA y
+  // sobrevive al re-mount del back del navegador — que re-resuelve el token y, si
+  // no, recalcularía el sub-step empujando de vuelta al paso más avanzado. La
+  // posición se persiste en sessionStorage keyed por la sesión de firma (una
+  // sesión distinta empieza limpia). KAL-7: NO guarda secretos, solo el índice.
+  const navKey = 'signNav_' + (signerCtx.session_id || signerCtx.signer_id || 'x');
+  const [sub, setSubState] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem(navKey);
+      return saved !== null ? Number(saved) : initialSubStep(signerCtx.steps);
+    } catch (e) {
+      return initialSubStep(signerCtx.steps);
+    }
+  });
+  const setSub = (n) => {
+    try { sessionStorage.setItem(navKey, String(n)); } catch (e) { /* non-fatal */ }
+    setSubState(n);
+  };
 
   return (
     <>
