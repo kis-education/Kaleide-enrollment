@@ -263,6 +263,71 @@ function assertValidEmail_(v, fieldName) {
 }
 
 /**
+ * CLI 8 (DL-E42 + DL-E39 ENMIENDA 3) — defensa en profundidad: el email de cada
+ * tutor es su CREDENCIAL DE IDENTIDAD per-guardian (recuperación + firma + decisiones
+ * legales a su propio nombre), así que dos tutores del MISMO grupo NO pueden compartir
+ * email. Rechaza si dos guardians distintos del payload comparten un email
+ * (normalizado lowercase/trim). Un mismo guardian repitiendo su email (personal+trabajo)
+ * NO es conflicto. Lanza `err.code='DUPLICATE_GUARDIAN_EMAIL'` → doPost lo mapea a
+ * HTTP 200 {ok:false,error:{code,message}} (P72 estructurado, NUNCA 403). KAL-11: el
+ * message NO incluye el email (PII); el frontend i18n por code.
+ *
+ * @param {Array} persons - payload de personas (guardians + applicants)
+ * @throws {Error & {code:'DUPLICATE_GUARDIAN_EMAIL'}}
+ */
+function assertUniqueGuardianEmails_(persons) {
+  if (!Array.isArray(persons)) return;
+  var seenByEmail = {};  // normalizedEmail → guardian index
+  persons.forEach(function(p, gi) {
+    if (!p || p.person_type_id !== 'guardian') return;
+    (p.emails || []).forEach(function(em) {
+      var raw = ((em && (em.value || em.email_address)) || '').toString().trim().toLowerCase();
+      if (!raw) return;
+      try { assertValidEmail_(raw, 'guardian_email'); } catch (e) { return; } // shape-invalid → lo gatea otra validación
+      if (seenByEmail[raw] !== undefined && seenByEmail[raw] !== gi) {
+        var err = new Error('Two guardians share the same email; each guardian needs a distinct email (identity credential).');
+        err.code = 'DUPLICATE_GUARDIAN_EMAIL';
+        throw err;
+      }
+      seenByEmail[raw] = gi;
+    });
+  });
+}
+
+/**
+ * CLI 8 (DL-E39 ENMIENDA 3 punto 4) — registra (best-effort) la ATESTACIÓN de tutor
+ * único como acto declarativo en la fila del grupo `enrEnrollmentGroups`. Es un Edit
+ * SEPARADO (solo PK + 4 campos de atestación) para que un silent-reject P72 (si las
+ * columnas aún no existen en AppSheet) NO arrastre el save principal de personas —
+ * solo se pierde la atestación, logueada (KAL-11 redactado). Destino justificado: la
+ * atestación es GROUP-scoped y se captura en Step 2, ANTES de que existan filas
+ * enrEnrollments (mismo motivo por el que los consents GDPR se difieren a submit);
+ * el wizard es thin client que escribe a enr* (DL-E41). TODO Diego: alta de columnas.
+ *
+ * @param {string} enrollmentGroupId  derivado del token (KAL-4)
+ * @param {{attested:boolean, attestant_guardian?:string, attested_at?:string, attestation_version?:string}} att
+ */
+function persistSoleGuardianAttestation_(enrollmentGroupId, att) {
+  if (!att || att.attested !== true) return;
+  try {
+    appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
+      enrollment_group_id:               enrollmentGroupId,
+      sole_guardian_attested:            true,
+      sole_guardian_attested_at:         att.attested_at || new Date().toISOString(),
+      sole_guardian_attestant:           att.attestant_guardian || null,
+      sole_guardian_attestation_version: att.attestation_version || null,
+    }]);
+    Logger.log(redact_('[persistSoleGuardianAttestation_] registrada atestación tutor único group=' +
+      enrollmentGroupId + ' attestant=' + (att.attestant_guardian || '?') + ' ver=' + (att.attestation_version || '?')));
+  } catch (e) {
+    // P72 / columnas no creadas aún → no rompe el flujo (regla "la falta de columna
+    // AppSheet NO congela"). Se loguea redactado; alta pendiente como TODO de Diego.
+    Logger.log(redact_('[persistSoleGuardianAttestation_] best-effort fail (¿columnas no creadas? P72) group=' +
+      enrollmentGroupId + ': ' + e.message));
+  }
+}
+
+/**
  * CLI PHONE-E164 — valida formato E.164 canónico (`+<dialcode><national>`).
  * Defensa en profundidad: la fuente de verdad es el input validado/normalizado
  * del wizard (Step 2 + utils/phone.js); esto es la red de seguridad server-side.
@@ -2340,7 +2405,12 @@ function saveStep_(p) {
     // NUNCA en el wizard anónimo. El cierre del wizard usa submitEnrollmentSession_.
     // Un step='review' cae ahora al `default:` y lanza 'Unknown step: review'.
     case 'persons':
+      // CLI 8: guard email único por tutor (defensa en profundidad) ANTES de escribir.
+      assertUniqueGuardianEmails_(payload);
       extra = savePersons_(enrollmentGroupId, payload);
+      // CLI 8: atestación de tutor único (acto declarativo, best-effort, group-scoped).
+      // KAL-4: enrollmentGroupId del token; la atestación es un campo del payload.
+      persistSoleGuardianAttestation_(enrollmentGroupId, p.sole_guardian_attestation);
       break;
     case 'relations':
       extra = saveRelations_(enrollmentGroupId, payload);

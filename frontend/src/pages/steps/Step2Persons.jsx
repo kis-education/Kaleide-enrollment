@@ -12,6 +12,20 @@ import { validatePhone } from '../../utils/phone';
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
 
+// CLI 8 (DL-E39 ENMIENDA 3): versión del texto de atestación de tutor único. Se
+// registra junto al acto (attestant + timestamp) para trazabilidad legal; bumpea si
+// cambia el texto de la atestación.
+const SOLE_GUARDIAN_ATTESTATION_VERSION = 'v1';
+
+// Email efectivo de un tutor (normalizado lowercase/trim): el default, o el primero.
+function guardianEmail_(p) {
+  const list = p && Array.isArray(p.emails) ? p.emails : [];
+  const def = list.find(e => e && (e.is_default === true || e.is_default === 'true'));
+  const chosen = def || list[0] || null;
+  const raw = chosen ? (chosen.email_address || chosen.value || '') : '';
+  return String(raw).trim().toLowerCase();
+}
+
 // person_id generated client-side at creation. Backend savePersons_ accepts
 // the provided id (`person.person_id || generateUuid_()`), so the round-trip
 // returns the same id — no stamping needed. Step3Relations can reference
@@ -336,6 +350,16 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
       <div className="mt-3">
         <h6 style={{ color: 'var(--muted)' }}>{t('contact.email')}</h6>
         <p className="form-text mb-2" style={{ fontSize: '0.8rem' }}>{t('contact.emergency_note')}</p>
+        {/* CLI 8 (DL-E42): el email de cada tutor es su credencial de identidad
+            per-guardian (recuperación + firma + decisiones legales a su nombre) →
+            por eso los emails de distintos tutores deben ser distintos. */}
+        {isGuardian && (
+          <div className="alert alert-light border d-flex align-items-start gap-2 mb-2 py-2 px-2"
+               style={{ fontSize: '0.8rem', borderLeft: '3px solid var(--teal)' }}>
+            <i className="bi bi-shield-lock" style={{ color: 'var(--teal)' }} />
+            <span>{t('step2.identity_note')}</span>
+          </div>
+        )}
         {canUseAppEmail && (
           <button className="add-btn mb-2" onClick={() => u('emails', [{
             ...emptyEmail(), email_address: primaryEmail, email_type_id: 'personal', is_default: true,
@@ -608,6 +632,11 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   });
   const [err, setErr] = useState('');
   const [highlightEdit, setHighlightEdit] = useState(false);
+  // CLI 8: atestación de tutor único (familia monoparental / único tutor legal).
+  // Persistido en el save vía sole_guardian_attestation; se rehidrata si ya constaba.
+  const [soleGuardianAttested, setSoleGuardianAttested] = useState(
+    !!stepData.sole_guardian_attestation?.attested
+  );
   // D-E18: dismissed flag survives only within this render of Step2; if the user
   // declines the banner, hide it for the rest of the session.
   const [recognitionDismissed, setRecognitionDismissed] = useState(false);
@@ -703,6 +732,31 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         }
       }
     }
+    // CLI 8 (DL-E42): email único por tutor. El email de cada tutor es su credencial
+    // de identidad per-guardian → dos tutores del grupo NO pueden compartirlo. Gate de
+    // avance (defensa backend en assertUniqueGuardianEmails_). El primer tutor recibe
+    // el email de sesión (primaryEmail) inyectado abajo; lo consideramos aquí también.
+    {
+      const seen = {};
+      for (let gi = 0; gi < guardians.length; gi++) {
+        const g = guardians[gi];
+        let email = guardianEmail_(g);
+        if (!email && gi === 0 && primaryEmail) email = String(primaryEmail).trim().toLowerCase();
+        if (!email) continue;
+        if (seen[email] !== undefined) {
+          setErr(t('error.duplicate_guardian_email'));
+          return;
+        }
+        seen[email] = gi;
+      }
+    }
+    // CLI 8 (DL-E39 ENMIENDA 3 punto 4): atestación de tutor único. Si solo se declara
+    // 1 tutor, exige confirmar la atestación (familia monoparental / único tutor legal)
+    // antes de avanzar.
+    if (guardians.length === 1 && !soleGuardianAttested) {
+      setErr(t('error.sole_guardian_attestation_required'));
+      return;
+    }
     setErr('');
     // Inject primary email BEFORE transformPersonForSave so the injected entry
     // goes through the same normalization as existing emails. Doing it after
@@ -738,7 +792,22 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     const transformed = withE164.map(transformPersonForSave);
     log.info('Step2: onNext persons (transformed)', transformed);
     updateStep('persons', transformed);
-    onNext('persons', transformed);
+    // CLI 8: si hay exactamente 1 tutor y se atestó, adjunta el acto declarativo al
+    // save (sole_guardian_attestation). attestant = email del tutor único (su credencial
+    // de identidad) o el email de sesión. El backend lo persiste best-effort (group-scoped).
+    let extra = null;
+    if (guardians.length === 1 && soleGuardianAttested) {
+      const attestant = guardianEmail_(guardians[0]) || String(primaryEmail || '').trim().toLowerCase() || null;
+      extra = {
+        sole_guardian_attestation: {
+          attested:            true,
+          attestant_guardian:  attestant,
+          attested_at:         new Date().toISOString(),
+          attestation_version: SOLE_GUARDIAN_ATTESTATION_VERSION,
+        },
+      };
+    }
+    onNext('persons', transformed, extra);
   };
 
   return (
@@ -813,6 +882,23 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         <button className="add-btn" onClick={() => addPerson('guardian')}>
           <i className="bi bi-plus-lg" /> {t('person.add_guardian')}
         </button>
+
+        {/* CLI 8 (DL-E39 ENMIENDA 3 punto 4): atestación de tutor único. Aparece solo
+            cuando se declara exactamente 1 tutor; sin marcarla no se avanza. El acto
+            (attestant + timestamp + versión) se registra en el save. */}
+        {guardians.length === 1 && (
+          <div className="alert alert-warning mt-2 mb-1 py-2 px-3" style={{ fontSize: '0.86rem', borderLeft: '4px solid var(--amber, #f0a500)' }}>
+            <label className="d-flex align-items-start gap-2 mb-0" style={{ cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                className="form-check-input mt-1"
+                checked={soleGuardianAttested}
+                onChange={e => setSoleGuardianAttested(e.target.checked)}
+              />
+              <span>{t('step2.sole_guardian.attestation_label')}</span>
+            </label>
+          </div>
+        )}
 
         {/* Applicants */}
         <h5 style={{ color: 'var(--teal-dk)', marginTop: 28, marginBottom: 8 }}>

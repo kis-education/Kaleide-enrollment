@@ -173,7 +173,7 @@ export default function WizardPage() {
     }
   }, []); // eslint-disable-line
 
-const handleNext = async (stepKey, data) => {
+const handleNext = async (stepKey, data, extra = null) => {
     log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
 
     // Optimistic-UI guardrail (Nivel 2): before advancing, ensure the
@@ -205,6 +205,7 @@ const handleNext = async (stepKey, data) => {
             application_id:      enrollmentGroupId, // legacy alias
             step:                stepKey,
             payload:             data,
+            ...(extra || {}),   // CLI 8: campos extra del paso (p.ej. sole_guardian_attestation)
           });
           log.success(`WizardPage: saveStep "${stepKey}" OK (background)`, saveResult?._debug || {});
 
@@ -226,7 +227,7 @@ const handleNext = async (stepKey, data) => {
           // mostrar StepUpReverify y reintentar este mismo paso tras verificar.
           if (err?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(err?.message || '')) {
             log.warn(`WizardPage: saveStep "${stepKey}" requires step-up`);
-            setStepUpPending({ stepKey, data });
+            setStepUpPending({ stepKey, data, extra });
             throw err;
           }
           // CLI PHONE-E164: rechazo estructurado de formato de teléfono (defensa
@@ -261,7 +262,7 @@ const handleNext = async (stepKey, data) => {
   // optimistamente); sólo re-emite la persistencia del paso pendiente.
   const retryStepUpSave = async () => {
     if (!stepUpPending) return;
-    const { stepKey, data } = stepUpPending;
+    const { stepKey, data, extra } = stepUpPending;
     setStepUpPending(null);
     if (!(enrollmentGroupId && stepKey)) return;
     const savePromise = (async () => {
@@ -272,6 +273,7 @@ const handleNext = async (stepKey, data) => {
           application_id:      enrollmentGroupId,
           step:                stepKey,
           payload:             data,
+          ...(extra || {}),   // CLI 8: preserva sole_guardian_attestation en el reintento
         });
         log.success(`WizardPage: saveStep "${stepKey}" OK (step-up retry)`, saveResult?._debug || {});
         if (stepKey === 'persons' && saveResult?._debug?.personIdMap?.length) {
@@ -283,7 +285,7 @@ const handleNext = async (stepKey, data) => {
         markStepSaved(stepKey, data);
       } catch (err) {
         if (err?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(err?.message || '')) {
-          setStepUpPending({ stepKey, data });
+          setStepUpPending({ stepKey, data, extra });
           return;
         }
         log.warn(`WizardPage: saveStep "${stepKey}" failed (step-up retry)`, { message: err.message });
