@@ -280,7 +280,17 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   // Seed group-level + per-hijo una sola vez (cuando hay tutores/hijos).
   useEffect(() => {
     if (payers.length) return;
-    setPayers(seedPayers());
+    const seeded = seedPayers();
+    // DBG-SESSION (bug 4a): seedPayers NO rehidrata el reparto guardado — siempre
+    // firmante 100%. Si signerCtx es null aún, el firmante cae al guardian[0].
+    log.info('[DBG billing] seed', {
+      signer8:    guardianPersonId && log.sid(guardianPersonId),
+      has_signerCtx: !!signerCtx,
+      guardians:  guardians.length,
+      applicants: applicants.length,
+      payers:     seeded.map(p => ({ key: p.key, pid8: log.sid(p.payer_person_id), split: p.split })),
+    });
+    setPayers(seeded);
     if (applicants.length) {
       const map = {};
       applicants.forEach(a => { map[a.person_id || a._uid] = seedPayers(); });
@@ -363,6 +373,11 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
     const body = { signing_token: signingToken };
     if (perChild && applicants.length) body.per_participant = buildPerParticipantPayload();
     else body.payers = buildGroupPayload();
+    log.info('[DBG billing] submit', {
+      mode: (perChild && applicants.length) ? 'per_participant' : 'group',
+      payers: body.payers && body.payers.map(p => ({ pid8: log.sid(p.payer_person_id), split: p.split_percentage })),
+      per_participant_n: body.per_participant && body.per_participant.length,
+    });
     // Background save (NO await aquí). El siguiente paso lo espera vía awaitPendingSave.
     const savePromise = gasCall('saveBillingInfo', body).catch(e => {
       log.error('SignBilling: saveBillingInfo failed (background)', { message: e.message });
@@ -502,6 +517,22 @@ export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
     catch (e) { /* non-fatal */ }
   };
   const [err, setErr] = useState('');
+  // DBG-SESSION (bug 5): si signerCtx es null en el 1er mount, gdprKey = 'signGdpr_x'
+  // → la restauración de sessionStorage no casa con la key real (signGdpr_<session>)
+  // y los consentimientos no se cargan al entrar (sí al re-entrar, ya con signerCtx).
+  useEffect(() => {
+    const countTrue = (o) => Object.values(o || {}).filter(Boolean).length;
+    log.info('[DBG gdpr] mount', {
+      gdprKey,
+      has_signerCtx: !!signerCtx,
+      session8: signerCtx && log.sid(signerCtx.session_id),
+      signer8:  signerCtx && log.sid(signerCtx.signer_id),
+      n_imageSubjects:   imageSubjects.length,
+      restored_gen_true: countTrue(genState),
+      restored_img_true: Object.values(imgState || {}).reduce((n, o) => n + countTrue(o), 0),
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const toggleGen = (code) => {
     const next = { ...genState, [code]: !genState[code] };
     persistConsents(next, imgState); setGenState(next);
@@ -563,6 +594,11 @@ export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
       subject_person_table: s.table,
       ...common,
     })));
+    log.info('[DBG gdpr] submit', {
+      consents_n: consents.length,
+      gen_true:   generalConsents.filter(c => genState[c.code] === true).length,
+      img_true:   imageSubjects.reduce((n, s) => n + imageConsents.filter(c => !!(imgState[s.id] && imgState[s.id][c.code])).length, 0),
+    });
     // Background save (NO await). `res.blocked` (rechazo de consentimiento bloqueante)
     // se convierte en un rechazo de la promesa para que el siguiente gate lo surface
     // — coherente con el resto de fallos de background. KAL-4/KAL-7 + payload intactos.
@@ -673,8 +709,15 @@ export function SignReview({ signingToken, onDone, onBack }) {
     // P-REVIEW-READONLY: Step 10 solo LEE los docs/members → create_only (NO despacha
     // el envelope). El dispatch real del acto de firma vive SOLO en Step 11 (SignSign).
     // Data-layer pieza 5: single-flight (de-dupe la tormenta de create_only concurrentes).
+    const _t0 = Date.now();                          // DBG-SESSION timing (bug 7)
+    log.info('[DBG review] initiateSigningRead start');
     initiateSigningRead(signingToken)
-      .then(res => { if (alive) setMembers(Array.isArray(res.members) ? res.members : []); })
+      .then(res => {
+        const ms = Date.now() - _t0;
+        const mem = Array.isArray(res.members) ? res.members : [];
+        log.info('[DBG review] members', { ms, n: mem.length, files8: mem.map(m => log.sid(m.file_id)), states: mem.map(m => m.purpose_code || '?') });
+        if (alive) setMembers(mem);
+      })
       .catch(e => {
         if (isStepUpRequiredError(e)) {
           log.warn('SignReview: initiateSigningSession requires step-up');
@@ -695,13 +738,17 @@ export function SignReview({ signingToken, onDone, onBack }) {
     const created = [];
     members.forEach(m => {
       if (!m.file_id) return;
+      const _t0 = Date.now();                        // DBG-SESSION timing por doc (bug 7)
+      log.info('[DBG review] getDocument start', { file8: log.sid(m.file_id) });
       fetchDocumentObjectUrl({ file_id: m.file_id, signing_token: signingToken })
         .then(({ url }) => {
+          log.info('[DBG review] getDocument OK', { file8: log.sid(m.file_id), ms: Date.now() - _t0, has_url: !!url });
           if (!alive) { URL.revokeObjectURL(url); return; }
           created.push(url);
           setDocUrls(prev => ({ ...prev, [m.file_id]: url }));
         })
         .catch(e => {
+          log.warn('[DBG review] getDocument FAIL', { file8: log.sid(m.file_id), ms: Date.now() - _t0, code: e && e.code, message: e && e.message });
           if (isStepUpRequiredError(e)) { if (alive) setNeedStepUp(true); return; }
           log.error('SignReview: getDocument failed', { file_id: m.file_id, message: e.message });
         });
@@ -719,6 +766,7 @@ export function SignReview({ signingToken, onDone, onBack }) {
   // disparado el background save.
   const confirm = async () => {
     if (!read) { setErr(t('signing.review.must_read')); return; }
+    log.info('[DBG review] confirm click — esperando save previo (gdpr) antes de avanzar');
     setErr(''); setSubmitting(true);
 
     // Lag de un paso: espera el save de GDPR. Si falló (incl. bloqueante), su rechazo
@@ -932,6 +980,7 @@ export function SignSign({ signingToken, signerCtx, onDone, onBack }) {
       // Data-layer pieza 5: lectura de estado vía single-flight (de-dupe la tormenta
       // de create_only concurrentes). NUNCA despacha el envelope (STOP-GAP intacto).
       const res = await initiateSigningRead(signingToken);
+      log.info('[DBG sign] readState', { initial, state: res && res.state, n_urls: ((res && res.signerUrls) || []).length });
       setSession(res);
       const urls = (res && res.signerUrls) || [];
       if (isInitiatedState(res && res.state) || urls.length > 0) setInitiated(true);
@@ -954,6 +1003,7 @@ export function SignSign({ signingToken, signerCtx, onDone, onBack }) {
   // vuelo, ya que el acto depende del milestone de revisión confirmada server-side.
   const dispatchSigning = async () => {
     setErr('');
+    log.warn('[DBG sign] dispatchSigning — DESPACHO DEL ENVELOPE (acto de firma)');
     // WIZARD — paso 11 BLOQUEANTE: await del save de REVIEW antes de despachar.
     try {
       await awaitPendingSave();

@@ -43,6 +43,38 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
     return () => { alive = false; };
   }, [i18n.language]); // eslint-disable-line
 
+  // ── DBG-SESSION (bug 2): qué llega al render. audience_category_id + has_q por
+  // pregunta + nº de hijos/tutores + claves de respuesta (prefijos 8 chars) son
+  // suficientes para decidir A (persons vacío) vs B (catálogo sin item.question)
+  // vs C (meetsConditions filtra). Se re-emite cuando cambian sets/persons/responses.
+  useEffect(() => {
+    if (loading) return;
+    try {
+      const summary = (sets || []).map(s => ({
+        set8: log.sid(s.set_id),
+        has_designation: !!s.designation,
+        n_items: (s.items || []).length,
+        qs: (s.items || []).map(it => ({
+          q8:    log.sid((it.question && it.question.question_id) || it.question_id),
+          has_q: !!it.question,
+          aud:   it.question ? (it.question.audience_category_id || 'general/null') : '—',
+          rtype: it.question && (it.question.response_type_code || it.question.response_type_id),
+          n_cond: it.question && (it.question.conditions || []).length,
+        })),
+      }));
+      log.info('[DBG Step5] catalog', {
+        n_sets:     (sets || []).length,
+        applicants: persons.filter(p => p.person_type_id === 'applicant').length,
+        guardians:  persons.filter(p => p.person_type_id === 'guardian').length,
+        n_responses: Object.keys(responses || {}).length,
+        response_keys: Object.keys(responses || {}).map(k => k.split('__').map(x => log.sid(x)).join('__')),
+        sets: summary,
+      });
+    } catch (e) {
+      log.warn('[DBG Step5] catalog log failed', { message: e.message });
+    }
+  }, [sets, persons, responses, loading]); // eslint-disable-line
+
   const setResponse = (key, val) => setResponses(prev => ({ ...prev, [key]: val }));
 
   const handleBack = () => {

@@ -131,7 +131,7 @@ export default function WizardPage() {
       // vez al cargar (el efecto needsHydration de abajo), no en cada pulse.
       pulseInFlightRef.current = true;
       gasCall('getAdmissionState', { resume_token: rt, recovered_email: re || undefined })
-        .then(data => refreshAdmissionState(data))
+        .then(data => { log.info('[DBG pulse] getAdmissionState', { state_code: data && data.state_code, signing_ready: data && data.signing_ready, signing_status: data && data.signing_status, has_ctx: !!(data && data.signing_context) }); refreshAdmissionState(data); })
         .catch(err => log.warn('WizardPage: admission pulse failed', { message: err.message }))
         .finally(() => { pulseInFlightRef.current = false; });
     };
@@ -327,6 +327,7 @@ const handleNext = async (stepKey, data, extra = null) => {
   // en la URL — vive en signingContext (React state) + se pasa por props a los steps.
   const enterSigning = () => {
     const token = signingContext?.signing_token;
+    log.info('[DBG enterSigning] click', { has_token: !!token, token8: token && log.sid(token), admission_steps: signingContext && signingContext.steps });
     if (!token) {
       showToast(t('wizard.signing_confirm_email'));
       return;
@@ -339,6 +340,7 @@ const handleNext = async (stepKey, data, extra = null) => {
     window.scrollTo(0, 0);
     gasCall('resolveSigningToken', { signing_token: token })
       .then(ctx => {
+        log.info('[DBG enterSigning] resolveSigningToken resolved', { valid: ctx && ctx.valid, reason: ctx && ctx.reason, steps: ctx && ctx.steps });
         if (!ctx || !ctx.valid) {
           log.warn('WizardPage: resolveSigningToken not valid on signing entry', { reason: ctx && ctx.reason });
           return;
@@ -347,6 +349,9 @@ const handleNext = async (stepKey, data, extra = null) => {
         // Aterriza en el sub-paso correcto según el progreso ya registrado.
         const sub = initialSubStep(ctx.steps);       // 0..3
         const target = STEP_FIRST_SIGNING + sub;       // 7..10
+        // DBG-SESSION: este es el salto async que arranca al usuario de billing al
+        // sub-paso más avanzado (bug 4b "al tocar billing salta al paso 11").
+        log.warn('[DBG enterSigning] JUMP async', { from_step_index: STEP_FIRST_SIGNING, sub, target_step_index: target });
         for (let i = STEP_FIRST_SIGNING; i < target; i++) addCompletedStep(i);
         setCurrentStep(target);
       })

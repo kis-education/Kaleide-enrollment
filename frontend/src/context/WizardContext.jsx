@@ -120,13 +120,15 @@ export function WizardProvider({ children }) {
   const enqueueSave = useCallback((saveFn) => {
     pendingCountRef.current += 1;
     setSaveState('saving');
+    const _t0 = Date.now();                          // DBG-SESSION timing
+    log.info('[DBG savequeue] enqueue', { pending: pendingCountRef.current });
     const run = saveTailRef.current
       .catch(() => {})                 // un fallo previo no debe abortar la cola
       .then(() => saveFn());           // ejecuta EN ORDEN tras el anterior
     // El tail avanza pase lo que pase; el conteo decrece al settle.
     saveTailRef.current = run.then(
-      () => { pendingCountRef.current -= 1; if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; setSaveState('idle'); } },
-      () => { pendingCountRef.current -= 1; if (pendingCountRef.current < 0) pendingCountRef.current = 0; setSaveState('error'); }
+      () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; setSaveState('idle'); } },
+      (e) => { pendingCountRef.current -= 1; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: e && e.code, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; setSaveState('error'); }
     );
     return run;
   }, []);
@@ -137,7 +139,12 @@ export function WizardProvider({ children }) {
    * de enviar. Safe incluso sin saves en vuelo (tail ya resuelto).
    */
   const awaitPendingSave = useCallback(() => {
-    return saveTailRef.current.catch(() => {});
+    const _t0 = Date.now();                          // DBG-SESSION timing
+    log.info('[DBG savequeue] await start');
+    return saveTailRef.current.then(
+      () => log.info('[DBG savequeue] await resolved', { ms: Date.now() - _t0 }),
+      () => log.warn('[DBG savequeue] await rejected', { ms: Date.now() - _t0 })
+    ).catch(() => {});
   }, []);
 
   /**
@@ -328,6 +335,7 @@ export function WizardProvider({ children }) {
     saveSession({ resumeToken: tok });
   }, []);
   const setCurrentStep = useCallback((step) => {
+    log.info('[DBG nav] setCurrentStep', { step });   // DBG-SESSION: rastro de TODA navegación/salto
     setCurrentStepRaw(step);
     saveSession({ currentStep: step });
   }, []);
@@ -645,16 +653,36 @@ export function WizardProvider({ children }) {
     setCompletedStepsRaw(completed);
     saveSession({ completedSteps: [...completed] });
 
+    // ── DBG-SESSION: resumen compacto de hidratación (prefijos 8 chars, sin PII) ──
+    log.info('[DBG hydrate]', {
+      submitted,
+      completed: [...completed],
+      applicants: persons.filter(p => p.person_type_id === 'applicant').length,
+      guardians:  persons.filter(p => p.person_type_id === 'guardian').length,
+      relations:  relations.length,
+      responses_n: Object.keys(responsesDict).length,
+      response_keys: Object.keys(responsesDict).map(k => k.split('__').map(x => log.sid(x)).join('__')),
+      documents: documents.length,
+      admission: adm ? {
+        state_code:      adm.state_code,
+        signing_ready:   adm.signing_ready,
+        signing_status:  adm.signing_status,
+        has_signing_ctx: !!adm.signing_context,
+        steps:           adm.signing_context && adm.signing_context.steps,
+      } : null,
+    });
+
     // Land on the first incomplete step, or Review if everything's filled.
     // Submitted sessions land on Step 7 Review (index 6) — read-only view of what
     // was sent. The post-AD steps 8-11 (indices 7-10) stay locked until admisión
     // decisión flips them open (future feature; backend not implemented yet — CLI 59).
-    if (submitted) { setCurrentStep(6); return; }
+    if (submitted) { log.info('[DBG hydrate] landing', { submitted: true, target: 6 }); setCurrentStep(6); return; }
     const STEP_COUNT = 7; // only wizard steps 0-6 considered for non-submitted resume
     let target = STEP_COUNT - 1; // default to Review
     for (let i = 0; i < STEP_COUNT; i++) {
       if (!completed.has(i)) { target = i; break; }
     }
+    log.info('[DBG hydrate] landing', { submitted: false, target });
     setCurrentStep(target);
   }, []);
 

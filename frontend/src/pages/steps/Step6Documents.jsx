@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall } from '../../api';
@@ -102,8 +102,8 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
       <div
         className="upload-zone"
         onDragOver={e => e.preventDefault()}
-        onDrop={e => { e.preventDefault(); onActivity && onActivity(); handleFile(e.dataTransfer.files[0]); }}
-        onClick={() => { onActivity && onActivity(); document.getElementById(`file_${docType}`).click(); }}
+        onDrop={e => { e.preventDefault(); log.info('[DBG docs] drop', { docType }); onActivity && onActivity(); handleFile(e.dataTransfer.files[0]); }}
+        onClick={() => { log.info('[DBG docs] upload-zone click', { docType }); onActivity && onActivity(); document.getElementById(`file_${docType}`).click(); }}
       >
         <i className="bi bi-cloud-arrow-up" style={{ fontSize: '1.5rem', color: 'var(--teal)' }} />
         <p style={{ margin: '6px 0 0', color: 'var(--muted)', fontSize: '0.88rem' }}>
@@ -177,6 +177,10 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     markStepUpFresh, touchActivity,
   } = useWizard();
   const [documents, setDocuments] = useState(stepData.documents || []);
+  // DBG-SESSION (bug 3): si locked=true (expediente enviado → completedSteps incluye
+  // este paso) la card lleva pointerEvents:none → el click de subida NO dispara su
+  // handler (no aparecerá '[DBG docs] upload-zone click').
+  useEffect(() => { log.info('[DBG docs] render', { locked, n_existing: (stepData.documents || []).length }); }, [locked]); // eslint-disable-line
   // DL-E39 ENMIENDA (gate de entrada): sin enmascarado per-campo. La PII está
   // protegida por el gate de entrada del wizard; aquí los documentos se muestran
   // con normalidad. markStepUpFresh/touchActivity siguen para el retry server-side

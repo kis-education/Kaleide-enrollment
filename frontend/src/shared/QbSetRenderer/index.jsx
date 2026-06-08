@@ -1,4 +1,6 @@
+import { useEffect } from 'react';
 import { meetsConditions } from './conditions';
+import * as log from '../../logger';
 
 /**
  * QbSetRenderer — shared question-set renderer (DL-Q05 §5 Capa D qb-render).
@@ -60,6 +62,42 @@ export default function QbSetRenderer({
   // seguridad para otros consumidores, lo leemos de la sesión del wizard.
   const effectiveInitiatorEmail = initiatorEmail != null ? initiatorEmail : readInitiatorEmail();
   const condCtx = { codeToId, initiatorEmail: effectiveInitiatorEmail };
+
+  // ── DBG-SESSION (bug 2 caso C): por cada pregunta×persona, si meetsConditions la
+  // muestra u oculta. En un useEffect (NO en render) para no hacer setState durante
+  // el render. Prefijos 8 chars, sin PII. Revela si las preguntas existen pero un
+  // filtro de condiciones (AGE/PARENT_ANSWER/INITIATOR_EMAIL) las descarta todas.
+  useEffect(() => {
+    try {
+      const decisions = [];
+      sets.forEach(set => (set.items || []).forEach(item => {
+        const q = item.question;
+        if (!q) { decisions.push({ set8: log.sid(set.set_id), q: 'NO_item.question' }); return; }
+        const q8 = log.sid(q.question_id);
+        const aud = q.audience_category_id;
+        if (aud === 'participant') {
+          if (!applicants.length) { decisions.push({ q8, aud, shown: false, reason: 'no_applicants' }); return; }
+          applicants.forEach(a => {
+            const pk = a.person_id || a._uid;
+            decisions.push({ q8, aud, person8: log.sid(pk), shown: meetsConditions(q, a, responses, pk, condCtx) });
+          });
+        } else if (aud === 'client') {
+          if (!guardians.length) { decisions.push({ q8, aud, shown: false, reason: 'no_guardians' }); return; }
+          guardians.forEach(g => {
+            const pk = g.person_id || g._uid;
+            decisions.push({ q8, aud, person8: log.sid(pk), shown: meetsConditions(q, g, responses, pk, condCtx) });
+          });
+        } else {
+          decisions.push({ q8, aud: aud || 'general/null', shown: meetsConditions(q, null, responses, groupId, condCtx) });
+        }
+      }));
+      const shown = decisions.filter(d => d.shown).length;
+      log.info('[DBG QbRender] decisions', { total: decisions.length, shown, hidden: decisions.length - shown, decisions });
+    } catch (e) {
+      log.warn('[DBG QbRender] log failed', { message: e.message });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sets, persons, responses]);
 
   const setResponse = (key, val) => {
     if (readOnly || typeof onResponse !== 'function') return;

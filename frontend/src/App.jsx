@@ -75,6 +75,8 @@ function App() {
       endpoint: import.meta.env.VITE_GAS_ENDPOINT ? '✓ set' : '✗ MISSING',
       recaptcha: import.meta.env.VITE_RECAPTCHA_SITE_KEY ? '✓ set' : '✗ not set',
     })
+    // DBG-SESSION marker: confirma que el E2E corre sobre el build instrumentado.
+    log.warn('[DBG build] enr-debug-instrumentation-1 — pasada E2E (8 bugs)')
   }, [])
 
   return (

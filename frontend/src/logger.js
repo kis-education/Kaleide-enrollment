@@ -22,9 +22,18 @@
 // KAL-11: was 500 — reduced to 50. The wizard generates ~5-10 log entries per
 // step transition; 50 covers the user's recent activity without keeping a
 // long-lived backlog that could accumulate PII if redaction misses anything.
-const MAX_ENTRIES = 50;
+// ⚠️ DBG-SESSION (2026-06-08): subido temporalmente a 600 para una pasada E2E
+// completa (11 pasos × instrumentación pesada [DBG …]). REVERTIR a 50 al cerrar
+// la depuración (los logs [DBG] usan solo prefijos de 8 chars / counts, sin PII).
+const MAX_ENTRIES = 600;
 const listeners   = new Set();
 export const entries = [];
+
+// DBG-SESSION helper: prefijo corto y estable de un id (UUID/clave). 8 chars NO
+// casan con UUID_RE (8-4-4-4-12) → sobreviven al redactor y siguen siendo
+// comparables para diagnosticar el matching de claves `${qid}__${respondent}`.
+// NO es un secreto ni PII (ids internos truncados). Quitar con el resto de [DBG].
+export const sid = (x) => (x === null || x === undefined ? String(x) : String(x).slice(0, 8));
 
 // KAL-11: regexes match the backend's redact_ helper (Code.js).
 const EMAIL_RE = /[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g;
