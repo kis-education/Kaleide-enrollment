@@ -54,6 +54,36 @@ export default function LandingPage() {
     setRecoveredEmail(email);
 
     try {
+      // ── DL-E39 · ENTRADA UNIFICADA ────────────────────────────────────────
+      // Una sola acción de email, gobernada por si el email está asociado.
+      // (1) RECUPERAR primero: el servidor resuelve el email contra `primary_email`
+      //     Y contra los emails de guardian del grupo (sendMagicLink_ →
+      //     findOpenGroupsByGuardianEmail_). Así CUALQUIER tutor asociado recupera
+      //     su solicitud, no solo el que la inició. El email del link va al inbox
+      //     del tutor que lo pidió → la identidad per-guardian se deriva server-side.
+      // (2) Si el email NO está asociado a ningún grupo abierto, INICIAR uno nuevo.
+      // Resultado constante ("revisa tu email") en ambos casos → anti-enumeración.
+      // El estado real (editar vs ver, último paso) lo resuelve el destino del
+      // magic link (resumeSession_), NO la landing.
+      let recovered = false;
+      try {
+        await gasCall('sendMagicLink', { primary_email: email });
+        recovered = true;
+      } catch (recErr) {
+        // Solo "Enrollment group not found" (email no asociado) cae a iniciar
+        // nuevo. Cualquier otro error (rate-limit, validación, red) se propaga.
+        if (!/not found/i.test((recErr && recErr.message) || '')) throw recErr;
+      }
+
+      if (recovered) {
+        // Recuperación: link enviado al inbox del tutor. El estado lo gobierna
+        // el destino del link, no la landing.
+        setResumed(true);
+        setSent(true);
+        return;
+      }
+
+      // ── Sin grupo asociado → iniciar una solicitud nueva ──────────────────
       let recaptcha_token = null;
       if (RECAPTCHA_SITE_KEY && window.grecaptcha) {
         await new Promise(resolve => window.grecaptcha.ready(resolve));
