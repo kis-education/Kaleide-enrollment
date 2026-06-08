@@ -442,7 +442,34 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
 
 export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
   const { t } = useTranslation();
-  const { setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
+  const { setPendingSave, awaitPendingSave, hasPendingSave, stepData } = useWizard();
+
+  // CLI 9 (DL-E42 §3): matriz tutor×sujeto. El guardian actual (derivado del token,
+  // signerCtx.guardian_person_id) consiente:
+  //  - GENERAL (GDPR_SCHOOL blocking + comms + platform groups): per-guardian, sujeto = él mismo.
+  //  - DERECHOS DE IMAGEN (4 usos): por CADA sujeto ∈ {participantes del grupo} ∪ {él mismo}.
+  //    Como representante legal consiente por cada niño; y sus PROPIOS derechos de imagen.
+  //    NUNCA por el otro tutor adulto (no aparece como sujeto). El otorgante NO viaja en
+  //    el payload — el KMS lo deriva del signing_token (KAL-4).
+  const fullName_ = (p) => [p.first_name, p.middle_name, p.last_name].filter(x => x && String(x).trim()).join(' ').trim();
+  const persons = (stepData && stepData.persons) || [];
+  const guardianPersonId = signerCtx?.guardian_person_id || null;
+  const applicants = persons.filter(p => p.person_type_id === 'applicant');
+  const selfGuardian = persons.find(p => (p.person_id || p._uid) === guardianPersonId) || null;
+  // Sujetos de la matriz de imagen: niños del grupo + el propio tutor firmante.
+  const imageSubjects = [
+    ...applicants.map(a => ({
+      id: a.person_id || a._uid, table: 'enrPersons',
+      name: fullName_(a) || t('signing.gdpr.subject_child', { n: applicants.indexOf(a) + 1 }), kind: 'child',
+    })).filter(s => s.id),
+    ...(guardianPersonId ? [{
+      id: guardianPersonId, table: 'enrPersons',
+      name: (selfGuardian && fullName_(selfGuardian)) ? t('signing.gdpr.subject_self_named', { name: fullName_(selfGuardian) }) : t('signing.gdpr.subject_self'),
+      kind: 'self',
+    }] : []),
+  ];
+  const generalConsents = SIGNING_CONSENTS.filter(c => !c.consent_use);
+  const imageConsents   = SIGNING_CONSENTS.filter(c => c.consent_use);
   // CLI 3 — los consentimientos marcados se PERSISTEN keyed por sesión de firma para que
   // sobrevivan a navegar atrás/adelante (9↔8). Antes el estado vivía solo en useState y se
   // perdía al desmontar SignGdpr en el back → al volver aparecía todo desmarcado. Mismo
@@ -450,31 +477,38 @@ export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
   // signing_token) — solo los booleans de consentimiento + la versión de texto, de modo que
   // si el texto legal cambia (SIGNING_CONSENT_TEXT_VERSION) se descarta lo guardado y se
   // re-consiente. Marcar NO envía nada (eso es submit/onDone); solo conserva las marcas.
+  // Estado: genState[code] (generales) + imgState[subjectId][code] (matriz de imagen).
+  // Persistido keyed por sesión (sobrevive 9↔8); se descarta si cambia la versión legal.
   const gdprKey = 'signGdpr_' + (signerCtx?.session_id || signerCtx?.signer_id || 'x');
-  const [state, setState] = useState(() => {
-    const init = {}; SIGNING_CONSENTS.forEach(c => { init[c.code] = false; });
+  const buildInit = () => {
+    const gen = {}; generalConsents.forEach(c => { gen[c.code] = false; });
+    const img = {}; imageSubjects.forEach(s => { img[s.id] = {}; imageConsents.forEach(c => { img[s.id][c.code] = false; }); });
     try {
       const raw = sessionStorage.getItem(gdprKey);
       if (raw) {
         const saved = JSON.parse(raw);
-        if (saved && saved.v === SIGNING_CONSENT_TEXT_VERSION && saved.state) {
-          SIGNING_CONSENTS.forEach(c => {
-            if (typeof saved.state[c.code] === 'boolean') init[c.code] = saved.state[c.code];
-          });
+        if (saved && saved.v === SIGNING_CONSENT_TEXT_VERSION) {
+          if (saved.gen) generalConsents.forEach(c => { if (typeof saved.gen[c.code] === 'boolean') gen[c.code] = saved.gen[c.code]; });
+          if (saved.img) imageSubjects.forEach(s => { if (saved.img[s.id]) imageConsents.forEach(c => { if (typeof saved.img[s.id][c.code] === 'boolean') img[s.id][c.code] = saved.img[s.id][c.code]; }); });
         }
       }
-    } catch (e) { /* non-fatal — empezar con defaults */ }
-    return init;
-  });
-  const persistConsents = (next) => {
-    try { sessionStorage.setItem(gdprKey, JSON.stringify({ v: SIGNING_CONSENT_TEXT_VERSION, state: next })); }
+    } catch (e) { /* non-fatal — defaults */ }
+    return { gen, img };
+  };
+  const [genState, setGenState] = useState(() => buildInit().gen);
+  const [imgState, setImgState] = useState(() => buildInit().img);
+  const persistConsents = (gen, img) => {
+    try { sessionStorage.setItem(gdprKey, JSON.stringify({ v: SIGNING_CONSENT_TEXT_VERSION, gen, img })); }
     catch (e) { /* non-fatal */ }
   };
   const [err, setErr] = useState('');
-  const toggle = (code) => {
-    const next = { ...state, [code]: !state[code] };
-    persistConsents(next);
-    setState(next);
+  const toggleGen = (code) => {
+    const next = { ...genState, [code]: !genState[code] };
+    persistConsents(next, imgState); setGenState(next);
+  };
+  const toggleImg = (subjectId, code) => {
+    const next = { ...imgState, [subjectId]: { ...(imgState[subjectId] || {}), [code]: !(imgState[subjectId] && imgState[subjectId][code]) } };
+    persistConsents(genState, next); setImgState(next);
   };
 
   // WIZARD — guardado background + avance optimista (paso 9). Mirror del patrón
@@ -483,8 +517,8 @@ export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
   // submitGdprConsents en BACKGROUND vía setPendingSave; (3) avanzar de inmediato.
   // Si el save de background rechaza, se surface en el siguiente gate (SignReview).
   const submit = async () => {
-    const gdprSchool = SIGNING_CONSENTS.find(c => c.blocking);
-    if (gdprSchool && state[gdprSchool.code] !== true) {
+    const gdprSchool = generalConsents.find(c => c.blocking);
+    if (gdprSchool && genState[gdprSchool.code] !== true) {
       setErr(t('signing.gdpr.must_accept_blocking'));
       return;
     }
@@ -500,16 +534,35 @@ export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
     }
 
     setErr('');
-    const consents = SIGNING_CONSENTS.map(c => ({
-      consent_type_code:    c.code,
-      consent_use:          c.consent_use || null,
-      consented:            state[c.code] === true,
-      consent_text_shown:   c.text[lang],
+    const common = {
       consent_text_version: SIGNING_CONSENT_TEXT_VERSION,
       language:             lang,
       signed_method:        'WEB_CLICK',
       user_agent:           navigator.userAgent,
+    };
+    // CLI 9: el otorgante NO viaja (server-side del token). Sujeto SÍ:
+    //  - generales → sujeto = el propio guardian firmante (sus datos/comms);
+    //  - imagen → una fila por (sujeto, uso). El KMS valida que el sujeto ∈
+    //    {participantes del grupo} ∪ {firmante}.
+    const consents = [];
+    generalConsents.forEach(c => consents.push({
+      consent_type_code:    c.code,
+      consent_use:          c.consent_use || null,
+      consented:            genState[c.code] === true,
+      consent_text_shown:   c.text[lang],
+      subject_person_id:    guardianPersonId || null,
+      subject_person_table: guardianPersonId ? 'enrPersons' : null,
+      ...common,
     }));
+    imageSubjects.forEach(s => imageConsents.forEach(c => consents.push({
+      consent_type_code:    c.code,
+      consent_use:          c.consent_use || null,
+      consented:            !!(imgState[s.id] && imgState[s.id][c.code]),
+      consent_text_shown:   c.text[lang],
+      subject_person_id:    s.id,
+      subject_person_table: s.table,
+      ...common,
+    })));
     // Background save (NO await). `res.blocked` (rechazo de consentimiento bloqueante)
     // se convierte en un rechazo de la promesa para que el siguiente gate lo surface
     // — coherente con el resto de fallos de background. KAL-4/KAL-7 + payload intactos.
@@ -547,18 +600,47 @@ export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
       {nav('top')}
       <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.gdpr.title')}</h2>
       <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.gdpr.subtitle')}</p>
-      {SIGNING_CONSENTS.map(c => (
+
+      {/* Consentimientos GENERALES (per-guardian: GDPR + comms + plataforma) */}
+      {generalConsents.map(c => (
         <div key={c.code} className="consent-block" style={{ borderBottom: '1px solid var(--bg)', paddingBottom: 12, marginBottom: 12 }}>
           <p style={{ fontSize: '0.86rem', color: 'var(--text)', marginBottom: 8 }}>{c.text[lang]}</p>
           <div className="form-check">
             <input type="checkbox" className="form-check-input" id={'consent_' + c.code}
-              checked={state[c.code]} onChange={() => toggle(c.code)} />
+              checked={genState[c.code]} onChange={() => toggleGen(c.code)} />
             <label className="form-check-label fw-semibold" htmlFor={'consent_' + c.code} style={{ fontSize: '0.85rem' }}>
               {c.label[lang]}{c.blocking && <span style={{ color: '#c0392b' }}> *</span>}
             </label>
           </div>
         </div>
       ))}
+
+      {/* DERECHOS DE IMAGEN — matriz tutor×sujeto: un bloque por sujeto (cada niño + el
+          propio tutor). El guardian consiente por cada hijo (representante legal) y sus
+          propios derechos; NO aparece el otro tutor adulto como sujeto. */}
+      {imageConsents.length > 0 && imageSubjects.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <h3 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '1rem', marginBottom: 4 }}>{t('signing.gdpr.image_rights_heading')}</h3>
+          <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 12 }}>{t('signing.gdpr.image_rights_subtitle')}</p>
+          {imageSubjects.map(s => (
+            <div key={s.id} className="border rounded p-2 mb-3" style={{ background: 'var(--bg)' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8, color: 'var(--teal-dk)' }}>
+                <i className={`bi ${s.kind === 'self' ? 'bi-person-badge' : 'bi-person'} me-1`} />{s.name}
+              </div>
+              {imageConsents.map(c => (
+                <div key={s.id + '_' + c.code} className="form-check" style={{ marginBottom: 6 }}>
+                  <input type="checkbox" className="form-check-input" id={'img_' + s.id + '_' + c.code}
+                    checked={!!(imgState[s.id] && imgState[s.id][c.code])} onChange={() => toggleImg(s.id, c.code)} />
+                  <label className="form-check-label" htmlFor={'img_' + s.id + '_' + c.code} style={{ fontSize: '0.84rem' }}>
+                    {c.label[lang]}
+                  </label>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
       {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
       {nav('bottom')}
     </div>

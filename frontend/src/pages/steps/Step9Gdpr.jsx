@@ -12,7 +12,7 @@ import { SignGdpr, lang_ } from '../signing/SigningSteps';
  *
  * El trabajo funcional vive en pages/signing/SigningSteps.jsx — NO se duplica aquí.
  */
-export default function Step9Gdpr({ onAdvance, onBack, signingToken }) {
+export default function Step9Gdpr({ onAdvance, onBack, signingToken, signerCtx }) {
   const { t, i18n } = useTranslation();
 
   if (!signingToken) {
@@ -32,6 +32,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken }) {
   return (
     <SignGdpr
       signingToken={signingToken}
+      signerCtx={signerCtx}
       lang={lang_(i18n)}
       onDone={onAdvance}
       onBack={onBack}
