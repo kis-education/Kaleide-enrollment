@@ -54,7 +54,7 @@ export default function WizardPage() {
     clearSession,
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
-    setPendingSave, awaitPendingSave, hasPendingSave,
+    setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
     isSubmitted,
     admissionState, signingContext,
     markStepUpFresh,
@@ -176,26 +176,23 @@ export default function WizardPage() {
 const handleNext = async (stepKey, data, extra = null) => {
     log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
 
-    // Optimistic-UI guardrail (Nivel 2): before advancing, ensure the
-    // PREVIOUS step's save (if any) has settled. Saves run in background;
-    // typically the user spends >1s on each step so the previous save is
-    // done by the time Next is clicked, making this a no-op. If they click
-    // fast, brief wait — the "Guardando..." indicator covers it.
-    if (hasPendingSave) {
-      log.info('WizardPage: waiting for previous step save to settle');
-      try { await awaitPendingSave(); }
-      catch (_) { /* errors handled inside the save promise */ }
-    }
+    // Data-layer pieza 2: el avance YA NO bloquea esperando el save de N-1. El save
+    // se ENCOLA (enqueueSave) y corre en background EN ORDEN FIFO (la cola preserva
+    // persons→relations: el save de relaciones se ejecuta tras el de personas, que
+    // ya estampó el personIdMap). La navegación avanza al instante; el indicador
+    // "Guardando…/Todo guardado/Error" (saveState) cubre el estado. El submit final
+    // (Step7Review) sí espera el drenaje de la cola (awaitPendingSave).
 
     const needsSave = !!(enrollmentGroupId && stepKey && isStepDirty(stepKey, data));
     if (!needsSave && enrollmentGroupId && stepKey) {
       log.info(`WizardPage: step "${stepKey}" clean — skipping save`);
     }
     if (needsSave) {
-      log.info(`WizardPage: step "${stepKey}" dirty — launching background save`, { data });
-      // Fire-and-forget. Wrap in an async IIFE so we can register the
-      // promise via setPendingSave for the next handleNext / submit to await.
-      const savePromise = (async () => {
+      log.info(`WizardPage: step "${stepKey}" dirty — encolando save en background`, { data });
+      // Data-layer pieza 2: encolar una FACTORY (no una promesa ya iniciada) para que
+      // la cola FIFO ejecute este save EN ORDEN tras el anterior (preserva la
+      // dependencia persons→relations) sin bloquear la navegación.
+      enqueueSave(async () => {
         try {
           // Send both new and legacy keys so backend keeps working during the
           // parallel refactor — server-side will prefer enrollment_group_id.
@@ -240,10 +237,9 @@ const handleNext = async (stepKey, data, extra = null) => {
           }
           log.warn(`WizardPage: saveStep "${stepKey}" failed (background)`, { message: err.message });
           showToast(t('wizard.save_failed'));
-          throw err; // surface to the awaiter — handleNext / submit handle gracefully
+          throw err; // surface al drenaje de la cola — submit lo maneja con gracia
         }
-      })();
-      setPendingSave(savePromise);
+      });
     } else {
       log.warn('WizardPage: skipping saveStep', { enrollmentGroupId, stepKey, dirty: needsSave });
     }
@@ -626,24 +622,27 @@ const handleNext = async (stepKey, data, extra = null) => {
             <i className="bi bi-bookmark" /> {t('wizard.save_later')}
           </button>
 
-          {/* Save-in-flight indicator. Driven by hasPendingSave from context;
-              shows up briefly while the previous step's save is running in
-              background. Centred so it's visible without crowding the buttons. */}
-          {hasPendingSave && (
-            <span
-              style={{
-                color: 'var(--muted)',
-                fontSize: '0.82rem',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-              aria-live="polite"
-            >
+          {/* Data-layer pieza 3: indicador estilo Google Docs con 3 estados,
+              gobernado por `saveState` del contexto. NUNCA bloquea la navegación;
+              los errores se reintentan en la cola y se surfacean aquí. El estado
+              "Todo guardado" solo se muestra tras haber guardado algo (≥1 paso
+              completado) para no anunciar "guardado" en un wizard recién abierto. */}
+          {saveState === 'saving' ? (
+            <span style={{ color: 'var(--muted)', fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }} aria-live="polite">
               <i className="bi bi-cloud-arrow-up" />
               {t('wizard.saving_in_background', 'Guardando…')}
             </span>
-          )}
+          ) : saveState === 'error' ? (
+            <span style={{ color: '#a02020', fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }} aria-live="polite">
+              <i className="bi bi-exclamation-triangle" />
+              {t('wizard.save_error_retrying', 'Error al guardar — reintentando')}
+            </span>
+          ) : completedSteps.size > 0 ? (
+            <span style={{ color: 'var(--muted)', fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }} aria-live="polite">
+              <i className="bi bi-check2-circle" />
+              {t('wizard.all_changes_saved', 'Todos los cambios guardados')}
+            </span>
+          ) : <span />}
 
           <button
             onClick={handleStartOver}

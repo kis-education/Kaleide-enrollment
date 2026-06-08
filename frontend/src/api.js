@@ -26,6 +26,27 @@ export function fetchLookups() {
   return _lookupsFlight;
 }
 
+// ─── Signing-session READ single-flight (data-layer pieza 5: corta la tormenta) ──
+// `initiateSigningSession` con create_only:true es una LECTURA del estado de la
+// sesión de firma (miembros, sub-pasos completados). SignReview (mount) + SignSign
+// (mount) + re-mounts concurrentes la disparaban por separado → tormenta de llamadas
+// concurrentes que AppSheet throttlea a 30-60s. Single-flight por signing_token:
+// mientras hay una lectura EN VUELO para ese token, los demás llamantes comparten la
+// MISMA promesa. Al settle se limpia → la siguiente lectura (tras un cambio de estado)
+// va fresca (sin cache stale).
+//   IMPORTANTE: SOLO de-duplica la LECTURA create_only:true. El DISPATCH real del
+//   envelope (initiateSigningSession SIN create_only, en SignSign por acción explícita
+//   del usuario) NUNCA pasa por aquí — el STOP-GAP de SignSign se preserva intacto.
+const _signingReadFlight = {};   // { [token]: promise }
+export function initiateSigningRead(signingToken) {
+  if (!signingToken) return Promise.reject(new Error('initiateSigningRead: signing_token required'));
+  if (_signingReadFlight[signingToken]) return _signingReadFlight[signingToken];
+  const flight = gasCall('initiateSigningSession', { signing_token: signingToken, create_only: true })
+    .finally(() => { delete _signingReadFlight[signingToken]; });
+  _signingReadFlight[signingToken] = flight;
+  return flight;
+}
+
 // ─── Questions cache ──────────────────────────────────────────────────────────
 // The question DEFINITION catalog (fetchQuestions → { sets: [...] }) is static for
 // the lifetime of the page, mirror of the lookups cache — but KEYED BY LANGUAGE

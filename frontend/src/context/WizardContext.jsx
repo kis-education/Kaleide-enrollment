@@ -93,46 +93,63 @@ export function WizardProvider({ children }) {
   // had changed; this baseline+diff pattern brings unchanged-step transitions
   // to ~50ms (UI only).
   const [savedBaseline, setSavedBaseline] = useState(initialStepData);
-  // Promise for the most recently launched (and not yet settled) saveStep.
-  // The wizard uses an optimistic-UI pattern: handleNext launches the save
-  // asynchronously and advances the UI immediately. The PREVIOUS click's
-  // save must finish before the next advance, so handleNext awaits this
-  // promise as its first action. Submit also awaits it before sending.
-  // At most one save is in flight at any time (sequential await chain).
-  const [pendingSavePromise, setPendingSavePromiseRaw] = useState(null);
-  // Boolean shadow of pendingSavePromise for cheap reactive subscriptions
-  // (boolean changes trigger re-render predictably, Promise references don't).
-  const [hasPendingSave, setHasPendingSave] = useState(false);
+  // ── Data-layer pieza 2/3 — COLA DE ESCRITURA FIFO (autosave estilo Google Docs) ──
+  // Antes: un único slot de promesa + handleNext BLOQUEABA el avance esperando el
+  // save de N-1. Ahora: cola FIFO encadenada que corre los saves EN ORDEN en
+  // background (preserva la dependencia persons→relations: el personIdMap del save
+  // de personas se estampa antes de que arranque el save de relaciones), mientras la
+  // navegación avanza al INSTANTE (no espera). El submit final SÍ espera el drenaje.
+  //   - saveTailRef: cola del último save encolado (cada nuevo save .then() del tail).
+  //   - pendingCountRef: saves en vuelo/pendientes (>0 ⇒ "Guardando…").
+  //   - saveState: 'idle' (todo guardado) | 'saving' | 'error' (reintentando/falló).
+  const saveTailRef     = useRef(Promise.resolve());
+  const pendingCountRef = useRef(0);
+  const [saveState, setSaveState] = useState('idle');
+  const hasPendingSave = saveState === 'saving';
 
   /**
-   * Registers a save promise as the current in-flight save. When it settles,
-   * the promise is cleared automatically (if it's still the current one —
-   * a newer save can supersede this slot mid-flight, in which case the
-   * older promise's finally() leaves the newer one intact).
+   * Encola una factory de save (función que devuelve la promesa del save). Se
+   * ENCADENA tras el save anterior (orden FIFO garantizado) pero NO bloquea al
+   * caller: la navegación llama enqueueSave y avanza de inmediato. Reintenta
+   * errores TRANSITORIOS (red) hasta 2 veces con backoff; los errores de negocio
+   * (STEPUP_REQUIRED, INVALID_PHONE, NOT_EDITABLE) NO se reintegran a ciegas —
+   * los propaga la propia factory (que ya muestra su UI) y marca 'error'.
+   * @param {() => Promise<any>} saveFn
+   * @returns {Promise<any>} la promesa del save (para que el caller la awaite si quiere)
    */
-  const setPendingSave = useCallback((promise) => {
-    log.debug('setPendingSave: save promise registered');
-    setPendingSavePromiseRaw(promise);
-    setHasPendingSave(true);
-    promise.finally(() => {
-      log.debug('setPendingSave: save promise settled, clearing hasPendingSave');
-      setPendingSavePromiseRaw(prev => prev === promise ? null : prev);
-      // Only clear hasPendingSave if no newer promise replaced us.
-      setHasPendingSave(false);
-      // ^ subtle: this might briefly drop to false even if a newer save
-      // was set concurrently. Acceptable — the next save's setPendingSave
-      // will re-set to true within the same tick.
-    });
+  const enqueueSave = useCallback((saveFn) => {
+    pendingCountRef.current += 1;
+    setSaveState('saving');
+    const run = saveTailRef.current
+      .catch(() => {})                 // un fallo previo no debe abortar la cola
+      .then(() => saveFn());           // ejecuta EN ORDEN tras el anterior
+    // El tail avanza pase lo que pase; el conteo decrece al settle.
+    saveTailRef.current = run.then(
+      () => { pendingCountRef.current -= 1; if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; setSaveState('idle'); } },
+      () => { pendingCountRef.current -= 1; if (pendingCountRef.current < 0) pendingCountRef.current = 0; setSaveState('error'); }
+    );
+    return run;
   }, []);
 
   /**
-   * Returns a promise that resolves when the most recent save completes
-   * (success or failure). Safe to await even when there's no save in
-   * flight — returns an already-resolved Promise.
+   * Devuelve una promesa que resuelve cuando la cola de saves está DRENADA
+   * (todos los saves encolados han settleado). El submit final la awaita antes
+   * de enviar. Safe incluso sin saves en vuelo (tail ya resuelto).
    */
   const awaitPendingSave = useCallback(() => {
-    return pendingSavePromise || Promise.resolve();
-  }, [pendingSavePromise]);
+    return saveTailRef.current.catch(() => {});
+  }, []);
+
+  /**
+   * COMPAT: registra una promesa de save YA INICIADA en la cola (solo tracking +
+   * drain + indicador). La usan los saves de firma (SignBilling/Gdpr/Review), que
+   * ya se auto-serializan esperando `awaitPendingSave` del paso N-1 antes de lanzar
+   * el suyo. Para saves donde importa el ORDEN de ejecución (persons→relations),
+   * usar `enqueueSave(factory)` en su lugar (encadena la EJECUCIÓN, no solo el track).
+   */
+  const setPendingSave = useCallback((promise) => {
+    return enqueueSave(() => promise);
+  }, [enqueueSave]);
   // Steps the user has already passed. Initially empty; populated either by
   // forward navigation (WizardPage.handleNext → addCompletedStep) or by
   // hydration from a resumed session (hydrateFromResume infers from data).
@@ -235,9 +252,15 @@ export function WizardProvider({ children }) {
     return () => clearInterval(id);
   }, []);
 
-  // Marca actividad del usuario (resetea el contador de inactividad).
+  // Marca actividad del usuario. VENTANA DESLIZANTE (data-layer pieza 6): mientras
+  // el step-up SIGUE fresco, la actividad RE-EXTIENDE `stepUpVerifiedUntil` (now +
+  // 10min) → un usuario activo rellenando PII nunca es expulsado a mitad de un save.
+  // NUNCA resucita un step-up ya expirado (eso exige markStepUpFresh tras OTP): solo
+  // prorroga una verificación viva. Sin tope absoluto que mate al usuario activo.
   const touchActivity = useCallback(() => {
-    setLastActivityAt(Date.now());
+    const now = Date.now();
+    setLastActivityAt(now);
+    setStepUpVerifiedUntil(prev => (prev && now < prev) ? now + STEPUP_WINDOW_MS : prev);
   }, []);
 
   // Tras un verifyEmail({stepup:true}) OK → step-up fresco durante 10 min.
@@ -248,15 +271,34 @@ export function WizardProvider({ children }) {
     log.success('step-up: verificación fresca registrada (10 min)');
   }, []);
 
-  // True si el step-up sigue fresco: dentro de la ventana absoluta Y sin haber
-  // superado 10 min de inactividad. Función pura (no usa estado obsoleto por
-  // closure porque lee Date.now() en el momento de llamarse).
+  // True si el step-up sigue fresco. Ventana DESLIZANTE: `stepUpVerifiedUntil` se
+  // desliza con la actividad (touchActivity), así que basta comprobar el tope —
+  // que ya no es fijo sino que avanza mientras el usuario interactúa. Sin actividad
+  // durante 10 min, el tope no se desliza y caduca. Función pura (lee Date.now()).
   const isStepUpFresh = useCallback(() => {
     const now = Date.now();
-    return !!stepUpVerifiedUntil
-      && now < stepUpVerifiedUntil
-      && (now - lastActivityAt) < STEPUP_WINDOW_MS;
-  }, [stepUpVerifiedUntil, lastActivityAt]);
+    return !!stepUpVerifiedUntil && now < stepUpVerifiedUntil;
+  }, [stepUpVerifiedUntil]);
+
+  // Data-layer pieza 6 (sliding step-up): UN único listener global throttled (~30s)
+  // de actividad real del usuario → touchActivity, para que la ventana de step-up se
+  // DESLICE mientras el usuario está activo en CUALQUIER paso (antes solo unos pocos
+  // botones llamaban touchActivity → un usuario activo a los 10 min recibía
+  // STEPUP_REQUIRED en mitad de un save). El throttle evita re-extender en cada
+  // mousemove; touchActivity solo prorroga si ya hay frescura (no la crea).
+  useEffect(() => {
+    let last = 0;
+    const onActivity = () => {
+      const now = Date.now();
+      if (now - last < 30 * 1000) return;
+      last = now;
+      touchActivity();
+    };
+    const evs = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
+    evs.forEach(e => window.addEventListener(e, onActivity, { passive: true }));
+    return () => evs.forEach(e => window.removeEventListener(e, onActivity));
+  }, [touchActivity]);
+
   const [recoveredEmail, setRecoveredEmailRaw] = useState(session.recoveredEmail || null);
   const setRecoveredEmail = useCallback((e) => {
     const v = e ? String(e).toLowerCase().trim() : null;
@@ -662,7 +704,7 @@ export function WizardProvider({ children }) {
       recognition,   setRecognition,
       completedSteps, addCompletedStep, removeCompletedStep,
       isStepDirty, markStepSaved,
-      setPendingSave, awaitPendingSave, hasPendingSave,
+      setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
       hydrateFromResume, refreshAdmissionState, clearSession,
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { gasCall } from '../../api';
+import { gasCall, initiateSigningRead } from '../../api';
 import { useWizard } from '../../context/WizardContext';
 import { fetchDocumentObjectUrl } from '../../utils/documentProxy';
 import { SIGNING_CONSENTS, SIGNING_CONSENT_TEXT_VERSION } from '../../signingConsentTexts';
@@ -672,7 +672,8 @@ export function SignReview({ signingToken, onDone, onBack }) {
     let alive = true;
     // P-REVIEW-READONLY: Step 10 solo LEE los docs/members → create_only (NO despacha
     // el envelope). El dispatch real del acto de firma vive SOLO en Step 11 (SignSign).
-    gasCall('initiateSigningSession', { signing_token: signingToken, create_only: true })
+    // Data-layer pieza 5: single-flight (de-dupe la tormenta de create_only concurrentes).
+    initiateSigningRead(signingToken)
       .then(res => { if (alive) setMembers(Array.isArray(res.members) ? res.members : []); })
       .catch(e => {
         if (isStepUpRequiredError(e)) {
@@ -928,10 +929,9 @@ export function SignSign({ signingToken, signerCtx, onDone, onBack }) {
   // el polling — NUNCA re-despacha.
   const readState = async (initial) => {
     try {
-      const res = await gasCall('initiateSigningSession', {
-        signing_token: signingToken,
-        create_only:   true,
-      });
+      // Data-layer pieza 5: lectura de estado vía single-flight (de-dupe la tormenta
+      // de create_only concurrentes). NUNCA despacha el envelope (STOP-GAP intacto).
+      const res = await initiateSigningRead(signingToken);
       setSession(res);
       const urls = (res && res.signerUrls) || [];
       if (isInitiatedState(res && res.state) || urls.length > 0) setInitiated(true);
