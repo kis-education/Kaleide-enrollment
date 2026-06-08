@@ -1266,10 +1266,14 @@ function sendMagicLink_(p) {
     const graceNonce = _mintMagicLinkNonce_(grp.enrollment_group_id);
     sendMagicLinkEmail_(destEmail, tokenToSend, grp.preferred_language || 'es', undefined, graceNonce);
   } else if (p.primary_email) {
-    // Find all non-submitted, non-abandoned sessions for this email
+    // Find all non-abandoned sessions for this email — INCLUDING submitted/AD.
+    // DL-E38: recovery MUST work for submitted/AD families so the magic link can
+    // resume them into signing. We only exclude abandoned sessions; submitted
+    // sessions get their EXISTING token sent (token renewal is skipped below for
+    // them, mirroring Path 1's behaviour).
     assertValidEmail_(p.primary_email, 'primary_email');
     let rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"primary_email" = "' + appsheetEscape_(p.primary_email) + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
+      Filter: '"primary_email" = "' + appsheetEscape_(p.primary_email) + '" && ISBLANK([abandoned_at])'
     });
     // DL-E38 a1: a non-primary guardian recovers with their OWN email — locate
     // open group(s) via enrEmails (guardians) when primary_email doesn't match.
@@ -1281,11 +1285,15 @@ function sendMagicLink_(p) {
     if (!rows || !rows.length) throw new Error('Enrollment group not found');
     _checkMagicLinkRateLimit_(p.primary_email.toLowerCase().trim());
 
-    // Renew tokens + created_at for all non-submitted sessions before sending.
+    // Renew tokens + created_at for NON-submitted sessions before sending so the
+    // new link is valid for a fresh 7-day window. Submitted/AD sessions keep
+    // their EXISTING resume_token untouched (no created_at reset) — exactly like
+    // Path 1 — so recovery into signing reuses the live token.
     const nowIso = new Date().toISOString();
     const grps = rows
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
       .map(g => {
+        if (g.submitted_at) return g; // submitted: send existing token, do not renew
         const newToken = generateUuid_();
         try {
           appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
@@ -1507,8 +1515,8 @@ function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, person
 }
 
 /**
- * DL-E38 a1: localiza grupos abiertos (no enviados, no abandonados) cuyo email
- * de GUARDIAN coincide con el tecleado — para que un guardian no-primario pueda
+ * DL-E38 a1: localiza grupos recuperables (no abandonados — INCLUYE submitted/AD)
+ * cuyo email de GUARDIAN coincide con el tecleado — para que un guardian no-primario pueda
  * recuperar con SU propio email (no solo el `primary_email` del grupo). El
  * magic link se envía al email tecleado (que es el del guardian dueño del buzón),
  * nunca al atacante. KAL-5: assertValidEmail_ + appsheetEscape_. Devuelve filas
@@ -1553,8 +1561,12 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
     if (g && g[e.person_id]) guardianEmailGroups[e.enrollment_group_id] = true;
   });
 
+  // DL-E38: include submitted/AD sessions (only exclude abandoned) so a
+  // non-primary guardian can recover with their own email post-submit and
+  // resume into signing. Token renewal for submitted rows is skipped by the
+  // caller (sendMagicLink_ Path 2), which sends their existing resume_token.
   return groups.filter(function(g) {
-    return !g.submitted_at && !g.abandoned_at && guardianEmailGroups[g.enrollment_group_id];
+    return !g.abandoned_at && guardianEmailGroups[g.enrollment_group_id];
   });
 }
 
