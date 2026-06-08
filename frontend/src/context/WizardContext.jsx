@@ -692,7 +692,10 @@ export function WizardProvider({ children }) {
       signing_context:   data.signing_context,
     };
     setAdmissionState(adm);
-    setSigningContext(data.signing_context || null);
+    // El pulso ligero (getAdmissionState) puede NO traer signing_context aunque la
+    // firma siga lista → NO borrar el token ya resuelto (vive en React state, KAL-7).
+    // Solo actualizar si el pulso aporta uno nuevo; si no, preservar el existente.
+    setSigningContext(prev => data.signing_context || prev);
   }, []);
 
   return (
