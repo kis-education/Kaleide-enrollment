@@ -128,6 +128,34 @@ export default function DevLogger() {
     showToast(ok ? 'Data copied' : 'Copy failed');
   }
 
+  // Download the FULL log store (every entry, ignoring the level/search
+  // filters) as a .txt file. Entries are already PII-redacted at push time
+  // (logger.js, KAL-11), so the file is as safe as "Copy all" — but a file
+  // survives long debug sessions that don't fit the clipboard / chat paste.
+  function downloadLog() {
+    if (!entries.length) { showToast('No entries'); return; }
+    const header =
+      `ENR DEBUG LOG  v${pkg.version}\n` +
+      `Generated: ${new Date().toISOString()}\n` +
+      `Entries: ${entries.length}\n` +
+      `${'─'.repeat(60)}\n\n`;
+    const text = header + entries.map(entryAsText).join('\n\n') + '\n';
+    try {
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url;
+      a.download = `enr-debug-v${pkg.version}-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast(`Downloaded ${entries.length} entries`);
+    } catch (_) {
+      showToast('Download failed');
+    }
+  }
+
   const hasErrors = entries.some(e => e.level === 'error');
 
   return (
@@ -154,8 +182,9 @@ export default function DevLogger() {
               </span>
             </span>
             <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={copyAll} style={btnStyle} title="Copy all visible entries with data">Copy all</button>
-              <button onClick={clear}   style={btnStyle}>Clear</button>
+              <button onClick={copyAll}     style={btnStyle} title="Copy all visible entries with data">Copy all</button>
+              <button onClick={downloadLog} style={btnStyle} title="Download the full log as a .txt file">⬇ Download</button>
+              <button onClick={clear}       style={btnStyle}>Clear</button>
               <button onClick={() => setOpen(false)} style={btnStyle}>✕</button>
             </div>
           </div>
