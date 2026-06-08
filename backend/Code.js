@@ -5687,7 +5687,14 @@ function initiateSigningSession_(p) {
   if (createOnly) proxyPayload.create_only = true; // P-REVIEW-READONLY: NO despacha envelope
   if (clientIp) proxyPayload.client_ip = clientIp; // evidencia forense, NUNCA gate
 
-  return kmsProxy_('enr.initiateSigningSessionQueued', proxyPayload);
+  // DL-A.4 / DL-B — encolar SOLO el DISPATCH real (envelope, 54-65s síncronos). El
+  // path create_only es una LECTURA/preparación idempotente del estado de la sesión
+  // (members/state/signerUrls) que SignReview/SignSign consumen SÍNCRONAMENTE en el
+  // mount + polling (initiateSigningRead) — encolarlo rompería esa lectura. El KMS ya
+  // lo de-dupea/idempotentiza server-side; el single-flight de api.js lo de-dupea en
+  // cliente. Por eso create_only → endpoint SÍNCRONO; dispatch → endpoint encolado.
+  const action = createOnly ? 'enr.initiateSigningSession' : 'enr.initiateSigningSessionQueued';
+  return kmsProxy_(action, proxyPayload);
 }
 
 // ─── DL-A — capa de datos del wizard (hidratación consolidada + liveState) ────
@@ -5709,11 +5716,41 @@ function initiateSigningSession_(p) {
  */
 function hydrateSession_(p) {
   const groupId = requireResumeToken_(p);  // KAL-4 + TTL 7d + abandoned gate
-  _markStepUpFresh_(groupId);              // recuperar es actividad real → desliza la ventana
-  return kmsProxy_('enr.wizardHydrate', {
+
+  // DL-B — gracia magic-link + gate PII (espejo EXACTO de resumeSession_:2116-2198).
+  // El endpoint consolidado de DL-A (enr.wizardHydrate) NO conoce el step-up/nonce del
+  // wizard (viven en SU ScriptCache), así que esas dos semánticas se aplican AQUÍ:
+  //  (1) Gracia: si llega un nonce de magic-link válido (<10 min), lo consume → step-up
+  //      fresco → sin OTP de entrada (step_up_fresh:true).
+  //  (2) Gate PII (DL-E39): si el step-up NO está fresco, el cliente ANÓNIMO recibe SOLO
+  //      lo no-PII (estructura + admission + lookups + versión) con pii_gated:true; la PII
+  //      (persons/relations/documents/responses + billing) NUNCA cruza al cliente antes
+  //      del OTP. El wizard backend (trusted) sí recibe todo del KMS, pero lo filtra.
+  const graceOk = _consumeMagicLinkNonce_(p && p.n, groupId);
+  if (graceOk) _markStepUpFresh_(groupId);
+  const stepUpFresh = _isStepUpFresh_(groupId);
+
+  // DL-A §1 — UNA llamada al KMS devuelve TODO (lookups + datos 11 pasos + qbResponses
+  // + admission + signing_context + billing_splits + live_version).
+  const data = kmsProxy_('enr.wizardHydrate', {
     resume_token:    String(p.resume_token).trim(),
     recovered_email: (p && p.recovered_email) ? String(p.recovered_email).trim() : null,
-  });
+  }) || {};
+
+  if (!stepUpFresh) {
+    return {
+      group:          data.group || null,
+      enrollments:    data.enrollments || [],
+      admission:      data.admission || null,
+      lookups:        data.lookups || {},
+      live_version:   data.live_version || 0,
+      persons:        [], relations: [], documents: [], responses: [],
+      billing_splits: { payers: [], per_participant: [] },
+      step_up_fresh:  false,
+      pii_gated:      true,
+    };
+  }
+  return Object.assign({}, data, { step_up_fresh: graceOk });
 }
 
 /**

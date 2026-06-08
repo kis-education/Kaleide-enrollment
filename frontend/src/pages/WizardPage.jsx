@@ -59,6 +59,7 @@ export default function WizardPage() {
     markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
     isSubmitted,
     admissionState, signingContext,
+    billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2
     markStepUpFresh,
     isStepUpFresh, recoveredViaMagicLink,
     otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER
@@ -130,26 +131,40 @@ export default function WizardPage() {
     (stepData?.email?.verified && stepData.email.primary_email) ? stepData.email.primary_email : null;
   const effectiveRecoveredEmail = recoveredEmail || verifiedSessionEmail || undefined;
 
-  const pulseRef = useRef({ resumeToken: null, effectiveRecoveredEmail: undefined, hasPendingSave: false });
-  pulseRef.current = { resumeToken, effectiveRecoveredEmail, hasPendingSave };
-  // PERF (2026-06-08): guard anti-concurrencia. getAdmissionState es ligero pero el
-  // ticker + focus + un tick lento podrían solapar llamadas; si ya hay una en vuelo,
-  // NO disparamos otra (era una causa de la saturación con resumeSession de 30-40s).
+  // DL-B §2 — liveState desacoplado, cheap-poll de DOS ETAPAS (Opción A). El poll de
+  // DETECCIÓN-DE-CAMBIO (getLiveStateVersion) es ULTRA-LIGERO: solo lee un contador del
+  // ScriptCache del wizard (que el KMS bumpa por doPost al cambiar estado/milestone) —
+  // NO toca AppSheet ni el KMS. SOLO cuando la versión SUBE respecto a la que tenemos en
+  // memoria hacemos el fetch de DETALLE (getAdmissionState) → refreshAdmissionState (que
+  // actualiza SOLO el slice de admisión/firma; NUNCA stepData/currentStep/landing). Antes:
+  // getAdmissionState directo cada 30s (lectura AppSheet en cada tick). Ahora: lectura
+  // pesada solo cuando algo cambió de verdad.
+  const pulseRef = useRef({ resumeToken: null, enrollmentGroupId: null, effectiveRecoveredEmail: undefined, hasPendingSave: false, liveVersion: 0 });
+  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, hasPendingSave, liveVersion };
   const pulseInFlightRef = useRef(false);
   useEffect(() => {
     const tick = () => {
-      const { resumeToken: rt, effectiveRecoveredEmail: re, hasPendingSave: pending } = pulseRef.current;
-      if (!rt) return;                                    // sin sesión → nada que sincronizar
+      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, hasPendingSave: pending, liveVersion: knownVer } = pulseRef.current;
+      if (!rt || !gid) return;                            // sin sesión → nada que sincronizar
       if (pending) return;                                // save en vuelo → saltar este tick
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return; // pestaña oculta → saltar
       if (pulseInFlightRef.current) return;               // ya hay un pulse en vuelo → no solapar
-      // PERF: endpoint LIGERO (solo estado admisión + signing), NO resumeSession
-      // (que relee TODO el expediente, 30-40s). La hidratación completa corre UNA
-      // vez al cargar (el efecto needsHydration de abajo), no en cada pulse.
       pulseInFlightRef.current = true;
-      gasCall('getAdmissionState', { resume_token: rt, recovered_email: re || undefined })
-        .then(data => { log.info('[DBG pulse] getAdmissionState', { state_code: data && data.state_code, signing_ready: data && data.signing_ready, signing_status: data && data.signing_status, has_ctx: !!(data && data.signing_context) }); refreshAdmissionState(data); })
-        .catch(err => log.warn('WizardPage: admission pulse failed', { message: err.message }))
+      // ── Etapa 1 — detección de cambio ULTRA-LIGERA (solo la versión, sin AppSheet/KMS).
+      gasCall('getLiveStateVersion', { enrollment_group_id: gid })
+        .then(verRes => {
+          const v = (verRes && Number(verRes.version)) || 0;
+          if (v <= (Number(knownVer) || 0)) return; // sin cambios → NO leer detalle
+          // ── Etapa 2 — la versión subió → fetch de DETALLE del liveState.
+          log.info('[DBG cheap-poll] version subió', { from: knownVer, to: v });
+          return gasCall('getAdmissionState', { resume_token: rt, recovered_email: re || undefined })
+            .then(data => {
+              log.info('[DBG pulse] getAdmissionState', { state_code: data && data.state_code, signing_ready: data && data.signing_ready, signing_status: data && data.signing_status, has_ctx: !!(data && data.signing_context) });
+              refreshAdmissionState(data);     // SOLO slice admisión/firma — nunca datos/nav
+              setLiveVersion(v);               // avanza la baseline (no re-disparar el mismo cambio)
+            });
+        })
+        .catch(err => log.warn('WizardPage: liveState cheap-poll failed', { message: err.message }))
         .finally(() => { pulseInFlightRef.current = false; });
     };
     const id = setInterval(tick, 30 * 1000);
@@ -172,7 +187,11 @@ export default function WizardPage() {
       // families even though a signing_token existed — Step 7 → /sign bridge
       // never unlocked. Mirrors ResumePage:59. Absent (cross-device) → falls
       // back to the deterministic session-anchored resolution / signer selector.
-      gasCall('resumeSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail })
+      // DL-B §1 — hidratación CONSOLIDADA: UNA llamada (hydrateSession → KMS
+      // enr.wizardHydrate) trae datos 11 pasos + lookups + qbResponses + admission
+      // + signing_context + billing_splits + live_version. Sustituye la cascada
+      // resumeSession + fetchLookups + getSavedBillingSplits + resolveSigningToken.
+      gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail })
         .then(data => {
           // hydrateFromResume now seeds completedSteps in context based on
           // which steps have data — no need to override here.
@@ -346,46 +365,26 @@ const handleNext = async (stepKey, data, extra = null) => {
   // identidad (los consentimientos GDPR son per-guardian). KAL-7: el token NUNCA va
   // en la URL — vive en signingContext (React state) + se pasa por props a los steps.
   const enterSigning = () => {
+    // DL-B §3 — autoridad de navegación ÚNICA, SIN JUMP. Eliminado el resolveSigningToken
+    // async que saltaba currentStep al sub-paso "más avanzado" ~19s después del click
+    // (causa del bug "al tocar billing salta al paso 11" y de pisar la pantalla del
+    // usuario). Ahora el avance a la firma es una transición de paso NORMAL (7→8) que
+    // gobierna el ESTADO (el botón solo aparece con AD + signing_ready, ver
+    // canAdvanceToSigning); a partir de ahí el usuario avanza 8→9→10→11 él mismo.
+    // El contexto del firmante (sub-pasos billing/gdpr/review/signed) YA viene en la
+    // hidratación consolidada (signingContext.steps) — no hace falta resolveSigningToken.
+    // KAL-7: el token vive en signingContext (React state), nunca en la URL.
     const token = signingContext?.signing_token;
-    log.info('[DBG enterSigning] click', { has_token: !!token, token8: token && log.sid(token), admission_steps: signingContext && signingContext.steps });
+    log.info('[DBG enterSigning] click (sin JUMP)', { has_token: !!token, admission_steps: signingContext && signingContext.steps });
     if (!token) {
       showToast(t('wizard.signing_confirm_email'));
       return;
     }
-    // WPERF-1 criterio 4: este click ARRANCA el salto a firma; resetea el flag para que
-    // solo cuente como "el usuario tomó el control" una nav MANUAL POSTERIOR (durante los
-    // ~19s de resolveSigningToken). El avance inmediato de abajo es parte del propio salto.
-    resetUserTookControl();
-    // Marca el Step 7 (índice 6) completado y entra al primer paso de firma de
-    // inmediato (Billing por defecto). resolveSigningToken refina el aterrizaje en
-    // background si la familia ya avanzó parte de la firma.
+    markUserTookControl();
+    if (signingContext) setSignerCtx(signingContext); // alimenta members/estado de los Steps 8-11
     addCompletedStep(6);
     setCurrentStep(STEP_FIRST_SIGNING);
     window.scrollTo(0, 0);
-    gasCall('resolveSigningToken', { signing_token: token })
-      .then(ctx => {
-        log.info('[DBG enterSigning] resolveSigningToken resolved', { valid: ctx && ctx.valid, reason: ctx && ctx.reason, steps: ctx && ctx.steps });
-        if (!ctx || !ctx.valid) {
-          log.warn('WizardPage: resolveSigningToken not valid on signing entry', { reason: ctx && ctx.reason });
-          return;
-        }
-        setSignerCtx(ctx);
-        // Aterriza en el sub-paso correcto según el progreso ya registrado.
-        const sub = initialSubStep(ctx.steps);       // 0..3
-        const target = STEP_FIRST_SIGNING + sub;       // 7..10
-        // DBG-SESSION: este es el salto async que arranca al usuario de billing al
-        // sub-paso más avanzado (bug 4b "al tocar billing salta al paso 11").
-        log.warn('[DBG enterSigning] JUMP async', { from_step_index: STEP_FIRST_SIGNING, sub, target_step_index: target, user_took_control: userTookControlRef.current });
-        // WPERF-1 criterio 4: si el usuario ya navegó a mano tras el click (atrás/adelante/
-        // avance de firma), ABORTA el salto — no le pisamos la pantalla ~19s después.
-        if (userTookControlRef.current) {
-          log.warn('[DBG enterSigning] JUMP abortado — el usuario tomó el control tras el click');
-          return;
-        }
-        for (let i = STEP_FIRST_SIGNING; i < target; i++) addCompletedStep(i);
-        setCurrentStep(target);
-      })
-      .catch(err => log.warn('WizardPage: resolveSigningToken failed on signing entry', { message: err.message }));
   };
 
   const handleUnlock = () => {
@@ -456,7 +455,7 @@ const handleNext = async (stepKey, data, extra = null) => {
           // pre-step-up). Tras el OTP el backend marcó el grupo fresco (verifyEmail
           // stepup:true) → re-hidratamos para cargar la PII del expediente ahora
           // permitida. Sin esto el stepData quedaría vacío tras pasar el gate.
-          gasCall('resumeSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail })
+          gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail })
             .then(data => { hydrateFromResume(data); log.success('WizardPage: rehydrate post step-up OK'); })
             .catch(err => log.error('WizardPage: rehydrate post step-up failed', { message: err.message }));
         }}
@@ -695,6 +694,10 @@ const handleNext = async (stepKey, data, extra = null) => {
           onAdvance={advanceSigningStep}
           signingToken={signingContext?.signing_token || null}
           signerCtx={signerCtx}
+          /* DL-B §1: el reparto de billing YA GUARDADO viene en la hidratación
+             consolidada → el Step 8 lo consume del store en vez de hacer una lectura
+             getSavedBillingSplits por-entrada. null = aún no hidratado (cae a su fetch). */
+          savedSplits={billingSplits}
           /* DL-E38 merge: Step 7 advance-to-signing (state-driven). The Step 7
              panel renders the same "Continuar" action TOP and BOTTOM (mirroring the
              standard StepNav positions of steps 1-6) when the file is Approved (AD),

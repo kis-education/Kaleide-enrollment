@@ -237,7 +237,7 @@ export function SplitEditor({ payers, onChange }) {
 //   · "Personalizar por hijo" expande a N repartos, cada uno solo % entre tutores, suma
 //     100, un primario → payload `per_participant:[{ applicant_person_id, payers[] }]`.
 // El KMS deriva grupo+enrollments del token (KAL-4) y mapea cada hijo → su finSubscription.
-export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
+export function SignBilling({ signingToken, signerCtx, savedSplits: savedSplitsProp, onDone, onBack }) {
   const { t } = useTranslation();
   const { stepData, setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
   // Default payer = signing guardian (DL-E38: identity derived server-side from the
@@ -293,10 +293,20 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
   // WPERF-4 (bug 1): reparto YA GUARDADO (null = aún cargando; {payers,per_participant}).
   const [savedSplits, setSavedSplits] = useState(null);
 
-  // WPERF-4 (bug 1): lee el reparto guardado ANTES de sembrar, para rehidratar 50/50
-  // en vez de volver siempre a 100/0. Best-effort: si falla, sembramos el default.
+  // DL-B §1: el reparto guardado YA viene en la hidratación consolidada (savedSplitsProp,
+  // del store WizardContext.billingSplits). Si está presente lo usamos directamente y NO
+  // hacemos la lectura getSavedBillingSplits por-entrada (elimina un round-trip por entrada
+  // al Step 8). Solo caemos al fetch si el prop no llegó (p.ej. entrada sin hidratación
+  // consolidada previa). WPERF-4 (bug 1): rehidratar 50/50 en vez de volver a 100/0.
   useEffect(() => {
     let alive = true;
+    if (savedSplitsProp && typeof savedSplitsProp === 'object') {
+      setSavedSplits({
+        payers:          savedSplitsProp.payers || [],
+        per_participant: savedSplitsProp.per_participant || [],
+      });
+      return undefined;
+    }
     if (!signingToken) { setSavedSplits({ payers: [], per_participant: [] }); return undefined; }
     gasCall('getSavedBillingSplits', { signing_token: signingToken })
       .then(res => {

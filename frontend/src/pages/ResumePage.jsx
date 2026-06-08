@@ -59,11 +59,13 @@ export default function ResumePage() {
     }
 
     const tokenPreview = String(token).slice(0, 8) + '...';
-    log.info('ResumePage: calling resumeSession', { resume_token_preview: tokenPreview });
-    // DL-E38 a1: re-send the email the family typed (persisted in sessionStorage)
-    // as the per-guardian discriminator. The backend re-resolves the guardian
-    // server-side from it (KAL-4); absent (e.g. cross-device) → group-scoped.
-    gasCall('resumeSession', { resume_token: token, recovered_email: recoveredEmail || undefined, n: graceNonce || undefined })
+    log.info('ResumePage: calling hydrateSession', { resume_token_preview: tokenPreview });
+    // DL-B §1 — hidratación CONSOLIDADA (hydrateSession): UNA llamada trae datos 11
+    // pasos + lookups + qbResponses + admission + signing_context + billing_splits +
+    // live_version. Preserva la gracia magic-link (consume el nonce `n` server-side) +
+    // el gate PII. DL-E38 a1: el email tecleado (persistido) es el discriminador
+    // per-guardian; el backend re-resuelve el guardian server-side (KAL-4).
+    gasCall('hydrateSession', { resume_token: token, recovered_email: recoveredEmail || undefined, n: graceNonce || undefined })
       .then(data => {
         // Post-DL-E15 shape uses `group`; legacy responses still use `application`.
         const grp = data.group || data.application;
