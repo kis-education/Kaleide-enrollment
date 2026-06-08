@@ -363,15 +363,42 @@ export function SignBilling({ signingToken, signerCtx, onDone, onBack }) {
 
 // ─── Step 9 — GDPR (modo conservador GATE-B: UN set, sin fan-out per-guardian) ─
 
-export function SignGdpr({ signingToken, lang, onDone, onBack }) {
+export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
   const { t } = useTranslation();
   const { setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
-  // default: blocking consent unchecked, optional ones unchecked.
+  // CLI 3 — los consentimientos marcados se PERSISTEN keyed por sesión de firma para que
+  // sobrevivan a navegar atrás/adelante (9↔8). Antes el estado vivía solo en useState y se
+  // perdía al desmontar SignGdpr en el back → al volver aparecía todo desmarcado. Mismo
+  // patrón que el `navKey` del sub-step. KAL-7: NO se guarda ningún secreto (ni el
+  // signing_token) — solo los booleans de consentimiento + la versión de texto, de modo que
+  // si el texto legal cambia (SIGNING_CONSENT_TEXT_VERSION) se descarta lo guardado y se
+  // re-consiente. Marcar NO envía nada (eso es submit/onDone); solo conserva las marcas.
+  const gdprKey = 'signGdpr_' + (signerCtx?.session_id || signerCtx?.signer_id || 'x');
   const [state, setState] = useState(() => {
-    const init = {}; SIGNING_CONSENTS.forEach(c => { init[c.code] = false; }); return init;
+    const init = {}; SIGNING_CONSENTS.forEach(c => { init[c.code] = false; });
+    try {
+      const raw = sessionStorage.getItem(gdprKey);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved && saved.v === SIGNING_CONSENT_TEXT_VERSION && saved.state) {
+          SIGNING_CONSENTS.forEach(c => {
+            if (typeof saved.state[c.code] === 'boolean') init[c.code] = saved.state[c.code];
+          });
+        }
+      }
+    } catch (e) { /* non-fatal — empezar con defaults */ }
+    return init;
   });
+  const persistConsents = (next) => {
+    try { sessionStorage.setItem(gdprKey, JSON.stringify({ v: SIGNING_CONSENT_TEXT_VERSION, state: next })); }
+    catch (e) { /* non-fatal */ }
+  };
   const [err, setErr] = useState('');
-  const toggle = (code) => setState(prev => ({ ...prev, [code]: !prev[code] }));
+  const toggle = (code) => {
+    const next = { ...state, [code]: !state[code] };
+    persistConsents(next);
+    setState(next);
+  };
 
   // WIZARD — guardado background + avance optimista (paso 9). Mirror del patrón
   // /apply: (1) await del save de BILLING en vuelo (awaitPendingSave) — fuerza el lag
@@ -958,7 +985,7 @@ export default function SigningSteps({ signingToken, signerCtx }) {
     <>
       <Progress current={sub} />
       {sub === 0 && <SignBilling signingToken={signingToken} signerCtx={signerCtx} onDone={() => setSub(1)} />}
-      {sub === 1 && <SignGdpr signingToken={signingToken} lang={lang} onDone={() => setSub(2)} onBack={() => setSub(0)} />}
+      {sub === 1 && <SignGdpr signingToken={signingToken} signerCtx={signerCtx} lang={lang} onDone={() => setSub(2)} onBack={() => setSub(0)} />}
       {sub === 2 && <SignReview signingToken={signingToken} onDone={() => setSub(3)} onBack={() => setSub(1)} />}
       {sub === 3 && <SignSign signingToken={signingToken} signerCtx={signerCtx} onBack={() => setSub(2)} onDone={() => { /* terminal — stays on success screen */ }} />}
     </>
