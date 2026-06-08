@@ -2390,43 +2390,46 @@ function saveStep_(p) {
   }
   _markStepUpFresh_(enrollmentGroupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
-  const now = new Date().toISOString();
-
-  // ── Update the GROUP row for session-level fields ──────────────────────────
-  // (legacy: this used to touch enrApplications)
-  const groupRow = { enrollment_group_id: enrollmentGroupId, updated_at: now };
-  if (step === 'application') {
-    // Persist all session-level fields to enrEnrollmentGroups so they survive resume.
-    // desired_start_date is staged here and propagated to each enrEnrollments row at submit.
-    // source maps to source_locale for now (real source_id was resolved at init).
-    if (payload.program_id)        groupRow.program_id        = payload.program_id;
-    if (payload.desired_start_date) groupRow.desired_start_date = normalizeDate_(payload.desired_start_date);
-    if (payload.source)            groupRow.source_locale     = payload.source;
-  }
-  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [groupRow]);
-
+  // ── Thin-client (DL-E41 / WPERF-3): la escritura la hace el KMS (encola). ─────
+  // El wizard valida (KAL-4 + step-up arriba) y PROXEA al endpoint del step; el KMS
+  // re-deriva el grupo del resume_token (KAL-4) y encola la persistencia. Para
+  // 'persons' el KMS pre-asigna los person_id y devuelve personIdMap (el frontend
+  // estampa los IDs reales). NOTA WPERF-INT: smoke de las shapes persons/relations/
+  // health (frontend payload ↔ enr_persist*_) tras integrar wperf-2 + deploy.
   let extra = null;
   switch (step) {
     case 'application':
-      // Group-level fields already written above
+      kmsProxy_('enr.wizardSaveStep', {
+        resume_token:       p.resume_token,
+        step:               'application',
+        program_id:         payload.program_id || null,
+        desired_start_date: payload.desired_start_date ? normalizeDate_(payload.desired_start_date) : null,
+        source_locale:      payload.source || null,
+      });
       break;
-    // KAL-NEW-3 (2026-06-05): `case 'review'` eliminado. Las transiciones de estado
-    // ADMISSION (RQ/IN/AD/...) viven en el KMS (operación staff autenticada),
-    // NUNCA en el wizard anónimo. El cierre del wizard usa submitEnrollmentSession_.
-    // Un step='review' cae ahora al `default:` y lanza 'Unknown step: review'.
+    // KAL-NEW-3 (2026-06-05): `case 'review'` eliminado — las transiciones ADMISSION
+    // viven en el KMS (staff). step='review' cae al default → 'Unknown step: review'.
     case 'persons':
-      // CLI 8: guard email único por tutor (defensa en profundidad) ANTES de escribir.
+      // CLI 8: guard email único por tutor (defensa en profundidad) ANTES de proxear.
       assertUniqueGuardianEmails_(payload);
-      extra = savePersons_(enrollmentGroupId, payload);
-      // CLI 8: atestación de tutor único (acto declarativo, best-effort, group-scoped).
-      // KAL-4: enrollmentGroupId del token; la atestación es un campo del payload.
+      extra = kmsProxy_('enr.wizardSavePersons', {
+        resume_token: p.resume_token,
+        persons:      Array.isArray(payload) ? payload : (payload.persons || []),
+      });
+      // CLI 8: atestación de tutor único — sigue siendo dato del payload (group-scoped).
       persistSoleGuardianAttestation_(enrollmentGroupId, p.sole_guardian_attestation);
       break;
     case 'relations':
-      extra = saveRelations_(enrollmentGroupId, payload);
+      kmsProxy_('enr.wizardSaveRelations', {
+        resume_token: p.resume_token,
+        relations:    Array.isArray(payload) ? payload : (payload.relations || []),
+      });
       break;
     case 'health':
-      saveHealth_(enrollmentGroupId, payload);
+      kmsProxy_('enr.wizardSaveHealth', {
+        resume_token: p.resume_token,
+        health:       Array.isArray(payload) ? payload : (payload.health || []),
+      });
       break;
     case 'questions':
       // Responses are saved individually via saveResponses_ — nothing to do here
@@ -2438,19 +2441,10 @@ function saveStep_(p) {
       throw new Error('Unknown step: ' + step);
   }
 
-  // KAL-4: _debug payload (extra) contained PII samples (firstNew / firstPhone /
-  // firstEmail from savePersons_); it is gated behind a script property so
-  // diagnostics still work during deploys but not for normal traffic.
-  // The frontend (Step2 → WizardPage) consumes _debug.personIdMap to stamp
-  // real person_ids back into the wizard form, so when _debug is suppressed
-  // we still expose ONLY that map (no PII fields).
-  const debugEnabled = PropertiesService.getScriptProperties().getProperty('DEBUG_MODE') === '1';
-  let safeDebug = null;
-  if (extra && extra.personIdMap) {
-    // Always expose the personIdMap (no PII — just _uid ↔ person_id pairs).
-    safeDebug = { personIdMap: extra.personIdMap };
-  }
-  if (debugEnabled) safeDebug = extra;
+  // El frontend (Step2 → WizardPage) consume _debug.personIdMap para estampar los
+  // person_id reales. El KMS lo devuelve en `extra.personIdMap` (sin PII — solo
+  // pares _uid ↔ person_id).
+  const safeDebug = (extra && extra.personIdMap) ? { personIdMap: extra.personIdMap } : null;
   return { saved: true, step, _debug: safeDebug };
 }
 
@@ -3623,53 +3617,12 @@ function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
  * @returns {{ allergies: Array, dietary: Array, medical: Array }}
  */
 function fetchLookups_() {
-  // 5 catalog reads in parallel via appsheetRequestBatch_ instead of
-  // sequential. Pre-parallelization: ~3-5s on first call (cache miss).
-  // Now: ~1s bounded by the slowest single fetch.
-  const specs = [
-    { table: T.LOOKUP_ALLERGIES,      action: 'Find', selector: { Filter: 'true' } },
-    { table: T.LOOKUP_DIETARY,        action: 'Find', selector: { Filter: 'true' } },
-    { table: T.LOOKUP_MEDICAL,        action: 'Find', selector: { Filter: 'true' } },
-    { table: T.LOOKUP_RELATION_TYPES, action: 'Find', selector: { Filter: 'true' } },
-    { table: T.PROGRAMS,              action: 'Find', selector: {
-        Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && ISBLANK([deleted_at])'
-    } },
-  ];
-  const results = appsheetRequestBatch_(specs);
-  const pick = (i) => {
-    if (!results[i].ok) {
-      Logger.log('fetchLookups_ error on ' + specs[i].table + ': ' + results[i].error);
-      return [];
-    }
-    return results[i].data || [];
-  };
-  const allergies     = pick(0);
-  const dietary       = pick(1);
-  const medical       = pick(2);
-  const relationTypes = pick(3);
-  const programs      = pick(4);
-
-  // KAL-11: reference rows shouldn't carry PII but UUIDs from joined tables can
-  // leak. Reduce to counts — the [0] dumps were only useful for the initial
-  // schema verification and are not needed in steady-state logs.
-  Logger.log('fetchLookups_ allergies: '     + allergies.length     + ' rows');
-  Logger.log('fetchLookups_ dietary: '       + dietary.length       + ' rows');
-  Logger.log('fetchLookups_ medical: '       + medical.length       + ' rows');
-  Logger.log('fetchLookups_ relationTypes: ' + relationTypes.length + ' rows');
-  Logger.log('fetchLookups_ programs: '      + programs.length      + ' rows');
-
-  return {
-    allergies:     allergies.map(r =>     ({ id: r['Row ID'] || r.row_id, label: r.food_allergy_designation })),
-    dietary:       dietary.map(r =>       ({ id: r['Row ID'] || r.row_id, label: r.diet_designation })),
-    medical:       medical.map(r =>       ({ id: r['Row ID'] || r.row_id, label: r.medical_condition_designation })),
-    relationTypes: relationTypes.map(r => ({ id: r['Row ID'] || r.row_id, label: r.relation_type_designation })),
-    programs:      programs.map(r => ({
-      program_id:       r.program_id,
-      designation:      r.designation,
-      period_starts_on: r.period_starts_on ? normalizeDate_(r.period_starts_on) : null,
-      period_ends_on:   r.period_ends_on   ? normalizeDate_(r.period_ends_on)   : null,
-    })),
-  };
+  // Thin-client (DL-E41 / WPERF-3): los catálogos del wizard (sin PII) los sirve el
+  // KMS — el wizard deja de leer AppSheet directo. kmsProxy_ añade service_token +
+  // Bearer OAuth; el KMS (enr.wizardFetchLookups) los valida y devuelve el mismo shape
+  // { allergies, dietary, medical, relationTypes, programs } de { id, label }, con las
+  // fechas de programa ya normalizadas server-side.
+  return kmsProxy_('enr.wizardFetchLookups', { school_id: SCHOOL_ID });
 }
 
 /**
@@ -3722,25 +3675,23 @@ function saveResponses_(p) {
     });
   }
 
-  const now  = new Date().toISOString();
-  const rows = responses.map(r => ({
-    response_id:                  generateUuid_(),
-    school_id:                    SCHOOL_ID,
+  // Thin-client (DL-E41 / WPERF-3): la escritura de qbResponses la hace el KMS (encola
+  // ENR_PERSIST_RESPONSES). El wizard valida (KAL-4 per-fila arriba) y proxea; el KMS
+  // re-deriva el grupo del resume_token y re-valida que cada respondent ∈ grupo (KAL-4
+  // defensa en profundidad). El response_id/responded_at los asigna el KMS.
+  const outResponses = responses.map(r => ({
     set_id:                       r.set_id || null,
     question_id:                  r.question_id,
-    // RESP-FIX: respondent PER-FILA (el applicant que el frontend manda en la key
-    // `${qid}__${applicant_id}`). Fallback: top-level respondent_id → group_id.
     respondent_id:                r.respondent_id || respondent_id || enrollmentGroupId,
     respondent_type_category_id:  respondent_type_category_id || 'client',
     response_text:                r.response_text || null,
     response_option_id:           r.response_option_id || null,
     response_numeric:             r.response_numeric || null,
     language:                     r.language || 'es',
-    responded_at:                 now,
   }));
 
-  appsheetRequest_(T.QB_RESPONSES, 'Add', rows);
-  return { saved: rows.length };
+  kmsProxy_('enr.wizardSaveResponses', { resume_token: p.resume_token, responses: outResponses });
+  return { saved: outResponses.length };
 }
 
 /**
