@@ -30,10 +30,12 @@ const isStepUpRequiredError = (e) =>
   e?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(e?.message || '');
 
 /**
- * Flujo funcional de firma (Steps 8-11) — vive en /sign (SigningWizardPage),
- * NO en el wizard /apply. Recibe `signingToken` + `signerCtx` (resueltos por
- * resolveSigningToken). Cada submit pasa `signing_token` al gasCall (auth
- * canónica del flujo /sign — requireSigningToken_ backend, CLI 45).
+ * Componentes funcionales de firma (Steps 8-11) — DL-E38: se renderizan INLINE en
+ * el wizard /apply (WizardPage → Step8Billing/Step9Gdpr/Step10Review/Step11Sign →
+ * SignBilling/SignGdpr/SignReview/SignSign). La ruta /sign y su host SigningWizardPage
+ * fueron eliminados. Reciben `signingToken` + `signerCtx` (resueltos server-side por
+ * resolveSigningToken al entrar a firma, KAL-7: el token NUNCA va en la URL). Cada
+ * submit pasa `signing_token` al gasCall (auth canónica — requireSigningToken_ backend, CLI 45).
  *
  * Secuencia: billing → gdpr → review → sign. El sub-step inicial se deriva de
  * signerCtx.steps (billing_confirmed / gdpr_completed / review_completed / signed).
@@ -955,39 +957,7 @@ export function SignSign({ signingToken, signerCtx, onDone, onBack }) {
   );
 }
 
-// ─── Orchestrator ─────────────────────────────────────────────────────────────
-
-export default function SigningSteps({ signingToken, signerCtx }) {
-  const { i18n } = useTranslation();
-  const lang = lang_(i18n);
-
-  // El landing por estado (initialSubStep) gobierna SOLO la primera carga. En
-  // cuanto el usuario navega (atrás/adelante), su posición tiene PREVALENCIA y
-  // sobrevive al re-mount del back del navegador — que re-resuelve el token y, si
-  // no, recalcularía el sub-step empujando de vuelta al paso más avanzado. La
-  // posición se persiste en sessionStorage keyed por la sesión de firma (una
-  // sesión distinta empieza limpia). KAL-7: NO guarda secretos, solo el índice.
-  const navKey = 'signNav_' + (signerCtx.session_id || signerCtx.signer_id || 'x');
-  const [sub, setSubState] = useState(() => {
-    try {
-      const saved = sessionStorage.getItem(navKey);
-      return saved !== null ? Number(saved) : initialSubStep(signerCtx.steps);
-    } catch (e) {
-      return initialSubStep(signerCtx.steps);
-    }
-  });
-  const setSub = (n) => {
-    try { sessionStorage.setItem(navKey, String(n)); } catch (e) { /* non-fatal */ }
-    setSubState(n);
-  };
-
-  return (
-    <>
-      <Progress current={sub} />
-      {sub === 0 && <SignBilling signingToken={signingToken} signerCtx={signerCtx} onDone={() => setSub(1)} />}
-      {sub === 1 && <SignGdpr signingToken={signingToken} signerCtx={signerCtx} lang={lang} onDone={() => setSub(2)} onBack={() => setSub(0)} />}
-      {sub === 2 && <SignReview signingToken={signingToken} onDone={() => setSub(3)} onBack={() => setSub(1)} />}
-      {sub === 3 && <SignSign signingToken={signingToken} signerCtx={signerCtx} onBack={() => setSub(2)} onDone={() => { /* terminal — stays on success screen */ }} />}
-    </>
-  );
-}
+// DL-E38: el orchestrator `SigningSteps` default (host de /sign) se ELIMINÓ con el
+// merge — el wizard renderiza los pasos de firma 8-11 inline (WizardPage → Step8-11
+// → SignBilling/SignGdpr/SignReview/SignSign nombrados arriba), con el sub-step
+// gobernado por WizardPage.enterSigning + initialSubStep. No queda default export.

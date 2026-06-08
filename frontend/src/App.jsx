@@ -1,4 +1,4 @@
-import { Routes, Route, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { Suspense, useEffect, Component } from 'react'
 import { WizardProvider } from './context/WizardContext'
 import LandingPage      from './pages/LandingPage'
@@ -8,7 +8,6 @@ import ResumePage       from './pages/ResumePage'
 import ReportUnsolicitedPage from './pages/ReportUnsolicitedPage'
 import ConfirmationPage       from './pages/ConfirmationPage'
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
-import SigningWizardPage from './pages/SigningWizardPage'
 import DevLogger        from './components/DevLogger'
 import * as log         from './logger'
 
@@ -91,7 +90,11 @@ function App() {
           <Route path="/report/:token"   element={<ReportUnsolicitedPage />} />
           <Route path="/confirmation"    element={<ConfirmationPage />}   />
           <Route path="/privacy"         element={<PrivacyPolicyPage />} />
-          <Route path="/sign"            element={<SigningWizardPage />} />
+          {/* DL-E38: /sign eliminado (host técnico coyuntural). El wizard es UN flujo
+              continuo 1→11 en /apply; los pasos de firma 8-11 se renderizan inline y el
+              signing_token se resuelve server-side en la recuperación (nunca en la URL,
+              KAL-7). Redirect sin lógica de token para bookmarks/links antiguos. */}
+          <Route path="/sign"            element={<Navigate to="/apply" replace />} />
           <Route path="*"               element={<LandingPage />}        />
         </Routes>
       </Suspense>
