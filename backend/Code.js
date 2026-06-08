@@ -2279,6 +2279,7 @@ function saveStep_(p) {
   if (p.step === 'persons' || p.step === 'relations' || p.step === 'health') {
     assertStepUpFresh_(enrollmentGroupId);
   }
+  _markStepUpFresh_(enrollmentGroupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
   const now = new Date().toISOString();
 
@@ -3566,6 +3567,7 @@ function saveResponses_(p) {
   // DL-E39 step-up gate: las respuestas del cuestionario son PII del expediente.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   assertStepUpFresh_(enrollmentGroupId);
+  _markStepUpFresh_(enrollmentGroupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
   const { respondent_id, respondent_type_category_id, responses } = p;
   if (!responses || !responses.length) return { saved: 0 };
 
@@ -3674,6 +3676,7 @@ function uploadDocument_(p) {
   // DL-E39 step-up gate: subir documentos del expediente es PII sensible.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   assertStepUpFresh_(enrollmentGroupId);
+  _markStepUpFresh_(enrollmentGroupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
   const enrollmentId      = p.enrollment_id || null;
   const { base64, mimeType, filename, document_type } = p;
   if (!base64) throw new Error('Missing base64');
@@ -3858,6 +3861,7 @@ function getDocument_(p) {
   // DL-E39 step-up gate: servir el documento en CLARO (bytes) revela PII.
   // groupId ya viene del token (resume_token o signing_token), nunca del payload.
   assertStepUpFresh_(groupId);
+  _markStepUpFresh_(groupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
   const fileId = p.file_id;
   assertValidUuid_(fileId, 'file_id');
@@ -5267,6 +5271,7 @@ function saveBillingInfo_(p) {
   // CLI 45 — auth por signing_token (flujo /sign). requireSigningToken_ valida el
   // token server-side (resolveSigningToken_) y resuelve signer/session/grupo.
   const sctx = requireSigningToken_(p);
+  _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
   return kmsProxy_('enr.saveBillingInfo', {
     signing_token:        sctx.signing_token,
@@ -5318,6 +5323,7 @@ function submitGdprConsents_(p) {
   if (!Array.isArray(p.consents) || !p.consents.length) {
     throw new Error('consents must be a non-empty array');
   }
+  _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
   // GATE-B modo conservador: pasamos el array consents[] tal cual sin
   // estructura per-guardian adicional. El handler KMS lo persiste como un
@@ -5345,6 +5351,7 @@ function submitGdprConsents_(p) {
 function confirmReview_(p) {
   // CLI 45 — auth por signing_token (flujo /sign).
   const sctx = requireSigningToken_(p);
+  _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
   return kmsProxy_('enr.confirmReview', {
     signing_token: sctx.signing_token,
@@ -5399,6 +5406,7 @@ function initiateSigningSession_(p) {
   // DL-E39: step-up INCONDICIONAL antes de iniciar el ACTO de firma (Step 11).
   // enrollment_group_id derivado del signing_token (KAL-4), nunca del payload.
   if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id);
+  _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
   // IP forense (best-effort): adjunta client_ip a la metadata del acto si el
   // cliente la reporta. KAL-11: redacta la IP en logs locales (no la imprimimos
