@@ -3837,11 +3837,13 @@ function getDocument_(p) {
   // El enrollment_group_id autorizado se deriva SIEMPRE del token server-side,
   // NUNCA del payload (KAL-4 IDOR).
   let groupId;
+  let usedSigningToken = false;
   if (p && p.resume_token) {
     groupId = requireResumeToken_(p);
   } else if (p && p.signing_token) {
     const sctx = requireSigningToken_(p);
     groupId = sctx.enrollment_group_id;
+    usedSigningToken = true;
   } else {
     const err = new Error('resume_token or signing_token required');
     err.code = 'BAD_REQUEST';
@@ -3859,6 +3861,20 @@ function getDocument_(p) {
 
   const fileId = p.file_id;
   assertValidUuid_(fileId, 'file_id');
+
+  // P-DOCS: los PDF del paquete de firma (Carta/Contrato) los genera el KMS y viven
+  // en el Drive del KMS → DriveApp local del wizard NO los lee. En el flujo /sign
+  // (signing_token) proxyamos la lectura de bytes al KMS (dueño de los ficheros),
+  // que re-valida el signing_token + IDOR server-side (KAL-4). Los docs subidos por
+  // la familia en /apply (resume_token) viven en el Drive del wizard → lectura local.
+  if (usedSigningToken) {
+    const d = kmsProxy_('enr.serveSigningDocument', { signing_token: p.signing_token, file_id: fileId });
+    return {
+      filename: d.filename || null,
+      mimeType: d.mime_type || d.mimeType || null,
+      base64:   d.base64,
+    };
+  }
 
   // ── Guard IDOR de lectura: el recFiles debe pertenecer al grupo del token ───
   const rows = appsheetRequest_(T.REC_FILES, 'Find', [], {
