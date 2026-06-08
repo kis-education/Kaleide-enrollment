@@ -417,7 +417,16 @@ const handleNext = async (stepKey, data) => {
     return (
       <StepUpGate
         tokenPayload={{ resume_token: resumeToken }}
-        onVerified={markStepUpFresh}
+        onVerified={() => {
+          markStepUpFresh();
+          // P-PII-GATE: la resumeSession previa al OTP llegó gateada (sin PII,
+          // pre-step-up). Tras el OTP el backend marcó el grupo fresco (verifyEmail
+          // stepup:true) → re-hidratamos para cargar la PII del expediente ahora
+          // permitida. Sin esto el stepData quedaría vacío tras pasar el gate.
+          gasCall('resumeSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail })
+            .then(data => { hydrateFromResume(data); log.success('WizardPage: rehydrate post step-up OK'); })
+            .catch(err => log.error('WizardPage: rehydrate post step-up failed', { message: err.message }));
+        }}
         shouldAutoSend={!otpAutoSentForRecovery}
         onAutoSent={markOtpAutoSentForRecovery}
       />

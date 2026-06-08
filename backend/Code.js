@@ -1997,6 +1997,28 @@ function resumeSession_(p) {
   // block — existing keys untouched so current consumers keep working.
   const admission = buildAdmissionContext_(id, enrollments, recoveredGuardianId, persons);
 
+  // P-PII-GATE: sin step-up fresco NO se devuelve PII del expediente
+  // (persons/relations/health/documents/responses/interviews). Un resume_token
+  // filtrado solo obtiene estado/metadata; la PII completa requiere step-up. La
+  // frescura es real: nonce de magic-link recién consumido (arriba) u OTP previo
+  // marcaron stepup_ok_<group> server-side (verifyEmail stepup:true). El frontend
+  // muestra el StepUpGate y re-llama resumeSession tras el OTP (onVerified) → PII.
+  // KAL-4: group (id) derivado del token, nunca del payload. (Bonus: corta antes
+  // de los ~20 reads de detalle por persona.)
+  if (!_isStepUpFresh_(id)) {
+    Logger.log(redact_('[resumeSession_] PII-gated (sin step-up) group=' + id));
+    return {
+      group,
+      application: group,
+      enrollments,
+      persons: [], relations: [], documents: [], responses: [], interviews: [],
+      admission,
+      recovered_guardian_person_id: recoveredGuardianId,
+      step_up_fresh: false,
+      pii_gated: true,
+    };
+  }
+
   // Documents: dedup by file_id + shape for frontend.
   // CLI 82 / KAL-NEW-5: NO drive_url. Sólo metadatos + file_id; los bytes se
   // resuelven on-demand vía getDocument (proxy gateado por token). El enlace
