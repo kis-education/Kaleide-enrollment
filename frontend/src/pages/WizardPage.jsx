@@ -3,8 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
-import { gasCall, prefetchLookups, prefetchQuestions } from '../api';
+import { gasCall, prefetchLookups, prefetchQuestions, prefetchDocuments } from '../api';
 import LangToggle from '../components/LangToggle';
+import SaveIndicator from '../components/SaveIndicator';
 import LoadingSpinner from '../components/LoadingSpinner';
 import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
@@ -55,6 +56,7 @@ export default function WizardPage() {
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
     setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
+    markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
     isSubmitted,
     admissionState, signingContext,
     markStepUpFresh,
@@ -87,6 +89,21 @@ export default function WizardPage() {
   // lookups and Step5/Step7 get the cached question catalog (keyed by language) —
   // no re-fetch when the user reaches Questions or navigates back/forward.
   useEffect(() => { prefetchLookups(); prefetchQuestions(i18n.language); }, []); // eslint-disable-line
+
+  // WPERF-1 criterio "eager docs": si el expediente está Aprobado (AD) y la firma está
+  // lista para este guardian (no completada), calienta el paquete contractual (members
+  // + bytes getDocument ~40s) para que S-REVIEW pinte sin esperar. Best-effort: si el
+  // step-up aún no está fresco, getDocument falla silenciosamente y la caché se purga
+  // (re-fetch normal al llegar a Review). Se dispara solo para firmantes reales (no en
+  // cada /apply) para no malgastar cuota GAS. KAL-7: el token vive en React state.
+  useEffect(() => {
+    if (admissionState?.state_code === 'AD'
+        && admissionState?.signing_ready
+        && admissionState?.signing_status !== 'COMPLETED'
+        && signingContext?.signing_token) {
+      prefetchDocuments(signingContext.signing_token);
+    }
+  }, [admissionState?.state_code, admissionState?.signing_ready, admissionState?.signing_status, signingContext?.signing_token]); // eslint-disable-line
 
   // ── Admission-state PULSE (realtime bug, Diego 2026-06-07) ───────────────────
   // El estado de admisión (admissionState/signingContext/isSubmitted) solo se
@@ -175,6 +192,7 @@ export default function WizardPage() {
 
 const handleNext = async (stepKey, data, extra = null) => {
     log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
+    markUserTookControl(); // WPERF-1 criterio 4: nav manual → invalida un JUMP de enterSigning pendiente
 
     // Data-layer pieza 2: el avance YA NO bloquea esperando el save de N-1. El save
     // se ENCOLA (enqueueSave) y corre en background EN ORDEN FIFO (la cola preserva
@@ -292,6 +310,7 @@ const handleNext = async (stepKey, data, extra = null) => {
   };
 
   const handleBack = () => {
+    markUserTookControl(); // WPERF-1 criterio 4
     addCompletedStep(currentStep);
     const prevStep = Math.max(currentStep - 1, 0);
     log.info(`WizardPage: going back to step ${prevStep}`);
@@ -309,6 +328,7 @@ const handleNext = async (stepKey, data, extra = null) => {
   const STEP_FIRST_SIGNING = 7;
 
   const advanceSigningStep = () => {
+    markUserTookControl(); // WPERF-1 criterio 4: avanzar la firma a mano invalida un JUMP pendiente
     addCompletedStep(currentStep);
     const nextStep = Math.min(currentStep + 1, STEP_COMPONENTS.length - 1);
     log.info(`WizardPage: advancing signing step ${currentStep} → ${nextStep}`);
@@ -332,6 +352,10 @@ const handleNext = async (stepKey, data, extra = null) => {
       showToast(t('wizard.signing_confirm_email'));
       return;
     }
+    // WPERF-1 criterio 4: este click ARRANCA el salto a firma; resetea el flag para que
+    // solo cuente como "el usuario tomó el control" una nav MANUAL POSTERIOR (durante los
+    // ~19s de resolveSigningToken). El avance inmediato de abajo es parte del propio salto.
+    resetUserTookControl();
     // Marca el Step 7 (índice 6) completado y entra al primer paso de firma de
     // inmediato (Billing por defecto). resolveSigningToken refina el aterrizaje en
     // background si la familia ya avanzó parte de la firma.
@@ -351,7 +375,13 @@ const handleNext = async (stepKey, data, extra = null) => {
         const target = STEP_FIRST_SIGNING + sub;       // 7..10
         // DBG-SESSION: este es el salto async que arranca al usuario de billing al
         // sub-paso más avanzado (bug 4b "al tocar billing salta al paso 11").
-        log.warn('[DBG enterSigning] JUMP async', { from_step_index: STEP_FIRST_SIGNING, sub, target_step_index: target });
+        log.warn('[DBG enterSigning] JUMP async', { from_step_index: STEP_FIRST_SIGNING, sub, target_step_index: target, user_took_control: userTookControlRef.current });
+        // WPERF-1 criterio 4: si el usuario ya navegó a mano tras el click (atrás/adelante/
+        // avance de firma), ABORTA el salto — no le pisamos la pantalla ~19s después.
+        if (userTookControlRef.current) {
+          log.warn('[DBG enterSigning] JUMP abortado — el usuario tomó el control tras el click');
+          return;
+        }
         for (let i = STEP_FIRST_SIGNING; i < target; i++) addCompletedStep(i);
         setCurrentStep(target);
       })
@@ -627,27 +657,10 @@ const handleNext = async (stepKey, data, extra = null) => {
             <i className="bi bi-bookmark" /> {t('wizard.save_later')}
           </button>
 
-          {/* Data-layer pieza 3: indicador estilo Google Docs con 3 estados,
-              gobernado por `saveState` del contexto. NUNCA bloquea la navegación;
-              los errores se reintentan en la cola y se surfacean aquí. El estado
-              "Todo guardado" solo se muestra tras haber guardado algo (≥1 paso
-              completado) para no anunciar "guardado" en un wizard recién abierto. */}
-          {saveState === 'saving' ? (
-            <span style={{ color: 'var(--muted)', fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }} aria-live="polite">
-              <i className="bi bi-cloud-arrow-up" />
-              {t('wizard.saving_in_background', 'Guardando…')}
-            </span>
-          ) : saveState === 'error' ? (
-            <span style={{ color: '#a02020', fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }} aria-live="polite">
-              <i className="bi bi-exclamation-triangle" />
-              {t('wizard.save_error_retrying', 'Error al guardar — reintentando')}
-            </span>
-          ) : completedSteps.size > 0 ? (
-            <span style={{ color: 'var(--muted)', fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }} aria-live="polite">
-              <i className="bi bi-check2-circle" />
-              {t('wizard.all_changes_saved', 'Todos los cambios guardados')}
-            </span>
-          ) : <span />}
+          {/* WPERF-1 criterios 2+3: indicador global estilo Google Docs (3 estados +
+              botón Reintentar en error), extraído a su propio componente. Vive aquí, en
+              la barra superior, FUERA de los botones de paso. NUNCA bloquea la navegación. */}
+          <SaveIndicator />
 
           <button
             onClick={handleStartOver}

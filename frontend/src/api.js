@@ -47,6 +47,39 @@ export function initiateSigningRead(signingToken) {
   return flight;
 }
 
+// ─── Documents (paquete de firma) eager cache (WPERF-1 criterio "eager docs") ───
+// `getDocument` (proxy de bytes) es la llamada MÁS lenta del paquete contractual
+// (~40s medidos). Espejo de prefetchLookups/prefetchQuestions: cuando un firmante
+// entra (expediente AD + firma lista), calentamos la LISTA de docs (initiateSigningRead
+// → members) y, best-effort, los BYTES de cada doc, para que al llegar a S-REVIEW las
+// previews pinten sin esperar. Se cachea la PROMESA de bytes ({base64,mimeType,filename})
+// por file_id; el caller (fetchDocumentObjectUrl) construye/revoca el object URL como
+// siempre — sin fugas. Errores (típicamente STEPUP_REQUIRED si el step-up no está fresco
+// todavía al montar) → la entrada se purga → cache-miss silencioso, idéntico al actual.
+const _docBytesCache = {};   // { [file_id]: Promise<{base64,mimeType,filename}> }
+
+export function getDocumentBytes({ file_id, resume_token, signing_token }) {
+  if (!file_id) return Promise.reject(new Error('getDocumentBytes: file_id required'));
+  if (_docBytesCache[file_id]) return _docBytesCache[file_id];
+  const flight = gasCall('getDocument', { file_id, resume_token, signing_token })
+    .catch(err => { delete _docBytesCache[file_id]; throw err; });   // NO cachear fallos
+  _docBytesCache[file_id] = flight;
+  return flight;
+}
+
+export function prefetchDocuments(signingToken) {
+  if (!signingToken) return;
+  initiateSigningRead(signingToken)
+    .then(res => {
+      const members = Array.isArray(res && res.members) ? res.members : [];
+      members.forEach(m => {
+        if (!m.file_id || _docBytesCache[m.file_id]) return;
+        getDocumentBytes({ file_id: m.file_id, signing_token: signingToken }).catch(() => {});
+      });
+    })
+    .catch(() => {});
+}
+
 // ─── Questions cache ──────────────────────────────────────────────────────────
 // The question DEFINITION catalog (fetchQuestions → { sets: [...] }) is static for
 // the lifetime of the page, mirror of the lookups cache — but KEYED BY LANGUAGE

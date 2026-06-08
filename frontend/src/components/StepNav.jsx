@@ -5,9 +5,13 @@ import { useTranslation } from 'react-i18next';
  *
  * Renders ONLY the button markup — NO logic. Reproduces the exact markup/styles
  * used inline in every step today (btn-secondary-kis / btn-primary-kis, the
- * bi-arrow-left / bi-arrow-right icons, and the savePending → spinner +
- * `wizard.saving_in_background` swap) so the appearance is identical whether the
+ * bi-arrow-left / bi-arrow-right icons) so the appearance is identical whether the
  * step renders it at the top or the bottom.
+ *
+ * WPERF-1 (criterios 1+2): el botón "Continuar" YA NO se deshabilita ni muestra
+ * "Guardando…" mientras hay un save en vuelo — la navegación es no-bloqueante y el
+ * estado de guardado se comunica en el SaveIndicator global (barra superior). El prop
+ * `savePending` se conserva por compatibilidad de llamada pero ya no afecta al botón.
  *
  * WIZARD-UX (Diego 2026-06-07): each step renders this TWICE — once above the form
  * (position="top", margin-bottom) and once below (position="bottom", margin-top) —
@@ -18,8 +22,8 @@ import { useTranslation } from 'react-i18next';
  * @param {Object}   props
  * @param {Function} props.onBack
  * @param {Function} props.onNext
- * @param {boolean} [props.savePending=false]  background save in flight → spinner label
- * @param {boolean} [props.nextDisabled=false] per-step gate (e.g. validation) — combined with savePending
+ * @param {boolean} [props.savePending=false]  DEPRECATED (WPERF-1): ignorado; el save es no-bloqueante
+ * @param {boolean} [props.nextDisabled=false] per-step gate (e.g. validation)
  * @param {string}  [props.backLabel]          override (default t('nav.back'))
  * @param {string}  [props.nextLabel]          override (default t('nav.continue'))
  * @param {boolean} [props.hideBack=false]     hide Back (e.g. Step1, the first step)
@@ -29,7 +33,7 @@ import { useTranslation } from 'react-i18next';
 export default function StepNav({
   onBack,
   onNext,
-  savePending = false,
+  savePending = false, // eslint-disable-line no-unused-vars — DEPRECATED (WPERF-1), conservado por compat de llamada
   nextDisabled = false,
   backLabel,
   nextLabel,
@@ -57,12 +61,9 @@ export default function StepNav({
         <button
           className="btn-primary-kis"
           onClick={onNext}
-          disabled={savePending || nextDisabled}
+          disabled={nextDisabled}
         >
-          {savePending
-            ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.9em', height: '0.9em', borderWidth: '0.12em' }} />{t('wizard.saving_in_background')}</>
-            : <>{nextLabel || t('nav.continue')} <i className="bi bi-arrow-right ms-1" /></>
-          }
+          {nextLabel || t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
         </button>
       )}
     </div>

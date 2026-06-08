@@ -148,15 +148,14 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
       </div>
 
       <div className="d-flex justify-content-end mt-3">
+        {/* WPERF-1 (criterios 1+2): el botón no se bloquea ni muestra "Guardando…" por un
+            save en vuelo — el SaveIndicator global lo comunica. Solo gatea por validación. */}
         <button
           className="btn-primary-kis"
           onClick={handleContinue}
-          disabled={!canContinue || savePending}
+          disabled={!canContinue}
         >
-          {savePending
-            ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.9em', height: '0.9em', borderWidth: '0.12em' }} />{t('wizard.saving_in_background')}</>
-            : <>{t('nav.continue')} <i className="bi bi-arrow-right ms-1" /></>
-          }
+          {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
         </button>
       </div>
     </>

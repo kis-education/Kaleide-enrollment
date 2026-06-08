@@ -148,11 +148,9 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
           <button className="btn-secondary-kis" onClick={handleBack}>
             <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
           </button>
-          <button className="btn-primary-kis" onClick={handleNext} disabled={savePending}>
-            {savePending
-              ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.9em', height: '0.9em', borderWidth: '0.12em' }} />{t('wizard.saving_in_background')}</>
-              : <>{t('nav.continue')} <i className="bi bi-arrow-right ms-1" /></>
-            }
+          {/* WPERF-1 (criterios 1+2): no se bloquea ni muestra "Guardando…" por save en vuelo. */}
+          <button className="btn-primary-kis" onClick={handleNext}>
+            {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
           </button>
         </div>
       </>
@@ -285,15 +283,13 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
         <button className="btn-secondary-kis" onClick={handleBack}>
           <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
         </button>
+        {/* WPERF-1 (criterios 1+2): no se bloquea por save en vuelo; solo gatea por validación. */}
         <button
           className="btn-primary-kis"
           onClick={handleNext}
-          disabled={savePending || (!locked && relations.length > 0 && !validationOk)}
+          disabled={!locked && relations.length > 0 && !validationOk}
         >
-          {savePending
-            ? <><span className="spinner-border spinner-border-sm me-1" style={{ width: '0.9em', height: '0.9em', borderWidth: '0.12em' }} />{t('wizard.saving_in_background')}</>
-            : <>{t('nav.continue')} <i className="bi bi-arrow-right ms-1" /></>
-          }
+          {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
         </button>
       </div>
     </>

@@ -1,4 +1,4 @@
-import { gasCall } from '../api';
+import { getDocumentBytes } from '../api';
 
 /**
  * CLI 82 / KAL-NEW-5 (Anexo A Opción A): proxy de bytes en el cliente.
@@ -15,7 +15,9 @@ import { gasCall } from '../api';
  * @returns {Promise<{url:string, mimeType:string, filename:string}>}
  */
 export async function fetchDocumentObjectUrl({ file_id, resume_token, signing_token }) {
-  const { base64, mimeType, filename } = await gasCall('getDocument', {
+  // WPERF-1: pasa por la caché de bytes (getDocumentBytes) — si prefetchDocuments ya
+  // calentó este file_id, la promesa está resuelta y el object URL se crea al instante.
+  const { base64, mimeType, filename } = await getDocumentBytes({
     file_id,
     resume_token,
     signing_token,

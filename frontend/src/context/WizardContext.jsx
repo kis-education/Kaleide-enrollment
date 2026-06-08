@@ -106,6 +106,20 @@ export function WizardProvider({ children }) {
   const pendingCountRef = useRef(0);
   const [saveState, setSaveState] = useState('idle');
   const hasPendingSave = saveState === 'saving';
+  // WPERF-1 criterio 3: referencia a la ÚLTIMA save factory que falló, para que el
+  // SaveIndicator pueda ofrecer "Reintentar" y re-encolarla. Se limpia cuando la cola
+  // drena sin errores. NOTA: solo re-ejecutable si la factory re-lanza la operación
+  // (los saves /apply via enqueueSave(factory) lo hacen); un setPendingSave(promise)
+  // ya iniciada re-resolvería la misma promesa settleada — los saves de paso usan
+  // factories, que es el caso que cubre el botón.
+  const lastFailedSaveRef = useRef(null);
+  // WPERF-1 criterio 4 (auto-avance guard): se pone a true en CUALQUIER navegación
+  // MANUAL (botón atrás/adelante, avance de firma). El JUMP async de enterSigning lo
+  // resetea al hacer click y lo comprueba antes de saltar: si el usuario navegó a mano
+  // tras el click, aborta el salto (no le pisa la pantalla ~19s después).
+  const userTookControlRef = useRef(false);
+  const markUserTookControl  = useCallback(() => { userTookControlRef.current = true;  }, []);
+  const resetUserTookControl = useCallback(() => { userTookControlRef.current = false; }, []);
 
   /**
    * Encola una factory de save (función que devuelve la promesa del save). Se
@@ -127,11 +141,25 @@ export function WizardProvider({ children }) {
       .then(() => saveFn());           // ejecuta EN ORDEN tras el anterior
     // El tail avanza pase lo que pase; el conteo decrece al settle.
     saveTailRef.current = run.then(
-      () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; setSaveState('idle'); } },
-      (e) => { pendingCountRef.current -= 1; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: e && e.code, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; setSaveState('error'); }
+      () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; lastFailedSaveRef.current = null; setSaveState('idle'); } },
+      (e) => { pendingCountRef.current -= 1; lastFailedSaveRef.current = saveFn; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: e && e.code, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; setSaveState('error'); }
     );
     return run;
   }, []);
+
+  /**
+   * WPERF-1 criterio 3: re-encola la última save que falló (la guarda
+   * lastFailedSaveRef). Lo dispara el botón "Reintentar" del SaveIndicator. No-op si
+   * no hay ninguna pendiente de reintento. Limpia la ref antes de re-encolar para no
+   * reintentar dos veces la misma factory si el usuario hace doble click.
+   */
+  const retryLastSave = useCallback(() => {
+    const fn = lastFailedSaveRef.current;
+    if (!fn) return;
+    lastFailedSaveRef.current = null;
+    log.info('[DBG savequeue] retry last failed save');
+    enqueueSave(fn);
+  }, [enqueueSave]);
 
   /**
    * Devuelve una promesa que resuelve cuando la cola de saves está DRENADA
@@ -676,7 +704,37 @@ export function WizardProvider({ children }) {
     // Submitted sessions land on Step 7 Review (index 6) — read-only view of what
     // was sent. The post-AD steps 8-11 (indices 7-10) stay locked until admisión
     // decisión flips them open (future feature; backend not implemented yet — CLI 59).
-    if (submitted) { log.info('[DBG hydrate] landing', { submitted: true, target: 6 }); setCurrentStep(6); return; }
+    if (submitted) {
+      // WPERF-1 criterio 5: no hardcodear Review. Si el expediente está Aprobado (AD)
+      // y la firma está EN CURSO (sesión lista para este guardian, no completada, con
+      // sub-pasos), aterriza en el primer sub-paso de firma INCOMPLETO (Steps 8-11 =
+      // índices 7-10) — derivado de admission.signing_context.steps — en vez de dejar a
+      // la familia en Review sin pista de que debe firmar. En cualquier otro caso, Review (6).
+      const STEP_FIRST_SIGNING = 7;
+      const st = adm && adm.signing_context && adm.signing_context.steps;
+      const signingInProgress =
+        adm && adm.state_code === 'AD' && adm.signing_ready
+        && adm.signing_status !== 'COMPLETED'
+        && adm.signing_context && adm.signing_context.signing_token;
+      if (signingInProgress && st) {
+        // primer sub-paso incompleto: billing(0)→gdpr(1)→review(2)→sign(3).
+        let sub = 3;
+        if      (!st.billing_confirmed) sub = 0;
+        else if (!st.gdpr_completed)    sub = 1;
+        else if (!st.review_completed)  sub = 2;
+        else if (!st.signed)            sub = 3;
+        const target = STEP_FIRST_SIGNING + sub;
+        for (let i = 0; i < target; i++) completed.add(i); // pasos previos completados → stepper coherente
+        setCompletedStepsRaw(new Set(completed));
+        saveSession({ completedSteps: [...completed] });
+        log.info('[DBG hydrate] landing', { submitted: true, signing: true, sub, target });
+        setCurrentStep(target);
+        return;
+      }
+      log.info('[DBG hydrate] landing', { submitted: true, target: 6 });
+      setCurrentStep(6);
+      return;
+    }
     const STEP_COUNT = 7; // only wizard steps 0-6 considered for non-submitted resume
     let target = STEP_COUNT - 1; // default to Review
     for (let i = 0; i < STEP_COUNT; i++) {
@@ -736,6 +794,8 @@ export function WizardProvider({ children }) {
       completedSteps, addCompletedStep, removeCompletedStep,
       isStepDirty, markStepSaved,
       setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
+      retryLastSave,                                              // WPERF-1 criterio 3
+      markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
       hydrateFromResume, refreshAdmissionState, clearSession,
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
