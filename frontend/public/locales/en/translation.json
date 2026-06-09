@@ -49,6 +49,7 @@
   "step2.phone.invalid": "Please enter a valid phone number (e.g. +34 600 000 000).",
   "step2.phone.guardian_required": "Each guardian needs at least one valid phone number.",
   "step2.phone.country_needed": "Add the address country or include the international prefix (e.g. +34).",
+  "step2.phone.unsupported_country": "That number's international prefix doesn't match any supported country. Check the number or use another contact.",
   "step2.identity_note": "Each guardian's email uniquely identifies them and is bound to that person: it is their credential to resume the application, sign, and make legal decisions in their own name. That's why each guardian must use a different email.",
   "step2.sole_guardian.attestation_label": "I declare that I am the sole legal guardian of the students (single-parent family or sole custody) and that there is no other guardian who should appear on this application.",
   "report.pending": "Processing…",
