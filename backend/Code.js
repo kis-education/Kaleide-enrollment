@@ -5934,6 +5934,22 @@ function hydrateSession_(p) {
     });
   }
 
+  // PHONE-STORE (P259 / §1.ter) — el KMS hydrate devuelve enrPhones.value RAW (sin '+',
+  //   AppSheet/Sheets lo pela). Reconstruimos E.164 con '+' aquí, capa de presentación del
+  //   wizard (espejo del IMPL-J de date_of_birth y de la firma _signing_normalizePhoneE164_).
+  //   Línea de reconstrucción VERBATIM del código-de-oro submitEnrollmentSession_:2717.
+  if (data.persons && data.persons.length) {
+    data.persons.forEach(function(person) {
+      if (!person || !person.phones || !person.phones.length) return;
+      person.phones.forEach(function(ph) {
+        ['phone_number', 'value'].forEach(function(k) {
+          var s = String(ph[k] == null ? '' : ph[k]).trim();
+          if (s && s[0] !== '+' && /^\d+$/.test(s)) ph[k] = '+' + s;   // P259: AppSheet quita el +
+        });
+      });
+    });
+  }
+
   return Object.assign({}, data, { step_up_fresh: stepUpFresh });
 }
 
