@@ -451,6 +451,12 @@ const handleNext = async (stepKey, data, extra = null) => {
   // intacto y el gate decide wizard (si fresco, B) u OTP (si no). NO aplica a un
   // arranque NUEVO (sin recoveredViaMagicLink/resumeToken) → ese sigue al wizard normal.
   // Reutiliza LoadingSpinner (neutro, sin header/stepper/StepSkeleton) — patrón ResumePage.
+  // CLI IMPL-E (2026-06-09): este loader cubre AHORA AMBOS hydrates de una sesión
+  // recuperada — (1) el hydrate de reload pre-OTP (efecto needsHydration, descubre
+  // el gate) y (2) el hydrate POST-OTP (onVerified del StepUpGate, trae la PII). El
+  // segundo también marca rehydrating=true/false, así que el formulario nunca se
+  // renderiza con stepData vacío durante esa rehidratación (~17-44s). La condición
+  // NO cambia — sigue (recoveredViaMagicLink && resumeToken && rehydrating).
   if (recoveredViaMagicLink && resumeToken && rehydrating) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -477,9 +483,16 @@ const handleNext = async (stepKey, data, extra = null) => {
           // pre-step-up). Tras el OTP el backend marcó el grupo fresco (verifyEmail
           // stepup:true) → re-hidratamos para cargar la PII del expediente ahora
           // permitida. Sin esto el stepData quedaría vacío tras pasar el gate.
+          // CLI IMPL-E: marcar rehydrating=true/false como el hydrate de reload
+          // (efecto needsHydration arriba) para que el loader neutro de
+          // WIZARD-GATE-ORDER cubra TAMBIÉN este tramo. Sin esto, entre
+          // markStepUpFresh() (mustPassEntryGate→false) y la resolución del
+          // hydrate (~17-44s) se renderizaba el formulario con stepData VACÍO.
+          setRehydrating(true);
           gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, language: i18n.language })
             .then(data => { hydrateFromResume(data); log.success('WizardPage: rehydrate post step-up OK'); })
-            .catch(err => log.error('WizardPage: rehydrate post step-up failed', { message: err.message }));
+            .catch(err => log.error('WizardPage: rehydrate post step-up failed', { message: err.message }))
+            .finally(() => setRehydrating(false));
         }}
         shouldAutoSend={!otpAutoSentForRecovery}
         onAutoSent={markOtpAutoSentForRecovery}
