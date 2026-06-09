@@ -3358,6 +3358,16 @@ function fetchQuestions_(p) {
   //     qbConditionGroups_T (grupo lógico) o a qbConditions_T (atómica). El
   //     helper frontend espera shape plano — aplanamos aquí. Schemas confirmados
   //     vía manual_diagQbConditionTables (commit 3ae741a).
+  //
+  // @deprecated — aplanado canónico vive ahora en KMS qb_core_enrichQuestion_
+  //   (Opción B contract §13, CLI IMPL-C). El KMS es el ÚNICO aplanador: emite
+  //   conditions PLANAS y el adapter fetchQuestions_adaptKmsResponse_ las pasa
+  //   por passthrough (`conditions: q.conditions || []`). Este bloque
+  //   (qbParseValueJson_ / qbAgeConditions_ / qbFlattenAtomic_ /
+  //   qbExpandCondition_) es HUÉRFANO: vive dentro de fetchQuestions_, path
+  //   legacy MUERTO ("STOPGAP P116 SOBREVIVIENTE"). Se conserva sin tocar (no
+  //   romper) — eliminar cuando fetchQuestions_ se borre por completo. NO añadir
+  //   consumidores nuevos: el aplanado canónico es el del KMS.
   const allGroups      = appsheetRequest_('qbConditionGroups_T', 'Find', [], {}) || [];
   const allItems       = appsheetRequest_('qbConditionGroupItems_T', 'Find', [], {}) || [];
   const allAtomicConds = appsheetRequest_('qbConditions_T', 'Find', [], {}) || [];
