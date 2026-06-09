@@ -988,6 +988,27 @@ function _checkMagicLinkRateLimitIp_(ip) {
 // ─── Action handlers ──────────────────────────────────────────────────────────
 
 /**
+ * Comparación de tiempo (aprox.) constante para secretos compartidos. GAS no
+ * expone crypto.timingSafeEqual; aplicar HMAC-SHA256 a ambos lados con una
+ * clave aleatoria per-llamada produce digests de longitud fija cuya comparación
+ * byte-a-byte (sin early-exit) no filtra ni la longitud ni un prefijo común de
+ * los inputs. (P226 / KAL-NEW-4 menor — side-channel irrelevante en red, cerrado
+ * por completitud.)
+ * @private
+ */
+function constantTimeEquals_(a, b) {
+  if (a == null || b == null) return false;
+  const key = Utilities.getUuid();
+  const ha = Utilities.computeHmacSha256Signature(String(a), key);
+  const hb = Utilities.computeHmacSha256Signature(String(b), key);
+  let diff = ha.length ^ hb.length;
+  for (let i = 0; i < ha.length && i < hb.length; i++) {
+    diff |= ha[i] ^ hb[i];
+  }
+  return diff === 0;
+}
+
+/**
  * Creates a new enrollment session (header row in enrEnrollmentGroups) — DL-E15.
  *
  * Unlike the legacy initApplication_, this no longer inserts into enrEnrollments
@@ -1014,9 +1035,21 @@ function _checkMagicLinkRateLimitIp_(ip) {
  */
 function initEnrollmentSession_(p) {
   const sourceCode = (p.source_code || 'WEB_PUBLIC').toUpperCase();
-  const VALID_SOURCES = ['WEB_PUBLIC', 'KMS_INTERNAL', 'FAMILIES_APP'];
+  // P226 / KAL-NEW-4 (audit 2026-06-05, decisión Diego 2026-06-09): 'FAMILIES_APP'
+  // QUITADO de VALID_SOURCES. El if/else if de abajo solo gatea KMS_INTERNAL (secret)
+  // y WEB_PUBLIC (reCAPTCHA fail-closed); 'FAMILIES_APP' caía al default → creaba
+  // sesión + magic-link SIN reCAPTCHA ni secret (bypass del gate anti-bot). No hay
+  // app de familias usándolo hoy; cuando exista se reañade CON su propia auth.
+  // Cualquier petición con source_code:'FAMILIES_APP' ya NO es un source válido →
+  // rechazada aquí con el error estructurado BAD_REQUEST (no 403).
+  const VALID_SOURCES = ['WEB_PUBLIC', 'KMS_INTERNAL'];
   if (VALID_SOURCES.indexOf(sourceCode) === -1) {
-    throw new Error('Invalid source_code: ' + sourceCode);
+    // err.code → doPost devuelve HTTP 200 { ok:false, error:{code,message} }
+    // (silent-reject estructurado P72, NUNCA 403/500 crudo). Antes sin code
+    // caía al 500 genérico; un source inválido es un BAD_REQUEST del cliente.
+    const err = new Error('Invalid source_code: ' + sourceCode);
+    err.code = 'BAD_REQUEST';
+    throw err;
   }
 
   // KAL-NEW-4 (audit 2026-05-30): reCAPTCHA fail-CLOSED + gate de KMS_INTERNAL.
@@ -1029,7 +1062,7 @@ function initEnrollmentSession_(p) {
   const secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
   if (sourceCode === 'KMS_INTERNAL') {
     const expectedInternal = PropertiesService.getScriptProperties().getProperty('KMS_INTERNAL_SHARED_SECRET');
-    if (!expectedInternal || p.kms_internal_secret !== expectedInternal) {
+    if (!expectedInternal || !constantTimeEquals_(p.kms_internal_secret, expectedInternal)) {
       throw new Error('Unauthorized source_code: KMS_INTERNAL');
     }
   } else if (sourceCode === 'WEB_PUBLIC') {
@@ -7099,6 +7132,36 @@ function manual_testKmsInternalGate() {
     if (backup == null) props.deleteProperty(KEY); else props.setProperty(KEY, backup);
   }
   Logger.log('=== manual_testKmsInternalGate: %s ===', pass ? 'PASS' : 'FAIL');
+}
+
+/**
+ * P226 / KAL-NEW-4 — verifica que el bypass de 'FAMILIES_APP' está cerrado:
+ * source_code:'FAMILIES_APP' ya NO está en VALID_SOURCES → initEnrollmentSession_
+ * lanza ANTES de cualquier reCAPTCHA/secret/escritura BD con err.code='BAD_REQUEST'
+ * (doPost lo mapea a HTTP 200 { ok:false, error:{ code:'BAD_REQUEST', ... } }, no 403).
+ * Función pura/segura — no toca BD, no requiere secretos. Lee PASS/FAIL en Logs.
+ */
+function manual_testFamiliesAppBypassClosed() {
+  let pass = true;
+  try {
+    initEnrollmentSession_({ source_code: 'FAMILIES_APP', primary_email: 'attacker@x.com' });
+    Logger.log('FAIL: FAMILIES_APP no fue rechazado — el bypass sigue abierto'); pass = false;
+  } catch (e) {
+    if (e.code === 'BAD_REQUEST' && /Invalid source_code/.test(e.message)) {
+      Logger.log('PASS: FAMILIES_APP → BAD_REQUEST estructurado (bypass cerrado)');
+    } else {
+      Logger.log('FAIL: lanzó "%s" (code=%s; esperado BAD_REQUEST/Invalid source_code)', e.message, e.code); pass = false;
+    }
+  }
+  // Sanity: un source desconocido cualquiera también cae como BAD_REQUEST.
+  try {
+    initEnrollmentSession_({ source_code: 'NOPE', primary_email: 'x@x.com' });
+    Logger.log('FAIL: source desconocido no rechazado'); pass = false;
+  } catch (e) {
+    if (e.code === 'BAD_REQUEST') Logger.log('PASS: source desconocido → BAD_REQUEST');
+    else { Logger.log('FAIL: source desconocido lanzó code=%s', e.code); pass = false; }
+  }
+  Logger.log('=== manual_testFamiliesAppBypassClosed: %s ===', pass ? 'PASS' : 'FAIL');
 }
 
 /**
