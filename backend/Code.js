@@ -5735,7 +5735,17 @@ function hydrateSession_(p) {
   const data = kmsProxy_('enr.wizardHydrate', {
     resume_token:    String(p.resume_token).trim(),
     recovered_email: (p && p.recovered_email) ? String(p.recovered_email).trim() : null,
+    language:        (p && p.language) ? String(p.language).trim() : null,
   }) || {};
+
+  // DL-C-A (g): el KMS pliega el catálogo de preguntas (raw qb) en el hydrate. Lo
+  // adaptamos aquí al shape { sets:[…] } que consume el frontend — mismo adaptador que
+  // el path fetchQuestions legacy → el wizard ya NO necesita la llamada fetchQuestions
+  // suelta (DL-C-B la elimina del frontend). No es PII (catálogo estático).
+  if (data && data.questions) {
+    try { data.questions = fetchQuestions_adaptKmsResponse_(data.questions, (p && p.language) || 'es'); }
+    catch (e) { data.questions = { sets: [] }; }
+  }
 
   if (!stepUpFresh) {
     return {
@@ -5743,6 +5753,7 @@ function hydrateSession_(p) {
       enrollments:    data.enrollments || [],
       admission:      data.admission || null,
       lookups:        data.lookups || {},
+      questions:      data.questions || null,
       live_version:   data.live_version || 0,
       persons:        [], relations: [], documents: [], responses: [],
       billing_splits: { payers: [], per_participant: [] },
