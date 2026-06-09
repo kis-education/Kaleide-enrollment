@@ -17,6 +17,20 @@ export function prefetchLookups() {
     .catch(_err => { _lookupsFlight = null; });
 }
 
+/**
+ * DL-B §1 — Siembra la caché de lookups desde la hidratación consolidada
+ * (hydrateSession devuelve `lookups`). Tras esto, fetchLookups()/prefetchLookups()
+ * resuelven DESDE MEMORIA sin tocar la red → cero fetch de catálogos por-entrada
+ * (Step3/Step4/Step7). Idempotente: solo siembra si trae datos y no había caché.
+ * @param {Object} lookups — { allergies, dietary, medical, relationTypes, programs }
+ */
+export function primeLookups(lookups) {
+  if (!lookups || typeof lookups !== 'object') return;
+  if (_lookupsCache) return;
+  _lookupsCache  = lookups;
+  _lookupsFlight = null;
+}
+
 export function fetchLookups() {
   if (_lookupsCache)  return Promise.resolve(_lookupsCache);
   if (_lookupsFlight) return _lookupsFlight;

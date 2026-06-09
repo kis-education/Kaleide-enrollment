@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import * as log from '../logger';
-import { purgeQuestionsCache } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión
+import { purgeQuestionsCache, primeLookups } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -238,6 +238,15 @@ export function WizardProvider({ children }) {
   // server-side on each call. Only the email is stored; never the token.
   const [admissionState, setAdmissionState] = useState(null);
   const [signingContext, setSigningContext] = useState(null);
+
+  // ── DL-B §1/§2 — capa de datos consolidada (hydrateSession) ──────────────────
+  // `billingSplits`: el reparto YA GUARDADO viene EN la hidratación consolidada
+  // (DL-A enr.wizardHydrate → billing_splits) → el Step 8 ya no hace una lectura
+  // getSavedBillingSplits por-entrada (spec §1). `liveVersion`: la versión liveState
+  // del grupo (cheap-poll Opción A §2); el poll ultra-ligero la compara y SOLO cuando
+  // sube hace el fetch de detalle. Ambos NO persistidos (se rehidratan en cada entrada).
+  const [billingSplits, setBillingSplits] = useState(null);
+  const [liveVersion, setLiveVersion]     = useState(0);
 
   // ── DL-E39 — step-up re-auth state (NO persistido) ───────────────────────────
   // `stepUpVerifiedUntil`: timestamp (ms) hasta el que el step-up se considera
@@ -656,6 +665,16 @@ export function WizardProvider({ children }) {
     const adm = data.admission || null;
     setAdmissionState(adm);
     setSigningContext(adm && adm.signing_context ? adm.signing_context : null);
+
+    // ── DL-B §1/§2 — extras de la hidratación consolidada (hydrateSession) ──────
+    // Catálogos: sembrar la caché de api.js → Step3/Step4/Step7 resuelven lookups
+    // desde memoria sin fetch por-entrada. Billing splits: guardar para que el Step 8
+    // rehidrate el reparto sin una lectura getSavedBillingSplits aparte. live_version:
+    // baseline del cheap-poll (Opción A): el poll ligero solo refresca cuando sube.
+    if (data.lookups) primeLookups(data.lookups);
+    if (data.billing_splits) setBillingSplits(data.billing_splits);
+    if (data.live_version != null) setLiveVersion(Number(data.live_version) || 0);
+
     const hasGuardians     = persons.some(p => p.person_type_id === 'guardian');
     const hasApplicants    = persons.some(p => p.person_type_id === 'applicant');
     // desired_start_date lives on enrEnrollments (not the group row), so check
@@ -799,6 +818,7 @@ export function WizardProvider({ children }) {
       hydrateFromResume, refreshAdmissionState, clearSession,
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
+      billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       isStepUpFresh, markStepUpFresh, touchActivity, // DL-E39 step-up PII-primero
       recoveredViaMagicLink, setRecoveredViaMagicLink, // DL-E39 gate de entrada
