@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import * as log from '../logger';
-import { purgeQuestionsCache, primeLookups } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado
+import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
+import { purgeQuestionsCache, primeLookups, primeQuestions } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -672,6 +673,10 @@ export function WizardProvider({ children }) {
     // rehidrate el reparto sin una lectura getSavedBillingSplits aparte. live_version:
     // baseline del cheap-poll (Opción A): el poll ligero solo refresca cuando sube.
     if (data.lookups) primeLookups(data.lookups);
+    // DL-C-B (g): el catálogo de preguntas viene plegado en el hydrate (DL-C-A) →
+    // sembramos la cache (mismo patrón que primeLookups) bajo el locale UI actual.
+    // Step5/Step7 lo resuelven de cache sin la llamada fetchQuestions suelta (~42s).
+    if (data.questions) primeQuestions(i18n.language, data.questions);
     if (data.billing_splits) setBillingSplits(data.billing_splits);
     if (data.live_version != null) setLiveVersion(Number(data.live_version) || 0);
 

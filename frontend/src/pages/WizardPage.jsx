@@ -3,10 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
-import { gasCall, prefetchLookups, prefetchQuestions, prefetchDocuments } from '../api';
+import { gasCall, prefetchLookups, prefetchDocuments } from '../api';
 import LangToggle from '../components/LangToggle';
 import SaveIndicator from '../components/SaveIndicator';
 import LoadingSpinner from '../components/LoadingSpinner';
+import StepSkeleton from '../components/StepSkeleton';  // DL-C-B (b): render progresivo durante la rehidratación
 import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
 import StepUpReverify from '../components/StepUpReverify';
@@ -86,10 +87,10 @@ export default function WizardPage() {
   // identidad de firma se deriva SOLO server-side (recovery link per-guardian,
   // Vía 1; o resolución determinista, Vía 2). CERO auto-declaración de identidad.
 
-  // Kick off lookup + question prefetch immediately so Step3/Step4 get cached
-  // lookups and Step5/Step7 get the cached question catalog (keyed by language) —
-  // no re-fetch when the user reaches Questions or navigates back/forward.
-  useEffect(() => { prefetchLookups(); prefetchQuestions(i18n.language); }, []); // eslint-disable-line
+  // Kick off lookup prefetch immediately so Step3/Step4 get cached lookups. El
+  // catálogo de PREGUNTAS ya NO se prefetcha suelto (DL-C-B g): viene plegado en el
+  // hydrate (DL-C-A) y lo siembra hydrateFromResume → Step5/Step7 lo leen de cache.
+  useEffect(() => { prefetchLookups(); }, []); // eslint-disable-line
 
   // WPERF-1 criterio "eager docs": si el expediente está Aprobado (AD) y la firma está
   // lista para este guardian (no completada), calienta el paquete contractual (members
@@ -191,7 +192,7 @@ export default function WizardPage() {
       // enr.wizardHydrate) trae datos 11 pasos + lookups + qbResponses + admission
       // + signing_context + billing_splits + live_version. Sustituye la cascada
       // resumeSession + fetchLookups + getSavedBillingSplits + resolveSigningToken.
-      gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail })
+      gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, language: i18n.language })
         .then(data => {
           // hydrateFromResume now seeds completedSteps in context based on
           // which steps have data — no need to override here.
@@ -455,7 +456,7 @@ const handleNext = async (stepKey, data, extra = null) => {
           // pre-step-up). Tras el OTP el backend marcó el grupo fresco (verifyEmail
           // stepup:true) → re-hidratamos para cargar la PII del expediente ahora
           // permitida. Sin esto el stepData quedaría vacío tras pasar el gate.
-          gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail })
+          gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, language: i18n.language })
             .then(data => { hydrateFromResume(data); log.success('WizardPage: rehydrate post step-up OK'); })
             .catch(err => log.error('WizardPage: rehydrate post step-up failed', { message: err.message }));
         }}
@@ -479,17 +480,9 @@ const handleNext = async (stepKey, data, extra = null) => {
         <LangToggle />
       </header>
 
-      {/* Rehydrating overlay (page reload). WIZARD-UX: rotating reassuring copy. */}
-      {rehydrating && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 9999,
-          background: 'rgba(248,249,250,0.95)',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          backdropFilter: 'blur(3px)',
-        }}>
-          <LoadingSpinner messages={['resume.loading', 'loading.rotating.2', 'loading.rotating.3', 'loading.rotating.4']} />
-        </div>
-      )}
+      {/* DL-C-B (b): el overlay opaco full-page de rehidratación se sustituyó por un
+          StepSkeleton en el área de contenido (más abajo) → render progresivo: el shell
+          (header + progress) es visible desde el primer frame, no una pantalla tapada. */}
 
       {/* Saving overlay. WIZARD-UX: rotating reassuring copy (context-specific first). */}
       {(saving || sendingMagicLink) && (
@@ -566,6 +559,16 @@ const handleNext = async (stepKey, data, extra = null) => {
                 ? t('submitted.body_by_state.' + admissionState.state_code, t('submitted.locked.body'))
                 : t('submitted.locked.body')}
             </div>
+            {/* DL-C-B (c): expediente APROBADO (signing_available) pero SIN contexto de
+                firma resuelto (signing_context:null — p.ej. la familia no recuperó por
+                el email de su guardian) → mensaje claro guía a recuperar, en vez de un
+                dead-end mudo en el Step 7. */}
+            {admissionState?.signing_available && !signingContext && (
+              <div style={{ marginTop: 8, fontWeight: 600, color: '#bf360c' }}>
+                <i className="bi bi-info-circle" style={{ marginRight: 6 }} />
+                {t('wizard.signing_confirm_email')}
+              </div>
+            )}
 
             {/* DL-E38 merge (flujo continuo 1→11, Diego 2026-06-07): el avance a la
                 firma deja de ser un salto a /sign con un botón verde especial. Ahora
@@ -679,8 +682,12 @@ const handleNext = async (stepKey, data, extra = null) => {
         </div>
       )}
 
-      {/* Step content */}
+      {/* Step content — DL-C-B (b): durante la rehidratación pintamos el shell
+          (header + progress, ya arriba) + un StepSkeleton en el área de contenido,
+          en vez de un overlay opaco que tapa todo. El primer paint es inmediato; el
+          store se rellena cuando llega el hydrate. */}
       <div className="wizard-body">
+        {rehydrating ? <StepSkeleton rows={6} /> : (
         <StepComponent
           onNext={handleNext}
           onBack={handleBack}
@@ -712,6 +719,7 @@ const handleNext = async (stepKey, data, extra = null) => {
             && admissionState?.signing_status !== 'COMPLETED'
           }
         />
+        )}
       </div>
 
       <Toast message={toastMsg} />

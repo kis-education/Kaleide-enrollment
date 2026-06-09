@@ -690,6 +690,12 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   };
 
   const handleNext = () => {
+    // DL-C-B (a): en modo locked/read-only (editable:false — revisando dato histórico)
+    // NO re-validamos los pasos 1-7. El fieldset está disabled (sin ediciones), así que
+    // el avance es un pass-through: dato legacy que no cumple E.164/gates nuevos NO debe
+    // bloquear la navegación. WizardPage.handleNext no guardará (no dirty). Preserva las
+    // validaciones íntegras en modo edición (locked=false).
+    if (locked) { setErr(''); onNext('persons', persons); return; }
     if (!guardians.length) {
       setErr(t('error.guardian_required'));
       return;

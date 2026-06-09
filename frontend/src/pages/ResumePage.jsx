@@ -29,7 +29,7 @@ export default function ResumePage() {
   const { token } = useParams();
   const [searchParams] = useSearchParams();
   const navigate  = useNavigate();
-  const { t }     = useTranslation();
+  const { t, i18n } = useTranslation();
   const { hydrateFromResume, recoveredEmail } = useWizard();
 
   // Magic-link grace (UX): nonce single-use de 10 min que viajó en `?n=<nonce>` del
@@ -65,7 +65,7 @@ export default function ResumePage() {
     // live_version. Preserva la gracia magic-link (consume el nonce `n` server-side) +
     // el gate PII. DL-E38 a1: el email tecleado (persistido) es el discriminador
     // per-guardian; el backend re-resuelve el guardian server-side (KAL-4).
-    gasCall('hydrateSession', { resume_token: token, recovered_email: recoveredEmail || undefined, n: graceNonce || undefined })
+    gasCall('hydrateSession', { resume_token: token, recovered_email: recoveredEmail || undefined, n: graceNonce || undefined, language: i18n.language })
       .then(data => {
         // Post-DL-E15 shape uses `group`; legacy responses still use `application`.
         const grp = data.group || data.application;

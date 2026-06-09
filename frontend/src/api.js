@@ -164,6 +164,21 @@ export function purgeQuestionsCache() {
   } catch { /* ignore */ }
 }
 
+/**
+ * DL-C-A/B (g): siembra la cache del catálogo de preguntas desde la hidratación
+ * consolidada (hydrate.questions ya adaptado a { sets:[…] } por el backend del wizard).
+ * Análogo a primeLookups → Step5/Step7 resuelven `fetchQuestions(lang)` de cache, SIN la
+ * llamada suelta de red (~42s). Idempotente; persiste a sessionStorage (sobrevive reload).
+ * Si data es falsy no hace nada (cae al fetch de red como fallback).
+ * @param {string} lang
+ * @param {Object} data — catálogo { sets:[…] }
+ */
+export function primeQuestions(lang, data) {
+  if (!data || typeof data !== 'object') return;
+  const key = lang || 'es';
+  _persistQuestions(key, data);
+}
+
 function _doFetchQuestions(lang) {
   return gasCall('fetchQuestions', { context_code: 'ENROLLMENT', language: lang });
 }
