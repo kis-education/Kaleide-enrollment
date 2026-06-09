@@ -5849,6 +5849,19 @@ function hydrateSession_(p) {
     data.enrollments[0].desired_start_date = normalizeDate_(data.enrollments[0].desired_start_date);
   }
 
+  // IMPL-J (extensión de §1.bis a date_of_birth) — el round-trip 2026-06-09 cazó que
+  //   persons[].date_of_birth volvía en slash (MM/DD/YYYY) → el <input type="date"> del Step 2
+  //   quedaba VACÍO. resumeSession_ SÍ normalizaba (verbatim :2403); hydrateSession_ (IMPL-F)
+  //   normalizó solo desired_start_date. Aquí extendemos a cada persona. Solo date_of_birth es
+  //   fecha en persons[]; place_of_birth NO es fecha.
+  if (data.persons && data.persons.length) {
+    data.persons.forEach(function(person) {
+      if (person && person.date_of_birth) {
+        person.date_of_birth = normalizeDate_(person.date_of_birth);
+      }
+    });
+  }
+
   return Object.assign({}, data, { step_up_fresh: stepUpFresh });
 }
 
