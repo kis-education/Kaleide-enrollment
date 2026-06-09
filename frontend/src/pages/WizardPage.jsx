@@ -441,6 +441,24 @@ const handleNext = async (stepKey, data, extra = null) => {
 
   const StepComponent = STEP_COMPONENTS[currentStep];
 
+  // WIZARD-GATE-ORDER (Diego 2026-06-09) — Mientras una sesión RECUPERADA por
+  // magic-link se está rehidratando (resume_token presente + rehydrating===true),
+  // mostrar un LOADER NEUTRO en vez del shell del wizard con StepSkeleton. Sin esto,
+  // como `mustPassEntryGate` exige `!rehydrating`, durante la rehidratación se caía al
+  // return del shell (header + stepper + esqueletos) → flash de "pantalla desbloqueada
+  // con datos fantasma" ANTES del OTP. Este early-return va ANTES del cálculo de
+  // `mustPassEntryGate`: al terminar la rehidratación (!rehydrating) el flujo sigue
+  // intacto y el gate decide wizard (si fresco, B) u OTP (si no). NO aplica a un
+  // arranque NUEVO (sin recoveredViaMagicLink/resumeToken) → ese sigue al wizard normal.
+  // Reutiliza LoadingSpinner (neutro, sin header/stepper/StepSkeleton) — patrón ResumePage.
+  if (recoveredViaMagicLink && resumeToken && rehydrating) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <LoadingSpinner messages={['resume.loading', 'loading.rotating.2', 'loading.rotating.3']} />
+      </div>
+    );
+  }
+
   // DL-E39 ENMIENDA — GATE DE ENTRADA (Diego 2026-06-06). Una sesión recuperada
   // por magic-link (resume_token → expediente con PII existente) NO muestra NINGÚN
   // paso ni dato hasta superar el OTP de entrada. El gate reaparece tras 10 min de

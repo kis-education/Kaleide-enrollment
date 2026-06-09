@@ -520,6 +520,10 @@ export function WizardProvider({ children }) {
     // entrada) y marcamos el auto-send como ya hecho (no dispares el OTP proactivo).
     // Si step_up_fresh es false (link >10 min, reusado, sin nonce, o filtrado/KAL-7),
     // NO tocamos nada → el gate OTP normal se aplica.
+    // WIZARD-GATE-ORDER (diagnóstico, 2026-06-09): registra SIEMPRE el valor recibido
+    // de step_up_fresh (incluido false) para verificar en el DevLogger si la frescura
+    // (B) vuelve true dentro de los 10 min. Solo log, no cambia ninguna rama de lógica.
+    log.info('hydrateFromResume: step_up_fresh recibido', { step_up_fresh: !!data.step_up_fresh });
     if (data.step_up_fresh) {
       markStepUpFresh();
       markOtpAutoSentForRecovery();
