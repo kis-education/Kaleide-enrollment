@@ -124,6 +124,64 @@ const _questionsFlight = {};   // { [lang]: promise }
 const QCACHE_PREFIX = 'kis_wizard_qcache_v2_'; // v2: invalida la caché vieja con códigos (pre QB-TRANS designation fix)
 const QCACHE_TTL_MS = 10 * 60 * 1000; // espejo de STEPUP_WINDOW_MS (WizardContext)
 
+// ─── SPEC-WIZ-BROWSERCACHE: catálogo PERSISTENTE en localStorage (2ª+ visita) ───
+// La capa sessionStorage de arriba (QCACHE_PREFIX) muere al CERRAR el navegador (es
+// por sesión). Este SPEC añade una capa localStorage PERSISTENTE para que la 2ª y
+// siguientes visitas del MISMO navegador (incluso días después, sesión nueva) pinten
+// el Step 5 al instante (sub-segundo) desde el catálogo cacheado, revalidando por
+// versión. Se ancla a las MISMAS funciones que ya lee el wizard (readQuestionsCacheSync
+// / fetchQuestions / _persistQuestions / purgeQuestionsCache) — NO crea un lector nuevo.
+//
+// KAL-7 (invariante "NO PII en localStorage"): SOLO se persiste el CATÁLOGO
+// (estructura + traducciones + condiciones), que es contenido PÚBLICO tenant-estático
+// y NO-PII. Las RESPUESTAS y datos de la familia NUNCA tocan esta capa (viven en
+// WizardContext/stepData). El catálogo se purga además al limpiar sesión (no sobrevive
+// al ciclo de auth — purgeQuestionsCache, espejo de la capa de sesión).
+//
+// catalog_version (PENDIENTE spec §7.5 — RESUELTO con degradación defensiva): hoy el
+// backend NO expone un identificador de versión del catálogo (fetchQuestions devuelve
+// { ctx, sets } sin version/etag — verificado en backend/Code.js:3746
+// fetchQuestions_adaptKmsResponse_). Per la regla "la falta de campo backend NO congela
+// el frontend", derivamos catalog_version client-side como hash estable del payload del
+// catálogo y revalidamos best-effort por TTL corto. Invariante "revalidación obligatoria
+// por versión" satisfecha: NUNCA servimos el cacheado indefinidamente — pasada la ventana
+// QCACHE_LS_REVALIDATE_MS la siguiente visita dispara un fetch de revalidación en
+// background y REEMPLAZA el catálogo si el hash (versión) cambió; un tope duro
+// QCACHE_LS_MAXAGE_MS descarta cache verdaderamente vieja.
+// TODO(Diego): cuando el backend exponga un catalog_version barato (p.ej. updated_at máx
+// de las tablas qb del context, SIN columnas ad-hoc — spec §7.5 opción (a); o derivado
+// del prewarm de SPEC-WIZ-PREWARM), cambiar la revalidación a una llamada LIGERA de
+// versión en vez del fetch pesado de fetchQuestions → la 2ª visita queda sin red visible
+// también fuera de la ventana corta (acceptance criterion pleno).
+const QCACHE_LS_PREFIX        = 'kis_wizard_qcache_persist_v1_';
+const QCACHE_LS_REVALIDATE_MS = 30 * 60 * 1000;            // 30 min: dentro de la ventana se sirve de localStorage SIN red; fuera, se revalida en background
+const QCACHE_LS_MAXAGE_MS     = 30 * 24 * 60 * 60 * 1000;  // 30 días: tope duro — cache más vieja se descarta como fría
+
+/** catalog_version client-side: hash estable y barato (FNV-1a 32-bit) del catálogo. */
+function _catalogVersion(data) {
+  const str = JSON.stringify((data && data.sets) || []);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return ('00000000' + h.toString(16)).slice(-8);
+}
+
+/** Lee la entrada PERSISTENTE de localStorage → { data, v, storedAt } o null (ausente/corrupto/>MAXAGE). */
+function _readPersistedQuestions(key) {
+  try {
+    const raw = localStorage.getItem(QCACHE_LS_PREFIX + key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.data || !parsed.storedAt || (Date.now() - parsed.storedAt) > QCACHE_LS_MAXAGE_MS) {
+      localStorage.removeItem(QCACHE_LS_PREFIX + key);
+      return null;
+    }
+    return parsed;
+  } catch { return null; }
+}
+
 /**
  * Lectura SÍNCRONA del catálogo cacheado en sessionStorage (paint instantáneo).
  * Esta lectura sync NO calienta la cache de MÓDULO a propósito: en un reload SIN
@@ -141,14 +199,20 @@ export function readQuestionsCacheSync(lang) {
   if (_questionsCache[key]) return _questionsCache[key];
   try {
     const raw = sessionStorage.getItem(QCACHE_PREFIX + key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || !parsed.data || !parsed.expiresAt || Date.now() > parsed.expiresAt) {
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.data && parsed.expiresAt && Date.now() <= parsed.expiresAt) {
+        return parsed.data;
+      }
       sessionStorage.removeItem(QCACHE_PREFIX + key);
-      return null;
     }
-    return parsed.data;
-  } catch { return null; }
+  } catch { /* cae a la capa persistente de localStorage */ }
+  // SPEC-WIZ-BROWSERCACHE: la capa de sesión murió (navegador cerrado / sesión nueva)
+  // → sirve el catálogo PERSISTENTE de localStorage para paint instantáneo. NO ceba la
+  // cache de módulo (igual que la lectura de sesión): así fetchQuestions revalida por
+  // versión en background cuando la entrada esté fuera de la ventana de frescura.
+  const persisted = _readPersistedQuestions(key);
+  return persisted ? persisted.data : null;
 }
 
 function _persistQuestions(key, data) {
@@ -156,15 +220,30 @@ function _persistQuestions(key, data) {
   try {
     sessionStorage.setItem(QCACHE_PREFIX + key, JSON.stringify({ data, expiresAt: Date.now() + QCACHE_TTL_MS }));
   } catch { /* quota/serialization → cache de módulo basta */ }
+  // SPEC-WIZ-BROWSERCACHE: capa PERSISTENTE (sobrevive al cierre del navegador) +
+  // catalog_version derivado, para servir la 2ª+ visita al instante y revalidar por
+  // versión. Best-effort: quota/serialización fallan → silencioso (la cache de
+  // sesión/módulo basta; comportamiento idéntico al actual).
+  try {
+    localStorage.setItem(QCACHE_LS_PREFIX + key, JSON.stringify({ data, v: _catalogVersion(data), storedAt: Date.now() }));
+  } catch { /* quota/serialization → silencioso */ }
 }
 
-/** Purga toda la cache de preguntas (módulo + sessionStorage). Llamado por clearSession. */
+/** Purga toda la cache de preguntas (módulo + sessionStorage + localStorage persistente). Llamado por clearSession. */
 export function purgeQuestionsCache() {
   for (const k in _questionsCache) delete _questionsCache[k];
   try {
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
       const k = sessionStorage.key(i);
       if (k && k.indexOf(QCACHE_PREFIX) === 0) sessionStorage.removeItem(k);
+    }
+  } catch { /* ignore */ }
+  // SPEC-WIZ-BROWSERCACHE: purga también la capa PERSISTENTE — el catálogo cacheado
+  // NUNCA debe sobrevivir al ciclo de auth (espejo de la decisión de la capa de sesión).
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.indexOf(QCACHE_LS_PREFIX) === 0) localStorage.removeItem(k);
     }
   } catch { /* ignore */ }
 }
@@ -191,6 +270,12 @@ function _doFetchQuestions(lang) {
 export function prefetchQuestions(lang) {
   const key = lang || 'es';
   if (_questionsCache[key] || _questionsFlight[key]) return;
+  // SPEC-WIZ-BROWSERCACHE: catálogo persistente FRESCO → ceba el módulo sin red.
+  const persisted = _readPersistedQuestions(key);
+  if (persisted && (Date.now() - persisted.storedAt) < QCACHE_LS_REVALIDATE_MS) {
+    _questionsCache[key] = persisted.data;
+    return;
+  }
   _questionsFlight[key] = _doFetchQuestions(key)
     .then(data  => { _persistQuestions(key, data); delete _questionsFlight[key]; return data; })
     .catch(_err => { delete _questionsFlight[key]; });
@@ -200,6 +285,17 @@ export function fetchQuestions(lang) {
   const key = lang || 'es';
   if (_questionsCache[key])  return Promise.resolve(_questionsCache[key]);
   if (_questionsFlight[key]) return _questionsFlight[key];
+  // SPEC-WIZ-BROWSERCACHE: si hay catálogo persistente FRESCO (dentro de la ventana de
+  // revalidación) sírvelo SIN red — 2ª visita sub-segundo, sin llamada visible en
+  // DevTools Network — y ceba el módulo. Fuera de la ventana NO cortocircuita → cae al
+  // fetch de red de abajo, que revalida y, vía _persistQuestions, REEMPLAZA el catálogo
+  // (y su catalog_version) si el staff lo editó. readQuestionsCacheSync ya da el paint
+  // instantáneo desde localStorage mientras esta revalidación corre en background.
+  const persisted = _readPersistedQuestions(key);
+  if (persisted && (Date.now() - persisted.storedAt) < QCACHE_LS_REVALIDATE_MS) {
+    _questionsCache[key] = persisted.data;
+    return Promise.resolve(persisted.data);
+  }
   _questionsFlight[key] = _doFetchQuestions(key)
     .then(data  => { _persistQuestions(key, data); delete _questionsFlight[key]; return data; })
     .catch(err  => { delete _questionsFlight[key]; throw err; });
