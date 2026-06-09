@@ -5763,6 +5763,32 @@ function hydrateSession_(p) {
   if (graceOk) _markStepUpFresh_(groupId);
   const stepUpFresh = _isStepUpFresh_(groupId);
 
+  // A (WIZARD-STEPUP) — gate ANTES de pagar el hydrate pesado. El gate PII (DL-E39)
+  // estaba DESPUÉS del kmsProxy_ (~30s) → el OTP de entrada salía tras la espera. Ahora,
+  // si el step-up NO está fresco, NO llamamos al KMS: el StepUpGate del frontend solo
+  // necesita `group` (enrollment_group_id + resume_token), así que basta un read BARATO
+  // de la fila de grupo — verbatim resumeSession_:2130-2135 (mismo selector + escape
+  // KAL-5). requireResumeToken_ ya validó UUID + TTL + abandoned_at; si aun así groups
+  // viene vacío, group:null es aceptable (el gate ya tiene el resume_token en su closure).
+  if (!stepUpFresh) {
+    const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+      Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
+    });
+    const group = (groups && groups.length) ? groups[0] : null;
+    return {
+      group,
+      enrollments:    [],
+      admission:      null,
+      lookups:        {},
+      questions:      null,
+      live_version:   0,
+      persons:        [], relations: [], documents: [], responses: [],
+      billing_splits: { payers: [], per_participant: [] },
+      step_up_fresh:  false,
+      pii_gated:      true,
+    };
+  }
+
   // DL-A §1 — UNA llamada al KMS devuelve TODO (lookups + datos 11 pasos + qbResponses
   // + admission + signing_context + billing_splits + live_version).
   const data = kmsProxy_('enr.wizardHydrate', {
@@ -5780,21 +5806,12 @@ function hydrateSession_(p) {
     catch (e) { data.questions = { sets: [] }; }
   }
 
-  if (!stepUpFresh) {
-    return {
-      group:          data.group || null,
-      enrollments:    data.enrollments || [],
-      admission:      data.admission || null,
-      lookups:        data.lookups || {},
-      questions:      data.questions || null,
-      live_version:   data.live_version || 0,
-      persons:        [], relations: [], documents: [], responses: [],
-      billing_splits: { payers: [], per_participant: [] },
-      step_up_fresh:  false,
-      pii_gated:      true,
-    };
-  }
-  return Object.assign({}, data, { step_up_fresh: graceOk });
+  // B (WIZARD-STEPUP) — honrar la frescura REAL de 10 min (decisión Diego). Antes se
+  //   reportaba `step_up_fresh: graceOk` (solo el nonce de magic-link) → en una recarga
+  //   sin nonce salía false aunque stepup_ok_<group> siguiera fresco (TTL 10 min) y el
+  //   frontend re-gateaba (re-OTP en cada recarga). Aquí estamos en el path fresco
+  //   (stepUpFresh === true), así que reusar la variable evita una 2ª lectura del cache.
+  return Object.assign({}, data, { step_up_fresh: stepUpFresh });
 }
 
 /**
