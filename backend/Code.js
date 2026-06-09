@@ -5785,6 +5785,10 @@ function hydrateSession_(p) {
       Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
     });
     const group = (groups && groups.length) ? groups[0] : null;
+    // IMPL-F: consistencia ISO también en el path gateado. Este read barato NO llama al
+    //   KMS → sin programas no hay fallback a period_starts_on; pero si la fila trae la
+    //   fecha la normalizamos igual para no cruzar slash al cliente.
+    if (group) group.desired_start_date = normalizeDate_(group.desired_start_date);
     return {
       group,
       enrollments:    [],
@@ -5821,6 +5825,30 @@ function hydrateSession_(p) {
   //   sin nonce salía false aunque stepup_ok_<group> siguiera fresco (TTL 10 min) y el
   //   frontend re-gateaba (re-OTP en cada recarga). Aquí estamos en el path fresco
   //   (stepUpFresh === true), así que reusar la variable evita una 2ª lectura del cache.
+
+  // IMPL-F (regresión DL-C) — normaliza desired_start_date a ISO YYYY-MM-DD + fallback a
+  //   program.period_starts_on. enr.wizardHydrate devolvía la fila del KMS TAL CUAL (sin
+  //   normalizeDate_) → la fecha cruzaba en slash ("05/01/2026") y el <input type="date">
+  //   del Step 1 quedaba vacío. Verbatim del lector probado resumeSession_:2317,2323-2329,
+  //   adaptado: aquí los programas llegan en data.lookups.programs
+  //   ({ program_id, period_starts_on, … } — KMS wizard-gateway.gs:265-274), NO en topRead.
+  if (data.group) {
+    data.group.desired_start_date = normalizeDate_(data.group.desired_start_date);
+    if (!data.group.desired_start_date && data.group.program_id) {
+      const progs = (data.lookups && data.lookups.programs) || [];
+      const prog  = progs.find(function(pr) { return pr && pr.program_id === data.group.program_id; });
+      if (prog && prog.period_starts_on) {
+        data.group.desired_start_date = normalizeDate_(prog.period_starts_on);
+      }
+    }
+  }
+  // La fecha canónica vive en enrEnrollments (no en el group); normaliza también
+  //   enrollments[0].desired_start_date para que ambas vías crucen en ISO coherente
+  //   (frontend WizardContext.jsx:698 considera ambas en su baseline de completitud).
+  if (data.enrollments && data.enrollments[0] && data.enrollments[0].desired_start_date) {
+    data.enrollments[0].desired_start_date = normalizeDate_(data.enrollments[0].desired_start_date);
+  }
+
   return Object.assign({}, data, { step_up_fresh: stepUpFresh });
 }
 
