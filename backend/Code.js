@@ -4661,6 +4661,9 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, graceNonce) {
       + securityFooter;
 
   sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
+  // SPEC-WIZ-WARMUP \u2014 calienta el hydrate del grupo en el "minuto muerto". resumeToken es
+  // el token NUEVO (todos los callers lo renuevan antes de invocar este env\u00edo). Best-effort.
+  _enqueueWarmHydrate_(resumeToken, lang);
 }
 
 /**
@@ -4713,6 +4716,35 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang, graceNonces) {
       + securityFooter;
 
   sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
+  // SPEC-WIZ-WARMUP \u2014 calienta el hydrate de CADA grupo enviado (tokens ya renovados). Best-effort.
+  (resumeTokens || []).forEach(function(t) { _enqueueWarmHydrate_(t, lang); });
+}
+
+/**
+ * SPEC-WIZ-WARMUP (kis-app/docs/kms/specs/enr-wizard-coldload-spec.md \u00a71) \u2014 al ENVIAR un
+ * magic-link, encola en el KMS un warm-up del hydrate del grupo (job ENR_WARM_HYDRATE v\u00eda
+ * kmsProxy_('enr.wizardWarmHydrate')) para que el click posterior (~1 min despu\u00e9s) resuelva
+ * contra cache (HIT casi instant\u00e1neo en vez de pagar el hydrate pesado en l\u00ednea).
+ *
+ * Best-effort TOTAL (invariante spec): si el encolado falla (KMS no configurado, red, etc.)
+ * loguea redactado y CONTIN\u00daA \u2014 el env\u00edo del email NUNCA depende del warm, nunca peor que
+ * hoy. Se invoca DENTRO de sendMagicLinkEmail_/sendMagicLinkMultiEmail_, que SIEMPRE reciben
+ * el resume_token YA RENOVADO por el caller (invariante spec: token NUEVO post-renovaci\u00f3n,
+ * nunca el viejo \u2014 si no, la cache se llavear\u00eda por un token que el link ya no porta). El
+ * KMS deriva el enrollment_group_id server-side del resume_token (KAL-4); no se manda aqu\u00ed.
+ *
+ * @param {string} resumeToken \u2014 token NUEVO que viaja en el magic-link reci\u00e9n enviado.
+ * @param {string} lang
+ * @private
+ */
+function _enqueueWarmHydrate_(resumeToken, lang) {
+  try {
+    if (!resumeToken) return;
+    kmsProxy_('enr.wizardWarmHydrate', { resume_token: String(resumeToken).trim(), language: lang || null });
+  } catch (e) {
+    // KAL-11: redacta. El warm es opcional \u2014 nunca rompe el env\u00edo del magic-link.
+    Logger.log(redact_('_enqueueWarmHydrate_: warm enqueue skipped (non-fatal) \u2014 ' + (e && e.message)));
+  }
 }
 
 /**
