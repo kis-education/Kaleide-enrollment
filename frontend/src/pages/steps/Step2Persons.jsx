@@ -128,28 +128,53 @@ function resolvePhoneValidation(rawInput, phoneCountry, countryISO) {
 function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
   const { t } = useTranslation();
   const [touched, setTouched] = useState(false);
-  // D: país del selector (ISO alpha-2). Autorelleno inteligente al montar: legacy por dial
-  // → countryISO de la dirección → '' (sin bloquear con error muerto).
-  const [phoneCountry, setPhoneCountry] = useState(() => {
-    const raw0 = (phone.phone_number || '').trim();
-    if (raw0 && !raw0.startsWith('+')) {
-      const detected = detectCountryByDial(raw0);
-      if (detected) return detected;
+  // IMPL-G: separar el DIAL (desplegable de país) del NÚMERO NACIONAL (input). El valor
+  // PERSISTIDO sigue siendo E.164 completo en `phone.phone_number` (contrato intacto); el
+  // dial vive SOLO en el desplegable y el input muestra SOLO el número nacional, sin '+'.
+  // Derivación de montaje: a partir del E.164 persistido (o legacy sin '+') se reparte en
+  // { país del desplegable, número nacional del input } detectando el dial MÁS LARGO que
+  // prefija (reutiliza detectCountryByDial/COUNTRIES — no se inventa lista).
+  const deriveFromPersisted = () => {
+    const digits = (phone.phone_number || '').replace(/\D/g, '');
+    if (digits) {
+      const detected = detectCountryByDial(digits);   // legacy '+34…' o '34…' → país por dial
+      if (detected) {
+        const dial = COUNTRIES.find(c => c.value === detected)?.dial || '';
+        return { country: detected, national: digits.slice(dial.length) };
+      }
+      // Sin dial detectable: el desplegable cae al país de la dirección; el input muestra
+      // los dígitos tal cual (NUNCA con '+').
+      return { country: countryISO || '', national: digits };
     }
-    return countryISO || '';
-  });
+    return { country: countryISO || '', national: '' };
+  };
+  const initial = deriveFromPersisted();
+  const [phoneCountry, setPhoneCountry] = useState(initial.country);
+  const [nationalNumber, setNationalNumber] = useState(initial.national);
   const update = (fields) => onChange({ ...phone, ...fields });
 
-  // CLI PHONE-E164 + D: validación en el punto de entrada usando el país del selector. El
-  // error inline solo se muestra tras blur (touched) y si el campo NO está vacío.
-  const res = resolvePhoneValidation(phone.phone_number, phoneCountry, countryISO);
-  const showError = touched && (phone.phone_number || '').trim() && !res.valid;
+  // IMPL-G: construye el candidato internacional combinando (dial del desplegable) +
+  // (número nacional del input) → +<dial><national>; sin dial cae al país de la dirección.
+  // La normalización/validación E.164 + set cerrado DL-E40 las sigue haciendo validatePhone
+  // (vía resolvePhoneValidation) — phone.js NO se toca. El input NUNCA contiene el dial.
+  const selDial = COUNTRIES.find(c => c.value === phoneCountry)?.dial || '';
+  const national = nationalNumber.trim();
+  const candidate = national
+    ? (selDial ? '+' + selDial + national.replace(/\D/g, '') : national)
+    : '';
+  const res = resolvePhoneValidation(candidate, phoneCountry, countryISO);
+  const showError = touched && national && !res.valid;
   const errKey = res.needCountry  ? 'step2.phone.country_needed'
                : res.notInSet     ? 'step2.phone.unsupported_country'
                :                     'step2.phone.invalid';
 
   const handleBlur = () => {
     setTouched(true);
+    // Input vacío → persistir vacío; NUNCA re-inyectar el dial.
+    if (!national) {
+      if (phone.phone_number) update({ phone_number: '' });
+      return;
+    }
     // Al salir del campo, si es válido persistimos el valor NORMALIZADO a E.164.
     if (res.valid && res.e164 && res.e164 !== phone.phone_number) {
       update({ phone_number: res.e164 });
@@ -180,9 +205,9 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
           <input type="tel"
             className={'form-control form-control-sm' + (showError ? ' is-invalid' : '')}
             aria-invalid={showError ? 'true' : undefined}
-            placeholder="+34 600 000 000"
-            value={phone.phone_number}
-            onChange={e => update({ phone_number: e.target.value })}
+            placeholder="600 000 000"
+            value={nationalNumber}
+            onChange={e => setNationalNumber(e.target.value)}
             onBlur={handleBlur} />
           {showError && <div className="field-error" style={{ fontSize: '0.78rem' }}>{t(errKey)}</div>}
         </div>
