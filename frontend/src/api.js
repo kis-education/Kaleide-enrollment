@@ -126,8 +126,13 @@ const QCACHE_TTL_MS = 10 * 60 * 1000; // espejo de STEPUP_WINDOW_MS (WizardConte
 
 /**
  * Lectura SÍNCRONA del catálogo cacheado en sessionStorage (paint instantáneo).
- * NO calienta la cache de módulo a propósito: así fetchQuestions revalida por red
- * tras un reload (SWR). Devuelve null si ausente/expirado/corrupto.
+ * Esta lectura sync NO calienta la cache de MÓDULO a propósito: en un reload SIN
+ * hydrate (familia sin resume reciente) el módulo arranca frío → fetchQuestions
+ * revalida por red (SWR) y refresca el catálogo. §11: cuando SÍ hubo hydrate, es
+ * `primeQuestions` (no esta lectura) quien ceba `_questionsCache[lang]` → entonces
+ * fetchQuestions short-circuita y sirve de memoria SIN red. El path del hydrate
+ * (prime) gana; el SWR solo actúa cuando no hubo prime. Devuelve null si
+ * ausente/expirado/corrupto.
  * @param {string} lang
  * @returns {Object|null}
  */

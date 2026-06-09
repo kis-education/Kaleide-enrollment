@@ -10,7 +10,7 @@ import * as log from '../../logger';
 
 export default function Step5Questions({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t, i18n }  = useTranslation();
-  const { enrollmentGroupId, resumeToken, stepData, updateStep } = useWizard();
+  const { enrollmentGroupId, resumeToken, stepData, updateStep, enqueueSave } = useWizard();
 
   // WIZARD-PERF-CACHE-SKELETON: paint instantáneo (stale-while-revalidate). Si hay
   // catálogo en sessionStorage (mismo idioma, no expirado) lo mostramos sin spinner
@@ -82,7 +82,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
     onBack();
   };
 
-  const handleNext = async () => {
+  const handleNext = () => {
     // Batch-save all responses
     const rows = Object.entries(responses).map(([key, val]) => {
       const [qid, respondentId] = key.split('__');
@@ -93,15 +93,25 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
         language:      i18n.language,
       };
     });
+    // §8 AVANCE OPTIMISTA (espejo de Step7Review.submitFactory). A diferencia del resto
+    // de pasos, Step5 NO enruta su save por WizardPage.handleNext → tenía su propio
+    // `await gasCall('saveResponses')` inline (~21.5s E2E) que BLOQUEABA el avance. Ahora
+    // se encola una factory RE-EJECUTABLE por el carril global (saveState → SaveIndicator:
+    // "Guardando…/Error+Reintentar") y se navega al instante SIN await. El contrato del
+    // payload NO cambia. En error la respuesta NO se pierde: enqueueSave marca
+    // saveState='error' y guarda la factory en lastFailedSaveRef → SaveIndicator ofrece
+    // "Reintentar" (retryLastSave re-encola ESTA misma factory). Por eso la factory NO
+    // lleva `.catch` que trague el error: debe propagarlo a la cola.
     if (rows.length && enrollmentGroupId) {
-      await gasCall('saveResponses', {
+      const saveFactory = () => gasCall('saveResponses', {
         resume_token:                resumeToken, // KAL-4: required for IDOR defense
         enrollment_group_id:         enrollmentGroupId,
         application_id:              enrollmentGroupId, // legacy alias
         respondent_id:               enrollmentGroupId,
         respondent_type_category_id: 'client',
         responses:                   rows,
-      }).catch(() => {});
+      });
+      enqueueSave(saveFactory);
     }
     log.info('Step5: onNext questions', responses);
     updateStep('questions', responses);
