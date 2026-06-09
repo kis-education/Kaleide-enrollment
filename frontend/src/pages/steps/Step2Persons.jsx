@@ -93,7 +93,9 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
   // muestra tras blur (touched) y si el campo NO está vacío.
   const res = validatePhone(phone.phone_number, countryISO || '');
   const showError = touched && (phone.phone_number || '').trim() && !res.valid;
-  const errKey = res.needCountry ? 'step2.phone.country_needed' : 'step2.phone.invalid';
+  const errKey = res.needCountry  ? 'step2.phone.country_needed'
+               : res.notInSet     ? 'step2.phone.unsupported_country'
+               :                     'step2.phone.invalid';
 
   const handleBlur = () => {
     setTouched(true);

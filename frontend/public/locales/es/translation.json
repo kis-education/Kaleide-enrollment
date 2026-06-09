@@ -49,6 +49,7 @@
   "step2.phone.invalid": "Introduce un número de teléfono válido (p.ej. +34 600 000 000).",
   "step2.phone.guardian_required": "Cada tutor necesita al menos un número de teléfono válido.",
   "step2.phone.country_needed": "Indica el país de la dirección o incluye el prefijo internacional (p.ej. +34).",
+  "step2.phone.unsupported_country": "El prefijo internacional de ese número no corresponde a ningún país admitido. Revisa el número o usa otro contacto.",
   "step2.identity_note": "El correo de cada tutor le identifica de forma única y queda vinculado a esa persona: es su credencial para recuperar la solicitud, firmar y tomar decisiones legales a su propio nombre. Por eso cada tutor debe usar un correo distinto.",
   "step2.sole_guardian.attestation_label": "Declaro que soy el único tutor legal de los alumnos (familia monoparental o tutela única) y que no existe otro tutor que deba figurar en esta solicitud.",
   "report.pending": "Procesando…",
