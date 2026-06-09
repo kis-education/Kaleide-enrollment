@@ -2676,6 +2676,55 @@ function submitEnrollmentSession_(p) {
     throw new Error('No applicant person found in enrollment group');
   }
 
+  // ── CLOSING VALIDATION (IMPL-H / W1 + W2) — VALIDATE BEFORE ANY WRITE ───────
+  // W1 (order): every closing validation MUST run BEFORE the first write that
+  // materialises the submission (requester Edit, enrEnrollments Add/Edit,
+  // sysStateTransitionLog, submitted_at on enrEnrollmentGroups, consents). The
+  // old gate sat at the end (after submitted_at was already stamped): a failed
+  // gate left the group half-submitted (submitted_at set) and the retry hit
+  // assertGroupEditable_'s NOT_EDITABLE → the family was stuck. Moving it here
+  // makes the submit atomic for the user: validate everything, then materialise,
+  // or abort clean writing nothing.
+  //
+  // Guardian phone gate: each guardian (the signer; Click & Sign requires it at
+  // Step 11) must have ≥1 valid E.164 phone. SOSPECHA-2 fix — the old gate read
+  // enrichedGuardians[].phones, but gPhoneJoins was hardcoded to [] (~line 2852),
+  // so the gate threw INVALID_PHONE ALWAYS, regardless of the real value. We load
+  // the guardians' real phones from enrPhones by enrollment_group_id (verbatim
+  // gold-standard read resumeSession_:2191,2197) and nest by person_id
+  // (resumeSession_:2409 pattern) so the some() iterates over real numbers.
+  //
+  // W2 (P259): AppSheet strips the leading '+' from enrPhones.value, so an E.164
+  // value '+34609211201' is stored as '34609211201'. Normalise the STORED value
+  // (re-prepend '+' when all-digits) before the strict regex; this only restores
+  // the '+' AppSheet removed — it still requires a valid E.164 after normalising,
+  // NOT "any digits". Fresh input keeps the strict-with-'+' check elsewhere.
+  const gPersonIdsForGate = guardians.map(g => g.person_id).filter(Boolean);
+  if (gPersonIdsForGate.length) {
+    const allGuardianPhones = appsheetRequest_(T.PHONES, 'Find', [], {
+      Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
+    }) || [];
+    const phonesByPerson = {};
+    allGuardianPhones.forEach(ph => {
+      const pid = ph.person_id;
+      if (!pid) return;
+      (phonesByPerson[pid] = phonesByPerson[pid] || []).push(ph);
+    });
+    guardians.forEach(g => {
+      const phones = phonesByPerson[g.person_id] || [];
+      const hasValidPhone = phones.some(ph => {
+        let s = String(ph.value || ph.phone_number || '').trim();
+        if (s && s[0] !== '+' && /^\d+$/.test(s)) s = '+' + s;   // P259: AppSheet quita el +
+        return /^\+[1-9]\d{6,14}$/.test(s);                       // E.164 estricto tras normalizar
+      });
+      if (!hasValidPhone) {
+        const e = new Error('Each guardian needs at least one valid E.164 phone');
+        e.code = 'INVALID_PHONE';
+        throw e;
+      }
+    });
+  }
+
   // ── Identify the requester (first guardian) if not yet recorded ────────────
   if (!group.requester_person_id && guardians.length) {
     appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
@@ -2871,20 +2920,11 @@ function submitEnrollmentSession_(p) {
     phones: gPhoneJoins.filter(r => r.person_id === g.person_id).map(r => ({ ...r, ...(gPhoneMap[r.phone_id] || {}) })),
   }));
 
-  // CLI PHONE-E164: defensa final al cerrar el wizard — cada guardian (firmante;
-  // Click&Sign lo exige en el Step 11) debe tener ≥1 teléfono E.164 válido. Reusa
-  // los phones ya cargados en enrichedGuardians (sin lectura extra). El gate
-  // primario es el frontend (handleNext); saveStep_ valida solo formato (DRAFT).
-  // Estructurado: code='INVALID_PHONE' → doPost HTTP 200 {ok:false,error}.
-  enrichedGuardians.forEach(g => {
-    const hasValidPhone = (g.phones || []).some(ph =>
-      /^\+[1-9]\d{6,14}$/.test(String(ph.value || ph.phone_number || '').trim()));
-    if (!hasValidPhone) {
-      const e = new Error('Each guardian needs at least one valid E.164 phone');
-      e.code = 'INVALID_PHONE';
-      throw e;
-    }
-  });
+  // NOTE (IMPL-H): the guardian E.164 phone gate moved UP — it now runs as part
+  // of the CLOSING VALIDATION block BEFORE any write (W1), reading real phones
+  // from enrPhones (W2 / SOSPECHA-2 fix). It is intentionally gone from here so
+  // no write precedes the validation. See the block right after the applicant
+  // check above.
 
   // Fetch QB responses for enrollment-specific questions (profession, employer, adaptation)
   const enrQbIds = [QB_PROFESSION_ID, QB_EMPLOYER_ID, QB_HAS_ADAPTATION_ID, QB_ADAPTATION_NOTES_ID];
