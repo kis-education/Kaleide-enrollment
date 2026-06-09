@@ -57,6 +57,7 @@ export default function WizardPage() {
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
     setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
+    validationError, setValidationError,                          // UX-1 aviso sticky
     markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
     isSubmitted,
     admissionState, signingContext,
@@ -212,6 +213,7 @@ export default function WizardPage() {
 
 const handleNext = async (stepKey, data, extra = null) => {
     log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
+    setValidationError('');  // UX-1: limpia el aviso sticky al avanzar de paso
     markUserTookControl(); // WPERF-1 criterio 4: nav manual → invalida un JUMP de enterSigning pendiente
 
     // Data-layer pieza 2: el avance YA NO bloquea esperando el save de N-1. El save
@@ -330,6 +332,7 @@ const handleNext = async (stepKey, data, extra = null) => {
   };
 
   const handleBack = () => {
+    setValidationError('');  // UX-1: limpia el aviso sticky al retroceder
     markUserTookControl(); // WPERF-1 criterio 4
     addCompletedStep(currentStep);
     const prevStep = Math.max(currentStep - 1, 0);
@@ -468,6 +471,11 @@ const handleNext = async (stepKey, data, extra = null) => {
 
   return (
     <div className="wizard-layout">
+      {/* UX-1: zona superior STICKY — header + stepper + SaveIndicator + resumen de
+          validación. z-index por debajo de los overlays (9999/10000); fondo opaco para
+          que el contenido no se transparente al hacer scroll. Los overlays internos son
+          position:fixed → no los afecta el sticky. */}
+      <div className="wizard-sticky-top" style={{ position: 'sticky', top: 0, zIndex: 500, background: 'var(--bg, #f8f9fa)' }}>
       {/* Header */}
       <header className="kis-header">
         <div className="brand">
@@ -681,6 +689,20 @@ const handleNext = async (stepKey, data, extra = null) => {
           </button>
         </div>
       )}
+
+      {/* UX-1: resumen de validación en la zona sticky superior (antes salía al pie de
+          cada paso). El step eleva su aviso al contexto (validationError); aquí se pinta. */}
+      {validationError && (
+        <div role="alert" aria-live="assertive" style={{
+          background: '#ffeaea', borderBottom: '2px solid #a02020',
+          padding: '10px 20px', display: 'flex', alignItems: 'center', gap: 8,
+          color: '#a02020', fontSize: '0.9rem',
+        }}>
+          <i className="bi bi-exclamation-triangle-fill" />
+          <span>{validationError}</span>
+        </div>
+      )}
+      </div>{/* /wizard-sticky-top (UX-1) */}
 
       {/* Step content — DL-C-B (b): durante la rehidratación pintamos el shell
           (header + progress, ya arriba) + un StepSkeleton en el área de contenido,

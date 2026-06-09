@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
@@ -25,12 +25,18 @@ import * as log from '../logger';
  * only the first 8 chars + '...' so the token is not reconstructable from
  * the dev console log stream.
  */
+// E (carga por etapas): el hydrate tarda ~30s; en vez de un texto único, el mensaje
+// rota por estas etapas (i18n) para dar sensación de avance. Topado al último índice
+// (no da la vuelta). El intervalo se limpia en cleanup y al resolver/rechazar la promesa.
+const RESUME_STAGE_KEYS = ['resume.stage.verifying', 'resume.stage.recovering', 'resume.stage.almost'];
+
 export default function ResumePage() {
   const { token } = useParams();
   const [searchParams] = useSearchParams();
   const navigate  = useNavigate();
   const { t, i18n } = useTranslation();
   const { hydrateFromResume, recoveredEmail } = useWizard();
+  const [stage, setStage] = useState(0);
 
   // Magic-link grace (UX): nonce single-use de 10 min que viajó en `?n=<nonce>` del
   // link. Se captura aquí (en el hash, antes del scrub KAL-7 que reemplaza el hash
@@ -58,6 +64,11 @@ export default function ResumePage() {
       log.warn('ResumePage: history.replaceState failed (non-fatal)', { message: e.message });
     }
 
+    // E: rota el mensaje de carga cada 7s, topado al último índice (no da la vuelta).
+    const stageTimer = setInterval(() => {
+      setStage(s => Math.min(s + 1, RESUME_STAGE_KEYS.length - 1));
+    }, 7000);
+
     const tokenPreview = String(token).slice(0, 8) + '...';
     log.info('ResumePage: calling hydrateSession', { resume_token_preview: tokenPreview });
     // DL-B §1 — hidratación CONSOLIDADA (hydrateSession): UNA llamada trae datos 11
@@ -75,18 +86,22 @@ export default function ResumePage() {
         });
         hydrateFromResume(data);
         log.info('ResumePage: hydration complete, navigating to /apply');
+        clearInterval(stageTimer);
         navigate('/apply', { replace: true });
       })
       .catch(err => {
         log.error('ResumePage: resumeSession failed', { message: err.message });
+        clearInterval(stageTimer);
         navigate('/?resume_error=1', { replace: true });
       });
+
+    return () => clearInterval(stageTimer);
   }, [token]); // eslint-disable-line
 
   return (
     <div style={{ textAlign: 'center', paddingTop: 80 }}>
       <div className="spinner" />
-      <p style={{ color: 'var(--muted)' }}>{t('resume.loading')}</p>
+      <p style={{ color: 'var(--muted)' }} aria-live="polite">{t(RESUME_STAGE_KEYS[stage])}</p>
     </div>
   );
 }

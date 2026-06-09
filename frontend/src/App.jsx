@@ -9,6 +9,7 @@ import ReportUnsolicitedPage from './pages/ReportUnsolicitedPage'
 import ConfirmationPage       from './pages/ConfirmationPage'
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
 import DevLogger        from './components/DevLogger'
+import SubmitErrorBanner from './components/SubmitErrorBanner'
 import * as log         from './logger'
 
 class ErrorBoundary extends Component {
@@ -101,6 +102,9 @@ function App() {
         </Routes>
       </Suspense>
       </ErrorBoundary>
+      {/* UX-3: aviso global de fallo del envío optimista — visible en cualquier ruta
+          (incl. /confirmation), por encima de los overlays. */}
+      <SubmitErrorBanner />
       {showDevLogger && <DevLogger />}
     </WizardProvider>
   )

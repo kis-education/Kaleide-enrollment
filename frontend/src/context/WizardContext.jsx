@@ -107,6 +107,13 @@ export function WizardProvider({ children }) {
   const pendingCountRef = useRef(0);
   const [saveState, setSaveState] = useState('idle');
   const hasPendingSave = saveState === 'saving';
+  // UX-1 — aviso de validación GLOBAL: los steps lo setean (en vez de su banner local al
+  // pie) y WizardPage lo pinta en la zona sticky superior. Se limpia al navegar/corregir.
+  const [validationError, setValidationError] = useState('');
+  // UX-3 — fallo del envío optimista del Step 7 (submit en background). Cuando el submit
+  // de fondo falla, el rollback revierte isSubmitted y este flag dispara el aviso global
+  // (toast visible en cualquier ruta, incl. /confirmation). Se limpia al reintentar OK.
+  const [submitError, setSubmitError] = useState(false);
   // WPERF-1 criterio 3: referencia a la ÚLTIMA save factory que falló, para que el
   // SaveIndicator pueda ofrecer "Reintentar" y re-encolarla. Se limpia cuando la cola
   // drena sin errores. NOTA: solo re-ejecutable si la factory re-lanza la operación
@@ -819,6 +826,8 @@ export function WizardProvider({ children }) {
       isStepDirty, markStepSaved,
       setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
       retryLastSave,                                              // WPERF-1 criterio 3
+      validationError, setValidationError,                        // UX-1 aviso sticky
+      submitError, setSubmitError,                                // UX-3 fallo envío optimista
       markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
       hydrateFromResume, refreshAdmissionState, clearSession,
       isSubmitted, setIsSubmitted,

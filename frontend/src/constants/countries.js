@@ -6,19 +6,18 @@
  * CLI PHONE-VAL (DL-E40, calidad en la frontera): `dial` define el SET CERRADO
  * de prefijos telefónicos aceptados por el wizard — un número internacional cuyo
  * country-calling-code no esté en este catálogo se rechaza (ver utils/phone.js).
+ * También alimenta el selector de país de `PhoneRow` (Step2Persons), que da el camino
+ * para corregir un teléfono legacy in-place.
  *
- * Fuente canónica futura = columna del código telefónico en la tabla AppSheet de
- * países (alta MANUAL de Diego, ver TODO abajo). Mientras esa columna no exista,
- * `dial` vive aquí hardcodeado y el validador DEGRADA DEFENSIVO: si una entrada no
- * tiene `dial`, NO se aplica el filtro de set cerrado para ese prefijo (se cae al
- * validador E.164 puro) en vez de rechazar números legítimos.
- *
- * TODO(Diego) — columna AppSheet del código telefónico en la tabla de países.
- *   Cabecera (tab-separated) a añadir a mano:
- *     country_id\tphone_calling_code
- *   Una vez exista y se sirva al wizard, `dial` debe leerse de ahí (no de este
- *   literal). La falta de columna NO congela el desarrollo: el set cerrado opera
- *   hoy con estos valores hardcodeados.
+ * Concesión Stage-1 (deliberada, NO deuda pendiente): la columna `phone_calling_code`
+ * de la tabla AppSheet de países YA existe, pero el wizard sigue leyendo el `dial` (y con
+ * él el set cerrado + el selector) de esta lista frontend. Son valores IDÉNTICOS (114
+ * países), y leer `phone_calling_code` desde AppSheet añadiría un lookup a un hydrate ya
+ * lento por un dato que no cambia. Por eso esa lectura se DIFIERE a Stage-2 (multi-tenant,
+ * backend Postgres), donde cada tenant podrá servir su propio catálogo de países. En
+ * Stage-1 la fuente es esta constante: cero latencia, cero divergencia. El validador
+ * DEGRADA DEFENSIVO: si una entrada no tiene `dial`, NO se aplica el filtro de set cerrado
+ * para ese prefijo (se cae al validador E.164 puro) en vez de rechazar números legítimos.
  */
 export const COUNTRIES = [
   { value: 'AF', label: 'Afghanistan', dial: '93' },

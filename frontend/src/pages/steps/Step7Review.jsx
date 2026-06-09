@@ -79,7 +79,8 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   const { t, i18n }  = useTranslation();
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
-  const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted, setIsSubmitted } = useWizard();
+  const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted, setIsSubmitted,
+          enqueueSave, setSubmitError, setValidationError } = useWizard(); // UX-3 + UX-1
 
   // DL-E39 ENMIENDA (gate de ENTRADA, Diego 2026-06-06): el enmascarado per-campo
   // se ELIMINA. Toda la PII queda protegida por el GATE DE ENTRADA del wizard
@@ -133,6 +134,9 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   const [consentLegal, setConsentLegal] = useState(false);
   const [submitting,   setSubmitting]   = useState(false);
   const [err,          setErr]          = useState('');
+  // UX-1: eleva el aviso de validación (esig/consents/recaptcha) a la zona sticky superior.
+  useEffect(() => { setValidationError(err); }, [err, setValidationError]);
+  useEffect(() => () => setValidationError(''), [setValidationError]);
 
   const handleSubmit = async () => {
     if (!esig.trim()) { setErr(t('error.esig_required')); return; }
@@ -143,12 +147,14 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
     setSubmitting(true);
     log.info('Step7: handleSubmit — submitting enrollment', { enrollmentGroupId, hasPendingSave, esig: esig.trim() ? '[signed]' : '[empty]' });
 
+    // ── Tramo SÍNCRONO (antes de asumir el envío): drenar saves pendientes + reCAPTCHA.
+    //    Si el reCAPTCHA o la red fallan aquí, NO asumimos un submit que ni arrancó —
+    //    error inline normal, sin estado optimista.
     try {
       if (hasPendingSave) {
         try { await awaitPendingSave(); }
         catch (_) { /* errors already toasted */ }
       }
-
       if (RECAPTCHA_SITE_KEY) {
         const rc = await loadRecaptcha(RECAPTCHA_SITE_KEY);
         const token = await rc.execute(RECAPTCHA_SITE_KEY, { action: 'submit' });
@@ -159,35 +165,46 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
           return;
         }
       }
-
-      await gasCall('submitEnrollmentSession', {
-        resume_token:        resumeToken, // KAL-4: required for IDOR defense
-        enrollment_group_id: enrollmentGroupId,
-        application_id:      enrollmentGroupId,
-        desired_start_date:  email?.desired_start_date || null,
-        program_id:          email?.program_id         || null,
-        esignature:          esig,
-        language:            lang,
-        consents: [
-          { type: 'gdpr',  accepted: consentGdpr,  consent_text_shown: CONSENT_TEXTS.gdpr[lang]  },
-          { type: 'legal', accepted: consentLegal, consent_text_shown: CONSENT_TEXTS.legal[lang] },
-        ],
-      });
-
-      // CLI 26 (2026-06-01) — flip isSubmitted=true so that if the user later
-      // navigates back to /apply (e.g. via Confirmation's "Ver mi solicitud"
-      // CTA) without a full page reload, the wizard renders in read-only mode
-      // (LockedBanner Edit button hidden, fields disabled). Without this,
-      // hydrateFromResume only runs on full reload — so the in-memory
-      // isSubmitted stays false after submit and the Edit button reappears,
-      // letting the family edit a submitted application. Reportado por Diego.
-      setIsSubmitted(true);
-
-      navigate('/confirmation');
     } catch (e) {
       setErr(e.message);
       setSubmitting(false);
+      return;
     }
+
+    // ── UX-3: ENVÍO OPTIMISTA. Tras pasar validaciones + reCAPTCHA, asumimos el estado de
+    //    inmediato y navegamos; el submit vuela en background por el carril de saveState
+    //    (SaveIndicator), NO bloquea el botón. NO cambia el contrato del payload.
+    const payload = {
+      resume_token:        resumeToken, // KAL-4: required for IDOR defense
+      enrollment_group_id: enrollmentGroupId,
+      application_id:      enrollmentGroupId,
+      desired_start_date:  email?.desired_start_date || null,
+      program_id:          email?.program_id         || null,
+      esignature:          esig,
+      language:            lang,
+      consents: [
+        { type: 'gdpr',  accepted: consentGdpr,  consent_text_shown: CONSENT_TEXTS.gdpr[lang]  },
+        { type: 'legal', accepted: consentLegal, consent_text_shown: CONSENT_TEXTS.legal[lang] },
+      ],
+    };
+
+    // Factory RE-EJECUTABLE (retryLastSave la re-lanza tal cual desde lastFailedSaveRef):
+    // lanza la operación COMPLETA cada vez. Éxito → estado enviado consolidado
+    // (isSubmitted=true, aviso limpio). Fallo → ROLLBACK del estado optimista
+    // (setIsSubmitted(false) re-habilita edición) + flag de aviso global; RE-LANZA el error
+    // para que el carril marque saveState='error' → SaveIndicator pinta "Reintentar"
+    // (retryLastSave re-encola ESTA misma factory). Un submit fallido NUNCA queda como
+    // "enviado" silencioso (red de seguridad — es más consecuente que un save: transiciona a
+    // RQ + dispara emails + crea enrollments).
+    const submitFactory = () => gasCall('submitEnrollmentSession', payload)
+      .then(res => { setIsSubmitted(true); setSubmitError(false); return res; })
+      .catch(e => { setIsSubmitted(false); setSubmitError(true); throw e; });
+
+    setSubmitError(false);
+    setIsSubmitted(true);        // optimista: bloquea edición (Edit-lock post-submit, CLI 26)
+    setSubmitting(false);
+    enqueueSave(submitFactory);  // background → saveState 'saving' → 'idle' | 'error'
+    navigate('/confirmation');   // navegación inmediata, sin esperar al submit
   };
 
   // ─── Render helpers ────────────────────────────────────────────────────────
@@ -568,7 +585,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
             </div>
           </div>
 
-          {err && <div className="field-error mt-3 p-3 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
+          {/* UX-1: el aviso de validación se muestra en la zona sticky superior (WizardPage). */}
 
           <div className="d-flex justify-content-between mt-4">
             <button className="btn-secondary-kis" onClick={onBack} disabled={submitting}>

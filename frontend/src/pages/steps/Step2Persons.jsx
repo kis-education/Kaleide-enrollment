@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import * as log from '../../logger';
@@ -84,14 +84,65 @@ const emptySchool = () => ({
   language_of_instruction: '',
 });
 
+// D (selector de país): detecta el país de un número legacy SIN '+' por su prefijo de
+// marcación. Elige el `dial` MÁS LARGO que prefije el número (varios países comparten
+// dial, p.ej. '1' US/CA → gana el match de prefijo más largo; con empate, el primero de
+// COUNTRIES). REUTILIZA COUNTRIES (no se crea otra lista). Devuelve ISO alpha-2 o ''.
+function detectCountryByDial(rawInput) {
+  const digits = (rawInput || '').replace(/\D/g, '');
+  if (!digits) return '';
+  let best = '', bestLen = 0;
+  for (const c of COUNTRIES) {
+    if (c.dial && digits.startsWith(c.dial) && c.dial.length > bestLen) {
+      best = c.value; bestLen = c.dial.length;
+    }
+  }
+  return best;
+}
+
+// D: construye el mejor input para `validatePhone` usando el país del selector, SIN tocar
+// phone.js (la normalización/validación E.164 + set cerrado DL-E40 quedan intactas — solo
+// CONSTRUIMOS mejor el input). Fallback ordenado: (1) si el usuario escribe con '+' →
+// internacional explícito; (2) si hay país elegido → nacional con ese país; (3) caso legacy
+// 11-díg internacional sin '+' (p.ej. 34609211201 con país ES) → si el número empieza por el
+// dial del país y el nacional falla, reintenta como +<numerocompleto>; (4) sin país → cae al
+// country de la dirección (comportamiento previo). El valor persistido sigue siendo res.e164.
+function resolvePhoneValidation(rawInput, phoneCountry, countryISO) {
+  const raw = (rawInput || '').trim();
+  if (!raw) return validatePhone(raw, phoneCountry || countryISO || '');
+  if (raw.startsWith('+')) return validatePhone(raw, '');           // internacional explícito
+  if (phoneCountry) {
+    const res = validatePhone(raw, phoneCountry);                   // nacional con el país elegido
+    if (res.valid) return res;
+    const dial = COUNTRIES.find(c => c.value === phoneCountry)?.dial;
+    const digits = raw.replace(/\D/g, '');
+    if (dial && digits.startsWith(dial)) {                          // legacy internacional sin '+'
+      const intl = validatePhone('+' + digits, '');
+      if (intl.valid) return intl;
+    }
+    return res;                                                     // ya pasamos country → no needCountry muerto
+  }
+  return validatePhone(raw, countryISO || '');                      // sin país elegido: country de la dirección
+}
+
 function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
   const { t } = useTranslation();
   const [touched, setTouched] = useState(false);
+  // D: país del selector (ISO alpha-2). Autorelleno inteligente al montar: legacy por dial
+  // → countryISO de la dirección → '' (sin bloquear con error muerto).
+  const [phoneCountry, setPhoneCountry] = useState(() => {
+    const raw0 = (phone.phone_number || '').trim();
+    if (raw0 && !raw0.startsWith('+')) {
+      const detected = detectCountryByDial(raw0);
+      if (detected) return detected;
+    }
+    return countryISO || '';
+  });
   const update = (fields) => onChange({ ...phone, ...fields });
 
-  // CLI PHONE-E164: validación en el punto de entrada. El error inline solo se
-  // muestra tras blur (touched) y si el campo NO está vacío.
-  const res = validatePhone(phone.phone_number, countryISO || '');
+  // CLI PHONE-E164 + D: validación en el punto de entrada usando el país del selector. El
+  // error inline solo se muestra tras blur (touched) y si el campo NO está vacío.
+  const res = resolvePhoneValidation(phone.phone_number, phoneCountry, countryISO);
   const showError = touched && (phone.phone_number || '').trim() && !res.valid;
   const errKey = res.needCountry  ? 'step2.phone.country_needed'
                : res.notInSet     ? 'step2.phone.unsupported_country'
@@ -115,9 +166,20 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
             {PHONE_TYPES.map(pt => <option key={pt} value={pt}>{t(`phone_type.${pt}`)}</option>)}
           </select>
         </div>
+        {/* D: selector de país/prefijo en la misma fila — da el camino para corregir un
+            número legacy in-place. Poblado de COUNTRIES (no otra lista). */}
+        <div className="col-auto" style={{ minWidth: 150 }}>
+          <select className="form-select form-select-sm" value={phoneCountry}
+            aria-label={t('field.phone_country')}
+            onChange={e => setPhoneCountry(e.target.value)}>
+            <option value="">{t('field.phone_country')}</option>
+            {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label} (+{c.dial})</option>)}
+          </select>
+        </div>
         <div className="col">
           <input type="tel"
             className={'form-control form-control-sm' + (showError ? ' is-invalid' : '')}
+            aria-invalid={showError ? 'true' : undefined}
             placeholder="+34 600 000 000"
             value={phone.phone_number}
             onChange={e => update({ phone_number: e.target.value })}
@@ -222,9 +284,13 @@ function PreviousSchoolRow({ school, onChange, onRemove, birthYear }) {
   );
 }
 
-function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail }) {
+function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit }) {
   const { t } = useTranslation();
-  const u = (f, v) => onChange({ ...person, [f]: v });
+  // UX-2: resaltado por-campo. `inv(field)` consulta si está marcado inválido; editar un
+  // campo lo limpia (vía onFieldEdit, subido al estado del padre).
+  const _pk = person.person_id || person._uid;
+  const inv = (f) => !!invalidFields[`${_pk}:${f}`];
+  const u = (f, v) => { if (onFieldEdit) onFieldEdit(`${_pk}:${f}`); onChange({ ...person, [f]: v }); };
   const isGuardian  = person.person_type_id === 'guardian';
   const isApplicant = person.person_type_id === 'applicant';
 
@@ -289,7 +355,8 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
       <div className="row g-3">
         <div className="col-md-4">
           <label className="form-label">{t('field.first_name')} *</label>
-          <input className="form-control" value={person.first_name} onChange={e => u('first_name', e.target.value)} />
+          <input className={'form-control' + (inv('first_name') ? ' is-invalid' : '')} aria-invalid={inv('first_name') ? 'true' : undefined}
+            value={person.first_name} onChange={e => u('first_name', e.target.value)} />
         </div>
         <div className="col-md-4">
           <label className="form-label">{t('field.middle_name')}</label>
@@ -297,7 +364,8 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         </div>
         <div className="col-md-4">
           <label className="form-label">{t('field.last_name')} *</label>
-          <input className="form-control" value={person.last_name} onChange={e => u('last_name', e.target.value)} />
+          <input className={'form-control' + (inv('last_name') ? ' is-invalid' : '')} aria-invalid={inv('last_name') ? 'true' : undefined}
+            value={person.last_name} onChange={e => u('last_name', e.target.value)} />
         </div>
         <div className="col-md-3">
           <label className="form-label">{t('field.date_of_birth')}{isApplicant && ' *'}</label>
@@ -614,7 +682,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const { t } = useTranslation();
   const {
     stepData, updateStep, recognition,
-    touchActivity,
+    touchActivity, setValidationError,
   } = useWizard();
   const primaryEmail = stepData.email?.primary_email || '';
 
@@ -633,6 +701,17 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     return [emptyPerson('guardian'), emptyPerson('applicant')];
   });
   const [err, setErr] = useState('');
+  // UX-1: eleva el aviso de validación a la zona sticky superior (WizardPage lo pinta en
+  // lugar del banner local al pie). Se limpia al corregir (err→'') y al desmontar.
+  useEffect(() => { setValidationError(err); }, [err, setValidationError]);
+  useEffect(() => () => setValidationError(''), [setValidationError]);
+  // UX-2: campos concretos marcados inválidos (is-invalid + aria-invalid). Clave =
+  // `${person_id||_uid}:${field}` (o 'attestation'). Se limpia al corregir el campo y al
+  // re-validar OK (handleNext resetea). Aditivo — NO cambia qué se considera válido.
+  const [invalidFields, setInvalidFields] = useState({});
+  const markInvalid = (keys) => setInvalidFields(Object.fromEntries(keys.map(k => [k, true])));
+  const clearInvalidField = (k) => setInvalidFields(prev => (prev[k] ? (() => { const n = { ...prev }; delete n[k]; return n; })() : prev));
+  const pkey = (p) => p.person_id || p._uid;
   const [highlightEdit, setHighlightEdit] = useState(false);
   // CLI 8: atestación de tutor único (familia monoparental / único tutor legal).
   // Persistido en el save vía sole_guardian_attestation; se rehidrata si ya constaba.
@@ -698,6 +777,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     // bloquear la navegación. WizardPage.handleNext no guardará (no dirty). Preserva las
     // validaciones íntegras en modo edición (locked=false).
     if (locked) { setErr(''); onNext('persons', persons); return; }
+    setInvalidFields({});  // UX-2: reset del resaltado antes de re-validar
     if (!guardians.length) {
       setErr(t('error.guardian_required'));
       return;
@@ -714,6 +794,11 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         const label = p.person_type_id === 'applicant'
           ? t('applicant.title', { n: idx })
           : t('guardian.title', { n: idx });
+        // UX-2: marca el/los campo(s) de nombre vacío(s) de ESA persona.
+        const bad = [];
+        if (!p.first_name?.trim()) bad.push(`${pkey(p)}:first_name`);
+        if (!p.last_name?.trim())  bad.push(`${pkey(p)}:last_name`);
+        markInvalid(bad);
         setErr(t('error.person_name_required', { name: label }));
         return;
       }
@@ -727,6 +812,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       for (const ph of phones) {
         const raw = (ph.phone_number || ph.value || '').trim();
         if (raw && !validatePhone(raw, countryISO).valid) {
+          markInvalid([`${pkey(p)}:phone`]);  // UX-2 (el PhoneRow ya resalta inline; refuerza)
           setErr(t('step2.phone.invalid'));
           return;
         }
@@ -735,6 +821,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         const hasValid = phones.some(ph =>
           validatePhone((ph.phone_number || ph.value || '').trim(), countryISO).valid);
         if (!hasValid) {
+          markInvalid([`${pkey(p)}:phone`]);  // UX-2
           setErr(t('step2.phone.guardian_required'));
           return;
         }
@@ -752,6 +839,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         if (!email && gi === 0 && primaryEmail) email = String(primaryEmail).trim().toLowerCase();
         if (!email) continue;
         if (seen[email] !== undefined) {
+          markInvalid([`${pkey(g)}:email`]);  // UX-2: marca el email duplicado
           setErr(t('error.duplicate_guardian_email'));
           return;
         }
@@ -762,10 +850,12 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     // 1 tutor, exige confirmar la atestación (familia monoparental / único tutor legal)
     // antes de avanzar.
     if (guardians.length === 1 && !soleGuardianAttested) {
+      markInvalid(['attestation']);  // UX-2: resalta la atestación
       setErr(t('error.sole_guardian_attestation_required'));
       return;
     }
     setErr('');
+    setInvalidFields({});  // UX-2: validación OK → limpia el resaltado
     // Inject primary email BEFORE transformPersonForSave so the injected entry
     // goes through the same normalization as existing emails. Doing it after
     // would leave { email_address } on the injected entry while the rest have
@@ -884,6 +974,8 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               onRemove={() => removePerson(i)}
               firstPersonId={firstPersonId}
               primaryEmail={primaryEmail}
+              invalidFields={invalidFields}
+              onFieldEdit={clearInvalidField}
             />
           );
         })}
@@ -899,9 +991,10 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
             <label className="d-flex align-items-start gap-2 mb-0" style={{ cursor: 'pointer' }}>
               <input
                 type="checkbox"
-                className="form-check-input mt-1"
+                className={'form-check-input mt-1' + (invalidFields['attestation'] ? ' is-invalid' : '')}
+                aria-invalid={invalidFields['attestation'] ? 'true' : undefined}
                 checked={soleGuardianAttested}
-                onChange={e => setSoleGuardianAttested(e.target.checked)}
+                onChange={e => { setSoleGuardianAttested(e.target.checked); clearInvalidField('attestation'); }}
               />
               <span>{t('step2.sole_guardian.attestation_label')}</span>
             </label>
@@ -925,6 +1018,8 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               onRemove={() => removePerson(i)}
               firstPersonId={firstPersonId}
               primaryEmail={primaryEmail}
+              invalidFields={invalidFields}
+              onFieldEdit={clearInvalidField}
             />
           );
         })}
@@ -932,7 +1027,8 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
           <i className="bi bi-plus-lg" /> {t('person.add_applicant')}
         </button>
 
-        {err && <div className="field-error mt-2">{err}</div>}
+        {/* UX-1: el aviso de validación se muestra ahora en la zona sticky superior
+            (WizardPage lo pinta desde validationError); ya no al pie del paso. */}
       </fieldset>
       </div>
 
