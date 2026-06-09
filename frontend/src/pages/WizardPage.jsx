@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
-import { gasCall, prefetchLookups, prefetchDocuments } from '../api';
+import { gasCall, prefetchLookups, prefetchQuestions, prefetchDocuments } from '../api';
 import LangToggle from '../components/LangToggle';
 import SaveIndicator from '../components/SaveIndicator';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -88,10 +88,18 @@ export default function WizardPage() {
   // identidad de firma se deriva SOLO server-side (recovery link per-guardian,
   // Vía 1; o resolución determinista, Vía 2). CERO auto-declaración de identidad.
 
-  // Kick off lookup prefetch immediately so Step3/Step4 get cached lookups. El
-  // catálogo de PREGUNTAS ya NO se prefetcha suelto (DL-C-B g): viene plegado en el
-  // hydrate (DL-C-A) y lo siembra hydrateFromResume → Step5/Step7 lo leen de cache.
-  useEffect(() => { prefetchLookups(); }, []); // eslint-disable-line
+  // Kick off lookup prefetch immediately so Step3/Step4 get cached lookups.
+  // SPEC-WIZ-LAZY (cold-load spec §3): además, calienta el CATÁLOGO pesado de
+  // preguntas en BACKGROUND desde el montaje del wizard para que esté listo al
+  // llegar al Step 5, SIN bloquear el primer render — Steps 1-4 solo necesitan
+  // `programs`/lookups, nunca el catálogo. `prefetchQuestions` es idempotente y
+  // fire-and-forget (comparte el dedup `_questionsFlight` con el `fetchQuestions`
+  // del Step 5 → colapsa a UNA sola llamada de red) y traga errores (best-effort:
+  // si no llegó a tiempo, el Step 5 hace su propio fetch con su loader). NO altera
+  // el invariante del Step 5 (set completo o loader, nunca parcial). Esto desacopla
+  // el catálogo del primer paint (parte frontend de SPEC-WIZ-LAZY; la opción (a) de
+  // quitar el plegado del hydrate es backend y queda fuera de este carril FE).
+  useEffect(() => { prefetchLookups(); prefetchQuestions(i18n.language); }, []); // eslint-disable-line
 
   // WPERF-1 criterio "eager docs": si el expediente está Aprobado (AD) y la firma está
   // lista para este guardian (no completada), calienta el paquete contractual (members
@@ -740,7 +748,22 @@ const handleNext = async (stepKey, data, extra = null) => {
           en vez de un overlay opaco que tapa todo. El primer paint es inmediato; el
           store se rellena cuando llega el hydrate. */}
       <div className="wizard-body">
-        {rehydrating ? <StepSkeleton rows={6} /> : (
+        {/* SPEC-WIZ-SHELL (cold-load spec §2): el shell (header + WizardProgress, en
+            la zona sticky de arriba) pinta al instante, antes de que resuelva el
+            hydrate/fetchQuestions. Durante la rehidratación mostramos en el área de
+            contenido el LOADER ROTATIVO de IMPL-E (LoadingSpinner, mensajes
+            tranquilizadores) SOBRE el StepSkeleton — REUSANDO el mismo componente del
+            loader de resume (líneas ~463), no se inventa uno nuevo. Invariantes §2: no
+            muestra PII (solo esqueleto + spinner) y no permite interacción que dispare
+            un save antes de tener datos (el StepComponent interactivo no se monta hasta
+            !rehydrating). El early-return neutro de sesión recuperada por magic-link
+            (WIZARD-GATE-ORDER, arriba) queda intacto — su gate de seguridad no cambia. */}
+        {rehydrating ? (
+          <>
+            <LoadingSpinner variant="inline" messages={['resume.loading', 'loading.rotating.2', 'loading.rotating.3']} />
+            <StepSkeleton rows={6} />
+          </>
+        ) : (
         <StepComponent
           onNext={handleNext}
           onBack={handleBack}
