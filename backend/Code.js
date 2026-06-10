@@ -5950,6 +5950,18 @@ function hydrateSession_(p) {
     });
   }
 
+  // REOPEN-FIX (regresión DL-C) — honra el reopen del KMS conducido por `admission.editable`.
+  //   enr_wizardHydrate ya calcula `editable = !submitted_at || allInfo` (todas las enrollments
+  //   en IN/NEEDS_MORE_INFO). Si el grupo trae `submitted_at` pero el KMS lo declara editable
+  //   (reopen), anulamos `submitted_at` en la respuesta — restaura el efecto probado de
+  //   resumeSession_:2344, CONDUCIDO por el `editable` del KMS (sin re-implementar el check de
+  //   estado). El frontend (WizardContext) deriva el lock de `group.submitted_at` → así desbloquea
+  //   la UI al reabrir.
+  if (data.admission && data.admission.editable && data.group && data.group.submitted_at) {
+    Logger.log(redact_('hydrateSession_: KMS admission.editable=true (reopen) — submitted_at overridden to null for group ' + data.group.enrollment_group_id));
+    data.group.submitted_at = null;
+  }
+
   return Object.assign({}, data, { step_up_fresh: stepUpFresh });
 }
 
