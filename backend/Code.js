@@ -3266,9 +3266,8 @@ function fetchQuestions_(p) {
   }
   const contextCode = raw.trim().toUpperCase();
   // KAL-5 defense-in-depth: whitelist regex prevents injection. UPPER_SNAKE:
-  // 1-64 chars, starts with letter, then letters/digits/underscore. Aplica
-  // tanto a la ruta canónica KMS como al fallback legacy — el motor qb-core
-  // re-valida pero validamos aquí primero para fail-fast antes de la red.
+  // 1-64 chars, starts with letter, then letters/digits/underscore. El motor
+  // qb-core re-valida, pero validamos aquí primero para fail-fast antes de la red.
   if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(contextCode)) {
     throw new Error('Invalid context_code: ' + JSON.stringify(raw));
   }
@@ -3278,11 +3277,14 @@ function fetchQuestions_(p) {
   // ── Q05-S5 (DL-Q05): proxy thin a KMS qb-public.resolveSetForConsumer ────
   // El motor reusable vive en kis-app/kms-server/qb/qb-core.gs y se expone
   // via doPost del KMS bajo `qb-public.resolveSetForConsumer` con auth por
-  // service token. Si Script Properties del wizard están configuradas, este
-  // path GANA al fallback legacy.
+  // service token. Script Properties `KMS_DEPLOYMENT_URL` + `QB_SERVICE_TOKEN`
+  // son REQUERIDAS — el path legacy AppSheet fue eliminado (W1, 2026-06-11).
   const props        = PropertiesService.getScriptProperties();
   const kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
   const serviceToken = props.getProperty('QB_SERVICE_TOKEN');
+  if (!kmsUrl || !serviceToken) {
+    throw new Error('fetchQuestions_: Script Properties KMS_DEPLOYMENT_URL y QB_SERVICE_TOKEN son requeridas (path legacy eliminado W1-2026-06-11)');
+  }
 
   if (kmsUrl && serviceToken) {
     const kmsPayload = {
@@ -3331,238 +3333,6 @@ function fetchQuestions_(p) {
 
     return fetchQuestions_adaptKmsResponse_(envelope.data, lang);
   }
-
-  // ── LEGACY pre-Q05-S5 — fallback path si KMS_DEPLOYMENT_URL o ───────────
-  // QB_SERVICE_TOKEN no están configuradas en Script Properties del wizard.
-  // Mantenido como red de seguridad hasta que el flow KMS esté estable en
-  // prod (remove tras estabilización post-Q05-S5).
-  // El filtro directo a qbContexts/Sets/Questions vía AppSheet API duplica
-  // el motor qb-core de Q05-S1 — su existencia es transitional.
-  // ─────────────────────────────────────────────────────────────────────────
-
-  // qbContexts / qbQuestionSets: filtramos server-side SOLO por igualdades de
-  // string fiables (context_code, context_id). is_active/deleted_at se evalúan
-  // EN MEMORIA porque AppSheet corrompe el Selector con comparaciones de
-  // booleano/blank: `"is_active" = true` (booleano vs "Y" almacenado) devuelve
-  // TODAS las filas, y `"deleted_at" = ""` sobre un campo null devuelve 0.
-  // Confirmado vía manual_diagFetchQuestions 2026-05-30. Mismo enfoque que el
-  // motor canónico qb-core.gs (kms-server) que filtra in-memory con db_find.
-  const ctxRows = appsheetRequest_(T.QB_CONTEXTS, 'Find', [], {
-    Filter: '"context_code" = "' + appsheetEscape_(contextCode) + '"'
-  }) || [];
-  const context = ctxRows.find(c =>
-    c.school_id === SCHOOL_ID && qbTruthy_(c.is_active) && !c.deleted_at);
-  if (!context) throw new Error('Context not found: ' + contextCode);
-
-  // Find question sets for this context (deleted_at filtrado en memoria).
-  const allSets = appsheetRequest_(T.QB_SETS, 'Find', [], {
-    Filter: '"context_id" = "' + appsheetEscape_(context.context_id) + '"'
-  }) || [];
-  const sets = allSets.filter(s => !s.deleted_at);
-  if (!sets.length) return { sets: [] };
-
-  const setIds       = sets.map(s => s.set_id);
-  const setIdFilter  = setIds.map(id => '"set_id" = "' + appsheetEscape_(id) + '"').join(' || ');
-
-  const setItems = appsheetRequest_(T.QB_SET_ITEMS, 'Find', [], { Filter: setIdFilter }) || [];
-  const questionIds  = [...new Set(setItems.map(i => i.question_id))];
-
-  if (!questionIds.length) return { sets };
-
-  const qIdFilter = questionIds.map(id => '"question_id" = "' + appsheetEscape_(id) + '"').join(' || ');
-
-  const [questions, allTranslations, allOptions, allConditions] = [
-    appsheetRequest_(T.QB_QUESTIONS, 'Find', [], { Filter: qIdFilter }) || [],
-    appsheetRequest_(T.QB_TRANSLATIONS, 'Find', [], { Filter: qIdFilter }) || [],
-    appsheetRequest_(T.QB_OPTIONS, 'Find', [], { Filter: qIdFilter }) || [],
-    appsheetRequest_(T.QB_CONDITIONS, 'Find', [], { Filter: qIdFilter }) || [],
-  ];
-
-  const optionIds = allOptions.map(o => o.option_id);
-  const allOptionTranslations = optionIds.length
-    ? appsheetRequest_(T.QB_OPT_TRANS, 'Find', [], {
-        Filter: optionIds.map(id => '"option_id" = "' + appsheetEscape_(id) + '"').join(' || ')
-      }) || []
-    : [];
-
-  // ── Q05-S5 fix Step 5 — catálogos auxiliares para el render del frontend ────
-  // (1) qbResponseTypes: AppSheet guarda response_type_id como UUID; el render
-  //     necesita el code legible ('select'|'boolean'|'long_text'|...) para
-  //     elegir el widget. Resolvemos el JOIN aquí.
-  const allResponseTypes = appsheetRequest_('qbResponseTypes', 'Find', [], {}) || [];
-  const responseTypeCodeById = {};
-  allResponseTypes.forEach(rt => { responseTypeCodeById[rt.response_type_id] = rt.response_type_code || 'text'; });
-
-  // (2) Grafo de conditions polimórficas (groups → items → conditions atómicas →
-  //     dimensions). qbQuestionConditions apunta vía condition_ref_table/_id a
-  //     qbConditionGroups_T (grupo lógico) o a qbConditions_T (atómica). El
-  //     helper frontend espera shape plano — aplanamos aquí. Schemas confirmados
-  //     vía manual_diagQbConditionTables (commit 3ae741a).
-  //
-  // @deprecated — aplanado canónico vive ahora en KMS qb_core_enrichQuestion_
-  //   (Opción B contract §13, CLI IMPL-C). El KMS es el ÚNICO aplanador: emite
-  //   conditions PLANAS y el adapter fetchQuestions_adaptKmsResponse_ las pasa
-  //   por passthrough (`conditions: q.conditions || []`). Este bloque
-  //   (qbParseValueJson_ / qbAgeConditions_ / qbFlattenAtomic_ /
-  //   qbExpandCondition_) es HUÉRFANO: vive dentro de fetchQuestions_, path
-  //   legacy MUERTO ("STOPGAP P116 SOBREVIVIENTE"). Se conserva sin tocar (no
-  //   romper) — eliminar cuando fetchQuestions_ se borre por completo. NO añadir
-  //   consumidores nuevos: el aplanado canónico es el del KMS.
-  const allGroups      = appsheetRequest_('qbConditionGroups_T', 'Find', [], {}) || [];
-  const allItems       = appsheetRequest_('qbConditionGroupItems_T', 'Find', [], {}) || [];
-  const allAtomicConds = appsheetRequest_('qbConditions_T', 'Find', [], {}) || [];
-  const allDims        = appsheetRequest_('qbDimensions_T', 'Find', [], {}) || [];
-
-  const groupById = {};      allGroups.forEach(g => { groupById[g.group_id] = g; });
-  const itemsByGroupId = {}; allItems.forEach(i => { (itemsByGroupId[i.group_id] = itemsByGroupId[i.group_id] || []).push(i); });
-  const atomicById = {};     allAtomicConds.forEach(c => { atomicById[c.condition_id] = c; });
-  const dimById = {};        allDims.forEach(d => { dimById[d.dimension_id] = d; });
-
-  // Parseo robusto de value_json (string serializado en qbConditions_T.value_json):
-  // intenta JSON.parse; si falla toma el string crudo (sin comillas).
-  const qbParseValueJson_ = (raw) => {
-    if (raw === null || raw === undefined) return raw;
-    try { return JSON.parse(raw); } catch (e) { return raw; }
-  };
-
-  // participant_age: el catálogo guarda el rango de audiencia como UN operator
-  // 'BETWEEN' con value_json = [lo, hi] (confirmado en datos reales — 26 de las
-  // 50 conditions). Lo descomponemos en GTE lo + LTE hi para que el helper —
-  // que sólo conoce comparadores escalares — lo evalúe sin ambigüedad. Soporta
-  // también shapes alternativos (objeto {min,max}/{lo,hi}/{from,to} o string
-  // "lo,hi"/"lo-hi") por robustez. GTE/LTE/EQ/NEQ escalares pasan tal cual.
-  const qbAgeConditions_ = (op, rawVal) => {
-    if (op === 'BETWEEN') {
-      let lo = NaN, hi = NaN;
-      if (Array.isArray(rawVal)) {
-        lo = parseFloat(rawVal[0]); hi = parseFloat(rawVal[1]);
-      } else if (rawVal && typeof rawVal === 'object') {
-        lo = parseFloat(rawVal.min != null ? rawVal.min : (rawVal.lo != null ? rawVal.lo : rawVal.from));
-        hi = parseFloat(rawVal.max != null ? rawVal.max : (rawVal.hi != null ? rawVal.hi : rawVal.to));
-      } else {
-        const parts = String(rawVal).split(/[,;:|\-]/).map(s => parseFloat(s));
-        lo = parts[0]; hi = parts[1];
-      }
-      const out = [];
-      if (!isNaN(lo)) out.push({ kind: 'AGE', operator: 'GTE', value: lo });
-      if (!isNaN(hi)) out.push({ kind: 'AGE', operator: 'LTE', value: hi });
-      // Si no pudimos extraer el rango → permissive (no oculta la pregunta).
-      if (out.length) return out;
-      return [{ kind: 'UNKNOWN', dimension_code: 'participant_age', operator: op, value: rawVal }];
-    }
-    return [{ kind: 'AGE', operator: op, value: parseFloat(rawVal) }];
-  };
-
-  // Aplana UNA condition atómica (qbConditions_T row) al shape plano que consume
-  // el helper meetsConditions del frontend, resolviendo su dimensión.
-  const qbFlattenAtomic_ = (atomic) => {
-    if (!atomic) return [];
-    const dim     = dimById[atomic.dimension_id] || {};
-    const dimCode = dim.dimension_code || '';
-    const op      = atomic.operator_code || 'EQ';  // 'GTE'|'LTE'|'EQ'|'NEQ' canónico
-    const rawVal  = qbParseValueJson_(atomic.value_json);
-
-    if (dimCode === 'participant_age') {
-      return qbAgeConditions_(op, rawVal);
-    }
-    if (dimCode.indexOf('question_response__') === 0) {
-      const parentCode = dimCode.slice('question_response__'.length);
-      let value = rawVal;
-      if (dim.value_type === 'BOOLEAN') value = (String(rawVal).toLowerCase() === 'true');
-      return [{ kind: 'PARENT_ANSWER', parent_question_code: parentCode, operator: op, value: value }];
-    }
-    if (dimCode === 'primary_email_initiator') {
-      return [{ kind: 'INITIATOR_EMAIL', operator: op, value: rawVal }];
-    }
-    // Dimensión desconocida → fallback permissive (no oculta la pregunta).
-    return [{ kind: 'UNKNOWN', dimension_code: dimCode, operator: op, value: rawVal }];
-  };
-
-  // Expande UNA condition polimórfica (qbQuestionConditions row) a un array
-  // plano. Recursión segura sobre grupos (profundidad máx 5 anti-ciclos).
-  const qbExpandCondition_ = (qc, depth) => {
-    depth = depth || 0;
-    if (!qc || depth > 5) return [];
-    const refTable = qc.condition_ref_table;
-    const refId    = qc.condition_ref_id;
-
-    if (refTable === 'qbConditions_T') {
-      return qbFlattenAtomic_(atomicById[refId]);
-    }
-    if (refTable === 'qbConditionGroups_T') {
-      const items = (itemsByGroupId[refId] || []).slice()
-        .sort((a, b) => (Number(a.sequence) || 0) - (Number(b.sequence) || 0));
-      const out = [];
-      items.forEach(it => {
-        if (it.child_condition_id) {
-          qbFlattenAtomic_(atomicById[it.child_condition_id]).forEach(f => out.push(f));
-        } else if (it.child_group_id) {
-          qbExpandCondition_({ condition_ref_table: 'qbConditionGroups_T', condition_ref_id: it.child_group_id }, depth + 1)
-            .forEach(f => out.push(f));
-        }
-      });
-      return out;
-    }
-    return [];
-  };
-
-  // Build enriched question objects
-  const enrichedQuestions = questions.map(q => {
-    const translation = allTranslations.find(t => t.question_id === q.question_id && t.language === lang)
-      || allTranslations.find(t => t.question_id === q.question_id);
-
-    const options = allOptions
-      .filter(o => o.question_id === q.question_id && o.is_active)
-      .sort((a, b) => a.display_order - b.display_order)
-      .map(o => ({
-        ...o,
-        text: (allOptionTranslations.find(t => t.option_id === o.option_id && t.language === lang)
-          || allOptionTranslations.find(t => t.option_id === o.option_id))?.option_text || o.option_value,
-      }));
-
-    return {
-      ...q,
-      // response_type_id es UUID de AppSheet; el render del frontend hace
-      // .toLowerCase() sobre response_type_code para elegir el widget.
-      response_type_code: responseTypeCodeById[q.response_type_id] || 'text',
-      question_text:   translation?.question_text   || '',
-      help_text:       translation?.help_text        || '',
-      placeholder_text: translation?.placeholder_text || '',
-      // STOPGAP P116 SOBREVIVIENTE — path legacy SIN runtime filtering.
-      // El path canónico KMS retiró el adapter equivalente cuando P116 cerró
-      // (kis-app deploy @283, runtime filtering qbAudienceRules a nivel de set),
-      // pero este path legacy NO consume el motor — lee qbQuestionSets/qbQuestions
-      // directamente vía AppSheet API. Sin un engine que filtre arriba, el
-      // workaround inline por question_code prefix sigue siendo necesario para
-      // que QbSetRenderer haga fan-out participant/client y el filtro AGE
-      // evalúe contra una persona real. Eliminar SOLO cuando: (a) Script
-      // Properties KMS_DEPLOYMENT_URL + QB_SERVICE_TOKEN estén siempre seteadas
-      // en prod, y (b) el path legacy se borre por completo, o (c) Q05-S6 / CLI
-      // QB-4 hagan que qbQuestions exponga audience_category_id canónica.
-      audience_category_id: deriveAudienceCategoryId_(q.question_code),
-      options,
-      // Conditions polimórficas aplanadas al shape plano que consume
-      // meetsConditions (AGE / PARENT_ANSWER / INITIATOR_EMAIL / UNKNOWN).
-      conditions: allConditions
-        .filter(c => c.question_id === q.question_id && !c.deleted_at)
-        .flatMap(c => qbExpandCondition_(c)),
-    };
-  });
-
-  // Build question map for lookup
-  const questionMap = {};
-  enrichedQuestions.forEach(q => { questionMap[q.question_id] = q; });
-
-  // Nest into sets
-  const enrichedSets = sets.map(s => ({
-    ...s,
-    items: setItems
-      .filter(i => i.set_id === s.set_id)
-      .sort((a, b) => a.display_order - b.display_order)
-      .map(i => ({ ...i, question: questionMap[i.question_id] })),
-  }));
-
-  return { context, sets: enrichedSets };
 }
 
 /**
@@ -3681,11 +3451,11 @@ function manual_diagFetchQuestions() {
  *   - resto (dev_test_*, etc.) → null (general scope; INITIATOR_EMAIL evalúa OK sin persona)
  *
  * P116 cerrado (kis-app deploy @283, runtime filtering qbAudienceRules a nivel de
- * set) retiró la necesidad de este helper en el path canónico KMS. Este helper
- * SOBREVIVE porque el path legacy AppSheet sigue activo cuando las Script Properties
- * KMS_DEPLOYMENT_URL/QB_SERVICE_TOKEN no están seteadas (sin engine que filtre arriba).
- * Eliminar cuando el path legacy desaparezca o cuando qbQuestions exponga
- * audience_category_id canónica (Q05-S6 / CLI QB-4).
+ * set) retiró la necesidad de este helper en el path canónico KMS. El helper
+ * SOBREVIVE como stopgap P116 para el adapter `fetchQuestions_adaptKmsResponse_`
+ * (que corre sobre la respuesta del KMS). Eliminar cuando el KMS exponga
+ * audience_category_id canónica vía qbAudienceRules (Q05-S6 / CLI QB-4).
+ * El path legacy AppSheet fue eliminado (W1, 2026-06-11).
  * NO inventar prefijos sin evidencia en el seeder.
  *
  * @param {string} code  question_code de la pregunta
@@ -5405,10 +5175,11 @@ function kmsProxy_(action, payload) {
 /**
  * Step 8 S-BILLING — datos fiscales pagador (P49 — DL-E28 §4.3).
  *
- * Proxy fino al KMS `enr.saveBillingInfo`. El wizard valida el resume_token
- * de la familia (auth family-facing) y reenvía signing_token + datos
- * fiscales. El KMS persiste en `enrGroupBilling` y marca el milestone
- * de billing.
+ * Proxy fino al KMS `enr.saveBillingInfoQueued`. El wizard valida la identidad
+ * del firmante (signing_token o resume_token+recovered_email) y reenvía los
+ * datos fiscales del pagador. El KMS persiste en `finBillingParties` vía
+ * `fin_saveBillingPartyFromWizard` (refactor CLI 84, P49/enrGroupBilling
+ * CANCELADO 2026-06-03 — DL-E28 §4/§12) y completa el milestone BILLING_STEP_COMPLETED.
  *
  * Payload esperado (del frontend Step8Billing):
  *   { resume_token, signing_token, payer_type, payer_person_id?, fiscal_name,
