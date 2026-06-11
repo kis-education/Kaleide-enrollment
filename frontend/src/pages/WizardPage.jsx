@@ -449,6 +449,44 @@ const handleNext = async (stepKey, data, extra = null) => {
 
   const StepComponent = STEP_COMPONENTS[currentStep];
 
+  // ── WIZ-FINAL-GATE (2026-06-11) — fuente de verdad ÚNICA del gate 7→8 + banners ──
+  // El botón de avance y los dos banners (rojo "confirma tu email" / amarillo "se está
+  // preparando") se derivan TODOS de aquí, para que nunca diverjan ni se muestren a la
+  // vez. signing_ready ya viene normalizado en WizardContext (signing_context poblado ⟺
+  // firma lista), así que con contexto en mano: botón habilitado, CERO banners.
+  const _gateState   = admissionState?.state_code || null;
+  const _gateReady   = !!admissionState?.signing_ready;
+  const _gateStatus  = admissionState?.signing_status || null;
+  const _hasCtx      = !!(signingContext && signingContext.signing_token);
+  const _hasGuardian = !!admissionState?.recovered_guardian_person_id;
+  const canAdvance =
+    currentStep === 6
+    && _gateState === 'AD'
+    && _gateReady
+    && _gateStatus !== 'COMPLETED';
+  // Banner rojo: expediente Aprobado pero SIN identidad de guardian (ni contexto ni
+  // guardian resuelto). Banner amarillo: Aprobado, firma aún NO iniciada server-side
+  // (no ready) y no completada, PERO con identidad (si no, manda el rojo). Mutuamente
+  // excluyentes por construcción: el rojo gana cuando falta identidad.
+  const showRedBanner =
+    currentStep === 6
+    && !!admissionState?.signing_available
+    && !_hasCtx
+    && !_hasGuardian;
+  const showYellowBanner =
+    currentStep === 6
+    && _gateState === 'AD'
+    && !_gateReady
+    && _gateStatus !== 'COMPLETED'
+    && !showRedBanner;
+  const _bannerLabel = canAdvance ? 'none' : (showRedBanner ? 'red' : (showYellowBanner ? 'yellow' : 'none'));
+  // Instrumentación: una línea por evaluación del gate → si vuelve a fallar, el log de
+  // Diego lo dice solo (estado/ready/ctx/status/canAdvance/banner). Sin PII.
+  log.info('[DBG gate]', {
+    state: _gateState, signing_ready: _gateReady, has_ctx: _hasCtx,
+    has_guardian: _hasGuardian, status: _gateStatus, canAdvance, banner: _bannerLabel,
+  });
+
   // WIZARD-GATE-ORDER (Diego 2026-06-09) — Mientras una sesión RECUPERADA por
   // magic-link se está rehidratando (resume_token presente + rehydrating===true),
   // mostrar un LOADER NEUTRO en vez del shell del wizard con StepSkeleton. Sin esto,
@@ -606,11 +644,17 @@ const handleNext = async (stepKey, data, extra = null) => {
                 ? t('submitted.body_by_state.' + admissionState.state_code, t('submitted.locked.body'))
                 : t('submitted.locked.body')}
             </div>
-            {/* DL-C-B (c): expediente APROBADO (signing_available) pero SIN contexto de
-                firma resuelto (signing_context:null — p.ej. la familia no recuperó por
-                el email de su guardian) → mensaje claro guía a recuperar, en vez de un
-                dead-end mudo en el Step 7. */}
-            {admissionState?.signing_available && !signingContext && (
+            {/* DL-C-B (c) + WIZ-FINAL-GATE (2026-06-11): el banner rojo "confirma tu email
+                recuperando tu solicitud" guía a recuperar SOLO cuando falta de verdad la
+                IDENTIDAD del guardian — es decir, expediente APROBADO (signing_available)
+                pero NI hay contexto de firma resuelto (signingContext) NI el backend
+                resolvió un guardian para esta recuperación (recovered_guardian_person_id).
+                Antes la condición era solo `signing_available && !signingContext`, que
+                disparaba el rojo aunque el guardian SÍ estuviera resuelto pero el
+                signing_context no se hubiera volcado a React state (el bug que veía Diego:
+                datos en mano, banner pidiendo recuperar de nuevo). Con guardian o contexto
+                resuelto → NO hay banner rojo. */}
+            {showRedBanner && (
               <div style={{ marginTop: 8, fontWeight: 600, color: '#bf360c' }}>
                 <i className="bi bi-info-circle" style={{ marginRight: 6 }} />
                 {t('wizard.signing_confirm_email')}
@@ -682,10 +726,7 @@ const handleNext = async (stepKey, data, extra = null) => {
                 — esa identidad vive en el ACTO de firma (/sign, P222), no en la puerta.
                 NO toca el modelo de autorización (KAL-4: el signing_token sigue
                 server-side). */}
-            {currentStep === 6
-              && admissionState?.state_code === 'AD'
-              && !admissionState?.signing_ready
-              && admissionState?.signing_status !== 'COMPLETED' && (
+            {showYellowBanner && (
               <div
                 style={{
                   marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 8,
@@ -788,12 +829,7 @@ const handleNext = async (stepKey, data, extra = null) => {
              enterSigning resolves the per-guardian signing_token server-side (KAL-4)
              and advances INLINE to Step 8. */
           onAdvanceToSigning={enterSigning}
-          canAdvanceToSigning={
-            currentStep === 6
-            && admissionState?.state_code === 'AD'
-            && admissionState?.signing_ready
-            && admissionState?.signing_status !== 'COMPLETED'
-          }
+          canAdvanceToSigning={canAdvance}
         />
         )}
       </div>

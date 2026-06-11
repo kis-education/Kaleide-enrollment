@@ -16,6 +16,52 @@ function normYN(v) {
   return Boolean(v);
 }
 
+// WIZ-FINAL-GATE (2026-06-11) — normaliza el bloque `admission` que el backend
+// devuelve (hydrate pesado, re-hydrate post-OTP, y pulse ligero) a la forma que
+// consumen el gate del botón (canAdvanceToSigning) y los banners de WizardPage.
+//
+// CAUSA RAÍZ del bloqueo (verificado contra kis-app-perf/kms-server/enr/
+// wizard-datalayer.gs:351-357): el `admission` de enr_wizardHydrate devuelve
+// SOLO { state_code, state_label, signing_available, signing_context, editable } —
+// NUNCA incluye `signing_status` NI `signing_ready`. La normalización previa
+// (WIZARD-GATES BUG 2) derivaba signing_ready = (signing_status !== 'NOT_INITIATED'),
+// pero con signing_status ausente eso colapsa a undefined → falsy → banner amarillo
+// "se está preparando" SIEMPRE visible + canAdvanceToSigning false → botón
+// deshabilitado, AUNQUE signing_context venga POBLADO (la firma SÍ está lista).
+//
+// Ground truth canónico (Code.js:1931+1947+1987): el backend solo resuelve
+// signing_context cuando existe un signer per-guardian con signing_token (sesión
+// de firma viva). Por tanto `signing_context` POBLADO ⟺ la firma está lista para
+// ese guardian. Esa es la fuente de verdad — más fiable que un signing_status que
+// el hydrate ni siquiera emite. Regla de derivación, en orden de prioridad:
+//   1. signing_ready explícito del backend (si lo manda) MANDA.
+//   2. si no, y hay signing_context con signing_token → READY (true).
+//   3. si no, derivar de signing_status (!== NOT_INITIATED) cuando exista.
+//   4. en último caso, signing_available && estado AD (la firma existe a nivel grupo).
+// Análogamente sintetiza signing_status='READY' cuando no llega pero la firma está
+// lista, para que canAdvanceToSigning (status !== 'COMPLETED') siga coherente.
+function normalizeAdmission_(admRaw) {
+  if (!admRaw) return null;
+  const hasCtxToken = !!(admRaw.signing_context && admRaw.signing_context.signing_token);
+  const statusKnown = admRaw.signing_status != null;
+  // ready requiere una SEÑAL REAL: flag explícito, contexto con token, o status
+  // conocido. Si el backend omite las tres (signing_available solo NO basta — puede
+  // ser AD sin sesión de firma todavía), NO marcamos ready a la ligera → el banner
+  // rojo/amarillo guía y el botón queda bloqueado hasta que haya señal de verdad.
+  const ready =
+    admRaw.signing_ready != null            ? !!admRaw.signing_ready
+    : hasCtxToken                           ? true
+    : statusKnown                           ? (admRaw.signing_status !== 'NOT_INITIATED')
+    : false;
+  // signing_status sintético solo si el backend no lo emite: si la firma está lista
+  // y no completada → 'READY'; si no, 'NOT_INITIATED'. NUNCA pisa un status real
+  // (incluido 'COMPLETED', que el banner/landing usan para el estado terminal).
+  const status = statusKnown
+    ? admRaw.signing_status
+    : (ready ? 'READY' : 'NOT_INITIATED');
+  return { ...admRaw, signing_ready: ready, signing_status: status };
+}
+
 const WizardContext = createContext(null);
 
 // DL-E39 (PII-primero) — step-up re-auth + inactivity window.
@@ -691,20 +737,16 @@ export function WizardProvider({ children }) {
     // GOBIERNA `admission.editable`; sin estado (pre-submit puro), fallback al
     // submitted_at histórico. POST-W2: el avance/edición los gobierna el estado.
     const admRaw = data.admission || null;
-    // WIZARD-GATES BUG 2 — normalización de signing_ready.
-    // El campo signing_ready puede llegar undefined/null cuando la respuesta de
-    // enr.wizardHydrate (KMS) no lo incluye explícitamente aunque la sesión de firma
-    // exista (signing_status IN_PROGRESS/READY). La regla canónica del backend es
-    // signing_ready = (signing_status !== 'NOT_INITIATED'). Si llega undefined,
-    // se deriva del signing_status para que el banner "preparando" y canAdvanceToSigning
-    // en WizardPage evalúen correctamente. signing_ready:false solo cuando se conoce
-    // explícitamente o signing_status==='NOT_INITIATED'.
-    const adm = admRaw ? {
-      ...admRaw,
-      signing_ready: admRaw.signing_ready != null
-        ? admRaw.signing_ready
-        : (admRaw.signing_status && admRaw.signing_status !== 'NOT_INITIATED'),
-    } : null;
+    // WIZARD-GATES BUG 2 + WIZ-FINAL-GATE — normalización de signing_ready.
+    const adm = normalizeAdmission_(admRaw);
+    // WIZ-FINAL-GATE: el guardian que el backend resolvió server-side para esta
+    // recuperación (enr_wizardHydrate.recovered_guardian_person_id, top-level). Lo
+    // estampamos en el bloque admission para que el banner rojo "confirma tu email"
+    // SOLO aparezca cuando NO hay identidad de guardian (ni contexto ni guardian
+    // resuelto), nunca cuando el guardian sí se resolvió. NO es PII sensible (un id).
+    if (adm && data.recovered_guardian_person_id != null) {
+      adm.recovered_guardian_person_id = data.recovered_guardian_person_id;
+    }
     const hasRealState = !!(adm && adm.state_code);
     const submitted = hasRealState
       ? (adm.editable === false)        // estado real: locked ⟺ no editable
@@ -839,13 +881,8 @@ export function WizardProvider({ children }) {
     if (data.group || data.application || data.admission) {
       const group = data.group || data.application || {};
       const admRaw = data.admission || null;
-      // WIZARD-GATES BUG 2: misma normalización de signing_ready que hydrateFromResume.
-      const adm = admRaw ? {
-        ...admRaw,
-        signing_ready: admRaw.signing_ready != null
-          ? admRaw.signing_ready
-          : (admRaw.signing_status && admRaw.signing_status !== 'NOT_INITIATED'),
-      } : null;
+      // WIZARD-GATES BUG 2 + WIZ-FINAL-GATE: misma normalización que hydrateFromResume.
+      const adm = normalizeAdmission_(admRaw);
       // URGENT-PASS3 BUG A: misma derivación state-driven que hydrateFromResume.
       // Un cambio de estado en el KMS (p.ej. AD, o reopen→IN) se refleja en el pulse
       // sin recargar: estado real → admission.editable gobierna; sin estado → submitted_at.
@@ -855,19 +892,16 @@ export function WizardProvider({ children }) {
       setSigningContext(adm && adm.signing_context ? adm.signing_context : null);
       return;
     }
-    // WIZARD-GATES BUG 2: normalización de signing_ready también en el path ligero.
-    const admStatus = data.signing_status;
-    const adm = {
+    // WIZARD-GATES BUG 2 + WIZ-FINAL-GATE: misma normalización en el path ligero.
+    const adm = normalizeAdmission_({
       state_code:        data.state_code,
       state_label:       data.state_label,
       signing_available: data.signing_available,
-      signing_ready:     data.signing_ready != null
-        ? data.signing_ready
-        : (admStatus && admStatus !== 'NOT_INITIATED'),
-      signing_status:    admStatus,
+      signing_ready:     data.signing_ready,
+      signing_status:    data.signing_status,
       signing_context:   data.signing_context,
       editable:          data.editable,
-    };
+    });
     setAdmissionState(adm);
     // URGENT-PASS3 BUG A: el pulse ligero ahora trae `editable` (getAdmissionState_) →
     // refleja AD/reopen sin recargar. Si hay estado real, GOBIERNA editable; si no, no
