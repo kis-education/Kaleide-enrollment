@@ -14,36 +14,14 @@ import StepUpReverify from '../components/StepUpReverify';
 import StepUpGate from '../components/StepUpGate';
 import { Toast, useToast } from '../components/Toast';
 
-import Step1Email      from './steps/Step1Email';
-import Step2Persons    from './steps/Step2Persons';
-import Step3Relations  from './steps/Step3Relations';
-import Step4Health     from './steps/Step4Health';
-import Step5Questions  from './steps/Step5Questions';
-import Step6Documents  from './steps/Step6Documents';
-import Step7Review     from './steps/Step7Review';
-import Step8Billing    from './steps/Step8Billing';
-import Step9Gdpr       from './steps/Step9Gdpr';
-import Step10Review    from './steps/Step10Review';
-import Step11Sign      from './steps/Step11Sign';
-import { initialSubStep } from './signing/SigningSteps';
+// STEP-FRAMEWORK (Diego 2026-06-11) — el wizard consume el CATÁLOGO DECLARATIVO de
+// pasos (steps/catalog.js). Los 11 pasos canónicos del programa ADMISIONES KIS son la
+// primera instancia; otro programa (campamentos, etc.) declararía otro catálogo sin
+// tocar este chasis. STEP_COMPONENTS deriva del catálogo (compat con el viejo array).
+// FIRST_SIGNING_INDEX (primer paso savePolicy:'act') sustituye el 7 hardcodeado.
+import { STEP_COMPONENTS, FIRST_SIGNING_INDEX } from './steps/catalog';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
-
-// 11 steps canónicos (CLI 59 — roadmap líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28).
-// Steps 1-7 reales pre-AD, 8-11 placeholders locked post-AD.
-const STEP_COMPONENTS = [
-  Step1Email,     // 1
-  Step2Persons,   // 2
-  Step3Relations, // 3
-  Step4Health,    // 4
-  Step5Questions, // 5
-  Step6Documents, // 6
-  Step7Review,    // 7
-  Step8Billing,   // 8  — S-BILLING (placeholder hasta P49 + enr.saveBillingInfo)
-  Step9Gdpr,      // 9  — S-GDPR    (placeholder hasta DL-E27 + enr.submitGdprConsents)
-  Step10Review,   // 10 — S-REVIEW  (placeholder hasta DL-E28 §6 + enr.confirmReview)
-  Step11Sign,     // 11 — S-SIGN    (placeholder hasta DL-E28 §7-§13 + enr.initiateSigningSession)
-];
 
 export default function WizardPage() {
   const { t, i18n }                     = useTranslation();
@@ -357,7 +335,8 @@ const handleNext = async (stepKey, data, extra = null) => {
   // "Siguiente" es el submit del componente funcional, que al completar llama a
   // advanceSigningStep para mover currentStep — SIN pasar por handleNext (que
   // dispararía un saveStep erróneo contra los endpoints /apply).
-  const STEP_FIRST_SIGNING = 7;
+  // STEP-FRAMEWORK: derivado del catálogo (primer paso savePolicy:'act'), no 7 mágico.
+  const STEP_FIRST_SIGNING = FIRST_SIGNING_INDEX;
 
   const advanceSigningStep = () => {
     markUserTookControl(); // WPERF-1 criterio 4: avanzar la firma a mano invalida un JUMP pendiente

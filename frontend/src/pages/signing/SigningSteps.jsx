@@ -5,6 +5,7 @@ import { useWizard } from '../../context/WizardContext';
 import { fetchDocumentObjectUrl } from '../../utils/documentProxy';
 import { SIGNING_CONSENTS, SIGNING_CONSENT_TEXT_VERSION } from '../../signingConsentTexts';
 import StepUpReverify from '../../components/StepUpReverify';
+import StepShell from '../../components/StepShell';
 import * as log from '../../logger';
 
 /**
@@ -110,49 +111,16 @@ export function Progress({ current }) {
   );
 }
 
-// ─── Signing-step nav (top + bottom) ─────────────────────────────────────────
-// WIZARD-UX (Diego 2026-06-07): "los botones de avanzar deben aparecer arriba y
-// abajo, en las mismas ubicaciones que los paneles anteriores". The signing steps
-// (8-11) are NOT plain StepNav steps — their "Next" is a per-step submit (async,
-// with its own spinner/label and validation), so we render a dedicated nav block
-// that mirrors StepNav's markup/styles but drives the step's own submit handler.
-// It is rendered TWICE per step (top + bottom) sharing the same handlers/state.
-//
-// WIZARD — firma guardado background + avance optimista (Diego 2026-06-07): los
-// pasos 8-10 (SignBilling/SignGdpr/SignReview) ya NO bloquean el botón mientras
-// guardan. El submit dispara la persistencia en BACKGROUND (setPendingSave) y avanza
-// de inmediato (regla N+1 si N-1 guardado: el siguiente paso espera el save de este
-// vía awaitPendingSave). El indicador "Guardando…" lo gobierna `savePending`
-// (hasPendingSave del contexto) — NO inhabilita el avance. El paso 11 (SignSign) SÍ
-// sigue bloqueante: es el ACTO terminal de firma, no un avance. `submitting` se
-// reserva para ese bloqueo terminal; los pasos optimistas pasan submitting=false +
-// savePending para el label no-bloqueante.
-export function SigningNav({ onBack, onSubmit, submitting, savePending = false, submitLabel, savingLabel, position = 'bottom', hideBack = false, submitDisabled = false }) {
-  const { t } = useTranslation();
-  const wrapClass = position === 'top'
-    ? 'd-flex justify-content-between mb-3'
-    : 'd-flex justify-content-between mt-3';
-  // savePending → spinner + "Guardando…" label, pero el botón NO se inhabilita por
-  // ello (avance optimista). `submitting` (bloqueo terminal de SignSign) sí lo
-  // inhabilita; `submitDisabled` cubre las gates de validación per-step.
-  const showSpinner = submitting || savePending;
-  return (
-    <div className={wrapClass}>
-      {hideBack || !onBack
-        ? <span />
-        : (
-          <button className="btn-secondary-kis" onClick={onBack} disabled={submitting}>
-            <i className="bi bi-arrow-left me-1" />{t('nav.back')}
-          </button>
-        )}
-      <button className="btn-primary-kis" onClick={onSubmit} disabled={submitting || submitDisabled}>
-        {showSpinner
-          ? <><span className="spinner-border spinner-border-sm me-2" />{savingLabel}</>
-          : submitLabel}
-      </button>
-    </div>
-  );
-}
+// ─── (Histórico) Signing-step nav — ELIMINADO por STEP-FRAMEWORK (Diego 2026-06-11) ──
+// El `SigningNav` era el SEGUNDO chasis: una barra de navegación propia de los pasos
+// 8-10 con su spinner "Guardando…" DENTRO del botón (guardado NO optimista, sin la
+// nube global, tratado distinto de los pasos 1-7). Diego: "Aunque sea la misma ruta,
+// se tratan de forma diferenciada. Tienes que unificar." Los pasos 8-10 usan AHORA el
+// chasis único `StepShell` (StepNav estándar + nube SaveIndicator global), idéntico a
+// los pasos 1-7. El guardado sigue siendo optimista vía la MISMA cola FIFO
+// (setPendingSave → enqueueSave); el indicador de guardado es la nube global, no un
+// spinner per-botón. El paso 11 (SignSign) conserva su back-nav propia: su "avance" es
+// el ACTO terminal de firma (frontera Click & Sign), no un "Continuar" de paso.
 
 // ─── Editor de UN reparto (1 / 2 / N pagadores) ───────────────────────────────
 // Slider+presets (2 pagadores) o inputs con rebalanceo proporcional (>2) → la suma es
@@ -265,7 +233,7 @@ export function SplitEditor({ payers, onChange }) {
 // El KMS deriva grupo+enrollments del token (KAL-4) y mapea cada hijo → su finSubscription.
 export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits: savedSplitsProp, onDone, onBack }) {
   const { t } = useTranslation();
-  const { stepData, setPendingSave, awaitPendingSave, hasPendingSave, recoveredEmail, recoveryNonce } = useWizard();
+  const { stepData, setPendingSave, awaitPendingSave, recoveredEmail, recoveryNonce } = useWizard();
   // Default payer = signing guardian (DL-E38: identity derived server-side from the
   // signing_token; client only echoes guardian_person_id for the KMS to disambiguate
   // which guardian pays in a multi-guardian family). KAL-4 stays intact — the KMS
@@ -471,26 +439,20 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
     onDone(); // avance optimista inmediato
   };
 
-  // Avance optimista: `submitting=false` (no bloqueamos el botón); el spinner
-  // "Guardando…" lo gobierna `savePending` (hasPendingSave del contexto).
-  const nav = (position) => (
-    <SigningNav
-      position={position}
-      onBack={onBack}
-      onSubmit={submit}
-      submitting={false}
-      savePending={hasPendingSave}
-      submitLabel={t('signing.billing.submit')}
-      savingLabel={t('signing.saving')}
-    />
-  );
-
+  // STEP-FRAMEWORK: este acto es un PASO IDÉNTICO a los 1-7 — usa el chasis StepShell
+  // (StepNav estándar arriba/abajo + nube global). El guardado es OPTIMISTA: `submit`
+  // encola el save en la MISMA cola FIFO (setPendingSave) → la MISMA nube SaveIndicator;
+  // el botón NUNCA muestra "Guardando…" ni se bloquea. El error inline lo pinta StepShell.
   return (
     <div className="kis-card">
-      {nav('top')}
-      <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.billing.title')}</h2>
-      <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.billing.subtitle')}</p>
-
+      <StepShell
+        title={t('signing.billing.title')}
+        subtitle={t('signing.billing.subtitle')}
+        onBack={onBack}
+        onNext={submit}
+        nextLabel={t('signing.billing.submit')}
+        error={err}
+      >
       {/* ── Reparto entre pagadores ──────────────────────────────────────────── */}
       <div style={{ marginTop: 8 }}>
         <h3 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '0.98rem', marginBottom: 4 }}>
@@ -530,9 +492,7 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
           </div>
         ))}
       </div>
-
-      {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
-      {nav('bottom')}
+      </StepShell>
     </div>
   );
 }
@@ -541,7 +501,7 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
 
 export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, onBack }) {
   const { t } = useTranslation();
-  const { setPendingSave, awaitPendingSave, hasPendingSave, stepData, recoveredEmail, recoveryNonce } = useWizard();
+  const { setPendingSave, awaitPendingSave, stepData, recoveredEmail, recoveryNonce } = useWizard();
 
   // CLI 9 (DL-E42 §3): matriz tutor×sujeto. El guardian actual (derivado del token,
   // signerCtx.guardian_person_id) consiente:
@@ -703,24 +663,19 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
     onDone(); // avance optimista inmediato
   };
 
-  const nav = (position) => (
-    <SigningNav
-      position={position}
-      onBack={onBack}
-      onSubmit={submit}
-      submitting={false}
-      savePending={hasPendingSave}
-      submitLabel={t('signing.gdpr.submit')}
-      savingLabel={t('signing.saving')}
-    />
-  );
-
+  // STEP-FRAMEWORK: paso idéntico a los 1-7 vía StepShell — guardado optimista (la
+  // MISMA cola/nube global), nav estándar, error inline. El consentimiento bloqueante
+  // (RGPD) es la gate de validación dentro de `submit`.
   return (
     <div className="kis-card">
-      {nav('top')}
-      <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.gdpr.title')}</h2>
-      <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.gdpr.subtitle')}</p>
-
+      <StepShell
+        title={t('signing.gdpr.title')}
+        subtitle={t('signing.gdpr.subtitle')}
+        onBack={onBack}
+        onNext={submit}
+        nextLabel={t('signing.gdpr.submit')}
+        error={err}
+      >
       {/* Consentimientos GENERALES (per-guardian: GDPR + comms + plataforma) */}
       {generalConsents.map(c => (
         <div key={c.code} className="consent-block" style={{ borderBottom: '1px solid var(--bg)', paddingBottom: 12, marginBottom: 12 }}>
@@ -760,9 +715,7 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
           ))}
         </div>
       )}
-
-      {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
-      {nav('bottom')}
+      </StepShell>
     </div>
   );
 }
@@ -771,7 +724,7 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
 
 export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   const { t } = useTranslation();
-  const { isStepUpFresh, markStepUpFresh, setPendingSave, awaitPendingSave, hasPendingSave, recoveredEmail, recoveryNonce } = useWizard();
+  const { isStepUpFresh, markStepUpFresh, setPendingSave, awaitPendingSave, recoveredEmail, recoveryNonce } = useWizard();
   const [members, setMembers] = useState(null); // null=loading, []=empty
   const [loadErr, setLoadErr] = useState('');
   const [read, setRead] = useState(false);
@@ -782,6 +735,14 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   // devuelve STEPUP_REQUIRED — exigimos re-verificar antes de cargar/previsualizar.
   const [needStepUp, setNeedStepUp] = useState(!isStepUpFresh());
   const [reloadKey, setReloadKey] = useState(0);
+  // STEP-FRAMEWORK (Diego 2026-06-11): muere el anti-patrón "Paquete en preparación.
+  // Vuelve en unos minutos." (cita: "No le puedo decir a un cliente del s.XXI que
+  // vuelva en unos minutos"). Cuando initiateSigningRead devuelve members vacíos (el
+  // KMS aún está generando la Carta/Contrato), NO mostramos un muro muerto: hacemos
+  // ESPERA ACTIVA con reintento automático (poll corto) y PROGRESO visible. `attempt`
+  // cuenta los reintentos para el feedback; el poll re-dispara el efecto vía reloadKey.
+  const [attempt, setAttempt] = useState(0);
+  const POLL_MS = 6000;        // reintento corto mientras el paquete se prepara
   // CLI 82 / KAL-NEW-5: file_id → object URL (bytes vía getDocument + signing_token).
   // Sustituye los enlaces públicos de Drive (m.drive_view_url) por previews
   // servidas desde el proxy de bytes. Privados al dueño del deployment.
@@ -790,18 +751,28 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   useEffect(() => {
     if (needStepUp) return undefined;
     let alive = true;
+    let retryTimer = null;
     // P-REVIEW-READONLY: Step 10 solo LEE los docs/members → create_only (NO despacha
     // el envelope). El dispatch real del acto de firma vive SOLO en Step 11 (SignSign).
     // Data-layer pieza 5: single-flight (de-dupe la tormenta de create_only concurrentes).
     const _t0 = Date.now();                          // DBG-SESSION timing (bug 7)
-    log.info('[DBG review] initiateSigningRead start');
+    log.info('[DBG review] initiateSigningRead start', { attempt });
     // IDENTITY-COMPLETION (#30): identidad de SESIÓN (resume_token + `n` del enlace).
     initiateSigningRead({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail })
       .then(res => {
         const ms = Date.now() - _t0;
         const mem = Array.isArray(res.members) ? res.members : [];
-        log.info('[DBG review] members', { ms, n: mem.length, files8: mem.map(m => log.sid(m.file_id)), states: mem.map(m => m.purpose_code || '?') });
-        if (alive) setMembers(mem);
+        log.info('[DBG review] members', { ms, n: mem.length, attempt, files8: mem.map(m => log.sid(m.file_id)), states: mem.map(m => m.purpose_code || '?') });
+        if (!alive) return;
+        if (mem.length === 0) {
+          // STEP-FRAMEWORK: paquete aún no listo → ESPERA ACTIVA. Re-pollea solo
+          // (sin pedir al cliente "vuelve en unos minutos"); el render muestra el
+          // progreso. members se mantiene en null (estado "preparando…", no "vacío").
+          log.info('[DBG review] paquete no listo — reintento automático', { in_ms: POLL_MS, next_attempt: attempt + 1 });
+          retryTimer = setTimeout(() => { if (alive) setAttempt(a => a + 1); }, POLL_MS);
+          return;
+        }
+        setMembers(mem);
       })
       .catch(e => {
         if (isStepUpRequiredError(e)) {
@@ -809,11 +780,16 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
           if (alive) setNeedStepUp(true);
           return;
         }
-        log.error('SignReview: initiateSigningSession failed', { message: e.message });
-        if (alive) setLoadErr(e.message || t('signing.generic_error'));
+        // STEP-FRAMEWORK: un fallo de RED tampoco manda al cliente a "vuelve en unos
+        // minutos" — reintento automático con el mismo poll (espera activa). El error
+        // duro solo se muestra si persiste tras varios intentos (loadErr).
+        log.warn('SignReview: initiateSigningRead failed — reintento automático', { attempt, message: e && e.message });
+        if (!alive) return;
+        if (attempt >= 8) { setLoadErr(e.message || t('signing.generic_error')); return; }
+        retryTimer = setTimeout(() => { if (alive) setAttempt(a => a + 1); }, POLL_MS);
       });
-    return () => { alive = false; };
-  }, [signingToken, resumeToken, recoveryNonce, recoveredEmail, needStepUp, reloadKey]); // eslint-disable-line
+    return () => { alive = false; if (retryTimer) clearTimeout(retryTimer); };
+  }, [signingToken, resumeToken, recoveryNonce, recoveredEmail, needStepUp, reloadKey, attempt]); // eslint-disable-line
 
   // Resuelve los bytes de cada documento del paquete vía el proxy y construye
   // object URLs en memoria. Revoca todas las URLs al desmontar.
@@ -862,7 +838,7 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   // procesado" para el await previo (puede tardar), pero NO bloquea el avance una vez
   // disparado el background save.
   const confirm = async () => {
-    log.info('[DBG review] confirm CLICK', { read, hasPendingSave });
+    log.info('[DBG review] confirm CLICK', { read });
     if (!read) { setErr(t('signing.review.must_read')); return; }
     setErr(''); setSubmitting(true);
 
@@ -898,26 +874,13 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
     onDone(); // avance optimista inmediato
   };
 
+  // STEP-FRAMEWORK: el nombre del documento es DINÁMICO — del propio member que el
+  // paquete declara (designation / purpose_code), con i18n key como preferencia y
+  // fallback a lo que el KMS mande. Cero literales de documentos hardcodeados.
   const docLabel = (m) => t('signing.doc.' + (m.purpose_code || ''), { defaultValue: m.designation || m.purpose_code || t('signing.review.document') });
-
-  // Top/bottom nav for the review step. `read` gates the submit (mirrors the
-  // inline "must read" check); the spinner/label swap matches the other steps.
-  // `submitting` cubre la ventana breve de await del save previo (gdpr) — bloquea el
-  // botón mientras esperamos que el lag se resuelva. `savePending` (hasPendingSave)
-  // muestra "Guardando…" no-bloqueante mientras confirmReview corre en background tras
-  // el avance optimista. `read` es la gate de validación (confirmación de lectura).
-  const nav = (position) => (
-    <SigningNav
-      position={position}
-      onBack={onBack}
-      onSubmit={confirm}
-      submitting={submitting}
-      savePending={hasPendingSave}
-      submitDisabled={!read}
-      submitLabel={t('signing.review.submit')}
-      savingLabel={t('signing.saving')}
-    />
-  );
+  // Lista de nombres de los documentos del paquete (para el subtítulo dinámico). Si el
+  // paquete aún no cargó, cae al subtítulo genérico (sin nombrar Carta/Contrato a ciegas).
+  const memberLabels = (members || []).map(docLabel);
 
   // DL-E39: gate step-up antes de revelar el paquete contractual (docs sensibles).
   if (needStepUp) {
@@ -953,33 +916,43 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
     );
   }
 
+  // STEP-FRAMEWORK: el "Continuar" se bloquea por la gate de validación (lectura
+  // confirmada) Y por que el paquete esté listo (members presentes). Hasta entonces el
+  // botón está deshabilitado pero la ESPERA es ACTIVA (progreso visible), nunca un muro
+  // "vuelve en unos minutos". El subtítulo nombra los documentos REALES del paquete.
+  const packageReady = !loadErr && Array.isArray(members) && members.length > 0;
+  const subtitle = packageReady && memberLabels.length
+    ? t('signing.review.subtitle_named', { docs: memberLabels.join(' · ') })
+    : t('signing.review.subtitle');
+
   return (
     <div className="kis-card">
-      {nav('top')}
-      <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.review.title')}</h2>
-      <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.review.subtitle')}</p>
-
-      {loadErr && (
+      <StepShell
+        title={t('signing.review.title')}
+        subtitle={subtitle}
+        onBack={onBack}
+        onNext={confirm}
+        nextLabel={t('signing.review.submit')}
+        nextDisabled={!read || !packageReady || submitting}
+        error={err}
+      >
+      {/* STEP-FRAMEWORK: ESPERA ACTIVA mientras el paquete se prepara — progreso
+          visible + reintento automático, JAMÁS "vuelve en unos minutos". Cubre los tres
+          casos no-listos (cargando inicial, paquete vacío reintentando, fallo de red
+          reintentando) con UN solo bloque de progreso. El error DURO (loadErr, tras 8
+          reintentos) sí informa con un mensaje accionable (contactar admisiones). */}
+      {loadErr ? (
         <div className="kis-card" style={{ textAlign: 'center', color: 'var(--muted)', background: 'var(--bg)' }}>
-          <i className="bi bi-hourglass-split" style={{ fontSize: '1.5rem', display: 'block', marginBottom: 8 }} />
-          {t('signing.review.package_loading')}
+          <i className="bi bi-exclamation-triangle" style={{ fontSize: '1.5rem', display: 'block', marginBottom: 8, color: '#a02020' }} />
+          {t('signing.review.package_error')}
         </div>
-      )}
-
-      {!loadErr && members === null && (
-        <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>
-          <span className="spinner-border spinner-border-sm me-2" />{t('signing.review.docs_loading')}
-        </div>
-      )}
-
-      {!loadErr && members !== null && members.length === 0 && (
+      ) : !packageReady ? (
         <div className="kis-card" style={{ textAlign: 'center', color: 'var(--muted)', background: 'var(--bg)' }}>
-          <i className="bi bi-hourglass-split" style={{ fontSize: '1.5rem', display: 'block', marginBottom: 8 }} />
-          {t('signing.review.package_loading')}
+          <span className="spinner-border spinner-border-sm me-2" />
+          {t('signing.review.package_preparing')}
+          <div style={{ fontSize: '0.78rem', marginTop: 6 }}>{t('signing.review.package_auto_refresh')}</div>
         </div>
-      )}
-
-      {!loadErr && members && members.length > 0 && (
+      ) : (
         <>
           {members.map((m, i) => {
             // WPERF-4 (bug 4): preferimos drive_view_url (instantáneo). Para el iframe
@@ -1021,10 +994,9 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
               {t('signing.review.confirm_label')}
             </label>
           </div>
-          {err && <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>}
-          {nav('bottom')}
         </>
       )}
+      </StepShell>
     </div>
   );
 }
