@@ -530,7 +530,11 @@ const handleNext = async (stepKey, data, extra = null) => {
   if (mustPassEntryGate) {
     return (
       <StepUpGate
-        tokenPayload={{ resume_token: resumeToken }}
+        /* OTP-WARM: el warm pre-OTP lleva LA MISMA identidad que usará el hydrate
+           post-OTP (abajo) — n + recovered_email + language entran en la clave de
+           la cache warm del KMS; sin ellos el warm no haría hit. Sin PII: warmSession
+           devuelve solo {ok,warmed}. sendVerificationCode ignora los extras. */
+        tokenPayload={{ resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, n: recoveryNonce || undefined, language: i18n.language }}
         onVerified={() => {
           markStepUpFresh();
           // P-PII-GATE: la resumeSession previa al OTP llegó gateada (sin PII,

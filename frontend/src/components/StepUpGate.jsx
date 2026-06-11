@@ -85,6 +85,15 @@ export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSe
       sendCode();
       if (onAutoSent) onAutoSent();
     }
+    // OTP-WARM pieza A (decisión Diego 2026-06-11: "por qué no está el wizard
+    // precargando datos… sólo se pone a hidratar cuando introduzco el otp"): mientras
+    // el usuario teclea el código, el servidor cocina el snapshot del hydrate y lo
+    // deja en la cache warm (warmSession devuelve SOLO {ok,warmed} — cero PII pre-OTP;
+    // gate KAL-4 por resume_token + rate-limit server-side 120s/grupo). Fire-and-forget:
+    // su fallo no afecta al flujo (el hydrate post-OTP seguiría el camino frío normal).
+    gasCall('warmSession', { ...tokenPayload })
+      .then(r => log.info('StepUpGate: warmSession', { warmed: !!(r && r.warmed), reason: (r && r.reason) || null }))
+      .catch(e => log.warn('StepUpGate: warmSession failed (best-effort)', { message: e.message }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
