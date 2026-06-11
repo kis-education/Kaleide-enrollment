@@ -1462,7 +1462,7 @@ function sendMagicLink_(p) {
     // primary_email (GAP-2 / pre-Step-2). KAL-4: groupId derived from token-path
     // caller, recovered_email only ever a discriminator validated against real rows.
     let destEmail = grp.primary_email;
-    if (p.recovered_email && resolveGuardianForRecovery_(grp.enrollment_group_id, p.recovered_email)) {
+    if (p.recovered_email && resolveGuardianForRecovery_(grp.enrollment_group_id, p.recovered_email, null, null, grp)) {
       destEmail = String(p.recovered_email).toLowerCase().trim();
     }
     _checkMagicLinkRateLimit_((destEmail || '').toLowerCase().trim());
@@ -1697,14 +1697,29 @@ function reportUnsolicited_(p) {
  * antes; appsheetEscape_ en cualquier Filter. KAL-4: el groupId ya viene derivado
  * del token, nunca del payload.
  *
+ * FALLBACK LEGADO (2026-06-11 — fix bug "email-de-creación huérfano"):
+ * El email con el que la familia inició sesión (`primary_email` del grupo) se
+ * registra en `enrEnrollmentGroups` pero NO genera una fila en `enrEmails` en el
+ * momento de la creación — se crea la fila de email solo cuando el guardián es
+ * persistido por el KMS (Step 2). En sesiones creadas por el PRIMER tutor que aún
+ * no ha completado el Step 2 (o cuyo email-de-creación no fue vinculado al person_id
+ * en la fila de enrEmails), el matcher principal no encuentra match. Fallback:
+ *   1. Si hay filas enrEmails SIN person_id cuyo value coincide → resolver el
+ *      guardian como `requester_person_id` del grupo (el primer guardian guardado).
+ *   2. Si el email coincide con `primary_email` del grupo Y hay un `requester_person_id`
+ *      que es un guardian → devolver ese requester_person_id.
+ * KAL-4: en ambos casos el groupId viene del token; el person_id se resuelve desde
+ * datos del servidor (nunca del payload).
+ *
  * @param {string} groupId         enrollment_group_id (ya derivado del token)
  * @param {string} recoveredEmail  email que tecleó la familia (discriminador)
  * @param {Array}  [emailsHint]    filas enrEmails del grupo ya leídas (evita re-query)
  * @param {Array}  [personsHint]   filas enrPersons del grupo ya leídas (evita re-query)
+ * @param {Object} [groupHint]     fila enrEnrollmentGroups ya leída (evita re-query)
  * @returns {string|null} guardian person_id, o null si ningún email de guardian matchea
  *                        (GAP-2: pre-Step-2 no hay filas → fallback group-scoped).
  */
-function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, personsHint) {
+function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, personsHint, groupHint) {
   if (!recoveredEmail) return null;
   var email;
   try {
@@ -1730,11 +1745,72 @@ function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, person
     if (per && per.person_type_id === 'guardian' && per.person_id) guardianIds[per.person_id] = true;
   });
 
+  // ── Vía principal: enrEmails con person_id de guardian ────────────────────
   var match = emails.find(function(e) {
     return e && guardianIds[e.person_id] &&
            String(e.value || '').toLowerCase().trim() === email;
   });
-  return match ? match.person_id : null;
+  if (match) return match.person_id;
+
+  // ── FALLBACK LEGADO: email-de-creación sin person_id en enrEmails ─────────
+  // El email introductorio del tutor 1 puede estar en enrEmails SIN person_id
+  // (la fila de email se crea pero no se vincula al person_id hasta que el KMS
+  // persiste el guardian en el Step 2). Dos sub-casos:
+  //   A. Fila enrEmails sin person_id cuyo value coincide.
+  //   B. Email coincide con primary_email del grupo (artefacto Stage-1).
+  // En ambos casos resolvemos guardian = requester_person_id del grupo (primer
+  // guardian, backfilled por el KMS en wizard-gateway.gs:762-767), siempre que
+  // ese person_id sea un guardian conocido. KAL-4 intacto: todo server-side.
+
+  // Sub-caso A: fila enrEmails sin person_id que coincida con el email tecleado.
+  var orphanMatch = emails.find(function(e) {
+    return e && !e.person_id &&
+           String(e.value || '').toLowerCase().trim() === email;
+  });
+
+  // Sub-caso B: email coincide con primary_email del grupo (necesita group row).
+  var primaryEmailMatch = false;
+  if (!orphanMatch) {
+    var grpRows = null;
+    if (groupHint && groupHint.enrollment_group_id) {
+      grpRows = [groupHint];
+    } else {
+      try {
+        grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [],
+          { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+      } catch (e) {
+        grpRows = [];
+      }
+    }
+    var grp = grpRows && grpRows[0];
+    if (grp && String(grp.primary_email || '').toLowerCase().trim() === email) {
+      primaryEmailMatch = true;
+    }
+  }
+
+  if (orphanMatch || primaryEmailMatch) {
+    // Necesitamos el requester_person_id del grupo.
+    var grpForRequester = null;
+    if (groupHint && groupHint.enrollment_group_id) {
+      grpForRequester = groupHint;
+    } else {
+      try {
+        var grpRows2 = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [],
+          { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+        grpForRequester = grpRows2[0] || null;
+      } catch (e) {
+        grpForRequester = null;
+      }
+    }
+    var requesterId = grpForRequester && grpForRequester.requester_person_id;
+    if (requesterId && guardianIds[requesterId]) {
+      Logger.log(redact_('[resolveGuardianForRecovery_] fallback legacy-email match → requester_person_id=' +
+                 requesterId + ' (group=' + groupId.substring(0, 8) + '...)'));
+      return requesterId;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -2234,7 +2310,7 @@ function resumeSession_(p) {
   // filtered to guardians — NEVER from a raw payload field (KAL-4). The
   // resume_token gate above already authorised the group; the guardian is an
   // ADDITIONAL discriminator re-resolved against real data on every call.
-  const recoveredGuardianId = resolveGuardianForRecovery_(id, p && p.recovered_email, allEmails, persons);
+  const recoveredGuardianId = resolveGuardianForRecovery_(id, p && p.recovered_email, allEmails, persons, group);
 
   // P215: real admission state + (if AD) per-guardian signing context. Additive
   // block — existing keys untouched so current consumers keep working.
@@ -7145,6 +7221,179 @@ function manual_testStepUpGate() {
 
   Logger.log('=== manual_testStepUpGate: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
   return { pass: pass };
+}
+
+/**
+ * URGENT-RECOVERY / 2026-06-11 — Diagnóstico de filas enrEmails de un grupo.
+ *
+ * Modelo canónico de Diego: "No existe email de grupo. Cualquier tutor recupera
+ * con SU email personal. Los emails son los introducidos al acceder por primera vez —
+ * el de creación es el email personal del tutor que inicia. Identidad = solicitud +
+ * email." La columna primary_email de enrEnrollmentGroups es un ARTEFACTO Stage-1.
+ *
+ * Vuelca por Logs (KAL-11: valores redactados a primeros 3 chars + dominio):
+ *   - primary_email del grupo + requester_person_id.
+ *   - Cada fila enrEmails: email_id (first-8), value (redactado), person_id, email_type_id, is_active.
+ *   - person_type_id de cada persona del grupo.
+ *
+ * Rellena GROUP_ID_REAL antes de ejecutar.
+ */
+function manual_diagGroupEmails() {
+  var GROUP_ID_REAL = 'e5bf6e89-REPLACE-WITH-FULL-UUID'; // rellenar con el UUID completo
+
+  Logger.log('=== manual_diagGroupEmails ===');
+  if (GROUP_ID_REAL.indexOf('REPLACE-') >= 0) {
+    Logger.log('  (skip) — rellenar GROUP_ID_REAL con el enrollment_group_id real.');
+    return { skipped: true };
+  }
+  try { assertValidUuid_(GROUP_ID_REAL, 'enrollment_group_id'); }
+  catch (e) { Logger.log('  ✗ UUID inválido: ' + e.message); return { error: 'INVALID_UUID' }; }
+
+  var idEsc = appsheetEscape_(GROUP_ID_REAL);
+
+  var grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+  if (!grpRows.length) { Logger.log('  ✗ Grupo no encontrado.'); return { error: 'NOT_FOUND' }; }
+  var grp = grpRows[0];
+  Logger.log(redact_('  primary_email=' + (grp.primary_email || '(null)') +
+             ' requester_person_id=' + (grp.requester_person_id || '(null)')));
+
+  var persons = appsheetRequest_(T.PERSONS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+  Logger.log('  enrPersons count=' + persons.length);
+  persons.forEach(function(p, i) {
+    Logger.log(redact_('    [persona ' + i + '] person_id=' + (p.person_id || '(null)') +
+               ' type=' + (p.person_type_id || '?') +
+               ' name=' + (p.first_name || '') + ' ' + (p.last_name || '')));
+  });
+
+  var emailRows = appsheetRequest_(T.EMAILS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+  Logger.log('  enrEmails count=' + emailRows.length);
+  emailRows.forEach(function(e, i) {
+    // KAL-11: redact pero muestra los primeros chars para identificación
+    var valRaw = String(e.value || '');
+    var valShort = valRaw.length > 3 ? valRaw.substring(0, 3) + '...' + (valRaw.indexOf('@') >= 0 ? valRaw.substring(valRaw.indexOf('@')) : '') : valRaw;
+    Logger.log('    [email ' + i + '] email_id=' + String(e.email_id || '').substring(0, 8) +
+               '... value=' + valShort +
+               ' person_id=' + (e.person_id || '(null/huérfano)') +
+               ' email_type_id=' + (e.email_type_id || '(null)') +
+               ' is_active=' + (e.is_active || '(null)'));
+  });
+
+  // Verificar si el resolver ya funciona (post-fix):
+  var resolvedId = resolveGuardianForRecovery_(GROUP_ID_REAL, grp.primary_email, emailRows, persons, grp);
+  Logger.log(redact_('  resolveGuardianForRecovery_(primary_email) → ' + (resolvedId || 'null') +
+             ' ' + (resolvedId ? '✓ PASS (fallback funciona)' : '✗ FAIL')));
+
+  Logger.log('=== fin manual_diagGroupEmails ===');
+  return {
+    primary_email_redacted: grp.primary_email ? grp.primary_email.substring(0, 3) + '...' : null,
+    requester_person_id: grp.requester_person_id || null,
+    enrEmails_count: emailRows.length,
+    orphan_emails: emailRows.filter(function(e) { return !e.person_id; }).length,
+    persons_count: persons.length,
+    guardians_count: persons.filter(function(p) { return p.person_type_id === 'guardian'; }).length,
+    resolver_result: resolvedId,
+  };
+}
+
+/**
+ * URGENT-RECOVERY / 2026-06-11 — Repara la fila enrEmails huérfana del tutor 1.
+ *
+ * El email de creación de la sesión se guarda en enrEnrollmentGroups.primary_email
+ * pero la fila en enrEmails que corresponde a ese email puede tener person_id=null
+ * porque cuando se creó el grupo, el tutor aún no tenía person_id asignado (se
+ * asigna en el Step 2 via KMS enr_persistPersons_). Este helper vincula la fila
+ * huérfana al requester_person_id del grupo.
+ *
+ * Operación: Edit enrEmails SET person_id = requester_person_id WHERE
+ *   email_id = la fila huérfana (value = primary_email del grupo, person_id null).
+ *
+ * Rellena GROUP_ID_REAL antes de ejecutar. Lee PASS/FAIL en los Logs.
+ * KAL-4: person_id resuelto desde datos del servidor (requester_person_id), no del payload.
+ * KAL-5: groupId validado con assertValidUuid_ + appsheetEscape_.
+ */
+function manual_repairRequesterEmailLink() {
+  var GROUP_ID_REAL = 'e5bf6e89-REPLACE-WITH-FULL-UUID'; // rellenar con el UUID completo
+
+  Logger.log('=== manual_repairRequesterEmailLink ===');
+  if (GROUP_ID_REAL.indexOf('REPLACE-') >= 0) {
+    Logger.log('  (skip) — rellenar GROUP_ID_REAL con el enrollment_group_id real.');
+    return { skipped: true };
+  }
+  try { assertValidUuid_(GROUP_ID_REAL, 'enrollment_group_id'); }
+  catch (e) { Logger.log('  ✗ UUID inválido: ' + e.message); return { error: 'INVALID_UUID' }; }
+
+  var idEsc = appsheetEscape_(GROUP_ID_REAL);
+
+  // Leer el grupo para obtener primary_email + requester_person_id.
+  var grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+  if (!grpRows.length) { Logger.log('  ✗ Grupo no encontrado.'); return { error: 'NOT_FOUND' }; }
+  var grp = grpRows[0];
+  var primaryEmail = String(grp.primary_email || '').toLowerCase().trim();
+  var requesterId = grp.requester_person_id;
+
+  Logger.log(redact_('  primary_email=' + primaryEmail + ' requester_person_id=' + (requesterId || '(null)')));
+
+  if (!primaryEmail) { Logger.log('  ✗ primary_email vacío — nada que reparar.'); return { error: 'NO_PRIMARY_EMAIL' }; }
+  if (!requesterId) { Logger.log('  ✗ requester_person_id nulo — el Step 2 aún no se completó. Reparar tras Step 2.'); return { error: 'NO_REQUESTER_PERSON_ID' }; }
+
+  // Verificar que requester_person_id es un guardian.
+  var persons = appsheetRequest_(T.PERSONS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+  var requester = persons.find(function(p) { return p.person_id === requesterId; });
+  if (!requester) { Logger.log(redact_('  ✗ requester_person_id=' + requesterId + ' no encontrado en enrPersons.')); return { error: 'REQUESTER_NOT_FOUND' }; }
+  if (requester.person_type_id !== 'guardian') {
+    Logger.log(redact_('  ✗ requester person_type_id=' + requester.person_type_id + ' (no es guardian) — PARA y reporta.'));
+    return { error: 'REQUESTER_NOT_GUARDIAN' };
+  }
+  Logger.log(redact_('  requester es guardian ✓ — person_id=' + requesterId));
+
+  // Encontrar la fila huérfana: value=primary_email Y person_id nulo/vacío.
+  var emailRows = appsheetRequest_(T.EMAILS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
+  var orphans = emailRows.filter(function(e) {
+    return !e.person_id && String(e.value || '').toLowerCase().trim() === primaryEmail;
+  });
+  Logger.log('  enrEmails total=' + emailRows.length + ' orphans-matching-primary=' + orphans.length);
+
+  if (!orphans.length) {
+    // Puede que la fila ya tenga person_id (ya reparada o creada correctamente).
+    var alreadyLinked = emailRows.find(function(e) {
+      return e.person_id === requesterId && String(e.value || '').toLowerCase().trim() === primaryEmail;
+    });
+    if (alreadyLinked) {
+      Logger.log('  (ya reparado) — la fila ya tiene person_id=' + requesterId + '. Sin acción.');
+      return { already_repaired: true };
+    }
+    Logger.log('  (no hay fila huérfana con ese email) — puede que la fila no exista todavía. Sin acción.');
+    return { no_orphan: true };
+  }
+
+  // Reparar todas las filas huérfanas (normalmente solo una).
+  var repaired = 0;
+  orphans.forEach(function(e) {
+    try {
+      appsheetRequest_(T.EMAILS, 'Edit', [{
+        email_id:  e.email_id,
+        person_id: requesterId,
+      }]);
+      repaired++;
+      Logger.log('  ✓ Reparado email_id=' + String(e.email_id).substring(0, 8) + '... → person_id=' + requesterId.substring(0, 8) + '...');
+    } catch (ex) {
+      Logger.log('  ✗ Error reparando email_id=' + e.email_id + ': ' + ex.message);
+    }
+  });
+
+  // Verificar que ahora el resolver funciona.
+  var resolvedId = resolveGuardianForRecovery_(GROUP_ID_REAL, primaryEmail, null, null, grp);
+  Logger.log(redact_('  post-repair: resolveGuardianForRecovery_(primary_email) → ' + (resolvedId || 'null') +
+             ' ' + (resolvedId === requesterId ? '✓ PASS' : '✗ FAIL')));
+
+  Logger.log('=== manual_repairRequesterEmailLink: ' + (repaired > 0 ? 'REPAIRED ' + repaired + ' fila(s)' : 'NOOP') + ' ===');
+  return { repaired: repaired, person_id_linked: requesterId };
 }
 
 /**
