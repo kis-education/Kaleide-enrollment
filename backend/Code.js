@@ -4229,12 +4229,37 @@ function getDocument_(p) {
   // NUNCA del payload (KAL-4 IDOR).
   let groupId;
   let usedSigningToken = false;
+  let kmsSigningToken = null;   // IDENTITY-COMPLETION (#30): signing_token a usar para el
+                                // proxy KMS de PDFs de firma — del payload (compat) o
+                                // resuelto SERVER-SIDE del grupo+guardian (resume_token).
+  let resolveKmsSigningToken = function () { return null; }; // lazy (resume_token path)
   if (p && p.resume_token) {
     groupId = requireResumeToken_(p);
+    // IDENTITY-COMPLETION (#30): los PDF del paquete de firma (Carta/Contrato) los genera
+    // y guarda el KMS (origin_reference='signing_package:…', NO el grupo) → el read local
+    // de abajo NO los encuentra. Para servirlos bajo resume_token (sesión que sobrevive a
+    // F5/incógnito), resolvemos el signing_token del guardian SERVER-SIDE: el `n` (email_id
+    // del enlace, IDENTITY-FROM-LINK) → email → guardian → resolveGuardianSigningContext_,
+    // y proxyamos al KMS igual que el flujo signing_token. KMS INTACTO: sigue recibiendo un
+    // signing_token válido. Resolución LAZY: solo si el read local falla (es un PDF de firma,
+    // no un documento subido por la familia) — sin coste en el path común de previews /apply.
+    resolveKmsSigningToken = function () {
+      try {
+        // IDENTITY-FROM-LINK: la identidad sale del `n` (email_id) del enlace, resuelto
+        // server-side contra el grupo del token (effectiveRecoveredEmail_ nueva firma:
+        // (clientEmail, groupId, nParam)). recovered_email es compat secundario.
+        const effEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n);
+        const guardianId = effEmail ? resolveGuardianForRecovery_(groupId, effEmail) : null;
+        if (!guardianId) return null;
+        const sctxSign = resolveGuardianSigningContext_(groupId, guardianId);
+        return (sctxSign && sctxSign.signing_token) || null;
+      } catch (eSign) { return null; }
+    };
   } else if (p && p.signing_token) {
     const sctx = requireSigningToken_(p);
     groupId = sctx.enrollment_group_id;
     usedSigningToken = true;
+    kmsSigningToken = sctx.signing_token;
   } else {
     const err = new Error('resume_token or signing_token required');
     err.code = 'BAD_REQUEST';
@@ -4262,8 +4287,9 @@ function getDocument_(p) {
   // (signing_token) proxyamos la lectura de bytes al KMS (dueño de los ficheros),
   // que re-valida el signing_token + IDOR server-side (KAL-4). Los docs subidos por
   // la familia en /apply (resume_token) viven en el Drive del wizard → lectura local.
+  // Flujo signing_token (compat): proxy directo al KMS con el token del payload.
   if (usedSigningToken) {
-    const d = kmsProxy_('enr.serveSigningDocument', { signing_token: p.signing_token, file_id: fileId });
+    const d = kmsProxy_('enr.serveSigningDocument', { signing_token: kmsSigningToken, file_id: fileId });
     return {
       filename: d.filename || null,
       mimeType: d.mime_type || d.mimeType || null,
@@ -4278,6 +4304,19 @@ function getDocument_(p) {
   }) || [];
   const row = rows.find(r => r && !r['deleted_at']);
   if (!row) {
+    // IDENTITY-COMPLETION (#30): no es un documento subido por la familia (origin_reference
+    // != grupo). Si bajo resume_token resolvemos (LAZY) un signing_token server-side, es un
+    // PDF del paquete de firma (Carta/Contrato, origin_reference='signing_package:…') → lo
+    // sirve el KMS (su dueño), que re-valida el signing_token + IDOR (KAL-4). KMS INTACTO.
+    const lazyKmsToken = kmsSigningToken || resolveKmsSigningToken();
+    if (lazyKmsToken) {
+      const d = kmsProxy_('enr.serveSigningDocument', { signing_token: lazyKmsToken, file_id: fileId });
+      return {
+        filename: d.filename || null,
+        mimeType: d.mime_type || d.mimeType || null,
+        base64:   d.base64,
+      };
+    }
     Logger.log(redact_('[getDocument_] UNAUTHORIZED file=' + fileId + ' group=' + groupId));
     const err = new Error('Unauthorized: file not in token group');
     err.code = 'UNAUTHORIZED';
@@ -7480,6 +7519,110 @@ function manual_testIdentityFromLink() {
 
   Logger.log('[manual_testIdentityFromLink] ' + JSON.stringify(out, null, 2));
   Logger.log('=== manual_testIdentityFromLink: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
+  return out;
+}
+
+/**
+ * IDENTITY-COMPLETION (2026-06-11) — test de la REENTRADA del FIRMANTE: la identidad del
+ * acto de firma sale del TOKEN DE SESIÓN + el `n` del enlace, NUNCA del `signing_token`
+ * volátil del cliente. Cierra las 3 🔴 de la auditoría de conformidad (filas 5, 29, 30),
+ * complementando `manual_testIdentityFromLink` (que cubre la resolución base del `n`).
+ *
+ * Mecanismo canónico (IDENTITY-FROM-LINK, Diego 2026-06-11): la identidad viaja en el `n`
+ * (= email_id de enrEmails) del magic link — dato OPACO, sin PII, YA EXISTENTE, SIN columna/
+ * tabla/almacenamiento nuevo. El frontend persiste `n` en sessionStorage (recoveryNonce) y
+ * lo REENVÍA en hydrate + pulse + LOS ACTOS DE FIRMA. El backend lo resuelve server-side
+ * (resolveEmailFromLinkParam_ → email → guardian, validado contra el grupo del token, KAL-4).
+ *
+ * Límite honesto: si el cliente PIERDE el `n` (sessionStorage borrado Y sin recovered_email)
+ * y reentra solo con el token → degrada a group-scoped (el fallback requester cubre al
+ * tutor-1 solicitante; el tutor-2 sin `n` ni recovered_email no se identifica en ese caso
+ * extremo). Esto es coherente con la decisión de Diego de NO crear almacenamiento server-side
+ * de la identidad: el enlace ES el portador, y el cliente lo conserva entre reentradas.
+ *
+ * Gates (mapeo al prompt — model n=email_id):
+ *   (a) emisión tutor-1 → `n` (email_id) localizable (findEmailIdForGuardian_).
+ *   (b) reentrada del firmante con token + `n` (la firma lo reenvía) → requireSignerContext_
+ *       resuelve el guardian SIN signing_token del cliente (path a) — fila 29/30.
+ *   (c) getDocument_ bajo resume_token + `n` resuelve el signing_token SERVER-SIDE para el
+ *       PDF de firma (resolveGuardianSigningContext_) — fila 30.
+ *   (d) fallback requester → tutor-1 resuelve sin `n` (resolveGuardianForRecovery_).
+ *   (e) sin `n` ni recovered_email → group-scoped limpio (degradación honesta).
+ *
+ * Read-only salvo (a) — NO ejecuta sendMagicLink_ (solo localiza el email_id, sin enviar
+ * email ni rotar token). Ejecutar vía clasp run / editor GAS; lee PASS/FAIL en Logs.
+ */
+function manual_testIdentityReentry() {
+  Logger.log('=== manual_testIdentityReentry (IDENTITY-COMPLETION — filas 5/29/30) ===');
+  var GROUP_ID_REAL       = 'e5bf6e89-6018-4d8e-9c1f-de3a9f5ece3d';
+  var GUARDIAN_ID_REAL    = '842951e3';
+  var GUARDIAN_EMAIL_REAL = 'ground.contact@gmail.com';
+  var out = {}; var pass = true;
+
+  var grp = (appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(GROUP_ID_REAL) + '"'
+  }) || [])[0] || null;
+  if (!grp) { Logger.log('  ✗ FAIL — GROUP_ID_REAL no existe.'); return { error: 'GROUP_NOT_FOUND' }; }
+
+  // (a) Emisión: el `n` (email_id) del guardian es localizable (lo que va a la URL).
+  var nEmailId = findEmailIdForGuardian_(GROUP_ID_REAL, GUARDIAN_EMAIL_REAL);
+  out.a_email_id = nEmailId;
+  var aOk = !!nEmailId;
+  if (!aOk) pass = false;
+  Logger.log('  (a) findEmailIdForGuardian_ → n(email_id)=' + redact_(String(nEmailId)) + ' → ' +
+             (aOk ? '✓ PASS' : '✗ FAIL (¿existe fila enrEmails?)'));
+
+  // (b) Reentrada del FIRMANTE con token + `n` (SIN signing_token del cliente — la firma
+  //     reenvía la identidad de sesión). requireSignerContext_ resuelve el guardian. Filas 29/30.
+  if (grp.resume_token) {
+    try {
+      var sctx = requireSignerContext_({ resume_token: grp.resume_token, n: nEmailId }); // sin signing_token
+      out.b_signer = { group: sctx.enrollment_group_id, guardian: sctx.guardian_person_id };
+      var bOk = !!(sctx.guardian_person_id && String(sctx.guardian_person_id).indexOf(GUARDIAN_ID_REAL) === 0
+                   && sctx.enrollment_group_id === GROUP_ID_REAL && !sctx.signing_token);
+      if (!bOk) pass = false;
+      Logger.log('  (b) firma con token+n (sin signing_token cliente) → requireSignerContext_ guardian=' +
+                 String(sctx.guardian_person_id) + ' → ' +
+                 (bOk ? '✓ PASS (identidad del firmante de SESIÓN)' : '✗ FAIL'));
+    } catch (e) {
+      pass = false;
+      Logger.log('  (b) requireSignerContext_ lanzó: ' + e.message + ' → ✗ FAIL');
+    }
+  } else { pass = false; Logger.log('  (b) ✗ FAIL — el grupo no tiene resume_token.'); }
+
+  // (c) getDocument_ bajo resume_token + `n` resuelve el signing_token SERVER-SIDE (mismo
+  //     camino que mi lazy resolver): n→email→guardian→resolveGuardianSigningContext_. Fila 30.
+  var effForDoc = effectiveRecoveredEmail_(null, GROUP_ID_REAL, nEmailId);
+  var gForDoc = effForDoc ? resolveGuardianForRecovery_(GROUP_ID_REAL, effForDoc) : null;
+  var sigCtx = gForDoc ? resolveGuardianSigningContext_(GROUP_ID_REAL, gForDoc) : null;
+  out.c_signing_token_resolved = !!(sigCtx && sigCtx.signing_token);
+  // Honesto: si NO hay sesión de firma activa para este grupo (pre-AD), sigCtx==null —
+  // entonces NO hay PDF de firma que servir (correcto). PASS si: o bien se resolvió el
+  // token, o bien no hay sesión (degradación coherente, no un fallo de identidad).
+  var cOk = (gForDoc && (sigCtx ? !!sigCtx.signing_token : true));
+  if (!cOk) pass = false;
+  Logger.log('  (c) getDocument_ resume_token+n → signing_token server-side=' +
+             (sigCtx ? (sigCtx.signing_token ? 'RESUELTO' : 'sesión-sin-token') : 'sin-sesión-firma (pre-AD, OK)') +
+             ' → ' + (cOk ? '✓ PASS' : '✗ FAIL'));
+
+  // (d) Fallback requester: el solicitante (tutor-1) resuelve sin `n`.
+  var dGuardian = resolveGuardianForRecovery_(GROUP_ID_REAL, GUARDIAN_EMAIL_REAL);
+  out.d_requester_guardian = dGuardian;
+  var dOk = !!(dGuardian && String(dGuardian).indexOf(GUARDIAN_ID_REAL) === 0);
+  if (!dOk) pass = false;
+  Logger.log('  (d) fallback requester → tutor-1 guardian=' + String(dGuardian) + ' → ' +
+             (dOk ? '✓ PASS' : '✗ FAIL'));
+
+  // (e) Sin `n` ni recovered_email → group-scoped limpio (degradación honesta).
+  var effNone = effectiveRecoveredEmail_(null, GROUP_ID_REAL, null);
+  out.e_effective_none = effNone;
+  var eOk = effNone === null;
+  if (!eOk) pass = false;
+  Logger.log('  (e) sin n ni recovered_email → effectiveRecoveredEmail_=null (group-scoped limpio) → ' +
+             (eOk ? '✓ PASS' : '✗ FAIL'));
+
+  Logger.log('[manual_testIdentityReentry] ' + JSON.stringify(out, null, 2));
+  Logger.log('=== manual_testIdentityReentry: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
   return out;
 }
 

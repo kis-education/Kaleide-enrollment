@@ -51,13 +51,33 @@ export function fetchLookups() {
 //   IMPORTANTE: SOLO de-duplica la LECTURA create_only:true. El DISPATCH real del
 //   envelope (initiateSigningSession SIN create_only, en SignSign por acción explícita
 //   del usuario) NUNCA pasa por aquí — el STOP-GAP de SignSign se preserva intacto.
-const _signingReadFlight = {};   // { [token]: promise }
-export function initiateSigningRead(signingToken) {
-  if (!signingToken) return Promise.reject(new Error('initiateSigningRead: signing_token required'));
-  if (_signingReadFlight[signingToken]) return _signingReadFlight[signingToken];
-  const flight = gasCall('initiateSigningSession', { signing_token: signingToken, create_only: true })
-    .finally(() => { delete _signingReadFlight[signingToken]; });
-  _signingReadFlight[signingToken] = flight;
+//   IDENTITY-COMPLETION (#30): acepta la identidad de SESIÓN ({ resumeToken, n,
+//   recoveredEmail } preferente; { signingToken } compat). IDENTITY-FROM-LINK: bajo
+//   resume_token el backend (requireSignerContext_) resuelve el firmante del `n` (email_id
+//   del enlace) → email → guardian, validado contra el grupo del token → la lectura del
+//   estado de firma sobrevive a F5/incógnito sin signing_token en React state. Compat: un
+//   argumento string se trata como signingToken (back-compat de llamadas antiguas).
+const _signingReadFlight = {};   // { [identityKey]: promise }
+export function initiateSigningRead(identity) {
+  const id = (typeof identity === 'string')
+    ? { signingToken: identity }
+    : (identity || {});
+  const resumeToken   = id.resumeToken || null;
+  const signingToken  = id.signingToken || null;
+  const n             = id.n || null;
+  const recoveredEmail = id.recoveredEmail || null;
+  if (!resumeToken && !signingToken) {
+    return Promise.reject(new Error('initiateSigningRead: resume_token or signing_token required'));
+  }
+  // Single-flight key: el resume_token de sesión (preferente) o el signing_token.
+  const key = resumeToken ? ('r:' + resumeToken) : ('s:' + signingToken);
+  if (_signingReadFlight[key]) return _signingReadFlight[key];
+  const tokenPayload = resumeToken
+    ? { resume_token: resumeToken, n: n || undefined, recovered_email: recoveredEmail || undefined }
+    : { signing_token: signingToken };
+  const flight = gasCall('initiateSigningSession', { ...tokenPayload, create_only: true })
+    .finally(() => { delete _signingReadFlight[key]; });
+  _signingReadFlight[key] = flight;
   return flight;
 }
 
@@ -72,10 +92,12 @@ export function initiateSigningRead(signingToken) {
 // todavía al montar) → la entrada se purga → cache-miss silencioso, idéntico al actual.
 const _docBytesCache = {};   // { [file_id]: Promise<{base64,mimeType,filename}> }
 
-export function getDocumentBytes({ file_id, resume_token, signing_token }) {
+export function getDocumentBytes({ file_id, resume_token, signing_token, n, recovered_email }) {
   if (!file_id) return Promise.reject(new Error('getDocumentBytes: file_id required'));
   if (_docBytesCache[file_id]) return _docBytesCache[file_id];
-  const flight = gasCall('getDocument', { file_id, resume_token, signing_token })
+  // IDENTITY-COMPLETION (#30): `n` (email_id del enlace) + recovered_email para que
+  // getDocument_ resuelva el signing_token server-side bajo resume_token (PDF de firma).
+  const flight = gasCall('getDocument', { file_id, resume_token, signing_token, n, recovered_email })
     .catch(err => { delete _docBytesCache[file_id]; throw err; });   // NO cachear fallos
   _docBytesCache[file_id] = flight;
   return flight;

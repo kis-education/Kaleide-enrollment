@@ -11,16 +11,20 @@ import { getDocumentBytes } from '../api';
  * El caller es responsable de `URL.revokeObjectURL(url)` cuando ya no lo
  * necesita (típicamente al desmontar el componente).
  *
- * @param {{file_id:string, resume_token?:string, signing_token?:string}} params
+ * @param {{file_id:string, resume_token?:string, signing_token?:string, n?:string, recovered_email?:string}} params
  * @returns {Promise<{url:string, mimeType:string, filename:string}>}
  */
-export async function fetchDocumentObjectUrl({ file_id, resume_token, signing_token }) {
+export async function fetchDocumentObjectUrl({ file_id, resume_token, signing_token, n, recovered_email }) {
   // WPERF-1: pasa por la caché de bytes (getDocumentBytes) — si prefetchDocuments ya
   // calentó este file_id, la promesa está resuelta y el object URL se crea al instante.
+  // IDENTITY-COMPLETION (#30): `n` (email_id del enlace) + recovered_email viajan para que
+  // getDocument_ resuelva el signing_token server-side bajo resume_token (PDF de firma).
   const { base64, mimeType, filename } = await getDocumentBytes({
     file_id,
     resume_token,
     signing_token,
+    n,
+    recovered_email,
   });
   const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
   const url   = URL.createObjectURL(new Blob([bytes], { type: mimeType || 'application/octet-stream' }));

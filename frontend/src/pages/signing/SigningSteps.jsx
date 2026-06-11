@@ -333,8 +333,11 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
       });
       return undefined;
     }
-    if (!signingToken) { setSavedSplits({ payers: [], per_participant: [] }); return undefined; }
-    gasCall('getSavedBillingSplits', { signing_token: signingToken })
+    // IDENTITY-COMPLETION (#30): identidad de SESIÓN (resume_token preferente; el backend
+    // resuelve el firmante server-side vía requireSignerContext_ + binding @157). El
+    // signing_token queda como compat. Si no hay NINGUNA identidad → reparto vacío.
+    if (!resumeToken && !signingToken) { setSavedSplits({ payers: [], per_participant: [] }); return undefined; }
+    gasCall('getSavedBillingSplits', signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }))
       .then(res => {
         const norm = (res && typeof res === 'object')
           ? { payers: res.payers || [], per_participant: res.per_participant || [] }
@@ -350,7 +353,7 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
         if (alive) setSavedSplits({ payers: [], per_participant: [] });
       });
     return () => { alive = false; };
-  }, [signingToken]);
+  }, [signingToken, resumeToken, recoveryNonce, recoveredEmail]); // eslint-disable-line
 
   // Seed group-level + per-hijo una sola vez, ESPERANDO a la lectura del reparto
   // guardado (savedSplits !== null) para rehidratar 50/50 si lo había (WPERF-4 bug 1).
@@ -792,7 +795,8 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
     // Data-layer pieza 5: single-flight (de-dupe la tormenta de create_only concurrentes).
     const _t0 = Date.now();                          // DBG-SESSION timing (bug 7)
     log.info('[DBG review] initiateSigningRead start');
-    initiateSigningRead(signingToken)
+    // IDENTITY-COMPLETION (#30): identidad de SESIÓN (resume_token + `n` del enlace).
+    initiateSigningRead({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail })
       .then(res => {
         const ms = Date.now() - _t0;
         const mem = Array.isArray(res.members) ? res.members : [];
@@ -809,7 +813,7 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
         if (alive) setLoadErr(e.message || t('signing.generic_error'));
       });
     return () => { alive = false; };
-  }, [signingToken, needStepUp, reloadKey]); // eslint-disable-line
+  }, [signingToken, resumeToken, recoveryNonce, recoveredEmail, needStepUp, reloadKey]); // eslint-disable-line
 
   // Resuelve los bytes de cada documento del paquete vía el proxy y construye
   // object URLs en memoria. Revoca todas las URLs al desmontar.
@@ -825,7 +829,15 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
       if (m.drive_view_url) { log.info('[DBG review] using drive_view_url (skip blob)', { file8: log.sid(m.file_id) }); return; }
       const _t0 = Date.now();                        // DBG-SESSION timing por doc (bug 7)
       log.info('[DBG review] getDocument start', { file8: log.sid(m.file_id) });
-      fetchDocumentObjectUrl({ file_id: m.file_id, signing_token: signingToken })
+      // IDENTITY-COMPLETION (#30): identidad de SESIÓN. getDocument_ acepta resume_token + `n`
+      // (resuelve el signing_token server-side del enlace para el proxy KMS de los PDF de
+      // firma) o signing_token (compat). Preferimos resume_token (sobrevive a F5/incógnito).
+      fetchDocumentObjectUrl({
+        file_id: m.file_id,
+        ...(resumeToken
+          ? { resume_token: resumeToken, n: recoveryNonce || undefined, recovered_email: recoveredEmail || undefined }
+          : { signing_token: signingToken }),
+      })
         .then(({ url }) => {
           log.info('[DBG review] getDocument OK', { file8: log.sid(m.file_id), ms: Date.now() - _t0, has_url: !!url });
           if (!alive) { URL.revokeObjectURL(url); return; }
@@ -839,7 +851,7 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
         });
     });
     return () => { alive = false; created.forEach(u => URL.revokeObjectURL(u)); };
-  }, [members, signingToken]); // eslint-disable-line
+  }, [members, signingToken, resumeToken]); // eslint-disable-line
 
   // WIZARD — guardado background + avance optimista (paso 10). (1) await del save de
   // GDPR en vuelo (awaitPendingSave) — fuerza el lag de un paso y surface un fallo de
@@ -923,7 +935,10 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.review.title')}</h2>
         <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('stepup.review_gate_body')}</p>
         <StepUpReverify
-          tokenPayload={{ signing_token: signingToken }}
+          /* IDENTITY-COMPLETION (#30): identidad de SESIÓN. _resolveStepUpGroup_ (@665)
+             deriva el grupo del resume_token (preferente) o signing_token (compat); `n`/
+             recovered_email son inocuos extra (el grupo sale del token). */
+          tokenPayload={signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail })}
           prompt={t('stepup.review_prompt')}
           onVerified={() => {
             markStepUpFresh();
@@ -1018,7 +1033,7 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
 
 export function SignSign({ signingToken, resumeToken, signerCtx, onDone, onBack }) { // eslint-disable-line no-unused-vars
   const { t } = useTranslation();
-  const { isStepUpFresh, markStepUpFresh, awaitPendingSave } = useWizard();
+  const { isStepUpFresh, markStepUpFresh, awaitPendingSave, recoveredEmail, recoveryNonce } = useWizard();
   // Back-only nav (top + bottom). The Sign step's "advance" is the signing act
   // itself (launched from the per-signer buttons / polled to completion), so the
   // nav only carries "Atrás" → Review. Hidden once the session is COMPLETED (the
@@ -1079,7 +1094,8 @@ export function SignSign({ signingToken, resumeToken, signerCtx, onDone, onBack 
     try {
       // Data-layer pieza 5: lectura de estado vía single-flight (de-dupe la tormenta
       // de create_only concurrentes). NUNCA despacha el envelope (STOP-GAP intacto).
-      const res = await initiateSigningRead(signingToken);
+      // IDENTITY-COMPLETION (#30): identidad de SESIÓN (resume_token preferente).
+      const res = await initiateSigningRead({ resumeToken, signingToken });
       log.info('[DBG sign] readState', { initial, state: res && res.state, n_urls: ((res && res.signerUrls) || []).length });
       setSession(res);
       const urls = (res && res.signerUrls) || [];
@@ -1117,8 +1133,13 @@ export function SignSign({ signingToken, resumeToken, signerCtx, onDone, onBack 
       ipRef.current = await fetchClientIp();
     }
     try {
+      // IDENTITY-COMPLETION (#29): el acto legal reenvía la identidad de SESIÓN
+      // (resume_token preferente; el firmante lo resuelve el backend server-side vía
+      // requireSignerContext_ @157 + binding token→tutor). El signing_token queda como
+      // compat. La mecánica Click & Sign (envelope, single-use/TTL/binding del ACTO,
+      // P222) es server-side e intacta — solo cambia DE DÓNDE sale la identidad.
       const res = await gasCall('initiateSigningSession', {
-        signing_token: signingToken,
+        ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }),
         client_ip:     ipRef.current || undefined,
       });
       setSession(res);
@@ -1155,7 +1176,7 @@ export function SignSign({ signingToken, resumeToken, signerCtx, onDone, onBack 
       }
     });
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [signingToken]); // eslint-disable-line
+  }, [signingToken, resumeToken]); // eslint-disable-line
 
   // Gate incondicional de step-up: SOLO se muestra cuando el usuario va a DESPACHAR
   // desde estado no-iniciado (no para la lectura read-only). Si la sesión ya está
@@ -1167,7 +1188,8 @@ export function SignSign({ signingToken, resumeToken, signerCtx, onDone, onBack 
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.signing.title')}</h2>
         <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('stepup.sign_gate_body')}</p>
         <StepUpReverify
-          tokenPayload={{ signing_token: signingToken }}
+          /* IDENTITY-COMPLETION (#29): identidad de SESIÓN (resume_token preferente). */
+          tokenPayload={signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail })}
           prompt={t('stepup.sign_prompt')}
           onVerified={() => { markStepUpFresh(); setNeedStepUp(false); dispatchSigning(); }}
         />
