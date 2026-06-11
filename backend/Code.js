@@ -46,15 +46,23 @@ const QB_ADAPTATION_NOTES_ID = 'a1b2c3d4-0023-0000-0000-000000000000';
 
 // ─── DL-E39 PII-primero — step-up re-auth (Fase A) ──────────────────────────
 // Step-up = prueba-de-acceso-al-inbox (código fresco 6-díg al buzón) que
-// compensa el resume_token largo (7 días, reutilizable). Una ventana de
-// inactividad: tras un verifyEmail_ con stepup=true marcamos el grupo como
-// "fresco" durante STEPUP_INACTIVITY_MS; los handlers que revelan/mutan PII
-// sensible exigen esa marca fresca (assertStepUpFresh_). Reutiliza
-// sendVerificationCode_/verifyEmail_ (endurecidos KAL-NEW-2) — NO hay token
-// ni endpoint nuevo. (El resume_token TTL de 7 días sigue siendo el TTL de
-// sesión; este es un TTL de inactividad mucho más corto que se renueva con
-// cada step-up.)
-const STEPUP_INACTIVITY_MS = 10 * 60 * 1000; // 10 min
+// compensa el resume_token largo (7 días, reutilizable). Una ventana DURA:
+// tras un verifyEmail_ con stepup=true (o el consumo single-use de la gracia de
+// magic-link) marcamos el grupo como "fresco" durante STEPUP_INACTIVITY_MS; los
+// handlers que revelan/mutan PII sensible exigen esa marca fresca
+// (assertStepUpFresh_). Reutiliza sendVerificationCode_/verifyEmail_ (endurecidos
+// KAL-NEW-2) — NO hay token ni endpoint nuevo.
+//
+// ★ SEC-STEPUP (finding #55, 2026-06-11): la ventana es DURA (10 min EXACTOS desde
+// la última RE-VERIFICACIÓN real), NO deslizante. El modelo anterior
+// (P-STEPUP-SLIDING) re-extendía la marca en CADA save de PII y en CADA pulso
+// getAdmissionState → 10 min se volvían infinitos mientras la pestaña pulsara/el
+// usuario estuviera activo, y una RECARGA dentro de esa ventana viva entraba SIN
+// OTP (bypass del PII-gate reportado por Diego). Ahora _markStepUpFresh_ se invoca
+// SOLO en (1) OTP verificado y (2) consumo de la gracia — NUNCA en lecturas/saves.
+// Pasados los 10 min, el PII-gate vuelve a exigir OTP. (El resume_token TTL de 7
+// días sigue siendo el TTL de sesión; este es el TTL corto de re-verificación.)
+const STEPUP_INACTIVITY_MS = 10 * 60 * 1000; // 10 min (ventana DURA, no deslizante)
 
 // Magic-link grace (UX, no urgente): un magic link recién enviado NO exige OTP si
 // se usa dentro de esta ventana. La gracia se vincula a un NONCE single-use de ESE
@@ -666,19 +674,39 @@ function _resolveStepUpGroup_(p) {
 }
 
 /**
- * Marca el grupo como "step-up fresco" durante STEPUP_INACTIVITY_MS. Guarda el
- * timestamp de EXPIRACIÓN (Date.now()+ventana) en el ScriptCache; el gate
- * compara contra Date.now(). El TTL del cache se alinea a la misma ventana.
+ * Marca el grupo como "step-up fresco" durante STEPUP_INACTIVITY_MS — VENTANA DURA.
+ *
+ * ★ SEC-STEPUP (finding #55, 2026-06-11). Esta marca se acuña EXCLUSIVAMENTE en
+ * eventos de RE-VERIFICACIÓN REAL del inbox:
+ *   (1) verifyEmail_ con stepup:true (OTP fresco verificado), y
+ *   (2) consumo single-use de la gracia de magic-link (mlgrace_<resume_token>,
+ *       que prueba un envío reciente al inbox del expediente).
+ *
+ * NUNCA se re-escribe en una mera RESOLUCIÓN/LECTURA (hydrate, pulso
+ * getAdmissionState, save de PII). Antes (P-STEPUP-SLIDING) cada save y cada
+ * pulso re-extendían la ventana → 10 min se convertían en infinitos mientras la
+ * pestaña estuviera abierta o el usuario activo, y una recarga dentro de esa
+ * ventana viva entraba SIN OTP (bypass del PII-gate). Ahora la ventana es DURA:
+ * 10 min EXACTOS desde la última re-verificación, sin extensión por uso. Pasados
+ * los 10 min, el PII-gate vuelve a exigir OTP.
+ *
+ * Guarda el timestamp de EXPIRACIÓN (Date.now()+ventana) en el ScriptCache; el
+ * gate compara contra Date.now(). El TTL del cache se alinea a la misma ventana.
+ *
+ * NO usar para "deslizar" la ventana en cada actividad — eso es precisamente el
+ * bug que SEC-STEPUP cerró. Para una ventana viva más larga, el usuario re-OTPa.
  *
  * @param {string} enrollmentGroupId - ya derivado del token (KAL-4)
+ * @param {string} [reason]          - etiqueta del evento (OTP|GRACE) para el log
  * @private
  */
-function _markStepUpFresh_(enrollmentGroupId) {
+function _markStepUpFresh_(enrollmentGroupId, reason) {
   CacheService.getScriptCache().put(
     'stepup_ok_' + enrollmentGroupId,
     String(Date.now() + STEPUP_INACTIVITY_MS),
     Math.ceil(STEPUP_INACTIVITY_MS / 1000)
   );
+  Logger.log(redact_('[DBG stepup] mint reason=' + (reason || '?') + ' group=' + enrollmentGroupId + ' ttl_s=' + Math.ceil(STEPUP_INACTIVITY_MS / 1000)));
 }
 
 // ─── DL-A.5 (Opción A §2) — versión liveState por grupo (cheap-poll) ──────────
@@ -766,11 +794,11 @@ function _consumeMagicLinkNonce_(resumeToken, expectedGroupId) {
   const mappedGroup = cache.get(key);
   if (!mappedGroup || mappedGroup !== expectedGroupId) {
     // Inexistente/expirado/usado o de otro grupo → sin gracia. KAL-7: preview ≤8.
-    Logger.log(redact_('[_consumeMagicLinkNonce_] grace miss token=' + String(resumeToken).slice(0, 8) + '… group=' + expectedGroupId));
+    Logger.log(redact_('[DBG stepup] grace_hit=false consumed=false token=' + String(resumeToken).slice(0, 8) + '… group=' + expectedGroupId));
     return false;
   }
-  cache.remove(key); // single-use: un solo click
-  Logger.log(redact_('[_consumeMagicLinkNonce_] grace OK token=' + String(resumeToken).slice(0, 8) + '… group=' + expectedGroupId));
+  cache.remove(key); // single-use ESTRICTO: el primer click BORRA la marca (no reusable)
+  Logger.log(redact_('[DBG stepup] grace_hit=true consumed=true token=' + String(resumeToken).slice(0, 8) + '… group=' + expectedGroupId));
   return true;
 }
 
@@ -795,7 +823,16 @@ function _consumeMagicLinkNonce_(resumeToken, expectedGroupId) {
  */
 function _isStepUpFresh_(enrollmentGroupId) {
   const val = CacheService.getScriptCache().get('stepup_ok_' + enrollmentGroupId);
-  return !!val && Number(val) >= Date.now();
+  const fresh = !!val && Number(val) >= Date.now();
+  // SEC-STEPUP [DBG stepup]: edad/restante de la ventana DURA, redactado. Que el
+  // próximo log lo cuente solo — sin re-extender nada (esto es solo lectura).
+  if (val) {
+    const remainingS = Math.max(0, Math.round((Number(val) - Date.now()) / 1000));
+    Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=' + fresh + ' remaining_s=' + remainingS));
+  } else {
+    Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=false no_mark'));
+  }
+  return fresh;
 }
 
 function assertStepUpFresh_(enrollmentGroupId) {
@@ -2460,7 +2497,7 @@ function resumeSession_(p) {
   // 10 min. KAL-4: el grupo (id) se deriva del resume_token server-side. KAL-7: un token
   // viejo/filtrado/reusado no tiene marcador → step_up_fresh=false → flujo OTP normal.
   const stepUpFresh = _consumeMagicLinkNonce_(p && p.resume_token, id);
-  if (stepUpFresh) _markStepUpFresh_(id);
+  if (stepUpFresh) _markStepUpFresh_(id, 'GRACE');
 
   // Refuse if the family explicitly abandoned this session via abandonSession_.
   // Submitted sessions stay resumable regardless (the family must always be
@@ -2777,16 +2814,15 @@ function getAdmissionState_(p) {
   // marcador, REPORTAMOS la frescura vigente del grupo (no la cambiamos).
   let stepUpFresh = _consumeMagicLinkNonce_(p && p.resume_token, id);
   if (stepUpFresh) {
-    _markStepUpFresh_(id);
+    _markStepUpFresh_(id, 'GRACE');
   } else {
+    // ★ SEC-STEPUP (finding #55): el pulso es una LECTURA — REPORTA la frescura
+    // vigente, NUNCA la re-extiende. Antes (P-STEPUP-SLIDING) este else re-escribía
+    // stepup_ok_<group> en cada pulso → la ventana de 10 min se deslizaba indefinida
+    // mientras la pestaña estuviera abierta, y una recarga dentro de esa ventana viva
+    // entraba SIN OTP (bypass del PII-gate). La ventana es DURA: 10 min desde la última
+    // RE-VERIFICACIÓN (OTP o gracia), sin extensión por uso. Solo se reporta aquí.
     stepUpFresh = _isStepUpFresh_(id);
-    // Data-layer pieza 6 (heartbeat, opción b): este pulso ya está throttled a 30s en
-    // el frontend; aquí RE-EXTIENDE la marca server-side stepup_ok_<group> SOLO si YA
-    // está fresca → un usuario activo con el wizard abierto no recibe STEPUP_REQUIRED
-    // en mitad de un save de PII (la frescura se desliza). NUNCA crea frescura de la
-    // nada (no convierte un grupo no-verificado en verificado): solo prorroga una
-    // sesión YA verificada. KAL-4: el grupo se deriva del resume_token (requireResumeToken_).
-    if (stepUpFresh) _markStepUpFresh_(id);
   }
 
   const idEsc = appsheetEscape_(id);
@@ -2865,7 +2901,9 @@ function saveStep_(p) {
   if (p.step === 'persons' || p.step === 'relations' || p.step === 'health') {
     assertStepUpFresh_(enrollmentGroupId);
   }
-  _markStepUpFresh_(enrollmentGroupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
+  // ★ SEC-STEPUP (finding #55): NO re-extender la ventana en un save (eso era
+  // P-STEPUP-SLIDING — convertía 10 min en infinitos por uso → bypass del gate en
+  // recarga). El gate de arriba ya exige frescura DURA de ≤10 min desde el OTP.
 
   // ── Thin-client (DL-E41 / WPERF-3): la escritura la hace el KMS (encola). ─────
   // El wizard valida (KAL-4 + step-up arriba) y PROXEA al endpoint del step; el KMS
@@ -3557,7 +3595,7 @@ function verifyEmail_(p) {
   // durante STEPUP_INACTIVITY_MS. Los handlers de PII (assertStepUpFresh_)
   // pasarán hasta que la ventana expire. (Flujo NO-stepup intacto.)
   if (p && p.stepup === true) {
-    _markStepUpFresh_(enrollmentGroupId);
+    _markStepUpFresh_(enrollmentGroupId, 'OTP');
   }
 
   // No DB write — `email_confirmed` columns are removed in DL-E15. The
@@ -3939,7 +3977,7 @@ function saveResponses_(p) {
   // DL-E39 step-up gate: las respuestas del cuestionario son PII del expediente.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   assertStepUpFresh_(enrollmentGroupId);
-  _markStepUpFresh_(enrollmentGroupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
+  // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const { respondent_id, respondent_type_category_id, responses } = p;
   if (!responses || !responses.length) return { saved: 0 };
 
@@ -4064,7 +4102,7 @@ function uploadDocument_(p) {
   // DL-E39 step-up gate: subir documentos del expediente es PII sensible.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   assertStepUpFresh_(enrollmentGroupId);
-  _markStepUpFresh_(enrollmentGroupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
+  // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const enrollmentId      = p.enrollment_id || null;
   const { base64, mimeType, filename, document_type } = p;
   if (!base64) throw new Error('Missing base64');
@@ -4274,7 +4312,7 @@ function getDocument_(p) {
   // DL-E39 step-up gate: servir el documento en CLARO (bytes) revela PII.
   // groupId ya viene del token (resume_token o signing_token), nunca del payload.
   assertStepUpFresh_(groupId);
-  _markStepUpFresh_(groupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
+  // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   const fileId = p.file_id;
   // F-17·#10 (2026-06-11): lectura tolera ids legacy semánticos (no-UUID) — validador
@@ -5574,7 +5612,7 @@ function saveBillingInfo_(p) {
   // (resume_token+recovered_email) [canónico] o signing_token [back-compat].
   // DL-A.4 — endpoint encolado: el KMS devuelve al instante {queued,job_id}.
   const sctx = requireSignerContext_(p);
-  _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
+  // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   return kmsProxy_('enr.saveBillingInfoQueued', Object.assign({}, sctx.identity, {
     // Canonical multi-payer reparto entre tutores (GUARDIAN only — sin facturación
@@ -5649,7 +5687,7 @@ function submitGdprConsents_(p) {
   if (!Array.isArray(p.consents) || !p.consents.length) {
     throw new Error('consents must be a non-empty array');
   }
-  _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
+  // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   // GATE-B modo conservador: pasamos el array consents[] tal cual sin
   // estructura per-guardian adicional. El handler KMS lo persiste como un
@@ -5676,7 +5714,7 @@ function submitGdprConsents_(p) {
 function confirmReview_(p) {
   // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado.
   const sctx = requireSignerContext_(p);
-  _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
+  // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   return kmsProxy_('enr.confirmReviewQueued', Object.assign({}, sctx.identity));
 }
@@ -5730,7 +5768,7 @@ function initiateSigningSession_(p) {
   // DL-E39: step-up INCONDICIONAL antes de iniciar el ACTO de firma (Step 11).
   // enrollment_group_id derivado de la identidad (KAL-4), nunca del payload.
   if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id);
-  _markStepUpFresh_(sctx.enrollment_group_id);  // P-STEPUP-SLIDING: actividad real desliza la ventana
+  // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   // IP forense (best-effort): adjunta client_ip a la metadata del acto si el
   // cliente la reporta. KAL-11: redacta la IP en logs locales (no la imprimimos
@@ -5782,7 +5820,7 @@ function hydrateSession_(p) {
   //      (persons/relations/documents/responses + billing) NUNCA cruza al cliente antes
   //      del OTP. El wizard backend (trusted) sí recibe todo del KMS, pero lo filtra.
   const graceOk = _consumeMagicLinkNonce_(p && p.resume_token, groupId);
-  if (graceOk) _markStepUpFresh_(groupId);
+  if (graceOk) _markStepUpFresh_(groupId, 'GRACE');
   const stepUpFresh = _isStepUpFresh_(groupId);
 
   // A (WIZARD-STEPUP) — gate ANTES de pagar el hydrate pesado. El gate PII (DL-E39)
@@ -7697,6 +7735,80 @@ function manual_testStepUpGate() {
   cache.remove(key);
 
   Logger.log('=== manual_testStepUpGate: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
+  return { pass: pass };
+}
+
+/**
+ * ★ SEC-STEPUP (finding #55, 2026-06-11) — test de la GRACIA de magic-link + la
+ * VENTANA DURA de step-up. Ejecutar desde el editor GAS. Opera 100% sobre el
+ * ScriptCache (no toca BD). Cubre los 4 casos del veredicto:
+ *
+ *   (i)   GRACIA SINGLE-USE: tras acuñar `mlgrace_<token>`, _consumeMagicLinkNonce_
+ *         devuelve true UNA vez (borra la marca); la SEGUNDA resolución devuelve
+ *         false → sin gracia → el gate exigiría OTP. (Cierra el bypass: la gracia
+ *         NO se reusa en cada recarga.)
+ *   (ii)  TTL DURO: una marca stepup_ok cuyo timestamp ya pasó → _isStepUpFresh_
+ *         false (la ventana caduca a los 10 min sin extensión por uso).
+ *   (iii) RENUEVA SOLO POR RE-VERIFICACIÓN: _markStepUpFresh_ (OTP/gracia) re-fija
+ *         la ventana a now+10min; una LECTURA (_isStepUpFresh_) NO la mueve — dos
+ *         lecturas consecutivas no extienden el tope (anti-slide).
+ *   (iv)  SIN GRACIA NI OTP: ni marca de gracia ni stepup_ok → _isStepUpFresh_
+ *         false → el PII-gate (hydrateSession_) devolvería pii_gated:true.
+ *
+ * Lee PASS/FAIL en los Logs.
+ */
+function manual_testStepUpGrace() {
+  Logger.log('=== manual_testStepUpGrace (SEC-STEPUP #55) ===');
+  var cache   = CacheService.getScriptCache();
+  var GROUP   = Utilities.getUuid();
+  var TOKEN   = Utilities.getUuid();
+  var gKey    = 'mlgrace_' + TOKEN;
+  var sKey    = 'stepup_ok_' + GROUP;
+  var pass    = true;
+  cache.remove(gKey); cache.remove(sKey);
+
+  // (i) gracia single-use → consume y la 2ª resolución exige OTP
+  _mintMagicLinkNonce_(TOKEN, GROUP);
+  var first  = _consumeMagicLinkNonce_(TOKEN, GROUP);
+  var second = _consumeMagicLinkNonce_(TOKEN, GROUP);
+  if (first === true && second === false) {
+    Logger.log('  i) gracia single-use → ✓ PASS (1ª=true, 2ª=false)');
+  } else {
+    Logger.log('  i) gracia single-use → ✗ FAIL (1ª=' + first + ', 2ª=' + second + ')'); pass = false;
+  }
+
+  // (ii) TTL duro: marca expirada → no fresca
+  cache.put(sKey, String(Date.now() - 1), 600);
+  if (_isStepUpFresh_(GROUP) === false) {
+    Logger.log('  ii) TTL duro expirado → ✓ PASS (no fresca)');
+  } else {
+    Logger.log('  ii) TTL duro expirado → ✗ FAIL (reporta fresca)'); pass = false;
+  }
+
+  // (iii) re-verificación renueva; lectura NO desliza
+  cache.remove(sKey);
+  _markStepUpFresh_(GROUP, 'OTP');
+  var topAfterMark = Number(cache.get(sKey));
+  _isStepUpFresh_(GROUP);                 // LECTURA — no debe mover el tope
+  _isStepUpFresh_(GROUP);                 // LECTURA — no debe mover el tope
+  var topAfterReads = Number(cache.get(sKey));
+  if (_isStepUpFresh_(GROUP) === true && topAfterReads === topAfterMark) {
+    Logger.log('  iii) OTP renueva / lectura NO desliza → ✓ PASS (tope estable ' + topAfterMark + ')');
+  } else {
+    Logger.log('  iii) lectura desliza → ✗ FAIL (mark=' + topAfterMark + ' reads=' + topAfterReads + ')'); pass = false;
+  }
+
+  // (iv) sin gracia ni OTP → no fresca (pii_gated)
+  cache.remove(gKey); cache.remove(sKey);
+  var graceMiss = _consumeMagicLinkNonce_(TOKEN, GROUP);
+  if (graceMiss === false && _isStepUpFresh_(GROUP) === false) {
+    Logger.log('  iv) sin gracia ni OTP → ✓ PASS (pii_gated)');
+  } else {
+    Logger.log('  iv) sin gracia ni OTP → ✗ FAIL (grace=' + graceMiss + ', fresh=' + _isStepUpFresh_(GROUP) + ')'); pass = false;
+  }
+
+  cache.remove(gKey); cache.remove(sKey);
+  Logger.log('=== manual_testStepUpGrace: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
   return { pass: pass };
 }
 

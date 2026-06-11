@@ -350,15 +350,15 @@ export function WizardProvider({ children }) {
     return () => clearInterval(id);
   }, []);
 
-  // Marca actividad del usuario. VENTANA DESLIZANTE (data-layer pieza 6): mientras
-  // el step-up SIGUE fresco, la actividad RE-EXTIENDE `stepUpVerifiedUntil` (now +
-  // 10min) → un usuario activo rellenando PII nunca es expulsado a mitad de un save.
-  // NUNCA resucita un step-up ya expirado (eso exige markStepUpFresh tras OTP): solo
-  // prorroga una verificación viva. Sin tope absoluto que mate al usuario activo.
+  // ★ SEC-STEPUP (finding #55, 2026-06-11): la ventana de step-up es DURA (10 min
+  // EXACTOS desde el OTP/gracia), NO deslizante. Antes la actividad re-extendía
+  // `stepUpVerifiedUntil` en el cliente → divergía de la ventana DURA del servidor
+  // y dejaba la UI desbloqueada (candado stale) más allá de lo que el backend honra
+  // (que ahora exige re-OTP pasados los 10 min en cada write de PII). touchActivity
+  // se conserva como marca de actividad SIN extender la frescura — el cliente espeja
+  // EXCLUSIVAMENTE la verdad del servidor (step_up_fresh del hydrate/pulso).
   const touchActivity = useCallback(() => {
-    const now = Date.now();
-    setLastActivityAt(now);
-    setStepUpVerifiedUntil(prev => (prev && now < prev) ? now + STEPUP_WINDOW_MS : prev);
+    setLastActivityAt(Date.now());
   }, []);
 
   // Tras un verifyEmail({stepup:true}) OK → step-up fresco durante 10 min.
@@ -369,33 +369,15 @@ export function WizardProvider({ children }) {
     log.success('step-up: verificación fresca registrada (10 min)');
   }, []);
 
-  // True si el step-up sigue fresco. Ventana DESLIZANTE: `stepUpVerifiedUntil` se
-  // desliza con la actividad (touchActivity), así que basta comprobar el tope —
-  // que ya no es fijo sino que avanza mientras el usuario interactúa. Sin actividad
-  // durante 10 min, el tope no se desliza y caduca. Función pura (lee Date.now()).
+  // True si el step-up sigue fresco. ★ SEC-STEPUP: ventana DURA (no deslizante):
+  // `stepUpVerifiedUntil` se fija una sola vez en markStepUpFresh (OTP/gracia) y
+  // caduca a los 10 min sin extensión por uso — espejo EXACTO del servidor. Función
+  // pura (lee Date.now()). El gate de entrada (WizardPage) deriva su candado de esto,
+  // que a su vez se siembra SOLO del `step_up_fresh` que el servidor reporta.
   const isStepUpFresh = useCallback(() => {
     const now = Date.now();
     return !!stepUpVerifiedUntil && now < stepUpVerifiedUntil;
   }, [stepUpVerifiedUntil]);
-
-  // Data-layer pieza 6 (sliding step-up): UN único listener global throttled (~30s)
-  // de actividad real del usuario → touchActivity, para que la ventana de step-up se
-  // DESLICE mientras el usuario está activo en CUALQUIER paso (antes solo unos pocos
-  // botones llamaban touchActivity → un usuario activo a los 10 min recibía
-  // STEPUP_REQUIRED en mitad de un save). El throttle evita re-extender en cada
-  // mousemove; touchActivity solo prorroga si ya hay frescura (no la crea).
-  useEffect(() => {
-    let last = 0;
-    const onActivity = () => {
-      const now = Date.now();
-      if (now - last < 30 * 1000) return;
-      last = now;
-      touchActivity();
-    };
-    const evs = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
-    evs.forEach(e => window.addEventListener(e, onActivity, { passive: true }));
-    return () => evs.forEach(e => window.removeEventListener(e, onActivity));
-  }, [touchActivity]);
 
   const [recoveredEmail, setRecoveredEmailRaw] = useState(session.recoveredEmail || null);
   const setRecoveredEmail = useCallback((e) => {
