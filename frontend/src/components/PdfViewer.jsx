@@ -193,8 +193,12 @@ export default function PdfViewer({ data, url, title }) { // eslint-disable-line
     <div ref={containerRef} role="document" aria-label={title || undefined}
       style={{ border: '1px solid var(--border)', borderRadius: 8, background: '#fff', overflow: 'hidden' }}>
       {controls('top')}
-      {/* Lienzo: UNA página visible; scroll horizontal solo si el usuario hace zoom-in. */}
-      <div style={{ overflow: 'auto', maxHeight: 'min(72vh, 880px)', minHeight: 320, background: 'var(--bg)', textAlign: 'center' }}>
+      {/* Lienzo: UNA página visible; scroll horizontal solo si el usuario hace zoom-in.
+          RESPONSIVE-UI (2026-06-11): el alto se sube a min(85vh, 1100px) para que en
+          monitores altos de escritorio el documento se vea grande sin recortarse; el vh
+          mantiene la proporción contenida en móvil/tablet. El ancho lo gobierna el
+          contenedor (fit-a-ancho vía ResizeObserver), que ahora es ancho en el Step 10. */}
+      <div style={{ overflow: 'auto', maxHeight: 'min(85vh, 1100px)', minHeight: 320, background: 'var(--bg)', textAlign: 'center' }}>
         {doc ? (
           <canvas ref={canvasRef} style={{ display: 'inline-block', boxShadow: '0 1px 4px rgba(0,0,0,0.18)', margin: '8px 0' }} />
         ) : (

@@ -456,6 +456,12 @@ const handleNext = async (stepKey, data, extra = null) => {
 
   const StepComponent = STEP_COMPONENTS[currentStep];
 
+  // RESPONSIVE-UI (2026-06-11): el paso de REVISIÓN DE DOCUMENTOS (s_review, Step 10)
+  // ensancha el contenedor del wizard para que el visor PDF aproveche el ancho del
+  // monitor. Derivado del CATÁLOGO (id), no de un índice mágico. El resto de pasos
+  // mantiene el ancho de lectura cómodo (.wizard-body). Solo layout — cero lógica.
+  const isWideStep = STEP_CATALOG[currentStep]?.id === 's_review';
+
   // ── WIZ-NAV-CANON (Diego 2026-06-11) — fuente de verdad ÚNICA del gate 7→8 + banners ──
   // "NO HAY DIFERENCIA entre pasar del 4 al 5 o del 7 al 8. Esto lo controlan única y
   // exclusivamente el estado de la máquina de estados y los hitos." La navegación 7→8 la
@@ -803,7 +809,7 @@ const handleNext = async (stepKey, data, extra = null) => {
           (header + progress, ya arriba) + un StepSkeleton en el área de contenido,
           en vez de un overlay opaco que tapa todo. El primer paint es inmediato; el
           store se rellena cuando llega el hydrate. */}
-      <div className="wizard-body">
+      <div className={`wizard-body${isWideStep ? ' wizard-body--wide' : ''}`}>
         {/* SPEC-WIZ-SHELL (cold-load spec §2): el shell (header + WizardProgress, en
             la zona sticky de arriba) pinta al instante, antes de que resuelva el
             hydrate/fetchQuestions. Durante la rehidratación mostramos en el área de

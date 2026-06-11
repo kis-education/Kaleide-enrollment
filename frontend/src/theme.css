@@ -156,9 +156,19 @@ body {
 .wizard-body {
   flex: 1;
   padding: 32px 16px;
-  max-width: 760px;
+  /* RESPONSIVE-UI (2026-06-11): pasos de FORMULARIO (1-9, 11) — ancho de lectura
+     cómodo y centrado. Sube de 760→820px en desktop sin estirar campos a lo bestia. */
+  max-width: 820px;
   margin: 0 auto;
   width: 100%;
+}
+/* RESPONSIVE-UI (2026-06-11): el Step 10 (revisión de documentos) necesita el ancho —
+   el visor PDF se ve diminuto en una columna estrecha de monitor ancho. Este modificador
+   (lo añade WizardPage cuando currentStep es el paso s_review) ensancha el contenedor para
+   que el PdfViewer (fit-a-ancho vía ResizeObserver) crezca solo. Móvil intacto (el min()
+   colapsa a 95vw mucho antes del breakpoint). */
+.wizard-body--wide {
+  max-width: min(1400px, 95vw);
 }
 .wizard-footer {
   background: var(--surface);
