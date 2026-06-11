@@ -232,7 +232,7 @@ export function SplitEditor({ payers, onChange }) {
 // El KMS deriva grupo+enrollments del token (KAL-4) y mapea cada hijo → su finSubscription.
 export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits: savedSplitsProp, onDone, onBack }) {
   const { t } = useTranslation();
-  const { stepData, setPendingSave, awaitPendingSave, recoveredEmail, recoveryNonce } = useWizard();
+  const { stepData, enqueueSave, recoveredEmail, recoveryNonce } = useWizard();
   // Default payer = signing guardian (DL-E38: identity derived server-side from the
   // signing_token; client only echoes guardian_person_id for the KMS to disambiguate
   // which guardian pays in a multi-guardian family). KAL-4 stays intact — the KMS
@@ -402,25 +402,23 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
       ? '' : t('signing.billing.split.err_sum');
   };
 
-  // WIZARD — guardado background + avance optimista (paso 8). (1) gate de validación;
-  // (2) await del save previo en vuelo (surfacea un fallo anterior); (3) saveBillingInfo
-  // en BACKGROUND; (4) avance inmediato (onDone). KAL-4/KAL-7 intactos: el KMS deriva
+  // WIZARD — avance optimista REAL (paso 8, BILLING-EDIT causa 3 2026-06-11). (1) gate
+  // de validación LOCAL; (2) encolar saveBillingInfo como FACTORY (enqueueSave encadena
+  // la EJECUCIÓN en FIFO tras el save anterior — WizardContext); (3) avance inmediato
+  // (onDone). YA NO hay `await awaitPendingSave()` previo: con actos de 53-62s ese await
+  // bloqueaba cada "Siguiente" hasta drenar el acto anterior. Un fallo del acto anterior
+  // se surfacea por la nube global (saveState 'error' + Reintentar re-encola SU factory,
+  // WPERF-1), no bloqueando este submit. KAL-4/KAL-7 intactos: el KMS deriva
   // grupo/signer del token; el payload solo lleva % (group-level o per-hijo).
-  const submit = async () => {
+  const submit = () => {
     const v = validate();
     if (v) { setErr(v); return; }
-    try {
-      await awaitPendingSave();
-    } catch (e) {
-      log.warn('SignBilling: previous signing-step save failed', { message: e.message });
-      setErr(e?.message === 'NOT_EDITABLE' ? t('signing.billing.err_locked') : (e?.message || t('signing.generic_error')));
-      return;
-    }
-
     setErr('');
     // Default (colapsado) → payers[] group-level; "personalizar por hijo" → per_participant.
     // IDENTITY-FROM-LINK: identidad canónica = resume_token + `n` (email_id del enlace); el
     // backend resuelve el firmante server-side. signing_token solo back-compat. KAL-4 intacta.
+    // El body se construye ANTES de encolar: la factory cierra sobre los valores ACTUALES
+    // del form (no sobre estado mutable) y es re-ejecutable (botón Reintentar).
     const body = { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }) };
     if (perChild && applicants.length) body.per_participant = buildPerParticipantPayload();
     else body.payers = buildGroupPayload();
@@ -429,18 +427,19 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
       payers: body.payers && body.payers.map(p => ({ pid8: log.sid(p.payer_person_id), split: p.split_percentage })),
       per_participant_n: body.per_participant && body.per_participant.length,
     });
-    // Background save (NO await aquí). El siguiente paso lo espera vía awaitPendingSave.
-    const savePromise = gasCall('saveBillingInfo', body).catch(e => {
-      log.error('SignBilling: saveBillingInfo failed (background)', { message: e.message });
-      throw e; // se surface en el siguiente gate (awaitPendingSave del paso N+1)
-    });
-    setPendingSave(savePromise);
+    enqueueSave(() => gasCall('saveBillingInfo', body).catch(e => {
+      // STEPUP_REQUIRED dentro de la cola: NO se reintenta a ciegas — se propaga y la
+      // nube marca 'error' (el gate de step-up vive en los actos que lo exigen, DL-E39).
+      if (isStepUpRequiredError(e)) log.warn('SignBilling: saveBillingInfo requires step-up (queued)');
+      else log.error('SignBilling: saveBillingInfo failed (background)', { message: e.message });
+      throw e; // surface vía SaveIndicator ('error' + Reintentar)
+    }));
     onDone(); // avance optimista inmediato
   };
 
   // STEP-FRAMEWORK: este acto es un PASO IDÉNTICO a los 1-7 — usa el chasis StepShell
   // (StepNav estándar arriba/abajo + nube global). El guardado es OPTIMISTA: `submit`
-  // encola el save en la MISMA cola FIFO (setPendingSave) → la MISMA nube SaveIndicator;
+  // encola el save en la MISMA cola FIFO (enqueueSave) → la MISMA nube SaveIndicator;
   // el botón NUNCA muestra "Guardando…" ni se bloquea. El error inline lo pinta StepShell.
   return (
     <div className="kis-card">
@@ -500,7 +499,7 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
 
 export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, onBack }) {
   const { t } = useTranslation();
-  const { setPendingSave, awaitPendingSave, stepData, recoveredEmail, recoveryNonce } = useWizard();
+  const { enqueueSave, stepData, recoveredEmail, recoveryNonce } = useWizard();
 
   // CLI 9 (DL-E42 §3): matriz tutor×sujeto. El guardian actual (derivado del token,
   // signerCtx.guardian_person_id) consiente:
@@ -585,28 +584,18 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
     persistConsents(genState, next); setImgState(next);
   };
 
-  // WIZARD — guardado background + avance optimista (paso 9). Mirror del patrón
-  // /apply: (1) await del save de BILLING en vuelo (awaitPendingSave) — fuerza el lag
-  // de un paso y surface un fallo de billing antes de proceder; (2) disparar ESTE
-  // submitGdprConsents en BACKGROUND vía setPendingSave; (3) avanzar de inmediato.
-  // Si el save de background rechaza, se surface en el siguiente gate (SignReview).
-  const submit = async () => {
+  // WIZARD — avance optimista REAL (paso 9, BILLING-EDIT causa 3 2026-06-11). Mirror
+  // del patrón /apply: (1) gate de validación LOCAL (consentimiento bloqueante);
+  // (2) encolar submitGdprConsents como FACTORY (enqueueSave encadena la EJECUCIÓN en
+  // FIFO tras el save de BILLING — sin `await awaitPendingSave()` previo que bloqueaba
+  // este "Siguiente" 53-62s); (3) avanzar de inmediato. Un fallo de billing o de este
+  // acto se surfacea por la nube global ('error' + Reintentar re-encola la factory).
+  const submit = () => {
     const gdprSchool = generalConsents.find(c => c.blocking);
     if (gdprSchool && genState[gdprSchool.code] !== true) {
       setErr(t('signing.gdpr.must_accept_blocking'));
       return;
     }
-
-    // Lag de un paso: espera el save de BILLING. Si falló, su rechazo se surface aquí
-    // y NO avanzamos a Review.
-    try {
-      await awaitPendingSave();
-    } catch (e) {
-      log.warn('SignGdpr: previous billing save failed', { message: e.message });
-      setErr(e?.message || t('signing.generic_error'));
-      return;
-    }
-
     setErr('');
     const common = {
       consent_text_version: SIGNING_CONSENT_TEXT_VERSION,
@@ -642,10 +631,12 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
       gen_true:   generalConsents.filter(c => genState[c.code] === true).length,
       img_true:   imageSubjects.reduce((n, s) => n + imageConsents.filter(c => !!(imgState[s.id] && imgState[s.id][c.code])).length, 0),
     });
-    // Background save (NO await). `res.blocked` (rechazo de consentimiento bloqueante)
-    // se convierte en un rechazo de la promesa para que el siguiente gate lo surface
-    // — coherente con el resto de fallos de background. KAL-4/KAL-7 + payload intactos.
-    const savePromise = gasCall('submitGdprConsents', { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }), consents })
+    // Factory encolada (BILLING-EDIT causa 3). `res.blocked` (rechazo de consentimiento
+    // bloqueante server-side) se convierte en rechazo de la promesa → misma vía de
+    // surfacing (nube 'error' + Reintentar). El payload se construye ANTES de encolar
+    // (cierra sobre las marcas actuales, re-ejecutable). KAL-4/KAL-7 + payload intactos.
+    const payload = { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }), consents };
+    enqueueSave(() => gasCall('submitGdprConsents', payload)
       .then(res => {
         if (res && res.blocked) {
           const blockErr = new Error('GDPR_BLOCKED');
@@ -655,10 +646,11 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
         return res;
       })
       .catch(e => {
-        log.error('SignGdpr: submitGdprConsents failed (background)', { message: e.message });
+        // STEPUP_REQUIRED dentro de la cola: no se reintenta a ciegas — propaga a la nube.
+        if (isStepUpRequiredError(e)) log.warn('SignGdpr: submitGdprConsents requires step-up (queued)');
+        else log.error('SignGdpr: submitGdprConsents failed (background)', { message: e.message });
         throw e;
-      });
-    setPendingSave(savePromise);
+      }));
     onDone(); // avance optimista inmediato
   };
 
@@ -724,7 +716,7 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
 export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   const { t } = useTranslation();
   const {
-    isStepUpFresh, markStepUpFresh, setPendingSave, awaitPendingSave,
+    isStepUpFresh, markStepUpFresh, enqueueSave,
     recoveredEmail, recoveryNonce,
     // STEP10-VIEWER (Diego 2026-06-11): el cache de documentos vive en el CONTEXTO
     // (object URLs + sha256 keyed por file_id) — navegar 10→11→10 NO refetchea.
@@ -734,7 +726,6 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   // instante; el efecto de abajo los refresca igualmente en background.
   const [members, setMembers] = useState(signingMembers); // null=loading/preparando
   const [loadErr, setLoadErr] = useState('');
-  const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   // DL-E39: la revisión del paquete contractual carga documentos sensibles vía
   // getDocument (handler gateado). Si no hay step-up fresco — o el backend
@@ -861,60 +852,44 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
     if (nextIdx >= 0) setIdx(nextIdx);
   };
 
-  // WIZARD — guardado background + avance optimista (paso 10). (1) await del save de
-  // GDPR en vuelo (awaitPendingSave) — fuerza el lag de un paso y surface un fallo de
-  // gdpr (incl. consentimiento bloqueante rechazado) antes de proceder; (2) disparar
-  // confirmReview en BACKGROUND vía setPendingSave; (3) avanzar de inmediato a Sign.
-  // SignSign hará a su vez await de ESTE confirmReview antes de iniciar el acto de
-  // firma (dependencia de milestone). `submitting` se mantiene como gate de "click ya
-  // procesado" para el await previo (puede tardar), pero NO bloquea el avance una vez
-  // disparado el background save.
-  const confirm = async () => {
+  // WIZARD — avance optimista REAL (paso 10, BILLING-EDIT causa 3 2026-06-11).
+  // (1) gate de validación LOCAL (todos los documentos aceptados uno a uno);
+  // (2) encolar confirmReview como FACTORY (enqueueSave encadena la EJECUCIÓN en FIFO
+  // tras el save de GDPR — sin `await awaitPendingSave()` previo: ni bloqueo de 53-62s
+  // ni el timeout-race de WPERF-4, que existía solo para acotar ese await); (3) avanzar
+  // de inmediato a Sign. Un fallo de gdpr (incl. consentimiento bloqueante) o de este
+  // acto se surfacea por la nube global ('error' + Reintentar re-encola la factory).
+  // SignSign SÍ drena la cola (awaitPendingSave) antes de INICIAR el acto de firma —
+  // único await legítimo (dependencia de milestone de revisión confirmada server-side).
+  const confirm = () => {
     log.info('[DBG review] confirm CLICK', { accepted_n: acceptedCount, total: docs.length });
     // STEP10-VIEWER: la condición del ACTO confirmReview es que TODOS los members
     // estén aceptados uno a uno (no una puerta de navegación nueva — el gating entre
     // pasos sigue siendo del estado/hitos).
     if (!allAccepted) { setErr(t('signing.review.must_accept_all')); return; }
-    setErr(''); setSubmitting(true);
+    setErr('');
+    log.info('[DBG review] confirm — avanzando (confirmReview encolado)');
 
-    // Lag de un paso: espera el save de GDPR. Si falló (incl. bloqueante), su rechazo
-    // se surface aquí y NO avanzamos a Sign.
-    // WPERF-4 (bug 3): un save previo COLGADO congelaba el avance para siempre (confirm
-    // se quedaba en este await y onDone nunca corría). Lo acotamos con un timeout: si el
-    // save no resuelve en 8s, avanzamos igual (SignSign re-espera el encadenado antes del
-    // acto de firma, así que no se pierde la red de seguridad del save). Compatible con la
-    // cola no-bloqueante de WPERF-1 (donde awaitPendingSave resuelve de inmediato).
-    try {
-      await Promise.race([
-        awaitPendingSave(),
-        new Promise((resolve) => setTimeout(() => { log.warn('[DBG review] awaitPendingSave timeout — avanzo igualmente'); resolve(); }, 8000)),
-      ]);
-    } catch (e) {
-      log.warn('SignReview: previous gdpr save failed', { message: e.message });
-      setErr(e?.gdprBlocked ? t('signing.gdpr.blocked') : (e?.message || t('signing.generic_error')));
-      setSubmitting(false);
-      return;
-    }
-    log.info('[DBG review] confirm — avanzando (confirmReview en background)');
-
-    // Background save (NO await). SignSign lo espera vía awaitPendingSave antes de
-    // iniciar el acto de firma. KAL-4/KAL-7 intactos (identidad server-side del token).
+    // KAL-4/KAL-7 intactos (identidad server-side del token).
     // STEP10-VIEWER: el acto registra QUÉ versiones se aceptaron — accepted[] con
     // {file_id, purpose_code, sha256}. El sha256 sale del response de getDocument
     // (DOC-BYTES); se tolera null/ausente hasta que el backend lo emita y lo registre
     // (follow-up server-side pendiente — hoy el backend lo ignora sin romper).
+    // El payload se construye ANTES de encolar (cierra sobre docs/docCache actuales,
+    // re-ejecutable por el botón Reintentar).
     const acceptedPayload = docs.map(m => ({
       file_id:      m.file_id,
       purpose_code: m.purpose_code || null,
       sha256:       (docCache[m.file_id] && docCache[m.file_id].sha256) || null,
     }));
-    const savePromise = gasCall('confirmReview', { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }), accepted: acceptedPayload })
+    const payload = { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }), accepted: acceptedPayload };
+    enqueueSave(() => gasCall('confirmReview', payload)
       .catch(e => {
-        log.error('SignReview: confirmReview failed (background)', { message: e.message });
+        // STEPUP_REQUIRED dentro de la cola: no se reintenta a ciegas — propaga a la nube.
+        if (isStepUpRequiredError(e)) log.warn('SignReview: confirmReview requires step-up (queued)');
+        else log.error('SignReview: confirmReview failed (background)', { message: e.message });
         throw e;
-      });
-    setPendingSave(savePromise);
-    setSubmitting(false);
+      }));
     onDone(); // avance optimista inmediato
   };
 
@@ -979,7 +954,7 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
         onBack={onBack}
         onNext={confirm}
         nextLabel={t('signing.review.submit')}
-        nextDisabled={!allAccepted || !packageReady || submitting}
+        nextDisabled={!allAccepted || !packageReady}
         error={err}
       >
       {/* STEP-FRAMEWORK: ESPERA ACTIVA mientras el paquete se prepara — progreso

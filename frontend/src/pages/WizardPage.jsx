@@ -738,6 +738,14 @@ const handleNext = async (stepKey, data, extra = null) => {
               </div>
             )}
           </div>
+          {/* BILLING-EDIT causa 2 (2026-06-11): la nube de guardado TAMBIÉN post-submit.
+              En los pasos 8-11 isSubmitted=true → este header sustituye a la barra
+              save-later, donde vivía la ÚNICA instancia del SaveIndicator — la cola FIFO
+              marcaba saveState='saving' correctamente pero la nube no existía en pantalla.
+              Misma instancia/estilo que abajo; empujada al borde derecho del flex. */}
+          <span style={{ marginLeft: 'auto', flexShrink: 0, alignSelf: 'center' }}>
+            <SaveIndicator />
+          </span>
         </div>
       ) : (
         /* Save-later bar */
