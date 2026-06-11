@@ -2181,7 +2181,9 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
 
   // Catálogo de estados ENR_ADMISSION_SCHOOL del tenant (mismo patrón que el
   // reopen-check de resumeSession_).
+  var perfS0 = Date.now(); // PERF-KMS2 (no-op si PERF2_.adm inactivo)
   var allStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
+  if (PERF2_.adm) PERF2_.adm.states_ms = Date.now() - perfS0;
   var statesById = {};
   allStates.forEach(function(s) {
     if (s && s.school_id === SCHOOL_ID && s.entity_type_code === 'ENR_ADMISSION_SCHOOL' && !s.deleted_at) {
@@ -2209,7 +2211,9 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
   if (out.state_code === 'AD') {
     // Path 1 — guardian resolved from the email the family typed (a1, KAL-4).
     if (guardianPersonId) {
+      var perfP1 = Date.now(); // PERF-KMS2
       out.signing_context = resolveGuardianSigningContext_(groupId, guardianPersonId);
+      if (PERF2_.adm) PERF2_.adm.ctx_path1_ms = Date.now() - perfP1;
     }
     // Path 2 (DL-E38 cross-device fix) — the magic link carries NO guardian
     // discriminator (recovered_email is empty when the link is clicked on a
@@ -2224,7 +2228,9 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
     // signing act protections (single-use/TTL/binding, P222) still live on the
     // signing endpoints — this only unlocks the entry bridge.
     if (!out.signing_context) {
+      var perfP2 = Date.now(); // PERF-KMS2
       out.signing_context = resolveSigningContextFromSession_(groupId, persons);
+      if (PERF2_.adm) PERF2_.adm.ctx_path2_ms = Date.now() - perfP2;
     }
     out.signing_available = !!out.signing_context;
 
@@ -2246,7 +2252,9 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
     // {NOT_INITIATED, IN_PROGRESS, COMPLETED} so the frontend can render a terminal
     // success state. Does NOT touch signing_available (the entry-bridge gate).
     // KAL-4: the group is token-authorised; nothing comes from the payload.
+    var perfSt = Date.now(); // PERF-KMS2
     out.signing_status = resolveSigningStatus_(groupId);
+    if (PERF2_.adm) PERF2_.adm.status_ms = Date.now() - perfSt;
 
     // WIZARD — AD unlocks step 8 (state-driven, Option A; decisión Diego 2026-06-07):
     // the ENTRY DOOR to step 8 (signing) is the AD admission state — NOT the
@@ -2849,7 +2857,9 @@ function resumeSession_(p) {
  */
 function getAdmissionState_(p) {
   // KAL-4: grupo autorizado derivado del token (valida UUID + TTL + abandoned_at).
+  const perfT0 = Date.now(); // PERF-KMS2
   const id = requireResumeToken_(p);
+  const perfGateMs = Date.now() - perfT0;
 
   // Magic-link grace (IDENTITY-FROM-LINK): anclada al resume_token recién rotado
   // (mlgrace_<resume_token>); single-use, 10 min → consume + marca fresco. Si no hay
@@ -2868,6 +2878,7 @@ function getAdmissionState_(p) {
   }
 
   const idEsc = appsheetEscape_(id);
+  const perfB0 = Date.now(); // PERF-KMS2
   const lightRead = appsheetRequestBatch_([
     { table: T.ENROLLMENTS,      action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
     { table: T.PERSONS,          action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
@@ -2876,6 +2887,7 @@ function getAdmissionState_(p) {
     // paralelo, sin coste de latencia adicional respecto al batch existente.
     { table: T.ENROLLMENT_GROUPS, action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
   ]);
+  const perfBatchMs = Date.now() - perfB0;
   const enrollments = lightRead[0].ok ? (lightRead[0].data || []) : [];
   const persons     = lightRead[1].ok ? (lightRead[1].data || []) : [];
   const groupRow    = (lightRead[2].ok && lightRead[2].data && lightRead[2].data[0]) || null;
@@ -2884,12 +2896,25 @@ function getAdmissionState_(p) {
   // email del guardian, validado contra el grupo del token (KAL-4). Prioridad `n` >
   // recovered_email (compat). emails se leen lazy dentro del resolver (email_id Find
   // dirigido); persons/groupRow como hints para guardian + fallback requester.
+  const perfG0 = Date.now(); // PERF-KMS2
   const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, id, p && p.n, null, persons, groupRow);
   const guardianId = resolveGuardianForRecovery_(id, effRecoveredEmail, null, persons, groupRow);
+  const perfGuardianMs = Date.now() - perfG0;
 
+  const perfA0 = Date.now();
+  PERF2_.adm = {}; // recoge segmentos internos de buildAdmissionContext_
   const admission = buildAdmissionContext_(id, enrollments, guardianId, persons);
+  const perfAdmMs = Date.now() - perfA0;
+  Logger.log('[PERF] getAdmissionState t_gate=' + perfGateMs + ' t_batch=' + perfBatchMs +
+             ' t_guardian=' + perfGuardianMs + ' t_admission=' + perfAdmMs +
+             ' adm=' + JSON.stringify(PERF2_.adm));
+  const perfOut = (p && p._perf === true) ? { // post-gate (KAL-4); solo ms (KAL-11)
+    t_gate_ms: perfGateMs, t_batch_ms: perfBatchMs, t_guardian_ms: perfGuardianMs,
+    t_admission_ms: perfAdmMs, adm_segments: PERF2_.adm, t_total_ms: Date.now() - perfT0,
+  } : undefined;
 
   return {
+    _perf:             perfOut,
     ok:                true,
     state_code:        admission.state_code,
     state_label:       admission.state_label,
@@ -5621,6 +5646,13 @@ function drainJobQueue_(payload) {
   }
 }
 
+// ─── PERF-KMS2 (2026-06-11) — timing por segmento, dueño de cada segundo ─────
+// Acumulador por-ejecución (los globals GAS viven una sola execution). Los
+// endpoints instrumentados adjuntan `_perf` al response SOLO si el payload trae
+// `_perf:true` Y el gate del bearer (KAL-4) ya pasó — nunca timing incondicional
+// al público. KAL-11: solo nombres de segmento + ms, sin PII ni tokens.
+var PERF2_ = { kms_fetch_ms: null, adm: null };
+
 function kmsProxy_(action, payload) {
   const props        = PropertiesService.getScriptProperties();
   const kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
@@ -5641,6 +5673,7 @@ function kmsProxy_(action, payload) {
   };
 
   let httpResp;
+  const perfFetchT0 = Date.now(); // PERF-KMS2: aísla el hop HTTP wizard→KMS
   try {
     // El KMS es `access: ANYONE` → Google exige login a nivel de plataforma
     // ANTES de llegar al doPost. Un POST anónimo se redirige a la página de
@@ -5662,6 +5695,8 @@ function kmsProxy_(action, payload) {
     err.code = 'KMS_NETWORK_ERROR';
     throw err;
   }
+  PERF2_.kms_fetch_ms = Date.now() - perfFetchT0; // PERF-KMS2 (KAL-11: solo ms)
+  Logger.log('[PERF] kmsProxy_ action=' + action + ' fetch_ms=' + PERF2_.kms_fetch_ms);
 
   const status = httpResp.getResponseCode();
   const text   = httpResp.getContentText();
@@ -5760,8 +5795,21 @@ function saveBillingInfo_(p) {
 function getSavedBillingSplits_(p) {
   // DL-A.3 — identidad unificada (colapso del signing_token). El KMS resuelve el
   // signer de (grupo+guardian) o del bearer legacy. Lectura → no se encola.
+  const perfT0 = Date.now(); // PERF-KMS2
   const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
-  return kmsProxy_('enr.getSavedBillingSplits', sctx.identity);
+  const perfIdentMs = Date.now() - perfT0;
+  const perfP0 = Date.now();
+  let data = kmsProxy_('enr.getSavedBillingSplits', sctx.identity);
+  const perfProxyMs = Date.now() - perfP0;
+  Logger.log('[PERF] getSavedBillingSplits t_identity=' + perfIdentMs + ' t_proxy=' + perfProxyMs +
+             ' kms_fetch=' + PERF2_.kms_fetch_ms);
+  if (p && p._perf === true) { // post-gate (KAL-4 ya pasó); solo segmentos+ms (KAL-11)
+    data = Object.assign({}, data, { _perf: {
+      t_identity_ms: perfIdentMs, t_proxy_ms: perfProxyMs,
+      kms_fetch_ms: PERF2_.kms_fetch_ms, t_total_ms: Date.now() - perfT0,
+    } });
+  }
+  return data;
 }
 
 /**
@@ -5876,7 +5924,9 @@ function initiateSigningSession_(p) {
   // guardian la hace el resolver único del KMS, anti-P245); el ACTO real de firma
   // (Step 11, sin create_only) conserva el camino COMPLETO de requireSignerContext_
   // — P222: las protecciones del acto jamás se adelgazan.
+  const perfT0 = Date.now(); // PERF-KMS2
   const sctx = createOnly ? requireSignerIdentity_(p) : requireSignerContext_(p);
+  const perfIdentMs = Date.now() - perfT0;
 
   // DL-E39: step-up INCONDICIONAL antes de iniciar el ACTO de firma (Step 11).
   // enrollment_group_id derivado de la identidad (KAL-4), nunca del payload.
@@ -5899,7 +5949,20 @@ function initiateSigningSession_(p) {
   // lo de-dupea/idempotentiza server-side; el single-flight de api.js lo de-dupea en
   // cliente. Por eso create_only → endpoint SÍNCRONO; dispatch → endpoint encolado.
   const action = createOnly ? 'enr.initiateSigningSession' : 'enr.initiateSigningSessionQueued';
-  return kmsProxy_(action, proxyPayload);
+  const perfP0 = Date.now(); // PERF-KMS2
+  let data = kmsProxy_(action, proxyPayload);
+  const perfProxyMs = Date.now() - perfP0;
+  Logger.log('[PERF] initiateSigningSession create_only=' + createOnly + ' t_identity=' + perfIdentMs +
+             ' t_proxy=' + perfProxyMs + ' kms_fetch=' + PERF2_.kms_fetch_ms);
+  // PERF-KMS2: `_perf` SOLO en la LECTURA create_only (el ACTO real jamás se toca — P222)
+  // y solo post-gate (KAL-4) bajo flag explícito. KAL-11: segmentos+ms, sin tokens.
+  if (createOnly && p && p._perf === true) {
+    data = Object.assign({}, data, { _perf: {
+      t_identity_ms: perfIdentMs, t_proxy_ms: perfProxyMs,
+      kms_fetch_ms: PERF2_.kms_fetch_ms, t_total_ms: Date.now() - perfT0,
+    } });
+  }
+  return data;
 }
 
 // ─── DL-A — capa de datos del wizard (hidratación consolidada + liveState) ────
