@@ -18,6 +18,14 @@ Aplica a todas las sesiones cloud y a todos los CLIs locales. Las únicas excepc
 - **Google Apps Script** backend (`backend/Code.js`) — manifest `executeAs: USER_DEPLOYING`, `access: ANYONE_ANONYMOUS`. This differs from the KMS (`executeAs: USER_ACCESSING`, `access: ANYONE` — login Google required, any account, backend resolves identity via `auth_resolveForEmail_` and deny-by-default ROUTE_PERMISSIONS) and the two cannot share a single GAS project — see DL-E23. The wizard is anonymous because families don't yet have an account when starting an application; the KMS portal serves them post-onboarding with their own Google account.
 - **Static frontend** (`frontend/`) served from the wizard's deployment URL.
 
+### Modelo canónico de email de recuperación — `primary_email` es artefacto Stage-1 (2026-06-11)
+
+**Modelo canónico de Diego**: "No existe email de grupo. Cualquier tutor recupera con SU email personal. Los emails son los introducidos al acceder por primera vez — el de creación es el email personal del tutor que inicia. Identidad = solicitud + email."
+
+`enrEnrollmentGroups.primary_email` es un **ARTEFACTO Stage-1**: almacena el email personal del solicitante para encontrar el grupo durante el `initEnrollmentSession_`. NO es un "email de grupo" ni un concepto independiente — es el email personal del tutor 1.
+
+**Consecuencia de diseño**: `resolveGuardianForRecovery_` incluye un fallback (2026-06-11) para el caso en que la fila de `enrEmails` correspondiente al email de creación esté sin `person_id` (bug de origen: `enr_persistPersons_` no vincula la fila huérfana al `person_id` del tutor 1). El fallback resuelve via `requester_person_id` del grupo. Ver `kis-app/docs/kms/reports/2026-06-11-recovery-email-fix.md` + finding #39.
+
 ## Security
 
 ### Datos bancarios y fiscales viven en sus tablas dedicadas, NO en sysTenantConfig_T
