@@ -25,12 +25,18 @@ import * as log from '../logger';
 
 // Carga única (module-level) de pdf.js + worker. Idempotente: el primer visor paga
 // el import; los siguientes reutilizan la promesa.
+// WEBKIT-COMPAT (Diego, iPhone 2026-06-11: "tarda una eternidad… y al final da fallo"):
+// el build moderno de pdfjs-dist v6 usa Promise.withResolvers (ES2024) y otras APIs
+// que los WebKit < 17.4 NO tienen → getDocument moría en iOS con el blob YA descargado
+// (pdf.load_error tras la espera). El build LEGACY embebe los polyfills de core-js
+// (verificado en node_modules: módulo TC39 Promise.withResolvers) — es la vía
+// canónica de pdf.js para navegadores viejos. Mismo API, mismo worker por ?url.
 let _pdfjsPromise = null;
 function loadPdfjs_() {
   if (!_pdfjsPromise) {
     _pdfjsPromise = Promise.all([
-      import('pdfjs-dist'),
-      import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+      import('pdfjs-dist/legacy/build/pdf.mjs'),
+      import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'),
     ]).then(([lib, workerUrl]) => {
       lib.GlobalWorkerOptions.workerSrc = workerUrl.default;
       return lib;
@@ -55,6 +61,7 @@ export default function PdfViewer({ url, title }) { // eslint-disable-line react
   const [zoom, setZoom] = useState(1);          // 1 = ajuste a ancho del contenedor
   const [containerWidth, setContainerWidth] = useState(0);
   const [loadErr, setLoadErr] = useState(false);
+  const [retryKey, setRetryKey] = useState(0); // WEBKIT-COMPAT: Reintentar re-dispara la carga
 
   // Ancho del contenedor (ajuste a ancho por defecto + responsive en rotación móvil).
   useEffect(() => {
@@ -94,7 +101,7 @@ export default function PdfViewer({ url, title }) { // eslint-disable-line react
       if (renderTaskRef.current) { try { renderTaskRef.current.cancel(); } catch { /* ignore */ } }
       if (docRef.current) { try { docRef.current.destroy(); } catch { /* ignore */ } docRef.current = null; }
     };
-  }, [url]);
+  }, [url, retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Render de la página visible a <canvas>: escala = ajuste-a-ancho × zoom, con
   // devicePixelRatio para nitidez (el canvas interno es más denso que su CSS width).
@@ -168,6 +175,12 @@ export default function PdfViewer({ url, title }) { // eslint-disable-line react
       <div style={{ textAlign: 'center', padding: 32, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 8 }}>
         <i className="bi bi-file-earmark-pdf" style={{ fontSize: '1.4rem', display: 'block', marginBottom: 6 }} />
         {t('pdf.load_error')}
+        <div style={{ marginTop: 12 }}>
+          <button type="button" className="btn btn-outline-secondary btn-sm"
+            onClick={() => setRetryKey(k => k + 1)}>
+            <i className="bi bi-arrow-clockwise me-1" />{t('pdf.retry')}
+          </button>
+        </div>
       </div>
     );
   }

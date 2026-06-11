@@ -409,5 +409,6 @@
   "stepup.sign_gate_body": "Antes de firmar, confirma tu identidad con un código de verificación.",
   "stepup.sign_prompt": "Verifica para firmar",
   "stepup.review_gate_body": "Antes de revisar el paquete contractual, confirma tu identidad con un código de verificación.",
-  "stepup.review_prompt": "Verifica para revisar los documentos"
+  "stepup.review_prompt": "Verifica para revisar los documentos",
+  "pdf.retry": "Reintentar"
 }
