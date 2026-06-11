@@ -377,23 +377,24 @@ const handleNext = async (stepKey, data, extra = null) => {
   // identidad (los consentimientos GDPR son per-guardian). KAL-7: el token NUNCA va
   // en la URL — vive en signingContext (React state) + se pasa por props a los steps.
   const enterSigning = () => {
-    // DL-B §3 — autoridad de navegación ÚNICA, SIN JUMP. Eliminado el resolveSigningToken
-    // async que saltaba currentStep al sub-paso "más avanzado" ~19s después del click
-    // (causa del bug "al tocar billing salta al paso 11" y de pisar la pantalla del
-    // usuario). Ahora el avance a la firma es una transición de paso NORMAL (7→8) que
-    // gobierna el ESTADO (el botón solo aparece con AD + signing_ready, ver
-    // canAdvanceToSigning); a partir de ahí el usuario avanza 8→9→10→11 él mismo.
-    // El contexto del firmante (sub-pasos billing/gdpr/review/signed) YA viene en la
-    // hidratación consolidada (signingContext.steps) — no hace falta resolveSigningToken.
-    // KAL-7: el token vive en signingContext (React state), nunca en la URL.
-    const token = signingContext?.signing_token;
-    log.info('[DBG enterSigning] click (sin JUMP)', { has_token: !!token, admission_steps: signingContext && signingContext.steps });
-    if (!token) {
-      showToast(t('wizard.signing_confirm_email'));
-      return;
-    }
+    // WIZ-NAV-CANON (Diego 2026-06-11) — "NO HAY DIFERENCIA entre pasar del 4 al 5 o
+    // del 7 al 8. Esto lo controlan única y exclusivamente el estado de la máquina de
+    // estados y los hitos." La navegación 7→8 es una transición de paso NORMAL gobernada
+    // SOLO por el estado (canAdvance: AD + signing_ready + no COMPLETED). NUNCA pide al
+    // CLIENTE un signing_token/contexto como precondición de NAVEGAR: el firmante lo
+    // resuelve el BACKEND en el momento del ACTO (saveBillingInfo/submitGdprConsents/
+    // confirmReview/initiateSigningSession derivan la identidad del resume_token de
+    // sesión vía requireSignerContext_ + binding server-side, @157). Si en el acto no
+    // se puede identificar al firmante, el ERROR DEL ACTO lo dice ahí — jamás bloquea
+    // esta navegación previa. KAL-4 intacta (identidad siempre server-side del token).
+    // El contexto del firmante (sub-pasos billing/gdpr/review/signed) viene en la
+    // hidratación consolidada (signingContext.steps) cuando existe — informativo, no gate.
+    log.info('[DBG enterSigning] click (state-driven, sin gate de ctx)', {
+      has_ctx: !!(signingContext && signingContext.signing_token),
+      admission_steps: signingContext && signingContext.steps,
+    });
     markUserTookControl();
-    if (signingContext) setSignerCtx(signingContext); // alimenta members/estado de los Steps 8-11
+    if (signingContext) setSignerCtx(signingContext); // alimenta members/estado de los Steps 8-11 (best-effort)
     addCompletedStep(6);
     setCurrentStep(STEP_FIRST_SIGNING);
     window.scrollTo(0, 0);
@@ -449,42 +450,43 @@ const handleNext = async (stepKey, data, extra = null) => {
 
   const StepComponent = STEP_COMPONENTS[currentStep];
 
-  // ── WIZ-FINAL-GATE (2026-06-11) — fuente de verdad ÚNICA del gate 7→8 + banners ──
-  // El botón de avance y los dos banners (rojo "confirma tu email" / amarillo "se está
-  // preparando") se derivan TODOS de aquí, para que nunca diverjan ni se muestren a la
-  // vez. signing_ready ya viene normalizado en WizardContext (signing_context poblado ⟺
-  // firma lista), así que con contexto en mano: botón habilitado, CERO banners.
+  // ── WIZ-NAV-CANON (Diego 2026-06-11) — fuente de verdad ÚNICA del gate 7→8 + banners ──
+  // "NO HAY DIFERENCIA entre pasar del 4 al 5 o del 7 al 8. Esto lo controlan única y
+  // exclusivamente el estado de la máquina de estados y los hitos." La navegación 7→8 la
+  // gobierna SOLO el estado: AD + signing_ready + no COMPLETED. CERO dependencia del
+  // signing_context del CLIENTE para NAVEGAR (eliminado el segundo sistema de gating). El
+  // firmante lo resuelve el BACKEND en el ACTO (requireSignerContext_ del resume_token,
+  // @157) — si falla, el error vive EN el acto, no aquí.
   const _gateState   = admissionState?.state_code || null;
   const _gateReady   = !!admissionState?.signing_ready;
   const _gateStatus  = admissionState?.signing_status || null;
-  const _hasCtx      = !!(signingContext && signingContext.signing_token);
-  const _hasGuardian = !!admissionState?.recovered_guardian_person_id;
+  const _hasCtx      = !!(signingContext && signingContext.signing_token); // SOLO informativo
+  const _hasGuardian = !!admissionState?.recovered_guardian_person_id;      // SOLO informativo
   const canAdvance =
     currentStep === 6
     && _gateState === 'AD'
     && _gateReady
     && _gateStatus !== 'COMPLETED';
-  // Banner rojo: expediente Aprobado pero SIN identidad de guardian (ni contexto ni
-  // guardian resuelto). Banner amarillo: Aprobado, firma aún NO iniciada server-side
-  // (no ready) y no completada, PERO con identidad (si no, manda el rojo). Mutuamente
-  // excluyentes por construcción: el rojo gana cuando falta identidad.
-  const showRedBanner =
-    currentStep === 6
-    && !!admissionState?.signing_available
-    && !_hasCtx
-    && !_hasGuardian;
+  // Banner amarillo: ÚNICO aviso de navegación restante — expediente Aprobado pero la
+  // firma TODAVÍA NO está iniciada server-side (signing_ready:false real) y no completada.
+  // Es la única razón legítima por la que el avance permanece bloqueado (la sesión de firma
+  // del grupo aún no existe, P200/P201). NO depende del contexto del cliente.
   const showYellowBanner =
     currentStep === 6
     && _gateState === 'AD'
     && !_gateReady
-    && _gateStatus !== 'COMPLETED'
-    && !showRedBanner;
-  const _bannerLabel = canAdvance ? 'none' : (showRedBanner ? 'red' : (showYellowBanner ? 'yellow' : 'none'));
-  // Instrumentación: una línea por evaluación del gate → si vuelve a fallar, el log de
-  // Diego lo dice solo (estado/ready/ctx/status/canAdvance/banner). Sin PII.
+    && _gateStatus !== 'COMPLETED';
+  // Banner rojo "confirma tu email": ELIMINADO como BLOQUEADOR de navegación (WIZ-NAV-CANON).
+  // La identidad del firmante NO es una precondición de navegar — el aviso de "no pudimos
+  // identificarte, entra desde tu enlace" solo puede aparecer EN el acto que falle (Steps
+  // 8-10), nunca como puerta del Step 7. Ya no existe la variable showRedBanner.
+  const _bannerLabel = canAdvance ? 'none' : (showYellowBanner ? 'yellow' : 'none');
+  // Instrumentación: una línea por evaluación del gate. has_ctx/has_guardian quedan SOLO
+  // como informativos — NO participan en el veredicto de navegación (canAdvance/banner).
   log.info('[DBG gate]', {
-    state: _gateState, signing_ready: _gateReady, has_ctx: _hasCtx,
-    has_guardian: _hasGuardian, status: _gateStatus, canAdvance, banner: _bannerLabel,
+    state: _gateState, signing_ready: _gateReady, status: _gateStatus,
+    canAdvance, banner: _bannerLabel,
+    _info_has_ctx: _hasCtx, _info_has_guardian: _hasGuardian,
   });
 
   // WIZARD-GATE-ORDER (Diego 2026-06-09) — Mientras una sesión RECUPERADA por
@@ -644,22 +646,13 @@ const handleNext = async (stepKey, data, extra = null) => {
                 ? t('submitted.body_by_state.' + admissionState.state_code, t('submitted.locked.body'))
                 : t('submitted.locked.body')}
             </div>
-            {/* DL-C-B (c) + WIZ-FINAL-GATE (2026-06-11): el banner rojo "confirma tu email
-                recuperando tu solicitud" guía a recuperar SOLO cuando falta de verdad la
-                IDENTIDAD del guardian — es decir, expediente APROBADO (signing_available)
-                pero NI hay contexto de firma resuelto (signingContext) NI el backend
-                resolvió un guardian para esta recuperación (recovered_guardian_person_id).
-                Antes la condición era solo `signing_available && !signingContext`, que
-                disparaba el rojo aunque el guardian SÍ estuviera resuelto pero el
-                signing_context no se hubiera volcado a React state (el bug que veía Diego:
-                datos en mano, banner pidiendo recuperar de nuevo). Con guardian o contexto
-                resuelto → NO hay banner rojo. */}
-            {showRedBanner && (
-              <div style={{ marginTop: 8, fontWeight: 600, color: '#bf360c' }}>
-                <i className="bi bi-info-circle" style={{ marginRight: 6 }} />
-                {t('wizard.signing_confirm_email')}
-              </div>
-            )}
+            {/* WIZ-NAV-CANON (Diego 2026-06-11): el banner rojo "confirma tu email" se
+                ELIMINÓ como BLOQUEADOR de navegación. La identidad del firmante NO es una
+                precondición de navegar — "si no me identifica bien en el paso 7 no debería
+                dejarme pasar del 1 al 2 tampoco". El aviso de "no pudimos identificarte,
+                entra desde tu enlace" solo puede surgir EN el acto que falle (Steps 8-10),
+                resuelto server-side del resume_token (requireSignerContext_, @157). Aquí
+                showRedBanner es constante false. */}
 
             {/* DL-E38 merge (flujo continuo 1→11, Diego 2026-06-07): el avance a la
                 firma deja de ser un salto a /sign con un botón verde especial. Ahora
@@ -817,6 +810,11 @@ const handleNext = async (stepKey, data, extra = null) => {
              funcionales reutilizados de SigningSteps. Ignorados por los Steps 1-7. */
           onAdvance={advanceSigningStep}
           signingToken={signingContext?.signing_token || null}
+          /* WIZ-NAV-CANON: el resume_token de SESIÓN es la identidad canónica que los
+             actos de firma (Steps 8-11) reenvían al backend; éste resuelve el firmante
+             server-side (requireSignerContext_ + binding, @157). El signing_token del
+             cliente queda como back-compat opcional, NUNCA como precondición de entrar. */
+          resumeToken={resumeToken}
           signerCtx={signerCtx}
           /* DL-B §1: el reparto de billing YA GUARDADO viene en la hidratación
              consolidada → el Step 8 lo consume del store en vez de hacer una lectura

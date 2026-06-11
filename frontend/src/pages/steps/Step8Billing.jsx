@@ -1,4 +1,3 @@
-import { useTranslation } from 'react-i18next';
 import { SignBilling } from '../signing/SigningSteps';
 
 /**
@@ -12,26 +11,16 @@ import { SignBilling } from '../signing/SigningSteps';
  *
  * El trabajo funcional vive en pages/signing/SigningSteps.jsx — NO se duplica aquí.
  */
-export default function Step8Billing({ onAdvance, onBack, signingToken, signerCtx, savedSplits }) {
-  const { t } = useTranslation();
-
-  if (!signingToken) {
-    return (
-      <div className="kis-card" style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
-        <p style={{ fontSize: '1.6rem', marginBottom: 12 }} aria-hidden="true">🔒</p>
-        <p style={{ margin: 0 }}>{t('step.billing.locked.body')}</p>
-        <div style={{ marginTop: 24 }}>
-          <button className="btn-secondary-kis" onClick={onBack}>
-            <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+export default function Step8Billing({ onAdvance, onBack, signingToken, resumeToken, signerCtx, savedSplits }) {
+  // WIZ-NAV-CANON (Diego 2026-06-11): este paso ya NO se bloquea por la ausencia de
+  // signing_token en el cliente. La navegación 7→8 la gobierna SOLO el estado (WizardPage
+  // canAdvance); aquí siempre renderizamos el acto. La identidad del firmante la resuelve
+  // el BACKEND a partir del resume_token de sesión (requireSignerContext_, @157). Si no se
+  // pudiese identificar al firmante, el error vive EN el acto (SignBilling), no como puerta.
   return (
     <SignBilling
       signingToken={signingToken}
+      resumeToken={resumeToken}
       signerCtx={signerCtx}
       savedSplits={savedSplits}
       onDone={onAdvance}

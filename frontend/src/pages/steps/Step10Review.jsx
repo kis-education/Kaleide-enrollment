@@ -1,4 +1,3 @@
-import { useTranslation } from 'react-i18next';
 import { SignReview } from '../signing/SigningSteps';
 
 /**
@@ -13,26 +12,15 @@ import { SignReview } from '../signing/SigningSteps';
  *
  * El trabajo funcional vive en pages/signing/SigningSteps.jsx — NO se duplica aquí.
  */
-export default function Step10Review({ onAdvance, onBack, signingToken }) {
-  const { t } = useTranslation();
-
-  if (!signingToken) {
-    return (
-      <div className="kis-card" style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
-        <p style={{ fontSize: '1.6rem', marginBottom: 12 }} aria-hidden="true">🔒</p>
-        <p style={{ margin: 0 }}>{t('step.signing_review.locked.body')}</p>
-        <div style={{ marginTop: 24 }}>
-          <button className="btn-secondary-kis" onClick={onBack}>
-            <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+export default function Step10Review({ onAdvance, onBack, signingToken, resumeToken }) {
+  // WIZ-NAV-CANON (Diego 2026-06-11): sin gate de signing_token del cliente. La navegación
+  // la gobierna el estado (WizardPage); la identidad del firmante la resuelve el backend del
+  // resume_token de sesión (requireSignerContext_, @157). El error de identidad, si lo hay,
+  // vive EN el acto (confirmReview / lectura del paquete), no como puerta de navegación.
   return (
     <SignReview
       signingToken={signingToken}
+      resumeToken={resumeToken}
       onDone={onAdvance}
       onBack={onBack}
     />

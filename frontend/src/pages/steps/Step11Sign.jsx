@@ -1,4 +1,3 @@
-import { useTranslation } from 'react-i18next';
 import { SignSign } from '../signing/SigningSteps';
 
 /**
@@ -13,26 +12,16 @@ import { SignSign } from '../signing/SigningSteps';
  *
  * El trabajo funcional vive en pages/signing/SigningSteps.jsx — NO se duplica aquí.
  */
-export default function Step11Sign({ onBack, signingToken, signerCtx }) {
-  const { t } = useTranslation();
-
-  if (!signingToken) {
-    return (
-      <div className="kis-card" style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
-        <p style={{ fontSize: '1.6rem', marginBottom: 12 }} aria-hidden="true">🔒</p>
-        <p style={{ margin: 0 }}>{t('step.signing.locked.body')}</p>
-        <div style={{ marginTop: 24 }}>
-          <button className="btn-secondary-kis" onClick={onBack}>
-            <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+export default function Step11Sign({ onBack, signingToken, resumeToken, signerCtx }) {
+  // WIZ-NAV-CANON (Diego 2026-06-11): sin gate de signing_token del cliente como puerta de
+  // navegación. La navegación la gobierna el estado (WizardPage). El ACTO de firma Click &
+  // Sign (SignSign) sigue siendo la frontera real — su identidad/irreductibilidad la
+  // resuelve el backend; si no se puede identificar al firmante, el error vive EN el acto,
+  // nunca como puerta del paso previo.
   return (
     <SignSign
       signingToken={signingToken}
+      resumeToken={resumeToken}
       signerCtx={signerCtx || {}}
       onBack={onBack}
       onDone={() => { /* terminal — stays on success screen */ }}

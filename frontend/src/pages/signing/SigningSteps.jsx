@@ -43,6 +43,21 @@ const isStepUpRequiredError = (e) =>
 
 export const SUBS = ['billing', 'gdpr', 'review', 'sign'];
 
+/**
+ * WIZ-NAV-CANON (Diego 2026-06-11) — identidad canónica del ACTO de firma. El backend
+ * (@157, requireSignerContext_) acepta DOS formas y prefiere (a): { resume_token } →
+ * grupo (KAL-4) + guardian (binding server-side / a1). El { signing_token } es back-compat.
+ * Aquí construimos el sub-objeto de identidad a fusionar en el payload de cada acto:
+ * preferimos el resume_token de SESIÓN (sobrevive a F5/incógnito; el firmante lo resuelve
+ * el servidor) y, si no hay, caemos al signing_token legacy. NUNCA mandamos un guardian/
+ * grupo del cliente — solo el bearer; la identidad la deriva el backend del token.
+ */
+export function signingIdentity_({ resumeToken, signingToken }) {
+  if (resumeToken) return { resume_token: resumeToken };
+  if (signingToken) return { signing_token: signingToken };
+  return {};
+}
+
 export function lang_(i18n) { return i18n.language && i18n.language.indexOf('en') === 0 ? 'en' : 'es'; }
 
 /**
@@ -237,7 +252,7 @@ export function SplitEditor({ payers, onChange }) {
 //   · "Personalizar por hijo" expande a N repartos, cada uno solo % entre tutores, suma
 //     100, un primario → payload `per_participant:[{ applicant_person_id, payers[] }]`.
 // El KMS deriva grupo+enrollments del token (KAL-4) y mapea cada hijo → su finSubscription.
-export function SignBilling({ signingToken, signerCtx, savedSplits: savedSplitsProp, onDone, onBack }) {
+export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits: savedSplitsProp, onDone, onBack }) {
   const { t } = useTranslation();
   const { stepData, setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
   // Default payer = signing guardian (DL-E38: identity derived server-side from the
@@ -423,7 +438,9 @@ export function SignBilling({ signingToken, signerCtx, savedSplits: savedSplitsP
 
     setErr('');
     // Default (colapsado) → payers[] group-level; "personalizar por hijo" → per_participant.
-    const body = { signing_token: signingToken };
+    // WIZ-NAV-CANON: identidad canónica = resume_token de sesión (el backend resuelve el
+    // firmante server-side, @157); signing_token solo como back-compat. KAL-4 intacta.
+    const body = { ...signingIdentity_({ resumeToken, signingToken }) };
     if (perChild && applicants.length) body.per_participant = buildPerParticipantPayload();
     else body.payers = buildGroupPayload();
     log.info('[DBG billing] submit', {
@@ -508,7 +525,7 @@ export function SignBilling({ signingToken, signerCtx, savedSplits: savedSplitsP
 
 // ─── Step 9 — GDPR (modo conservador GATE-B: UN set, sin fan-out per-guardian) ─
 
-export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
+export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, onBack }) {
   const { t } = useTranslation();
   const { setPendingSave, awaitPendingSave, hasPendingSave, stepData } = useWizard();
 
@@ -655,7 +672,7 @@ export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
     // Background save (NO await). `res.blocked` (rechazo de consentimiento bloqueante)
     // se convierte en un rechazo de la promesa para que el siguiente gate lo surface
     // — coherente con el resto de fallos de background. KAL-4/KAL-7 + payload intactos.
-    const savePromise = gasCall('submitGdprConsents', { signing_token: signingToken, consents })
+    const savePromise = gasCall('submitGdprConsents', { ...signingIdentity_({ resumeToken, signingToken }), consents })
       .then(res => {
         if (res && res.blocked) {
           const blockErr = new Error('GDPR_BLOCKED');
@@ -738,7 +755,7 @@ export function SignGdpr({ signingToken, signerCtx, lang, onDone, onBack }) {
 
 // ─── Step 10 — Review (paquete contractual + confirmación lectura) ────────────
 
-export function SignReview({ signingToken, onDone, onBack }) {
+export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   const { t } = useTranslation();
   const { isStepUpFresh, markStepUpFresh, setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
   const [members, setMembers] = useState(null); // null=loading, []=empty
@@ -848,7 +865,7 @@ export function SignReview({ signingToken, onDone, onBack }) {
 
     // Background save (NO await). SignSign lo espera vía awaitPendingSave antes de
     // iniciar el acto de firma. KAL-4/KAL-7 + payload intactos.
-    const savePromise = gasCall('confirmReview', { signing_token: signingToken })
+    const savePromise = gasCall('confirmReview', { ...signingIdentity_({ resumeToken, signingToken }) })
       .catch(e => {
         log.error('SignReview: confirmReview failed (background)', { message: e.message });
         throw e;
@@ -988,7 +1005,7 @@ export function SignReview({ signingToken, onDone, onBack }) {
 
 // ─── Step 11 — Sign (Click & Sign + polling) ─────────────────────────────────
 
-export function SignSign({ signingToken, signerCtx, onDone, onBack }) {
+export function SignSign({ signingToken, resumeToken, signerCtx, onDone, onBack }) { // eslint-disable-line no-unused-vars
   const { t } = useTranslation();
   const { isStepUpFresh, markStepUpFresh, awaitPendingSave } = useWizard();
   // Back-only nav (top + bottom). The Sign step's "advance" is the signing act
