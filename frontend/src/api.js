@@ -86,11 +86,17 @@ export function initiateSigningRead(identity) {
 // (~40s medidos). Espejo de prefetchLookups/prefetchQuestions: cuando un firmante
 // entra (expediente AD + firma lista), calentamos la LISTA de docs (initiateSigningRead
 // → members) y, best-effort, los BYTES de cada doc, para que al llegar a S-REVIEW las
-// previews pinten sin esperar. Se cachea la PROMESA de bytes ({base64,mimeType,filename})
-// por file_id; el caller (fetchDocumentObjectUrl) construye/revoca el object URL como
-// siempre — sin fugas. Errores (típicamente STEPUP_REQUIRED si el step-up no está fresco
+// previews pinten sin esperar. Se cachea la PROMESA de bytes ({base64,mimeType,filename,
+// sha256 — DOC-BYTES}) por file_id (capa de fetch/de-dupe ÚNICA). El cache DURADERO del
+// visor (object URLs + sha256) vive en WizardContext (STEP10-VIEWER, decisión Diego
+// 2026-06-11: "si avanzo de los documentos a la firma y vuelvo a documentos, me vuelve a
+// cargar los documentos, no los almacena en memoria") — el `loadDocument` del contexto
+// pasa SIEMPRE por aquí, así que warm y visor comparten UNA sola vía de bytes (no hay dos
+// caches que diverjan). Errores (típicamente STEPUP_REQUIRED si el step-up no está fresco
 // todavía al montar) → la entrada se purga → cache-miss silencioso, idéntico al actual.
-const _docBytesCache = {};   // { [file_id]: Promise<{base64,mimeType,filename}> }
+// STEP10-VIEWER (blob-only): la rama WPERF-4 de URLs de visor de Drive se ELIMINÓ — el KMS ya no
+// emite ese campo (DOC-BYTES) y el visor usa SIEMPRE object URLs de PDF.
+const _docBytesCache = {};   // { [file_id]: Promise<{base64,mimeType,filename,sha256?}> }
 
 export function getDocumentBytes({ file_id, resume_token, signing_token, n, recovered_email }) {
   if (!file_id) return Promise.reject(new Error('getDocumentBytes: file_id required'));
@@ -103,19 +109,32 @@ export function getDocumentBytes({ file_id, resume_token, signing_token, n, reco
   return flight;
 }
 
-export function prefetchDocuments(signingToken) {
-  if (!signingToken) return;
-  initiateSigningRead(signingToken)
+/** STEP10-VIEWER: purga la capa de bytes (la llama WizardContext al limpiar sesión,
+ *  junto con la revocación de los object URLs del cache del contexto). */
+export function purgeDocumentBytesCache() {
+  for (const k in _docBytesCache) delete _docBytesCache[k];
+}
+
+/**
+ * Warm del paquete contractual en background (WPERF-1 + preload `documents` del
+ * catálogo STEP-FRAMEWORK). STEP10-VIEWER: escribe en EL cache del contexto — recibe
+ * `loadDocument` (WizardContext), que resuelve bytes vía getDocumentBytes (de-dupe) y
+ * persiste el object URL + sha256 keyed por file_id en el contexto. Un solo cache.
+ * @param {{resumeToken?:string, signingToken?:string, n?:string, recoveredEmail?:string}} identity
+ * @param {(params:Object)=>Promise<Object>} loadDocument — del WizardContext
+ */
+export function prefetchDocuments(identity, loadDocument) {
+  const id = (typeof identity === 'string') ? { signingToken: identity } : (identity || {});
+  if ((!id.resumeToken && !id.signingToken) || typeof loadDocument !== 'function') return;
+  const docIdentity = id.resumeToken
+    ? { resume_token: id.resumeToken, n: id.n || undefined, recovered_email: id.recoveredEmail || undefined }
+    : { signing_token: id.signingToken };
+  initiateSigningRead(id)
     .then(res => {
       const members = Array.isArray(res && res.members) ? res.members : [];
       members.forEach(m => {
-        if (!m.file_id || _docBytesCache[m.file_id]) return;
-        // WPERF-INT (reconciliación con WPERF-4): el preview de S-REVIEW usa drive_view_url
-        // (instantáneo) cuando existe; los bytes (getDocument ~40s) son SOLO fallback. No
-        // malgastamos los 40s pre-calentando bytes que ya no son la vía principal — solo
-        // calentamos cuando el member NO trae drive_view_url (espejo de la lógica de SignReview).
-        if (m.drive_view_url) return;
-        getDocumentBytes({ file_id: m.file_id, signing_token: signingToken }).catch(() => {});
+        if (!m.file_id) return;
+        loadDocument({ file_id: m.file_id, ...docIdentity }).catch(() => {});
       });
     })
     .catch(() => {});

@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import * as log from '../logger';
 import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
-import { purgeQuestionsCache, primeLookups, primeQuestions } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate
+import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -293,6 +293,72 @@ export function WizardProvider({ children }) {
   const [admissionState, setAdmissionState] = useState(null);
   const [signingContext, setSigningContext] = useState(null);
 
+  // ── STEP10-VIEWER (Diego 2026-06-11) — cache EN MEMORIA del paquete contractual ──
+  // Queja literal: "si avanzo de los documentos a la firma y vuelvo a documentos, me
+  // vuelve a cargar los documentos, no los almacena en memoria." Los object URLs (+
+  // sha256/filename/mimeType — DOC-BYTES) viven AQUÍ keyed por file_id, NO en useState
+  // local de SignReview → navegar 10→11→10 NO refetchea ni re-crea blobs. La lista de
+  // members del paquete (`signingMembers`, metadata sin bytes) también se cachea para
+  // que la re-entrada al Step 10 pinte al instante (se refresca en background).
+  // Revocación de object URLs SOLO al limpiar sesión / desmontar el wizard (clearSession
+  // + cleanup del provider), NUNCA al salir del step. KAL-7: nada de esto toca la URL ni
+  // sessionStorage (los blobs son documentos contractuales — viven solo en memoria).
+  const [docCache, setDocCache] = useState({});   // { [file_id]: { url, sha256, filename, mimeType } }
+  const docCacheRef = useRef({});                 // espejo síncrono (race guard + revocación)
+  const [signingMembers, setSigningMembersRaw] = useState(null); // null = nunca cargados
+  const setSigningMembers = useCallback((members) => {
+    setSigningMembersRaw(Array.isArray(members) && members.length ? members : null);
+  }, []);
+
+  /**
+   * Resuelve un documento del paquete a su entrada de cache { url, sha256, filename,
+   * mimeType }. Pasa SIEMPRE por getDocumentBytes (api.js — única capa de fetch +
+   * de-dupe, compartida con el warm prefetchDocuments) y crea el object URL UNA sola
+   * vez por file_id. Idempotente y race-safe: si otro caller ya creó la entrada
+   * mientras llegaban los bytes, se reutiliza la suya (sin fugar el blob duplicado).
+   * @param {{file_id:string, resume_token?:string, signing_token?:string, n?:string, recovered_email?:string}} params
+   * @returns {Promise<{url:string, sha256:string|null, filename:string|null, mimeType:string|null}>}
+   */
+  const loadDocument = useCallback(async (params) => {
+    const fid = params && params.file_id;
+    if (!fid) throw new Error('loadDocument: file_id required');
+    if (docCacheRef.current[fid]) return docCacheRef.current[fid];
+    const res = await getDocumentBytes(params);
+    if (docCacheRef.current[fid]) return docCacheRef.current[fid]; // carrera: ya creada
+    const bytes = Uint8Array.from(atob(res.base64), c => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: res.mimeType || 'application/pdf' }));
+    const entry = {
+      url,
+      sha256:   res.sha256 || null,   // DOC-BYTES: tolera ausente hasta que aterrice server-side
+      filename: res.filename || null,
+      mimeType: res.mimeType || null,
+    };
+    docCacheRef.current = { ...docCacheRef.current, [fid]: entry };
+    setDocCache(docCacheRef.current);
+    log.info('[doc cache] object URL creado', { file8: log.sid(fid), has_sha256: !!entry.sha256 });
+    return entry;
+  }, []);
+
+  /** Revoca TODOS los object URLs y vacía el cache (+ la capa de bytes de api.js).
+   *  SOLO se llama al limpiar sesión o al desmontar el provider del wizard —
+   *  nunca al salir de un step (STEP10-VIEWER). */
+  const revokeDocumentCache = useCallback(() => {
+    Object.values(docCacheRef.current).forEach(e => {
+      try { URL.revokeObjectURL(e.url); } catch { /* ignore */ }
+    });
+    docCacheRef.current = {};
+    setDocCache({});
+    setSigningMembersRaw(null);
+    purgeDocumentBytesCache();
+  }, []);
+
+  // Desmontar el wizard entero (cierre de la SPA) → liberar los blobs.
+  useEffect(() => () => {
+    Object.values(docCacheRef.current).forEach(e => {
+      try { URL.revokeObjectURL(e.url); } catch { /* ignore */ }
+    });
+  }, []);
+
   // ── DL-B §1/§2 — capa de datos consolidada (hydrateSession) ──────────────────
   // `billingSplits`: el reparto YA GUARDADO viene EN la hidratación consolidada
   // (DL-A enr.wizardHydrate → billing_splits) → el Step 8 ya no hace una lectura
@@ -448,7 +514,10 @@ export function WizardProvider({ children }) {
     // WIZARD-PERF-CACHE-SKELETON: el catálogo cacheado de preguntas NUNCA debe
     // sobrevivir al ciclo de auth — purgar al limpiar sesión (logout/clear/expiry).
     purgeQuestionsCache();
-  }, []);
+    // STEP10-VIEWER: revocar los object URLs del paquete contractual + purgar la capa
+    // de bytes. Es el ÚNICO punto (junto con el unmount del provider) donde se revoca.
+    revokeDocumentCache();
+  }, [revokeDocumentCache]);
 
   /**
    * True if the step's current data differs from what was last saved to the
@@ -927,6 +996,7 @@ export function WizardProvider({ children }) {
       hydrateFromResume, refreshAdmissionState, clearSession,
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
+      docCache, loadDocument, signingMembers, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual
       billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       recoveryNonce, setRecoveryNonce,           // IDENTITY-FROM-LINK: `n` = email_id del enlace

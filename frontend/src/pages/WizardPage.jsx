@@ -19,7 +19,7 @@ import { Toast, useToast } from '../components/Toast';
 // primera instancia; otro programa (campamentos, etc.) declararía otro catálogo sin
 // tocar este chasis. STEP_COMPONENTS deriva del catálogo (compat con el viejo array).
 // FIRST_SIGNING_INDEX (primer paso savePolicy:'act') sustituye el 7 hardcodeado.
-import { STEP_COMPONENTS, FIRST_SIGNING_INDEX } from './steps/catalog';
+import { STEP_CATALOG, STEP_COMPONENTS, FIRST_SIGNING_INDEX } from './steps/catalog';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
@@ -39,6 +39,7 @@ export default function WizardPage() {
     markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
     isSubmitted,
     admissionState, signingContext,
+    loadDocument,                               // STEP10-VIEWER: cache de docs del contexto
     billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2
     markStepUpFresh,
     isStepUpFresh, recoveredViaMagicLink,
@@ -86,14 +87,39 @@ export default function WizardPage() {
   // step-up aún no está fresco, getDocument falla silenciosamente y la caché se purga
   // (re-fetch normal al llegar a Review). Se dispara solo para firmantes reales (no en
   // cada /apply) para no malgastar cuota GAS. KAL-7: el token vive en React state.
+  // STEP10-VIEWER: el warm escribe en EL cache del CONTEXTO (loadDocument → object URLs
+  // + sha256 keyed por file_id en WizardContext) — un solo cache, no dos paralelos.
+  // Identidad de SESIÓN preferente (resume_token + `n`); signing_token solo compat.
+  const warmDocuments = () => {
+    prefetchDocuments(
+      {
+        resumeToken,
+        signingToken: signingContext?.signing_token || null,
+        n: recoveryNonce,
+        recoveredEmail,
+      },
+      loadDocument
+    );
+  };
   useEffect(() => {
     if (admissionState?.state_code === 'AD'
         && admissionState?.signing_ready
         && admissionState?.signing_status !== 'COMPLETED'
-        && signingContext?.signing_token) {
-      prefetchDocuments(signingContext.signing_token);
+        && (resumeToken || signingContext?.signing_token)) {
+      warmDocuments();
     }
-  }, [admissionState?.state_code, admissionState?.signing_ready, admissionState?.signing_status, signingContext?.signing_token]); // eslint-disable-line
+  }, [admissionState?.state_code, admissionState?.signing_ready, admissionState?.signing_status, resumeToken, signingContext?.signing_token]); // eslint-disable-line
+
+  // STEP-FRAMEWORK preload del catálogo: al ENTRAR a un paso cuyo catálogo declara
+  // `preload: ['documents']` (Step 10 s_review), dispara el MISMO warm (mismo cache del
+  // contexto). Best-effort: con el cache caliente es no-op (loadDocument es idempotente
+  // y getDocumentBytes de-dupea los vuelos).
+  useEffect(() => {
+    const entry = STEP_CATALOG[currentStep];
+    if (entry && Array.isArray(entry.preload) && entry.preload.includes('documents')) {
+      warmDocuments();
+    }
+  }, [currentStep]); // eslint-disable-line
 
   // ── Admission-state PULSE (realtime bug, Diego 2026-06-07) ───────────────────
   // El estado de admisión (admissionState/signingContext/isSubmitted) solo se

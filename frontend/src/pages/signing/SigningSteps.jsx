@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { gasCall, initiateSigningRead } from '../../api';
 import { useWizard } from '../../context/WizardContext';
-import { fetchDocumentObjectUrl } from '../../utils/documentProxy';
 import { SIGNING_CONSENTS, SIGNING_CONSENT_TEXT_VERSION } from '../../signingConsentTexts';
 import StepUpReverify from '../../components/StepUpReverify';
 import StepShell from '../../components/StepShell';
@@ -724,10 +723,17 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
 
 export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   const { t } = useTranslation();
-  const { isStepUpFresh, markStepUpFresh, setPendingSave, awaitPendingSave, recoveredEmail, recoveryNonce } = useWizard();
-  const [members, setMembers] = useState(null); // null=loading, []=empty
+  const {
+    isStepUpFresh, markStepUpFresh, setPendingSave, awaitPendingSave,
+    recoveredEmail, recoveryNonce,
+    // STEP10-VIEWER (Diego 2026-06-11): el cache de documentos vive en el CONTEXTO
+    // (object URLs + sha256 keyed por file_id) — navegar 10→11→10 NO refetchea.
+    docCache, loadDocument, signingMembers, setSigningMembers,
+  } = useWizard();
+  // members sembrados del cache del contexto → re-entrada al Step 10 pinta al
+  // instante; el efecto de abajo los refresca igualmente en background.
+  const [members, setMembers] = useState(signingMembers); // null=loading/preparando
   const [loadErr, setLoadErr] = useState('');
-  const [read, setRead] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   // DL-E39: la revisión del paquete contractual carga documentos sensibles vía
@@ -743,10 +749,11 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   // cuenta los reintentos para el feedback; el poll re-dispara el efecto vía reloadKey.
   const [attempt, setAttempt] = useState(0);
   const POLL_MS = 6000;        // reintento corto mientras el paquete se prepara
-  // CLI 82 / KAL-NEW-5: file_id → object URL (bytes vía getDocument + signing_token).
-  // Sustituye los enlaces públicos de Drive (m.drive_view_url) por previews
-  // servidas desde el proxy de bytes. Privados al dueño del deployment.
-  const [docUrls, setDocUrls] = useState({});
+  // STEP10-VIEWER (cita Diego: "La navegación no obstante debería ser de aceptación de
+  // documentos uno a uno. Presentarlo en un visor más amplio y pudiendo pasar de uno a
+  // otro documento"): UN documento a la vez + aceptación explícita por documento.
+  const [idx, setIdx] = useState(0);            // documento visible (0-based)
+  const [accepted, setAccepted] = useState({}); // { [file_id]: true } — aceptación por doc
 
   useEffect(() => {
     if (needStepUp) return undefined;
@@ -765,6 +772,9 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
         log.info('[DBG review] members', { ms, n: mem.length, attempt, files8: mem.map(m => log.sid(m.file_id)), states: mem.map(m => m.purpose_code || '?') });
         if (!alive) return;
         if (mem.length === 0) {
+          // STEP10-VIEWER: si ya teníamos members (sembrados del cache del contexto),
+          // un read vacío transitorio NO los pisa ni re-arranca la espera activa.
+          if (Array.isArray(members) && members.length) return;
           // STEP-FRAMEWORK: paquete aún no listo → ESPERA ACTIVA. Re-pollea solo
           // (sin pedir al cliente "vuelve en unos minutos"); el render muestra el
           // progreso. members se mantiene en null (estado "preparando…", no "vacío").
@@ -773,6 +783,7 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
           return;
         }
         setMembers(mem);
+        setSigningMembers(mem); // STEP10-VIEWER: cache del contexto (re-entrada instantánea)
       })
       .catch(e => {
         if (isStepUpRequiredError(e)) {
@@ -785,40 +796,40 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
         // duro solo se muestra si persiste tras varios intentos (loadErr).
         log.warn('SignReview: initiateSigningRead failed — reintento automático', { attempt, message: e && e.message });
         if (!alive) return;
+        // STEP10-VIEWER: con members ya sembrados del cache, el refresh fallido no
+        // degrada la pantalla (seguimos mostrando el paquete cacheado).
+        if (Array.isArray(members) && members.length) return;
         if (attempt >= 8) { setLoadErr(e.message || t('signing.generic_error')); return; }
         retryTimer = setTimeout(() => { if (alive) setAttempt(a => a + 1); }, POLL_MS);
       });
     return () => { alive = false; if (retryTimer) clearTimeout(retryTimer); };
   }, [signingToken, resumeToken, recoveryNonce, recoveredEmail, needStepUp, reloadKey, attempt]); // eslint-disable-line
 
-  // Resuelve los bytes de cada documento del paquete vía el proxy y construye
-  // object URLs en memoria. Revoca todas las URLs al desmontar.
+  // STEP10-VIEWER (blob-only): resuelve los bytes de cada documento vía el cache del
+  // CONTEXTO (loadDocument → object URL + sha256 keyed por file_id). Cache-hit → CERO
+  // red y CERO '[DBG review] getDocument start' repetido (10→11→10 instantáneo). La
+  // rama de URLs de visor de Drive (WPERF-4) se ELIMINÓ — el KMS ya no emite ese campo (DOC-BYTES);
+  // el visor usa SIEMPRE object URLs de PDF (CSP frame-src blob: ya lo permite). NO se
+  // revoca nada al desmontar el step: la revocación vive en WizardContext (clearSession
+  // / desmontaje del wizard), nunca al salir del paso.
   useEffect(() => {
     if (!members || !members.length) return undefined;
     let alive = true;
-    const created = [];
     members.forEach(m => {
-      if (!m.file_id) return;
-      // WPERF-4 (bug 4): si el member ya trae drive_view_url (carga bien, instantáneo),
-      // NO descargamos los bytes por GAS (getDocument tarda ~40s). El visor inline usa
-      // drive_view_url directamente; el blob queda solo como fallback cuando falta.
-      if (m.drive_view_url) { log.info('[DBG review] using drive_view_url (skip blob)', { file8: log.sid(m.file_id) }); return; }
+      if (!m.file_id || docCache[m.file_id]) return; // ya en cache → no refetch
       const _t0 = Date.now();                        // DBG-SESSION timing por doc (bug 7)
       log.info('[DBG review] getDocument start', { file8: log.sid(m.file_id) });
       // IDENTITY-COMPLETION (#30): identidad de SESIÓN. getDocument_ acepta resume_token + `n`
       // (resuelve el signing_token server-side del enlace para el proxy KMS de los PDF de
       // firma) o signing_token (compat). Preferimos resume_token (sobrevive a F5/incógnito).
-      fetchDocumentObjectUrl({
+      loadDocument({
         file_id: m.file_id,
         ...(resumeToken
           ? { resume_token: resumeToken, n: recoveryNonce || undefined, recovered_email: recoveredEmail || undefined }
           : { signing_token: signingToken }),
       })
-        .then(({ url }) => {
-          log.info('[DBG review] getDocument OK', { file8: log.sid(m.file_id), ms: Date.now() - _t0, has_url: !!url });
-          if (!alive) { URL.revokeObjectURL(url); return; }
-          created.push(url);
-          setDocUrls(prev => ({ ...prev, [m.file_id]: url }));
+        .then((entry) => {
+          log.info('[DBG review] getDocument OK', { file8: log.sid(m.file_id), ms: Date.now() - _t0, has_url: !!(entry && entry.url), has_sha256: !!(entry && entry.sha256) });
         })
         .catch(e => {
           log.warn('[DBG review] getDocument FAIL', { file8: log.sid(m.file_id), ms: Date.now() - _t0, code: e && e.code, message: e && e.message });
@@ -826,8 +837,29 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
           log.error('SignReview: getDocument failed', { file_id: m.file_id, message: e.message });
         });
     });
-    return () => { alive = false; created.forEach(u => URL.revokeObjectURL(u)); };
+    return () => { alive = false; };
   }, [members, signingToken, resumeToken]); // eslint-disable-line
+
+  // ── STEP10-VIEWER: derivados del visor (UN doc a la vez + aceptación por doc) ──
+  // N es DINÁMICO: los members que el paquete declara (cero hardcode de documentos).
+  const docs = (members || []).filter(m => m.file_id);
+  const total = docs.length;
+  const safeIdx = Math.min(idx, Math.max(0, total - 1));
+  const current = total ? docs[safeIdx] : null;
+  const currentEntry = current ? docCache[current.file_id] : null;
+  const acceptedCount = docs.filter(m => accepted[m.file_id]).length;
+  const allAccepted = total > 0 && acceptedCount === total;
+
+  // Aceptación explícita del documento visible; al aceptar, auto-avanza al siguiente
+  // documento NO aceptado si lo hay (cita Diego: "aceptación de documentos uno a uno").
+  const acceptCurrent = () => {
+    if (!current) return;
+    const next = { ...accepted, [current.file_id]: true };
+    setAccepted(next);
+    setErr('');
+    const nextIdx = docs.findIndex(m => !next[m.file_id]);
+    if (nextIdx >= 0) setIdx(nextIdx);
+  };
 
   // WIZARD — guardado background + avance optimista (paso 10). (1) await del save de
   // GDPR en vuelo (awaitPendingSave) — fuerza el lag de un paso y surface un fallo de
@@ -838,8 +870,11 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   // procesado" para el await previo (puede tardar), pero NO bloquea el avance una vez
   // disparado el background save.
   const confirm = async () => {
-    log.info('[DBG review] confirm CLICK', { read });
-    if (!read) { setErr(t('signing.review.must_read')); return; }
+    log.info('[DBG review] confirm CLICK', { accepted_n: acceptedCount, total: docs.length });
+    // STEP10-VIEWER: la condición del ACTO confirmReview es que TODOS los members
+    // estén aceptados uno a uno (no una puerta de navegación nueva — el gating entre
+    // pasos sigue siendo del estado/hitos).
+    if (!allAccepted) { setErr(t('signing.review.must_accept_all')); return; }
     setErr(''); setSubmitting(true);
 
     // Lag de un paso: espera el save de GDPR. Si falló (incl. bloqueante), su rechazo
@@ -863,8 +898,17 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
     log.info('[DBG review] confirm — avanzando (confirmReview en background)');
 
     // Background save (NO await). SignSign lo espera vía awaitPendingSave antes de
-    // iniciar el acto de firma. KAL-4/KAL-7 + payload intactos.
-    const savePromise = gasCall('confirmReview', { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }) })
+    // iniciar el acto de firma. KAL-4/KAL-7 intactos (identidad server-side del token).
+    // STEP10-VIEWER: el acto registra QUÉ versiones se aceptaron — accepted[] con
+    // {file_id, purpose_code, sha256}. El sha256 sale del response de getDocument
+    // (DOC-BYTES); se tolera null/ausente hasta que el backend lo emita y lo registre
+    // (follow-up server-side pendiente — hoy el backend lo ignora sin romper).
+    const acceptedPayload = docs.map(m => ({
+      file_id:      m.file_id,
+      purpose_code: m.purpose_code || null,
+      sha256:       (docCache[m.file_id] && docCache[m.file_id].sha256) || null,
+    }));
+    const savePromise = gasCall('confirmReview', { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }), accepted: acceptedPayload })
       .catch(e => {
         log.error('SignReview: confirmReview failed (background)', { message: e.message });
         throw e;
@@ -905,8 +949,10 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
           prompt={t('stepup.review_prompt')}
           onVerified={() => {
             markStepUpFresh();
-            setMembers(null);
-            setDocUrls({});
+            // STEP10-VIEWER: NO se purga el cache de docs del contexto — si había
+            // entradas válidas (otro paso las calentó), siguen sirviendo; lo que
+            // falló por STEPUP_REQUIRED nunca se cacheó (cache-miss limpio).
+            setMembers(signingMembers);
             setNeedStepUp(false);
             setReloadKey(k => k + 1);
           }}
@@ -933,7 +979,7 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
         onBack={onBack}
         onNext={confirm}
         nextLabel={t('signing.review.submit')}
-        nextDisabled={!read || !packageReady || submitting}
+        nextDisabled={!allAccepted || !packageReady || submitting}
         error={err}
       >
       {/* STEP-FRAMEWORK: ESPERA ACTIVA mientras el paquete se prepara — progreso
@@ -954,46 +1000,74 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
         </div>
       ) : (
         <>
-          {members.map((m, i) => {
-            // WPERF-4 (bug 4): preferimos drive_view_url (instantáneo). Para el iframe
-            // Drive necesita /preview (el /view deniega X-Frame). El blob por GAS queda
-            // como fallback cuando el member no trae drive_view_url.
-            const blobUrl = m.file_id ? docUrls[m.file_id] : null;
-            const embedDrive = (u) => u ? u.replace(/\/view(\?[^#]*)?(#.*)?$/, '/preview') : u;
-            const previewUrl = m.drive_view_url ? embedDrive(m.drive_view_url) : blobUrl;
-            const openUrl = m.drive_view_url || blobUrl;
-            return (
-            <div key={m.file_id || i} style={{ marginBottom: 18 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <strong style={{ color: 'var(--teal-dk)', fontSize: '0.92rem' }}>{docLabel(m)}</strong>
-                {openUrl && (
-                  <a href={openUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem', color: 'var(--teal-dk)' }}>
-                    {t('signing.review.open_doc')} <i className="bi bi-box-arrow-up-right ms-1" />
-                  </a>
-                )}
+          {/* STEP10-VIEWER: UN documento a la vez en un visor AMPLIO (ancho completo,
+              alto generoso), navegación prev/siguiente + "documento i de N" y
+              aceptación explícita POR documento. El object URL sale del cache del
+              contexto (blob-only — sin URLs de Drive). */}
+          {current && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                <strong style={{ color: 'var(--teal-dk)', fontSize: '1rem' }}>
+                  {docLabel(current)}
+                  {accepted[current.file_id] && (
+                    <span style={{ marginLeft: 10, fontSize: '0.78rem', color: '#2e7d32', fontWeight: 700 }}>
+                      <i className="bi bi-check-circle-fill me-1" />{t('signing.review.accepted')}
+                    </span>
+                  )}
+                </strong>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ fontSize: '0.82rem', color: 'var(--muted)', fontWeight: 600 }}>
+                    {t('signing.review.doc_counter', { i: safeIdx + 1, n: total })}
+                  </span>
+                  {currentEntry && (
+                    <a href={currentEntry.url} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem', color: 'var(--teal-dk)' }}>
+                      {t('signing.review.open_doc')} <i className="bi bi-box-arrow-up-right ms-1" />
+                    </a>
+                  )}
+                </span>
               </div>
-              {previewUrl ? (
+
+              {currentEntry ? (
                 <iframe
-                  title={docLabel(m)}
-                  src={previewUrl}
-                  style={{ width: '100%', height: 480, border: '1px solid var(--border)', borderRadius: 8 }}
+                  title={docLabel(current)}
+                  src={currentEntry.url}
+                  style={{ width: '100%', height: 'min(72vh, 880px)', minHeight: 420, border: '1px solid var(--border)', borderRadius: 8, background: '#fff' }}
                   sandbox="allow-scripts allow-same-origin allow-popups"
                 />
-              ) : m.file_id ? (
-                <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>
+              ) : (
+                <div style={{ textAlign: 'center', padding: 48, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 8 }}>
                   <span className="spinner-border spinner-border-sm me-2" />{t('signing.review.docs_loading')}
                 </div>
-              ) : null}
+              )}
+
+              {/* Controles: anterior · aceptar este documento · siguiente */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                <button type="button" className="btn-secondary-kis" disabled={safeIdx === 0}
+                  onClick={() => { setErr(''); setIdx(safeIdx - 1); }}>
+                  <i className="bi bi-chevron-left me-1" />{t('signing.review.prev_doc')}
+                </button>
+                {!accepted[current.file_id] ? (
+                  <button type="button" className="btn-primary-kis" disabled={!currentEntry} onClick={acceptCurrent}>
+                    <i className="bi bi-check2 me-1" />{t('signing.review.accept_doc')}
+                  </button>
+                ) : (
+                  <span style={{ fontSize: '0.86rem', color: '#2e7d32', fontWeight: 700 }}>
+                    <i className="bi bi-check-circle-fill me-1" />{t('signing.review.accepted')}
+                  </span>
+                )}
+                <button type="button" className="btn-secondary-kis" disabled={safeIdx >= total - 1}
+                  onClick={() => { setErr(''); setIdx(safeIdx + 1); }}>
+                  {t('signing.review.next_doc')}<i className="bi bi-chevron-right ms-1" />
+                </button>
+              </div>
+
+              {/* Progreso de aceptación — el ACTO "Confirmar y proceder a la firma" se
+                  habilita SOLO cuando TODOS los documentos están aceptados. */}
+              <p style={{ textAlign: 'center', fontSize: '0.82rem', color: allAccepted ? '#2e7d32' : 'var(--muted)', fontWeight: 600, marginTop: 10, marginBottom: 0 }}>
+                {t('signing.review.accept_progress', { accepted: acceptedCount, n: total })}
+              </p>
             </div>
-            );
-          })}
-          <div className="form-check mt-2">
-            <input type="checkbox" className="form-check-input" id="review_read"
-              checked={read} onChange={e => setRead(e.target.checked)} />
-            <label className="form-check-label fw-semibold" htmlFor="review_read" style={{ fontSize: '0.88rem' }}>
-              {t('signing.review.confirm_label')}
-            </label>
-          </div>
+          )}
         </>
       )}
       </StepShell>
