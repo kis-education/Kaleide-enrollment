@@ -1711,6 +1711,11 @@ function reportUnsolicited_(p) {
  * KAL-4: en ambos casos el groupId viene del token; el person_id se resuelve desde
  * datos del servidor (nunca del payload).
  *
+ * Matching canónico per-guardian — DEBE permanecer idéntico a
+ * enr_resolveGuardianFromEmail_ (kms-server/enr/wizard-datalayer.gs) hasta
+ * consolidación P245 (un solo resolver, probablemente KMS-side). Si diverge,
+ * uno de los dos es incorrecto. Cross-ref: P245 + HYDRATE-FIX 2026-06-11.
+ *
  * @param {string} groupId         enrollment_group_id (ya derivado del token)
  * @param {string} recoveredEmail  email que tecleó la familia (discriminador)
  * @param {Array}  [emailsHint]    filas enrEmails del grupo ya leídas (evita re-query)
