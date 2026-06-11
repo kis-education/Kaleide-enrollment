@@ -667,14 +667,26 @@ export function WizardProvider({ children }) {
     // the deepest one with data so they land where they left off (with prior
     // steps locked for the LockedBanner unlock-to-edit pattern). Submitted
     // sessions always go straight to Review (step 6).
-    const submitted = !!group.submitted_at;
+    //
+    // URGENT-PASS3 BUG A (2026-06-11): "enviada" deriva del ESTADO REAL, NO de
+    // submitted_at. Diego promovió el expediente borrador→RQ→PS→RS→AD desde el KMS,
+    // pero submitted_at quedó vacío (las transiciones staff nunca lo reponen) → el
+    // wizard creía DRAFT y pedía RE-ENVIAR en pleno AD. El backend ya resuelve la
+    // editabilidad real del estado en `admission.editable` (state ∈ {DRAFT,IN,
+    // NEEDS_MORE_INFO} ⟺ editable; resto ⟺ enviada/locked). Cuando hay estado real,
+    // GOBIERNA `admission.editable`; sin estado (pre-submit puro), fallback al
+    // submitted_at histórico. POST-W2: el avance/edición los gobierna el estado.
+    const adm = data.admission || null;
+    const hasRealState = !!(adm && adm.state_code);
+    const submitted = hasRealState
+      ? (adm.editable === false)        // estado real: locked ⟺ no editable
+      : !!group.submitted_at;           // pre-submit puro: fallback histórico
     setIsSubmitted(submitted);
 
     // P216: store the real admission state + per-guardian signing context the
     // backend resolved (additive block). Re-fetched on every resume → React
     // state only. The Step 7 banner reads admissionState.state_label; the
     // "continue to sign" advance reads signingContext (Phase 3).
-    const adm = data.admission || null;
     setAdmissionState(adm);
     setSigningContext(adm && adm.signing_context ? adm.signing_context : null);
 
@@ -798,8 +810,12 @@ export function WizardProvider({ children }) {
     //      (el pulse solo refresca el bloque de admisión + signing context).
     if (data.group || data.application || data.admission) {
       const group = data.group || data.application || {};
-      setIsSubmitted(!!group.submitted_at);
       const adm = data.admission || null;
+      // URGENT-PASS3 BUG A: misma derivación state-driven que hydrateFromResume.
+      // Un cambio de estado en el KMS (p.ej. AD, o reopen→IN) se refleja en el pulse
+      // sin recargar: estado real → admission.editable gobierna; sin estado → submitted_at.
+      const hasRealState = !!(adm && adm.state_code);
+      setIsSubmitted(hasRealState ? (adm.editable === false) : !!group.submitted_at);
       setAdmissionState(adm);
       setSigningContext(adm && adm.signing_context ? adm.signing_context : null);
       return;
@@ -811,8 +827,14 @@ export function WizardProvider({ children }) {
       signing_ready:     data.signing_ready,
       signing_status:    data.signing_status,
       signing_context:   data.signing_context,
+      editable:          data.editable,
     };
     setAdmissionState(adm);
+    // URGENT-PASS3 BUG A: el pulse ligero ahora trae `editable` (getAdmissionState_) →
+    // refleja AD/reopen sin recargar. Si hay estado real, GOBIERNA editable; si no, no
+    // tocamos isSubmitted (el pulse ligero no trae submitted_at — el caso pre-submit lo
+    // cubrió ya la hidratación pesada).
+    if (data.state_code) setIsSubmitted(data.editable === false);
     // El pulso ligero (getAdmissionState) puede NO traer signing_context aunque la
     // firma siga lista → NO borrar el token ya resuelto (vive en React state, KAL-7).
     // Solo actualizar si el pulso aporta uno nuevo; si no, preservar el existente.

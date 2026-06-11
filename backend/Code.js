@@ -1811,7 +1811,10 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
  * @returns {{state_code, state_label, signing_available, signing_context, signing_ready, signing_status}}
  */
 function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons) {
-  var out = { state_code: null, state_label: null, signing_available: false, signing_context: null, signing_ready: false };
+  // URGENT-PASS3 BUG A (2026-06-11): `editable` deriva del ESTADO REAL (no de submitted_at).
+  // Sin enrollments → pre-submit puro → editable (borrador). Con estado real, lo gobierna el
+  // estado: ∈ {DRAFT,IN,NEEDS_MORE_INFO} ⟺ editable; resto (RQ,PS,RS,AD,…) ⟺ enviada/locked.
+  var out = { state_code: null, state_label: null, signing_available: false, signing_context: null, signing_ready: false, editable: true };
   if (!enrollments || !enrollments.length) return out;
 
   // Catálogo de estados ENR_ADMISSION_SCHOOL del tenant (mismo patrón que el
@@ -1835,6 +1838,11 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
   var chosen = enrStates[0];
   out.state_code  = chosen.state_code  || null;
   out.state_label = chosen.designation || null; // 'designation' = label canónico (DL-S34)
+
+  // URGENT-PASS3 BUG A: editabilidad state-driven (mismo conjunto que el KMS hydrate
+  // wizard-datalayer.gs). Con estado real, locked salvo {DRAFT,IN,NEEDS_MORE_INFO}.
+  var EDITABLE_STATE_CODES_ = { 'DRAFT': true, 'IN': true, 'NEEDS_MORE_INFO': true };
+  out.editable = out.state_code ? !!EDITABLE_STATE_CODES_[out.state_code] : true;
 
   if (out.state_code === 'AD') {
     // Path 1 — guardian resolved from the email the family typed (a1, KAL-4).
@@ -2513,6 +2521,7 @@ function getAdmissionState_(p) {
     signing_status:    admission.signing_status || null,
     signing_available: admission.signing_available,
     signing_context:   admission.signing_context,
+    editable:          admission.editable,   // URGENT-PASS3 BUG A: state-driven editabilidad
     step_up_fresh:     stepUpFresh,
   };
 }
