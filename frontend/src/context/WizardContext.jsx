@@ -863,6 +863,14 @@ export function WizardProvider({ children }) {
     // Step5/Step7 lo resuelven de cache sin la llamada fetchQuestions suelta (~42s).
     if (data.questions) primeQuestions(i18n.language, data.questions);
     if (data.billing_splits) setBillingSplits(data.billing_splits);
+    // GDPR-REHYDRATE (Diego 2026-06-11: "recupera el usuario pero no carga lo que había
+    // guardado en los consentimientos"): el hydrate trae el set guardado del firmante
+    // (sysConsentsLog → {gen, img, v}). Siembra SOLO si el usuario no tocó el slice en
+    // esta sesión (sus ediciones mandan — regla REBUILD-8-11). Step9 valida v contra
+    // SIGNING_CONSENT_TEXT_VERSION (texto legal nuevo → re-consentir, intencional).
+    if (data.gdpr_consents && data.gdpr_consents.v) {
+      setSigningFormsRaw(prev => (prev && prev.gdpr) ? prev : { ...(prev || {}), gdpr: data.gdpr_consents });
+    }
     if (data.live_version != null) setLiveVersion(Number(data.live_version) || 0);
 
     const hasGuardians     = persons.some(p => p.person_type_id === 'guardian');
