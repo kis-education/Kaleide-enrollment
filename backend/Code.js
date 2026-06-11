@@ -4461,8 +4461,20 @@ function getDocument_(p) {
         const effEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n);
         const guardianId = effEmail ? resolveGuardianForRecovery_(groupId, effEmail) : null;
         if (!guardianId) return null;
+        // PERF (log real Diego 20:32 — getDocument 37-40s e2e): esta resolución del
+        // signing_token quedó fuera del memo @166 y pagaba la cadena completa por
+        // CADA documento. Memo ScriptCache TTL 300s — SOLO para este camino de
+        // LECTURA (servir bytes); el KMS re-valida el token + IDOR en vivo por
+        // llamada (KAL-4) y el ACTO de firma no pasa por aquí (P222 intacta).
+        const cache = CacheService.getScriptCache();
+        const memoKey = 'docsigntok_' + sha256Hex_(
+          Utilities.newBlob(groupId + '|' + guardianId).getBytes()).slice(0, 40);
+        const hit = cache.get(memoKey);
+        if (hit) return hit;
         const sctxSign = resolveGuardianSigningContext_(groupId, guardianId);
-        return (sctxSign && sctxSign.signing_token) || null;
+        const tok = (sctxSign && sctxSign.signing_token) || null;
+        if (tok) cache.put(memoKey, tok, 300);
+        return tok;
       } catch (eSign) { return null; }
     };
   } else if (p && p.signing_token) {

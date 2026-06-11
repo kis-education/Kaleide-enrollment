@@ -329,6 +329,12 @@ export function WizardProvider({ children }) {
     const url = URL.createObjectURL(new Blob([bytes], { type: res.mimeType || 'application/pdf' }));
     const entry = {
       url,
+      // WEBKIT-COMPAT (log real de Diego, iPhone 20:32): pdf.js con `url:` hace fetch
+      // del blob: y WebKit devuelve status 0 → "Unexpected server response (0)". El
+      // visor recibe los BYTES directamente (entry.bytes); el url queda para "Abrir
+      // documento". OJO: pdf.js TRANSFIERE el buffer al worker (lo desconecta) — el
+      // visor debe pasarle SIEMPRE una COPIA (new Uint8Array(bytes)), nunca este.
+      bytes,
       sha256:   res.sha256 || null,   // DOC-BYTES: tolera ausente hasta que aterrice server-side
       filename: res.filename || null,
       mimeType: res.mimeType || null,

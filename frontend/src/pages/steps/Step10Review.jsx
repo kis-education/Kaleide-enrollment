@@ -314,7 +314,7 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
                     El src sigue siendo el object URL de NUESTRO PDF contractual (blob
                     del cache del contexto) — el pipeline de descarga no cambia. */}
                 {currentEntry ? (
-                  <PdfViewer url={currentEntry.url} title={docLabel(current)} />
+                  <PdfViewer data={currentEntry.bytes} url={currentEntry.url} title={docLabel(current)} />
                 ) : (
                   <div style={{ textAlign: 'center', padding: 48, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 8 }}>
                     <span className="spinner-border spinner-border-sm me-2" />{t('signing.review.docs_loading')}

@@ -49,7 +49,7 @@ const ZOOM_MIN = 0.6;
 const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.25;
 
-export default function PdfViewer({ url, title }) { // eslint-disable-line react/prop-types
+export default function PdfViewer({ data, url, title }) { // eslint-disable-line react/prop-types
   const { t } = useTranslation();
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
@@ -79,12 +79,16 @@ export default function PdfViewer({ url, title }) { // eslint-disable-line react
   // Carga del documento (import dinámico de pdf.js + getDocument sobre el object URL
   // del cache del contexto — pdf.js hace fetch local del blob, cero red).
   useEffect(() => {
-    if (!url) return undefined;
+    if (!url && !data) return undefined;
     let alive = true;
     setDoc(null); setLoadErr(false); setPageNum(1); setZoom(1);
     const _t0 = Date.now();
+    // WEBKIT-COMPAT (log real iPhone 20:32): con `url:` pdf.js hace fetch del blob: y
+    // WebKit responde status 0 → "Unexpected server response (0)". Preferimos `data:`
+    // (bytes ya en memoria, cero fetch). pdf.js TRANSFIERE el buffer al worker (lo
+    // desconecta) → SIEMPRE una copia, nunca el Uint8Array cacheado del contexto.
     loadPdfjs_()
-      .then(lib => lib.getDocument({ url }).promise)
+      .then(lib => lib.getDocument(data ? { data: new Uint8Array(data) } : { url }).promise)
       .then(pdf => {
         if (!alive) { pdf.destroy(); return; }
         docRef.current = pdf;
@@ -101,7 +105,7 @@ export default function PdfViewer({ url, title }) { // eslint-disable-line react
       if (renderTaskRef.current) { try { renderTaskRef.current.cancel(); } catch { /* ignore */ } }
       if (docRef.current) { try { docRef.current.destroy(); } catch { /* ignore */ } docRef.current = null; }
     };
-  }, [url, retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [url, data, retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Render de la página visible a <canvas>: escala = ajuste-a-ancho × zoom, con
   // devicePixelRatio para nitidez (el canvas interno es más denso que su CSS width).
