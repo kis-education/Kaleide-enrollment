@@ -32,19 +32,20 @@ SHA_CONTRACT="3ceb4e928585e03a6b4baa3155edcc780287cc1f2ed5f4241e7fdca961b239a4"
 
 PASS=0; FAIL=0; RESULTS=""
 
-call() { # call <json-body> -> stdout JSON; $CALL_MS latencia
+call() { # call <json-body> -> stdout JSON; latencia en /tmp/jv_ms (subshell-safe)
   local body="$1" t0 t1 loc
   t0=$(date +%s%3N)
   loc=$(curl -s -D - -o /dev/null -X POST "$GAS_URL" -H "Content-Type: text/plain" \
         -d "$body" --max-time 120 | grep -i '^location:' | tr -d '\r' | awk '{print $2}')
-  [ -z "$loc" ] && { CALL_MS=0; echo '{"ok":false,"error":"NO_REDIRECT"}'; return; }
+  if [ -z "$loc" ]; then echo 0 > /tmp/jv_ms; echo '{"ok":false,"error":"NO_REDIRECT"}'; return; fi
   curl -s "$loc" --max-time 90
-  t1=$(date +%s%3N); CALL_MS=$((t1 - t0))
+  t1=$(date +%s%3N); echo $((t1 - t0)) > /tmp/jv_ms
 }
 
 check() { # check <nombre> <resultado PASS|FAIL|PASS(gated)> <detalle>
-  local name="$1" verdict="$2" detail="$3"
-  RESULTS+="$(printf '%-34s %-12s %6sms  %s' "$name" "$verdict" "${CALL_MS:-0}" "$detail")"$'\n'
+  local name="$1" verdict="$2" detail="$3" ms
+  ms=$(cat /tmp/jv_ms 2>/dev/null || echo 0)
+  RESULTS+="$(printf '%-34s %-12s %6sms  %s' "$name" "$verdict" "$ms" "$detail")"$'\n'
   case "$verdict" in FAIL*) FAIL=$((FAIL+1));; *) PASS=$((PASS+1));; esac
 }
 
