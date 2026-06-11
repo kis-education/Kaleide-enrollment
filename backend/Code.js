@@ -1886,6 +1886,16 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
  * afectados. La firma se ancla al GRUPO (sysSigningSessions.entity_id == group),
  * así que el gate AD es a nivel de grupo.
  *
+ * P245 STRIKE 3 (anti-divergencia, 2026-06-11): la tripleta de campos de firma
+ * `signing_ready` / `signing_status` / `signing_context` que emite esta función (el
+ * PULSE del wizard, getAdmissionState) DEBE permanecer IDÉNTICA a la que emite el
+ * hydrate del KMS (`kms-server/enr/wizard-datalayer.gs`, bloque admission +
+ * `enr_resolveSigningStatus_`, port verbatim de `resolveSigningStatus_` de abajo).
+ * Si divergen, el frontend recibe dos semánticas para el mismo grupo y el gate 7→8 se
+ * rompe. Regla canónica de Diego: firma lista ⟺ existe signer con token (sesión DRAFT
+ * cuenta; el envelope Click&Sign NO es la vara). P245 (un solo resolver) es PRIORIDAD-1
+ * del backlog — tres divergencias en un día (editable / guardian-matching / signing).
+ *
  * @param {string} groupId
  * @param {Array}  enrollments         filas enrEnrollments del grupo
  * @param {string|null} guardianPersonId  guardian resuelto server-side (a1)
