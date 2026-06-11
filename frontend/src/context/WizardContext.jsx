@@ -529,6 +529,20 @@ export function WizardProvider({ children }) {
       markOtpAutoSentForRecovery();
       log.info('hydrateFromResume: magic-link grace activa (nonce válido <10min) — sin OTP');
     }
+
+    // WIZARD-GATES BUG 1 — aterrizaje con esqueleto PII-gated.
+    // Cuando el backend devuelve pii_gated:true + step_up_fresh:false, los datos de
+    // personas/relaciones/admission vienen VACÍOS (skeleton). Si procesáramos el landing
+    // aquí, computaríamos submitted=false + target=1 con datos fantasma, aterrizando en
+    // el Step 1 con el wizard vacío ANTES del gate OTP. El estado mínimo ya está listo
+    // (enrollmentGroupId + resumeToken + recoveredViaMagicLink=true) para que el
+    // StepUpGate de WizardPage funcione. El aterrizaje REAL ocurre en el re-hydrate
+    // post-OTP donde los datos son completos. Salir aquí sin tomar ninguna decisión
+    // de landing ni de stepData.
+    if (data.pii_gated && !data.step_up_fresh) {
+      log.info('hydrateFromResume: pii_gated=true — skip landing, esperando OTP', { pii_gated: true });
+      return;
+    }
     // The magic link token itself proves email ownership — treat as verified regardless
     // of the email_confirmed DB flag (which may lag or not have been written yet).
     const persons   = data.persons   || [];
@@ -676,7 +690,21 @@ export function WizardProvider({ children }) {
     // NEEDS_MORE_INFO} ⟺ editable; resto ⟺ enviada/locked). Cuando hay estado real,
     // GOBIERNA `admission.editable`; sin estado (pre-submit puro), fallback al
     // submitted_at histórico. POST-W2: el avance/edición los gobierna el estado.
-    const adm = data.admission || null;
+    const admRaw = data.admission || null;
+    // WIZARD-GATES BUG 2 — normalización de signing_ready.
+    // El campo signing_ready puede llegar undefined/null cuando la respuesta de
+    // enr.wizardHydrate (KMS) no lo incluye explícitamente aunque la sesión de firma
+    // exista (signing_status IN_PROGRESS/READY). La regla canónica del backend es
+    // signing_ready = (signing_status !== 'NOT_INITIATED'). Si llega undefined,
+    // se deriva del signing_status para que el banner "preparando" y canAdvanceToSigning
+    // en WizardPage evalúen correctamente. signing_ready:false solo cuando se conoce
+    // explícitamente o signing_status==='NOT_INITIATED'.
+    const adm = admRaw ? {
+      ...admRaw,
+      signing_ready: admRaw.signing_ready != null
+        ? admRaw.signing_ready
+        : (admRaw.signing_status && admRaw.signing_status !== 'NOT_INITIATED'),
+    } : null;
     const hasRealState = !!(adm && adm.state_code);
     const submitted = hasRealState
       ? (adm.editable === false)        // estado real: locked ⟺ no editable
@@ -810,7 +838,14 @@ export function WizardProvider({ children }) {
     //      (el pulse solo refresca el bloque de admisión + signing context).
     if (data.group || data.application || data.admission) {
       const group = data.group || data.application || {};
-      const adm = data.admission || null;
+      const admRaw = data.admission || null;
+      // WIZARD-GATES BUG 2: misma normalización de signing_ready que hydrateFromResume.
+      const adm = admRaw ? {
+        ...admRaw,
+        signing_ready: admRaw.signing_ready != null
+          ? admRaw.signing_ready
+          : (admRaw.signing_status && admRaw.signing_status !== 'NOT_INITIATED'),
+      } : null;
       // URGENT-PASS3 BUG A: misma derivación state-driven que hydrateFromResume.
       // Un cambio de estado en el KMS (p.ej. AD, o reopen→IN) se refleja en el pulse
       // sin recargar: estado real → admission.editable gobierna; sin estado → submitted_at.
@@ -820,12 +855,16 @@ export function WizardProvider({ children }) {
       setSigningContext(adm && adm.signing_context ? adm.signing_context : null);
       return;
     }
+    // WIZARD-GATES BUG 2: normalización de signing_ready también en el path ligero.
+    const admStatus = data.signing_status;
     const adm = {
       state_code:        data.state_code,
       state_label:       data.state_label,
       signing_available: data.signing_available,
-      signing_ready:     data.signing_ready,
-      signing_status:    data.signing_status,
+      signing_ready:     data.signing_ready != null
+        ? data.signing_ready
+        : (admStatus && admStatus !== 'NOT_INITIATED'),
+      signing_status:    admStatus,
       signing_context:   data.signing_context,
       editable:          data.editable,
     };
