@@ -11,10 +11,18 @@ import * as log from '../logger';
  * render en el visor PDF nativo de Chrome (toolbar ajena con print/download/anotación,
  * render a dos columnas apretado) y en iOS Safari los PDF multipágina en iframe NI
  * renderizan. Este componente renderiza NUESTRO blob a <canvas> con pdf.js:
- *   - UNA página visible, controles propios: ‹ página i de N ›, zoom −/+.
- *   - Ajuste a ancho por defecto (escala al contenedor) + devicePixelRatio (nitidez).
  *   - SIN toolbar de Chrome — cero print/download/anotación.
+ *   - Ajuste a ancho por defecto (escala al contenedor) + devicePixelRatio (nitidez).
  *   - Botones grandes (táctiles) para móvil; el canvas escala al ancho del contenedor.
+ *
+ * VIEWER-SCROLL (Diego 2026-06-11: "No sé si la presentación del pdf se puede hacer
+ * que las páginas salgan con un simple scroll, en vez de tener que pasar página por
+ * página."): TODAS las páginas se renderizan apiladas (un <canvas> por página) dentro
+ * del contenedor con scroll vertical — el scroll nativo (táctil en móvil) es el modo
+ * primario de navegación. Los PDF del paquete son 3-6 páginas, así que se renderizan
+ * todas en orden secuencial (sin lazy-loading — innecesario a este tamaño). Los
+ * botones ‹ › quedan como salto-scroll a página anterior/siguiente y el indicador
+ * "página i de N" refleja la página VISIBLE (scroll handler simple).
  *
  * pdf.js se carga por IMPORT DINÁMICO al montar el visor — los pasos 1-7 no pagan el
  * peso en el bundle inicial (Vite lo parte en chunk aparte; el worker va como asset
@@ -52,13 +60,14 @@ const ZOOM_STEP = 0.25;
 export default function PdfViewer({ data, url, title }) { // eslint-disable-line react/prop-types
   const { t } = useTranslation();
   const containerRef = useRef(null);
-  const canvasRef = useRef(null);
-  const docRef = useRef(null);        // PDFDocumentProxy vivo (para destroy)
-  const renderTaskRef = useRef(null); // RenderTask en vuelo (para cancel)
+  const scrollRef = useRef(null);      // contenedor con scroll vertical (página visible + salto)
+  const canvasRefs = useRef([]);       // un <canvas> por página, en orden
+  const docRef = useRef(null);         // PDFDocumentProxy vivo (para destroy)
+  const renderTasksRef = useRef([]);   // RenderTasks en vuelo (para cancel por página)
   const [doc, setDoc] = useState(null);
   const [numPages, setNumPages] = useState(0);
-  const [pageNum, setPageNum] = useState(1);
-  const [zoom, setZoom] = useState(1);          // 1 = ajuste a ancho del contenedor
+  const [visiblePage, setVisiblePage] = useState(1); // página visible en el scroll
+  const [zoom, setZoom] = useState(1);               // 1 = ajuste a ancho del contenedor
   const [containerWidth, setContainerWidth] = useState(0);
   const [loadErr, setLoadErr] = useState(false);
   const [retryKey, setRetryKey] = useState(0); // WEBKIT-COMPAT: Reintentar re-dispara la carga
@@ -76,12 +85,17 @@ export default function PdfViewer({ data, url, title }) { // eslint-disable-line
     return () => ro.disconnect();
   }, []);
 
+  const cancelRenderTasks_ = () => {
+    renderTasksRef.current.forEach(task => { try { task.cancel(); } catch { /* ignore */ } });
+    renderTasksRef.current = [];
+  };
+
   // Carga del documento (import dinámico de pdf.js + getDocument sobre el object URL
   // del cache del contexto — pdf.js hace fetch local del blob, cero red).
   useEffect(() => {
     if (!url && !data) return undefined;
     let alive = true;
-    setDoc(null); setLoadErr(false); setPageNum(1); setZoom(1);
+    setDoc(null); setLoadErr(false); setVisiblePage(1); setZoom(1);
     const _t0 = Date.now();
     // WEBKIT-COMPAT (log real iPhone 20:32): con `url:` pdf.js hace fetch del blob: y
     // WebKit responde status 0 → "Unexpected server response (0)". Preferimos `data:`
@@ -94,6 +108,7 @@ export default function PdfViewer({ data, url, title }) { // eslint-disable-line
         docRef.current = pdf;
         setDoc(pdf);
         setNumPages(pdf.numPages);
+        if (scrollRef.current) scrollRef.current.scrollTop = 0;
         log.info('[pdf viewer] documento cargado', { ms: Date.now() - _t0, pages: pdf.numPages });
       })
       .catch(e => {
@@ -102,47 +117,75 @@ export default function PdfViewer({ data, url, title }) { // eslint-disable-line
       });
     return () => {
       alive = false;
-      if (renderTaskRef.current) { try { renderTaskRef.current.cancel(); } catch { /* ignore */ } }
+      cancelRenderTasks_();
       if (docRef.current) { try { docRef.current.destroy(); } catch { /* ignore */ } docRef.current = null; }
     };
-  }, [url, data, retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [url, data, retryKey]);
 
-  // Render de la página visible a <canvas>: escala = ajuste-a-ancho × zoom, con
-  // devicePixelRatio para nitidez (el canvas interno es más denso que su CSS width).
+  // Render de TODAS las páginas apiladas, EN ORDEN secuencial (una a una — mantiene
+  // la memoria contenida y las primeras páginas aparecen primero). Escala = ajuste-
+  // a-ancho × zoom, con devicePixelRatio para nitidez (canvas interno más denso que
+  // su CSS width). Re-render por zoom/ancho REUTILIZA los mismos <canvas> (resize
+  // destruye el bitmap previo — no se acumulan canvases). Cancelación: cleanup
+  // cancela los RenderTasks en vuelo (patrón renderTask.cancel, ahora por página).
   useEffect(() => {
-    if (!doc || !containerWidth || !canvasRef.current) return undefined;
+    if (!doc || !containerWidth) return undefined;
     let alive = true;
-    doc.getPage(pageNum).then(page => {
-      if (!alive || !canvasRef.current) return;
-      const base = page.getViewport({ scale: 1 });
-      const fitScale = (containerWidth - 2) / base.width; // -2: borde del marco
-      const scale = fitScale * zoom;
-      const dpr = Math.min(window.devicePixelRatio || 1, 3);
-      const viewport = page.getViewport({ scale: scale * dpr });
-      const canvas = canvasRef.current;
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      canvas.style.width = Math.floor(viewport.width / dpr) + 'px';
-      canvas.style.height = Math.floor(viewport.height / dpr) + 'px';
-      const ctx = canvas.getContext('2d');
-      if (renderTaskRef.current) { try { renderTaskRef.current.cancel(); } catch { /* ignore */ } }
-      const task = page.render({ canvasContext: ctx, viewport });
-      renderTaskRef.current = task;
-      task.promise.catch(e => {
-        // RenderingCancelledException al cambiar de página/zoom rápido — esperado.
-        if (e && e.name !== 'RenderingCancelledException') {
-          log.warn('[pdf viewer] render fallido', { message: e && e.message });
+    cancelRenderTasks_();
+    (async () => {
+      for (let i = 1; i <= doc.numPages; i++) {
+        if (!alive) return;
+        try {
+          const page = await doc.getPage(i);
+          if (!alive) return;
+          const canvas = canvasRefs.current[i - 1];
+          if (!canvas) continue;
+          const base = page.getViewport({ scale: 1 });
+          const fitScale = (containerWidth - 2) / base.width; // -2: borde del marco
+          const scale = fitScale * zoom;
+          const dpr = Math.min(window.devicePixelRatio || 1, 3);
+          const viewport = page.getViewport({ scale: scale * dpr });
+          canvas.width = Math.floor(viewport.width);
+          canvas.height = Math.floor(viewport.height);
+          canvas.style.width = Math.floor(viewport.width / dpr) + 'px';
+          canvas.style.height = Math.floor(viewport.height / dpr) + 'px';
+          const ctx = canvas.getContext('2d');
+          const task = page.render({ canvasContext: ctx, viewport });
+          renderTasksRef.current.push(task);
+          await task.promise;
+        } catch (e) {
+          // RenderingCancelledException al cambiar zoom/desmontar rápido — esperado.
+          if (e && e.name !== 'RenderingCancelledException') {
+            log.warn('[pdf viewer] render fallido', { page: i, message: e && e.message });
+          }
         }
-      });
-    }).catch(e => {
-      log.warn('[pdf viewer] getPage fallido', { page: pageNum, message: e && e.message });
-    });
-    return () => { alive = false; };
-  }, [doc, pageNum, zoom, containerWidth]);
+      }
+    })();
+    return () => { alive = false; cancelRenderTasks_(); };
+  }, [doc, zoom, containerWidth]);
 
+  // Página visible: scroll handler simple — la última página cuyo top quedó por
+  // encima del 40% del viewport del contenedor es la "actual". (Los PDF son 3-6
+  // páginas; IntersectionObserver sería sobre-ingeniería aquí.)
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const threshold = el.scrollTop + el.clientHeight * 0.4;
+    let current = 1;
+    canvasRefs.current.forEach((c, idx) => {
+      if (c && c.offsetTop <= threshold) current = idx + 1;
+    });
+    setVisiblePage(current);
+  }, []);
+
+  // ‹ › = salto-scroll a página anterior/siguiente (el scroll es el modo primario).
   const go = useCallback((delta) => {
-    setPageNum(p => Math.min(Math.max(1, p + delta), numPages || 1));
-  }, [numPages]);
+    const el = scrollRef.current;
+    if (!el) return;
+    const target = Math.min(Math.max(1, visiblePage + delta), numPages || 1);
+    const canvas = canvasRefs.current[target - 1];
+    if (canvas) el.scrollTo({ top: Math.max(0, canvas.offsetTop - 8), behavior: 'smooth' });
+  }, [visiblePage, numPages]);
   const zoomBy = (delta) => setZoom(z => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round((z + delta) * 100) / 100)));
 
   // Controles propios — botones GRANDES (táctiles) compartidos arriba y abajo.
@@ -150,13 +193,13 @@ export default function PdfViewer({ data, url, title }) { // eslint-disable-line
   const controls = (position) => (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 4px', flexWrap: 'wrap', borderBottom: position === 'top' ? '1px solid var(--border)' : 'none', borderTop: position === 'bottom' ? '1px solid var(--border)' : 'none' }}>
       <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <button type="button" style={navBtn} disabled={pageNum <= 1} onClick={() => go(-1)} aria-label={t('pdf.prev_page')}>
+        <button type="button" style={navBtn} disabled={visiblePage <= 1} onClick={() => go(-1)} aria-label={t('pdf.prev_page')}>
           <i className="bi bi-chevron-left" />
         </button>
         <span style={{ fontSize: '0.85rem', color: 'var(--text)', fontWeight: 600, minWidth: 90, textAlign: 'center' }}>
-          {t('pdf.page_of', { i: pageNum, n: numPages })}
+          {t('pdf.page_of', { i: visiblePage, n: numPages })}
         </span>
-        <button type="button" style={navBtn} disabled={pageNum >= numPages} onClick={() => go(1)} aria-label={t('pdf.next_page')}>
+        <button type="button" style={navBtn} disabled={visiblePage >= numPages} onClick={() => go(1)} aria-label={t('pdf.next_page')}>
           <i className="bi bi-chevron-right" />
         </button>
       </span>
@@ -193,14 +236,21 @@ export default function PdfViewer({ data, url, title }) { // eslint-disable-line
     <div ref={containerRef} role="document" aria-label={title || undefined}
       style={{ border: '1px solid var(--border)', borderRadius: 8, background: '#fff', overflow: 'hidden' }}>
       {controls('top')}
-      {/* Lienzo: UNA página visible; scroll horizontal solo si el usuario hace zoom-in.
-          RESPONSIVE-UI (2026-06-11): el alto se sube a min(85vh, 1100px) para que en
-          monitores altos de escritorio el documento se vea grande sin recortarse; el vh
-          mantiene la proporción contenida en móvil/tablet. El ancho lo gobierna el
-          contenedor (fit-a-ancho vía ResizeObserver), que ahora es ancho en el Step 10. */}
-      <div style={{ overflow: 'auto', maxHeight: 'min(85vh, 1100px)', minHeight: 320, background: 'var(--bg)', textAlign: 'center' }}>
+      {/* Lienzo: TODAS las páginas apiladas con scroll continuo (VIEWER-SCROLL); scroll
+          horizontal solo si el usuario hace zoom-in. `position: relative` para que el
+          offsetTop de los canvas sea relativo al contenedor de scroll (página visible +
+          salto ‹ ›). RESPONSIVE-UI (2026-06-11): el alto se sube a min(85vh, 1100px)
+          para que en monitores altos de escritorio el documento se vea grande sin
+          recortarse; el vh mantiene la proporción contenida en móvil/tablet. El ancho lo
+          gobierna el contenedor (fit-a-ancho vía ResizeObserver), ancho en el Step 10. */}
+      <div ref={scrollRef} onScroll={handleScroll}
+        style={{ position: 'relative', overflow: 'auto', maxHeight: 'min(85vh, 1100px)', minHeight: 320, background: 'var(--bg)', textAlign: 'center' }}>
         {doc ? (
-          <canvas ref={canvasRef} style={{ display: 'inline-block', boxShadow: '0 1px 4px rgba(0,0,0,0.18)', margin: '8px 0' }} />
+          Array.from({ length: numPages }, (_, idx) => (
+            <canvas key={idx}
+              ref={el => { canvasRefs.current[idx] = el; }}
+              style={{ display: 'block', boxShadow: '0 1px 4px rgba(0,0,0,0.18)', margin: '8px auto', verticalAlign: 'top' }} />
+          ))
         ) : (
           <div style={{ padding: 48, color: 'var(--muted)' }}>
             <span className="spinner-border spinner-border-sm me-2" />{t('pdf.rendering')}
