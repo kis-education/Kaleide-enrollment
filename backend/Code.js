@@ -602,6 +602,38 @@ function requireSignerContext_(payload) {
 function requireSignerIdentity_(payload) {
   payload = payload || {};
   if (payload.resume_token && !payload.signing_token) {
+    // PERF-KMS2 (2026-06-11): memo ScriptCache de la derivación {groupId, effEmail}
+    // (medida: 10-22s por llamada — 2-3 lecturas AppSheet a 4-7s/lectura). Reglas:
+    //   - SOLO para los consumidores de este gate: lecturas (getSavedBillingSplits,
+    //     initiateSigningSession create_only) y acks encolados (billing/gdpr/review).
+    //     El ACTO real de firma (Step 11) va por requireSignerContext_ — NO toca esto;
+    //     todo check de single-use vive server-side en el KMS (P222 intacta).
+    //   - Clave = sha256(resume_token|n|recovered_email) → la rotación del token
+    //     (sendMagicLink_) cambia la clave; la entrada vieja queda inalcanzable y expira.
+    //   - TTL 300s. El KMS re-valida TODO (token/TTL/abandoned/guardian) en cada proxy —
+    //     el memo solo ahorra la re-derivación wizard-side, no autoriza nada por sí solo.
+    var memoKey = null;
+    try {
+      var memoRaw = [String(payload.resume_token).trim(), payload.n || '', payload.recovered_email || ''].join('|');
+      var memoDig = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, memoRaw, Utilities.Charset.UTF_8);
+      memoKey = 'sigid_' + memoDig.map(function(b) {
+        var v = (b + 256) % 256; return (v < 16 ? '0' : '') + v.toString(16);
+      }).join('');
+      var memoHit = CacheService.getScriptCache().get(memoKey);
+      if (memoHit) {
+        var memoVal = JSON.parse(memoHit);
+        if (memoVal && memoVal.g && memoVal.e) {
+          return {
+            enrollment_group_id: memoVal.g,
+            identity: {
+              resume_token:    String(payload.resume_token).trim(),
+              recovered_email: memoVal.e,
+            },
+          };
+        }
+      }
+    } catch (eMemo) { /* el memo nunca rompe el camino live */ }
+
     const groupId = requireResumeToken_(payload);   // KAL-4 + TTL 7d + abandoned gate
     const effEmail = effectiveRecoveredEmail_(payload.recovered_email, groupId, payload.n);
     if (!effEmail) {
@@ -609,6 +641,11 @@ function requireSignerIdentity_(payload) {
       err.code = 'UNAUTHORIZED';
       throw err;
     }
+    try {
+      if (memoKey) {
+        CacheService.getScriptCache().put(memoKey, JSON.stringify({ g: groupId, e: effEmail }), 300);
+      }
+    } catch (ePut) { /* best-effort */ }
     return {
       enrollment_group_id: groupId,
       identity: {
@@ -2172,7 +2209,12 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
  * @param {string|null} guardianPersonId  guardian resuelto server-side (a1)
  * @returns {{state_code, state_label, signing_available, signing_context, signing_ready, signing_status}}
  */
-function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons) {
+function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons, admHints) {
+  // PERF-KMS2 (2026-06-11): admHints (OPCIONAL) = filas live ya bajadas por el caller en
+  // su batch paralelo — {states, sessions, signersBySession}. Cada consumidor re-aplica
+  // su filtro de siempre en memoria; sin hints, TODOS los reads quedan live (callers
+  // existentes intactos). Medido: states_ms 10-13s + 2×(sessions+signers) ~9-12s seriales.
+  admHints = admHints || {};
   // URGENT-PASS3 BUG A (2026-06-11): `editable` deriva del ESTADO REAL (no de submitted_at).
   // Sin enrollments → pre-submit puro → editable (borrador). Con estado real, lo gobierna el
   // estado: ∈ {DRAFT,IN,NEEDS_MORE_INFO} ⟺ editable; resto (RQ,PS,RS,AD,…) ⟺ enviada/locked.
@@ -2182,7 +2224,9 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
   // Catálogo de estados ENR_ADMISSION_SCHOOL del tenant (mismo patrón que el
   // reopen-check de resumeSession_).
   var perfS0 = Date.now(); // PERF-KMS2 (no-op si PERF2_.adm inactivo)
-  var allStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
+  var allStates = Array.isArray(admHints.states)
+    ? admHints.states
+    : (appsheetRequest_(T.STATES_T, 'Find', [], {}) || []);
   if (PERF2_.adm) PERF2_.adm.states_ms = Date.now() - perfS0;
   var statesById = {};
   allStates.forEach(function(s) {
@@ -2212,7 +2256,8 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
     // Path 1 — guardian resolved from the email the family typed (a1, KAL-4).
     if (guardianPersonId) {
       var perfP1 = Date.now(); // PERF-KMS2
-      out.signing_context = resolveGuardianSigningContext_(groupId, guardianPersonId);
+      out.signing_context = resolveGuardianSigningContext_(groupId, guardianPersonId,
+        admHints.sessions, admHints.signersBySession);
       if (PERF2_.adm) PERF2_.adm.ctx_path1_ms = Date.now() - perfP1;
     }
     // Path 2 (DL-E38 cross-device fix) — the magic link carries NO guardian
@@ -2229,7 +2274,8 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
     // signing endpoints — this only unlocks the entry bridge.
     if (!out.signing_context) {
       var perfP2 = Date.now(); // PERF-KMS2
-      out.signing_context = resolveSigningContextFromSession_(groupId, persons);
+      out.signing_context = resolveSigningContextFromSession_(groupId, persons,
+        admHints.sessions, admHints.signersBySession);
       if (PERF2_.adm) PERF2_.adm.ctx_path2_ms = Date.now() - perfP2;
     }
     out.signing_available = !!out.signing_context;
@@ -2253,7 +2299,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
     // success state. Does NOT touch signing_available (the entry-bridge gate).
     // KAL-4: the group is token-authorised; nothing comes from the payload.
     var perfSt = Date.now(); // PERF-KMS2
-    out.signing_status = resolveSigningStatus_(groupId);
+    out.signing_status = resolveSigningStatus_(groupId, admHints.sessions, admHints.signersBySession);
     if (PERF2_.adm) PERF2_.adm.status_ms = Date.now() - perfSt;
 
     // WIZARD — AD unlocks step 8 (state-driven, Option A; decisión Diego 2026-06-07):
@@ -2299,15 +2345,20 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons)
  * @param {string} groupId  token-authorised enrollment_group_id (KAL-4)
  * @returns {'NOT_INITIATED'|'IN_PROGRESS'|'COMPLETED'}
  */
-function resolveSigningStatus_(groupId) {
+function resolveSigningStatus_(groupId, sessionsHint, signersBySessionHint) {
   try {
     assertValidUuid_(groupId, 'enrollment_group_id');
   } catch (e) { return 'NOT_INITIATED'; }
 
+  // PERF-KMS2: sessionsHint = filas de sysSigningSessions del grupo ya bajadas (mismo
+  // Filter entity_id) por el batch del caller; signersBySessionHint[session_id] = filas
+  // de signers ya bajadas (mismo Filter session_id). Sin hints → reads live de siempre.
   var sessions;
   try {
-    sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
+    sessions = Array.isArray(sessionsHint)
+      ? sessionsHint
+      : (appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+          { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || []);
   } catch (e) {
     Logger.log('[resolveSigningStatus_] sessions lookup failed: ' + e.message);
     return 'NOT_INITIATED';
@@ -2330,8 +2381,10 @@ function resolveSigningStatus_(groupId) {
 
   var signers;
   try {
-    signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-      { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
+    signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
+      ? signersBySessionHint[session.session_id]
+      : (appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+          { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || []);
   } catch (e) {
     Logger.log('[resolveSigningStatus_] signers lookup failed: ' + e.message);
     // Session exists but signers unreadable: trust the state code if it says so,
@@ -2377,15 +2430,18 @@ function resolveSigningStatus_(groupId) {
  * @param {Array}  persons  enrPersons rows of the group (to count guardians)
  * @returns {{signer_id, session_id, guardian_person_id, signing_token}|null}
  */
-function resolveSigningContextFromSession_(groupId, persons) {
+function resolveSigningContextFromSession_(groupId, persons, sessionsHint, signersBySessionHint) {
   try {
     assertValidUuid_(groupId, 'enrollment_group_id');
   } catch (e) { return null; }
 
+  // PERF-KMS2: hints opcionales del batch del caller (mismos Filters); sin ellos, live.
   var sessions;
   try {
-    sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
+    sessions = Array.isArray(sessionsHint)
+      ? sessionsHint
+      : (appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+          { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || []);
   } catch (e) {
     Logger.log('[resolveSigningContextFromSession_] sessions lookup failed: ' + e.message);
     return null;
@@ -2401,8 +2457,10 @@ function resolveSigningContextFromSession_(groupId, persons) {
 
   var signers;
   try {
-    signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-      { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
+    signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
+      ? signersBySessionHint[session.session_id]
+      : (appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+          { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || []);
   } catch (e) {
     Logger.log('[resolveSigningContextFromSession_] signers lookup failed: ' + e.message);
     return null;
@@ -2461,16 +2519,19 @@ function resolveSigningContextFromSession_(groupId, persons) {
  * @param {string} guardianPersonId
  * @returns {{signer_id, session_id, guardian_person_id, signing_token}|null}
  */
-function resolveGuardianSigningContext_(groupId, guardianPersonId) {
+function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint, signersBySessionHint) {
   try {
     assertValidUuid_(groupId, 'enrollment_group_id');
     assertValidUuid_(guardianPersonId, 'guardian_person_id');
   } catch (e) { return null; }
 
+  // PERF-KMS2: hints opcionales del batch del caller (mismos Filters); sin ellos, live.
   var sessions;
   try {
-    sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
+    sessions = Array.isArray(sessionsHint)
+      ? sessionsHint
+      : (appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
+          { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || []);
   } catch (e) {
     Logger.log('[resolveGuardianSigningContext_] sessions lookup failed: ' + e.message);
     return null;
@@ -2486,8 +2547,10 @@ function resolveGuardianSigningContext_(groupId, guardianPersonId) {
 
   var signers;
   try {
-    signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-      { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || [];
+    signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
+      ? signersBySessionHint[session.session_id]
+      : (appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
+          { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || []);
   } catch (e) {
     Logger.log('[resolveGuardianSigningContext_] signers lookup failed: ' + e.message);
     return null;
@@ -2886,24 +2949,59 @@ function getAdmissionState_(p) {
     // requester de resolveGuardianForRecovery_ (email de creación sin person_id). En
     // paralelo, sin coste de latencia adicional respecto al batch existente.
     { table: T.ENROLLMENT_GROUPS, action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
+    // PERF-KMS2 (2026-06-11): 3 tablas más en el MISMO batch paralelo (cero latencia
+    // extra) que antes se leían en SERIE aguas abajo (medido: states 10-13s + emails
+    // ~3-5s + sessions 2×3-4s). Filtros VERBATIM de los lectores probados:
+    // buildAdmissionContext_ (STATES_T sin filtro), resolveEmailFromLinkParam_/
+    // findEmailIdForGuardian_ (EMAILS por grupo), resolveSigningStatus_/
+    // resolveGuardianSigningContext_/resolveSigningContextFromSession_ (SESSIONS por
+    // entity_id). Las filas viajan como hints opcionales — cada helper re-aplica su
+    // filtro fino en memoria; sin hints, su camino live queda intacto.
+    { table: T.STATES_T,          action: 'Find', selector: {} },
+    { table: T.EMAILS,            action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
+    { table: T.SIGNING_SESSIONS,  action: 'Find', selector: { Filter: '"entity_id" = "' + idEsc + '"' } },
   ]);
   const perfBatchMs = Date.now() - perfB0;
   const enrollments = lightRead[0].ok ? (lightRead[0].data || []) : [];
   const persons     = lightRead[1].ok ? (lightRead[1].data || []) : [];
   const groupRow    = (lightRead[2].ok && lightRead[2].data && lightRead[2].data[0]) || null;
+  // PERF-KMS2: hints (null si su read del batch falló → los helpers caen a su live).
+  const statesHint   = lightRead[3].ok ? (lightRead[3].data || []) : null;
+  const emailsHint   = lightRead[4].ok ? (lightRead[4].data || []) : null;
+  const sessionsHint = lightRead[5].ok ? (lightRead[5].data || []) : null;
+
+  // PERF-KMS2: prefetch paralelo de signers de las sesiones VIVAS del grupo (≤2 típicas)
+  // — mismo Filter session_id que los helpers; si falla, el helper lee live como siempre.
+  let signersBySession = null;
+  if (sessionsHint && sessionsHint.length) {
+    try {
+      const liveSessions = sessionsHint.filter(function(s) { return s && !s.deleted_at && s.session_id; });
+      if (liveSessions.length) {
+        const sigReads = appsheetRequestBatch_(liveSessions.map(function(s) {
+          return { table: T.SIGNING_SESSION_SIGNERS, action: 'Find',
+                   selector: { Filter: '"session_id" = "' + appsheetEscape_(s.session_id) + '"' } };
+        }));
+        signersBySession = {};
+        liveSessions.forEach(function(s, i) {
+          if (sigReads[i] && sigReads[i].ok) signersBySession[s.session_id] = sigReads[i].data || [];
+        });
+      }
+    } catch (eSig) { signersBySession = null; /* helpers caen a live */ }
+  }
 
   // IDENTITY-FROM-LINK (2026-06-11): la identidad viaja en el ENLACE — `p.n` (email_id) →
   // email del guardian, validado contra el grupo del token (KAL-4). Prioridad `n` >
   // recovered_email (compat). emails se leen lazy dentro del resolver (email_id Find
   // dirigido); persons/groupRow como hints para guardian + fallback requester.
   const perfG0 = Date.now(); // PERF-KMS2
-  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, id, p && p.n, null, persons, groupRow);
-  const guardianId = resolveGuardianForRecovery_(id, effRecoveredEmail, null, persons, groupRow);
+  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, id, p && p.n, emailsHint, persons, groupRow);
+  const guardianId = resolveGuardianForRecovery_(id, effRecoveredEmail, emailsHint, persons, groupRow);
   const perfGuardianMs = Date.now() - perfG0;
 
   const perfA0 = Date.now();
   PERF2_.adm = {}; // recoge segmentos internos de buildAdmissionContext_
-  const admission = buildAdmissionContext_(id, enrollments, guardianId, persons);
+  const admission = buildAdmissionContext_(id, enrollments, guardianId, persons,
+    { states: statesHint, sessions: sessionsHint, signersBySession: signersBySession });
   const perfAdmMs = Date.now() - perfA0;
   Logger.log('[PERF] getAdmissionState t_gate=' + perfGateMs + ' t_batch=' + perfBatchMs +
              ' t_guardian=' + perfGuardianMs + ' t_admission=' + perfAdmMs +
