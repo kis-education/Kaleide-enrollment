@@ -4258,8 +4258,15 @@ function uploadDocument_(p) {
  * comprobación esto sería un IDOR de lectura de todo Drive. Mismo patrón KAL-4
  * aplicado a la lectura (CLAUDE.md §"IDOR — token enforcement obligatorio").
  *
+ * DOC-BYTES (decisión Diego 2026-06-11, finding #56): el blob es EL camino canónico
+ * (drive_view_url retirada de los members del KMS — los ficheros NO están compartidos
+ * por enlace y NO deben estarlo). El response propaga además `sha256` (hex sobre los
+ * bytes EXACTOS servidos), `mime_type` y `size_bytes`. Invariante: ese mismo PDF
+ * (mismo sha256) es el que recibe Click & Sign — el hash permite verificar la
+ * identidad documento-mostrado == documento-firmado.
+ *
  * @param {{ resume_token?: string, signing_token?: string, file_id: string }} p
- * @returns {{ filename: string, mimeType: string, base64: string }}
+ * @returns {{ filename: string, mimeType: string, mime_type: string, base64: string, sha256: string|null, size_bytes: number|null }}
  */
 function getDocument_(p) {
   // ── Gate dual: resume_token (/apply) O signing_token (/sign) ────────────────
@@ -4329,9 +4336,14 @@ function getDocument_(p) {
   if (usedSigningToken) {
     const d = kmsProxy_('enr.serveSigningDocument', { signing_token: kmsSigningToken, file_id: fileId });
     return {
-      filename: d.filename || null,
-      mimeType: d.mime_type || d.mimeType || null,
-      base64:   d.base64,
+      filename:   d.filename || null,
+      mimeType:   d.mime_type || d.mimeType || null,
+      mime_type:  d.mime_type || d.mimeType || null,
+      base64:     d.base64,
+      // DOC-BYTES: hash/size calculados por el KMS sobre los bytes EXACTOS servidos
+      // (mismo sha256 que el PDF que recibe Click & Sign).
+      sha256:     d.sha256 || null,
+      size_bytes: (typeof d.size_bytes === 'number') ? d.size_bytes : null,
     };
   }
 
@@ -4350,9 +4362,13 @@ function getDocument_(p) {
     if (lazyKmsToken) {
       const d = kmsProxy_('enr.serveSigningDocument', { signing_token: lazyKmsToken, file_id: fileId });
       return {
-        filename: d.filename || null,
-        mimeType: d.mime_type || d.mimeType || null,
-        base64:   d.base64,
+        filename:   d.filename || null,
+        mimeType:   d.mime_type || d.mimeType || null,
+        mime_type:  d.mime_type || d.mimeType || null,
+        base64:     d.base64,
+        // DOC-BYTES: mismo sha256 que el PDF que recibe Click & Sign (lo calcula el KMS).
+        sha256:     d.sha256 || null,
+        size_bytes: (typeof d.size_bytes === 'number') ? d.size_bytes : null,
       };
     }
     Logger.log(redact_('[getDocument_] UNAUTHORIZED file=' + fileId + ' group=' + groupId));
@@ -4366,12 +4382,35 @@ function getDocument_(p) {
     throw err;
   }
 
-  const blob = DriveApp.getFileById(row.drive_file_id).getBlob();
+  const blob  = DriveApp.getFileById(row.drive_file_id).getBlob();
+  const bytes = blob.getBytes();
   return {
-    filename: row.file_name,
-    mimeType: row.mime_type,
-    base64:   Utilities.base64Encode(blob.getBytes()),
+    filename:   row.file_name,
+    mimeType:   row.mime_type,
+    mime_type:  row.mime_type,
+    base64:     Utilities.base64Encode(bytes),
+    // DOC-BYTES: sha256 sobre los bytes EXACTOS servidos (paridad de contrato con
+    // el camino KMS — permite verificación de integridad en cualquier consumidor).
+    sha256:     sha256Hex_(bytes),
+    size_bytes: bytes.length,
   };
+}
+
+/**
+ * SHA256 hex (64 chars) de un array de bytes. DOC-BYTES 2026-06-11 — mismo
+ * encoding que `_enr_computeSha256Hex_` del KMS (kms-server/enr/signing-status.gs).
+ * @param {number[]} bytes
+ * @returns {string}
+ */
+function sha256Hex_(bytes) {
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes);
+  const hex = [];
+  for (let i = 0; i < digest.length; i++) {
+    const b = digest[i] < 0 ? digest[i] + 256 : digest[i];
+    const h = b.toString(16);
+    hex.push(h.length === 1 ? '0' + h : h);
+  }
+  return hex.join('');
 }
 
 /**
