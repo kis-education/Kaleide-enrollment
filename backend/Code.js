@@ -4382,18 +4382,46 @@ function getDocument_(p) {
     throw err;
   }
 
-  const blob  = DriveApp.getFileById(row.drive_file_id).getBlob();
-  const bytes = blob.getBytes();
-  return {
-    filename:   row.file_name,
-    mimeType:   row.mime_type,
-    mime_type:  row.mime_type,
-    base64:     Utilities.base64Encode(bytes),
-    // DOC-BYTES: sha256 sobre los bytes EXACTOS servidos (paridad de contrato con
-    // el camino KMS — permite verificación de integridad en cualquier consumidor).
-    sha256:     sha256Hex_(bytes),
-    size_bytes: bytes.length,
-  };
+  // DOC-FALLBACK (2026-06-11): el Drive local del wizard NO es fiable — verificado en
+  // producción que esta rama moría con "getFileById on object DriveApp" para los PDF
+  // del paquete de firma (fila recFiles matcheó por grupo pero el fichero vive en el
+  // Drive del KMS), dejando el visor del Step 10 en "Cargando…" eterno. Doctrina
+  // thin-client (decisión Diego, blob KMS→wizard): si la lectura local falla, el
+  // fallback es SIEMPRE el proxy al KMS (dueño de los ficheros), que re-valida el
+  // signing_token + IDOR server-side (KAL-4). Solo si tampoco hay token de firma
+  // resolvible se devuelve error estructurado (P72: ok:false, nunca HTTP 4xx).
+  try {
+    const blob  = DriveApp.getFileById(row.drive_file_id).getBlob();
+    const bytes = blob.getBytes();
+    return {
+      filename:   row.file_name,
+      mimeType:   row.mime_type,
+      mime_type:  row.mime_type,
+      base64:     Utilities.base64Encode(bytes),
+      // DOC-BYTES: sha256 sobre los bytes EXACTOS servidos (paridad de contrato con
+      // el camino KMS — permite verificación de integridad en cualquier consumidor).
+      sha256:     sha256Hex_(bytes),
+      size_bytes: bytes.length,
+    };
+  } catch (eDrive) {
+    Logger.log(redact_('[getDocument_] Drive local FALLÓ file=' + fileId +
+      ' — fallback proxy KMS. err=' + (eDrive && eDrive.message)));
+    const fbToken = kmsSigningToken || resolveKmsSigningToken();
+    if (fbToken) {
+      const d = kmsProxy_('enr.serveSigningDocument', { signing_token: fbToken, file_id: fileId });
+      return {
+        filename:   d.filename || row.file_name || null,
+        mimeType:   d.mime_type || d.mimeType || row.mime_type || null,
+        mime_type:  d.mime_type || d.mimeType || row.mime_type || null,
+        base64:     d.base64,
+        sha256:     d.sha256 || null,
+        size_bytes: (typeof d.size_bytes === 'number') ? d.size_bytes : null,
+      };
+    }
+    const err = new Error('Document temporarily unavailable');
+    err.code = 'DOC_UNAVAILABLE';
+    throw err;
+  }
 }
 
 /**
