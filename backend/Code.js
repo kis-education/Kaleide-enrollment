@@ -250,6 +250,28 @@ function assertValidUuid_(v, fieldName) {
 }
 
 /**
+ * Validates a file_id for READ-ONLY lookups, tolerating LEGACY semantic ids
+ * (KAL/F-17·#10, 2026-06-11). Documentos sembrados con design anterior llevan ids
+ * NO-UUID tipo `file-kis-admission-letter-2026-001`; `assertValidUuid_` los rechaza
+ * con BAD_REQUEST → el botón "Ver archivo" del wizard quedaba inerte (Hallazgo #10).
+ *
+ * Whitelist estricta `^[A-Za-z0-9._-]{1,128}$`: sin comillas → no rompe el AppSheet
+ * Filter (KAL-5 capa 1); `appsheetEscape_()` en la concatenación es la capa 2. SOLO
+ * para getDocument_ (lectura gateada por token + guard de propiedad IDOR). Las
+ * escrituras y la emisión de ids nuevos siguen exigiendo UUID v4 (assertValidUuid_).
+ *
+ * @param {*}      v
+ * @param {string} [fieldName]
+ */
+function assertValidFileIdForRead_(v, fieldName) {
+  if (typeof v !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(v)) {
+    const err = new Error('Invalid file_id for ' + (fieldName || 'field') + ': ' + JSON.stringify(v));
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
+}
+
+/**
  * Validates an email shape (RFC-light + RFC-5321 max length of 254).
  * Throws an Error if invalid. Use BEFORE concatenating emails into a Filter.
  *
@@ -3923,7 +3945,10 @@ function getDocument_(p) {
   _markStepUpFresh_(groupId);  // P-STEPUP-SLIDING: actividad real desliza la ventana
 
   const fileId = p.file_id;
-  assertValidUuid_(fileId, 'file_id');
+  // F-17·#10 (2026-06-11): lectura tolera ids legacy semánticos (no-UUID) — validador
+  // relajado + whitelist (sin comillas) + appsheetEscape_ abajo. NO usar assertValidUuid_
+  // aquí: rechazaba `file-kis-admission-letter-2026-001` antes del lookup (Hallazgo #10).
+  assertValidFileIdForRead_(fileId, 'file_id');
 
   // P-DOCS: los PDF del paquete de firma (Carta/Contrato) los genera el KMS y viven
   // en el Drive del KMS → DriveApp local del wizard NO los lee. En el flujo /sign
