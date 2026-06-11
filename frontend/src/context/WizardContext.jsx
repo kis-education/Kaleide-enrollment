@@ -404,6 +404,19 @@ export function WizardProvider({ children }) {
     saveSession({ recoveredEmail: v });
   }, []);
 
+  // IDENTITY-FROM-LINK (2026-06-11): `recoveryNonce` = el `n` del magic link (email_id del
+  // guardian, opaco). Es la VÍA CANÓNICA de identidad: la identidad viaja en el enlace, no
+  // en el cliente. Se persiste en sessionStorage para SOBREVIVIR a F5/incógnito (tras la
+  // limpieza KAL-7 de la URL, `n` ya no está en la barra → debe vivir en sessionStorage).
+  // NO es un secreto bearer (no autoriza nada por sí solo; el backend lo valida contra el
+  // grupo del resume_token, KAL-4/5). El frontend lo reenvía en hydrate + actos de firma.
+  const [recoveryNonce, setRecoveryNonceRaw] = useState(session.recoveryNonce || null);
+  const setRecoveryNonce = useCallback((n) => {
+    const v = n ? String(n).trim() : null;
+    setRecoveryNonceRaw(v);
+    saveSession({ recoveryNonce: v });
+  }, []);
+
   // D-E18: recognition result from initEnrollmentSession. Survives reloads via
   // sessionStorage so Step2 can show the "we recognised your family" banner
   // even after the family resumes from magic link.
@@ -445,6 +458,7 @@ export function WizardProvider({ children }) {
     setAdmissionState(null);
     setSigningContext(null);
     setRecoveredEmailRaw(null);
+    setRecoveryNonceRaw(null);
     setStepUpVerifiedUntil(0);
     setLastActivityAt(Date.now());
     setRecoveredViaMagicLinkRaw(false);
@@ -933,6 +947,7 @@ export function WizardProvider({ children }) {
       admissionState, signingContext,           // P216 (DL-E38)
       billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
+      recoveryNonce, setRecoveryNonce,           // IDENTITY-FROM-LINK: `n` = email_id del enlace
       isStepUpFresh, markStepUpFresh, touchActivity, // DL-E39 step-up PII-primero
       recoveredViaMagicLink, setRecoveredViaMagicLink, // DL-E39 gate de entrada
       otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER: auto-send solo 1ª recuperación

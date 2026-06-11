@@ -532,24 +532,19 @@ function requireSignerContext_(payload) {
   payload = payload || {};
 
   // (a) Path canónico — colapso del bearer (resume_token + email).
-  // IDENTITY-BINDING (2026-06-11): basta el resume_token. El recovered_email se deriva
-  // del binding server-side (recovery_guardian_email) cuando el cliente no lo aporta
+  // IDENTITY-FROM-LINK (2026-06-11): basta el resume_token + el `n` (email_id) del enlace.
+  // El recovered_email se deriva SERVER-SIDE del propio enlace (`n` = email_id → email del
+  // guardian, validado contra el grupo del token) cuando el cliente no lo aporta
   // (F5/incógnito/pestaña nueva) → la firma resuelve identidad sin depender del cliente.
   if (payload.resume_token && !payload.signing_token) {
     const groupId = requireResumeToken_(payload);   // KAL-4 + TTL 7d + abandoned gate
-    // Releer la fila de grupo (autorizada por el token) para el binding server-side.
-    let sgRow = null;
-    try {
-      const sgRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-        Filter: '"resume_token" = "' + appsheetEscape_(String(payload.resume_token).trim()) + '"'
-      });
-      sgRow = (sgRows && sgRows.length) ? sgRows[0] : null;
-    } catch (e) { sgRow = null; }
-    const effEmail = effectiveRecoveredEmail_(payload.recovered_email, sgRow);
+    // IDENTITY-FROM-LINK: prioridad `n` (email_id del enlace) > recovered_email (compat).
+    // resolveGuardianForRecovery_ lee enrEmails/persons lazy dentro del resolver.
+    const effEmail = effectiveRecoveredEmail_(payload.recovered_email, groupId, payload.n);
     if (!effEmail) {
-      // Sin recovered_email del cliente NI binding → no se puede identificar al
+      // Sin `n` del enlace NI recovered_email del cliente → no se puede identificar al
       // guardian. Caer a (b) si hay signing_token; si no, error explícito.
-      const err = new Error('Unauthorized: no recovered_email ni binding token→guardian para identificar al firmante');
+      const err = new Error('Unauthorized: no se pudo identificar al firmante (falta `n` del enlace o recovered_email)');
       err.code = 'UNAUTHORIZED';
       throw err;
     }
@@ -722,50 +717,60 @@ function _bumpLiveStateVersion_(enrollmentGroupId) {
 }
 
 /**
- * Acuña un nonce single-use para la gracia del magic-link (ver MAGIC_LINK_GRACE_MS).
- * Guarda `mlnonce_<nonce>` = enrollment_group_id en ScriptCache con TTL = ventana de
- * gracia (10 min). El nonce viaja en la URL del magic link (`?n=<nonce>`) y se consume
- * en el primer recovery. NO se loguea el nonce completo (KAL-7: preview ≤8 chars).
+ * IDENTITY-FROM-LINK (2026-06-11) — la gracia del magic-link (OTP-skip de 10 min) ya NO
+ * viaja en `?n=` (ese param pasa a llevar el `email_id` del guardian, identidad — ver
+ * resolveGuardianFromLinkParam_). La gracia se ANCLA al `resume_token` recién rotado:
+ * al emitir un link se acuña un marcador single-use `mlgrace_<resume_token>` = group en
+ * ScriptCache (TTL = ventana de gracia). El `resume_token` ya viaja en el path del link
+ * y el frontend ya lo reenvía en cada llamada → cero param nuevo, cero schema nuevo.
  *
+ * Propiedades de seguridad preservadas vs el modelo de nonce aleatorio:
+ *  - Single-use: el primer recovery BORRA el marcador.
+ *  - 10 min: TTL idéntico (MAGIC_LINK_GRACE_MS).
+ *  - Anclado a un envío reciente de ESTE grupo: la rotación del token en la emisión
+ *    crea el marcador con el token NUEVO; un token viejo/filtrado/reusado no tiene
+ *    marcador → step_up_fresh=false → flujo OTP normal intacto (KAL-7).
+ *
+ * @param {string} resumeToken       - el resume_token (recién rotado) del envío
  * @param {string} enrollmentGroupId - ya derivado/validado server-side (KAL-4)
- * @returns {string} nonce UUID v4
  * @private
  */
-function _mintMagicLinkNonce_(enrollmentGroupId) {
-  const nonce = Utilities.getUuid();
+function _mintMagicLinkNonce_(resumeToken, enrollmentGroupId) {
+  if (!resumeToken || !enrollmentGroupId) return;
+  try { assertValidUuid_(resumeToken, 'resume_token'); } catch (e) { return; }
   CacheService.getScriptCache().put(
-    'mlnonce_' + nonce,
+    'mlgrace_' + resumeToken,
     enrollmentGroupId,
     Math.ceil(MAGIC_LINK_GRACE_MS / 1000)
   );
-  return nonce;
 }
 
 /**
- * Consume (single-use) un nonce de magic-link: si existe en cache y mapea al grupo
- * esperado, lo BORRA y devuelve true (gracia válida → sin OTP). Si no existe (expiró,
- * ya usado, nunca emitido) o mapea a otro grupo → false (flujo OTP normal). El grupo
- * esperado se deriva SIEMPRE del resume_token server-side (KAL-4), nunca del payload;
- * el nonce solo confirma "este click viene de un envío reciente de ESTE grupo".
+ * Consume (single-use) la gracia de magic-link anclada al `resume_token`: si existe el
+ * marcador `mlgrace_<resume_token>` en cache y mapea al grupo esperado, lo BORRA y
+ * devuelve true (gracia válida → sin OTP). Si no existe (expiró, ya usado, token viejo,
+ * nunca emitido) o mapea a otro grupo → false (flujo OTP normal). El grupo esperado se
+ * deriva SIEMPRE del resume_token server-side (KAL-4); el marcador solo confirma "este
+ * click viene de un envío reciente de ESTE grupo".
  *
- * @param {string} nonce             - candidato (de la URL del link, validado UUID)
- * @param {string} expectedGroupId   - group derivado del resume_token
+ * @param {string} resumeToken     - resume_token del payload (validado server-side antes)
+ * @param {string} expectedGroupId - group derivado del resume_token
  * @returns {boolean}
  * @private
  */
-function _consumeMagicLinkNonce_(nonce, expectedGroupId) {
-  if (!nonce) return false;
-  try { assertValidUuid_(nonce, 'magic_link_nonce'); } catch (e) { return false; }
+function _consumeMagicLinkNonce_(resumeToken, expectedGroupId) {
+  if (!resumeToken) return false;
+  try { assertValidUuid_(resumeToken, 'resume_token'); } catch (e) { return false; }
   const cache = CacheService.getScriptCache();
-  const key   = 'mlnonce_' + nonce;
+  const key   = 'mlgrace_' + resumeToken;
   const mappedGroup = cache.get(key);
   if (!mappedGroup || mappedGroup !== expectedGroupId) {
     // Inexistente/expirado/usado o de otro grupo → sin gracia. KAL-7: preview ≤8.
-    Logger.log(redact_('[_consumeMagicLinkNonce_] miss nonce=' + String(nonce).slice(0, 8) + '… group=' + expectedGroupId));
+    Logger.log(redact_('[_consumeMagicLinkNonce_] grace miss token=' + String(resumeToken).slice(0, 8) + '… group=' + expectedGroupId));
     return false;
   }
   cache.remove(key); // single-use: un solo click
-  Logger.log(redact_('[_consumeMagicLinkNonce_] grace OK nonce=' + String(nonce).slice(0, 8) + '… group=' + expectedGroupId));
+  Logger.log(redact_('[_consumeMagicLinkNonce_] grace OK token=' + String(resumeToken).slice(0, 8) + '… group=' + expectedGroupId));
   return true;
 }
 
@@ -1453,104 +1458,153 @@ function recognizeFamily_(p, opts) {
 }
 
 /**
- * IDENTITY-BINDING (2026-06-11) — persiste el binding token→tutor SERVER-SIDE al
- * emitir un magic link, de modo que toda resolución posterior derive la identidad
- * del token (no del cliente). Modelo canónico de Diego (LA regla):
+ * IDENTITY-FROM-LINK (2026-06-11) — resuelve el email del guardian que recupera A PARTIR
+ * DEL PROPIO ENLACE, usando SOLO datos existentes: el parámetro `n` del magic link, que
+ * desde ahora lleva el `email_id` (PK de la fila `enrEmails` del guardian al que se emitió
+ * el link). El `email_id` es OPACO, sin PII, y YA EXISTE en la BD — cero columna nueva,
+ * cero tabla nueva, cero almacenamiento nuevo.
  *
- *   "Cualquier tutor, en cualquier momento, recupera la solicitud desde
- *    admissions.kaleide.org metiendo SU email personal. Esto lleva implícito que
- *    se sabe SIEMPRE quién es el tutor que accede."
+ * Modelo canónico de Diego (LA regla, cita literal — corrección de rumbo 2026-06-11):
+ *   "Tienes herramientas y datos suficientes para resolver la identidad sabiendo el
+ *    email con el que se solicita el link. No pienso crear un campo que solo sirve a
+ *    uno de los tipos de programa."
  *
- * El binding se almacena en `enrEnrollmentGroups.recovery_guardian_email`: el email
- * (de un GUARDIAN concreto) al que se envió el magic link activo. Como tanto
- * `resolveGuardianForRecovery_` (wizard) como `enr_resolveGuardianFromEmail_` (KMS)
- * matchean POR EMAIL contra filas reales, almacenar el email del binding permite
- * alimentar `recovered_email` server-side en cada resolución posterior — CERO lógica
- * de resolver nueva, contrato del KMS intacto.
+ * Esto SUPERSEDE el enfoque IDENTITY-BINDING (columna dedicada `recovery_guardian_email`,
+ * vetado por Diego: específico de un tipo de programa). El `email_id` sirve a TODO tipo
+ * de programa porque es un dato transversal del modelo de personas/emails.
  *
- * SEGURIDAD:
- *  - El binding SOLO se escribe aquí (emisión, server-side). NUNCA viene del payload
- *    del cliente. KAL-4 elevado a su forma correcta.
- *  - Se escribe en un Edit SEPARADO y TOLERANTE A FALLO (NUNCA empaquetado con la
- *    renovación del resume_token): si la columna `recovery_guardian_email` aún no
- *    existe en AppSheet (silent reject P72), la renovación del token NO se ve
- *    afectada y el flujo degrada honestamente al modelo group-scoped actual.
- *  - La rotación del token re-escribe el binding con el token nuevo; un token viejo
- *    nunca resuelve identidad (caduca con el token: el binding vive en la misma fila
- *    de grupo cuyo `resume_token` se acaba de rotar).
+ * SEGURIDAD (KAL-4 / KAL-5):
+ *  - `n` (email_id) JAMÁS se cree a ciegas: se lee la fila real `enrEmails[email_id=n]` y
+ *    se VALIDA server-side que (a) pertenece al `enrollment_group_id` del resume_token
+ *    (KAL-4 — el grupo SIEMPRE del token, nunca del payload) y (b) su persona es un
+ *    guardian del grupo (o el fallback requester del email de creación, ya existente).
+ *  - assertValidUuid_ + appsheetEscape_ (KAL-5 doble capa) antes de concatenar en el Filter.
+ *  - Devuelve el VALUE (email) de la fila → alimenta `recovered_email` exactamente como el
+ *    contrato del KMS espera (matchea por email). CERO cambio KMS.
+ *  - Si `n` está ausente, malformado, no pertenece al grupo, o no resuelve a guardian →
+ *    null limpio → el flujo degrada al modelo group-scoped intacto (sin gracia de identidad).
  *
- * @param {string} groupId   enrollment_group_id (derivado server-side)
- * @param {string} boundEmail email del guardian al que se emitió el link (lowercased)
+ * @param {string} groupId   enrollment_group_id (DERIVADO del resume_token, KAL-4)
+ * @param {string} nParam    p.n del payload (email_id candidato, de la URL del link)
+ * @param {Array}  [emailsHint]  filas enrEmails del grupo ya leídas (evita re-Find)
+ * @param {Array}  [personsHint] filas enrPersons del grupo ya leídas (evita re-Find)
+ * @param {Object} [groupHint]   fila de grupo ya leída (para el fallback requester)
+ * @returns {string|null} email (lowercased) del guardian, o null (degrada group-scoped)
  */
-function persistRecoveryBinding_(groupId, boundEmail) {
-  if (!groupId || !boundEmail) return;
-  var email;
+function resolveEmailFromLinkParam_(groupId, nParam, emailsHint, personsHint, groupHint) {
+  if (!nParam) return null;
+  var emailId;
+  try {
+    assertValidUuid_(nParam, 'n_email_id');
+    emailId = String(nParam).trim();
+  } catch (e) {
+    return null; // `n` no es un email_id → ignorar limpio (degrada group-scoped)
+  }
   try {
     assertValidUuid_(groupId, 'enrollment_group_id');
-    assertValidEmail_(boundEmail, 'recovery_guardian_email');
-    email = String(boundEmail).toLowerCase().trim();
-  } catch (e) {
-    return; // binding malformado → no-op (degrada a group-scoped)
-  }
-  try {
-    appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-      enrollment_group_id:     groupId,
-      recovery_guardian_email: email,
-      updated_at:              new Date().toISOString(),
-    }]);
-    // KAL-11: redact email + group UUID.
-    Logger.log(redact_('[persistRecoveryBinding_] bound token→guardian email=' +
-               email + ' group=' + groupId));
-  } catch (e) {
-    // P72 silent reject (columna ausente) o error transitorio: NO romper la emisión.
-    Logger.log(redact_('[persistRecoveryBinding_] binding write skipped (col ausente?) group=' +
-               groupId + ': ' + (e && e.message)));
-  }
-}
-
-/**
- * IDENTITY-BINDING (2026-06-11) — lee el email del binding token→tutor desde la fila
- * de grupo (server-side), para alimentar `recovered_email` en las resoluciones
- * posteriores cuando el cliente NO lo aporta (F5 / incógnito / pestaña nueva). El
- * argumento del cliente (`recovered_email`) tiene PRECEDENCIA solo si viene; el
- * binding es la red de seguridad que hace que la identidad sobreviva a TODO.
- *
- * @param {Object} groupRow fila enrEnrollmentGroups ya leída
- * @returns {string|null} email del binding, o null si no hay binding (degrada).
- */
-function readRecoveryBinding_(groupRow) {
-  if (!groupRow) return null;
-  var bound = groupRow.recovery_guardian_email;
-  if (!bound) return null;
-  try {
-    assertValidEmail_(bound, 'recovery_guardian_email');
-    return String(bound).toLowerCase().trim();
   } catch (e) {
     return null;
   }
+  // Leer la fila enrEmails por su PK (email_id). KAL-5: assertValidUuid_ (arriba) +
+  // appsheetEscape_ (aquí). Preferir el hint del batch del caller; si no, Find dirigido.
+  var row = null;
+  if (Array.isArray(emailsHint)) {
+    row = emailsHint.find(function(e) { return e && e.email_id === emailId; }) || null;
+  }
+  if (!row) {
+    var rows = appsheetRequest_(T.EMAILS, 'Find', [], {
+      Filter: '"email_id" = "' + appsheetEscape_(emailId) + '"'
+    }) || [];
+    row = rows[0] || null;
+  }
+  if (!row) {
+    Logger.log(redact_('[resolveEmailFromLinkParam_] email_id no existe n=' + emailId.slice(0, 8) + '… group=' + groupId));
+    return null;
+  }
+  // KAL-4: la fila DEBE pertenecer al grupo del token. Sin esto, un email_id de OTRO
+  // grupo (enumeración) resolvería identidad ajena.
+  if (String(row.enrollment_group_id || '') !== String(groupId)) {
+    Logger.log(redact_('[resolveEmailFromLinkParam_] email_id de OTRO grupo (rechazado) n=' + emailId.slice(0, 8) + '… group=' + groupId));
+    return null;
+  }
+  var email = String(row.value || '').toLowerCase().trim();
+  if (!email) return null;
+  // VALIDAR que el email resuelve a un guardian del grupo (o el fallback requester del
+  // email de creación) — reutiliza el resolver probado. Si no resuelve, no concedemos
+  // identidad (group-scoped intacto).
+  var guardianId = resolveGuardianForRecovery_(groupId, email, emailsHint, personsHint, groupHint);
+  if (!guardianId) {
+    Logger.log(redact_('[resolveEmailFromLinkParam_] email no resuelve a guardian (rechazado) n=' + emailId.slice(0, 8) + '… group=' + groupId));
+    return null;
+  }
+  Logger.log(redact_('[resolveEmailFromLinkParam_] n→email→guardian OK n=' + emailId.slice(0, 8) + '… group=' + groupId));
+  return email;
 }
 
 /**
- * IDENTITY-BINDING (2026-06-11) — email de recuperación EFECTIVO para una resolución
- * de identidad. Precedencia:
- *   1. `clientRecoveredEmail` del payload (compat — ya NO necesario, pero respetado).
- *   2. binding server-side del token (`recovery_guardian_email` de la fila de grupo).
- * Devuelve null si no hay ninguno (→ degrada al modelo group-scoped intacto). Esto es
- * lo que hace que la identidad SOBREVIVA a F5/incógnito/pestañas: el cliente puede
- * haber perdido `recovered_email`, pero el binding lo reconstituye server-side.
+ * IDENTITY-FROM-LINK (2026-06-11) — email de recuperación EFECTIVO para una resolución
+ * de identidad. Precedencia (prioridad `n` > recovered_email):
+ *   1. `nParam` (email_id del enlace) → email del guardian resuelto SERVER-SIDE contra BD
+ *      (resolveEmailFromLinkParam_). Es la vía canónica: la identidad viaja en el enlace.
+ *   2. `clientRecoveredEmail` del payload (compat secundario — F5/sessionStorage; respetado
+ *      pero ya NO es la red de seguridad principal).
+ * Devuelve null si ninguno aplica (→ degrada al modelo group-scoped intacto).
  *
  * @param {string|null} clientRecoveredEmail  p.recovered_email (puede faltar)
- * @param {Object} groupRow                   fila enrEnrollmentGroups ya leída
+ * @param {string} groupId                    enrollment_group_id (derivado del token, KAL-4)
+ * @param {string|null} nParam                p.n del payload (email_id del enlace)
+ * @param {Array}  [emailsHint]               filas enrEmails del grupo ya leídas
+ * @param {Array}  [personsHint]              filas enrPersons del grupo ya leídas
+ * @param {Object} [groupHint]                fila de grupo ya leída
  * @returns {string|null}
  */
-function effectiveRecoveredEmail_(clientRecoveredEmail, groupRow) {
+function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsHint, personsHint, groupHint) {
+  // 1. Prioridad: identidad DEL ENLACE (`n` = email_id) resuelta server-side.
+  var fromLink = resolveEmailFromLinkParam_(groupId, nParam, emailsHint, personsHint, groupHint);
+  if (fromLink) return fromLink;
+  // 2. Compat secundario: recovered_email del cliente (sessionStorage), si viene.
   if (clientRecoveredEmail) {
     try {
       assertValidEmail_(clientRecoveredEmail, 'recovered_email');
       return String(clientRecoveredEmail).toLowerCase().trim();
-    } catch (e) { /* malformado → caer al binding */ }
+    } catch (e) { /* malformado → null (group-scoped) */ }
   }
-  return readRecoveryBinding_(groupRow);
+  return null;
+}
+
+/**
+ * IDENTITY-FROM-LINK (2026-06-11) — localiza el `email_id` (PK de enrEmails) de la fila
+ * del email DENTRO del grupo, para meterlo en el `n` del magic link. Es el dato opaco,
+ * sin PII y ya existente que resuelve la identidad del guardian al recuperar (espejo
+ * inverso de resolveEmailFromLinkParam_). KAL-5: assertValidUuid_ + assertValidEmail_ +
+ * appsheetEscape_. Devuelve null si no hay match (→ `n` ausente → group-scoped intacto).
+ *
+ * @param {string} groupId enrollment_group_id (server-side)
+ * @param {string} email   email del guardian destino (lowercased)
+ * @returns {string|null} email_id (UUID) o null
+ * @private
+ */
+function findEmailIdForGuardian_(groupId, email) {
+  if (!groupId || !email) return null;
+  var emailLc;
+  try {
+    assertValidUuid_(groupId, 'enrollment_group_id');
+    assertValidEmail_(email, 'guardian_email');
+    emailLc = String(email).toLowerCase().trim();
+  } catch (e) {
+    return null;
+  }
+  try {
+    var rows = appsheetRequest_(T.EMAILS, 'Find', [], {
+      Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
+    }) || [];
+    var match = rows.find(function(r) {
+      return r && String(r.value || '').toLowerCase().trim() === emailLc && r.email_id;
+    });
+    return match ? String(match.email_id) : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -1582,14 +1636,14 @@ function sendMagicLink_(p) {
     // primary_email (GAP-2 / pre-Step-2). KAL-4: groupId derived from token-path
     // caller, recovered_email only ever a discriminator validated against real rows.
     let destEmail = grp.primary_email;
-    let boundGuardianEmail = null; // IDENTITY-BINDING: email del guardian resuelto (si lo hay)
+    let identityEmail = null; // IDENTITY-FROM-LINK: email del guardian destino (si resuelve)
     if (p.recovered_email && resolveGuardianForRecovery_(grp.enrollment_group_id, p.recovered_email, null, null, grp)) {
       destEmail = String(p.recovered_email).toLowerCase().trim();
-      boundGuardianEmail = destEmail;
+      identityEmail = destEmail;
     } else if (resolveGuardianForRecovery_(grp.enrollment_group_id, grp.primary_email, null, null, grp)) {
       // Sin recovered_email explícito: si el primary_email resuelve a un guardian
-      // (caso tutor-1 / artefacto Stage-1), ese es el guardian del binding.
-      boundGuardianEmail = String(grp.primary_email || '').toLowerCase().trim();
+      // (caso tutor-1 / artefacto Stage-1), ese es el guardian del enlace.
+      identityEmail = String(grp.primary_email || '').toLowerCase().trim();
     }
     _checkMagicLinkRateLimit_((destEmail || '').toLowerCase().trim());
     _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
@@ -1612,14 +1666,13 @@ function sendMagicLink_(p) {
       Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
     }
 
-    // IDENTITY-BINDING: persistir token→guardian tras la rotación (o reafirmarlo en
-    // sesiones submitted que conservan su token). Edit SEPARADO, tolerante a fallo.
-    if (boundGuardianEmail) {
-      persistRecoveryBinding_(grp.enrollment_group_id, boundGuardianEmail);
-    }
-
-    const graceNonce = _mintMagicLinkNonce_(grp.enrollment_group_id);
-    sendMagicLinkEmail_(destEmail, tokenToSend, grp.preferred_language || 'es', undefined, graceNonce);
+    // IDENTITY-FROM-LINK (2026-06-11): `n` := email_id de la fila enrEmails del guardian
+    // destino (opaco, sin PII, ya existe). La identidad viaja EN EL ENLACE; cero columna.
+    // Si el email no resuelve a un email_id de guardian (group-scoped legacy) → n null.
+    const nEmailId = findEmailIdForGuardian_(grp.enrollment_group_id, identityEmail);
+    // Gracia OTP-skip anclada al resume_token recién rotado (single-use, 10 min).
+    _mintMagicLinkNonce_(tokenToSend, grp.enrollment_group_id);
+    sendMagicLinkEmail_(destEmail, tokenToSend, grp.preferred_language || 'es', undefined, nEmailId);
   } else if (p.primary_email) {
     // Find all non-abandoned sessions for this email — INCLUDING submitted/AD.
     // DL-E38: recovery MUST work for submitted/AD families so the magic link can
@@ -1665,24 +1718,25 @@ function sendMagicLink_(p) {
         }
       });
 
-    // IDENTITY-BINDING: el link va al email tecleado (p.primary_email = buzón del
-    // guardian dueño). Persistir token→ese email en cada grupo recuperado, tras la
-    // rotación de arriba. Edit SEPARADO, tolerante a fallo (degrada a group-scoped).
-    const boundEmail = p.primary_email.toLowerCase().trim();
-    grps.forEach(function(g) { persistRecoveryBinding_(g.enrollment_group_id, boundEmail); });
+    // IDENTITY-FROM-LINK (2026-06-11): el link va al email tecleado (p.primary_email =
+    // buzón del guardian dueño). `n` := email_id de la fila enrEmails de ESE email en
+    // CADA grupo recuperado (opaco, sin PII, ya existe). La identidad viaja en el enlace.
+    const identityEmail = p.primary_email.toLowerCase().trim();
 
     const lang = grps[0].preferred_language || 'es';
     if (grps.length === 1) {
       // Use the single-link template (with full security footer + GDPR block)
       // instead of the abridged multi template when there's actually only one
       // open session — which is the common case under the new single-session policy.
-      const graceNonce = _mintMagicLinkNonce_(grps[0].enrollment_group_id);
-      sendMagicLinkEmail_(p.primary_email, grps[0].resume_token, lang, false, graceNonce);
+      const nEmailId = findEmailIdForGuardian_(grps[0].enrollment_group_id, identityEmail);
+      _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
+      sendMagicLinkEmail_(p.primary_email, grps[0].resume_token, lang, false, nEmailId);
     } else {
-      // Un nonce single-use por grupo (paralelo a los tokens), para que cada link
-      // tenga su propia gracia de 10 min vinculada a SU grupo.
-      const graceNonces = grps.map(g => _mintMagicLinkNonce_(g.enrollment_group_id));
-      sendMagicLinkMultiEmail_(p.primary_email, grps.map(g => g.resume_token), lang, graceNonces);
+      // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
+      // del guardian en SU grupo. La gracia OTP-skip se ancla al resume_token de cada grupo.
+      const nEmailIds = grps.map(g => findEmailIdForGuardian_(g.enrollment_group_id, identityEmail));
+      grps.forEach(g => _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id));
+      sendMagicLinkMultiEmail_(p.primary_email, grps.map(g => g.resume_token), lang, nEmailIds);
     }
   } else {
     throw new Error('Missing enrollment_group_id or primary_email');
@@ -2399,13 +2453,13 @@ function resumeSession_(p) {
   assertValidUuid_(id, 'enrollment_group_id');
 
   // ── Magic-link grace (UX, sin urgencia) ────────────────────────────────────
-  // Si el link traía un nonce de gracia (`?n=`) válido, no usado y de ESTE grupo,
-  // lo consumimos (single-use) y marcamos el grupo step-up fresco → el recovery NO
-  // exigirá OTP durante los 10 min. KAL-4: el grupo (id) se deriva del resume_token
-  // server-side; el nonce solo confirma "este click viene de un envío reciente de
-  // ESTE grupo", nunca decide el grupo. KAL-7: un token filtrado/reusado/expirado
-  // NO trae un nonce válido → step_up_fresh=false → flujo OTP normal intacto.
-  const stepUpFresh = _consumeMagicLinkNonce_(p && p.n, id);
+  // IDENTITY-FROM-LINK (2026-06-11): la gracia OTP-skip se ancla al resume_token recién
+  // rotado (`mlgrace_<resume_token>`), NO al `?n=` (que ahora lleva el email_id, identidad).
+  // Si el resume_token tiene un marcador de gracia válido, no usado y de ESTE grupo, lo
+  // consumimos (single-use) y marcamos step-up fresco → el recovery NO exige OTP durante
+  // 10 min. KAL-4: el grupo (id) se deriva del resume_token server-side. KAL-7: un token
+  // viejo/filtrado/reusado no tiene marcador → step_up_fresh=false → flujo OTP normal.
+  const stepUpFresh = _consumeMagicLinkNonce_(p && p.resume_token, id);
   if (stepUpFresh) _markStepUpFresh_(id);
 
   // Refuse if the family explicitly abandoned this session via abandonSession_.
@@ -2463,10 +2517,12 @@ function resumeSession_(p) {
   // filtered to guardians — NEVER from a raw payload field (KAL-4). The
   // resume_token gate above already authorised the group; the guardian is an
   // ADDITIONAL discriminator re-resolved against real data on every call.
-  // IDENTITY-BINDING (2026-06-11): si el cliente NO aporta recovered_email
-  // (F5/incógnito/pestaña nueva), el binding server-side del token lo reconstituye
-  // → la identidad sobrevive sin depender del cliente.
-  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, group);
+  // IDENTITY-FROM-LINK (2026-06-11): la identidad viaja en el ENLACE — `p.n` lleva el
+  // email_id del guardian; resolveEmailFromLinkParam_ lo valida contra el grupo del token
+  // (KAL-4) y devuelve su email. Prioridad `n` > recovered_email (compat). Reusa los hints
+  // del batch (allEmails/persons/group) → sin re-Find. Sobrevive a F5/incógnito/pestañas
+  // porque el enlace (no el cliente) porta la identidad.
+  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, id, p && p.n, allEmails, persons, group);
   const recoveredGuardianId = resolveGuardianForRecovery_(id, effRecoveredEmail, allEmails, persons, group);
 
   // P215: real admission state + (if AD) per-guardian signing context. Additive
@@ -2716,9 +2772,10 @@ function getAdmissionState_(p) {
   // KAL-4: grupo autorizado derivado del token (valida UUID + TTL + abandoned_at).
   const id = requireResumeToken_(p);
 
-  // Magic-link grace: un nonce válido (single-use, 10 min) consume + marca fresco.
-  // Si no hay nonce, REPORTAMOS la frescura vigente del grupo (no la cambiamos).
-  let stepUpFresh = _consumeMagicLinkNonce_(p && p.n, id);
+  // Magic-link grace (IDENTITY-FROM-LINK): anclada al resume_token recién rotado
+  // (mlgrace_<resume_token>); single-use, 10 min → consume + marca fresco. Si no hay
+  // marcador, REPORTAMOS la frescura vigente del grupo (no la cambiamos).
+  let stepUpFresh = _consumeMagicLinkNonce_(p && p.resume_token, id);
   if (stepUpFresh) {
     _markStepUpFresh_(id);
   } else {
@@ -2736,20 +2793,21 @@ function getAdmissionState_(p) {
   const lightRead = appsheetRequestBatch_([
     { table: T.ENROLLMENTS,      action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
     { table: T.PERSONS,          action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    // IDENTITY-BINDING: la fila de grupo trae el binding token→guardian (en paralelo,
-    // sin coste de latencia adicional respecto al batch existente).
+    // IDENTITY-FROM-LINK: la fila de grupo se usa como groupHint para el fallback
+    // requester de resolveGuardianForRecovery_ (email de creación sin person_id). En
+    // paralelo, sin coste de latencia adicional respecto al batch existente.
     { table: T.ENROLLMENT_GROUPS, action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
   ]);
   const enrollments = lightRead[0].ok ? (lightRead[0].data || []) : [];
   const persons     = lightRead[1].ok ? (lightRead[1].data || []) : [];
   const groupRow    = (lightRead[2].ok && lightRead[2].data && lightRead[2].data[0]) || null;
 
-  // Guardian (Path 1) re-resuelto del recovered_email contra datos reales (KAL-4).
-  // emails se leen lazy dentro del resolver (solo si hay recovered_email).
-  // IDENTITY-BINDING: si el cliente no aporta recovered_email, el binding del token
-  // (server-side) lo reconstituye → identidad sobrevive a F5/incógnito/pestañas.
-  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupRow);
-  const guardianId = resolveGuardianForRecovery_(id, effRecoveredEmail, null, persons);
+  // IDENTITY-FROM-LINK (2026-06-11): la identidad viaja en el ENLACE — `p.n` (email_id) →
+  // email del guardian, validado contra el grupo del token (KAL-4). Prioridad `n` >
+  // recovered_email (compat). emails se leen lazy dentro del resolver (email_id Find
+  // dirigido); persons/groupRow como hints para guardian + fallback requester.
+  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, id, p && p.n, null, persons, groupRow);
+  const guardianId = resolveGuardianForRecovery_(id, effRecoveredEmail, null, persons, groupRow);
 
   const admission = buildAdmissionContext_(id, enrollments, guardianId, persons);
 
@@ -4441,11 +4499,13 @@ function sendInternalEmail_(subject, bodyHtml) {
  * @param {string} resumeToken
  * @param {string} lang - 'en' or 'es'
  */
-function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, graceNonce) {
-  // El nonce de gracia (single-use, 10 min) viaja SOLO en la URL de resume, NO en la
-  // de report. El frontend lo strippea de la URL al instante (KAL-7) y lo manda a
-  // resumeSession para saltar el OTP si sigue válido.
-  const resumeUrl = RESUME_BASE_URL + resumeToken + (graceNonce ? '?n=' + graceNonce : '');
+function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, nEmailId) {
+  // IDENTITY-FROM-LINK (2026-06-11): `?n=` lleva el email_id del guardian destino (opaco,
+  // sin PII, ya existe) — resuelve la identidad server-side al recuperar. Viaja SOLO en la
+  // URL de resume, NO en la de report. El frontend lo strippea de la URL al instante
+  // (KAL-7) y lo reenvía a resume/hydrate/getAdmissionState. La gracia OTP-skip NO viaja
+  // en `n`: se ancla al resume_token recién rotado (_mintMagicLinkNonce_).
+  const resumeUrl = RESUME_BASE_URL + resumeToken + (nEmailId ? '?n=' + nEmailId : '');
   const reportUrl = REPORT_BASE_URL + resumeToken;
   const isEn = lang === 'en';
 
@@ -4507,7 +4567,7 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, graceNonce) {
 /**
  * Sends a resume email with one link per open application (for families with multiple apps).
  */
-function sendMagicLinkMultiEmail_(email, resumeTokens, lang, graceNonces) {
+function sendMagicLinkMultiEmail_(email, resumeTokens, lang, nEmailIds) {
   const isEn = lang === 'en';
 
   const subject = isEn
@@ -4515,9 +4575,10 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang, graceNonces) {
     : 'Tus enlaces de solicitud de Kaleide';
 
   const linkItems = resumeTokens.map((token, idx) => {
-    // Nonce de gracia paralelo a este token (si se proveyó); single-use, 10 min.
-    const nonce = (graceNonces && graceNonces[idx]) || null;
-    const url = RESUME_BASE_URL + token + (nonce ? '?n=' + nonce : '');
+    // IDENTITY-FROM-LINK: `?n=` lleva el email_id del guardian en ESTE grupo (paralelo al
+    // token). La gracia OTP-skip se ancla al resume_token (no a `n`), minteada en el caller.
+    const nEmailId = (nEmailIds && nEmailIds[idx]) || null;
+    const url = RESUME_BASE_URL + token + (nEmailId ? '?n=' + nEmailId : '');
     const label = isEn
       ? 'Application ' + (idx + 1)
       : 'Solicitud ' + (idx + 1);
@@ -5674,13 +5735,14 @@ function hydrateSession_(p) {
   // DL-B — gracia magic-link + gate PII (espejo EXACTO de resumeSession_:2116-2198).
   // El endpoint consolidado de DL-A (enr.wizardHydrate) NO conoce el step-up/nonce del
   // wizard (viven en SU ScriptCache), así que esas dos semánticas se aplican AQUÍ:
-  //  (1) Gracia: si llega un nonce de magic-link válido (<10 min), lo consume → step-up
-  //      fresco → sin OTP de entrada (step_up_fresh:true).
+  //  (1) Gracia (IDENTITY-FROM-LINK): anclada al resume_token recién rotado
+  //      (mlgrace_<resume_token>), NO al `?n=` (que ahora lleva email_id, identidad). Si
+  //      el token tiene marcador válido (<10 min) → step-up fresco → sin OTP (step_up_fresh:true).
   //  (2) Gate PII (DL-E39): si el step-up NO está fresco, el cliente ANÓNIMO recibe SOLO
   //      lo no-PII (estructura + admission + lookups + versión) con pii_gated:true; la PII
   //      (persons/relations/documents/responses + billing) NUNCA cruza al cliente antes
   //      del OTP. El wizard backend (trusted) sí recibe todo del KMS, pero lo filtra.
-  const graceOk = _consumeMagicLinkNonce_(p && p.n, groupId);
+  const graceOk = _consumeMagicLinkNonce_(p && p.resume_token, groupId);
   if (graceOk) _markStepUpFresh_(groupId);
   const stepUpFresh = _isStepUpFresh_(groupId);
 
@@ -5714,11 +5776,11 @@ function hydrateSession_(p) {
     };
   }
 
-  // IDENTITY-BINDING (2026-06-11): deriva el recovered_email EFECTIVO server-side. Si
-  // el cliente no lo aporta (F5/incógnito/pestaña nueva), el binding del token
-  // (recovery_guardian_email en la fila de grupo) lo reconstituye → el KMS recibe
-  // SIEMPRE la identidad del guardian que recuperó, sin depender del cliente. Read
-  // barato de la fila de grupo (espejo del read del path gateado de arriba).
+  // IDENTITY-FROM-LINK (2026-06-11): deriva el recovered_email EFECTIVO server-side DEL
+  // PROPIO ENLACE. `p.n` (email_id del enlace) → email del guardian, validado contra el
+  // grupo del token (KAL-4) → el KMS recibe SIEMPRE la identidad del guardian que recuperó,
+  // sin depender del cliente. Prioridad `n` > recovered_email (compat). Read barato de la
+  // fila de grupo como groupHint (fallback requester del email de creación).
   let bindGroupRow = null;
   try {
     const bgRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
@@ -5726,7 +5788,7 @@ function hydrateSession_(p) {
     });
     bindGroupRow = (bgRows && bgRows.length) ? bgRows[0] : null;
   } catch (e) { bindGroupRow = null; }
-  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, bindGroupRow);
+  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n, null, null, bindGroupRow);
 
   // DL-A §1 — UNA llamada al KMS devuelve TODO (lookups + datos 11 pasos + qbResponses
   // + admission + signing_context + billing_splits + live_version).
@@ -7328,32 +7390,30 @@ function manual_testRecoveryPerGuardian() {
 }
 
 /**
- * IDENTITY-BINDING (2026-06-11) — verifica el binding token→tutor server-side.
+ * IDENTITY-FROM-LINK (2026-06-11) — verifica la identidad derivada DEL ENLACE (`n` =
+ * email_id), sin columna nueva. SUPERSEDE manual_testIdentityBinding (vetado por Diego).
  *
- * Modelo canónico de Diego (LA regla): "Cualquier tutor, en cualquier momento,
- * recupera la solicitud metiendo SU email personal. Esto lleva implícito que se sabe
- * SIEMPRE quién es el tutor que accede." → la identidad debe sobrevivir a F5/incógnito/
- * pestañas porque el binding vive SERVER-SIDE, no en el cliente.
+ * Modelo canónico de Diego (LA regla, cita literal — corrección de rumbo): "Tienes
+ * herramientas y datos suficientes para resolver la identidad sabiendo el email con el
+ * que se solicita el link. No pienso crear un campo que solo sirve a uno de los tipos de
+ * programa." → la identidad viaja en el `n` del enlace (email_id, opaco, ya existe).
  *
- * Caso real de verificación (mission): grupo e5bf6e89-…, tutor Diego 842951e3-…,
- * email ground.contact@gmail.com. Rellenar abajo si difieren.
+ * Caso real (mission): grupo e5bf6e89-…, tutor Diego 842951e3-…, email
+ * ground.contact@gmail.com, email_id 81cfafbf-…. Ajustar abajo si difiere.
  *
  * Verifica:
- *   (a) emitir un link (sendMagicLink_ por primary_email) → persiste el binding
- *       recovery_guardian_email; readRecoveryBinding_ del grupo == email; el binding
- *       resuelve al guardian esperado (842951e3-…).
- *   (b) resume/getAdmissionState con SOLO el token (sin recovered_email) → guardian +
- *       signing_context resueltos vía binding (identidad reconstituida server-side).
- *   (c) rotar el token (nuevo link) → el binding viejo deja de poder identificar por un
- *       token viejo (el binding vive con el token nuevo en la misma fila).
- *   (d) email sin guardian → binding vacío para ese email, flujo group-scoped intacto.
+ *   (a) emisión: findEmailIdForGuardian_(grupo, ground.contact) → email_id (81cfafbf…).
+ *   (b) resolución: effectiveRecoveredEmail_ con token+n (sin recovered_email) → email →
+ *       guardian 842951e3… (la identidad sale del enlace, no del cliente).
+ *   (c) `n` (email_id) de OTRO grupo → rechazado (KAL-4 cross-group).
+ *   (d) `n` basura (no-UUID / UUID inexistente) → ignorado limpio (KAL-5) → null.
+ *   (e) sin `n` y sin recovered_email → null (group-scoped intacto).
  *
- * ⚠️ Ejecuta sendMagicLink_ REAL → ENVÍA UN EMAIL a ground.contact@gmail.com y ROTA
- * el resume_token del grupo (DRAFT). Idempotente respecto al binding. Ejecutar desde
- * el editor GAS / clasp run; lee PASS/FAIL en Logs.
+ * Ejecutar desde el editor GAS / clasp run; lee PASS/FAIL en Logs. NO envía email
+ * (no llama sendMagicLink_); solo lee BD + ejercita los resolvers.
  */
-function manual_testIdentityBinding() {
-  Logger.log('=== manual_testIdentityBinding (IDENTITY-BINDING) ===');
+function manual_testIdentityFromLink() {
+  Logger.log('=== manual_testIdentityFromLink (IDENTITY-FROM-LINK) ===');
   var GROUP_ID_REAL       = 'e5bf6e89-6018-4d8e-9c1f-de3a9f5ece3d';
   var GUARDIAN_ID_REAL    = '842951e3'; // prefijo esperado del guardian (Diego)
   var GUARDIAN_EMAIL_REAL = 'ground.contact@gmail.com';
@@ -7361,88 +7421,65 @@ function manual_testIdentityBinding() {
   var out = {};
   var pass = true;
 
-  // Localizar la fila de grupo + su primary_email para emitir.
-  var grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + appsheetEscape_(GROUP_ID_REAL) + '"'
-  }) || [];
-  if (!grpRows.length) {
-    Logger.log('  ✗ FAIL — GROUP_ID_REAL no existe. Ajustar el caso real.');
-    return { error: 'GROUP_NOT_FOUND' };
-  }
-
-  // (a) Emitir link por email → binding persistido.
-  try {
-    sendMagicLink_({ primary_email: GUARDIAN_EMAIL_REAL });
-    Logger.log('  (a) sendMagicLink_ emitido para ' + redact_(GUARDIAN_EMAIL_REAL) + ' (email enviado + token rotado).');
-  } catch (e) {
-    Logger.log('  (a) sendMagicLink_ lanzó: ' + e.message + ' (puede ser rate-limit; continúa la verificación del binding).');
-  }
-
-  // Releer la fila tras la emisión.
-  var grpAfter = (appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + appsheetEscape_(GROUP_ID_REAL) + '"'
-  }) || [])[0] || null;
-  var bound = readRecoveryBinding_(grpAfter);
-  out.a_binding = bound;
-  var aOk = bound === GUARDIAN_EMAIL_REAL.toLowerCase();
+  // (a) Emisión: localizar el email_id del guardian en su grupo.
+  var nEmailId = findEmailIdForGuardian_(GROUP_ID_REAL, GUARDIAN_EMAIL_REAL);
+  out.a_email_id = nEmailId;
+  var aOk = !!nEmailId;
   if (!aOk) pass = false;
-  Logger.log('  (a) binding recovery_guardian_email=' + redact_(String(bound)) + ' → ' +
-             (aOk ? '✓ PASS' : '✗ FAIL (¿columna recovery_guardian_email existe en AppSheet? si no, P72 silent reject → binding vacío, ver appsheet-todo)'));
+  Logger.log('  (a) findEmailIdForGuardian_ → n(email_id)=' + redact_(String(nEmailId)) + ' → ' +
+             (aOk ? '✓ PASS' : '✗ FAIL (¿existe fila enrEmails para ese email en el grupo?)'));
 
-  // binding → guardian esperado
-  var gFromBinding = bound ? resolveGuardianForRecovery_(GROUP_ID_REAL, bound) : null;
-  out.a_guardian_from_binding = gFromBinding;
-  var aGuardOk = !!(gFromBinding && String(gFromBinding).indexOf(GUARDIAN_ID_REAL) === 0);
-  if (!aGuardOk) pass = false;
-  Logger.log('  (a) binding → guardian=' + String(gFromBinding) + ' → ' +
-             (aGuardOk ? '✓ PASS' : '✗ FAIL (esperado prefijo ' + GUARDIAN_ID_REAL + ')'));
-
-  // (b) resolución con SOLO el token (sin recovered_email): effectiveRecoveredEmail_
-  //     reconstituye el email del binding → guardian resuelto.
-  var effNoClient = effectiveRecoveredEmail_(null, grpAfter);
-  out.b_effective_email = effNoClient;
-  var gNoClient = effNoClient ? resolveGuardianForRecovery_(GROUP_ID_REAL, effNoClient) : null;
-  out.b_guardian_no_client = gNoClient;
-  var bOk = !!(gNoClient && String(gNoClient).indexOf(GUARDIAN_ID_REAL) === 0);
+  // (b) Resolución: token+n SIN recovered_email → email → guardian.
+  var effFromLink = effectiveRecoveredEmail_(null, GROUP_ID_REAL, nEmailId);
+  out.b_effective_email = effFromLink;
+  var gFromLink = effFromLink ? resolveGuardianForRecovery_(GROUP_ID_REAL, effFromLink) : null;
+  out.b_guardian_from_link = gFromLink;
+  var bOk = !!(gFromLink && String(gFromLink).indexOf(GUARDIAN_ID_REAL) === 0);
   if (!bOk) pass = false;
-  Logger.log('  (b) SIN recovered_email del cliente → effective=' + redact_(String(effNoClient)) +
-             ' guardian=' + String(gNoClient) + ' → ' + (bOk ? '✓ PASS (identidad reconstituida server-side)' : '✗ FAIL'));
+  Logger.log('  (b) effectiveRecoveredEmail_(null, grupo, n) → email=' + redact_(String(effFromLink)) +
+             ' guardian=' + String(gFromLink) + ' → ' +
+             (bOk ? '✓ PASS (identidad DEL ENLACE, sin cliente)' : '✗ FAIL (esperado prefijo ' + GUARDIAN_ID_REAL + ')'));
 
-  // (b.bis) end-to-end vía getAdmissionState_ con SOLO el token.
-  if (grpAfter && grpAfter.resume_token) {
-    try {
-      var st = getAdmissionState_({ resume_token: grpAfter.resume_token });
-      out.b_admission_state = { state_code: st.state_code, signing_ready: st.signing_ready, has_ctx: !!st.signing_context };
-      Logger.log('  (b.bis) getAdmissionState_ (solo token) → state_code=' + st.state_code +
-                 ' signing_ready=' + st.signing_ready + ' signing_context=' + (st.signing_context ? 'poblado' : 'null'));
-    } catch (e) {
-      Logger.log('  (b.bis) getAdmissionState_ lanzó: ' + e.message + ' (puede requerir step-up; el binding ya se verificó en (b)).');
-    }
+  // (c) `n` de OTRO grupo → rechazado. Buscar un email_id que NO sea de este grupo.
+  var otherEmailId = null;
+  try {
+    var anyEmails = appsheetRequest_(T.EMAILS, 'Find', [], {
+      Filter: 'NOT("enrollment_group_id" = "' + appsheetEscape_(GROUP_ID_REAL) + '")'
+    }) || [];
+    var foreign = anyEmails.find(function(r) { return r && r.email_id; });
+    otherEmailId = foreign ? foreign.email_id : null;
+  } catch (e) { otherEmailId = null; }
+  if (otherEmailId) {
+    var effCross = effectiveRecoveredEmail_(null, GROUP_ID_REAL, otherEmailId);
+    out.c_cross_group = effCross;
+    var cOk = effCross === null;
+    if (!cOk) pass = false;
+    Logger.log('  (c) `n` de OTRO grupo → ' + String(effCross) + ' → ' +
+               (cOk ? '✓ PASS (rechazado, KAL-4 cross-group)' : '✗ FAIL (resolvió identidad ajena!)'));
+  } else {
+    Logger.log('  (c) (n/a) — no se encontró un email_id de otro grupo para probar cross-group.');
   }
 
-  // (c) Rotación: el binding vive en la MISMA fila cuyo resume_token se rota. Un token
-  //     VIEJO ya no resuelve la fila (requireResumeToken_ no lo encuentra) → no puede
-  //     llegar al binding. Verificamos que un token aleatorio (≈ token viejo) no resuelve.
-  var staleToken = Utilities.getUuid();
-  var staleRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + appsheetEscape_(staleToken) + '"'
-  }) || [];
-  var cOk = staleRows.length === 0;
-  if (!cOk) pass = false;
-  out.c_stale_resolves = staleRows.length;
-  Logger.log('  (c) token viejo/aleatorio no resuelve fila (binding caduca con el token) → ' +
-             (cOk ? '✓ PASS' : '✗ FAIL'));
-
-  // (d) email sin guardian → binding inservible para ese email (group-scoped intacto).
-  var dGuardian = resolveGuardianForRecovery_(GROUP_ID_REAL, 'no-guardian-' + Date.now() + '@example.com');
-  out.d_nonguardian = dGuardian;
-  var dOk = dGuardian === null;
+  // (d) `n` basura → ignorado limpio (KAL-5). Dos sub-casos: no-UUID y UUID inexistente.
+  var effGarbage1 = effectiveRecoveredEmail_(null, GROUP_ID_REAL, 'not-a-uuid" || "1"="1');
+  var effGarbage2 = effectiveRecoveredEmail_(null, GROUP_ID_REAL, Utilities.getUuid());
+  out.d_garbage_noUuid = effGarbage1;
+  out.d_garbage_unknownUuid = effGarbage2;
+  var dOk = effGarbage1 === null && effGarbage2 === null;
   if (!dOk) pass = false;
-  Logger.log('  (d) email sin guardian → ' + String(dGuardian) + ' → ' +
-             (dOk ? '✓ PASS (degrada a group-scoped)' : '✗ FAIL'));
+  Logger.log('  (d) `n` basura (no-UUID + UUID inexistente) → ' + String(effGarbage1) + ' / ' + String(effGarbage2) +
+             ' → ' + (dOk ? '✓ PASS (ignorado limpio, KAL-5)' : '✗ FAIL'));
 
-  Logger.log('[manual_testIdentityBinding] ' + JSON.stringify(out, null, 2));
-  Logger.log('=== manual_testIdentityBinding: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
+  // (e) sin `n` y sin recovered_email → null (group-scoped intacto).
+  var effNone = effectiveRecoveredEmail_(null, GROUP_ID_REAL, null);
+  out.e_none = effNone;
+  var eOk = effNone === null;
+  if (!eOk) pass = false;
+  Logger.log('  (e) sin `n` ni recovered_email → ' + String(effNone) + ' → ' +
+             (eOk ? '✓ PASS (group-scoped intacto)' : '✗ FAIL'));
+
+  Logger.log('[manual_testIdentityFromLink] ' + JSON.stringify(out, null, 2));
+  Logger.log('=== manual_testIdentityFromLink: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
   return out;
 }
 

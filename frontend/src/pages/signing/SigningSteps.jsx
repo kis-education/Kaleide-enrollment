@@ -44,16 +44,27 @@ const isStepUpRequiredError = (e) =>
 export const SUBS = ['billing', 'gdpr', 'review', 'sign'];
 
 /**
- * WIZ-NAV-CANON (Diego 2026-06-11) — identidad canónica del ACTO de firma. El backend
- * (@157, requireSignerContext_) acepta DOS formas y prefiere (a): { resume_token } →
- * grupo (KAL-4) + guardian (binding server-side / a1). El { signing_token } es back-compat.
- * Aquí construimos el sub-objeto de identidad a fusionar en el payload de cada acto:
- * preferimos el resume_token de SESIÓN (sobrevive a F5/incógnito; el firmante lo resuelve
- * el servidor) y, si no hay, caemos al signing_token legacy. NUNCA mandamos un guardian/
- * grupo del cliente — solo el bearer; la identidad la deriva el backend del token.
+ * IDENTITY-FROM-LINK (Diego 2026-06-11) — identidad canónica del ACTO de firma. El backend
+ * (requireSignerContext_) acepta DOS formas y prefiere (a): { resume_token } → grupo
+ * (KAL-4) + guardian resuelto SERVER-SIDE del PROPIO ENLACE: `n` (email_id del enlace) →
+ * email → guardian, validado contra el grupo del token. El { signing_token } es back-compat.
+ *
+ * Construimos el sub-objeto de identidad a fusionar en el payload de cada acto:
+ *   - resume_token de SESIÓN (sobrevive a F5/incógnito; el firmante lo resuelve el servidor).
+ *   - `n` (email_id del enlace) cuando lo tenemos → es la VÍA CANÓNICA de identidad: la
+ *     identidad viaja en el enlace, no en el cliente (Diego: "resolver la identidad sabiendo
+ *     el email con el que se solicita el link"). El backend lo valida contra BD (KAL-4/5).
+ *   - recovered_email como COMPAT secundario (sessionStorage), si está.
+ *   - si no hay resume_token, caemos al signing_token legacy.
+ * NUNCA mandamos un guardian/grupo del cliente — el backend deriva la identidad del token+n.
  */
-export function signingIdentity_({ resumeToken, signingToken }) {
-  if (resumeToken) return { resume_token: resumeToken };
+export function signingIdentity_({ resumeToken, signingToken, n, recoveredEmail }) {
+  if (resumeToken) {
+    const out = { resume_token: resumeToken };
+    if (n) out.n = n;                                  // identidad del enlace (email_id)
+    if (recoveredEmail) out.recovered_email = recoveredEmail; // compat secundario
+    return out;
+  }
   if (signingToken) return { signing_token: signingToken };
   return {};
 }
@@ -254,7 +265,7 @@ export function SplitEditor({ payers, onChange }) {
 // El KMS deriva grupo+enrollments del token (KAL-4) y mapea cada hijo → su finSubscription.
 export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits: savedSplitsProp, onDone, onBack }) {
   const { t } = useTranslation();
-  const { stepData, setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
+  const { stepData, setPendingSave, awaitPendingSave, hasPendingSave, recoveredEmail, recoveryNonce } = useWizard();
   // Default payer = signing guardian (DL-E38: identity derived server-side from the
   // signing_token; client only echoes guardian_person_id for the KMS to disambiguate
   // which guardian pays in a multi-guardian family). KAL-4 stays intact — the KMS
@@ -438,9 +449,9 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
 
     setErr('');
     // Default (colapsado) → payers[] group-level; "personalizar por hijo" → per_participant.
-    // WIZ-NAV-CANON: identidad canónica = resume_token de sesión (el backend resuelve el
-    // firmante server-side, @157); signing_token solo como back-compat. KAL-4 intacta.
-    const body = { ...signingIdentity_({ resumeToken, signingToken }) };
+    // IDENTITY-FROM-LINK: identidad canónica = resume_token + `n` (email_id del enlace); el
+    // backend resuelve el firmante server-side. signing_token solo back-compat. KAL-4 intacta.
+    const body = { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }) };
     if (perChild && applicants.length) body.per_participant = buildPerParticipantPayload();
     else body.payers = buildGroupPayload();
     log.info('[DBG billing] submit', {
@@ -527,7 +538,7 @@ export function SignBilling({ signingToken, resumeToken, signerCtx, savedSplits:
 
 export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, onBack }) {
   const { t } = useTranslation();
-  const { setPendingSave, awaitPendingSave, hasPendingSave, stepData } = useWizard();
+  const { setPendingSave, awaitPendingSave, hasPendingSave, stepData, recoveredEmail, recoveryNonce } = useWizard();
 
   // CLI 9 (DL-E42 §3): matriz tutor×sujeto. El guardian actual (derivado del token,
   // signerCtx.guardian_person_id) consiente:
@@ -672,7 +683,7 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
     // Background save (NO await). `res.blocked` (rechazo de consentimiento bloqueante)
     // se convierte en un rechazo de la promesa para que el siguiente gate lo surface
     // — coherente con el resto de fallos de background. KAL-4/KAL-7 + payload intactos.
-    const savePromise = gasCall('submitGdprConsents', { ...signingIdentity_({ resumeToken, signingToken }), consents })
+    const savePromise = gasCall('submitGdprConsents', { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }), consents })
       .then(res => {
         if (res && res.blocked) {
           const blockErr = new Error('GDPR_BLOCKED');
@@ -757,7 +768,7 @@ export function SignGdpr({ signingToken, resumeToken, signerCtx, lang, onDone, o
 
 export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
   const { t } = useTranslation();
-  const { isStepUpFresh, markStepUpFresh, setPendingSave, awaitPendingSave, hasPendingSave } = useWizard();
+  const { isStepUpFresh, markStepUpFresh, setPendingSave, awaitPendingSave, hasPendingSave, recoveredEmail, recoveryNonce } = useWizard();
   const [members, setMembers] = useState(null); // null=loading, []=empty
   const [loadErr, setLoadErr] = useState('');
   const [read, setRead] = useState(false);
@@ -865,7 +876,7 @@ export function SignReview({ signingToken, resumeToken, onDone, onBack }) {
 
     // Background save (NO await). SignSign lo espera vía awaitPendingSave antes de
     // iniciar el acto de firma. KAL-4/KAL-7 + payload intactos.
-    const savePromise = gasCall('confirmReview', { ...signingIdentity_({ resumeToken, signingToken }) })
+    const savePromise = gasCall('confirmReview', { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }) })
       .catch(e => {
         log.error('SignReview: confirmReview failed (background)', { message: e.message });
         throw e;

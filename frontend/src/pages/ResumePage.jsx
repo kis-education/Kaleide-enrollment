@@ -35,14 +35,17 @@ export default function ResumePage() {
   const [searchParams] = useSearchParams();
   const navigate  = useNavigate();
   const { t, i18n } = useTranslation();
-  const { hydrateFromResume, recoveredEmail } = useWizard();
+  const { hydrateFromResume, recoveredEmail, setRecoveryNonce } = useWizard();
   const [stage, setStage] = useState(0);
 
-  // Magic-link grace (UX): nonce single-use de 10 min que viajó en `?n=<nonce>` del
-  // link. Se captura aquí (en el hash, antes del scrub KAL-7 que reemplaza el hash
-  // por #/apply y lo elimina de la barra). Si el backend lo valida, el recovery NO
-  // exige OTP. Capturado al montar; no se persiste ni se loguea entero (KAL-7).
-  const graceNonce = searchParams.get('n') || null;
+  // IDENTITY-FROM-LINK (2026-06-11): `?n=<email_id>` del magic link lleva la IDENTIDAD del
+  // guardian (email_id, opaco, sin PII). Se captura aquí (en el hash, antes del scrub KAL-7
+  // que reemplaza el hash por #/apply y lo elimina de la barra) y se PERSISTE en
+  // sessionStorage (setRecoveryNonce) para sobrevivir a F5/incógnito y alimentar la
+  // identidad en hydrate + actos de firma. El backend lo valida contra el grupo del
+  // resume_token (KAL-4/5). NO es un bearer (no autoriza por sí solo). KAL-7: no se loguea
+  // entero. La gracia OTP-skip YA NO viaja en `n` (se ancla al resume_token server-side).
+  const linkN = searchParams.get('n') || null;
 
   useEffect(() => {
     if (!token) {
@@ -69,14 +72,18 @@ export default function ResumePage() {
       setStage(s => Math.min(s + 1, RESUME_STAGE_KEYS.length - 1));
     }, 7000);
 
+    // IDENTITY-FROM-LINK: persiste el `n` (email_id) en sessionStorage → la identidad del
+    // enlace sobrevive a F5/incógnito y se reenvía en getAdmissionState + actos de firma.
+    if (linkN) setRecoveryNonce(linkN);
+
     const tokenPreview = String(token).slice(0, 8) + '...';
     log.info('ResumePage: calling hydrateSession', { resume_token_preview: tokenPreview });
     // DL-B §1 — hidratación CONSOLIDADA (hydrateSession): UNA llamada trae datos 11
     // pasos + lookups + qbResponses + admission + signing_context + billing_splits +
-    // live_version. Preserva la gracia magic-link (consume el nonce `n` server-side) +
-    // el gate PII. DL-E38 a1: el email tecleado (persistido) es el discriminador
-    // per-guardian; el backend re-resuelve el guardian server-side (KAL-4).
-    gasCall('hydrateSession', { resume_token: token, recovered_email: recoveredEmail || undefined, n: graceNonce || undefined, language: i18n.language })
+    // live_version. IDENTITY-FROM-LINK: `n` (email_id del enlace) resuelve la identidad
+    // del guardian server-side (KAL-4); la gracia OTP-skip se ancla al resume_token. El
+    // recovered_email persistido queda como compat secundario.
+    gasCall('hydrateSession', { resume_token: token, recovered_email: recoveredEmail || undefined, n: linkN || undefined, language: i18n.language })
       .then(data => {
         // Post-DL-E15 shape uses `group`; legacy responses still use `application`.
         const grp = data.group || data.application;

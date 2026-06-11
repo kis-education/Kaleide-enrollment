@@ -66,6 +66,7 @@ export default function WizardPage() {
     isStepUpFresh, recoveredViaMagicLink,
     otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER
     recoveredEmail, setRecoveredEmail,
+    recoveryNonce, // IDENTITY-FROM-LINK: `n` = email_id del enlace (identidad canónica)
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -149,12 +150,12 @@ export default function WizardPage() {
   // actualiza SOLO el slice de admisión/firma; NUNCA stepData/currentStep/landing). Antes:
   // getAdmissionState directo cada 30s (lectura AppSheet en cada tick). Ahora: lectura
   // pesada solo cuando algo cambió de verdad.
-  const pulseRef = useRef({ resumeToken: null, enrollmentGroupId: null, effectiveRecoveredEmail: undefined, hasPendingSave: false, liveVersion: 0 });
-  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, hasPendingSave, liveVersion };
+  const pulseRef = useRef({ resumeToken: null, enrollmentGroupId: null, effectiveRecoveredEmail: undefined, recoveryNonce: undefined, hasPendingSave: false, liveVersion: 0 });
+  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, recoveryNonce, hasPendingSave, liveVersion };
   const pulseInFlightRef = useRef(false);
   useEffect(() => {
     const tick = () => {
-      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, hasPendingSave: pending, liveVersion: knownVer } = pulseRef.current;
+      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer } = pulseRef.current;
       if (!rt || !gid) return;                            // sin sesión → nada que sincronizar
       if (pending) return;                                // save en vuelo → saltar este tick
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return; // pestaña oculta → saltar
@@ -167,7 +168,7 @@ export default function WizardPage() {
           if (v <= (Number(knownVer) || 0)) return; // sin cambios → NO leer detalle
           // ── Etapa 2 — la versión subió → fetch de DETALLE del liveState.
           log.info('[DBG cheap-poll] version subió', { from: knownVer, to: v });
-          return gasCall('getAdmissionState', { resume_token: rt, recovered_email: re || undefined })
+          return gasCall('getAdmissionState', { resume_token: rt, recovered_email: re || undefined, n: rn || undefined })
             .then(data => {
               log.info('[DBG pulse] getAdmissionState', { state_code: data && data.state_code, signing_ready: data && data.signing_ready, signing_status: data && data.signing_status, has_ctx: !!(data && data.signing_context) });
               refreshAdmissionState(data);     // SOLO slice admisión/firma — nunca datos/nav
@@ -201,7 +202,7 @@ export default function WizardPage() {
       // enr.wizardHydrate) trae datos 11 pasos + lookups + qbResponses + admission
       // + signing_context + billing_splits + live_version. Sustituye la cascada
       // resumeSession + fetchLookups + getSavedBillingSplits + resolveSigningToken.
-      gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, language: i18n.language })
+      gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, n: recoveryNonce || undefined, language: i18n.language })
         .then(data => {
           // hydrateFromResume now seeds completedSteps in context based on
           // which steps have data — no need to override here.
@@ -537,7 +538,7 @@ const handleNext = async (stepKey, data, extra = null) => {
           // markStepUpFresh() (mustPassEntryGate→false) y la resolución del
           // hydrate (~17-44s) se renderizaba el formulario con stepData VACÍO.
           setRehydrating(true);
-          gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, language: i18n.language })
+          gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, n: recoveryNonce || undefined, language: i18n.language })
             .then(data => { hydrateFromResume(data); log.success('WizardPage: rehydrate post step-up OK'); })
             .catch(err => log.error('WizardPage: rehydrate post step-up failed', { message: err.message }))
             .finally(() => setRehydrating(false));
