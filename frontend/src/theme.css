@@ -311,6 +311,16 @@ body {
 .btn-primary-kis:hover {
   background: var(--teal-dk);
 }
+/* VIEWER-UX (2026-06-11): un botón gateado debe VERSE deshabilitado de verdad —
+   antes pintaba idéntico al activo y el clic "no hacía nada" sin feedback. */
+.btn-primary-kis:disabled {
+  background: #9db4b6;
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+.btn-primary-kis:disabled:hover {
+  background: #9db4b6;
+}
 .btn-secondary-kis {
   background: var(--surface);
   color: var(--teal-dk);

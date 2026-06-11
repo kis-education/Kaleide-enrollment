@@ -24,6 +24,10 @@ import { useTranslation } from 'react-i18next';
  * @param {Function} props.onNext
  * @param {boolean} [props.savePending=false]  DEPRECATED (WPERF-1): ignorado; el save es no-bloqueante
  * @param {boolean} [props.nextDisabled=false] per-step gate (e.g. validation)
+ * @param {string}  [props.nextHint]           VIEWER-UX: cuando nextDisabled, mensaje
+ *                                             FIJO bajo el botón que EXPLICA por qué no
+ *                                             avanza (queja Diego 2026-06-11: el botón
+ *                                             gateado "parece que no hace nada")
  * @param {string}  [props.backLabel]          override (default t('nav.back'))
  * @param {string}  [props.nextLabel]          override (default t('nav.continue'))
  * @param {boolean} [props.hideBack=false]     hide Back (e.g. Step1, the first step)
@@ -35,6 +39,7 @@ export default function StepNav({
   onNext,
   savePending = false, // eslint-disable-line no-unused-vars — DEPRECATED (WPERF-1), conservado por compat de llamada
   nextDisabled = false,
+  nextHint = '', // eslint-disable-line react/prop-types
   backLabel,
   nextLabel,
   hideBack = false,
@@ -58,13 +63,23 @@ export default function StepNav({
           </button>
         )}
       {!hideNext && (
-        <button
-          className="btn-primary-kis"
-          onClick={onNext}
-          disabled={nextDisabled}
-        >
-          {nextLabel || t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', maxWidth: '60%' }}>
+          <button
+            className="btn-primary-kis"
+            onClick={onNext}
+            disabled={nextDisabled}
+          >
+            {nextLabel || t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
+          </button>
+          {/* VIEWER-UX: el botón gateado EXPLICA por qué no avanza — hint fijo, visible
+              junto al botón (también el de ARRIBA, lejos del contador del cuerpo). */}
+          {nextDisabled && nextHint && (
+            <div role="status" aria-live="polite"
+              style={{ fontSize: '0.78rem', color: 'var(--muted)', fontWeight: 600, marginTop: 4, textAlign: 'right' }}>
+              <i className="bi bi-info-circle me-1" />{nextHint}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

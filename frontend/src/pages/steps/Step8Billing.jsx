@@ -88,14 +88,31 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   // siembra inicial; jamás pisa un formulario ya existente en el contexto.
   const [savedSplits, setSavedSplits] = useState(null);
 
+  // Construye el slice sembrado completo desde un reparto guardado normalizado (o
+  // defaults si src=null). Compartido por la siembra inmediata y la revalidación.
+  const buildSeed_ = (src) => {
+    const seeded = seedPayers(src ? src.payers : null);
+    const map = {};
+    if (applicants.length) {
+      const perChildSaved = {};
+      ((src && src.per_participant) || []).forEach(pp => {
+        if (pp && pp.applicant_person_id) perChildSaved[String(pp.applicant_person_id)] = pp.payers;
+      });
+      applicants.forEach(a => { const k = a.person_id || a._uid; map[k] = seedPayers(perChildSaved[String(k)]); });
+    }
+    return { payers: seeded, perChild: false, childSplits: map };
+  };
+
   // DL-B §1 VERBATIM: el reparto guardado YA viene en la hidratación consolidada
   // (savedSplitsProp, del store WizardContext.billingSplits). Si está presente lo
   // usamos directamente y NO hacemos la lectura getSavedBillingSplits por-entrada.
   // Solo caemos al fetch si el prop no llegó. Si el formulario YA existe en el
   // contexto (usuario tocó / siembra previa) ni siquiera leemos: su valor manda.
+  // VIEWER-UX (revalidación silenciosa): el fetch corre EN BACKGROUND — la siembra
+  // de abajo NO lo espera (el paso pinta interactivo al instante con defaults).
   useEffect(() => {
     let alive = true;
-    if (form) return undefined; // el input del usuario manda — cero lecturas
+    if (form && (form.touched || form.seededFromServer)) return undefined; // el input del usuario manda — cero lecturas
     if (savedSplitsProp && typeof savedSplitsProp === 'object') {
       setSavedSplits({
         payers:          savedSplitsProp.payers || [],
@@ -125,37 +142,54 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
     return () => { alive = false; };
   }, [signingToken, resumeToken, recoveryNonce, recoveredEmail]); // eslint-disable-line
 
-  // Siembra del formulario al CONTEXTO una sola vez, ESPERANDO a la lectura del
-  // reparto guardado (savedSplits !== null) para rehidratar 50/50 si lo había.
+  // Siembra INMEDIATA del formulario al CONTEXTO (VIEWER-UX, queja Diego: "sigue sin
+  // hacer guardado optimista en el paso 8-9 […] clic → spinner"): el paso pinta
+  // INTERACTIVO al instante. Si la hidratación consolidada (savedSplitsProp) o una
+  // lectura previa (savedSplits) ya trajeron el reparto guardado, se siembra de ahí
+  // (seededFromServer); si no, defaults (firmante 100%) SIN esperar al fetch — la
+  // lectura de arriba pasa a revalidación en background (efecto de abajo).
   // updateSigningForm con función: si otra carrera ya sembró, NO se pisa.
   useEffect(() => {
-    if (form || savedSplits === null) return;
-    const seeded = seedPayers(savedSplits.payers);
+    if (form) return;
+    const fromProp = (savedSplitsProp && typeof savedSplitsProp === 'object')
+      ? { payers: savedSplitsProp.payers || [], per_participant: savedSplitsProp.per_participant || [] } // eslint-disable-line react/prop-types
+      : null;
+    const src = fromProp || savedSplits; // null → defaults (siembra optimista)
+    const seed = buildSeed_(src);
     log.info('[DBG billing] seed', {
       signer8:    guardianPersonId && log.sid(guardianPersonId),
       has_signerCtx: !!signerCtx,
-      has_saved:  (savedSplits.payers || []).length > 0,
+      from:       fromProp ? 'hydration' : (savedSplits ? 'fetch' : 'defaults'),
+      has_saved:  !!(src && (src.payers || []).length),
       guardians:  guardians.length,
       applicants: applicants.length,
-      payers:     seeded.map(p => ({ key: p.key, pid8: log.sid(p.payer_person_id), split: p.split })),
+      payers:     seed.payers.map(p => ({ key: p.key, pid8: log.sid(p.payer_person_id), split: p.split })),
     });
-    const map = {};
-    if (applicants.length) {
-      const perChildSaved = {};
-      (savedSplits.per_participant || []).forEach(pp => {
-        if (pp && pp.applicant_person_id) perChildSaved[String(pp.applicant_person_id)] = pp.payers;
-      });
-      applicants.forEach(a => { const k = a.person_id || a._uid; map[k] = seedPayers(perChildSaved[String(k)]); });
-    }
-    updateSigningForm('billing', prev => prev || { payers: seeded, perChild: false, childSplits: map });
+    updateSigningForm('billing', prev => prev || { ...seed, touched: false, seededFromServer: !!src });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guardians.length, applicants.length, guardianPersonId, savedSplits, form]);
 
-  // Ediciones del usuario → contexto (su valor manda toda la sesión; el server no lo pisa).
-  const setPayers     = (next) => updateSigningForm('billing', f => ({ ...(f || { perChild: false, childSplits: {} }), payers: next }));
-  const setPerChild   = (v)    => updateSigningForm('billing', f => ({ ...(f || { payers: [], childSplits: {} }), perChild: v }));
+  // REVALIDACIÓN SILENCIOSA (VIEWER-UX): cuando la lectura background resuelve con un
+  // reparto realmente guardado y el usuario NO tocó nada (siembra default intacta),
+  // re-siembra con el dato del server. Si tocó, su valor manda — el server no lo pisa.
+  useEffect(() => {
+    if (!savedSplits) return;
+    const hasSaved = (savedSplits.payers || []).length > 0 || (savedSplits.per_participant || []).length > 0;
+    if (!hasSaved) return;
+    updateSigningForm('billing', f => {
+      if (!f || f.touched || f.seededFromServer) return f; // el usuario (o el server) ya manda
+      log.info('[DBG billing] revalidación silenciosa — re-siembra desde server');
+      return { ...buildSeed_(savedSplits), touched: false, seededFromServer: true };
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedSplits]);
+
+  // Ediciones del usuario → contexto (su valor manda toda la sesión; el server no lo
+  // pisa — `touched` sella el slice contra la revalidación background).
+  const setPayers     = (next) => updateSigningForm('billing', f => ({ ...(f || { perChild: false, childSplits: {} }), payers: next, touched: true }));
+  const setPerChild   = (v)    => updateSigningForm('billing', f => ({ ...(f || { payers: [], childSplits: {} }), perChild: v, touched: true }));
   const setChildSplit = (key, next) => updateSigningForm('billing', f => ({
-    ...(f || { payers: [], perChild: true }), childSplits: { ...((f && f.childSplits) || {}), [key]: next },
+    ...(f || { payers: [], perChild: true }), childSplits: { ...((f && f.childSplits) || {}), [key]: next }, touched: true,
   }));
 
   const childKey = (a) => a.person_id || a._uid;

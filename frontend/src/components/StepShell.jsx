@@ -42,6 +42,9 @@ export default function StepShell({
   nextLabel,
   backLabel,
   nextDisabled = false,
+  /** VIEWER-UX: mensaje fijo bajo el botón Continuar cuando está deshabilitado —
+   *  EXPLICA por qué no avanza (e.g. "Acepta los N documentos…"). */
+  nextHint = '', // eslint-disable-line react/prop-types
   hideBack = false,
   hideNext = false,
   locked = false,
@@ -67,6 +70,7 @@ export default function StepShell({
       onBack={onBack}
       onNext={onNext}
       nextDisabled={nextDisabled}
+      nextHint={nextHint}
       nextLabel={nextLabel}
       backLabel={backLabel}
       hideBack={hideBack}

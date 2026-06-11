@@ -4,6 +4,7 @@ import { gasCall, initiateSigningRead } from '../../api';
 import { useWizard } from '../../context/WizardContext';
 import StepShell from '../../components/StepShell';
 import StepUpReverify from '../../components/StepUpReverify';
+import PdfViewer from '../../components/PdfViewer';
 import { signingIdentity_, isStepUpRequiredError } from './signingCommon';
 import * as log from '../../logger';
 
@@ -244,6 +245,14 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
     ? t('signing.review.subtitle_named', { docs: memberLabels.join(' · ') })
     : t('signing.review.subtitle');
 
+  // VIEWER-UX (queja Diego: "le das al botón y parece que no avanza […] tampoco da
+  // feedback de que haya que aceptar algo"): el Confirmar deshabilitado EXPLICA por
+  // qué — hint fijo junto a AMBOS botones (top y bottom; su captura mostraba el botón
+  // de arriba, lejos del contador "x de N" del pie del visor).
+  const nextHint = !packageReady
+    ? t('signing.review.hint_preparing')
+    : (!allAccepted ? t('signing.review.hint_accept_all', { accepted: acceptedCount, n: total }) : '');
+
   return (
     <div className="kis-card">
       <StepShell
@@ -253,6 +262,7 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
         onNext={confirm}
         nextLabel={t('signing.review.submit')}
         nextDisabled={!allAccepted || !packageReady}
+        nextHint={nextHint}
         error={err}
       >
         {/* ESPERA ACTIVA mientras el paquete se prepara — progreso visible + reintento
@@ -297,16 +307,14 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
                   </span>
                 </div>
 
-                {/* REBUILD-8-11: iframe SIN atributo `sandbox` — Chrome bloquea su visor
-                    PDF interno dentro de iframes sandboxed (captura Diego 2026-06-11).
-                    El src es un object URL de NUESTRO PDF contractual (blob del cache del
-                    contexto), no contenido de terceros. */}
+                {/* VIEWER-UX (Diego 2026-06-11): visor pdf.js PROPIO en <canvas> — el
+                    iframe anterior delegaba en el visor nativo de Chrome ("claramente es
+                    un visor de google drive […] imposible de manejar": toolbar ajena,
+                    dos columnas, y en iOS Safari los PDF multipágina NI renderizan).
+                    El src sigue siendo el object URL de NUESTRO PDF contractual (blob
+                    del cache del contexto) — el pipeline de descarga no cambia. */}
                 {currentEntry ? (
-                  <iframe
-                    title={docLabel(current)}
-                    src={currentEntry.url}
-                    style={{ width: '100%', height: 'min(72vh, 880px)', minHeight: 420, border: '1px solid var(--border)', borderRadius: 8, background: '#fff' }}
-                  />
+                  <PdfViewer url={currentEntry.url} title={docLabel(current)} />
                 ) : (
                   <div style={{ textAlign: 'center', padding: 48, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 8 }}>
                     <span className="spinner-border spinner-border-sm me-2" />{t('signing.review.docs_loading')}
