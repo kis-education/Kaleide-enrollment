@@ -583,6 +583,47 @@ function requireSignerContext_(payload) {
   };
 }
 
+/**
+ * PERF-WIZ (2026-06-11) — identidad de firmante LIGERA para los proxies de actos
+ * ENCOLADOS y lecturas de firma. Misma autenticación de sesión que
+ * requireSignerContext_ (requireResumeToken_ KAL-4 + TTL + abandoned, y el email
+ * efectivo del enlace via effectiveRecoveredEmail_), pero SIN la validación local
+ * del guardian (resolveGuardianForRecovery_, varias lecturas AppSheet): esa
+ * validación la hace SIEMPRE el resolver ÚNICO del KMS (enr_resolveSignerContext_)
+ * en el MISMO request síncrono del enqueue — si la identidad no resuelve, el KMS
+ * lanza UNAUTHORIZED y este proxy lo propaga igual que antes. Dos resolvers
+ * duplicados divergentes era el anti-patrón P245; el wizard pre-validando al
+ * guardian costaba 20-40s por acto SIN añadir seguridad (KAL-4 vive server-side
+ * en quien ESCRIBE). El acto real de firma del Step 11 NO usa este helper.
+ *
+ * @param {Object} payload — { resume_token, n?, recovered_email? } o { signing_token }
+ * @returns {{enrollment_group_id:string, identity:Object}}
+ */
+function requireSignerIdentity_(payload) {
+  payload = payload || {};
+  if (payload.resume_token && !payload.signing_token) {
+    const groupId = requireResumeToken_(payload);   // KAL-4 + TTL 7d + abandoned gate
+    const effEmail = effectiveRecoveredEmail_(payload.recovered_email, groupId, payload.n);
+    if (!effEmail) {
+      const err = new Error('Unauthorized: no se pudo identificar al firmante (falta `n` del enlace o recovered_email)');
+      err.code = 'UNAUTHORIZED';
+      throw err;
+    }
+    return {
+      enrollment_group_id: groupId,
+      identity: {
+        resume_token:    String(payload.resume_token).trim(),
+        recovered_email: effEmail,
+      },
+    };
+  }
+  const sctx = requireSigningToken_(payload);
+  return {
+    enrollment_group_id: sctx.enrollment_group_id,
+    identity: { signing_token: sctx.signing_token },
+  };
+}
+
 // ─── CLI 26 (2026-06-01) — State-gate for mutation endpoints ─────────────────
 //
 // Defense-in-depth against frontend bugs that let a family edit a submitted
@@ -5679,7 +5720,7 @@ function saveBillingInfo_(p) {
   // DL-A.3 — identidad unificada (★ CANÓNICA: colapso del signing_token). Acepta
   // (resume_token+recovered_email) [canónico] o signing_token [back-compat].
   // DL-A.4 — endpoint encolado: el KMS devuelve al instante {queued,job_id}.
-  const sctx = requireSignerContext_(p);
+  const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   return kmsProxy_('enr.saveBillingInfoQueued', Object.assign({}, sctx.identity, {
@@ -5719,7 +5760,7 @@ function saveBillingInfo_(p) {
 function getSavedBillingSplits_(p) {
   // DL-A.3 — identidad unificada (colapso del signing_token). El KMS resuelve el
   // signer de (grupo+guardian) o del bearer legacy. Lectura → no se encola.
-  const sctx = requireSignerContext_(p);
+  const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
   return kmsProxy_('enr.getSavedBillingSplits', sctx.identity);
 }
 
@@ -5750,7 +5791,7 @@ function getSavedBillingSplits_(p) {
 function submitGdprConsents_(p) {
   // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado
   // (era ~95s síncrono): el KMS devuelve al instante {queued,job_id}.
-  const sctx = requireSignerContext_(p);
+  const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
 
   if (!Array.isArray(p.consents) || !p.consents.length) {
     throw new Error('consents must be a non-empty array');
@@ -5781,7 +5822,7 @@ function submitGdprConsents_(p) {
  */
 function confirmReview_(p) {
   // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado.
-  const sctx = requireSignerContext_(p);
+  const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   return kmsProxy_('enr.confirmReviewQueued', Object.assign({}, sctx.identity));
@@ -5822,16 +5863,20 @@ function confirmReview_(p) {
  *     (KMS enr.initiateSigningSession) solo como pista, jamás para autorizar.
  */
 function initiateSigningSession_(p) {
-  // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado
-  // (era 54-65s síncrono) + de-dupe server-side de create_only. El KMS resuelve
-  // guardians/documentos/proveedor del grupo derivado de la identidad (KAL-4).
-  const sctx = requireSignerContext_(p);
-
   // P-REVIEW-READONLY: create_only sólo CREA/garantiza la sesión DRAFT + tokens y
   // devuelve members/docs SIN despachar el envelope (KMS wizard-firma.gs).
   // Es preparación/lectura del Step 10, NO el acto legal de firma → no exige el
   // step-up INCONDICIONAL (ese gate es exclusivo del acto real, Step 11 sin create_only).
   const createOnly = !!(p && (p.create_only === true || p.create_only === 'true'));
+
+  // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado
+  // (era 54-65s síncrono) + de-dupe server-side de create_only. El KMS resuelve
+  // guardians/documentos/proveedor del grupo derivado de la identidad (KAL-4).
+  // PERF-WIZ: la LECTURA create_only usa la identidad LIGERA (la validación del
+  // guardian la hace el resolver único del KMS, anti-P245); el ACTO real de firma
+  // (Step 11, sin create_only) conserva el camino COMPLETO de requireSignerContext_
+  // — P222: las protecciones del acto jamás se adelgazan.
+  const sctx = createOnly ? requireSignerIdentity_(p) : requireSignerContext_(p);
 
   // DL-E39: step-up INCONDICIONAL antes de iniciar el ACTO de firma (Step 11).
   // enrollment_group_id derivado de la identidad (KAL-4), nunca del payload.
