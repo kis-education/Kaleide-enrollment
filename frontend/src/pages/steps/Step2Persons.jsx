@@ -594,6 +594,38 @@ function parseBool(val) {
   return Boolean(val);
 }
 
+// ─── #6: re-derivación del checkbox "Mismo domicilio que Tutor 1" ─────────────
+// `_sameAddress` es estado UI-only (transformPersonForSave lo borra), así que al
+// re-sembrar el paso (rehidratación tras resume, o volver al Step 2 en sesión) se
+// perdía y aparecían los campos de domicilio duplicados aunque el domicilio fuera
+// el mismo. Estos helpers re-derivan el estado del checkbox en la siembra:
+//  (a) por igualdad de domicilio campo a campo (normalizando trim/case) con la
+//      primera persona, o
+//  (b) por la marca in-session `copy_address_from_person_id` (presente en stepData
+//      cuando el usuario marcó el checkbox en esta sesión; el server no la devuelve).
+// Campos canónicos del domicilio = los de AddressForm/emptyAddress (enrAddresses).
+const ADDRESS_FIELDS = ['address_line_1', 'address_line_2', 'city', 'province', 'country_id', 'zip'];
+const normalizedAddress_ = (a) =>
+  ADDRESS_FIELDS.map(f => String((a && a[f]) || '').trim().toLowerCase()).join('|');
+const addressIsEmpty_ = (a) =>
+  ADDRESS_FIELDS.every(f => !String((a && a[f]) || '').trim());
+
+function deriveSameAddressFlags(list) {
+  if (!Array.isArray(list) || !list.length) return list;
+  const first = list[0];
+  const firstKey   = first ? (first.person_id || first._uid || null) : null;
+  const firstNorm  = normalizedAddress_(first && first.address);
+  const firstEmpty = addressIsEmpty_(first && first.address);
+  return list.map((p, i) => {
+    if (i === 0 || !p || p._sameAddress) return p;
+    const byCopyRef  = !!p.copy_address_from_person_id && p.copy_address_from_person_id === firstKey;
+    const byEquality = !firstEmpty && normalizedAddress_(p.address) === firstNorm;
+    if (!byCopyRef && !byEquality) return p;
+    log.debug('Step2: re-derived _sameAddress on seed', { idx: i, byCopyRef, byEquality });
+    return { ...p, _sameAddress: true };
+  });
+}
+
 function preparePersonForUI(person) {
   const out = { ...person };
   // nationality: prefer existing flat field; fall back to first nationality in array
@@ -650,8 +682,25 @@ function preparePersonForUI(person) {
  * NOTE: _uid is intentionally preserved — Step3Relations depends on it to
  * build unique guardian_person_id keys before the backend assigns person_id.
  */
-function transformPersonForSave(person) {
+function transformPersonForSave(person, idx, arr) {
   const out = { ...person };
+
+  // #6: con "Mismo domicilio que Tutor 1" marcado, materializa la COPIA de los
+  // campos de domicilio de la primera persona en el save. Sin esto el backend
+  // (enr_persistPersons_ ignora copy_address_from_person_id y solo escribe
+  // p.address con datos) no persistía NINGÚN domicilio para esa persona y el
+  // round-trip de rehidratación no podía re-derivar el checkbox (#6). Se copian
+  // SOLO los 6 campos canónicos (nunca address_id/record propios, que se
+  // preservan para el upsert). Si los valores ya son iguales, el objeto no
+  // cambia → el dirty-check no se ensucia.
+  if (out._sameAddress && Array.isArray(arr) && idx > 0 && arr[0] && !addressIsEmpty_(arr[0].address)) {
+    const src = arr[0].address || {};
+    const copied = {};
+    // Copia VERBATIM (sin coerciones) — si los valores ya eran iguales, el objeto
+    // resultante es idéntico al baseline y el dirty-check no dispara saves extra.
+    ADDRESS_FIELDS.forEach(f => { copied[f] = (src[f] !== undefined ? src[f] : ''); });
+    out.address = { ...(out.address || {}), ...copied };
+  }
 
   // Spread existing array entry as base to preserve server fields (e.g. person_id)
   // so the dirty check stays stable on resume.
@@ -718,7 +767,9 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
 
   const [persons, setPersons] = useState(() => {
     if (stepData.persons?.length) {
-      const ui = stepData.persons.map(preparePersonForUI);
+      // #6: tras preparar la shape UI, re-deriva el checkbox "Mismo domicilio que
+      // Tutor 1" comparando domicilios (trim/case) — se perdía en cada re-siembra.
+      const ui = deriveSameAddressFlags(stepData.persons.map(preparePersonForUI));
       log.debug('Step2: init persons from stepData (preparePersonForUI applied)', ui);
       return ui;
     }

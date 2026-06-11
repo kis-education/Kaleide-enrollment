@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
+import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import { gasCall, fetchLookups, fetchQuestions } from '../../api';
 import StepNav from '../../components/StepNav';
 import { openDocument } from '../../utils/documentProxy';
@@ -328,7 +329,10 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   return (
     <>
       <div className="mb-3">
-        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step7.title')}</h2>
+        {/* #11: cabecera = MISMO nombre que el stepper (catálogo único). Antes usaba
+            la key paralela step7.title ("Resumen") mientras el stepper decía
+            step.review ("Revisar y enviar") — Diego pidió "Resumen" en ambos. */}
+        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t(stepLabelKey('review'))}</h2>
         <p style={{ color: 'var(--muted)' }}>{t('step7.subtitle')}</p>
       </div>
 

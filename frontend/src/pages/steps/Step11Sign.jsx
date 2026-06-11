@@ -4,6 +4,7 @@ import { gasCall, initiateSigningRead } from '../../api';
 import { useWizard } from '../../context/WizardContext';
 import StepUpReverify from '../../components/StepUpReverify';
 import { signingIdentity_, isStepUpRequiredError, fetchClientIp } from './signingCommon';
+import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import * as log from '../../logger';
 
 /**
@@ -176,7 +177,7 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
     return (
       <div className="kis-card">
         {backNav('top')}
-        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.signing.title')}</h2>
+        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t(stepLabelKey('s_sign'))}</h2>
         <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('stepup.sign_gate_body')}</p>
         <StepUpReverify
           /* IDENTITY-COMPLETION (#29): identidad de SESIÓN (resume_token preferente). */
@@ -193,7 +194,7 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
     return (
       <div className="kis-card">
         {backNav('top')}
-        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.signing.title')}</h2>
+        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t(stepLabelKey('s_sign'))}</h2>
         <div className="field-error mt-2 p-2 rounded" style={{ background: '#ffeaea' }}>{err}</div>
         {backNav('bottom')}
       </div>
@@ -225,7 +226,7 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
     return (
       <div className="kis-card">
         {backNav('top')}
-        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.signing.title')}</h2>
+        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t(stepLabelKey('s_sign'))}</h2>
         <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.signing.intro')}</p>
         {session === null && (
           <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>
@@ -245,7 +246,7 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
   return (
     <div className="kis-card">
       {backNav('top')}
-      <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.signing.title')}</h2>
+      <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t(stepLabelKey('s_sign'))}</h2>
       <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.signing.in_progress')}</p>
 
       {signerUrls.length > 0 ? (

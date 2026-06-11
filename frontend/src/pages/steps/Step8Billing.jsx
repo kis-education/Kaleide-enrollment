@@ -5,6 +5,7 @@ import { useWizard } from '../../context/WizardContext';
 import StepShell from '../../components/StepShell';
 import SplitEditor from '../../components/SplitEditor';
 import { signingIdentity_, isStepUpRequiredError } from './signingCommon';
+import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import * as log from '../../logger';
 
 /**
@@ -285,7 +286,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   return (
     <div className="kis-card">
       <StepShell
-        title={t('signing.billing.title')}
+        title={t(stepLabelKey('s_billing'))}
         subtitle={t('signing.billing.subtitle')}
         onBack={onBack}
         onNext={submit}

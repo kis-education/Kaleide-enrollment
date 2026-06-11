@@ -6,6 +6,7 @@ import StepShell from '../../components/StepShell';
 import StepUpReverify from '../../components/StepUpReverify';
 import PdfViewer from '../../components/PdfViewer';
 import { signingIdentity_, isStepUpRequiredError } from './signingCommon';
+import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import * as log from '../../logger';
 
 /**
@@ -216,7 +217,7 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
     return (
       <div className="kis-card">
         {backOnly('top')}
-        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t('signing.review.title')}</h2>
+        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t(stepLabelKey('s_review'))}</h2>
         <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('stepup.review_gate_body')}</p>
         <StepUpReverify
           /* IDENTITY-COMPLETION (#30): identidad de SESIÓN. _resolveStepUpGroup_ deriva
@@ -256,7 +257,7 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
   return (
     <div className="kis-card">
       <StepShell
-        title={t('signing.review.title')}
+        title={t(stepLabelKey('s_review'))}
         subtitle={subtitle}
         onBack={onBack}
         onNext={confirm}

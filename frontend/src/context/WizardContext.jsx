@@ -71,33 +71,12 @@ const WizardContext = createContext(null);
 export const STEPUP_WINDOW_MS = 10 * 60 * 1000; // 10 minutos
 
 // Wizard canónico — 11 steps per roadmap (docs/kms/plan/wizard-admissions-roadmap.md
-// líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28). NO inventar pasos extra. CLI 22 + CLI 28
-// + Frontend-9-10 + Frontend-12 introdujeron "Status/Interview/Decision/Deposit/..."
-// inventados; CLI 59 (2026-05-30) revirtió a este canon.
-//
-// 1-7 pre-AD (admisión decisión): ya implementados, formularios reales.
-// 8-11 post-AD: placeholders informativos hasta que tengan backend.
-//
-// Endpoints futuros para 8-11 (no existen todavía):
-//   8 S-BILLING  → enr.saveBillingInfo       (P49)
-//   9 S-GDPR     → enr.submitGdprConsents    (DL-E27)
-//  10 S-REVIEW   → enr.confirmReview         (DL-E28 §6)
-//  11 S-SIGN     → enr.initiateSigningSession (DL-E28 §7-§13, P50)
-export const STEPS = [
-  // Steps 1-7: enrollment wizard pre-AD
-  { key: 'email',       labelKey: 'step.email'           },
-  { key: 'persons',     labelKey: 'step.persons'         },
-  { key: 'relations',   labelKey: 'step.relations'       },
-  { key: 'health',      labelKey: 'step.health'          },
-  { key: 'questions',   labelKey: 'step.questions'       },
-  { key: 'documents',   labelKey: 'step.documents'       },
-  { key: 'review',      labelKey: 'step.review'          },
-  // Steps 8-11: post-AD (locked hasta que admisiones acepte la solicitud).
-  { key: 's_billing',   labelKey: 'step.billing.title'         },
-  { key: 's_gdpr',      labelKey: 'step.gdpr.title'            },
-  { key: 's_review',    labelKey: 'step.signing_review.title'  },
-  { key: 's_sign',      labelKey: 'step.signing.title'         },
-];
+// líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28). NO inventar pasos extra.
+// #11 (catálogo único de nombres de pasos): la lista STEPS que vivía aquí duplicaba
+// el catálogo declarativo de pages/steps/catalog.js y ambas fuentes divergían
+// ("Resumen" vs "Revisar y enviar"). ELIMINADA — el catálogo (STEP_CATALOG +
+// stepLabelKey) es la ÚNICA fuente de ids y nombres de pasos; WizardProgress y los
+// componentes de paso leen de él.
 
 const initialStepData = {
   email:     { primary_email: '', verified: false },
@@ -459,6 +438,18 @@ export function WizardProvider({ children }) {
     setStepUpVerifiedUntil(now + STEPUP_WINDOW_MS);
     setLastActivityAt(now);
     log.success('step-up: verificación fresca registrada (10 min)');
+  }, []);
+
+  // #30 (lock proactivo, post-#55): revoca el espejo LOCAL de frescura. El servidor es
+  // la verdad de la ventana DURA; el cliente solo conoce el booleano `step_up_fresh`
+  // (sin remaining_s), así que tras un F5 a mitad de ventana el espejo local puede
+  // sobrevivir más que la marca server-side. Cuando el servidor rechaza con
+  // STEPUP_REQUIRED, esto re-sincroniza el espejo a "expirado" → el ticker de 30s
+  // re-renderiza y el gate de entrada (mustPassEntryGate) se cierra para TODA la UI
+  // PII, no solo para el save que falló. NUNCA extiende — solo revoca (anti-sliding).
+  const revokeStepUpFresh = useCallback(() => {
+    setStepUpVerifiedUntil(0);
+    log.warn('step-up: frescura revocada (servidor reportó STEPUP_REQUIRED)');
   }, []);
 
   // True si el step-up sigue fresco. ★ SEC-STEPUP: ventana DURA (no deslizante):
@@ -1036,7 +1027,7 @@ export function WizardProvider({ children }) {
       signingForms, updateSigningForm,            // REBUILD-8-11: formularios de firma en memoria
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       recoveryNonce, setRecoveryNonce,           // IDENTITY-FROM-LINK: `n` = email_id del enlace
-      isStepUpFresh, markStepUpFresh, touchActivity, // DL-E39 step-up PII-primero
+      isStepUpFresh, markStepUpFresh, revokeStepUpFresh, touchActivity, // DL-E39 step-up PII-primero + #30 espejo revocable
       recoveredViaMagicLink, setRecoveredViaMagicLink, // DL-E39 gate de entrada
       otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER: auto-send solo 1ª recuperación
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),

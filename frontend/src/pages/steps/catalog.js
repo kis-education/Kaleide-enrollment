@@ -79,13 +79,30 @@ export const ADMISSIONS_STEPS = [
   { id: 'documents',  labelKey: 'step.documents',            component: Step6Documents, savePolicy: 'wizard', lockPolicy: 'completed', preload: [] },
   { id: 'review',     labelKey: 'step.review',               component: Step7Review,    savePolicy: 'none',   lockPolicy: 'never',     preload: [] },
   // ── Pasos 8-11: firma post-AD (mismo chasis; cada acto persiste vía su endpoint) ─
-  { id: 's_billing',  labelKey: 'step.billing.title',        component: Step8Billing,   savePolicy: 'act',    lockPolicy: 'state',     preload: [] },
-  { id: 's_gdpr',     labelKey: 'step.gdpr.title',           component: Step9Gdpr,      savePolicy: 'act',    lockPolicy: 'state',     preload: [] },
+  // #11 (catálogo único de nombres): los labelKey de los pasos de firma apuntan a las
+  // MISMAS keys que ya usaban las cabeceras de los componentes (signing.*.title), de
+  // forma que stepper y cabecera muestran el mismo nombre desde UNA fuente (dirección
+  // fijada por Diego en el paso 7: el texto de cabecera manda). Las keys antiguas
+  // step.billing.title / step.gdpr.title / step.signing_review.title / step.signing.title
+  // quedan sin consumidor en el catálogo (solo sus hermanas .subtitle/.locked.* siguen
+  // su ciclo propio).
+  { id: 's_billing',  labelKey: 'signing.billing.title',  component: Step8Billing,   savePolicy: 'act',    lockPolicy: 'state',     preload: [] },
+  { id: 's_gdpr',     labelKey: 'signing.gdpr.title',     component: Step9Gdpr,      savePolicy: 'act',    lockPolicy: 'state',     preload: [] },
   // Step 10: precarga del paquete contractual (members + doc URLs) AL ENTRAR → render
   // dinámico de los members sin "vuelve en unos minutos" (espera activa con reintento).
-  { id: 's_review',   labelKey: 'step.signing_review.title', component: Step10Review,   savePolicy: 'act',    lockPolicy: 'state',     preload: ['documents'] },
-  { id: 's_sign',     labelKey: 'step.signing.title',        component: Step11Sign,     savePolicy: 'none',   lockPolicy: 'never',     preload: [] },
+  { id: 's_review',   labelKey: 'signing.review.title',   component: Step10Review,   savePolicy: 'act',    lockPolicy: 'state',     preload: ['documents'] },
+  { id: 's_sign',     labelKey: 'signing.signing.title',  component: Step11Sign,     savePolicy: 'none',   lockPolicy: 'never',     preload: [] },
 ];
+
+/**
+ * #11 — i18n key del NOMBRE de un paso por id de catálogo. Único punto de verdad
+ * para títulos/cabeceras/banners que muestran el nombre del paso: los componentes
+ * llaman t(stepLabelKey('review')) en vez de duplicar literales/keys propios.
+ */
+export const stepLabelKey = (id) => {
+  const s = ADMISSIONS_STEPS.find(x => x.id === id);
+  return s ? s.labelKey : '';
+};
 
 /** Índice 0-based del primer paso de firma (Step 8). Derivado del catálogo. */
 export const FIRST_SIGNING_INDEX = ADMISSIONS_STEPS.findIndex(s => s.savePolicy === 'act');

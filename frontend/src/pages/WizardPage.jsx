@@ -41,7 +41,7 @@ export default function WizardPage() {
     admissionState, signingContext,
     loadDocument,                               // STEP10-VIEWER: cache de docs del contexto
     billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2
-    markStepUpFresh,
+    markStepUpFresh, revokeStepUpFresh, // #30: espejo local revocable (lock proactivo)
     isStepUpFresh, recoveredViaMagicLink,
     otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER
     recoveredEmail, setRecoveredEmail,
@@ -277,6 +277,11 @@ const handleNext = async (stepKey, data, extra = null) => {
           // mostrar StepUpReverify y reintentar este mismo paso tras verificar.
           if (err?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(err?.message || '')) {
             log.warn(`WizardPage: saveStep "${stepKey}" requires step-up`);
+            // #30: el servidor dice que la ventana DURA expiró → revocar el espejo
+            // local para que el gate de entrada se cierre en TODA la UI PII (no solo
+            // el modal de reintento). Cubre el F5 a mitad de ventana, donde el espejo
+            // local (sembrado a 10 min completos en hydrate) sobrevivía al servidor.
+            revokeStepUpFresh();
             setStepUpPending({ stepKey, data, extra });
             throw err;
           }
@@ -334,6 +339,7 @@ const handleNext = async (stepKey, data, extra = null) => {
         markStepSaved(stepKey, data);
       } catch (err) {
         if (err?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(err?.message || '')) {
+          revokeStepUpFresh(); // #30: re-sincroniza el espejo local con la verdad del servidor
           setStepUpPending({ stepKey, data, extra });
           return;
         }

@@ -5,6 +5,7 @@ import { useWizard } from '../../context/WizardContext';
 import StepShell from '../../components/StepShell';
 import { SIGNING_CONSENTS, SIGNING_CONSENT_TEXT_VERSION } from '../../signingConsentTexts';
 import { signingIdentity_, isStepUpRequiredError, lang_ } from './signingCommon';
+import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import * as log from '../../logger';
 
 /**
@@ -156,7 +157,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   return (
     <div className="kis-card">
       <StepShell
-        title={t('signing.gdpr.title')}
+        title={t(stepLabelKey('s_gdpr'))}
         subtitle={t('signing.gdpr.subtitle')}
         onBack={onBack}
         onNext={submit}
