@@ -368,6 +368,26 @@ export function WizardProvider({ children }) {
   const [billingSplits, setBillingSplits] = useState(null);
   const [liveVersion, setLiveVersion]     = useState(0);
 
+  // ── REBUILD-8-11 (Diego 2026-06-11) — formularios de los pasos de firma 8-10 ──
+  // El input del usuario de los pasos de firma (reparto del 8, consentimientos del 9,
+  // aceptaciones por documento del 10) vive AQUÍ, en memoria, igual que stepData para
+  // los pasos 1-7: la siembra desde servidor solo aplica si el usuario NO tocó nada
+  // (slice ausente); una vez editado, su valor MANDA toda la sesión (el server no lo
+  // pisa) y sobrevive a navegar 8↔9↔10↔11 (los componentes desmontan, el contexto no).
+  // Tras un save OK, el paso estampa su `baseline` en el slice (espejo de markStepSaved).
+  // KAL-7: NADA de esto se persiste en sessionStorage (cero secretos/PII fuera de
+  // memoria); un F5 re-siembra desde servidor, que ya tiene lo guardado.
+  //   { billing: {payers, perChild, childSplits, baseline?},
+  //     gdpr:    {gen, img, v},
+  //     review:  {accepted} }
+  const [signingForms, setSigningFormsRaw] = useState({});
+  const updateSigningForm = useCallback((key, valueOrFn) => {
+    setSigningFormsRaw(prev => ({
+      ...prev,
+      [key]: typeof valueOrFn === 'function' ? valueOrFn(prev[key]) : valueOrFn,
+    }));
+  }, []);
+
   // ── DL-E39 — step-up re-auth state (NO persistido) ───────────────────────────
   // `stepUpVerifiedUntil`: timestamp (ms) hasta el que el step-up se considera
   // fresco. `lastActivityAt`: última interacción del usuario; tras 10 min sin
@@ -511,6 +531,7 @@ export function WizardProvider({ children }) {
     setLastActivityAt(Date.now());
     setRecoveredViaMagicLinkRaw(false);
     setOtpAutoSentForRecoveryRaw(false);
+    setSigningFormsRaw({}); // REBUILD-8-11: el input de firma muere con la sesión
     // WIZARD-PERF-CACHE-SKELETON: el catálogo cacheado de preguntas NUNCA debe
     // sobrevivir al ciclo de auth — purgar al limpiar sesión (logout/clear/expiry).
     purgeQuestionsCache();
@@ -998,6 +1019,7 @@ export function WizardProvider({ children }) {
       admissionState, signingContext,           // P216 (DL-E38)
       docCache, loadDocument, signingMembers, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual
       billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
+      signingForms, updateSigningForm,            // REBUILD-8-11: formularios de firma en memoria
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       recoveryNonce, setRecoveryNonce,           // IDENTITY-FROM-LINK: `n` = email_id del enlace
       isStepUpFresh, markStepUpFresh, touchActivity, // DL-E39 step-up PII-primero

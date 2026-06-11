@@ -34,7 +34,7 @@ export default function WizardPage() {
     clearSession,
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
-    setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
+    setPendingSave, enqueueSave, hasPendingSave, saveState,
     validationError, setValidationError,                          // UX-1 aviso sticky
     markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
     isSubmitted,
@@ -630,6 +630,7 @@ const handleNext = async (stepKey, data, extra = null) => {
           when they need changes — the wizard cannot reopen a submitted
           application; only KMS staff can transition it back to NEEDS_MORE_INFO. */}
       {isSubmitted ? (
+        <>
         <div style={{
           background: '#e8f5e9', borderBottom: '2px solid #43a047',
           padding: '12px 20px', display: 'flex', alignItems: 'flex-start', gap: 12,
@@ -738,15 +739,18 @@ const handleNext = async (stepKey, data, extra = null) => {
               </div>
             )}
           </div>
-          {/* BILLING-EDIT causa 2 (2026-06-11): la nube de guardado TAMBIÉN post-submit.
-              En los pasos 8-11 isSubmitted=true → este header sustituye a la barra
-              save-later, donde vivía la ÚNICA instancia del SaveIndicator — la cola FIFO
-              marcaba saveState='saving' correctamente pero la nube no existía en pantalla.
-              Misma instancia/estilo que abajo; empujada al borde derecho del flex. */}
-          <span style={{ marginLeft: 'auto', flexShrink: 0, alignSelf: 'center' }}>
-            <SaveIndicator />
-          </span>
         </div>
+        {/* REBUILD-8-11 (2026-06-11): la nube de guardado post-submit vive en la MISMA
+            wizard-header-bar y POSICIÓN que en los pasos 1-7 (una sola nube en pantalla
+            — la instancia que BILLING-EDIT causa 2 metió dentro del header verde se
+            integra aquí). Los botones save-later/abandonar no aplican a una solicitud
+            enviada → huecos vacíos para conservar el layout homogéneo de la barra. */}
+        <div className="wizard-header-bar" style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center' }}>
+          <span />
+          <SaveIndicator />
+          <span />
+        </div>
+        </>
       ) : (
         /* Save-later bar */
         <div className="wizard-header-bar" style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center' }}>
@@ -818,10 +822,11 @@ const handleNext = async (stepKey, data, extra = null) => {
           locked={completedSteps.has(currentStep)}
           onUnlock={isSubmitted ? null : handleUnlock}
           savePending={hasPendingSave}
-          /* DL-E38 merge: props para los Steps 8-11 de firma inline. onAdvance
-             mueve currentStep SIN saveStep (cada step de firma persiste vía su
-             propio endpoint). signingToken/signerCtx alimentan los componentes
-             funcionales reutilizados de SigningSteps. Ignorados por los Steps 1-7. */
+          /* DL-E38 merge + REBUILD-8-11: props para los Steps 8-11 de firma inline.
+             onAdvance mueve currentStep SIN saveStep (cada step de firma persiste vía
+             su propio endpoint, encolado en la MISMA cola FIFO → misma nube).
+             signingToken/signerCtx alimentan los pasos reconstruidos en steps/Step8..11.
+             Ignorados por los Steps 1-7. */
           onAdvance={advanceSigningStep}
           signingToken={signingContext?.signing_token || null}
           /* WIZ-NAV-CANON: el resume_token de SESIÓN es la identidad canónica que los
