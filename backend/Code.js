@@ -1683,8 +1683,32 @@ function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsH
     try {
       assertValidEmail_(clientRecoveredEmail, 'recovered_email');
       return String(clientRecoveredEmail).toLowerCase().trim();
-    } catch (e) { /* malformado → null (group-scoped) */ }
+    } catch (e) { /* malformado → null, cae al fallback 3 */ }
   }
+  // 3. FALLBACK CANÓNICO "identidad = solicitud + email" (Diego: la identidad NO PUEDE
+  //    FALTAR POR CONSTRUCCIÓN). Si la sesión entra solo con el resume_token —recarga de
+  //    una pestaña con token viejo, sin `n` ni recovered_email del cliente (log real de
+  //    Diego 20:40: UNAUTHORIZED "falta n del enlace o recovered_email" pese a hidratar
+  //    los datos)— la SOLICITUD conoce el email de su solicitante: `primary_email` es el
+  //    ARTEFACTO Stage-1 = email personal del tutor 1 (el que creó la solicitud). Es el
+  //    guardian por defecto canónico de una recuperación group-scoped sin discriminador.
+  //    KAL-4: el groupId viene SIEMPRE del token (server-side); primary_email se lee de
+  //    la fila de ESE grupo, jamás del payload. El `n` sigue teniendo prioridad cuando
+  //    existe (firma per-guardian intacta); esto solo cubre el hueco "sin discriminador".
+  try {
+    var grow = groupHint;
+    if (!grow && groupId) {
+      var grows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+        Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
+      }) || [];
+      grow = grows.length ? grows[0] : null;
+    }
+    var pe = grow && grow.primary_email ? String(grow.primary_email).toLowerCase().trim() : '';
+    if (pe) {
+      try { assertValidEmail_(pe, 'primary_email'); return pe; }
+      catch (e2) { /* primary_email malformado → null */ }
+    }
+  } catch (e3) { /* lectura falló → null (group-scoped, comportamiento previo) */ }
   return null;
 }
 
@@ -4882,7 +4906,7 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, nEmailId) {
   sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
   // SPEC-WIZ-WARMUP \u2014 calienta el hydrate del grupo en el "minuto muerto". resumeToken es
   // el token NUEVO (todos los callers lo renuevan antes de invocar este env\u00edo). Best-effort.
-  _enqueueWarmHydrate_(resumeToken, lang);
+  _enqueueWarmHydrate_(resumeToken, lang, email);
 }
 
 /**
@@ -4937,7 +4961,7 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang, nEmailIds) {
 
   sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
   // SPEC-WIZ-WARMUP \u2014 calienta el hydrate de CADA grupo enviado (tokens ya renovados). Best-effort.
-  (resumeTokens || []).forEach(function(t) { _enqueueWarmHydrate_(t, lang); });
+  (resumeTokens || []).forEach(function(t) { _enqueueWarmHydrate_(t, lang, email); });
 }
 
 /**
@@ -4957,10 +4981,19 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang, nEmailIds) {
  * @param {string} lang
  * @private
  */
-function _enqueueWarmHydrate_(resumeToken, lang) {
+function _enqueueWarmHydrate_(resumeToken, lang, recoveredEmail) {
   try {
     if (!resumeToken) return;
-    kmsProxy_('enr.wizardWarmHydrate', { resume_token: String(resumeToken).trim(), language: lang || null });
+    // WARM-KEY-PARITY (2026-06-11, hydrate 73s de Diego = MISS sistémico): la clave de la
+    // cache warm es (token, recovered_email, locale). El click REAL siempre manda el email
+    // del guardian (IDENTITY-FROM-LINK: derivado del `n` del enlace) + language — el warm
+    // que cocinaba SIN email producía claves que nadie lee. El email de destino del link
+    // ES el recovered_email que el click resolverá → clave idéntica → HIT.
+    kmsProxy_('enr.wizardWarmHydrate', {
+      resume_token:    String(resumeToken).trim(),
+      recovered_email: recoveredEmail || null,
+      language:        lang || null,
+    });
   } catch (e) {
     // KAL-11: redacta. El warm es opcional \u2014 nunca rompe el env\u00edo del magic-link.
     Logger.log(redact_('_enqueueWarmHydrate_: warm enqueue skipped (non-fatal) \u2014 ' + (e && e.message)));
