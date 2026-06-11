@@ -935,6 +935,7 @@ function doPost(e) {
       // notifyLiveStateChange: lo llama SOLO el KMS (gate WIZARD_NOTIFY_SECRET) → bumpa
       //   la versión liveState del grupo. getLiveStateVersion: cheap-poll (solo versión).
       case 'hydrateSession':          result = hydrateSession_(payload);          break;
+      case 'warmSession':             result = warmSession_(payload);             break;
       case 'notifyLiveStateChange':   result = notifyLiveStateChange_(payload);   break;
       case 'getLiveStateVersion':     result = getLiveStateVersion_(payload);     break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
@@ -5873,6 +5874,52 @@ function initiateSigningSession_(p) {
  * @param {Object} p — { resume_token, recovered_email? }
  * @returns {Object} payload consolidado del KMS.
  */
+/**
+ * OTP-WARM pieza B (spec 2026-06-11): ceba la cache warm del hydrate DURANTE la ventana
+ * del OTP, sin devolver PII. La idea de Diego ("por qué no está el wizard precargando
+ * datos… sólo se pone a hidratar cuando introduzco el otp"): lo que el OTP autoriza es
+ * VER la PII, no COCINARLA — la identidad (grupo) ya la da el resume_token. Este endpoint
+ * dispara la MISMA ensamblación que hydrateSession_ (proxy enr.wizardHydrate, cuya cache
+ * warm KMS-side se ceba en el write-through de SPEC-WIZ-WARMUP) y DESCARTA el resultado:
+ * al cliente solo cruza {ok, warmed}. Tras validar el OTP, hydrateSession sirve warm-hit.
+ *
+ * Guardas: requireResumeToken_ (KAL-4) + rate-limit 1 warm/grupo/120s (es caro). El
+ * frontend lo dispara fire-and-forget al pintar la pantalla OTP.
+ */
+function warmSession_(p) {
+  const groupId = requireResumeToken_(p);
+  const rlCache = CacheService.getScriptCache();
+  const rlKey = 'warmrl_' + groupId;
+  if (rlCache.get(rlKey)) return { ok: true, warmed: false, reason: 'RATE_LIMITED' };
+  rlCache.put(rlKey, '1', 120);
+
+  // Identidad efectiva — VERBATIM de hydrateSession_ (IDENTITY-FROM-LINK): la clave de
+  // la cache warm KMS incluye recovered_email + locale; debe coincidir con la que usará
+  // el hydrate real post-OTP o el warm no haría hit.
+  let bindGroupRow = null;
+  try {
+    const bgRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+      Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
+    });
+    bindGroupRow = (bgRows && bgRows.length) ? bgRows[0] : null;
+  } catch (e) { bindGroupRow = null; }
+  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n, null, null, bindGroupRow);
+
+  try {
+    kmsProxy_('enr.wizardHydrate', {
+      resume_token:    String(p.resume_token).trim(),
+      recovered_email: effRecoveredEmail || null,
+      language:        (p && p.language) ? String(p.language).trim() : null,
+    });
+  } catch (eWarm) {
+    // Best-effort: un warm fallido no es error de cara al cliente (el hydrate real
+    // post-OTP seguirá su camino normal). Log redactado para correlación.
+    Logger.log(redact_('[warmSession_] warm FALLÓ group=' + groupId + ' err=' + (eWarm && eWarm.message)));
+    return { ok: true, warmed: false, reason: 'WARM_FAILED' };
+  }
+  return { ok: true, warmed: true };
+}
+
 function hydrateSession_(p) {
   const groupId = requireResumeToken_(p);  // KAL-4 + TTL 7d + abandoned gate
 
