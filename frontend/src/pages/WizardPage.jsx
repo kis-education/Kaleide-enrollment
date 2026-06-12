@@ -46,6 +46,7 @@ export default function WizardPage() {
     otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER
     recoveredEmail, setRecoveredEmail,
     recoveryNonce, // IDENTITY-FROM-LINK: `n` = email_id del enlace (identidad canónica)
+  , getStepEditMode,
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -838,8 +839,11 @@ const handleNext = async (stepKey, data, extra = null) => {
         <StepComponent
           onNext={handleNext}
           onBack={handleBack}
-          locked={completedSteps.has(currentStep)}
-          onUnlock={isSubmitted ? null : handleUnlock}
+          /* MAPEO CENTRAL de modos (Diego 2026-06-12): EDITABLE | PROTECTED | LOCKED.
+             UN solo componente de candado (LockedBanner, via StepShell) para TODOS
+             los pasos — los pasos no computan su propio lock. */
+          locked={getStepEditMode(currentStep) !== 'EDITABLE'}
+          onUnlock={getStepEditMode(currentStep) === 'PROTECTED' ? handleUnlock : null}
           savePending={hasPendingSave}
           /* DL-E38 merge + REBUILD-8-11: props para los Steps 8-11 de firma inline.
              onAdvance mueve currentStep SIN saveStep (cada step de firma persiste vía

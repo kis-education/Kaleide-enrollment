@@ -26,16 +26,14 @@ import * as log from '../../logger';
  *    mismo}. NUNCA por el otro tutor adulto. El otorgante NO viaja en el payload — el
  *    KMS lo deriva del token (KAL-4).
  */
-export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken, signerCtx }) {
+export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken, signerCtx, locked, onUnlock }) {
   const { t, i18n } = useTranslation();
   const {
     enqueueSave, stepData, recoveredEmail, recoveryNonce,
-    signingForms, updateSigningForm, admissionState, reviewConfirmedLocal,
+    signingForms, updateSigningForm,
   } = useWizard();
-  // Decisión Diego 2026-06-12: post-REVIEW_CONFIRMED el wizard se bloquea (solo
-  // lectura); el backend además rechaza con SIGNING_LOCKED.
-  const signingLocked = !!(reviewConfirmedLocal || (admissionState && admissionState.signing_context
-    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed));
+  // MAPEO CENTRAL (Diego 2026-06-12): el candado viene de getStepEditMode via
+  // props locked/onUnlock — este paso no computa su propio lock.
   const lang = lang_(i18n);
 
   const fullName_ = (p) => [p.first_name, p.middle_name, p.last_name].filter(x => x && String(x).trim()).join(' ').trim();
@@ -93,7 +91,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   // (consentimiento bloqueante); (2) payload VERBATIM construido ANTES de encolar;
   // (3) enqueueSave SIN await previo → nube global; (4) avance inmediato.
   const submit = () => {
-    if (signingLocked) { onAdvance(); return; } // solo lectura: avanza sin guardar
+    if (locked) { onAdvance(); return; } // solo lectura: avanza sin guardar
     const gdprSchool = generalConsents.find(c => c.blocking);
     if (gdprSchool && genState[gdprSchool.code] !== true) {
       setErr(t('signing.gdpr.must_accept_blocking'));
@@ -166,14 +164,11 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
         subtitle={t('signing.gdpr.subtitle')}
         onBack={onBack}
         onNext={submit}
-        nextLabel={signingLocked ? undefined : t('signing.gdpr.submit')}
+        nextLabel={locked ? undefined : t('signing.gdpr.submit')}
+        locked={locked}
+        onUnlock={onUnlock}
         error={err}
       >
-        {signingLocked && (
-          <p style={{ background: '#fff8e1', borderLeft: '4px solid #f0a500', padding: '10px 14px', borderRadius: 4, color: '#5c4400', fontSize: '0.9rem' }}>
-            {t('signing.locked_note')}
-          </p>
-        )}
         {/* Consentimientos GENERALES (per-guardian: GDPR + comms + plataforma) */}
         {generalConsents.map(c => (
           <div key={c.code} className="consent-block" style={{ borderBottom: '1px solid var(--bg)', paddingBottom: 12, marginBottom: 12 }}>

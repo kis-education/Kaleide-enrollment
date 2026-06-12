@@ -273,7 +273,11 @@ export function WizardProvider({ children }) {
   // Decisión Diego 2026-06-12 (lock EN VIVO): los flags de hitos del hydrate son de
   // la ENTRADA — si el usuario confirma la lectura en ESTA sesión, el bloqueo debe
   // engancharse al instante, sin esperar al re-hydrate ni al drenado del job.
-  const [reviewConfirmedLocal, setReviewConfirmedLocal] = useState(false);
+  const [reviewConfirmedLocal, setReviewConfirmedLocalRaw] = useState(!!session.reviewConfirmedLocal);
+  const setReviewConfirmedLocal = useCallback((v) => {
+    setReviewConfirmedLocalRaw(!!v);
+    saveSession({ reviewConfirmedLocal: !!v }); // sobrevive a F5 / navegación
+  }, []);
   const [signingContext, setSigningContext] = useState(null);
 
   // ── STEP10-VIEWER (Diego 2026-06-11) — cache EN MEMORIA del paquete contractual ──
@@ -866,6 +870,13 @@ export function WizardProvider({ children }) {
     if (data.gdpr_consents && data.gdpr_consents.v) {
       setSigningFormsRaw(prev => (prev && prev.gdpr) ? prev : { ...(prev || {}), gdpr: data.gdpr_consents });
     }
+    // Lock por hito durable (Diego 2026-06-12): si el server reporta REVIEW_CONFIRMED,
+    // sincroniza el flag local (y su copia en sessionStorage) — el candado no depende
+    // de la vida del componente ni de la navegación 7↔8.
+    try {
+      const stRD = data.admission && data.admission.signing_context && data.admission.signing_context.steps;
+      if (stRD && stRD.review_completed) setReviewConfirmedLocal(true);
+    } catch (eRD) { /* best-effort */ }
     // DL-E44 §2: las aceptaciones por documento del Step 10 rehidratan desde la
     // evidencia DURABLE del hito REVIEW_CONFIRMED (per-guardian, accepted[] del
     // hydrate) — nunca se re-piden. Mismo patrón que gdpr: siembra solo si el
@@ -970,6 +981,30 @@ export function WizardProvider({ children }) {
     setCurrentStep(target);
   }, []);
 
+  // ── MAPEO CENTRAL de modos de edición por paso (decisión Diego 2026-06-12:
+  //    "según el estado de cada fase, mapeo de qué pasos deben estar en qué estado:
+  //    disponible / edición con protección / bloqueado", con UN único componente
+  //    de bloqueo — LockedBanner). ÚNICA fuente de verdad del candado; los pasos
+  //    NO computan su propio lock. Derivado de ESTADO + HITOS:
+  //      EDITABLE  → sin banner.
+  //      PROTECTED → LockedBanner CON botón Editar (editar a propósito).
+  //      LOCKED    → LockedBanner SIN botón (no editable).
+  //    reviewDone = hito durable REVIEW_CONFIRMED (server) O confirmación de ESTA
+  //    sesión (local, persistida en sessionStorage) → bloquea TODO (documentación
+  //    aceptada y enviada a firma — el backend además rechaza con SIGNING_LOCKED).
+  const getStepEditMode = useCallback((stepIndex) => {
+    const reviewDone = reviewConfirmedLocal
+      || !!(admissionState && admissionState.signing_context
+            && admissionState.signing_context.steps
+            && admissionState.signing_context.steps.review_completed);
+    if (reviewDone) return stepIndex === 10 ? 'EDITABLE' : 'LOCKED'; // paso 11 = informativo
+    if (stepIndex <= 6) { // pasos 1-7 (semántica previa intacta)
+      if (!completedSteps.has(stepIndex)) return 'EDITABLE';
+      return isSubmitted ? 'LOCKED' : 'PROTECTED';
+    }
+    return 'EDITABLE'; // pasos 8-10 pre-confirmación
+  }, [reviewConfirmedLocal, admissionState, completedSteps, isSubmitted]);
+
   // ── Admission-state PULSE (realtime bug, Diego 2026-06-07) ───────────────────
   // Refresca SOLO el sub-bloque de admisión (admissionState/signingContext/
   // isSubmitted) desde una respuesta de resumeSession, SIN tocar stepData /
@@ -1041,6 +1076,7 @@ export function WizardProvider({ children }) {
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
       reviewConfirmedLocal, setReviewConfirmedLocal, // lock en vivo post-confirm (Diego 2026-06-12)
+      getStepEditMode,                            // mapeo central de modos de edición (Diego 2026-06-12)
       docCache, loadDocument, signingMembers, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual
       billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
       signingForms, updateSigningForm,            // REBUILD-8-11: formularios de firma en memoria
