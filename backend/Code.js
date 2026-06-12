@@ -991,8 +991,53 @@ function assertStepUpFresh_(enrollmentGroupId) {
 // cache DESPUÉS de sus gates (requireResumeToken_ + step-up/PII) — solo cambia el
 // ORIGEN de los datos. KAL-11: logs solo con token.slice(0,8).
 
-/** Clave base del cache wizard (kind: 'hyd' | 'adm' | 'doc'). */
+/** Clave base del cache wizard (kind: 'hyd' | 'adm' | 'res' | 'mem' | 'doc'). */
 function _wzCacheKey_(kind, suffix) { return 'wz_' + kind + '_' + suffix; }
+
+// URL /exec PROPIA para las auto-invocaciones del warm. El deployment es FIJO
+// (CLAUDE.md: nunca se crea deployment nuevo — cambiaría la URL pública); fallback
+// dinámico por si algún día rota.
+var WIZARD_EXEC_URL_ = 'https://script.google.com/macros/s/AKfycbyzyAR6J3_2UAiE6tCyNHVawoGfMNNbZEaurp99cRI76IYbiqGVEeQQcTxsgAqUFnGk0w/exec';
+
+/**
+ * SPEC-WIZ-WARMUP-V2.1 (2026-06-12) — PARALELIZA el warm: dos ejecuciones HIJAS
+ * concurrentes contra el propio /exec (UrlFetchApp.fetchAll). El PADRE es la
+ * ejecución async que arrancó el kick del frontend (puede bloquear sin coste de
+ * UX); los hijos corren en PARALELO (cuota GAS 30 concurrentes/usuario) → el
+ * tiempo de pared del warm pasa de sum(fases) a max(fases). Motivo: round 5
+ * (13:44Z) probó que el warm SECUENCIAL (hydrate 30-70s + res 25-30s + docs) no
+ * ganaba la carrera del minuto muerto. Best-effort: timeout/cierre del padre no
+ * mata a los hijos (ejecución sobrevive al corte del caller — verificado E1).
+ * @private
+ */
+function _wzSelfFetchAll_(payloads) {
+  try {
+    if (!payloads || !payloads.length) return;
+    var url = WIZARD_EXEC_URL_;
+    try { var u = ScriptApp.getService().getUrl(); if (u) url = u; } catch (eU) { /* fallback const */ }
+    var reqs = payloads.map(function(pl) {
+      return {
+        url: url, method: 'post', contentType: 'text/plain',
+        payload: JSON.stringify(Object.assign({ action: 'warmBundle', _hp: '' }, pl)),
+        followRedirects: false, muteHttpExceptions: true,
+      };
+    });
+    UrlFetchApp.fetchAll(reqs);
+  } catch (e) { Logger.log(redact_('[_wzSelfFetchAll_] non-fatal — ' + (e && e.message))); }
+}
+
+/**
+ * Pase interno single-use (TTL 300s) para una fase hija del warm. Server-minted
+ * (jamás derivable por el cliente); consumido en warmBundle_ al primer uso.
+ * @private
+ */
+function _mintWarmPass_(item) {
+  try {
+    var pass = generateUuid_();
+    CacheService.getScriptCache().put('wzwp_' + pass, JSON.stringify(item), 300);
+    return pass;
+  } catch (e) { return null; }
+}
 
 /** Guarda `serialized` en N trozos (<90KB) + clave _meta. TTL en segundos. Best-effort.
  *  (port verbatim de _enr_docCachePutChunked_, código-de-oro KMS signing-docs.gs) */
@@ -1116,6 +1161,44 @@ function _wzKmsFetchAll_(calls) {
  * @returns {{ok:boolean, hydrate:boolean, admission:boolean, members:number, docs:number, ms:number}}
  * @private
  */
+/**
+ * V2.1 — fase HIJA 'res': pre-computa el payload de resumeSession (la hidratacion
+ * de entrada del magic link, ~25-30s de lecturas wizard-side) con el MISMO lector
+ * del camino vivo (buildResumeSessionData_, cero divergencia) y lo cachea
+ * wz_res_<token>. skipPiiGate=true: el warm corre ANTES del click (sin step-up);
+ * la ENTREGA al cliente sigue gateada en resumeSession_ (precedente #69).
+ * @private
+ */
+function _warmResumePhase_(it) {
+  var out = { ok: false, resume: false, ms: 0 };
+  var t0 = Date.now();
+  try {
+    var token = String(it.t).trim();
+    try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
+    var cache = CacheService.getScriptCache();
+    if (cache.get(_wzCacheKey_('res', token) + '_meta')) { out.ok = true; out.resume = true; return out; }
+    var grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+      Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
+    }) || [];
+    if (grpRows.length && !grpRows[0].abandoned_at) {
+      var groupId = grpRows[0].enrollment_group_id;
+      var resData = buildResumeSessionData_(grpRows[0],
+        { resume_token: token, n: it.n || null, recovered_email: it.e || null },
+        false, { skipPiiGate: true });
+      if (resData && resData.pii_gated !== true) {
+        out.resume = _wzCachePutChunked_(cache, _wzCacheKey_('res', token),
+          JSON.stringify({ v: _getLiveStateVersion_(groupId), n: String(it.n || ''), data: resData }), 1800);
+      }
+    }
+    out.ok = true;
+  } catch (e) {
+    Logger.log(redact_('[_warmResumePhase_] non-fatal — ' + (e && e.message)));
+  }
+  out.ms = Date.now() - t0;
+  Logger.log('[WZCACHE] warm res done ' + JSON.stringify(out));
+  return out;
+}
+
 function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
   var out = { ok: false, hydrate: false, admission: false, resume: false, members: 0, docs: 0, ms: 0 };
   var t0 = Date.now();
@@ -1191,32 +1274,6 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
       };
       out.admission = _wzCachePutChunked_(cache, _wzCacheKey_('adm', token), JSON.stringify(admEntry), 1800);
     }
-
-    // (c.bis) Payload de resume COMPLETO → wz_res_<token> (SPEC-WIZ-WARMUP-V2,
-    //     2026-06-12): es la hidratacion de entrada del magic link (ResumePage →
-    //     hydrateFromResume), ~25-30s de lecturas wizard-side. MISMO lector que el
-    //     vivo (buildResumeSessionData_, cero divergencia); skipPiiGate=true porque
-    //     el warm corre ANTES del click (sin step-up) — la ENTREGA gatea igual.
-    if (groupId && !cache.get(_wzCacheKey_('res', token) + '_meta')) {
-      try {
-        var tR = Date.now();
-        var grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-          Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
-        }) || [];
-        if (grpRows.length && !grpRows[0].abandoned_at) {
-          var resData = buildResumeSessionData_(grpRows[0],
-            { resume_token: token, n: nParam || null, recovered_email: recoveredEmail || null },
-            false, { skipPiiGate: true });
-          if (resData && resData.pii_gated !== true) {
-            out.resume = _wzCachePutChunked_(cache, _wzCacheKey_('res', token),
-              JSON.stringify({ v: _getLiveStateVersion_(groupId), n: String(nParam || ''), data: resData }), 1800);
-          }
-        }
-        Logger.log('[WZCACHE] warm res token=' + tPrev + ' cached=' + out.resume + ' ms=' + (Date.now() - tR));
-      } catch (eR) {
-        Logger.log(redact_('[WZCACHE] warm res FALLO token=' + tPrev + ' - ' + (eR && eR.message)));
-      }
-    } else if (groupId) { out.resume = true; }
 
     // (d) Members del paquete + (e) bytes de cada uno → wz_doc_<token>_<file_id>.
     if (signingToken) {
@@ -3447,7 +3504,7 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
 function getAdmissionState_(p) {
   // KAL-4: grupo autorizado derivado del token (valida UUID + TTL + abandoned_at).
   const perfT0 = Date.now(); // PERF-KMS2
-  const id = requireResumeToken_(p);
+  const id = requireResumeTokenMemo_(p) /* PERF V2.1: lectura pura — memo del gate (mutaciones siguen en vivo) */;
   const perfGateMs = Date.now() - perfT0;
 
   // Magic-link grace (IDENTITY-FROM-LINK): anclada al resume_token recién rotado
@@ -6819,6 +6876,28 @@ function warmSession_(p) {
  * Multi-familia: claves per-token/per-ticket, cero estructuras compartidas con RMW.
  */
 function warmBundle_(p) {
+  // ── Fase HIJA (V2.1): pase interno single-use minteado por el padre ──────────
+  if (p && p.pass) {
+    var ps = String(p.pass).trim();
+    try { assertValidUuid_(ps, 'pass'); } catch (eVp) { return { ok: false }; }
+    var pCache = CacheService.getScriptCache();
+    var pKey = 'wzwp_' + ps;
+    var pRaw = pCache.get(pKey);
+    pCache.remove(pKey); // single-use SIEMPRE
+    if (!pRaw) return { ok: false };
+    var it0;
+    try { it0 = JSON.parse(pRaw) || {}; } catch (ePp) { return { ok: false }; }
+    if (!it0.t) return { ok: false };
+    if (it0.phase === 'res') return _warmResumePhase_(it0);
+    // fase 'kms' — bundle KMS-side (hydrate+admission+members+docs), mismo gate
+    // KAL-4 y rate-limit que el warm de la pantalla OTP (warmSession_).
+    try {
+      return warmSession_({ resume_token: it0.t, n: it0.n || null, recovered_email: it0.e || null, language: it0.l || null });
+    } catch (eWk) {
+      Logger.log(redact_('[warmBundle_] fase kms non-fatal — ' + (eWk && eWk.message)));
+      return { ok: false };
+    }
+  }
   if (p && p.ticket) {
     var tk = String(p.ticket).trim();
     try { assertValidUuid_(tk, 'ticket'); } catch (eV) { return { ok: false }; }
@@ -6829,23 +6908,20 @@ function warmBundle_(p) {
     if (!raw) return { ok: false };
     var items = [];
     try { items = JSON.parse(raw) || []; } catch (eP) { return { ok: false }; }
-    var warmed = 0, docs = 0;
+    // V2.1: por cada item, DOS fases hijas CONCURRENTES (fetchAll al propio /exec):
+    //  - 'res': payload de resume wizard-side (~25-30s) — lo primero que pide el click.
+    //  - 'kms': hydrate+admission+members+bytes PDF (30-90s, dominado por el pull KMS).
+    // Antes secuencial: el warm no ganaba la carrera del minuto muerto (round 5).
+    var passes = [];
     items.forEach(function(it) {
       if (!it || !it.t) return;
-      try {
-        var r = warmSession_({
-          resume_token:    it.t,
-          n:               it.n || null,
-          recovered_email: it.e || null,
-          language:        it.l || null,
-        });
-        if (r && r.warmed) { warmed++; docs += (r.docs || 0); }
-      } catch (eW) {
-        // Best-effort por item (KAL-11 redactado): un grupo fallido no rompe el resto.
-        Logger.log(redact_('[warmBundle_] item non-fatal — ' + (eW && eW.message)));
-      }
+      var pr = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'res' });
+      var pk = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'kms' });
+      if (pr) passes.push({ pass: pr });
+      if (pk) passes.push({ pass: pk });
     });
-    return { ok: true, warmed: warmed, docs: docs };
+    _wzSelfFetchAll_(passes);
+    return { ok: true, phases: passes.length };
   }
   // Sin ticket: mismo gate y semántica que el warm de la pantalla OTP (KAL-4 dentro).
   return warmSession_(p);
