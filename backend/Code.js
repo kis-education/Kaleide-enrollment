@@ -923,6 +923,334 @@ function assertStepUpFresh_(enrollmentGroupId) {
   // Fresco.
 }
 
+// ─── WIZARD-CACHE (2026-06-12, arquitectura dictada por Diego) ────────────────
+//
+// "Los datos cacheados los debería tener el Wizard: usuario pide magic link → el
+// backend genera el link y solicita recursos al KMS → el KMS se los envía al
+// Wizard Backend que los cachea → para cuando el usuario abra el wizard, el
+// backend ya tiene todos los datos cacheados y los sirve de inmediato."
+//
+// Capas: este cache es la L1 (wizard-side, ScriptCache del wizard, TTL 1800s);
+// el warm del KMS (SPEC-WIZ-WARMUP, _enqueueWarmHydrate_) se MANTIENE como L2 —
+// abarata los pulls de esta capa.
+//
+// Troceo: port VERBATIM del código-de-oro del KMS (kis-app/kms-server/enr/
+// signing-docs.gs — _enr_docCacheKey_/_enr_docCachePutChunked_/_enr_docCacheGetChunked_,
+// reensamblado 364KB en 0,6s verificado 2026-06-12). Los valores grandes (hydrate
+// 100-400KB, PDFs base64 287-373KB) NO caben en una clave ScriptCache (~100KB).
+//
+// Seguridad: claves keyed por resume_token (KAL-4: el grupo se deriva del token
+// validado server-side en el SERVIDO; la rotación del token en sendMagicLink_
+// invalida gratis — clave nueva). El cache NO salta NINGÚN gate: los lectores leen
+// cache DESPUÉS de sus gates (requireResumeToken_ + step-up/PII) — solo cambia el
+// ORIGEN de los datos. KAL-11: logs solo con token.slice(0,8).
+
+/** Clave base del cache wizard (kind: 'hyd' | 'adm' | 'doc'). */
+function _wzCacheKey_(kind, suffix) { return 'wz_' + kind + '_' + suffix; }
+
+/** Guarda `serialized` en N trozos (<90KB) + clave _meta. TTL en segundos. Best-effort.
+ *  (port verbatim de _enr_docCachePutChunked_, código-de-oro KMS signing-docs.gs) */
+function _wzCachePutChunked_(cache, key, serialized, ttl) {
+  try {
+    var CH = 90000;
+    var n = Math.ceil(serialized.length / CH);
+    if (n < 1 || n > 12) return false;   // >~1MB: no cachear (degradación al camino vivo)
+    var obj = {}; obj[key + '_meta'] = String(n);
+    for (var i = 0; i < n; i++) obj[key + '_' + i] = serialized.substr(i * CH, CH);
+    cache.putAll(obj, ttl || 1800);
+    return true;
+  } catch (e) { return false; }
+}
+
+/** Reensambla el serialized desde los trozos. null si miss/expirado (cualquier trozo ausente).
+ *  (port verbatim de _enr_docCacheGetChunked_, código-de-oro KMS signing-docs.gs) */
+function _wzCacheGetChunked_(cache, key) {
+  try {
+    var meta = cache.get(key + '_meta');
+    if (!meta) return null;
+    var n = Number(meta); if (!n || n < 1) return null;
+    var keys = []; for (var i = 0; i < n; i++) keys.push(key + '_' + i);
+    var parts = cache.getAll(keys);
+    var s = '';
+    for (var j = 0; j < n; j++) { var p = parts[key + '_' + j]; if (p == null) return null; s += p; }
+    return s;
+  } catch (e) { return null; }
+}
+
+/**
+ * WIZARD-CACHE — invalida hyd/adm del token tras CUALQUIER escritura del grupo
+ * (NUNCA servir stale tras un write). Borrar la clave _meta basta: el get troceado
+ * devuelve null sin meta. Los docs (PDFs del paquete, inmutables) no se invalidan
+ * aquí — si el KMS regenera el paquete cambian los file_id (clave distinta).
+ * @private
+ */
+function _wzCacheInvalidate_(resumeToken) {
+  try {
+    if (!resumeToken) return;
+    var t = String(resumeToken).trim();
+    CacheService.getScriptCache().removeAll([
+      _wzCacheKey_('hyd', t) + '_meta',
+      _wzCacheKey_('adm', t) + '_meta',
+    ]);
+  } catch (e) { /* best-effort */ }
+}
+
+/**
+ * WIZARD-CACHE — transporte en LOTE al KMS (UrlFetchApp.fetchAll): GAS no tiene fetch
+ * paralelo entre llamadas kmsProxy_ secuenciales; fetchAll sí concurre los pulls de
+ * documentos del warm. URL/bearer/envelope/parse VERBATIM de kmsProxy_ (mismo
+ * contrato); SOLO lo usa el warm (best-effort: cualquier fallo → null en esa posición).
+ * @param {Array<{action:string, payload:Object}>} calls
+ * @returns {Array<Object|null>} data del KMS por posición (null si falló)
+ * @private
+ */
+function _wzKmsFetchAll_(calls) {
+  try {
+    var props        = PropertiesService.getScriptProperties();
+    var kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
+    var serviceToken = props.getProperty('QB_SERVICE_TOKEN');
+    if (!kmsUrl || !serviceToken || !calls || !calls.length) {
+      return (calls || []).map(function() { return null; });
+    }
+    var bearer = ScriptApp.getOAuthToken();
+    var reqs = calls.map(function(c) {
+      return {
+        url:                kmsUrl,
+        method:             'post',
+        contentType:        'text/plain',
+        headers:            { Authorization: 'Bearer ' + bearer },
+        payload:            JSON.stringify({
+          action:    c.action,
+          payload:   Object.assign({ service_token: serviceToken }, c.payload || {}),
+          requestId: generateUuid_(),
+        }),
+        followRedirects:    true,
+        muteHttpExceptions: true,
+      };
+    });
+    var resps = UrlFetchApp.fetchAll(reqs);
+    return resps.map(function(r) {
+      try {
+        if (r.getResponseCode() !== 200) return null;
+        var j = JSON.parse(r.getContentText());
+        return (j && j.success === true) ? j.data : null;
+      } catch (e) { return null; }
+    });
+  } catch (e) {
+    Logger.log(redact_('[_wzKmsFetchAll_] non-fatal — ' + (e && e.message)));
+    return (calls || []).map(function() { return null; });
+  }
+}
+
+/**
+ * WIZARD-CACHE — el corazón: con el resume_token NUEVO (post-rotación) trae del KMS y
+ * cachea wizard-side, troceado, keyed por token:
+ *   (a) hydrate completo (enr.wizardHydrate) → wz_hyd_<token>
+ *   (b) admission (con versión liveState wizard-side) → wz_adm_<token>
+ *   (c) bytes de cada member del paquete de firma (enr.serveSigningDocument, el KMS
+ *       sirve de SU cache troceado en ~0,6s) → wz_doc_<token>_<file_id>
+ *
+ * Identidad warm = la de _enqueueWarmHydrate_ (recovered_email = email destino del
+ * link; language) → misma clave de warm KMS que el click real (WARM-KEY-PARITY).
+ * Members: lector probado del paso 10 — enr.initiateSigningSession con
+ * create_only:true (initiateSigningSession_, identidad {signing_token} = rama (b) de
+ * requireSignerIdentity_) devuelve members[{file_id,…}] SIN despachar envelope; N
+ * dinámico (lo que el hito declare). signing_token: del signing_context._signer_row
+ * del hydrate; fallback el lector probado del wizard resolveGuardianSigningContext_
+ * (mismo camino que el lazy resolver de getDocument_).
+ *
+ * Best-effort TOTAL: cualquier fallo → log redactado y seguir (nunca peor que hoy).
+ * NUNCA lanza. KAL-4: todo keyed por el token; el SERVIDO re-valida el token.
+ *
+ * @param {string} resumeToken    token NUEVO del magic-link recién enviado
+ * @param {string} recoveredEmail email destino del link (identidad warm)
+ * @param {string} lang
+ * @returns {{ok:boolean, hydrate:boolean, admission:boolean, members:number, docs:number, ms:number}}
+ * @private
+ */
+function warmEntryBundle_(resumeToken, recoveredEmail, lang) {
+  var out = { ok: false, hydrate: false, admission: false, members: 0, docs: 0, ms: 0 };
+  var t0 = Date.now();
+  try {
+    if (!resumeToken) return out;
+    var token = String(resumeToken).trim();
+    try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
+    var tPrev = token.slice(0, 8) + '…';
+    var cache = CacheService.getScriptCache();
+
+    // (a) Hydrate completo → wz_hyd_<token>. El KMS tiene SU warm (L2) → pull barato
+    //     si el job KMS corrió; si no, se paga UNA vez aquí (no en el click del usuario).
+    var data = null;
+    var cachedRaw = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', token));
+    if (cachedRaw) { try { data = JSON.parse(cachedRaw); out.hydrate = true; } catch (e) { data = null; } }
+    if (!data) {
+      var tH = Date.now();
+      data = kmsProxy_('enr.wizardHydrate', {
+        resume_token:    token,
+        recovered_email: recoveredEmail || null,
+        language:        lang || null,
+      }) || {};
+      out.hydrate = _wzCachePutChunked_(cache, _wzCacheKey_('hyd', token), JSON.stringify(data), 1800);
+      Logger.log('[WZCACHE] warm hyd token=' + tPrev + ' cached=' + out.hydrate + ' ms=' + (Date.now() - tH));
+    }
+
+    var groupId     = (data && data.group && data.group.enrollment_group_id) || null;
+    var guardianPid = (data && data.recovered_guardian_person_id) || null;
+
+    // (b) signing_token del guardian — del signing_context del hydrate (fila
+    //     _signer_row, KMS wizard-datalayer.gs); fallback: lector probado del wizard
+    //     resolveGuardianSigningContext_(groupId, guardianPid) (mismo camino que el
+    //     lazy resolver de getDocument_). Pre-AD/sin sesión → null → sin docs (OK).
+    var sctxH = (data && data.signing_context) || null;
+    var signingToken = (sctxH && sctxH._signer_row && sctxH._signer_row.signing_token) || null;
+    var sessionId    = (sctxH && sctxH.session_id) || null;
+    var signerId     = (sctxH && sctxH.signer_id) || null;
+    if (!signingToken && groupId && guardianPid) {
+      try {
+        var sctxW = resolveGuardianSigningContext_(groupId, guardianPid);
+        if (sctxW && sctxW.signing_token) {
+          signingToken = sctxW.signing_token;
+          sessionId    = sctxW.session_id;
+          signerId     = sctxW.signer_id;
+        }
+      } catch (eS) { /* pre-AD o sin sesión: nada que calentar */ }
+    }
+
+    // (c) admission → wz_adm_<token>, con la versión liveState WIZARD-side: el pulse
+    //     getLiveStateVersion sigue gobernando el refresh (si la versión sube, el
+    //     servido invalida y va al vivo). signing_context en la SHAPE del wizard
+    //     (resolveGuardianSigningContext_: {signer_id, session_id, guardian_person_id,
+    //     signing_token}) — paridad de contrato con getAdmissionState_ live.
+    if (data && data.admission && groupId) {
+      var admSrc = data.admission;
+      var admEntry = {
+        v: _getLiveStateVersion_(groupId),
+        admission: {
+          state_code:        admSrc.state_code || null,
+          state_label:       admSrc.state_label || null,
+          signing_ready:     !!admSrc.signing_ready,
+          signing_status:    admSrc.signing_status || null,
+          signing_available: !!admSrc.signing_available,
+          signing_context:   (signingToken && guardianPid) ? {
+            signer_id:          signerId || null,
+            session_id:         sessionId || null,
+            guardian_person_id: guardianPid,
+            signing_token:      signingToken,
+          } : null,
+          editable:          !!admSrc.editable,
+        },
+      };
+      out.admission = _wzCachePutChunked_(cache, _wzCacheKey_('adm', token), JSON.stringify(admEntry), 1800);
+    }
+
+    // (d) Members del paquete + (e) bytes de cada uno → wz_doc_<token>_<file_id>.
+    if (signingToken) {
+      var members = [];
+      try {
+        var prep = kmsProxy_('enr.initiateSigningSession', { signing_token: signingToken, create_only: true }) || {};
+        members = prep.members || [];
+      } catch (eM) {
+        Logger.log(redact_('[WZCACHE] warm members FALLÓ token=' + tPrev + ' — ' + (eM && eM.message)));
+      }
+      out.members = members.length;
+
+      var pendientes = [];
+      members.forEach(function(m) {
+        var fid = m && m.file_id;
+        if (!fid) return;
+        if (cache.get(_wzCacheKey_('doc', token + '_' + fid) + '_meta')) return; // ya caliente
+        pendientes.push(fid);
+      });
+      if (pendientes.length) {
+        var tD = Date.now();
+        var results = _wzKmsFetchAll_(pendientes.map(function(fid) {
+          return { action: 'enr.serveSigningDocument', payload: { signing_token: signingToken, file_id: fid } };
+        }));
+        pendientes.forEach(function(fid, i) {
+          var d = results[i];
+          if (d && d.base64) {
+            if (_wzCachePutChunked_(cache, _wzCacheKey_('doc', token + '_' + fid), JSON.stringify(d), 1800)) out.docs++;
+          }
+        });
+        Logger.log('[WZCACHE] warm docs token=' + tPrev + ' pedidos=' + pendientes.length +
+                   ' cacheados=' + out.docs + ' ms=' + (Date.now() - tD));
+      }
+    }
+    out.ok = true;
+  } catch (e) {
+    // Best-effort TOTAL (KAL-11: redactado). Nunca peor que hoy.
+    Logger.log(redact_('[warmEntryBundle_] non-fatal — ' + (e && e.message)));
+  }
+  out.ms = Date.now() - t0;
+  Logger.log('[WZCACHE] warm bundle done ' + JSON.stringify(out));
+  return out;
+}
+
+/**
+ * WIZARD-CACHE — encola un warm del bundle de entrada y programa el trigger one-shot.
+ * Los triggers time-based NO llevan args → el token viaja por una cola simple en
+ * ScriptCache (`wz_warmq`); el trigger la drena y SE AUTOBORRA (límite ~20 triggers/
+ * script — borrar siempre). Best-effort: si la creación del trigger falla, log y
+ * seguir — el envío del email JAMÁS depende del warm.
+ * @private
+ */
+function _enqueueWizardWarm_(resumeToken, lang, recoveredEmail) {
+  try {
+    if (!resumeToken) return;
+    var cache = CacheService.getScriptCache();
+    var lock = null, locked = false;
+    try { lock = LockService.getScriptLock(); locked = lock.tryLock(2000); } catch (eL) { /* sin lock: best-effort */ }
+    try {
+      var q = [];
+      var raw = cache.get('wz_warmq');
+      if (raw) { try { q = JSON.parse(raw) || []; } catch (e) { q = []; } }
+      q.push({ t: String(resumeToken).trim(), e: recoveredEmail || null, l: lang || null });
+      if (q.length > 10) q = q.slice(-10);   // bound defensivo
+      cache.put('wz_warmq', JSON.stringify(q), 1800);
+    } finally { if (locked) { try { lock.releaseLock(); } catch (eR) {} } }
+    ScriptApp.newTrigger('wizardWarmTrigger').timeBased().after(1000).create();
+  } catch (e) {
+    Logger.log(redact_('[_enqueueWizardWarm_] skip (non-fatal) — ' + (e && e.message)));
+  }
+}
+
+/**
+ * WIZARD-CACHE — handler del trigger one-shot. PRIMERO se autoborra (todos los
+ * triggers de este handler — los pendientes drenan la misma cola, no se pierden
+ * items), luego drena `wz_warmq` y calienta cada token. Guard de 4,5 min: si la
+ * cola es larga, re-encola el resto + nuevo trigger (límite 6 min de ejecución).
+ * NO está en el dispatcher doPost (no invocable desde internet) ni es manual_*
+ * (lo dispara ScriptApp, no Diego).
+ */
+function wizardWarmTrigger() {
+  try {
+    ScriptApp.getProjectTriggers().forEach(function(tr) {
+      if (tr.getHandlerFunction && tr.getHandlerFunction() === 'wizardWarmTrigger') {
+        try { ScriptApp.deleteTrigger(tr); } catch (eD) {}
+      }
+    });
+  } catch (eT) { /* best-effort */ }
+  var cache = CacheService.getScriptCache();
+  var items = [];
+  try {
+    var raw = cache.get('wz_warmq');
+    cache.remove('wz_warmq');
+    if (raw) { try { items = JSON.parse(raw) || []; } catch (e) { items = []; } }
+  } catch (e) { items = []; }
+  var t0 = Date.now();
+  for (var i = 0; i < items.length; i++) {
+    if (Date.now() - t0 > 270000) {
+      try {
+        cache.put('wz_warmq', JSON.stringify(items.slice(i)), 1800);
+        ScriptApp.newTrigger('wizardWarmTrigger').timeBased().after(1000).create();
+      } catch (eRe) { /* best-effort */ }
+      break;
+    }
+    var it = items[i] || {};
+    warmEntryBundle_(it.t, it.e, it.l);
+  }
+}
+
 // ─── Entry points ─────────────────────────────────────────────────────────────
 
 /**
@@ -2964,6 +3292,42 @@ function getAdmissionState_(p) {
     stepUpFresh = _isStepUpFresh_(id);
   }
 
+  // WIZARD-CACHE (2026-06-12) — cache-first: si el warm dejó wz_adm_<token> y la
+  // versión liveState wizard-side NO subió desde que se cocinó, servimos de cache.
+  // El pulse de live_version existente sigue gobernando el refresh: si la versión
+  // subió respecto al cacheado → invalida y ve al vivo. Gates intactos:
+  // requireResumeToken_ (KAL-4) + gracia/step-up ya corrieron arriba; step_up_fresh
+  // SIEMPRE se computa en vivo (estado per-llamada, nunca del cache).
+  try {
+    const wzAdmKey = _wzCacheKey_('adm', String(p.resume_token).trim());
+    const wzAdmRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzAdmKey);
+    if (wzAdmRaw) {
+      const wzEntry = JSON.parse(wzAdmRaw);
+      if (wzEntry && wzEntry.admission && wzEntry.v === _getLiveStateVersion_(id)) {
+        const admC = wzEntry.admission;
+        Logger.log('[WZCACHE] HIT adm token=' + String(p.resume_token).slice(0, 8) +
+                   '… ms=' + (Date.now() - perfT0));
+        return {
+          _perf:             (p && p._perf === true) ? { cache_hit: true, t_gate_ms: perfGateMs, t_total_ms: Date.now() - perfT0 } : undefined,
+          ok:                true,
+          state_code:        admC.state_code,
+          state_label:       admC.state_label,
+          signing_ready:     admC.signing_ready,
+          signing_status:    admC.signing_status || null,
+          signing_available: admC.signing_available,
+          signing_context:   admC.signing_context,
+          editable:          admC.editable,
+          step_up_fresh:     stepUpFresh,
+        };
+      }
+      if (wzEntry && wzEntry.admission) {
+        // live_version subió respecto al cacheado → NUNCA servir stale: invalida y ve al vivo.
+        CacheService.getScriptCache().remove(wzAdmKey + '_meta');
+        Logger.log('[WZCACHE] STALE adm (live_version) token=' + String(p.resume_token).slice(0, 8) + '… — invalidado');
+      }
+    }
+  } catch (eWzAdm) { /* best-effort → camino vivo */ }
+
   const idEsc = appsheetEscape_(id);
   const perfB0 = Date.now(); // PERF-KMS2
   const lightRead = appsheetRequestBatch_([
@@ -3035,6 +3399,22 @@ function getAdmissionState_(p) {
     t_admission_ms: perfAdmMs, adm_segments: PERF2_.adm, t_total_ms: Date.now() - perfT0,
   } : undefined;
 
+  // WIZARD-CACHE write-through (best-effort): el próximo pulse del MISMO estado sirve
+  // de cache hasta que live_version suba (notify del KMS) o un write lo invalide.
+  try {
+    _wzCachePutChunked_(CacheService.getScriptCache(),
+      _wzCacheKey_('adm', String(p.resume_token).trim()),
+      JSON.stringify({ v: _getLiveStateVersion_(id), admission: {
+        state_code:        admission.state_code,
+        state_label:       admission.state_label,
+        signing_ready:     admission.signing_ready,
+        signing_status:    admission.signing_status || null,
+        signing_available: admission.signing_available,
+        signing_context:   admission.signing_context,
+        editable:          admission.editable,
+      } }), 1800);
+  } catch (eWzWt) { /* best-effort */ }
+
   return {
     _perf:             perfOut,
     ok:                true,
@@ -3079,6 +3459,7 @@ function saveStep_(p) {
   // helper from a legacy flow; no current frontend caller invokes it, and the
   // canonical state-machine API lives in KMS — so gating it too is correct.
   assertGroupEditable_(enrollmentGroupId);
+  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
   // ── DL-E39 step-up gate (PII-primero) ──────────────────────────────────────
   // Los steps que mutan PII sensible (Persons / Relations / Health) exigen un
@@ -3179,6 +3560,7 @@ function submitEnrollmentSession_(p) {
   // this guard since CLI 26 — submit was the one that slipped through. Throws
   // Error{code:'NOT_EDITABLE'} → doPost maps it to HTTP 200 {ok:false,error}.
   assertGroupEditable_(enrollmentGroupId);
+  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
   const now = new Date().toISOString();
 
@@ -4166,6 +4548,7 @@ function saveResponses_(p) {
   // DL-E39 step-up gate: las respuestas del cuestionario son PII del expediente.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   assertStepUpFresh_(enrollmentGroupId);
+  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const { respondent_id, respondent_type_category_id, responses } = p;
   if (!responses || !responses.length) return { saved: 0 };
@@ -4291,6 +4674,7 @@ function uploadDocument_(p) {
   // DL-E39 step-up gate: subir documentos del expediente es PII sensible.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   assertStepUpFresh_(enrollmentGroupId);
+  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const enrollmentId      = p.enrollment_id || null;
   const { base64, mimeType, filename, document_type } = p;
@@ -4528,6 +4912,34 @@ function getDocument_(p) {
   // aquí: rechazaba `file-kis-admission-letter-2026-001` antes del lookup (Hallazgo #10).
   assertValidFileIdForRead_(fileId, 'file_id');
 
+  // WIZARD-CACHE (2026-06-12) — cache-first POST-GATES (token + step-up YA corrieron;
+  // el cache solo cambia el ORIGEN de los bytes, no salta ningún gate). Keyed por el
+  // resume_token validado (KAL-4): un doc cacheado por el warm bajo el token X solo se
+  // sirve al portador de X; la rotación del token invalida gratis. El camino vivo
+  // (read local + proxy KMS) queda INTACTO como fallback.
+  if (p && p.resume_token) {
+    try {
+      const wzDocT0 = Date.now();
+      const wzDocKey = _wzCacheKey_('doc', String(p.resume_token).trim() + '_' + fileId);
+      const wzDocRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzDocKey);
+      if (wzDocRaw) {
+        const dC = JSON.parse(wzDocRaw);
+        if (dC && dC.base64) {
+          Logger.log('[WZCACHE] HIT doc token=' + String(p.resume_token).slice(0, 8) +
+                     '… file=' + String(fileId).slice(0, 8) + '… ms=' + (Date.now() - wzDocT0));
+          return {
+            filename:   dC.filename || null,
+            mimeType:   dC.mime_type || dC.mimeType || null,
+            mime_type:  dC.mime_type || dC.mimeType || null,
+            base64:     dC.base64,
+            sha256:     dC.sha256 || null,
+            size_bytes: (typeof dC.size_bytes === 'number') ? dC.size_bytes : null,
+          };
+        }
+      }
+    } catch (eWzDoc) { /* best-effort → camino vivo intacto */ }
+  }
+
   // P-DOCS: los PDF del paquete de firma (Carta/Contrato) los genera el KMS y viven
   // en el Drive del KMS → DriveApp local del wizard NO los lee. En el flujo /sign
   // (signing_token) proxyamos la lectura de bytes al KMS (dueño de los ficheros),
@@ -4562,6 +4974,15 @@ function getDocument_(p) {
     const lazyKmsToken = kmsSigningToken || resolveKmsSigningToken();
     if (lazyKmsToken) {
       const d = kmsProxy_('enr.serveSigningDocument', { signing_token: lazyKmsToken, file_id: fileId });
+      // WIZARD-CACHE write-through (best-effort): la siguiente lectura del mismo doc
+      // bajo este token sirve de cache (preview + reentradas), sin re-pagar el proxy.
+      try {
+        if (p && p.resume_token && d && d.base64) {
+          _wzCachePutChunked_(CacheService.getScriptCache(),
+            _wzCacheKey_('doc', String(p.resume_token).trim() + '_' + fileId),
+            JSON.stringify(d), 1800);
+        }
+      } catch (eWzWt) { /* best-effort */ }
       return {
         filename:   d.filename || null,
         mimeType:   d.mime_type || d.mimeType || null,
@@ -4610,6 +5031,14 @@ function getDocument_(p) {
     const fbToken = kmsSigningToken || resolveKmsSigningToken();
     if (fbToken) {
       const d = kmsProxy_('enr.serveSigningDocument', { signing_token: fbToken, file_id: fileId });
+      // WIZARD-CACHE write-through (best-effort) — mismo motivo que el path lazy.
+      try {
+        if (p && p.resume_token && d && d.base64) {
+          _wzCachePutChunked_(CacheService.getScriptCache(),
+            _wzCacheKey_('doc', String(p.resume_token).trim() + '_' + fileId),
+            JSON.stringify(d), 1800);
+        }
+      } catch (eWzWt2) { /* best-effort */ }
       return {
         filename:   d.filename || row.file_name || null,
         mimeType:   d.mime_type || d.mimeType || row.mime_type || null,
@@ -4907,6 +5336,10 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, nEmailId) {
   // SPEC-WIZ-WARMUP \u2014 calienta el hydrate del grupo en el "minuto muerto". resumeToken es
   // el token NUEVO (todos los callers lo renuevan antes de invocar este env\u00edo). Best-effort.
   _enqueueWarmHydrate_(resumeToken, lang, email);
+  // WIZARD-CACHE (decisi\u00f3n Diego 2026-06-12) \u2014 L1 wizard-side: trigger one-shot que trae
+  // del KMS y cachea AQU\u00cd el bundle de entrada (hydrate + admission + PDFs del paquete).
+  // El warm KMS de arriba se MANTIENE como L2 (abarata los pulls del bundle). Best-effort.
+  _enqueueWizardWarm_(resumeToken, lang, email);
 }
 
 /**
@@ -4962,6 +5395,9 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang, nEmailIds) {
   sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
   // SPEC-WIZ-WARMUP \u2014 calienta el hydrate de CADA grupo enviado (tokens ya renovados). Best-effort.
   (resumeTokens || []).forEach(function(t) { _enqueueWarmHydrate_(t, lang, email); });
+  // WIZARD-CACHE \u2014 L1 wizard-side por cada token (el trigger drena la cola entera;
+  // los triggers redundantes se autoborran en el primer drain). Best-effort.
+  (resumeTokens || []).forEach(function(t) { _enqueueWizardWarm_(t, lang, email); });
 }
 
 /**
@@ -5900,6 +6336,7 @@ function saveBillingInfo_(p) {
   // DL-A.4 — endpoint encolado: el KMS devuelve al instante {queued,job_id}.
   const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
+  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
   return kmsProxy_('enr.saveBillingInfoQueued', Object.assign({}, sctx.identity, {
     // Canonical multi-payer reparto entre tutores (GUARDIAN only — sin facturación
@@ -5988,6 +6425,7 @@ function submitGdprConsents_(p) {
     throw new Error('consents must be a non-empty array');
   }
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
+  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
   // GATE-B modo conservador: pasamos el array consents[] tal cual sin
   // estructura per-guardian adicional. El handler KMS lo persiste como un
@@ -6015,6 +6453,7 @@ function confirmReview_(p) {
   // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado.
   const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
+  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
   return kmsProxy_('enr.confirmReviewQueued', Object.assign({}, sctx.identity));
 }
@@ -6156,19 +6595,21 @@ function warmSession_(p) {
   } catch (e) { bindGroupRow = null; }
   const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n, null, null, bindGroupRow);
 
-  try {
-    kmsProxy_('enr.wizardHydrate', {
-      resume_token:    String(p.resume_token).trim(),
-      recovered_email: effRecoveredEmail || null,
-      language:        (p && p.language) ? String(p.language).trim() : null,
-    });
-  } catch (eWarm) {
+  // WIZARD-CACHE (decisión Diego 2026-06-12): el warm de la pantalla OTP cocina el
+  // bundle ENTERO wizard-side (hydrate troceado + admission + PDFs del paquete), no
+  // solo el warm KMS — cubre la entrada SIN link fresco (en el caso normal el trigger
+  // del envío del magic-link ya lo dejó caliente; warmEntryBundle_ es idempotente:
+  // si wz_hyd_<token> ya está, reusa y solo completa lo que falte). La misma llamada
+  // enr.wizardHydrate de antes vive DENTRO del bundle → el warm KMS (L2) se ceba igual.
+  var w = warmEntryBundle_(String(p.resume_token).trim(), effRecoveredEmail || null,
+    (p && p.language) ? String(p.language).trim() : null);
+  if (!w.hydrate) {
     // Best-effort: un warm fallido no es error de cara al cliente (el hydrate real
     // post-OTP seguirá su camino normal). Log redactado para correlación.
-    Logger.log(redact_('[warmSession_] warm FALLÓ group=' + groupId + ' err=' + (eWarm && eWarm.message)));
+    Logger.log(redact_('[warmSession_] warm FALLÓ group=' + groupId));
     return { ok: true, warmed: false, reason: 'WARM_FAILED' };
   }
-  return { ok: true, warmed: true };
+  return { ok: true, warmed: true, docs: w.docs, members: w.members };
 }
 
 function hydrateSession_(p) {
@@ -6234,11 +6675,31 @@ function hydrateSession_(p) {
 
   // DL-A §1 — UNA llamada al KMS devuelve TODO (lookups + datos 11 pasos + qbResponses
   // + admission + signing_context + billing_splits + live_version).
-  const data = kmsProxy_('enr.wizardHydrate', {
-    resume_token:    String(p.resume_token).trim(),
-    recovered_email: effRecoveredEmail || null,
-    language:        (p && p.language) ? String(p.language).trim() : null,
-  }) || {};
+  // WIZARD-CACHE (2026-06-12): cache-first — si el warm (magic-link / pantalla OTP)
+  // dejó wz_hyd_<token> wizard-side, servimos de ScriptCache local y ahorramos el hop
+  // al KMS. Estamos en el path step-up FRESCO (el gate PII de arriba ya corrió — el
+  // cache solo cambia el ORIGEN). Las adaptaciones post-proxy de abajo (questions/
+  // fechas/phones/reopen) son EL MISMO código para ambos orígenes (idempotentes — el
+  // cache guarda la respuesta RAW del KMS, como el warm). Write-through best-effort
+  // en el camino vivo; los writes del grupo invalidan via _wzCacheInvalidate_.
+  let data = null;
+  const wzHydCache = CacheService.getScriptCache();
+  const wzHydKey = _wzCacheKey_('hyd', String(p.resume_token).trim());
+  try {
+    const wzHydRaw = _wzCacheGetChunked_(wzHydCache, wzHydKey);
+    if (wzHydRaw) {
+      data = JSON.parse(wzHydRaw);
+      if (data) Logger.log('[WZCACHE] HIT hyd token=' + String(p.resume_token).slice(0, 8) + '…');
+    }
+  } catch (eWzHyd) { data = null; /* best-effort → camino vivo */ }
+  if (!data) {
+    data = kmsProxy_('enr.wizardHydrate', {
+      resume_token:    String(p.resume_token).trim(),
+      recovered_email: effRecoveredEmail || null,
+      language:        (p && p.language) ? String(p.language).trim() : null,
+    }) || {};
+    try { _wzCachePutChunked_(wzHydCache, wzHydKey, JSON.stringify(data), 1800); } catch (eWzWt) { /* best-effort */ }
+  }
 
   // DL-C-A (g): el KMS pliega el catálogo de preguntas (raw qb) en el hydrate. Lo
   // adaptamos aquí al shape { sets:[…] } que consume el frontend — mismo adaptador que
