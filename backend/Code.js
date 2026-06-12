@@ -993,8 +993,23 @@ function assertStepUpFresh_(enrollmentGroupId) {
 // cache DESPUÉS de sus gates (requireResumeToken_ + step-up/PII) — solo cambia el
 // ORIGEN de los datos. KAL-11: logs solo con token.slice(0,8).
 
-/** Clave base del cache wizard (kind: 'hyd' | 'adm' | 'res' | 'mem' | 'doc'). */
+/** Clave base del cache wizard (kind: 'hyd' | 'adm' | 'res' | 'mem' | 'doc').
+ *
+ * RE-LLAVEO V2.4 (pregunta de Diego 2026-06-12 17:08: "una vez cargada en el
+ * servidor, ¿por qué no se queda ahí hasta que caduque la caché?"): las claves
+ * iban atadas al resume_token y el token ROTA con cada magic link → clave nueva
+ * → cache "perdido" aunque los bytes siguieran en ScriptCache. Claves ESTABLES:
+ *   doc → file_id (bytes inmutables; la entrada guarda g=group_id y el servido
+ *         verifica pertenencia post-gate — KAL-4; TTL 6h)
+ *   mem → enrollment_group_id (members del paquete, de grupo)
+ *   hyd/res/adm → enrollment_group_id + n (contexto per-guardian)
+ * Frescura: live_version (v en la entrada) — los writes bumpan la versión del
+ * grupo (_wzCacheInvalidate_) y cualquier entrada con v vieja es MISS. La
+ * rotación del token deja de borrar nada: re-entrar 10 min después = HIT. */
 function _wzCacheKey_(kind, suffix) { return 'wz_' + kind + '_' + suffix; }
+
+/** Discriminador per-guardian para claves hyd/res/adm ('-' si no hay n). @private */
+function _wzN_(n) { return String(n || '-').trim(); }
 
 // URL /exec PROPIA para las auto-invocaciones del warm. El deployment es FIJO
 // (CLAUDE.md: nunca se crea deployment nuevo — cambiaría la URL pública); fallback
@@ -1104,15 +1119,13 @@ function _wzCacheGetChunked_(cache, key) {
  * @private
  */
 function _wzCacheInvalidate_(resumeToken) {
+  // V2.4: las claves ya no llevan token — la invalidación canónica es BUMPAR la
+  // live_version del grupo (todas las entradas guardan v y una v vieja es MISS).
+  // El gate del writer ya pobló el memo del token → resolver el grupo es ~0ms.
   try {
     if (!resumeToken) return;
-    var t = String(resumeToken).trim();
-    CacheService.getScriptCache().removeAll([
-      _wzCacheKey_('hyd', t) + '_meta',
-      _wzCacheKey_('adm', t) + '_meta',
-      _wzCacheKey_('res', t) + '_meta',
-      _wzCacheKey_('mem', t) + '_meta',
-    ]);
+    var gid = requireResumeTokenMemo_({ resume_token: String(resumeToken).trim() });
+    if (gid) _bumpLiveStateVersion_(gid);
   } catch (e) { /* best-effort */ }
 }
 
@@ -1207,19 +1220,22 @@ function _warmResumePhase_(it) {
     var token = String(it.t).trim();
     try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
     var cache = CacheService.getScriptCache();
-    if (cache.get(_wzCacheKey_('res', token) + '_meta')) { out.ok = true; out.resume = true; return out; }
     var grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
       Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
     }) || [];
     if (grpRows.length && !grpRows[0].abandoned_at) {
       var groupId = grpRows[0].enrollment_group_id;
+      var resKey = _wzCacheKey_('res', groupId + '_' + _wzN_(it.n));
+      if (cache.get(resKey + '_meta')) { out.ok = true; out.resume = true; return out; }
+      try { cache.put('wzck_res_' + groupId + '_' + _wzN_(it.n), '1', 240); } catch (eMr) {}
       var resData = buildResumeSessionData_(grpRows[0],
         { resume_token: token, n: it.n || null, recovered_email: it.e || null },
         false, { skipPiiGate: true });
       if (resData && resData.pii_gated !== true) {
-        out.resume = _wzCachePutChunked_(cache, _wzCacheKey_('res', token),
-          JSON.stringify({ v: _getLiveStateVersion_(groupId), n: String(it.n || ''), data: resData }), 1800);
+        out.resume = _wzCachePutChunked_(cache, resKey,
+          JSON.stringify({ v: _getLiveStateVersion_(groupId), data: resData }), 1800);
       }
+      try { cache.remove('wzck_res_' + groupId + '_' + _wzN_(it.n)); } catch (eMr2) {}
     }
     out.ok = true;
   } catch (e) {
@@ -1246,9 +1262,9 @@ function _warmMembersDocsPhase_(it) {
   var cache = CacheService.getScriptCache();
   try {
     try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
-    if (cache.get(_wzCacheKey_('mem', token) + '_meta')) { out.ok = true; return out; }
-    try { cache.put('wzck_mem_' + token, '1', 240); } catch (eM) {}
     var groupId = requireResumeTokenMemo_({ resume_token: token });
+    if (cache.get(_wzCacheKey_('mem', groupId) + '_meta')) { out.ok = true; return out; }
+    try { cache.put('wzck_mem_' + groupId, '1', 240); } catch (eM) {}
     var effEmail = effectiveRecoveredEmail_(it.e || null, groupId, it.n || null);
     var guardianId = effEmail ? resolveGuardianForRecovery_(groupId, effEmail) : null;
     var sctx = guardianId ? resolveGuardianSigningContext_(groupId, guardianId) : null;
@@ -1258,17 +1274,18 @@ function _warmMembersDocsPhase_(it) {
       var members = prep.members || [];
       out.members = members.length;
       if (members.length) {
-        _wzCachePutChunked_(cache, _wzCacheKey_('mem', token),
-          JSON.stringify({ v: _getLiveStateVersion_(groupId), n: String(it.n || ''), data: prep }), 1800);
+        _wzCachePutChunked_(cache, _wzCacheKey_('mem', groupId),
+          JSON.stringify({ v: _getLiveStateVersion_(groupId), data: prep }), 1800);
         var pendientes = members.map(function(m) { return m && m.file_id; }).filter(Boolean)
-          .filter(function(fid) { return !cache.get(_wzCacheKey_('doc', token + '_' + fid) + '_meta'); });
+          .filter(function(fid) { return !cache.get(_wzCacheKey_('doc', fid) + '_meta'); });
         if (pendientes.length) {
           var results = _wzKmsFetchAll_(pendientes.map(function(fid) {
             return { action: 'enr.serveSigningDocument', payload: { signing_token: signingToken, file_id: fid } };
           }));
           pendientes.forEach(function(fid, i) {
             var d = results[i];
-            if (d && d.base64 && _wzCachePutChunked_(cache, _wzCacheKey_('doc', token + '_' + fid), JSON.stringify(d), 1800)) out.docs++;
+            if (d && d.base64 && _wzCachePutChunked_(cache, _wzCacheKey_('doc', fid),
+              JSON.stringify(Object.assign({ g: groupId }, d)), 21600)) out.docs++;
           });
         }
       }
@@ -1277,13 +1294,13 @@ function _warmMembersDocsPhase_(it) {
   } catch (e) {
     Logger.log(redact_('[_warmMembersDocsPhase_] non-fatal — ' + (e && e.message)));
   }
-  try { cache.remove('wzck_mem_' + token); } catch (eR) {}
+  try { cache.remove('wzck_mem_' + (typeof groupId !== 'undefined' && groupId ? groupId : token)); } catch (eR) {}
   out.ms = Date.now() - t0;
   Logger.log('[WZCACHE] warm mem done ' + JSON.stringify(out));
   return out;
 }
 
-function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
+function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdParam) {
   var out = { ok: false, hydrate: false, admission: false, resume: false, members: 0, docs: 0, ms: 0 };
   var t0 = Date.now();
   try {
@@ -1292,16 +1309,24 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
     try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
     var tPrev = token.slice(0, 8) + '…';
     var cache = CacheService.getScriptCache();
+    // V2.4: claves estables — gid del caller (warmSession_ ya gateó) o memo.
+    var gidW = groupIdParam || requireResumeTokenMemo_({ resume_token: token });
+    var nW = _wzN_(nParam);
     // V2.2 single-flight: marca "cocinando" para que el camino vivo espere en vez
     // de competir. hyd cubre hydrate+admission; mem cubre members. Se retiran al
     // completar cada tramo (y caducan solos si esta ejecución muere).
-    try { cache.put('wzck_hyd_' + token, '1', 240); } catch (eM1) {}
+    try { cache.put('wzck_hyd_' + gidW + '_' + nW, '1', 240); } catch (eM1) {}
 
     // (a) Hydrate completo → wz_hyd_<token>. El KMS tiene SU warm (L2) → pull barato
     //     si el job KMS corrió; si no, se paga UNA vez aquí (no en el click del usuario).
     var data = null;
-    var cachedRaw = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', token));
-    if (cachedRaw) { try { data = JSON.parse(cachedRaw); out.hydrate = true; } catch (e) { data = null; } }
+    var cachedRaw = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', gidW + '_' + nW));
+    if (cachedRaw) {
+      try {
+        var envH = JSON.parse(cachedRaw);
+        if (envH && envH.v === _getLiveStateVersion_(gidW)) { data = envH.data; out.hydrate = true; }
+      } catch (e) { data = null; }
+    }
     if (!data) {
       var tH = Date.now();
       data = kmsProxy_('enr.wizardHydrate', {
@@ -1309,7 +1334,8 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
         recovered_email: recoveredEmail || null,
         language:        lang || null,
       }) || {};
-      out.hydrate = _wzCachePutChunked_(cache, _wzCacheKey_('hyd', token), JSON.stringify(data), 1800);
+      out.hydrate = _wzCachePutChunked_(cache, _wzCacheKey_('hyd', gidW + '_' + nW),
+        JSON.stringify({ v: _getLiveStateVersion_(gidW), data: data }), 1800);
       Logger.log('[WZCACHE] warm hyd token=' + tPrev + ' cached=' + out.hydrate + ' ms=' + (Date.now() - tH));
     }
 
@@ -1360,15 +1386,15 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
           editable:          !!admSrc.editable,
         },
       };
-      out.admission = _wzCachePutChunked_(cache, _wzCacheKey_('adm', token), JSON.stringify(admEntry), 1800);
+      out.admission = _wzCachePutChunked_(cache, _wzCacheKey_('adm', gidW + '_' + nW), JSON.stringify(admEntry), 1800);
     }
-    try { cache.remove('wzck_hyd_' + token); } catch (eM2) {}
-    try { cache.put('wzck_mem_' + token, '1', 240); } catch (eM3) {}
+    try { cache.remove('wzck_hyd_' + gidW + '_' + nW); } catch (eM2) {}
+    try { cache.put('wzck_mem_' + gidW, '1', 240); } catch (eM3) {}
 
     // (d)+(e) members+docs: movidos a _warmMembersDocsPhase_ (fase hija propia,
     // V2.3 — el paso 10 no debe esperar al hydrate). Aquí solo si este caller
     // llegó con signingToken ya resuelto y la fase mem no corrió aún.
-    if (signingToken && !cache.get(_wzCacheKey_('mem', token) + '_meta')) {
+    if (signingToken && !cache.get(_wzCacheKey_('mem', gidW) + '_meta')) {
       var members = [];
       try {
         var prep = kmsProxy_('enr.initiateSigningSession', { signing_token: signingToken, create_only: true }) || {};
@@ -1378,8 +1404,8 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
         // sirve de aqui post-gates. SOLO la lectura create_only; el ACTO (initiate)
         // jamas toca cache (P222).
         if (prep && members.length && groupId) {
-          _wzCachePutChunked_(cache, _wzCacheKey_('mem', token),
-            JSON.stringify({ v: _getLiveStateVersion_(groupId), n: String(nParam || ''), data: prep }), 1800);
+          _wzCachePutChunked_(cache, _wzCacheKey_('mem', gidW),
+            JSON.stringify({ v: _getLiveStateVersion_(gidW), data: prep }), 1800);
         }
       } catch (eM) {
         Logger.log(redact_('[WZCACHE] warm members FALLÓ token=' + tPrev + ' — ' + (eM && eM.message)));
@@ -1391,7 +1417,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
       members.forEach(function(m) {
         var fid = m && m.file_id;
         if (!fid) return;
-        if (cache.get(_wzCacheKey_('doc', token + '_' + fid) + '_meta')) return; // ya caliente
+        if (cache.get(_wzCacheKey_('doc', fid) + '_meta')) return; // ya caliente
         pendientes.push(fid);
       });
       if (pendientes.length) {
@@ -1402,7 +1428,8 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
         pendientes.forEach(function(fid, i) {
           var d = results[i];
           if (d && d.base64) {
-            if (_wzCachePutChunked_(cache, _wzCacheKey_('doc', token + '_' + fid), JSON.stringify(d), 1800)) out.docs++;
+            if (_wzCachePutChunked_(cache, _wzCacheKey_('doc', fid),
+              JSON.stringify(Object.assign({ g: gidW }, d)), 21600)) out.docs++;
           }
         });
         Logger.log('[WZCACHE] warm docs token=' + tPrev + ' pedidos=' + pendientes.length +
@@ -1416,8 +1443,10 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
   }
   try {
     var cM = CacheService.getScriptCache();
-    cM.remove('wzck_hyd_' + String(resumeToken).trim());
-    cM.remove('wzck_mem_' + String(resumeToken).trim());
+    if (typeof gidW !== 'undefined' && gidW) {
+      cM.remove('wzck_hyd_' + gidW + '_' + (typeof nW !== 'undefined' ? nW : '-'));
+      cM.remove('wzck_mem_' + gidW);
+    }
   } catch (eM5) { /* best-effort */ }
   out.ms = Date.now() - t0;
   Logger.log('[WZCACHE] warm bundle done ' + JSON.stringify(out));
@@ -3259,12 +3288,16 @@ function resumeSession_(p) {
   // precedente #69: el warm pre-computa completo, el servido gatea). La entrada
   // guarda live_version + identidad `n`: version subida o guardian distinto → vivo.
   try {
-    const wzResKey = _wzCacheKey_('res', String(p.resume_token).trim());
-    const wzResRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzResKey);
+    const wzResKey = _wzCacheKey_('res', id + '_' + _wzN_(p && p.n));
+    let wzResRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzResKey);
+    if (!wzResRaw) {
+      // single-flight: si el warm está cocinando este payload, esperar su resultado.
+      _dbgEv_('wait', 'single-flight res');
+      wzResRaw = _wzAwaitWarm_('wzck_res_' + id + '_' + _wzN_(p && p.n), wzResKey, 45000);
+    }
     if (wzResRaw) {
       const entry = JSON.parse(wzResRaw);
-      if (entry && entry.data && entry.v === _getLiveStateVersion_(id)
-          && String(entry.n || '') === String((p && p.n) || '')) {
+      if (entry && entry.data && entry.v === _getLiveStateVersion_(id)) {
         Logger.log('[WZCACHE] HIT res token=' + String(p.resume_token).slice(0, 8) + '...');
         _dbgEv_('cache', 'HIT res');
         if (_isStepUpFresh_(id)) {
@@ -3295,8 +3328,8 @@ function resumeSession_(p) {
   if (data && data.pii_gated !== true) {
     try {
       _wzCachePutChunked_(CacheService.getScriptCache(),
-        _wzCacheKey_('res', String(p.resume_token).trim()),
-        JSON.stringify({ v: _getLiveStateVersion_(id), n: String((p && p.n) || ''), data: data }), 1800);
+        _wzCacheKey_('res', id + '_' + _wzN_(p && p.n)),
+        JSON.stringify({ v: _getLiveStateVersion_(id), data: data }), 1800);
     } catch (eWzWt) { /* best-effort */ }
   }
   return data;
@@ -3631,7 +3664,7 @@ function getAdmissionState_(p) {
   // requireResumeToken_ (KAL-4) + gracia/step-up ya corrieron arriba; step_up_fresh
   // SIEMPRE se computa en vivo (estado per-llamada, nunca del cache).
   try {
-    const wzAdmKey = _wzCacheKey_('adm', String(p.resume_token).trim());
+    const wzAdmKey = _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n));
     const wzAdmRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzAdmKey);
     if (wzAdmRaw) {
       const wzEntry = JSON.parse(wzAdmRaw);
@@ -3639,9 +3672,7 @@ function getAdmissionState_(p) {
       // dos tutores comparten clave. La entrada guarda el `n` con el que se cocino;
       // si el caller trae otro `n` (otro guardian) -> MISS al camino vivo (que
       // re-resuelve la identidad real). Mismo patron en wz_res/wz_mem.
-      const wzN = String((p && p.n) || '');
-      if (wzEntry && wzEntry.admission && wzEntry.v === _getLiveStateVersion_(id)
-          && String(wzEntry.n || '') === wzN) {
+      if (wzEntry && wzEntry.admission && wzEntry.v === _getLiveStateVersion_(id)) {
         const admC = wzEntry.admission;
         Logger.log('[WZCACHE] HIT adm token=' + String(p.resume_token).slice(0, 8) +
                    '… ms=' + (Date.now() - perfT0));
@@ -3742,8 +3773,8 @@ function getAdmissionState_(p) {
   // de cache hasta que live_version suba (notify del KMS) o un write lo invalide.
   try {
     _wzCachePutChunked_(CacheService.getScriptCache(),
-      _wzCacheKey_('adm', String(p.resume_token).trim()),
-      JSON.stringify({ v: _getLiveStateVersion_(id), n: String((p && p.n) || ''), admission: {
+      _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n)),
+      JSON.stringify({ v: _getLiveStateVersion_(id), admission: {
         state_code:        admission.state_code,
         state_label:       admission.state_label,
         signing_ready:     admission.signing_ready,
@@ -5266,11 +5297,14 @@ function getDocument_(p) {
   if (p && p.resume_token) {
     try {
       const wzDocT0 = Date.now();
-      const wzDocKey = _wzCacheKey_('doc', String(p.resume_token).trim() + '_' + fileId);
+      const wzDocKey = _wzCacheKey_('doc', fileId);
       const wzDocRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzDocKey);
       if (wzDocRaw) {
         const dC = JSON.parse(wzDocRaw);
-        if (dC && dC.base64) {
+        // V2.4 — KAL-4: la clave ya no lleva token; la entrada guarda g=group_id de
+        // ORIGEN y solo se sirve si coincide con el grupo del CALLER (derivado de su
+        // token, post-gate). Mismatch → MISS → camino vivo (que re-valida pertenencia).
+        if (dC && dC.base64 && dC.g === groupId) {
           Logger.log('[WZCACHE] HIT doc token=' + String(p.resume_token).slice(0, 8) +
                      '… file=' + String(fileId).slice(0, 8) + '… ms=' + (Date.now() - wzDocT0));
           return {
@@ -5325,8 +5359,8 @@ function getDocument_(p) {
       try {
         if (p && p.resume_token && d && d.base64) {
           _wzCachePutChunked_(CacheService.getScriptCache(),
-            _wzCacheKey_('doc', String(p.resume_token).trim() + '_' + fileId),
-            JSON.stringify(d), 1800);
+            _wzCacheKey_('doc', fileId),
+            JSON.stringify(Object.assign({ g: groupId }, d)), 21600);
         }
       } catch (eWzWt) { /* best-effort */ }
       return {
@@ -5381,8 +5415,8 @@ function getDocument_(p) {
       try {
         if (p && p.resume_token && d && d.base64) {
           _wzCachePutChunked_(CacheService.getScriptCache(),
-            _wzCacheKey_('doc', String(p.resume_token).trim() + '_' + fileId),
-            JSON.stringify(d), 1800);
+            _wzCacheKey_('doc', fileId),
+            JSON.stringify(Object.assign({ g: groupId }, d)), 21600);
         }
       } catch (eWzWt2) { /* best-effort */ }
       return {
@@ -6916,12 +6950,11 @@ function initiateSigningSession_(p) {
   // o guardian distinto → vivo). El ACTO real (sin create_only) JAMAS toca cache (P222).
   if (createOnly && p && p.resume_token) {
     try {
-      const wzMemKey = _wzCacheKey_('mem', String(p.resume_token).trim());
+      const wzMemKey = _wzCacheKey_('mem', sctx.enrollment_group_id);
       const wzMemRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzMemKey);
       if (wzMemRaw) {
         const memEntry = JSON.parse(wzMemRaw);
-        if (memEntry && memEntry.data && memEntry.v === _getLiveStateVersion_(sctx.enrollment_group_id)
-            && String(memEntry.n || '') === String((p && p.n) || '')) {
+        if (memEntry && memEntry.data && memEntry.v === _getLiveStateVersion_(sctx.enrollment_group_id)) {
           Logger.log('[WZCACHE] HIT mem token=' + String(p.resume_token).slice(0, 8) + '...');
         _dbgEv_('cache', 'HIT mem');
           return (p._perf === true)
@@ -6938,11 +6971,10 @@ function initiateSigningSession_(p) {
       // su resultado (≤40s) antes de duplicar la lectura.
       if (!wzMemRaw) {
         _dbgEv_('wait', 'single-flight mem');
-        const awaitedMem = _wzAwaitWarm_('wzck_mem_' + String(p.resume_token).trim(), wzMemKey, 40000);
+        const awaitedMem = _wzAwaitWarm_('wzck_mem_' + sctx.enrollment_group_id, wzMemKey, 40000);
         if (awaitedMem) {
           const memE2 = JSON.parse(awaitedMem);
-          if (memE2 && memE2.data && memE2.v === _getLiveStateVersion_(sctx.enrollment_group_id)
-              && String(memE2.n || '') === String((p && p.n) || '')) {
+          if (memE2 && memE2.data && memE2.v === _getLiveStateVersion_(sctx.enrollment_group_id)) {
             Logger.log('[WZCACHE] HIT mem (single-flight) token=' + String(p.resume_token).slice(0, 8) + '...');
             return (p._perf === true)
               ? Object.assign({}, memE2.data, { _perf: { cache_hit: true, single_flight: true, t_total_ms: Date.now() - perfT0 } })
@@ -6963,8 +6995,8 @@ function initiateSigningSession_(p) {
   if (createOnly && p && p.resume_token && data && data.members && data.members.length) {
     try {
       _wzCachePutChunked_(CacheService.getScriptCache(),
-        _wzCacheKey_('mem', String(p.resume_token).trim()),
-        JSON.stringify({ v: _getLiveStateVersion_(sctx.enrollment_group_id), n: String((p && p.n) || ''), data: data }), 1800);
+        _wzCacheKey_('mem', sctx.enrollment_group_id),
+        JSON.stringify({ v: _getLiveStateVersion_(sctx.enrollment_group_id), data: data }), 1800);
     } catch (eWzWtM) { /* best-effort */ }
   }
   // PERF-KMS2: `_perf` SOLO en la LECTURA create_only (el ACTO real jamás se toca — P222)
@@ -7033,7 +7065,7 @@ function warmSession_(p) {
   // si wz_hyd_<token> ya está, reusa y solo completa lo que falte). La misma llamada
   // enr.wizardHydrate de antes vive DENTRO del bundle → el warm KMS (L2) se ceba igual.
   var w = warmEntryBundle_(String(p.resume_token).trim(), effRecoveredEmail || null,
-    (p && p.language) ? String(p.language).trim() : null, (p && p.n) || null);
+    (p && p.language) ? String(p.language).trim() : null, (p && p.n) || null, groupId);
   if (!w.hydrate) {
     // Best-effort: un warm fallido no es error de cara al cliente (el hydrate real
     // post-OTP seguirá su camino normal). Log redactado para correlación.
@@ -7193,11 +7225,12 @@ function hydrateSession_(p) {
   // en el camino vivo; los writes del grupo invalidan via _wzCacheInvalidate_.
   let data = null;
   const wzHydCache = CacheService.getScriptCache();
-  const wzHydKey = _wzCacheKey_('hyd', String(p.resume_token).trim());
+  const wzHydKey = _wzCacheKey_('hyd', groupId + '_' + _wzN_(p && p.n));
   try {
     const wzHydRaw = _wzCacheGetChunked_(wzHydCache, wzHydKey);
     if (wzHydRaw) {
-      data = JSON.parse(wzHydRaw);
+      const envH = JSON.parse(wzHydRaw);
+      data = (envH && envH.v === _getLiveStateVersion_(groupId)) ? envH.data : null;
       if (data) Logger.log('[WZCACHE] HIT hyd token=' + String(p.resume_token).slice(0, 8) + '…');
         _dbgEv_('cache', 'HIT hyd');
     }
@@ -7208,9 +7241,10 @@ function hydrateSession_(p) {
     // segundo pull KMS que compite con él. Marcador caído / timeout → pull vivo.
     try {
       _dbgEv_('wait', 'single-flight hyd (warm en curso)');
-      const awaited = _wzAwaitWarm_('wzck_hyd_' + String(p.resume_token).trim(), wzHydKey, 60000);
+      const awaited = _wzAwaitWarm_('wzck_hyd_' + groupId + '_' + _wzN_(p && p.n), wzHydKey, 60000);
       if (awaited) {
-        data = JSON.parse(awaited);
+        const envH2 = JSON.parse(awaited);
+        data = (envH2 && envH2.v === _getLiveStateVersion_(groupId)) ? envH2.data : null;
         if (data) Logger.log('[WZCACHE] HIT hyd (single-flight) token=' + String(p.resume_token).slice(0, 8) + '…');
       }
     } catch (eAw) { data = null; }
@@ -7221,7 +7255,8 @@ function hydrateSession_(p) {
       recovered_email: effRecoveredEmail || null,
       language:        (p && p.language) ? String(p.language).trim() : null,
     }) || {};
-    try { _wzCachePutChunked_(wzHydCache, wzHydKey, JSON.stringify(data), 1800); } catch (eWzWt) { /* best-effort */ }
+    try { _wzCachePutChunked_(wzHydCache, wzHydKey,
+      JSON.stringify({ v: _getLiveStateVersion_(groupId), data: data }), 1800); } catch (eWzWt) { /* best-effort */ }
   }
 
   // DL-C-A (g): el KMS pliega el catálogo de preguntas (raw qb) en el hydrate. Lo
