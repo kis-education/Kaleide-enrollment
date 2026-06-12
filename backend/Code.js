@@ -6444,7 +6444,13 @@ function confirmReview_(p) {
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
-  return kmsProxy_('enr.confirmReviewQueued', Object.assign({}, sctx.identity));
+  // DL-E44 §2 (2026-06-12): reenviar accepted[] al KMS — antes se descartaba aquí
+  // (solo viajaba la identidad) y el KMS no podía persistir las aceptaciones por
+  // documento como evidencia del hito REVIEW_CONFIRMED. El KMS valida cada
+  // file_id contra los documentos de la sesión del token (KAL-4) antes de persistir.
+  const reviewBody = Object.assign({}, sctx.identity);
+  if (Array.isArray(p && p.accepted)) reviewBody.accepted = p.accepted;
+  return kmsProxy_('enr.confirmReviewQueued', reviewBody);
 }
 
 /**

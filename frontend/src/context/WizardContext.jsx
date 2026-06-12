@@ -862,6 +862,15 @@ export function WizardProvider({ children }) {
     if (data.gdpr_consents && data.gdpr_consents.v) {
       setSigningFormsRaw(prev => (prev && prev.gdpr) ? prev : { ...(prev || {}), gdpr: data.gdpr_consents });
     }
+    // DL-E44 §2: las aceptaciones por documento del Step 10 rehidratan desde la
+    // evidencia DURABLE del hito REVIEW_CONFIRMED (per-guardian, accepted[] del
+    // hydrate) — nunca se re-piden. Mismo patrón que gdpr: siembra solo si el
+    // usuario no tocó el slice review en esta sesión.
+    if (Array.isArray(data.review_acceptances) && data.review_acceptances.length) {
+      const acceptedMap = {};
+      data.review_acceptances.forEach(a => { if (a && a.file_id) acceptedMap[a.file_id] = true; });
+      setSigningFormsRaw(prev => (prev && prev.review) ? prev : { ...(prev || {}), review: { accepted: acceptedMap } });
+    }
     if (data.live_version != null) setLiveVersion(Number(data.live_version) || 0);
 
     const hasGuardians     = persons.some(p => p.person_type_id === 'guardian');
