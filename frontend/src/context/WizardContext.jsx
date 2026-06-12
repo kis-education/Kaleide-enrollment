@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import * as log from '../logger';
+import { preparePersonForUI } from '../pages/steps/personShape';
 import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
 import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
 
@@ -763,21 +764,12 @@ export function WizardProvider({ children }) {
       // the shape that preparePersonForUI (Step2) and buildInitialRelations (Step3)
       // produce. Without this, isStepDirty sees false !== "Y" on every navigation
       // and fires spurious saveStep calls even when nothing changed.
-      persons: persons.map(p => ({
-        ...p,
-        phones: Array.isArray(p.phones) ? p.phones.map(ph => ({
-          ...ph,
-          is_default:   normYN(ph.is_default),
-          is_emergency: normYN(ph.is_emergency),
-          is_whatsapp:  normYN(ph.is_whatsapp),
-          is_telegram:  normYN(ph.is_telegram),
-        })) : p.phones,
-        emails: Array.isArray(p.emails) ? p.emails.map(e => ({
-          ...e,
-          is_default:   normYN(e.is_default),
-          is_emergency: normYN(e.is_emergency),
-        })) : p.emails,
-      })),
+      // Fix saves espurios (Diego 2026-06-12): sembrar con la MISMA forma que el
+      // Step 2 produce (preparePersonForUI — flats de nationality/id, _record_ids,
+      // alias email/phone, booleanos) → stepData y baseline idénticos → el
+      // dirty-check solo dispara con EDICIONES reales. Subsume el normYN parcial
+      // previo (que arreglaba esta misma clase solo para booleanos).
+      persons: persons.map(preparePersonForUI),
       relations: relations.map(r => ({
         ...r,
         is_custodial:            normYN(r.is_custodial),
