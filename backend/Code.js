@@ -441,6 +441,7 @@ function assertValidSigningToken_(v, fieldName) {
  * @private
  */
 function requireResumeTokenMemo_(payload) {
+  _dbgEv_('gate', 'requireResumeToken (memo)');
   const token = payload && payload.resume_token;
   let cache = null, key = null;
   try {
@@ -466,6 +467,7 @@ function requireResumeTokenMemo_(payload) {
 }
 
 function requireResumeToken_(payload) {
+  _dbgEv_('gate', 'requireResumeToken (live)');
   const token = payload && payload.resume_token;
   assertValidUuid_(token, 'resume_token');
   const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
@@ -1147,7 +1149,10 @@ function _wzKmsFetchAll_(calls) {
         muteHttpExceptions: true,
       };
     });
+    _dbgEv_('kms_call_batch', calls.map(function(c) { return c.action; }).join(','));
+    var tFA = Date.now();
     var resps = UrlFetchApp.fetchAll(reqs);
+    _dbgEv_('kms_resp_batch', (Date.now() - tFA) + 'ms');
     return resps.map(function(r) {
       try {
         if (r.getResponseCode() !== 200) return null;
@@ -1484,6 +1489,7 @@ function doGet(e) {
 function doPost(e) {
   try {
     const payload = JSON.parse(e.postData.contents);
+    _dbgStart_(payload); // DBG-TRACE: cronología server-side si _dbg:true
 
     // Honeypot guard — bots fill hidden fields, humans don't
     if (payload._hp && payload._hp !== '') {
@@ -1567,7 +1573,8 @@ function doPost(e) {
         return jsonResponse_({ ok: false, error: 'Unknown action: ' + action }, 400);
     }
 
-    return jsonResponse_({ ok: true, ...result });
+    const dbgB = _dbgBlock_();
+    return jsonResponse_(dbgB ? { ok: true, ...result, _dbg: dbgB } : { ok: true, ...result });
 
   } catch (err) {
     // KAL-11: log full message internally with email/UUID redaction (Stackdriver interno).
@@ -3259,6 +3266,7 @@ function resumeSession_(p) {
       if (entry && entry.data && entry.v === _getLiveStateVersion_(id)
           && String(entry.n || '') === String((p && p.n) || '')) {
         Logger.log('[WZCACHE] HIT res token=' + String(p.resume_token).slice(0, 8) + '...');
+        _dbgEv_('cache', 'HIT res');
         if (_isStepUpFresh_(id)) {
           return Object.assign({}, entry.data, { step_up_fresh: stepUpFresh });
         }
@@ -3637,6 +3645,7 @@ function getAdmissionState_(p) {
         const admC = wzEntry.admission;
         Logger.log('[WZCACHE] HIT adm token=' + String(p.resume_token).slice(0, 8) +
                    '… ms=' + (Date.now() - perfT0));
+        _dbgEv_('cache', 'HIT adm');
         return {
           _perf:             (p && p._perf === true) ? { cache_hit: true, t_gate_ms: perfGateMs, t_total_ms: Date.now() - perfT0 } : undefined,
           ok:                true,
@@ -6576,6 +6585,25 @@ function drainJobQueue_(payload) {
 // al público. KAL-11: solo nombres de segmento + ms, sin PII ni tokens.
 var PERF2_ = { kms_fetch_ms: null, adm: null };
 
+// ─── DBG-TRACE (petición Diego 2026-06-12 17:05): cronología server-side por request
+// para el debug log del frontend. Evento = {t: ms desde recepción, e: tipo, d: detalle
+// SIN PII/tokens (KAL-11)}. doPost adjunta `_dbg` SOLO si el payload trae `_dbg:true`.
+// Estado global por ejecución — seguro en GAS (una ejecución = un hilo).
+var DBGT_ = { on: false, t0: 0, ev: [] };
+function _dbgStart_(payload) {
+  DBGT_.on = !!(payload && payload._dbg === true);
+  DBGT_.t0 = Date.now();
+  DBGT_.ev = [];
+}
+function _dbgEv_(type, detail) {
+  if (!DBGT_.on) return;
+  try { DBGT_.ev.push({ t: Date.now() - DBGT_.t0, e: String(type), d: detail == null ? undefined : String(detail).slice(0, 120) }); } catch (e) {}
+}
+function _dbgBlock_() {
+  if (!DBGT_.on) return undefined;
+  return { server_ms: Date.now() - DBGT_.t0, received_at: new Date(DBGT_.t0).toISOString(), events: DBGT_.ev };
+}
+
 function kmsProxy_(action, payload) {
   const props        = PropertiesService.getScriptProperties();
   const kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
@@ -6596,6 +6624,7 @@ function kmsProxy_(action, payload) {
   };
 
   let httpResp;
+  _dbgEv_('kms_call', action);
   const perfFetchT0 = Date.now(); // PERF-KMS2: aísla el hop HTTP wizard→KMS
   try {
     // El KMS es `access: ANYONE` → Google exige login a nivel de plataforma
@@ -6619,6 +6648,7 @@ function kmsProxy_(action, payload) {
     throw err;
   }
   PERF2_.kms_fetch_ms = Date.now() - perfFetchT0; // PERF-KMS2 (KAL-11: solo ms)
+  _dbgEv_('kms_resp', action + ' ' + PERF2_.kms_fetch_ms + 'ms');
   Logger.log('[PERF] kmsProxy_ action=' + action + ' fetch_ms=' + PERF2_.kms_fetch_ms);
 
   const status = httpResp.getResponseCode();
@@ -6893,6 +6923,7 @@ function initiateSigningSession_(p) {
         if (memEntry && memEntry.data && memEntry.v === _getLiveStateVersion_(sctx.enrollment_group_id)
             && String(memEntry.n || '') === String((p && p.n) || '')) {
           Logger.log('[WZCACHE] HIT mem token=' + String(p.resume_token).slice(0, 8) + '...');
+        _dbgEv_('cache', 'HIT mem');
           return (p._perf === true)
             ? Object.assign({}, memEntry.data, { _perf: { cache_hit: true, t_identity_ms: perfIdentMs, t_total_ms: Date.now() - perfT0 } })
             : memEntry.data;
@@ -6906,6 +6937,7 @@ function initiateSigningSession_(p) {
       // 2-3 lecturas create_only VIVAS de 37-49s compitiendo con el warm), esperar
       // su resultado (≤40s) antes de duplicar la lectura.
       if (!wzMemRaw) {
+        _dbgEv_('wait', 'single-flight mem');
         const awaitedMem = _wzAwaitWarm_('wzck_mem_' + String(p.resume_token).trim(), wzMemKey, 40000);
         if (awaitedMem) {
           const memE2 = JSON.parse(awaitedMem);
@@ -7167,6 +7199,7 @@ function hydrateSession_(p) {
     if (wzHydRaw) {
       data = JSON.parse(wzHydRaw);
       if (data) Logger.log('[WZCACHE] HIT hyd token=' + String(p.resume_token).slice(0, 8) + '…');
+        _dbgEv_('cache', 'HIT hyd');
     }
   } catch (eWzHyd) { data = null; /* best-effort → camino vivo */ }
   if (!data) {
@@ -7174,6 +7207,7 @@ function hydrateSession_(p) {
     // está cocinando este token, esperar su resultado (≤60s) en vez de lanzar un
     // segundo pull KMS que compite con él. Marcador caído / timeout → pull vivo.
     try {
+      _dbgEv_('wait', 'single-flight hyd (warm en curso)');
       const awaited = _wzAwaitWarm_('wzck_hyd_' + String(p.resume_token).trim(), wzHydKey, 60000);
       if (awaited) {
         data = JSON.parse(awaited);

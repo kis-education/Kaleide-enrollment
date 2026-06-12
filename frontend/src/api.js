@@ -366,7 +366,10 @@ export async function gasCall(action, payload = {}) {
   log.info(`→ GAS ${action}`, logPayload);
   log.debug(`→ GAS ${action} (raw payload keys)`, { keys: Object.keys(payload), enrollment_group_id: payload.enrollment_group_id || payload.application_id || null });
 
-  const body = JSON.stringify({ action, _hp: '', ...payload });
+  // DBG-TRACE (Diego 2026-06-12): pedir al backend la cronología server-side de la
+  // request (gates, llamadas wizard→KMS con inicio/duración, HIT/MISS de cache,
+  // esperas single-flight). Vuelve como `_dbg` y se vuelca al debug log abajo.
+  const body = JSON.stringify({ action, _hp: '', _dbg: true, ...payload });
   const t0   = performance.now();
 
   let res;
@@ -395,6 +398,17 @@ export async function gasCall(action, payload = {}) {
   } catch (jsonErr) {
     log.error(`gasCall ${action}: failed to parse JSON response`, { message: jsonErr.message });
     throw new Error('Invalid JSON response from server');
+  }
+
+  // DBG-TRACE: cronología server-side → debug log. Formato compacto: cada evento
+  // "t+<ms> <tipo> <detalle>" — permite ver cuándo el backend recibió, cuándo llamó
+  // al KMS, cuándo contestó el KMS, y de dónde salió cada dato (cache/vivo/espera).
+  if (data && data._dbg) {
+    try {
+      log.info(`[SRV ${action}] server_ms=${data._dbg.server_ms} recibido=${data._dbg.received_at}`, {
+        events: (data._dbg.events || []).map(ev => `t+${ev.t}ms ${ev.e}${ev.d ? ' ' + ev.d : ''}`),
+      });
+    } catch (eDbg) { /* best-effort */ }
   }
 
   if (!data.ok) {
