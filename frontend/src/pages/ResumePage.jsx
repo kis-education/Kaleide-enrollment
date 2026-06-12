@@ -92,6 +92,12 @@ export default function ResumePage() {
           submitted_at:        grp?.submitted_at,
         });
         hydrateFromResume(data);
+        // SPEC-WIZ-WARMUP-V2.1 (2026-06-12): kick fire-and-forget del precalentado
+        // TAMBIEN al entrar — cubre las entradas sin kick de envio (email de la
+        // Carta, link antiguo, click mas rapido que el minuto muerto): mientras la
+        // familia recorre los pasos, el backend cocina docs/members/hydrate para
+        // el paso 10. Gate KAL-4 + rate-limit (120s/grupo) server-side; best-effort.
+        gasCall('warmBundle', { resume_token: token, n: linkN || undefined }).catch(() => {});
         log.info('ResumePage: hydration complete, navigating to /apply');
         clearInterval(stageTimer);
         navigate('/apply', { replace: true });

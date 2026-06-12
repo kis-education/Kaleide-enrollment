@@ -6183,6 +6183,47 @@ function generateConsentPdf_(applicationId, app, guardians, applicants, consentR
  * @param {string} milestoneTypeCode 'BILLING_STEP_COMPLETED' | 'GDPR_CONSENTS_SUBMITTED' | 'REVIEW_CONFIRMED'
  * @returns {boolean}
  */
+/**
+ * DL-E44 (2026-06-12) — hito DURABLE de grupo de progreso de firma, matcheado al
+ * guardian via evidence_metadata_json.guardian_person_id (la fila milestone es
+ * per-guardian, tipo is_repeatable). Una fila legacy sin guardian en evidencia
+ * cuenta para cualquier firmante del grupo (degradacion conservadora: no re-pedir
+ * un acto ya hecho). Mismo invariante de catalogo que isMilestoneCompleted_.
+ * @private
+ */
+function isDurableSigningMilestoneCompleted_(groupId, guardianPersonId, milestoneTypeCode) {
+  try {
+    assertValidUuid_(groupId, 'enrollment_group_id');
+  } catch (e) {
+    return false;
+  }
+  try {
+    var milestones = appsheetRequest_(T.MILESTONES, 'Find', [],
+      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
+    if (!milestones.length) return false;
+    var typeRows = appsheetRequest_(T.MILESTONE_TYPES, 'Find', [], {}) || [];
+    var codeById = {};
+    typeRows.forEach(function(t) { codeById[t.milestone_type_id] = t.milestone_type_code; });
+    var gpid = String(guardianPersonId || '');
+    for (var i = 0; i < milestones.length; i++) {
+      var m = milestones[i];
+      if (m.entity_type_code !== 'ENR_ADMISSION_SCHOOL') continue;
+      if (m.deleted_at) continue;
+      if (m.status !== 'COMPLETED') continue;
+      var code = m.milestone_type_code || codeById[m.milestone_type_id] || null;
+      if (code !== milestoneTypeCode) continue;
+      var ev = {};
+      try { ev = JSON.parse(m.evidence_metadata_json || '{}'); } catch (eEv) { ev = {}; }
+      var evPid = String(ev.guardian_person_id || '');
+      if (!evPid || (gpid && evPid === gpid)) return true;
+    }
+    return false;
+  } catch (e2) {
+    Logger.log(redact_('[isDurableSigningMilestoneCompleted_] read failed para ' + milestoneTypeCode + ': ' + e2.message));
+    return false;
+  }
+}
+
 function isMilestoneCompleted_(entityTypeCode, entityId, milestoneTypeCode) {
   try {
     assertValidUuid_(entityId, 'entityId');
@@ -6314,9 +6355,16 @@ function resolveSigningToken_(p) {
   // Ya NO se leen las cols DEROGADAS gdpr_step_completed_at / review_step_completed_at
   // (tombstone DL-E27/E28) ni el hardcode billing_confirmed=false (enrGroupBilling
   // CANCELADO DL-E28 §4/§12 — el billing canónico es finBillingParties + el milestone).
+  // DL-E44 (2026-06-12): GDPR/REVIEW son ahora hitos DURABLES del GRUPO
+  // (ENR_ADMISSION_SCHOOL / enrollment_group_id) con discriminador per-guardian en
+  // evidence_metadata_json.guardian_person_id — sobreviven a la recreacion de la
+  // sesion/firmante (antes: per-signer, entidad efimera → progreso orfano). Espejo
+  // VERBATIM del lector canonico del KMS (sys/signing.gs sys_resolveSigningToken_).
   const billingConfirmed = isMilestoneCompleted_('ENR_ADMISSION_SCHOOL', enrollmentGroupId, 'BILLING_STEP_COMPLETED');
-  const gdprCompleted    = isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', signerId, 'GDPR_CONSENTS_SUBMITTED');
-  const reviewCompleted  = isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', signerId, 'REVIEW_CONFIRMED');
+  const gdprCompleted    = isDurableSigningMilestoneCompleted_(enrollmentGroupId, signer['signer_person_id'], 'GDPR_CONSENTS_SUBMITTED')
+                        || isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', signerId, 'GDPR_CONSENTS_SUBMITTED'); // fallback legacy pre-migracion
+  const reviewCompleted  = isDurableSigningMilestoneCompleted_(enrollmentGroupId, signer['signer_person_id'], 'REVIEW_CONFIRMED')
+                        || isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', signerId, 'REVIEW_CONFIRMED');       // fallback legacy pre-migracion
   const signed           = !!(signer['signed_at']);  // válido: campo real de la fila del signer
 
   Logger.log(redact_('[resolveSigningToken_] valid=true signer=' + signerId + ' group=' + enrollmentGroupId));

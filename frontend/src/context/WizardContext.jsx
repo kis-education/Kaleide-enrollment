@@ -929,10 +929,15 @@ export function WizardProvider({ children }) {
       // la familia en Review sin pista de que debe firmar. En cualquier otro caso, Review (6).
       const STEP_FIRST_SIGNING = 7;
       const st = adm && adm.signing_context && adm.signing_context.steps;
+      // DL-E44 (2026-06-12, log real de Diego 14:12Z): el avance lo gobiernan SOLO
+      // el ESTADO y los HITOS — el signing_token NO es bearer de entrada (★ CANONICA)
+      // y el hydrate puede traer el contexto SIN token (se resuelve server-side en
+      // cada acto via resume_token+n). Exigirlo aqui re-aterrizaba en el paso 7 con
+      // gdpr/review ya completados. Basta contexto presente + estado + hitos.
       const signingInProgress =
         adm && adm.state_code === 'AD' && adm.signing_ready
         && adm.signing_status !== 'COMPLETED'
-        && adm.signing_context && adm.signing_context.signing_token;
+        && adm.signing_context;
       if (signingInProgress && st) {
         // primer sub-paso incompleto: billing(0)→gdpr(1)→review(2)→sign(3).
         let sub = 3;
