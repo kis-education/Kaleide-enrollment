@@ -30,12 +30,12 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   const { t, i18n } = useTranslation();
   const {
     enqueueSave, stepData, recoveredEmail, recoveryNonce,
-    signingForms, updateSigningForm, admissionState,
+    signingForms, updateSigningForm, admissionState, reviewConfirmedLocal,
   } = useWizard();
   // Decisión Diego 2026-06-12: post-REVIEW_CONFIRMED el wizard se bloquea (solo
   // lectura); el backend además rechaza con SIGNING_LOCKED.
-  const signingLocked = !!(admissionState && admissionState.signing_context
-    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed);
+  const signingLocked = !!(reviewConfirmedLocal || (admissionState && admissionState.signing_context
+    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed));
   const lang = lang_(i18n);
 
   const fullName_ = (p) => [p.first_name, p.middle_name, p.last_name].filter(x => x && String(x).trim()).join(' ').trim();

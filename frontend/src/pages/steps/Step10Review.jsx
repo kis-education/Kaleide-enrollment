@@ -37,11 +37,11 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
     // STEP10-VIEWER: el cache de documentos vive en el CONTEXTO (object URLs + sha256
     // keyed por file_id) — navegar 10→11→10 NO refetchea.
     docCache, loadDocument, signingMembers, setSigningMembers,
-    signingForms, updateSigningForm, admissionState } = useWizard();
+    signingForms, updateSigningForm, admissionState , reviewConfirmedLocal, setReviewConfirmedLocal } = useWizard();
   // Decisión Diego 2026-06-12: post-REVIEW_CONFIRMED el wizard se bloquea (solo
   // lectura); la confirmación ya está registrada — avanzar no re-encola nada.
-  const signingLocked = !!(admissionState && admissionState.signing_context
-    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed);
+  const signingLocked = !!(reviewConfirmedLocal || (admissionState && admissionState.signing_context
+    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed));
   // members sembrados del cache del contexto → re-entrada al Step 10 pinta al
   // instante; el efecto de abajo los refresca igualmente en background.
   const [members, setMembers] = useState(signingMembers); // null=loading/preparando
@@ -185,6 +185,10 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
       sha256:       (docCache[m.file_id] && docCache[m.file_id].sha256) || null,
     }));
     const payload = { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }), accepted: acceptedPayload };
+    // Lock EN VIVO (Diego 2026-06-12): desde el momento de confirmar, los pasos
+    // 8-10 quedan en solo lectura (el backend además rechazará con SIGNING_LOCKED
+    // cuando el hito durable aterrice).
+    setReviewConfirmedLocal(true);
     enqueueSave(() => gasCall('confirmReview', payload)
       .then(res => {
         // Baseline tras save OK (espejo de markStepSaved).

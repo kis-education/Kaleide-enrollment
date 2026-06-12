@@ -29,13 +29,13 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   const { t } = useTranslation();
   const {
     stepData, enqueueSave, recoveredEmail, recoveryNonce,
-    signingForms, updateSigningForm, admissionState,
+    signingForms, updateSigningForm, admissionState, reviewConfirmedLocal,
   } = useWizard();
   // Decisión Diego 2026-06-12: tras aceptar los documentos y enviarse a firma
   // (hito durable REVIEW_CONFIRMED), el wizard se BLOQUEA — solo lectura. El
   // backend además rechaza el acto con SIGNING_LOCKED (defensa en profundidad).
-  const signingLocked = !!(admissionState && admissionState.signing_context
-    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed);
+  const signingLocked = !!(reviewConfirmedLocal || (admissionState && admissionState.signing_context
+    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed));
   // Default payer = signing guardian (DL-E38: identity derived server-side from the
   // token). KAL-4 intact — the KMS re-derives enrollment_group_id + signer from the
   // token, never from this payload.

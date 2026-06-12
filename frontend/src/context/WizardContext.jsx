@@ -270,6 +270,10 @@ export function WizardProvider({ children }) {
   // discriminator the frontend re-sends so the backend re-resolves the guardian
   // server-side on each call. Only the email is stored; never the token.
   const [admissionState, setAdmissionState] = useState(null);
+  // Decisión Diego 2026-06-12 (lock EN VIVO): los flags de hitos del hydrate son de
+  // la ENTRADA — si el usuario confirma la lectura en ESTA sesión, el bloqueo debe
+  // engancharse al instante, sin esperar al re-hydrate ni al drenado del job.
+  const [reviewConfirmedLocal, setReviewConfirmedLocal] = useState(false);
   const [signingContext, setSigningContext] = useState(null);
 
   // ── STEP10-VIEWER (Diego 2026-06-11) — cache EN MEMORIA del paquete contractual ──
@@ -1036,6 +1040,7 @@ export function WizardProvider({ children }) {
       hydrateFromResume, refreshAdmissionState, clearSession,
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
+      reviewConfirmedLocal, setReviewConfirmedLocal, // lock en vivo post-confirm (Diego 2026-06-12)
       docCache, loadDocument, signingMembers, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual
       billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
       signingForms, updateSigningForm,            // REBUILD-8-11: formularios de firma en memoria

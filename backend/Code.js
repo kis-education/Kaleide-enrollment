@@ -1225,6 +1225,59 @@ function _warmResumePhase_(it) {
   return out;
 }
 
+/**
+ * V2.3 (log Diego 16:59 — initiateSigningRead 71,5s: el warm cocinaba members
+ * DESPUÉS del hydrate y el usuario llegaba al paso 10 antes) — fase HIJA 'mem':
+ * members + bytes del paquete SIN depender del hydrate. Identidad resuelta
+ * wizard-side por el MISMO camino lazy de getDocument_ (effectiveRecoveredEmail_
+ * → resolveGuardianForRecovery_ → resolveGuardianSigningContext_); pre-AD o sin
+ * sesión → no-op limpio. Marca wzck_mem para el single-flight del vivo.
+ * @private
+ */
+function _warmMembersDocsPhase_(it) {
+  var out = { ok: false, members: 0, docs: 0, ms: 0 };
+  var t0 = Date.now();
+  var token = String(it.t || '').trim();
+  var cache = CacheService.getScriptCache();
+  try {
+    try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
+    if (cache.get(_wzCacheKey_('mem', token) + '_meta')) { out.ok = true; return out; }
+    try { cache.put('wzck_mem_' + token, '1', 240); } catch (eM) {}
+    var groupId = requireResumeTokenMemo_({ resume_token: token });
+    var effEmail = effectiveRecoveredEmail_(it.e || null, groupId, it.n || null);
+    var guardianId = effEmail ? resolveGuardianForRecovery_(groupId, effEmail) : null;
+    var sctx = guardianId ? resolveGuardianSigningContext_(groupId, guardianId) : null;
+    var signingToken = (sctx && sctx.signing_token) || null;
+    if (signingToken) {
+      var prep = kmsProxy_('enr.initiateSigningSession', { signing_token: signingToken, create_only: true }) || {};
+      var members = prep.members || [];
+      out.members = members.length;
+      if (members.length) {
+        _wzCachePutChunked_(cache, _wzCacheKey_('mem', token),
+          JSON.stringify({ v: _getLiveStateVersion_(groupId), n: String(it.n || ''), data: prep }), 1800);
+        var pendientes = members.map(function(m) { return m && m.file_id; }).filter(Boolean)
+          .filter(function(fid) { return !cache.get(_wzCacheKey_('doc', token + '_' + fid) + '_meta'); });
+        if (pendientes.length) {
+          var results = _wzKmsFetchAll_(pendientes.map(function(fid) {
+            return { action: 'enr.serveSigningDocument', payload: { signing_token: signingToken, file_id: fid } };
+          }));
+          pendientes.forEach(function(fid, i) {
+            var d = results[i];
+            if (d && d.base64 && _wzCachePutChunked_(cache, _wzCacheKey_('doc', token + '_' + fid), JSON.stringify(d), 1800)) out.docs++;
+          });
+        }
+      }
+    }
+    out.ok = true;
+  } catch (e) {
+    Logger.log(redact_('[_warmMembersDocsPhase_] non-fatal — ' + (e && e.message)));
+  }
+  try { cache.remove('wzck_mem_' + token); } catch (eR) {}
+  out.ms = Date.now() - t0;
+  Logger.log('[WZCACHE] warm mem done ' + JSON.stringify(out));
+  return out;
+}
+
 function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
   var out = { ok: false, hydrate: false, admission: false, resume: false, members: 0, docs: 0, ms: 0 };
   var t0 = Date.now();
@@ -1307,8 +1360,10 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
     try { cache.remove('wzck_hyd_' + token); } catch (eM2) {}
     try { cache.put('wzck_mem_' + token, '1', 240); } catch (eM3) {}
 
-    // (d) Members del paquete + (e) bytes de cada uno → wz_doc_<token>_<file_id>.
-    if (signingToken) {
+    // (d)+(e) members+docs: movidos a _warmMembersDocsPhase_ (fase hija propia,
+    // V2.3 — el paso 10 no debe esperar al hydrate). Aquí solo si este caller
+    // llegó con signingToken ya resuelto y la fase mem no corrió aún.
+    if (signingToken && !cache.get(_wzCacheKey_('mem', token) + '_meta')) {
       var members = [];
       try {
         var prep = kmsProxy_('enr.initiateSigningSession', { signing_token: signingToken, create_only: true }) || {};
@@ -6991,6 +7046,7 @@ function warmBundle_(p) {
     try { it0 = JSON.parse(pRaw) || {}; } catch (ePp) { return { ok: false }; }
     if (!it0.t) return { ok: false };
     if (it0.phase === 'res') return _warmResumePhase_(it0);
+    if (it0.phase === 'mem') return _warmMembersDocsPhase_(it0);
     // fase 'kms' — bundle KMS-side (hydrate+admission+members+docs), mismo gate
     // KAL-4 y rate-limit que el warm de la pantalla OTP (warmSession_).
     try {
@@ -7019,8 +7075,12 @@ function warmBundle_(p) {
       if (!it || !it.t) return;
       var pr = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'res' });
       var pk = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'kms' });
+      // V2.3: fase 'mem' CONCURRENTE e independiente del hydrate — el paso 10
+      // (members+docs) queda caliente aunque el usuario llegue en <60s.
+      var pm = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'mem' });
       if (pr) passes.push({ pass: pr });
       if (pk) passes.push({ pass: pk });
+      if (pm) passes.push({ pass: pm });
     });
     _wzSelfFetchAll_(passes);
     return { ok: true, phases: passes.length };
