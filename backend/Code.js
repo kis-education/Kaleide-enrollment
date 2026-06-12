@@ -428,6 +428,43 @@ function assertValidSigningToken_(v, fieldName) {
  * @param {Object} payload - request payload (must contain `resume_token`)
  * @returns {string} canonical enrollment_group_id authorised by the token
  */
+/**
+ * Memo de LECTURA del gate KAL-4 (SPEC-WIZ-WARMUP-V2, 2026-06-12 — precedente
+ * canónico #65/#67b: memo ScriptCache de identidad TTL 300s SOLO para lecturas).
+ * requireResumeToken_ paga una lectura AppSheet (~2,5-5s) por llamada; en los
+ * caminos que SIRVEN datos ya autorizados (getDocument_) ese coste dominaba el
+ * e2e con el bundle caliente. Cachea token→groupId 300s con el MISMO cross-group
+ * guard. NUNCA usar en handlers de mutación (saveStep_, submit…, actos de firma):
+ * esos validan SIEMPRE en vivo. Lag aceptado ≤5 min para abandono/expiración/
+ * rotación en lecturas (mismo trade-off aprobado del memo de requireSignerIdentity_);
+ * el PII-gate de step-up (ventana dura 10 min) sigue evaluándose EN VIVO aparte.
+ * @private
+ */
+function requireResumeTokenMemo_(payload) {
+  const token = payload && payload.resume_token;
+  let cache = null, key = null;
+  try {
+    assertValidUuid_(token, 'resume_token');
+    cache = CacheService.getScriptCache();
+    key = 'rtmemo_' + sha256Hex_(Utilities.newBlob(String(token).trim()).getBytes()).slice(0, 40);
+    const hit = cache.get(key);
+    if (hit) {
+      // Cross-group guard — paridad EXACTA con requireResumeToken_ (KAL-4).
+      const payloadGroupId = payload && (payload.enrollment_group_id || payload.application_id);
+      if (payloadGroupId && payloadGroupId !== hit) {
+        throw new Error('Unauthorized: payload enrollment_group_id does not match resume_token grant');
+      }
+      return hit;
+    }
+  } catch (e) {
+    if (e && /Unauthorized/.test(e.message || '')) throw e;
+    // assert/cache falló → camino vivo (degradación limpia)
+  }
+  const groupId = requireResumeToken_(payload);
+  try { if (cache && key) cache.put(key, groupId, 300); } catch (e2) { /* best-effort */ }
+  return groupId;
+}
+
 function requireResumeToken_(payload) {
   const token = payload && payload.resume_token;
   assertValidUuid_(token, 'resume_token');
@@ -4845,7 +4882,14 @@ function getDocument_(p) {
                                 // resuelto SERVER-SIDE del grupo+guardian (resume_token).
   let resolveKmsSigningToken = function () { return null; }; // lazy (resume_token path)
   if (p && p.resume_token) {
-    groupId = requireResumeToken_(p);
+    // PERF V2 (2026-06-12, puerta <5s de SPEC-WIZ-WARMUP-V2): el gate KAL-4 pagaba
+    // una lectura AppSheet (~2,5-5s) POR CADA documento servido — con el bundle ya
+    // caliente era el coste dominante del e2e (8,5/6,8s medidos). Memo de LECTURA
+    // (precedente #65/#67b: requireSignerIdentity_/token lazy, TTL 300s, solo
+    // lecturas): getDocument_ sirve bytes YA autorizados, el step-up gate (ventana
+    // dura 10 min) sigue aplicando en vivo más abajo, y los handlers de MUTACIÓN
+    // siguen en requireResumeToken_ live sin memo.
+    groupId = requireResumeTokenMemo_(p);
     // IDENTITY-COMPLETION (#30): los PDF del paquete de firma (Carta/Contrato) los genera
     // y guarda el KMS (origin_reference='signing_package:…', NO el grupo) → el read local
     // de abajo NO los encuentra. Para servirlos bajo resume_token (sesión que sobrevive a
