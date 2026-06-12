@@ -46,7 +46,7 @@ export default function WizardPage() {
     otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER
     recoveredEmail, setRecoveredEmail,
     recoveryNonce, // IDENTITY-FROM-LINK: `n` = email_id del enlace (identidad canónica)
-  , getStepEditMode,
+    getStepEditMode, // mapeo central de modos de edición (Diego 2026-06-12)
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
