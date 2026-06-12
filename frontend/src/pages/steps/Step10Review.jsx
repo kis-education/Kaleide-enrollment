@@ -199,7 +199,14 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
   // El nombre del documento es DINÁMICO — del propio member que el paquete declara
   // (designation / purpose_code), con i18n key como preferencia y fallback a lo que el
   // KMS mande. Cero literales de documentos hardcodeados.
-  const docLabel = (m) => t('signing.doc.' + (m.purpose_code || ''), { defaultValue: m.designation || m.purpose_code || t('signing.review.document') });
+  // MEMBER-OWNER (Diego 2026-06-12): con varios hijos hay N contratos/cartas — cada
+  // documento se etiqueta con SU participante ("Contrato Escolar — Jara …"). El backend
+  // resuelve applicant_name del enrollment dueño del hito; sin nombre (grupo de 1 hijo
+  // legacy o fallo best-effort) la etiqueta queda como antes.
+  const docLabel = (m) => {
+    const base = t('signing.doc.' + (m.purpose_code || ''), { defaultValue: m.designation || m.purpose_code || t('signing.review.document') });
+    return m.applicant_name ? base + ' \u2014 ' + m.applicant_name : base;
+  };
   // Lista de nombres de los documentos del paquete (para el subtítulo dinámico). Si el
   // paquete aún no cargó, cae al subtítulo genérico (sin nombrar Carta/Contrato a ciegas).
   const memberLabels = (members || []).map(docLabel);
