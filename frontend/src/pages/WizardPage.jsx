@@ -19,7 +19,7 @@ import { Toast, useToast } from '../components/Toast';
 // primera instancia; otro programa (campamentos, etc.) declararía otro catálogo sin
 // tocar este chasis. STEP_COMPONENTS deriva del catálogo (compat con el viejo array).
 // FIRST_SIGNING_INDEX (primer paso savePolicy:'act') sustituye el 7 hardcodeado.
-import { STEP_CATALOG, STEP_COMPONENTS, FIRST_SIGNING_INDEX } from './steps/catalog';
+import { STEP_CATALOG, STEP_COMPONENTS, FIRST_SIGNING_INDEX, stepEditMode } from './steps/catalog';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
@@ -46,7 +46,7 @@ export default function WizardPage() {
     otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER
     recoveredEmail, setRecoveredEmail,
     recoveryNonce, // IDENTITY-FROM-LINK: `n` = email_id del enlace (identidad canónica)
-    getStepEditMode, // mapeo central de modos de edición (Diego 2026-06-12)
+    reviewConfirmed, // input del mapeo central (catalog.stepEditMode)
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -842,8 +842,8 @@ const handleNext = async (stepKey, data, extra = null) => {
           /* MAPEO CENTRAL de modos (Diego 2026-06-12): EDITABLE | PROTECTED | LOCKED.
              UN solo componente de candado (LockedBanner, via StepShell) para TODOS
              los pasos — los pasos no computan su propio lock. */
-          locked={getStepEditMode(currentStep) !== 'EDITABLE'}
-          onUnlock={getStepEditMode(currentStep) === 'PROTECTED' ? handleUnlock : null}
+          locked={stepEditMode(currentStep, { isSubmitted, reviewConfirmed, completedSteps }) !== 'EDITABLE'}
+          onUnlock={stepEditMode(currentStep, { isSubmitted, reviewConfirmed, completedSteps }) === 'PROTECTED' ? handleUnlock : null}
           savePending={hasPendingSave}
           /* DL-E38 merge + REBUILD-8-11: props para los Steps 8-11 de firma inline.
              onAdvance mueve currentStep SIN saveStep (cada step de firma persiste vía

@@ -981,29 +981,14 @@ export function WizardProvider({ children }) {
     setCurrentStep(target);
   }, []);
 
-  // ── MAPEO CENTRAL de modos de edición por paso (decisión Diego 2026-06-12:
-  //    "según el estado de cada fase, mapeo de qué pasos deben estar en qué estado:
-  //    disponible / edición con protección / bloqueado", con UN único componente
-  //    de bloqueo — LockedBanner). ÚNICA fuente de verdad del candado; los pasos
-  //    NO computan su propio lock. Derivado de ESTADO + HITOS:
-  //      EDITABLE  → sin banner.
-  //      PROTECTED → LockedBanner CON botón Editar (editar a propósito).
-  //      LOCKED    → LockedBanner SIN botón (no editable).
-  //    reviewDone = hito durable REVIEW_CONFIRMED (server) O confirmación de ESTA
-  //    sesión (local, persistida en sessionStorage) → bloquea TODO (documentación
-  //    aceptada y enviada a firma — el backend además rechaza con SIGNING_LOCKED).
-  const getStepEditMode = useCallback((stepIndex) => {
-    const reviewDone = reviewConfirmedLocal
-      || !!(admissionState && admissionState.signing_context
-            && admissionState.signing_context.steps
-            && admissionState.signing_context.steps.review_completed);
-    if (reviewDone) return stepIndex === 10 ? 'EDITABLE' : 'LOCKED'; // paso 11 = informativo
-    if (stepIndex <= 6) { // pasos 1-7 (semántica previa intacta)
-      if (!completedSteps.has(stepIndex)) return 'EDITABLE';
-      return isSubmitted ? 'LOCKED' : 'PROTECTED';
-    }
-    return 'EDITABLE'; // pasos 8-10 pre-confirmación
-  }, [reviewConfirmedLocal, admissionState, completedSteps, isSubmitted]);
+  // ── Flag DERIVADO para el mapeo central (catalog.stepEditMode — decisión Diego
+  //    2026-06-12, pasos 1-11 uniformes): la lectura está confirmada si lo dice el
+  //    HITO DURABLE del server o la confirmación local de esta sesión (persistida).
+  const reviewConfirmed = reviewConfirmedLocal
+    || !!(admissionState && admissionState.signing_context
+          && admissionState.signing_context.steps
+          && admissionState.signing_context.steps.review_completed);
+
 
   // ── Admission-state PULSE (realtime bug, Diego 2026-06-07) ───────────────────
   // Refresca SOLO el sub-bloque de admisión (admissionState/signingContext/
@@ -1076,7 +1061,7 @@ export function WizardProvider({ children }) {
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
       reviewConfirmedLocal, setReviewConfirmedLocal, // lock en vivo post-confirm (Diego 2026-06-12)
-      getStepEditMode,                            // mapeo central de modos de edición (Diego 2026-06-12)
+      reviewConfirmed,                            // input del mapeo central (catalog.stepEditMode)
       docCache, loadDocument, signingMembers, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual
       billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
       signingForms, updateSigningForm,            // REBUILD-8-11: formularios de firma en memoria

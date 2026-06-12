@@ -34,7 +34,19 @@
 //                  - 'none':   paso sin persistencia propia (review pre-submit, sign
 //                    terminal). El submit del Step 7 es el envío; el Step 11 es el acto
 //                    terminal de firma (su propia frontera bloqueante).
-//     lockPolicy: 'completed' | 'state' | 'never'
+//     closedBy:   condiciones de ESTADO/HITOS que CIERRAN el paso (LOCKED, candado
+//                  sin botón Editar). Decisión Diego 2026-06-12: "no hay diferencia
+//                  entre los pasos 1-7 y los 8-11 — lo único que modifica su estado
+//                  es el estado de la solicitud y los hitos completados". El mapeo
+//                  central (WizardContext.getStepEditMode) evalúa para CUALQUIER
+//                  paso, uniformemente: closedBy cumplido → LOCKED; si no, paso en
+//                  completedSteps → PROTECTED (banner + Editar); si no → EDITABLE.
+//                  Condiciones disponibles (estado + hitos, server-driven):
+//                    'SUBMITTED'        → solicitud enviada y no editable (estado real)
+//                    'REVIEW_CONFIRMED' → hito durable de lectura confirmada (la
+//                                         documentación salió a firma — bloquea todo)
+//     lockPolicy: 'completed' | 'state' | 'never' (LEGACY informativo — la fuente
+//                  operativa del candado es closedBy + completedSteps)
 //                  - 'completed': se bloquea cuando el paso está en completedSteps
 //                    (patrón LockedBanner "sección guardada y bloqueada", pasos 1-6).
 //                  - 'state':     editabilidad gobernada por el estado real del
@@ -71,13 +83,13 @@ import Step11Sign      from './Step11Sign';
  */
 export const ADMISSIONS_STEPS = [
   // ── Pasos 1-7: wizard pre-AD (familia anónima, /apply, resume_token) ──────────
-  { id: 'email',      labelKey: 'step.email',                component: Step1Email,     savePolicy: 'wizard', lockPolicy: 'completed', preload: [] },
-  { id: 'persons',    labelKey: 'step.persons',              component: Step2Persons,   savePolicy: 'wizard', lockPolicy: 'completed', preload: [] },
-  { id: 'relations',  labelKey: 'step.relations',            component: Step3Relations, savePolicy: 'wizard', lockPolicy: 'completed', preload: [] },
-  { id: 'health',     labelKey: 'step.health',               component: Step4Health,    savePolicy: 'wizard', lockPolicy: 'completed', preload: [] },
-  { id: 'questions',  labelKey: 'step.questions',            component: Step5Questions, savePolicy: 'wizard', lockPolicy: 'completed', preload: [] },
-  { id: 'documents',  labelKey: 'step.documents',            component: Step6Documents, savePolicy: 'wizard', lockPolicy: 'completed', preload: [] },
-  { id: 'review',     labelKey: 'step.review',               component: Step7Review,    savePolicy: 'none',   lockPolicy: 'never',     preload: [] },
+  { id: 'email',      labelKey: 'step.email',                component: Step1Email,     savePolicy: 'wizard', lockPolicy: 'completed', preload: [] , closedBy: ['SUBMITTED', 'REVIEW_CONFIRMED'] },
+  { id: 'persons',    labelKey: 'step.persons',              component: Step2Persons,   savePolicy: 'wizard', lockPolicy: 'completed', preload: [] , closedBy: ['SUBMITTED', 'REVIEW_CONFIRMED'] },
+  { id: 'relations',  labelKey: 'step.relations',            component: Step3Relations, savePolicy: 'wizard', lockPolicy: 'completed', preload: [] , closedBy: ['SUBMITTED', 'REVIEW_CONFIRMED'] },
+  { id: 'health',     labelKey: 'step.health',               component: Step4Health,    savePolicy: 'wizard', lockPolicy: 'completed', preload: [] , closedBy: ['SUBMITTED', 'REVIEW_CONFIRMED'] },
+  { id: 'questions',  labelKey: 'step.questions',            component: Step5Questions, savePolicy: 'wizard', lockPolicy: 'completed', preload: [] , closedBy: ['SUBMITTED', 'REVIEW_CONFIRMED'] },
+  { id: 'documents',  labelKey: 'step.documents',            component: Step6Documents, savePolicy: 'wizard', lockPolicy: 'completed', preload: [] , closedBy: ['SUBMITTED', 'REVIEW_CONFIRMED'] },
+  { id: 'review',     labelKey: 'step.review',               component: Step7Review,    savePolicy: 'none',   lockPolicy: 'never',     preload: [] , closedBy: ['SUBMITTED', 'REVIEW_CONFIRMED'] },
   // ── Pasos 8-11: firma post-AD (mismo chasis; cada acto persiste vía su endpoint) ─
   // #11 (catálogo único de nombres): los labelKey de los pasos de firma apuntan a las
   // MISMAS keys que ya usaban las cabeceras de los componentes (signing.*.title), de
@@ -86,13 +98,43 @@ export const ADMISSIONS_STEPS = [
   // step.billing.title / step.gdpr.title / step.signing_review.title / step.signing.title
   // quedan sin consumidor en el catálogo (solo sus hermanas .subtitle/.locked.* siguen
   // su ciclo propio).
-  { id: 's_billing',  labelKey: 'signing.billing.title',  component: Step8Billing,   savePolicy: 'act',    lockPolicy: 'state',     preload: [] },
-  { id: 's_gdpr',     labelKey: 'signing.gdpr.title',     component: Step9Gdpr,      savePolicy: 'act',    lockPolicy: 'state',     preload: [] },
+  { id: 's_billing',  labelKey: 'signing.billing.title',  component: Step8Billing,   savePolicy: 'act',    lockPolicy: 'state',     preload: [] , closedBy: ['REVIEW_CONFIRMED'] },
+  { id: 's_gdpr',     labelKey: 'signing.gdpr.title',     component: Step9Gdpr,      savePolicy: 'act',    lockPolicy: 'state',     preload: [] , closedBy: ['REVIEW_CONFIRMED'] },
   // Step 10: precarga del paquete contractual (members + doc URLs) AL ENTRAR → render
   // dinámico de los members sin "vuelve en unos minutos" (espera activa con reintento).
-  { id: 's_review',   labelKey: 'signing.review.title',   component: Step10Review,   savePolicy: 'act',    lockPolicy: 'state',     preload: ['documents'] },
-  { id: 's_sign',     labelKey: 'signing.signing.title',  component: Step11Sign,     savePolicy: 'none',   lockPolicy: 'never',     preload: [] },
+  { id: 's_review',   labelKey: 'signing.review.title',   component: Step10Review,   savePolicy: 'act',    lockPolicy: 'state',     preload: ['documents'] , closedBy: ['REVIEW_CONFIRMED'] },
+  { id: 's_sign',     labelKey: 'signing.signing.title',  component: Step11Sign,     savePolicy: 'none',   lockPolicy: 'never',     preload: [] , closedBy: [] },
 ];
+
+/**
+ * MAPEO CENTRAL de modos de edición (decisión Diego 2026-06-12: "no hay diferencia
+ * entre los pasos 1-7 y los 8-11 — lo único que modifica su estado es el estado de
+ * la solicitud y los hitos completados"). Evaluador PURO y UNIFORME para CUALQUIER
+ * paso del catálogo — cero rangos de índice, cero casos especiales:
+ *
+ *   LOCKED    ← alguna condición closedBy del paso se cumple (estado/hitos).
+ *   PROTECTED ← el paso está completado/guardado (banner + botón Editar).
+ *   EDITABLE  ← resto.
+ *
+ * Las condiciones son server-driven: 'SUBMITTED' = solicitud enviada y no editable
+ * (estado real, con override de reopen); 'REVIEW_CONFIRMED' = hito durable de
+ * lectura confirmada (la documentación salió a firma). Otro programa declara sus
+ * propios closedBy en SU catálogo sin tocar este evaluador.
+ *
+ * @param {number} stepIndex
+ * @param {{isSubmitted:boolean, reviewConfirmed:boolean, completedSteps:Set<number>}} st
+ * @returns {'EDITABLE'|'PROTECTED'|'LOCKED'}
+ */
+export function stepEditMode(stepIndex, st) {
+  const entry = STEP_CATALOG[stepIndex] || {};
+  const COND = {
+    SUBMITTED:        !!st.isSubmitted,
+    REVIEW_CONFIRMED: !!st.reviewConfirmed,
+  };
+  if ((entry.closedBy || []).some(c => COND[c])) return 'LOCKED';
+  if (st.completedSteps && st.completedSteps.has(stepIndex)) return 'PROTECTED';
+  return 'EDITABLE';
+}
 
 /**
  * #11 — i18n key del NOMBRE de un paso por id de catálogo. Único punto de verdad
