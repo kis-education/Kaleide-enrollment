@@ -446,10 +446,13 @@ const handleNext = async (stepKey, data, extra = null) => {
     log.info('WizardPage: sending magic link for Save & Continue Later', { enrollmentGroupId });
     setSendingMagicLink(true);
     try {
-      await gasCall('sendMagicLink', {
+      const sent = await gasCall('sendMagicLink', {
         enrollment_group_id: enrollmentGroupId,
         application_id:      enrollmentGroupId, // legacy alias
       });
+      // SPEC-WIZ-WARMUP-V2: kick fire-and-forget del precalentado (ticket opaco;
+      // el token rotado solo viaja por email — ver LandingPage para el racional).
+      if (sent && sent.warm_ticket) gasCall('warmBundle', { ticket: sent.warm_ticket }).catch(() => {});
       log.success('WizardPage: magic link sent');
       showToast(t('wizard.save_later_sent'));
     } catch (err) {

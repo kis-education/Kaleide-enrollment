@@ -1187,40 +1187,35 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang) {
 }
 
 /**
- * WIZARD-CACHE — encola un warm del bundle de entrada y programa el trigger one-shot.
- * Los triggers time-based NO llevan args → el token viaja por una cola simple en
- * ScriptCache (`wz_warmq`); el trigger la drena y SE AUTOBORRA (límite ~20 triggers/
- * script — borrar siempre). Best-effort: si la creación del trigger falla, log y
- * seguir — el envío del email JAMÁS depende del warm.
+ * SPEC-WIZ-WARMUP-V2 (2026-06-12) — ticket de warm opaco para la auto-invocación
+ * concurrente del wizard a su propio /exec. El frontend NUNCA conoce el resume_token
+ * nuevo (viaja solo por email), así que sendMagicLink_/initEnrollmentSession_ mintean
+ * este ticket single-use (TTL 300s) que mapea SERVER-SIDE a los items de warm
+ * [{t: resume_token, n: email_id, e: email destino, l: lang}]. El ticket NO es un
+ * bearer de datos: solo dispara el warm (warmBundle_ devuelve conteos, jamás PII ni
+ * tokens). KAL-7: viaja en el body JSON de la respuesta, nunca en URL; KAL-11: no se
+ * loguea entero. Best-effort: si el mint falla, null → sin kick (camino vivo intacto).
+ * @param {Array<{t:string,n:?string,e:?string,l:?string}>} items
+ * @returns {string|null} ticket UUID o null
  * @private
  */
-function _enqueueWizardWarm_(resumeToken, lang, recoveredEmail) {
+function _mintWarmTicket_(items) {
   try {
-    if (!resumeToken) return;
-    var cache = CacheService.getScriptCache();
-    var lock = null, locked = false;
-    try { lock = LockService.getScriptLock(); locked = lock.tryLock(2000); } catch (eL) { /* sin lock: best-effort */ }
-    try {
-      var q = [];
-      var raw = cache.get('wz_warmq');
-      if (raw) { try { q = JSON.parse(raw) || []; } catch (e) { q = []; } }
-      q.push({ t: String(resumeToken).trim(), e: recoveredEmail || null, l: lang || null });
-      if (q.length > 10) q = q.slice(-10);   // bound defensivo
-      cache.put('wz_warmq', JSON.stringify(q), 1800);
-    } finally { if (locked) { try { lock.releaseLock(); } catch (eR) {} } }
-    ScriptApp.newTrigger('wizardWarmTrigger').timeBased().after(1000).create();
-  } catch (e) {
-    Logger.log(redact_('[_enqueueWizardWarm_] skip (non-fatal) — ' + (e && e.message)));
-  }
+    if (!items || !items.length) return null;
+    var ticket = generateUuid_();
+    CacheService.getScriptCache().put('wzwt_' + ticket, JSON.stringify(items), 300);
+    return ticket;
+  } catch (e) { return null; }
 }
 
 /**
- * WIZARD-CACHE — handler del trigger one-shot. PRIMERO se autoborra (todos los
- * triggers de este handler — los pendientes drenan la misma cola, no se pierden
- * items), luego drena `wz_warmq` y calienta cada token. Guard de 4,5 min: si la
- * cola es larga, re-encola el resto + nuevo trigger (límite 6 min de ejecución).
- * NO está en el dispatcher doPost (no invocable desde internet) ni es manual_*
- * (lo dispara ScriptApp, no Diego).
+ * STUB de compatibilidad del mecanismo V1 (trigger one-shot, RETIRADO por
+ * SPEC-WIZ-WARMUP-V2 2026-06-12 — el trigger de GAS no garantizaba arranque a
+ * tiempo; log real de Diego: getDocument 38-46s en frío pese al "warm"). El warm
+ * vivo es la auto-invocación concurrente al action `warmBundle` (fire-and-forget
+ * del frontend con ticket; la ejecución invocada sigue viva server-side aunque el
+ * caller corte — verificado 2026-06-12). Este stub solo absorbe triggers residuales
+ * pre-deploy (se autoborra y NO hace trabajo). Eliminar en un deploy futuro.
  */
 function wizardWarmTrigger() {
   try {
@@ -1230,25 +1225,7 @@ function wizardWarmTrigger() {
       }
     });
   } catch (eT) { /* best-effort */ }
-  var cache = CacheService.getScriptCache();
-  var items = [];
-  try {
-    var raw = cache.get('wz_warmq');
-    cache.remove('wz_warmq');
-    if (raw) { try { items = JSON.parse(raw) || []; } catch (e) { items = []; } }
-  } catch (e) { items = []; }
-  var t0 = Date.now();
-  for (var i = 0; i < items.length; i++) {
-    if (Date.now() - t0 > 270000) {
-      try {
-        cache.put('wz_warmq', JSON.stringify(items.slice(i)), 1800);
-        ScriptApp.newTrigger('wizardWarmTrigger').timeBased().after(1000).create();
-      } catch (eRe) { /* best-effort */ }
-      break;
-    }
-    var it = items[i] || {};
-    warmEntryBundle_(it.t, it.e, it.l);
-  }
+  try { CacheService.getScriptCache().remove('wz_warmq'); } catch (eC) { /* limpia la cola V1 */ }
 }
 
 // ─── Entry points ─────────────────────────────────────────────────────────────
@@ -1342,6 +1319,9 @@ function doPost(e) {
       //   la versión liveState del grupo. getLiveStateVersion: cheap-poll (solo versión).
       case 'hydrateSession':          result = hydrateSession_(payload);          break;
       case 'warmSession':             result = warmSession_(payload);             break;
+      // SPEC-WIZ-WARMUP-V2 — auto-invocación concurrente del precalentado (fire-and-
+      // forget del frontend tras pedir magic link; ticket single-use o KAL-4 directo).
+      case 'warmBundle':              result = warmBundle_(payload);              break;
       case 'notifyLiveStateChange':   result = notifyLiveStateChange_(payload);   break;
       case 'getLiveStateVersion':     result = getLiveStateVersion_(payload);     break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
@@ -1603,6 +1583,7 @@ function initEnrollmentSession_(p) {
     // Send a magic link so the family can view their submitted application in
     // read-only mode. Rate-limit is checked but errors are swallowed — the
     // already_submitted response is always returned regardless.
+    let warmTicketSubmitted = null;
     try {
       _checkMagicLinkRateLimit_(normalizedEmail);
       const lang = grp.preferred_language || (p.preferred_language || 'es');
@@ -1611,6 +1592,8 @@ function initEnrollmentSession_(p) {
       // these coincide; non-primary-guardian recovery is served by the magic-link
       // recovery service (sendMagicLink_ → findOpenGroupsByGuardianEmail_).
       sendMagicLinkEmail_(normalizedEmail, grp.resume_token, lang, false);
+      // SPEC-WIZ-WARMUP-V2: el usuario clicará el link en ~1 min — precalienta.
+      warmTicketSubmitted = _mintWarmTicket_([{ t: grp.resume_token, n: null, e: normalizedEmail, l: lang }]);
     } catch (e) {
       Logger.log('initEnrollmentSession_: could not send magic link for submitted session: ' + e.message);
     }
@@ -1618,6 +1601,7 @@ function initEnrollmentSession_(p) {
       already_submitted:   true,
       enrollment_group_id: grp.enrollment_group_id,
       application_id:      grp.enrollment_group_id,
+      warm_ticket:         warmTicketSubmitted,
     };
   }
 
@@ -1687,6 +1671,8 @@ function initEnrollmentSession_(p) {
       abandoned_count:     losers.length,    // for frontend telemetry / debug
       enrollment_group_id: winner.enrollment_group_id,
       application_id:      winner.enrollment_group_id, // legacy alias
+      // SPEC-WIZ-WARMUP-V2: precalienta el grupo superviviente para el click del link.
+      warm_ticket:         _mintWarmTicket_([{ t: winner.resume_token, n: null, e: normalizedEmail, l: lang }]),
     };
   }
 
@@ -2140,7 +2126,11 @@ function sendMagicLink_(p) {
     const nEmailId = findEmailIdForGuardian_(grp.enrollment_group_id, identityEmail);
     // Gracia OTP-skip anclada al resume_token recién rotado (single-use, 10 min).
     _mintMagicLinkNonce_(tokenToSend, grp.enrollment_group_id);
-    sendMagicLinkEmail_(destEmail, tokenToSend, grp.preferred_language || 'es', undefined, nEmailId);
+    const langP1 = grp.preferred_language || 'es';
+    sendMagicLinkEmail_(destEmail, tokenToSend, langP1, undefined, nEmailId);
+    // SPEC-WIZ-WARMUP-V2: ticket para que el frontend dispare warmBundle fire-and-forget
+    // con el token NUEVO (que solo viaja por email). Identidad warm = la del click real.
+    return { sent: true, warm_ticket: _mintWarmTicket_([{ t: tokenToSend, n: nEmailId, e: destEmail, l: langP1 }]) };
   } else if (p.primary_email) {
     // Find all non-abandoned sessions for this email — INCLUDING submitted/AD.
     // DL-E38: recovery MUST work for submitted/AD families so the magic link can
@@ -2199,17 +2189,20 @@ function sendMagicLink_(p) {
       const nEmailId = findEmailIdForGuardian_(grps[0].enrollment_group_id, identityEmail);
       _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
       sendMagicLinkEmail_(p.primary_email, grps[0].resume_token, lang, false, nEmailId);
+      // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
+      return { sent: true, warm_ticket: _mintWarmTicket_([{ t: grps[0].resume_token, n: nEmailId, e: identityEmail, l: lang }]) };
     } else {
       // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
       // del guardian en SU grupo. La gracia OTP-skip se ancla al resume_token de cada grupo.
       const nEmailIds = grps.map(g => findEmailIdForGuardian_(g.enrollment_group_id, identityEmail));
       grps.forEach(g => _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id));
       sendMagicLinkMultiEmail_(p.primary_email, grps.map(g => g.resume_token), lang, nEmailIds);
+      // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
+      return { sent: true, warm_ticket: _mintWarmTicket_(grps.map((g, i) => ({ t: g.resume_token, n: nEmailIds[i] || null, e: identityEmail, l: lang }))) };
     }
   } else {
     throw new Error('Missing enrollment_group_id or primary_email');
   }
-  return { sent: true };
 }
 
 /**
@@ -5335,11 +5328,9 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, nEmailId) {
   sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
   // SPEC-WIZ-WARMUP \u2014 calienta el hydrate del grupo en el "minuto muerto". resumeToken es
   // el token NUEVO (todos los callers lo renuevan antes de invocar este env\u00edo). Best-effort.
+  // SPEC-WIZ-WARMUP-V2: este warm KMS queda como L2; el L1 wizard-side lo dispara la
+  // auto-invocaci\u00f3n concurrente `warmBundle` (ticket minteado por el caller del env\u00edo).
   _enqueueWarmHydrate_(resumeToken, lang, email);
-  // WIZARD-CACHE (decisi\u00f3n Diego 2026-06-12) \u2014 L1 wizard-side: trigger one-shot que trae
-  // del KMS y cachea AQU\u00cd el bundle de entrada (hydrate + admission + PDFs del paquete).
-  // El warm KMS de arriba se MANTIENE como L2 (abarata los pulls del bundle). Best-effort.
-  _enqueueWizardWarm_(resumeToken, lang, email);
 }
 
 /**
@@ -5394,10 +5385,8 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang, nEmailIds) {
 
   sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
   // SPEC-WIZ-WARMUP \u2014 calienta el hydrate de CADA grupo enviado (tokens ya renovados). Best-effort.
+  // SPEC-WIZ-WARMUP-V2: warm KMS = L2; el L1 wizard-side lo dispara `warmBundle` (ticket).
   (resumeTokens || []).forEach(function(t) { _enqueueWarmHydrate_(t, lang, email); });
-  // WIZARD-CACHE \u2014 L1 wizard-side por cada token (el trigger drena la cola entera;
-  // los triggers redundantes se autoborran en el primer drain). Best-effort.
-  (resumeTokens || []).forEach(function(t) { _enqueueWizardWarm_(t, lang, email); });
 }
 
 /**
@@ -6610,6 +6599,60 @@ function warmSession_(p) {
     return { ok: true, warmed: false, reason: 'WARM_FAILED' };
   }
   return { ok: true, warmed: true, docs: w.docs, members: w.members };
+}
+
+/**
+ * SPEC-WIZ-WARMUP-V2 (2026-06-12, arquitectura dictada por Diego) — action pública del
+ * precalentado del bundle de entrada. La dispara el frontend FIRE-AND-FORGET justo tras
+ * pedir un magic link (auto-invocación concurrente del wizard a su propio /exec): la
+ * ejecución invocada sigue viva server-side aunque el caller corte la conexión
+ * (VERIFICADO 2026-06-12: curl -m 3 sobre warmSession → bundle cocinado, cache HIT).
+ * PROHIBIDO el trigger temporal (mecanismo V1, retirado — no ganaba la carrera del
+ * "minuto muerto"). NOTA de plataforma: UrlFetchApp NO soporta timeout configurable,
+ * por eso el caller que corta es el frontend (browser), no el backend.
+ *
+ * Dos modos:
+ *  - { ticket }: ticket opaco single-use (TTL 300s, _mintWarmTicket_) que mapea
+ *    server-side a [{t,n,e,l}] — el frontend nunca conoce el resume_token nuevo.
+ *    Ticket desconocido/expirado/reusado → {ok:false} silencioso (sin oráculo).
+ *  - { resume_token, n?, language? }: passthrough a warmSession_ (gate KAL-4
+ *    requireResumeToken_ dentro). Útil para verificación outside-in por curl.
+ *
+ * Seguridad: KAL-4 intacta (el warm se computa contra el grupo derivado del token
+ * server-side; el servido re-valida gates token+step-up). Devuelve SOLO conteos.
+ * Multi-familia: claves per-token/per-ticket, cero estructuras compartidas con RMW.
+ */
+function warmBundle_(p) {
+  if (p && p.ticket) {
+    var tk = String(p.ticket).trim();
+    try { assertValidUuid_(tk, 'ticket'); } catch (eV) { return { ok: false }; }
+    var cache = CacheService.getScriptCache();
+    var key = 'wzwt_' + tk;
+    var raw = cache.get(key);
+    cache.remove(key); // single-use SIEMPRE (también si el parse falla)
+    if (!raw) return { ok: false };
+    var items = [];
+    try { items = JSON.parse(raw) || []; } catch (eP) { return { ok: false }; }
+    var warmed = 0, docs = 0;
+    items.forEach(function(it) {
+      if (!it || !it.t) return;
+      try {
+        var r = warmSession_({
+          resume_token:    it.t,
+          n:               it.n || null,
+          recovered_email: it.e || null,
+          language:        it.l || null,
+        });
+        if (r && r.warmed) { warmed++; docs += (r.docs || 0); }
+      } catch (eW) {
+        // Best-effort por item (KAL-11 redactado): un grupo fallido no rompe el resto.
+        Logger.log(redact_('[warmBundle_] item non-fatal — ' + (eW && eW.message)));
+      }
+    });
+    return { ok: true, warmed: warmed, docs: docs };
+  }
+  // Sin ticket: mismo gate y semántica que el warm de la pantalla OTP (KAL-4 dentro).
+  return warmSession_(p);
 }
 
 function hydrateSession_(p) {

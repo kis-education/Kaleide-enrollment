@@ -67,8 +67,14 @@ export default function LandingPage() {
       // magic link (resumeSession_), NO la landing.
       let recovered = false;
       try {
-        await gasCall('sendMagicLink', { primary_email: email });
+        const sent = await gasCall('sendMagicLink', { primary_email: email });
         recovered = true;
+        // SPEC-WIZ-WARMUP-V2 — auto-invocación CONCURRENTE del wizard a su propio
+        // /exec: kick fire-and-forget (SIN await) del precalentado del bundle de
+        // entrada, con el ticket opaco que mintió el backend (el resume_token nuevo
+        // solo viaja por email). La ejecución GAS sigue viva server-side aunque esta
+        // pestaña se cierre. Best-effort: el catch vacío es deliberado.
+        if (sent && sent.warm_ticket) gasCall('warmBundle', { ticket: sent.warm_ticket }).catch(() => {});
       } catch (recErr) {
         // Solo "Enrollment group not found" (email no asociado) cae a iniciar
         // nuevo. Cualquier otro error (rate-limit, validación, red) se propaga.
@@ -95,6 +101,9 @@ export default function LandingPage() {
         preferred_language: navigator.language?.startsWith('en') ? 'en' : 'es',
         recaptcha_token,
       });
+      // SPEC-WIZ-WARMUP-V2: los paths already_submitted/resumed del init también
+      // envían magic link → mismo kick fire-and-forget del precalentado.
+      if (data.warm_ticket) gasCall('warmBundle', { ticket: data.warm_ticket }).catch(() => {});
       if (data.already_submitted) {
         setAlreadySubmitted(true);
         setSent(true);
