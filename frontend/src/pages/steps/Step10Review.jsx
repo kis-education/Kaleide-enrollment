@@ -37,8 +37,11 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
     // STEP10-VIEWER: el cache de documentos vive en el CONTEXTO (object URLs + sha256
     // keyed por file_id) — navegar 10→11→10 NO refetchea.
     docCache, loadDocument, signingMembers, setSigningMembers,
-    signingForms, updateSigningForm,
-  } = useWizard();
+    signingForms, updateSigningForm, admissionState } = useWizard();
+  // Decisión Diego 2026-06-12: post-REVIEW_CONFIRMED el wizard se bloquea (solo
+  // lectura); la confirmación ya está registrada — avanzar no re-encola nada.
+  const signingLocked = !!(admissionState && admissionState.signing_context
+    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed);
   // members sembrados del cache del contexto → re-entrada al Step 10 pinta al
   // instante; el efecto de abajo los refresca igualmente en background.
   const [members, setMembers] = useState(signingMembers); // null=loading/preparando
@@ -167,7 +170,8 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
   // previo → nube global; (4) avance inmediato. El Step 11 SÍ drena la cola
   // (awaitPendingSave) antes del acto de firma — único await legítimo.
   const confirm = () => {
-    log.info('[DBG review] confirm CLICK', { accepted_n: acceptedCount, total: docs.length });
+    log.info('[DBG review] confirm CLICK', { accepted_n: acceptedCount, total: docs.length, locked: signingLocked });
+    if (signingLocked) { onAdvance(); return; } // ya confirmado y enviado: solo lectura
     if (!allAccepted) { setErr(t('signing.review.must_accept_all')); return; }
     setErr('');
     log.info('[DBG review] confirm — avanzando (confirmReview encolado)');
@@ -269,10 +273,15 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
         onBack={onBack}
         onNext={confirm}
         nextLabel={t('signing.review.submit')}
-        nextDisabled={!allAccepted || !packageReady}
-        nextHint={nextHint}
+        nextDisabled={!signingLocked && (!allAccepted || !packageReady)}
+        nextHint={signingLocked ? '' : nextHint}
         error={err}
       >
+        {signingLocked && (
+          <p style={{ background: '#fff8e1', borderLeft: '4px solid #f0a500', padding: '10px 14px', borderRadius: 4, color: '#5c4400', fontSize: '0.9rem' }}>
+            {t('signing.locked_note')}
+          </p>
+        )}
         {/* ESPERA ACTIVA mientras el paquete se prepara — progreso visible + reintento
             automático, JAMÁS "vuelve en unos minutos". El error DURO (loadErr, tras 8
             reintentos) sí informa con un mensaje accionable (contactar admisiones). */}

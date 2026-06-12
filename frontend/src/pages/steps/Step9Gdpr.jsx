@@ -30,8 +30,12 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   const { t, i18n } = useTranslation();
   const {
     enqueueSave, stepData, recoveredEmail, recoveryNonce,
-    signingForms, updateSigningForm,
+    signingForms, updateSigningForm, admissionState,
   } = useWizard();
+  // Decisión Diego 2026-06-12: post-REVIEW_CONFIRMED el wizard se bloquea (solo
+  // lectura); el backend además rechaza con SIGNING_LOCKED.
+  const signingLocked = !!(admissionState && admissionState.signing_context
+    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed);
   const lang = lang_(i18n);
 
   const fullName_ = (p) => [p.first_name, p.middle_name, p.last_name].filter(x => x && String(x).trim()).join(' ').trim();
@@ -89,6 +93,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   // (consentimiento bloqueante); (2) payload VERBATIM construido ANTES de encolar;
   // (3) enqueueSave SIN await previo → nube global; (4) avance inmediato.
   const submit = () => {
+    if (signingLocked) { onAdvance(); return; } // solo lectura: avanza sin guardar
     const gdprSchool = generalConsents.find(c => c.blocking);
     if (gdprSchool && genState[gdprSchool.code] !== true) {
       setErr(t('signing.gdpr.must_accept_blocking'));
@@ -161,9 +166,14 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
         subtitle={t('signing.gdpr.subtitle')}
         onBack={onBack}
         onNext={submit}
-        nextLabel={t('signing.gdpr.submit')}
+        nextLabel={signingLocked ? undefined : t('signing.gdpr.submit')}
         error={err}
       >
+        {signingLocked && (
+          <p style={{ background: '#fff8e1', borderLeft: '4px solid #f0a500', padding: '10px 14px', borderRadius: 4, color: '#5c4400', fontSize: '0.9rem' }}>
+            {t('signing.locked_note')}
+          </p>
+        )}
         {/* Consentimientos GENERALES (per-guardian: GDPR + comms + plataforma) */}
         {generalConsents.map(c => (
           <div key={c.code} className="consent-block" style={{ borderBottom: '1px solid var(--bg)', paddingBottom: 12, marginBottom: 12 }}>

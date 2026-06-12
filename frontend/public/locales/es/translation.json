@@ -412,5 +412,6 @@
   "stepup.sign_prompt": "Verifica para firmar",
   "stepup.review_gate_body": "Antes de revisar el paquete contractual, confirma tu identidad con un código de verificación.",
   "stepup.review_prompt": "Verifica para revisar los documentos",
-  "pdf.retry": "Reintentar"
+  "pdf.retry": "Reintentar",
+  "signing.locked_note": "La documentación ya fue aceptada y enviada a firma — esta sección es de solo lectura."
 }

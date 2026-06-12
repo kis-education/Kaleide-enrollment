@@ -29,8 +29,13 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   const { t } = useTranslation();
   const {
     stepData, enqueueSave, recoveredEmail, recoveryNonce,
-    signingForms, updateSigningForm,
+    signingForms, updateSigningForm, admissionState,
   } = useWizard();
+  // Decisión Diego 2026-06-12: tras aceptar los documentos y enviarse a firma
+  // (hito durable REVIEW_CONFIRMED), el wizard se BLOQUEA — solo lectura. El
+  // backend además rechaza el acto con SIGNING_LOCKED (defensa en profundidad).
+  const signingLocked = !!(admissionState && admissionState.signing_context
+    && admissionState.signing_context.steps && admissionState.signing_context.steps.review_completed);
   // Default payer = signing guardian (DL-E38: identity derived server-side from the
   // token). KAL-4 intact — the KMS re-derives enrollment_group_id + signer from the
   // token, never from this payload.
@@ -253,6 +258,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   // (4) avance inmediato (onAdvance). Baseline al contexto tras save OK.
   // KAL-4/KAL-7 intactos: el KMS deriva grupo/signer del token; el payload solo lleva %.
   const submit = () => {
+    if (signingLocked) { onAdvance(); return; } // solo lectura: avanza sin guardar
     const v = validate();
     if (v) { setErr(v); return; }
     setErr('');
@@ -290,9 +296,14 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
         subtitle={t('signing.billing.subtitle')}
         onBack={onBack}
         onNext={submit}
-        nextLabel={t('signing.billing.submit')}
+        nextLabel={signingLocked ? undefined : t('signing.billing.submit')}
         error={err}
       >
+        {signingLocked && (
+          <p style={{ background: '#fff8e1', borderLeft: '4px solid #f0a500', padding: '10px 14px', borderRadius: 4, color: '#5c4400', fontSize: '0.9rem' }}>
+            {t('signing.locked_note')}
+          </p>
+        )}
         <div style={{ marginTop: 8 }}>
           <h3 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '0.98rem', marginBottom: 4 }}>
             {t('signing.billing.split.title')}

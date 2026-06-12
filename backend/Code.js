@@ -1027,6 +1027,32 @@ function _wzSelfFetchAll_(payloads) {
 }
 
 /**
+ * SPEC-WIZ-WARMUP-V2.2 (2026-06-12, log real de Diego 15:06) — SINGLE-FLIGHT:
+ * cuando el usuario clica ANTES de que el warm termine (click a los 26s del kick),
+ * el camino vivo NO debe duplicar el trabajo del warm (la estampida multiplicaba
+ * la latencia: hydrate 73,7s, initiate(read) 37-49s x3). Si hay un warm COCINANDO
+ * este token (marcador wzck_*), el vivo ESPERA su resultado (sondeo del cache cada
+ * 2s, con tope) en vez de competir. Marcador caído sin resultado o timeout → vivo.
+ * @returns {?string} serialized del cache o null (→ camino vivo)
+ * @private
+ */
+function _wzAwaitWarm_(markerKey, cacheKey, maxMs) {
+  try {
+    var cache = CacheService.getScriptCache();
+    if (!cache.get(markerKey)) return null;
+    Logger.log('[WZCACHE] single-flight: esperando warm en curso (' + markerKey.slice(0, 12) + '…)');
+    var t0 = Date.now();
+    while (Date.now() - t0 < maxMs) {
+      Utilities.sleep(2000);
+      var raw = _wzCacheGetChunked_(cache, cacheKey);
+      if (raw) return raw;
+      if (!cache.get(markerKey)) return null;
+    }
+  } catch (e) { /* best-effort → vivo */ }
+  return null;
+}
+
+/**
  * Pase interno single-use (TTL 300s) para una fase hija del warm. Server-minted
  * (jamás derivable por el cliente); consumido en warmBundle_ al primer uso.
  * @private
@@ -1208,6 +1234,10 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
     try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
     var tPrev = token.slice(0, 8) + '…';
     var cache = CacheService.getScriptCache();
+    // V2.2 single-flight: marca "cocinando" para que el camino vivo espere en vez
+    // de competir. hyd cubre hydrate+admission; mem cubre members. Se retiran al
+    // completar cada tramo (y caducan solos si esta ejecución muere).
+    try { cache.put('wzck_hyd_' + token, '1', 240); } catch (eM1) {}
 
     // (a) Hydrate completo → wz_hyd_<token>. El KMS tiene SU warm (L2) → pull barato
     //     si el job KMS corrió; si no, se paga UNA vez aquí (no en el click del usuario).
@@ -1274,6 +1304,8 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
       };
       out.admission = _wzCachePutChunked_(cache, _wzCacheKey_('adm', token), JSON.stringify(admEntry), 1800);
     }
+    try { cache.remove('wzck_hyd_' + token); } catch (eM2) {}
+    try { cache.put('wzck_mem_' + token, '1', 240); } catch (eM3) {}
 
     // (d) Members del paquete + (e) bytes de cada uno → wz_doc_<token>_<file_id>.
     if (signingToken) {
@@ -1293,6 +1325,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
         Logger.log(redact_('[WZCACHE] warm members FALLÓ token=' + tPrev + ' — ' + (eM && eM.message)));
       }
       out.members = members.length;
+      try { cache.remove('wzck_mem_' + token); } catch (eM4) {}
 
       var pendientes = [];
       members.forEach(function(m) {
@@ -1321,6 +1354,11 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
     // Best-effort TOTAL (KAL-11: redactado). Nunca peor que hoy.
     Logger.log(redact_('[warmEntryBundle_] non-fatal — ' + (e && e.message)));
   }
+  try {
+    var cM = CacheService.getScriptCache();
+    cM.remove('wzck_hyd_' + String(resumeToken).trim());
+    cM.remove('wzck_mem_' + String(resumeToken).trim());
+  } catch (eM5) { /* best-effort */ }
   out.ms = Date.now() - t0;
   Logger.log('[WZCACHE] warm bundle done ' + JSON.stringify(out));
   return out;
@@ -6809,6 +6847,22 @@ function initiateSigningSession_(p) {
           Logger.log('[WZCACHE] STALE mem token=' + String(p.resume_token).slice(0, 8) + '... — invalidado');
         }
       }
+      // V2.2 single-flight: si el warm está cocinando los members (log Diego 15:07 —
+      // 2-3 lecturas create_only VIVAS de 37-49s compitiendo con el warm), esperar
+      // su resultado (≤40s) antes de duplicar la lectura.
+      if (!wzMemRaw) {
+        const awaitedMem = _wzAwaitWarm_('wzck_mem_' + String(p.resume_token).trim(), wzMemKey, 40000);
+        if (awaitedMem) {
+          const memE2 = JSON.parse(awaitedMem);
+          if (memE2 && memE2.data && memE2.v === _getLiveStateVersion_(sctx.enrollment_group_id)
+              && String(memE2.n || '') === String((p && p.n) || '')) {
+            Logger.log('[WZCACHE] HIT mem (single-flight) token=' + String(p.resume_token).slice(0, 8) + '...');
+            return (p._perf === true)
+              ? Object.assign({}, memE2.data, { _perf: { cache_hit: true, single_flight: true, t_total_ms: Date.now() - perfT0 } })
+              : memE2.data;
+          }
+        }
+      }
     } catch (eWzMem) { /* best-effort → camino vivo */ }
   }
 
@@ -7055,6 +7109,18 @@ function hydrateSession_(p) {
       if (data) Logger.log('[WZCACHE] HIT hyd token=' + String(p.resume_token).slice(0, 8) + '…');
     }
   } catch (eWzHyd) { data = null; /* best-effort → camino vivo */ }
+  if (!data) {
+    // V2.2 single-flight (log Diego 15:06 — hydrate 73,7s por ESTAMPIDA): si el warm
+    // está cocinando este token, esperar su resultado (≤60s) en vez de lanzar un
+    // segundo pull KMS que compite con él. Marcador caído / timeout → pull vivo.
+    try {
+      const awaited = _wzAwaitWarm_('wzck_hyd_' + String(p.resume_token).trim(), wzHydKey, 60000);
+      if (awaited) {
+        data = JSON.parse(awaited);
+        if (data) Logger.log('[WZCACHE] HIT hyd (single-flight) token=' + String(p.resume_token).slice(0, 8) + '…');
+      }
+    } catch (eAw) { data = null; }
+  }
   if (!data) {
     data = kmsProxy_('enr.wizardHydrate', {
       resume_token:    String(p.resume_token).trim(),
