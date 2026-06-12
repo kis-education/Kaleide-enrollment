@@ -1037,6 +1037,8 @@ function _wzCacheInvalidate_(resumeToken) {
     CacheService.getScriptCache().removeAll([
       _wzCacheKey_('hyd', t) + '_meta',
       _wzCacheKey_('adm', t) + '_meta',
+      _wzCacheKey_('res', t) + '_meta',
+      _wzCacheKey_('mem', t) + '_meta',
     ]);
   } catch (e) { /* best-effort */ }
 }
@@ -1114,8 +1116,8 @@ function _wzKmsFetchAll_(calls) {
  * @returns {{ok:boolean, hydrate:boolean, admission:boolean, members:number, docs:number, ms:number}}
  * @private
  */
-function warmEntryBundle_(resumeToken, recoveredEmail, lang) {
-  var out = { ok: false, hydrate: false, admission: false, members: 0, docs: 0, ms: 0 };
+function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam) {
+  var out = { ok: false, hydrate: false, admission: false, resume: false, members: 0, docs: 0, ms: 0 };
   var t0 = Date.now();
   try {
     if (!resumeToken) return out;
@@ -1171,6 +1173,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang) {
       var admSrc = data.admission;
       var admEntry = {
         v: _getLiveStateVersion_(groupId),
+        n: String(nParam || ''),
         admission: {
           state_code:        admSrc.state_code || null,
           state_label:       admSrc.state_label || null,
@@ -1189,12 +1192,46 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang) {
       out.admission = _wzCachePutChunked_(cache, _wzCacheKey_('adm', token), JSON.stringify(admEntry), 1800);
     }
 
+    // (c.bis) Payload de resume COMPLETO → wz_res_<token> (SPEC-WIZ-WARMUP-V2,
+    //     2026-06-12): es la hidratacion de entrada del magic link (ResumePage →
+    //     hydrateFromResume), ~25-30s de lecturas wizard-side. MISMO lector que el
+    //     vivo (buildResumeSessionData_, cero divergencia); skipPiiGate=true porque
+    //     el warm corre ANTES del click (sin step-up) — la ENTREGA gatea igual.
+    if (groupId && !cache.get(_wzCacheKey_('res', token) + '_meta')) {
+      try {
+        var tR = Date.now();
+        var grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+          Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
+        }) || [];
+        if (grpRows.length && !grpRows[0].abandoned_at) {
+          var resData = buildResumeSessionData_(grpRows[0],
+            { resume_token: token, n: nParam || null, recovered_email: recoveredEmail || null },
+            false, { skipPiiGate: true });
+          if (resData && resData.pii_gated !== true) {
+            out.resume = _wzCachePutChunked_(cache, _wzCacheKey_('res', token),
+              JSON.stringify({ v: _getLiveStateVersion_(groupId), n: String(nParam || ''), data: resData }), 1800);
+          }
+        }
+        Logger.log('[WZCACHE] warm res token=' + tPrev + ' cached=' + out.resume + ' ms=' + (Date.now() - tR));
+      } catch (eR) {
+        Logger.log(redact_('[WZCACHE] warm res FALLO token=' + tPrev + ' - ' + (eR && eR.message)));
+      }
+    } else if (groupId) { out.resume = true; }
+
     // (d) Members del paquete + (e) bytes de cada uno → wz_doc_<token>_<file_id>.
     if (signingToken) {
       var members = [];
       try {
         var prep = kmsProxy_('enr.initiateSigningSession', { signing_token: signingToken, create_only: true }) || {};
         members = prep.members || [];
+        // SPEC-WIZ-WARMUP-V2 (2026-06-12): cachear la RESPUESTA create_only entera
+        // (members/state) → el initiateSigningRead del Step 10 (45-48s e2e, #65)
+        // sirve de aqui post-gates. SOLO la lectura create_only; el ACTO (initiate)
+        // jamas toca cache (P222).
+        if (prep && members.length && groupId) {
+          _wzCachePutChunked_(cache, _wzCacheKey_('mem', token),
+            JSON.stringify({ v: _getLiveStateVersion_(groupId), n: String(nParam || ''), data: prep }), 1800);
+        }
       } catch (eM) {
         Logger.log(redact_('[WZCACHE] warm members FALLÓ token=' + tPrev + ' — ' + (eM && eM.message)));
       }
@@ -2084,7 +2121,7 @@ function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsH
  * @returns {string|null} email_id (UUID) o null
  * @private
  */
-function findEmailIdForGuardian_(groupId, email) {
+function findEmailIdForGuardian_(groupId, email, emailsHint) {
   if (!groupId || !email) return null;
   var emailLc;
   try {
@@ -2095,9 +2132,12 @@ function findEmailIdForGuardian_(groupId, email) {
     return null;
   }
   try {
-    var rows = appsheetRequest_(T.EMAILS, 'Find', [], {
-      Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
-    }) || [];
+    // PERF sendMagicLink (2026-06-12): emailsHint = filas enrEmails del MISMO grupo
+    // ya bajadas por el caller (mismo filtro que abajo) — evita un Find serial.
+    var rows = Array.isArray(emailsHint) ? emailsHint
+      : appsheetRequest_(T.EMAILS, 'Find', [], {
+          Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
+        }) || [];
     var match = rows.find(function(r) {
       return r && String(r.value || '').toLowerCase().trim() === emailLc && r.email_id;
     });
@@ -2137,10 +2177,20 @@ function sendMagicLink_(p) {
     // caller, recovered_email only ever a discriminator validated against real rows.
     let destEmail = grp.primary_email;
     let identityEmail = null; // IDENTITY-FROM-LINK: email del guardian destino (si resuelve)
-    if (p.recovered_email && resolveGuardianForRecovery_(grp.enrollment_group_id, p.recovered_email, null, null, grp)) {
+    // PERF sendMagicLink (2026-06-12): UN batch paralelo de emails+persons del grupo
+    // como hints de los 2 resolveGuardianForRecovery_ + findEmailIdForGuardian_
+    // (antes: hasta 3 Finds SERIALES de las mismas tablas, ~3-5s cada uno).
+    const grpIdEsc = appsheetEscape_(grp.enrollment_group_id);
+    const hintRead = appsheetRequestBatch_([
+      { table: T.EMAILS,  action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + grpIdEsc + '"' } },
+      { table: T.PERSONS, action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + grpIdEsc + '"' } },
+    ]);
+    const emailsHint  = hintRead[0].ok ? (hintRead[0].data || []) : null;
+    const personsHint = hintRead[1].ok ? (hintRead[1].data || []) : null;
+    if (p.recovered_email && resolveGuardianForRecovery_(grp.enrollment_group_id, p.recovered_email, emailsHint, personsHint, grp)) {
       destEmail = String(p.recovered_email).toLowerCase().trim();
       identityEmail = destEmail;
-    } else if (resolveGuardianForRecovery_(grp.enrollment_group_id, grp.primary_email, null, null, grp)) {
+    } else if (resolveGuardianForRecovery_(grp.enrollment_group_id, grp.primary_email, emailsHint, personsHint, grp)) {
       // Sin recovered_email explícito: si el primary_email resuelve a un guardian
       // (caso tutor-1 / artefacto Stage-1), ese es el guardian del enlace.
       identityEmail = String(grp.primary_email || '').toLowerCase().trim();
@@ -2169,7 +2219,7 @@ function sendMagicLink_(p) {
     // IDENTITY-FROM-LINK (2026-06-11): `n` := email_id de la fila enrEmails del guardian
     // destino (opaco, sin PII, ya existe). La identidad viaja EN EL ENLACE; cero columna.
     // Si el email no resuelve a un email_id de guardian (group-scoped legacy) → n null.
-    const nEmailId = findEmailIdForGuardian_(grp.enrollment_group_id, identityEmail);
+    const nEmailId = findEmailIdForGuardian_(grp.enrollment_group_id, identityEmail, emailsHint);
     // Gracia OTP-skip anclada al resume_token recién rotado (single-use, 10 min).
     _mintMagicLinkNonce_(tokenToSend, grp.enrollment_group_id);
     const langP1 = grp.preferred_language || 'es';
@@ -2202,25 +2252,47 @@ function sendMagicLink_(p) {
     // their EXISTING resume_token untouched (no created_at reset) — exactly like
     // Path 1 — so recovery into signing reuses the live token.
     const nowIso = new Date().toISOString();
-    const grps = rows
-      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-      .map(g => {
-        if (g.submitted_at) return g; // submitted: send existing token, do not renew
-        const newToken = generateUuid_();
-        try {
-          appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-            enrollment_group_id: g.enrollment_group_id,
-            resume_token:        newToken,
-            created_at:          nowIso,
-            updated_at:          nowIso,
-          }]);
-          return { ...g, resume_token: newToken };
-        } catch (e) {
-          // KAL-11: redact group_id UUID.
-          Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message));
-          return g; // fall back to original token on error
-        }
-      });
+    // PERF sendMagicLink (2026-06-12): renovaciones de token (Edits) + lectura de
+    // enrEmails por grupo en UN solo batch paralelo (antes: 1 Edit serial por grupo
+    // + 1 Find serial por findEmailIdForGuardian_, ~3-5s cada uno). Mismas filas,
+    // mismos filtros — solo serie→paralelo. Si un Edit del batch falla, ese grupo
+    // conserva su token original (mismo fallback que antes).
+    const sorted = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    const renewSpecs = [];
+    const renewIdx   = {};   // group_id → posicion en renewSpecs
+    const newTokens  = {};   // group_id → token nuevo propuesto
+    sorted.forEach(g => {
+      if (g.submitted_at) return; // submitted: send existing token, do not renew
+      const newToken = generateUuid_();
+      newTokens[g.enrollment_group_id] = newToken;
+      renewIdx[g.enrollment_group_id] = renewSpecs.length;
+      renewSpecs.push({ table: T.ENROLLMENT_GROUPS, action: 'Edit', rows: [{
+        enrollment_group_id: g.enrollment_group_id,
+        resume_token:        newToken,
+        created_at:          nowIso,
+        updated_at:          nowIso,
+      }] });
+    });
+    const emailSpecsBase = renewSpecs.length;
+    sorted.forEach(g => {
+      renewSpecs.push({ table: T.EMAILS, action: 'Find', selector: {
+        Filter: '"enrollment_group_id" = "' + appsheetEscape_(g.enrollment_group_id) + '"' } });
+    });
+    const batchRes = appsheetRequestBatch_(renewSpecs);
+    const emailsHintByGroup = {};
+    sorted.forEach((g, i) => {
+      const r = batchRes[emailSpecsBase + i];
+      emailsHintByGroup[g.enrollment_group_id] = (r && r.ok) ? (r.data || []) : null;
+    });
+    const grps = sorted.map(g => {
+      const gid = g.enrollment_group_id;
+      if (!(gid in newTokens)) return g; // submitted: token vivo intacto
+      const r = batchRes[renewIdx[gid]];
+      if (r && r.ok) return { ...g, resume_token: newTokens[gid] };
+      // KAL-11: redact group_id UUID.
+      Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + gid + ': ' + ((r && r.error) || 'batch error')));
+      return g; // fall back to original token on error
+    });
 
     // IDENTITY-FROM-LINK (2026-06-11): el link va al email tecleado (p.primary_email =
     // buzón del guardian dueño). `n` := email_id de la fila enrEmails de ESE email en
@@ -2232,7 +2304,7 @@ function sendMagicLink_(p) {
       // Use the single-link template (with full security footer + GDPR block)
       // instead of the abridged multi template when there's actually only one
       // open session — which is the common case under the new single-session policy.
-      const nEmailId = findEmailIdForGuardian_(grps[0].enrollment_group_id, identityEmail);
+      const nEmailId = findEmailIdForGuardian_(grps[0].enrollment_group_id, identityEmail, emailsHintByGroup[grps[0].enrollment_group_id]);
       _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
       sendMagicLinkEmail_(p.primary_email, grps[0].resume_token, lang, false, nEmailId);
       // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
@@ -2240,7 +2312,7 @@ function sendMagicLink_(p) {
     } else {
       // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
       // del guardian en SU grupo. La gracia OTP-skip se ancla al resume_token de cada grupo.
-      const nEmailIds = grps.map(g => findEmailIdForGuardian_(g.enrollment_group_id, identityEmail));
+      const nEmailIds = grps.map(g => findEmailIdForGuardian_(g.enrollment_group_id, identityEmail, emailsHintByGroup[g.enrollment_group_id]));
       grps.forEach(g => _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id));
       sendMagicLinkMultiEmail_(p.primary_email, grps.map(g => g.resume_token), lang, nEmailIds);
       // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
@@ -3022,6 +3094,69 @@ function resumeSession_(p) {
     }
   }
 
+
+  // ── SPEC-WIZ-WARMUP-V2 (2026-06-12) — cache-first POST-GATES del payload de
+  // resume (la hidratacion de entrada del magic link, la pieza mas visible de la
+  // primera carga: ~25-30s de lecturas). El warm (warmBundle) lo cocina COMPLETO
+  // keyed por token; la ENTREGA sigue gateada igual (PII solo con step-up fresco —
+  // precedente #69: el warm pre-computa completo, el servido gatea). La entrada
+  // guarda live_version + identidad `n`: version subida o guardian distinto → vivo.
+  try {
+    const wzResKey = _wzCacheKey_('res', String(p.resume_token).trim());
+    const wzResRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzResKey);
+    if (wzResRaw) {
+      const entry = JSON.parse(wzResRaw);
+      if (entry && entry.data && entry.v === _getLiveStateVersion_(id)
+          && String(entry.n || '') === String((p && p.n) || '')) {
+        Logger.log('[WZCACHE] HIT res token=' + String(p.resume_token).slice(0, 8) + '...');
+        if (_isStepUpFresh_(id)) {
+          return Object.assign({}, entry.data, { step_up_fresh: stepUpFresh });
+        }
+        // Sin step-up fresco: misma shape gateada del camino vivo (PII vaciada).
+        return {
+          group: entry.data.group,
+          application: entry.data.group,
+          enrollments: entry.data.enrollments || [],
+          persons: [], relations: [], documents: [], responses: [], interviews: [],
+          admission: entry.data.admission || null,
+          recovered_guardian_person_id: entry.data.recovered_guardian_person_id || null,
+          step_up_fresh: false,
+          pii_gated: true,
+        };
+      }
+      if (entry && entry.data) {
+        // live_version subio o identidad distinta → NUNCA servir stale/ajeno.
+        CacheService.getScriptCache().remove(wzResKey + '_meta');
+        Logger.log('[WZCACHE] STALE res token=' + String(p.resume_token).slice(0, 8) + '... — invalidado');
+      }
+    }
+  } catch (eWzRes) { /* best-effort → camino vivo */ }
+
+  const data = buildResumeSessionData_(group, p, stepUpFresh);
+  // Write-through SOLO del payload COMPLETO (el gateado es barato y parcial).
+  if (data && data.pii_gated !== true) {
+    try {
+      _wzCachePutChunked_(CacheService.getScriptCache(),
+        _wzCacheKey_('res', String(p.resume_token).trim()),
+        JSON.stringify({ v: _getLiveStateVersion_(id), n: String((p && p.n) || ''), data: data }), 1800);
+    } catch (eWzWt) { /* best-effort */ }
+  }
+  return data;
+}
+
+/**
+ * SPEC-WIZ-WARMUP-V2 — camino de DATOS de resumeSession_, movido VERBATIM (regla
+ * codigo-de-oro: mismas tablas, mismos filtros, mismo mapeo; cero redisenno) para
+ * que el warm lo pre-compute y el live lo comparta (UN solo lector, sin divergencia).
+ * Los GATES (token→grupo, gracia, abandoned, TTL) viven en resumeSession_ y corren
+ * SIEMPRE en vivo. opts.skipPiiGate=true SOLO para el warm server-side (pre-computa
+ * el payload completo; la entrega al cliente sigue gateada en el servido).
+ * @private
+ */
+function buildResumeSessionData_(group, p, stepUpFresh, opts) {
+  const id = group.enrollment_group_id;
+  assertValidUuid_(id, 'enrollment_group_id');
+
   // ── Top-level reads in parallel ────────────────────────────────────────────
   // Pre-parallelization: 4 sequential ~600ms-1s Finds (~3-4s total).
   // Now: one fetchAll batch (~1s bounded by slowest).
@@ -3078,7 +3213,7 @@ function resumeSession_(p) {
   // muestra el StepUpGate y re-llama resumeSession tras el OTP (onVerified) → PII.
   // KAL-4: group (id) derivado del token, nunca del payload. (Bonus: corta antes
   // de los ~20 reads de detalle por persona.)
-  if (!_isStepUpFresh_(id)) {
+  if (!(opts && opts.skipPiiGate) && !_isStepUpFresh_(id)) {
     Logger.log(redact_('[resumeSession_] PII-gated (sin step-up) group=' + id));
     return {
       group,
@@ -3342,7 +3477,13 @@ function getAdmissionState_(p) {
     const wzAdmRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzAdmKey);
     if (wzAdmRaw) {
       const wzEntry = JSON.parse(wzAdmRaw);
-      if (wzEntry && wzEntry.admission && wzEntry.v === _getLiveStateVersion_(id)) {
+      // IDENTIDAD (multi-tutor, 2026-06-12): en grupos submitted el token NO rota ->
+      // dos tutores comparten clave. La entrada guarda el `n` con el que se cocino;
+      // si el caller trae otro `n` (otro guardian) -> MISS al camino vivo (que
+      // re-resuelve la identidad real). Mismo patron en wz_res/wz_mem.
+      const wzN = String((p && p.n) || '');
+      if (wzEntry && wzEntry.admission && wzEntry.v === _getLiveStateVersion_(id)
+          && String(wzEntry.n || '') === wzN) {
         const admC = wzEntry.admission;
         Logger.log('[WZCACHE] HIT adm token=' + String(p.resume_token).slice(0, 8) +
                    '… ms=' + (Date.now() - perfT0));
@@ -3443,7 +3584,7 @@ function getAdmissionState_(p) {
   try {
     _wzCachePutChunked_(CacheService.getScriptCache(),
       _wzCacheKey_('adm', String(p.resume_token).trim()),
-      JSON.stringify({ v: _getLiveStateVersion_(id), admission: {
+      JSON.stringify({ v: _getLiveStateVersion_(id), n: String((p && p.n) || ''), admission: {
         state_code:        admission.state_code,
         state_label:       admission.state_label,
         signing_ready:     admission.signing_ready,
@@ -5379,11 +5520,11 @@ function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, nEmailId) {
       + securityFooter;
 
   sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
-  // SPEC-WIZ-WARMUP \u2014 calienta el hydrate del grupo en el "minuto muerto". resumeToken es
-  // el token NUEVO (todos los callers lo renuevan antes de invocar este env\u00edo). Best-effort.
-  // SPEC-WIZ-WARMUP-V2: este warm KMS queda como L2; el L1 wizard-side lo dispara la
-  // auto-invocaci\u00f3n concurrente `warmBundle` (ticket minteado por el caller del env\u00edo).
-  _enqueueWarmHydrate_(resumeToken, lang, email);
+  // SPEC-WIZ-WARMUP-V2 (2026-06-12): el ack sincrono al KMS (_enqueueWarmHydrate_)
+  // se RETIRA del camino del envio - costaba 8-15s del e2e de sendMagicLink y es
+  // redundante: el kick warmBundle (frontend, fire-and-forget) llama enr.wizardHydrate,
+  // cuyo wrapper warm del KMS cachea su propio output -> la L2 se ceba igual, fuera
+  // del camino del usuario.
 }
 
 /**
@@ -5437,46 +5578,9 @@ function sendMagicLinkMultiEmail_(email, resumeTokens, lang, nEmailIds) {
       + securityFooter;
 
   sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
-  // SPEC-WIZ-WARMUP \u2014 calienta el hydrate de CADA grupo enviado (tokens ya renovados). Best-effort.
-  // SPEC-WIZ-WARMUP-V2: warm KMS = L2; el L1 wizard-side lo dispara `warmBundle` (ticket).
-  (resumeTokens || []).forEach(function(t) { _enqueueWarmHydrate_(t, lang, email); });
+  // SPEC-WIZ-WARMUP-V2 (2026-06-12): ack L2 sincrono retirado (ver sendMagicLinkEmail_).
 }
 
-/**
- * SPEC-WIZ-WARMUP (kis-app/docs/kms/specs/enr-wizard-coldload-spec.md \u00a71) \u2014 al ENVIAR un
- * magic-link, encola en el KMS un warm-up del hydrate del grupo (job ENR_WARM_HYDRATE v\u00eda
- * kmsProxy_('enr.wizardWarmHydrate')) para que el click posterior (~1 min despu\u00e9s) resuelva
- * contra cache (HIT casi instant\u00e1neo en vez de pagar el hydrate pesado en l\u00ednea).
- *
- * Best-effort TOTAL (invariante spec): si el encolado falla (KMS no configurado, red, etc.)
- * loguea redactado y CONTIN\u00daA \u2014 el env\u00edo del email NUNCA depende del warm, nunca peor que
- * hoy. Se invoca DENTRO de sendMagicLinkEmail_/sendMagicLinkMultiEmail_, que SIEMPRE reciben
- * el resume_token YA RENOVADO por el caller (invariante spec: token NUEVO post-renovaci\u00f3n,
- * nunca el viejo \u2014 si no, la cache se llavear\u00eda por un token que el link ya no porta). El
- * KMS deriva el enrollment_group_id server-side del resume_token (KAL-4); no se manda aqu\u00ed.
- *
- * @param {string} resumeToken \u2014 token NUEVO que viaja en el magic-link reci\u00e9n enviado.
- * @param {string} lang
- * @private
- */
-function _enqueueWarmHydrate_(resumeToken, lang, recoveredEmail) {
-  try {
-    if (!resumeToken) return;
-    // WARM-KEY-PARITY (2026-06-11, hydrate 73s de Diego = MISS sistémico): la clave de la
-    // cache warm es (token, recovered_email, locale). El click REAL siempre manda el email
-    // del guardian (IDENTITY-FROM-LINK: derivado del `n` del enlace) + language — el warm
-    // que cocinaba SIN email producía claves que nadie lee. El email de destino del link
-    // ES el recovered_email que el click resolverá → clave idéntica → HIT.
-    kmsProxy_('enr.wizardWarmHydrate', {
-      resume_token:    String(resumeToken).trim(),
-      recovered_email: recoveredEmail || null,
-      language:        lang || null,
-    });
-  } catch (e) {
-    // KAL-11: redacta. El warm es opcional \u2014 nunca rompe el env\u00edo del magic-link.
-    Logger.log(redact_('_enqueueWarmHydrate_: warm enqueue skipped (non-fatal) \u2014 ' + (e && e.message)));
-  }
-}
 
 /**
  * Sends bilingual EN/ES confirmation email to the family on submission.
@@ -6578,12 +6682,45 @@ function initiateSigningSession_(p) {
   // mount + polling (initiateSigningRead) — encolarlo rompería esa lectura. El KMS ya
   // lo de-dupea/idempotentiza server-side; el single-flight de api.js lo de-dupea en
   // cliente. Por eso create_only → endpoint SÍNCRONO; dispatch → endpoint encolado.
+  // SPEC-WIZ-WARMUP-V2 (2026-06-12) — cache-first POST-GATES de la LECTURA
+  // create_only (members/state del paquete; 45-48s e2e en frio, #65). El warm la
+  // cocina con el MISMO endpoint KMS; la entrada guarda live_version + `n` (stale
+  // o guardian distinto → vivo). El ACTO real (sin create_only) JAMAS toca cache (P222).
+  if (createOnly && p && p.resume_token) {
+    try {
+      const wzMemKey = _wzCacheKey_('mem', String(p.resume_token).trim());
+      const wzMemRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzMemKey);
+      if (wzMemRaw) {
+        const memEntry = JSON.parse(wzMemRaw);
+        if (memEntry && memEntry.data && memEntry.v === _getLiveStateVersion_(sctx.enrollment_group_id)
+            && String(memEntry.n || '') === String((p && p.n) || '')) {
+          Logger.log('[WZCACHE] HIT mem token=' + String(p.resume_token).slice(0, 8) + '...');
+          return (p._perf === true)
+            ? Object.assign({}, memEntry.data, { _perf: { cache_hit: true, t_identity_ms: perfIdentMs, t_total_ms: Date.now() - perfT0 } })
+            : memEntry.data;
+        }
+        if (memEntry && memEntry.data) {
+          CacheService.getScriptCache().remove(wzMemKey + '_meta');
+          Logger.log('[WZCACHE] STALE mem token=' + String(p.resume_token).slice(0, 8) + '... — invalidado');
+        }
+      }
+    } catch (eWzMem) { /* best-effort → camino vivo */ }
+  }
+
   const action = createOnly ? 'enr.initiateSigningSession' : 'enr.initiateSigningSessionQueued';
   const perfP0 = Date.now(); // PERF-KMS2
   let data = kmsProxy_(action, proxyPayload);
   const perfProxyMs = Date.now() - perfP0;
   Logger.log('[PERF] initiateSigningSession create_only=' + createOnly + ' t_identity=' + perfIdentMs +
              ' t_proxy=' + perfProxyMs + ' kms_fetch=' + PERF2_.kms_fetch_ms);
+  // WIZARD-CACHE write-through de la lectura create_only (best-effort).
+  if (createOnly && p && p.resume_token && data && data.members && data.members.length) {
+    try {
+      _wzCachePutChunked_(CacheService.getScriptCache(),
+        _wzCacheKey_('mem', String(p.resume_token).trim()),
+        JSON.stringify({ v: _getLiveStateVersion_(sctx.enrollment_group_id), n: String((p && p.n) || ''), data: data }), 1800);
+    } catch (eWzWtM) { /* best-effort */ }
+  }
   // PERF-KMS2: `_perf` SOLO en la LECTURA create_only (el ACTO real jamás se toca — P222)
   // y solo post-gate (KAL-4) bajo flag explícito. KAL-11: segmentos+ms, sin tokens.
   if (createOnly && p && p._perf === true) {
@@ -6650,7 +6787,7 @@ function warmSession_(p) {
   // si wz_hyd_<token> ya está, reusa y solo completa lo que falte). La misma llamada
   // enr.wizardHydrate de antes vive DENTRO del bundle → el warm KMS (L2) se ceba igual.
   var w = warmEntryBundle_(String(p.resume_token).trim(), effRecoveredEmail || null,
-    (p && p.language) ? String(p.language).trim() : null);
+    (p && p.language) ? String(p.language).trim() : null, (p && p.n) || null);
   if (!w.hydrate) {
     // Best-effort: un warm fallido no es error de cara al cliente (el hydrate real
     // post-OTP seguirá su camino normal). Log redactado para correlación.
