@@ -500,6 +500,15 @@ function requireResumeToken_(payload) {
   }
 
   const tokenGroupId = group.enrollment_group_id;
+  // SPEC-WIZ-WARMUP-V2: poblar el memo de LECTURA (rtmemo_) tras la validación
+  // VIVA — así la primera llamada de lectura posterior (getDocument_) ya tiene el
+  // gate caliente sin pagar otra lectura AppSheet. Best-effort; no cambia la
+  // semántica de validación de NINGÚN caller (esto ES el resultado en vivo).
+  try {
+    CacheService.getScriptCache().put(
+      'rtmemo_' + sha256Hex_(Utilities.newBlob(String(payload.resume_token).trim()).getBytes()).slice(0, 40),
+      tokenGroupId, 300);
+  } catch (eM) { /* best-effort */ }
   // Cross-group guard: if payload also provides group_id (legacy alias
   // `application_id` included), it MUST match the one resolved from token.
   const payloadGroupId = payload && (payload.enrollment_group_id || payload.application_id);
