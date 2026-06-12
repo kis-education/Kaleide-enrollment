@@ -2,35 +2,40 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { gasCall, initiateSigningRead } from '../../api';
 import { useWizard } from '../../context/WizardContext';
-import StepUpReverify from '../../components/StepUpReverify';
-import { signingIdentity_, isStepUpRequiredError, fetchClientIp } from './signingCommon';
+import { signingIdentity_, fetchClientIp } from './signingCommon';
 import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import * as log from '../../logger';
 
 /**
- * Step 11 — S-SIGN (firma electrónica Click & Sign + polling).
+ * Step 11 — S-SIGN (estado de la firma electrónica Click & Sign + polling).
  *
- * REBUILD-8-11 (Diego 2026-06-11): paso TERMINAL del wizard, reconstruido como
- * ciudadano de pages/steps. La lógica de DISPATCH del envelope Click & Sign está
- * PORTADA VERBATIM del SignSign probado (antiguo pages/signing/* (monolito del antiguo host /sign),
- * eliminado en este cambio) — incluido el STOP-GAP anti-re-dispatch, el gate
- * incondicional de step-up (DL-E39), la IP forense best-effort y el ÚNICO
- * `awaitPendingSave()` legítimo del wizard (drenar la cola ANTES del acto legal,
- * que depende del milestone de revisión confirmada server-side).
+ * AUTO-DISPATCH (decisión Diego 2026-06-12, literal): "Una vez que el usuario ha
+ * aceptado la lectura de los documentos en el paso 10 y le da a avanzar, se debería
+ * automáticamente proceder al envío de la firma a Click and Sign (de momento
+ * inhabilitada). Sí debe estar el paso 11 informando al usuario de que se le ha
+ * enviado el documento para su firma digital y que mire el email, pero no debería
+ * ser el usuario el que tenga que pulsar 'firmar'."
  *
- * Su "avance" es el ACTO terminal de firma (frontera Click & Sign), no un
- * "Continuar" de paso — por eso conserva la back-nav propia (catálogo
- * savePolicy:'none' / lockPolicy:'never').
+ * El DESPACHO del envelope ya NO es una acción de usuario: lo invoca la regla
+ * declarativa server-side kis-rule-0018 (KMS, anclada a la completación del
+ * milestone REVIEW_CONFIRMED del Step 10). Este paso es INFORMATIVO:
+ *   - Sesión ya iniciada (INITIATED/IN_PROGRESS/...) → "te hemos enviado los
+ *     documentos para tu firma digital — revisa tu correo".
+ *   - Confirmación registrada pero envío aún no efectuado (DRAFT — caso capado
+ *     por el kill-switch CLICKSIGN_DISPATCH_ENABLED, o en cola) → "tu confirmación
+ *     está registrada; te llegará un email para firmar en breve".
+ *   - COMPLETED → pantalla de éxito terminal.
+ * El polling read-only (create_only, NUNCA despacha) refresca el estado para que
+ * la transición DRAFT→INITIATED se refleje sola. CERO acciones de usuario que
+ * despachen (el botón "Enviar a firma" + su gate de step-up fueron eliminados).
  */
 export default function Step11Sign({ onBack, signingToken, resumeToken, signerCtx: signerCtxProp, onDone }) {
   const { t } = useTranslation();
-  const { isStepUpFresh, markStepUpFresh, awaitPendingSave, recoveredEmail, recoveryNonce } = useWizard();
+  const { recoveredEmail, recoveryNonce } = useWizard();
   const signerCtx = signerCtxProp || {};
   const finish = onDone || (() => { /* terminal — permanece en la pantalla de éxito */ });
-  // Back-only nav (top + bottom). The Sign step's "advance" is the signing act
-  // itself (launched from the per-signer buttons / polled to completion), so the
-  // nav only carries "Atrás" → Review. Hidden once the session is COMPLETED (the
-  // terminal success screen has its own Finish button). Mirrors StepNav spacing.
+  // Back-only nav (top + bottom). El "avance" de este paso es el acto de firma
+  // que ocurre FUERA (email Click & Sign); la nav solo lleva "Atrás" → Review.
   const backNav = (position) => {
     if (!onBack) return null;
     return (
@@ -44,30 +49,12 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
   };
   const [session, setSession] = useState(null); // { signerUrls, state }
   const [err, setErr] = useState('');
-  // STOP-GAP VERBATIM (fix real = P-SIGN-ENGINE, KMS): el bug user-blocking + legal es
-  // que RE-ENTRAR a Step 11 re-despachaba el envelope de Click&Sign (email legalmente
-  // vinculante) en CADA mount, porque el backend no avanza fiable la sesión a
-  // INITIATED y el check de idempotencia sigue viendo DRAFT. Mientras eso se
-  // arregla server-side, el FRONTEND nunca dispara un re-dispatch al re-entrar:
-  //   - On mount: lectura READ-ONLY del estado (create_only:true → NO despacha,
-  //     NO exige step-up). Detecta si la sesión ya está iniciada.
-  //   - Si ya iniciada → render de los enlaces / "firma en curso" + polling
-  //     read-only (create_only), SIN despachar nunca.
-  //   - El despacho REAL (non-create_only, que dispara el envelope) ocurre SOLO
-  //     en acción EXPLÍCITA del usuario (botón "Enviar a firma") y SOLO desde
-  //     estado no-iniciado (DRAFT). Tras dispararlo una vez → render "ya iniciada".
-  // El gate de step-up + auth por token se mantienen intactos.
-
-  // `initiated`: la sesión ya tiene el envelope despachado (no hace falta — ni se
-  // debe — re-disparar). Sembrada desde signerCtx (ya firmado) y refinada por la
-  // lectura read-only de mount. Una vez true, NO se vuelve a poner false.
+  // `initiated`: la sesión ya tiene el envelope despachado (server-side). Sembrada
+  // desde signerCtx (ya firmado) y refinada por la lectura read-only. Una vez true,
+  // NO se vuelve a poner false.
   const [initiated, setInitiated] = useState(!!(signerCtx?.steps && signerCtx.steps.signed));
-  // DL-E39: gate INCONDICIONAL de firma — SIEMPRE exigimos step-up fresco antes
-  // de DESPACHAR el acto de firma, independiente de la inactividad. Solo aplica al
-  // dispatch real (botón explícito), nunca a la lectura read-only del estado.
-  const [needStepUp, setNeedStepUp] = useState(!isStepUpFresh());
   const pollRef = useRef(null);
-  const ipRef = useRef(undefined); // cache de la IP forense (best-effort)
+  const ipRef = useRef(undefined); // cache de la IP forense (best-effort) — solo para el dispatch preservado
 
   // ¿El `state` devuelto por el backend indica que la sesión YA fue iniciada
   // (envelope despachado)? Todo lo que no sea DRAFT/null/NOT_INITIATED cuenta como
@@ -79,13 +66,13 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
   };
 
   // Lectura READ-ONLY del estado de la sesión: create_only:true crea/garantiza la
-  // sesión DRAFT + tokens y devuelve members/state/signerUrls SIN despachar el
-  // envelope y SIN exigir step-up. Usado en mount y en el polling — NUNCA re-despacha.
+  // sesión DRAFT + tokens y devuelve members/state SIN despachar el envelope.
+  // Usado en mount y en el polling — NUNCA despacha (el despacho es server-side,
+  // regla kis-rule-0018).
   const readState = async (initial) => {
     try {
       // Data-layer pieza 5: lectura de estado vía single-flight (de-dupe la tormenta
-      // de create_only concurrentes). NUNCA despacha el envelope (STOP-GAP intacto).
-      // IDENTITY-COMPLETION (#30): identidad de SESIÓN (resume_token preferente).
+      // de create_only concurrentes). IDENTITY-COMPLETION (#30): identidad de SESIÓN.
       const res = await initiateSigningRead({ resumeToken, signingToken });
       log.info('[DBG sign] readState', { initial, state: res && res.state, n_urls: ((res && res.signerUrls) || []).length });
       setSession(res);
@@ -104,91 +91,42 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
     pollRef.current = setInterval(() => readState(false), 5000);
   };
 
-  // DESPACHO REAL del envelope — SOLO desde acción explícita del usuario y SOLO
-  // cuando la sesión NO está iniciada. Es el acto legal: exige step-up fresco
-  // (gate incondicional DL-E39) + await del save de REVIEW (confirmReview) en
-  // vuelo, ya que el acto depende del milestone de revisión confirmada server-side.
+  // DISPATCH PRESERVADO, NO CABLEADO (AUTO-DISPATCH 2026-06-12): el envío real del
+  // envelope lo invoca la regla declarativa kis-rule-0018 server-side al completarse
+  // REVIEW_CONFIRMED (Step 10). Se conserva el código portado del acto por si Diego
+  // decide reintroducir un disparo manual — NINGÚN elemento de UI lo invoca.
+  // (El awaitPendingSave del acto ya no aplica: el server despacha tras el milestone.)
+  // eslint-disable-next-line no-unused-vars
   const dispatchSigning = async () => {
     setErr('');
-    log.warn('[DBG sign] dispatchSigning — DESPACHO DEL ENVELOPE (acto de firma)');
-    // ÚNICO await legítimo del wizard: drenar la cola (billing/gdpr/review en vuelo)
-    // ANTES de despachar el acto legal.
-    try {
-      await awaitPendingSave();
-    } catch (e) {
-      log.warn('Step11Sign: previous review save failed', { message: e.message });
-      setErr(e?.message || t('signing.generic_error'));
-      return;
-    }
+    log.warn('[DBG sign] dispatchSigning — DESPACHO DEL ENVELOPE (no cableado a UI; server-side kis-rule-0018)');
     // IP forense best-effort: evidencia, nunca gate. KAL-7: nunca va en la URL.
     if (ipRef.current === undefined) {
       ipRef.current = await fetchClientIp();
     }
     try {
-      // IDENTITY-COMPLETION (#29): el acto legal reenvía la identidad de SESIÓN
-      // (resume_token preferente; el firmante lo resuelve el backend server-side vía
-      // requireSignerContext_ + binding token→tutor). El signing_token queda como
-      // compat. La mecánica Click & Sign (envelope, single-use/TTL/binding del ACTO,
-      // P222) es server-side e intacta — solo cambia DE DÓNDE sale la identidad.
+      // IDENTITY-COMPLETION (#29): identidad de SESIÓN (resume_token preferente).
       const res = await gasCall('initiateSigningSession', {
         ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }),
         client_ip:     ipRef.current || undefined,
       });
       setSession(res);
-      setInitiated(true); // tras despachar una vez → no volver a despachar nunca
+      setInitiated(true);
       if (!(res && res.state === 'COMPLETED')) startPolling();
     } catch (e) {
-      // Gate incondicional reforzado por el backend: re-pedimos step-up.
-      if (isStepUpRequiredError(e)) {
-        log.warn('Step11Sign: initiateSigningSession requires step-up');
-        setNeedStepUp(true);
-        return;
-      }
       setErr(e.message || t('signing.generic_error'));
     }
   };
 
-  // Click del botón "Enviar a firma": si no hay step-up fresco, lo pedimos primero;
-  // tras verificar, despachamos. Si ya está fresco, despachamos directamente.
-  const onSendClick = () => {
-    if (needStepUp) return; // el render muestra StepUpReverify; onVerified → dispatchSigning
-    dispatchSigning();
-  };
-
   useEffect(() => {
-    // STOP-GAP: en mount SOLO leemos el estado (read-only, no despacha). El
-    // despacho real lo dispara el usuario explícitamente. Esto garantiza que
-    // re-montar / re-entrar a Step 11 NUNCA re-despacha el envelope.
+    // Mount: lectura read-only + polling SIEMPRE que la sesión no esté completada —
+    // así el paso refleja solo la transición DRAFT→INITIATED cuando la regla
+    // server-side despacha (o cuando se levante el kill-switch).
     readState(true).then((res) => {
-      // Si la sesión ya estaba iniciada, arrancamos el polling para reflejar el
-      // progreso de firma — sin despachar.
-      const urls = (res && res.signerUrls) || [];
-      if (isInitiatedState(res && res.state) || urls.length > 0 || (signerCtx?.steps && signerCtx.steps.signed)) {
-        startPolling();
-      }
+      if (!(res && res.state === 'COMPLETED')) startPolling();
     });
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [signingToken, resumeToken]); // eslint-disable-line
-
-  // Gate incondicional de step-up: SOLO se muestra cuando el usuario va a DESPACHAR
-  // desde estado no-iniciado (no para la lectura read-only). Si la sesión ya está
-  // iniciada, no exigimos step-up para ver los enlaces.
-  if (needStepUp && !initiated) {
-    return (
-      <div className="kis-card">
-        {backNav('top')}
-        <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t(stepLabelKey('s_sign'))}</h2>
-        <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('stepup.sign_gate_body')}</p>
-        <StepUpReverify
-          /* IDENTITY-COMPLETION (#29): identidad de SESIÓN (resume_token preferente). */
-          tokenPayload={signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail })}
-          prompt={t('stepup.sign_prompt')}
-          onVerified={() => { markStepUpFresh(); setNeedStepUp(false); dispatchSigning(); }}
-        />
-        {backNav('bottom')}
-      </div>
-    );
-  }
 
   if (err) {
     return (
@@ -215,61 +153,42 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
     );
   }
 
-  const signerUrls = (session && session.signerUrls) || [];
-
-  // STOP-GAP render: si la sesión NO está iniciada (DRAFT), NO despachamos en
-  // background — mostramos intro + botón explícito "Enviar a firma". El usuario
-  // dispara el envelope una sola vez, conscientemente. Re-entrar aquí con la
-  // sesión ya iniciada cae en la rama `initiated` (enlaces + polling), nunca
-  // re-despacha.
-  if (!initiated) {
+  // Cargando el primer estado.
+  if (session === null) {
     return (
       <div className="kis-card">
         {backNav('top')}
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t(stepLabelKey('s_sign'))}</h2>
-        <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.signing.intro')}</p>
-        {session === null && (
-          <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>
-            <span className="spinner-border spinner-border-sm me-2" />{t('signing.saving')}
-          </div>
-        )}
-        <div className="d-flex justify-content-center mt-3">
-          <button className="btn-primary-kis" disabled={session === null} onClick={onSendClick}>
-            {t('signing.signing.start')}
-          </button>
+        <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>
+          <span className="spinner-border spinner-border-sm me-2" />{t('signing.saving')}
         </div>
         {backNav('bottom')}
       </div>
     );
   }
 
+  // Informativo según datos reales (sin acción de usuario que despache):
+  //  - initiated → el envelope salió: "revisa tu correo (email del guardian)".
+  //  - no initiated (DRAFT — capado/en cola) → "confirmación registrada; te llegará
+  //    un email en breve" (VERDAD bajo el kill-switch).
+  const sentBody = recoveredEmail
+    ? t('signing.signing.auto_sent_named', { email: recoveredEmail })
+    : t('signing.signing.auto_sent');
+
   return (
     <div className="kis-card">
       {backNav('top')}
       <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t(stepLabelKey('s_sign'))}</h2>
-      <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('signing.signing.in_progress')}</p>
 
-      {signerUrls.length > 0 ? (
-        signerUrls.map((s, i) => {
-          const url  = s.signing_url || s.url || s.signingUrl;
-          const name = s.name || s.signer_name || t('signing.signing.sign_as_generic');
-          return (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--bg)' }}>
-              <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{name}</span>
-              <button className="btn-primary-kis btn-sm" disabled={!url}
-                onClick={() => url && window.open(url, '_blank', 'noopener')}>
-                {t('signing.signing.sign_as', { name })}
-              </button>
-            </div>
-          );
-        })
-      ) : (
-        <p style={{ color: 'var(--muted)', fontSize: '0.88rem', textAlign: 'center', padding: 16 }}>
-          {t('signing.signing.waiting')}
+      <div style={{ textAlign: 'center', padding: '20px 8px' }}>
+        <i className={initiated ? 'bi bi-envelope-check' : 'bi bi-envelope-arrow-up'}
+           style={{ fontSize: '2.4rem', color: 'var(--teal-dk)' }} />
+        <p style={{ color: 'var(--text, #2a2a2a)', maxWidth: 480, margin: '14px auto 4px', fontWeight: 600 }}>
+          {initiated ? sentBody : t('signing.signing.auto_queued')}
         </p>
-      )}
+      </div>
 
-      <p style={{ textAlign: 'center', fontSize: '0.78rem', color: 'var(--muted)', marginTop: 16 }}>
+      <p style={{ textAlign: 'center', fontSize: '0.78rem', color: 'var(--muted)', marginTop: 12 }}>
         <span className="spinner-border spinner-border-sm me-2" style={{ width: 12, height: 12 }} />
         {t('signing.signing.polling')}
       </p>
