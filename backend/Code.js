@@ -4364,6 +4364,9 @@ function submitEnrollmentSession_(p) {
  * Gmail can locate the body correctly.
  */
 function sendAsAlias_(toEmail, subject, htmlBody, replyTo) {
+  // DBG-TRACE: duración del envío de email (Gmail alias / fallback MailApp).
+  var _dbgM0 = Date.now();
+  _dbgEv_('mail_send', 'start');
   // KAL-NEW-13 (2026-06-06): robust delivery. The OTP step-up (DL-E39) surfaced
   // that a single un-caught failure inside the Gmail Advanced Service (alias not
   // configured as "Send mail as", advanced service disabled, transient Gmail
@@ -4389,6 +4392,7 @@ function sendAsAlias_(toEmail, subject, htmlBody, replyTo) {
       headers.join('\r\n') + '\r\n\r\n' + encodedBody
     ).replace(/=+$/, '');
     Gmail.Users.Messages.send({ raw: raw }, 'me');
+    _dbgEv_('mail_sent', 'alias ' + (Date.now() - _dbgM0) + 'ms');
     Logger.log(redact_('[sendAsAlias_] sent via alias to=' + toEmail + ' subject=' + subject));
   } catch (aliasErr) {
     Logger.log(redact_('[sendAsAlias_] alias send FAILED (' + (aliasErr && aliasErr.message) +
@@ -5955,6 +5959,9 @@ function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, app
  * @returns {Array|null} Parsed rows array or null
  */
 function appsheetRequest_(table, action, rows, selector, debugOut) {
+  // DBG-TRACE: cada lectura/escritura AppSheet visible en el _dbg del frontend.
+  const _dbgT0 = Date.now();
+  _dbgEv_('as_call', table + '/' + action);
   const props  = PropertiesService.getScriptProperties();
   const appId  = props.getProperty('APPSHEET_APP_ID');
   const apiKey = props.getProperty('APPSHEET_ACCESS_KEY');
@@ -6034,6 +6041,7 @@ function appsheetRequest_(table, action, rows, selector, debugOut) {
       throw new Error('AppSheet silently rejected ' + action + ' on ' + table + ' (0 rows returned). Response: ' + text.slice(0, 400));
     }
   }
+  _dbgEv_('as_resp', table + ' ' + (Date.now() - _dbgT0) + 'ms');
   return resultRows || parsed || null;
 }
 
@@ -6120,7 +6128,9 @@ function appsheetRequestBatch_(specs) {
     if (!b.skipped) { dispatchIdx.push(i); requests.push(b.request); }
   });
   const startMs = Date.now();
+  _dbgEv_('as_batch_call', specs.map(function(sp) { return sp.table + '/' + sp.action; }).join(','));
   const responses = requests.length ? UrlFetchApp.fetchAll(requests) : [];
+  _dbgEv_('as_batch_resp', requests.length + ' calls ' + (Date.now() - startMs) + 'ms');
   Logger.log('appsheetRequestBatch_: ' + requests.length + ' parallel calls in ' + (Date.now() - startMs) + 'ms');
 
   const out = new Array(specs.length);
