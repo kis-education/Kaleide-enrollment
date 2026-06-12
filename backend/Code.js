@@ -1270,6 +1270,13 @@ function _warmMembersDocsPhase_(it) {
     var sctx = guardianId ? resolveGuardianSigningContext_(groupId, guardianId) : null;
     var signingToken = (sctx && sctx.signing_token) || null;
     if (signingToken) {
+      // V2.4.1 (gap de 24,5s en getDocument, _dbg Diego 17:33): cebar el memo del
+      // token de firma (docsigntok_) — la MISMA clave que el resolver lazy de
+      // getDocument_ — para que servir bytes no re-pague la cadena de identidad.
+      try {
+        cache.put('docsigntok_' + sha256Hex_(
+          Utilities.newBlob(groupId + '|' + guardianId).getBytes()).slice(0, 40), signingToken, 300);
+      } catch (eTk) { /* best-effort */ }
       var prep = kmsProxy_('enr.initiateSigningSession', { signing_token: signingToken, create_only: true }) || {};
       var members = prep.members || [];
       out.members = members.length;
@@ -3300,6 +3307,9 @@ function resumeSession_(p) {
       if (entry && entry.data && entry.v === _getLiveStateVersion_(id)) {
         Logger.log('[WZCACHE] HIT res token=' + String(p.resume_token).slice(0, 8) + '...');
         _dbgEv_('cache', 'HIT res');
+        // V2.4.1: normalizar el token embebido (cocinado quizá pre-rotación).
+        if (entry.data.group) entry.data.group.resume_token = String(p.resume_token).trim();
+        if (entry.data.application) entry.data.application.resume_token = String(p.resume_token).trim();
         if (_isStepUpFresh_(id)) {
           return Object.assign({}, entry.data, { step_up_fresh: stepUpFresh });
         }
@@ -7241,6 +7251,12 @@ function hydrateSession_(p) {
     if (wzHydRaw) {
       const envH = JSON.parse(wzHydRaw);
       data = (envH && envH.v === _getLiveStateVersion_(groupId)) ? envH.data : null;
+      // V2.4.1 (regresión cazada por el _dbg de Diego 17:33 — "resume_token not
+      // recognized" intermitente): el payload cacheado por GRUPO puede haberse
+      // cocinado en una sesión con token YA ROTADO y lo lleva EMBEBIDO en la fila
+      // del grupo → el frontend lo adoptaba. El gate de ESTA llamada ya validó que
+      // el token del caller pertenece a este grupo → sobrescribir SIEMPRE.
+      if (data && data.group) data.group.resume_token = String(p.resume_token).trim();
       if (data) Logger.log('[WZCACHE] HIT hyd token=' + String(p.resume_token).slice(0, 8) + '…');
         _dbgEv_('cache', 'HIT hyd');
     }
@@ -7255,6 +7271,7 @@ function hydrateSession_(p) {
       if (awaited) {
         const envH2 = JSON.parse(awaited);
         data = (envH2 && envH2.v === _getLiveStateVersion_(groupId)) ? envH2.data : null;
+        if (data && data.group) data.group.resume_token = String(p.resume_token).trim(); // V2.4.1 (ver arriba)
         if (data) Logger.log('[WZCACHE] HIT hyd (single-flight) token=' + String(p.resume_token).slice(0, 8) + '…');
       }
     } catch (eAw) { data = null; }
