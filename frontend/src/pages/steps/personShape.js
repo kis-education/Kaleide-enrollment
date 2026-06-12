@@ -22,6 +22,9 @@ export function parseBool(val) {
 
 export function preparePersonForUI(person) {
   const out = { ...person };
+  // ids ausente vs [] — el formulario inicializa []; normalizar para que la siembra
+  // del baseline produzca byte a byte la misma forma (fantasma 'ids' del dirty-check).
+  if (!Array.isArray(out.ids)) out.ids = [];
   // nationality: prefer existing flat field; fall back to first nationality in array
   if (!out.nationality) {
     const primary = (out.nationalities || [])[0];
@@ -69,4 +72,40 @@ export function preparePersonForUI(person) {
     }));
   }
   return out;
+}
+
+// Derivación a NIVEL DE LISTA del checkbox 'mismo domicilio que Tutor 1' (#6) —
+// movida VERBATIM desde Step2Persons.jsx (menos la traza dev) para que la SIEMBRA
+// del baseline aplique la MISMA derivación que el formulario (fantasma _sameAddress).
+// Campos canónicos del domicilio = los de AddressForm/emptyAddress (enrAddresses).
+export const ADDRESS_FIELDS = ['address_line_1', 'address_line_2', 'city', 'province', 'country_id', 'zip'];
+export const normalizedAddress_ = (a) =>
+  ADDRESS_FIELDS.map(f => String((a && a[f]) || '').trim().toLowerCase()).join('|');
+export const addressIsEmpty_ = (a) =>
+  ADDRESS_FIELDS.every(f => !String((a && a[f]) || '').trim());
+
+export function deriveSameAddressFlags(list) {
+  if (!Array.isArray(list) || !list.length) return list;
+  const first = list[0];
+  const firstKey   = first ? (first.person_id || first._uid || null) : null;
+  const firstNorm  = normalizedAddress_(first && first.address);
+  const firstEmpty = addressIsEmpty_(first && first.address);
+  return list.map((p, i) => {
+    if (i === 0 || !p || p._sameAddress) return p;
+    const byCopyRef  = !!p.copy_address_from_person_id && p.copy_address_from_person_id === firstKey;
+    const byEquality = !firstEmpty && normalizedAddress_(p.address) === firstNorm;
+    if (!byCopyRef && !byEquality) return p;
+    return { ...p, _sameAddress: true };
+  });
+}
+
+/**
+ * Forma canónica de la LISTA de personas: per-person (preparePersonForUI, que
+ * además normaliza ids:[] ausente) + derivaciones de lista (_sameAddress). La
+ * siembra del baseline (WizardContext.hydrateFromResume) y el Step 2 usan ESTA
+ * función — una sola forma, cero diffs fantasma en el dirty-check.
+ */
+export function preparePersonsForUI(list) {
+  if (!Array.isArray(list)) return list;
+  return deriveSameAddressFlags(list.map(preparePersonForUI));
 }

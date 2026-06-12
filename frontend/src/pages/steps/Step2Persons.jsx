@@ -8,7 +8,7 @@ import LockedBanner from '../../components/LockedBanner';
 import StepNav from '../../components/StepNav';
 import { generateUuid } from '../../utils/uuid';
 import { validatePhone } from '../../utils/phone';
-import { parseBool, preparePersonForUI } from './personShape';
+import { parseBool, preparePersonForUI, preparePersonsForUI, deriveSameAddressFlags, addressIsEmpty_, ADDRESS_FIELDS } from './personShape';
 
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
@@ -598,28 +598,6 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
 //      primera persona, o
 //  (b) por la marca in-session `copy_address_from_person_id` (presente en stepData
 //      cuando el usuario marcó el checkbox en esta sesión; el server no la devuelve).
-// Campos canónicos del domicilio = los de AddressForm/emptyAddress (enrAddresses).
-const ADDRESS_FIELDS = ['address_line_1', 'address_line_2', 'city', 'province', 'country_id', 'zip'];
-const normalizedAddress_ = (a) =>
-  ADDRESS_FIELDS.map(f => String((a && a[f]) || '').trim().toLowerCase()).join('|');
-const addressIsEmpty_ = (a) =>
-  ADDRESS_FIELDS.every(f => !String((a && a[f]) || '').trim());
-
-function deriveSameAddressFlags(list) {
-  if (!Array.isArray(list) || !list.length) return list;
-  const first = list[0];
-  const firstKey   = first ? (first.person_id || first._uid || null) : null;
-  const firstNorm  = normalizedAddress_(first && first.address);
-  const firstEmpty = addressIsEmpty_(first && first.address);
-  return list.map((p, i) => {
-    if (i === 0 || !p || p._sameAddress) return p;
-    const byCopyRef  = !!p.copy_address_from_person_id && p.copy_address_from_person_id === firstKey;
-    const byEquality = !firstEmpty && normalizedAddress_(p.address) === firstNorm;
-    if (!byCopyRef && !byEquality) return p;
-    log.debug('Step2: re-derived _sameAddress on seed', { idx: i, byCopyRef, byEquality });
-    return { ...p, _sameAddress: true };
-  });
-}
 
 
 /**

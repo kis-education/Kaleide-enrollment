@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import * as log from '../logger';
-import { preparePersonForUI } from '../pages/steps/personShape';
+import { preparePersonsForUI } from '../pages/steps/personShape';
 import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
 import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
 
@@ -769,7 +769,7 @@ export function WizardProvider({ children }) {
       // alias email/phone, booleanos) → stepData y baseline idénticos → el
       // dirty-check solo dispara con EDICIONES reales. Subsume el normYN parcial
       // previo (que arreglaba esta misma clase solo para booleanos).
-      persons: persons.map(preparePersonForUI),
+      persons: preparePersonsForUI(persons),
       relations: relations.map(r => ({
         ...r,
         is_custodial:            normYN(r.is_custodial),

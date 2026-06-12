@@ -97,7 +97,11 @@ export default function ResumePage() {
         // Carta, link antiguo, click mas rapido que el minuto muerto): mientras la
         // familia recorre los pasos, el backend cocina docs/members/hydrate para
         // el paso 10. Gate KAL-4 + rate-limit (120s/grupo) server-side; best-effort.
-        gasCall('warmBundle', { resume_token: token, n: linkN || undefined }).catch(() => {});
+        // Retraso de 4s: con todo ya caliente el kick es casi no-op server-side, pero
+        // su respuesta ocupaba una conexión del navegador compitiendo con las cargas
+        // inmediatas del usuario (log Diego 18:07: getDocument server 1,2s pero 13,7s
+        // percibidos por contención del transporte). Primero el usuario, luego el warm.
+        setTimeout(() => { gasCall('warmBundle', { resume_token: token, n: linkN || undefined }).catch(() => {}); }, 4000);
         log.info('ResumePage: hydration complete, navigating to /apply');
         clearInterval(stageTimer);
         navigate('/apply', { replace: true });
