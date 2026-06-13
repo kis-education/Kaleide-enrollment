@@ -368,6 +368,7 @@
   "signing.signing.start": "Send for signature",
   "signing.signing.in_progress": "Signature in progress. Use the links below to sign; the page will refresh automatically when complete.",
   "signing.signing.waiting": "Preparing the signing link…",
+  "signing.signing.checking_status": "Checking your signature status…",
   "signing.signing.polling": "Waiting for signature…",
   "signing.signing.auto_sent": "We have sent you the documents for your digital signature. Please check your email to sign them.",
   "signing.signing.auto_sent_named": "We have sent you the documents for your digital signature. Please check your email ({{email}}) to sign them.",

@@ -29,9 +29,23 @@ import * as log from '../../logger';
  * la transición DRAFT→INITIATED se refleje sola. CERO acciones de usuario que
  * despachen (el botón "Enviar a firma" + su gate de step-up fueron eliminados).
  */
+// ¿El `state` devuelto por el backend indica que la sesión YA fue iniciada (envelope
+// despachado)? Todo lo que no sea DRAFT/null/NOT_INITIATED cuenta como iniciada —
+// INITIATED, IN_PROGRESS, COMPLETED, etc. Módulo-scope: pura, usable en el seed de useState.
+function isInitiatedState(state) {
+  if (!state) return false;
+  const s = String(state).toUpperCase();
+  return s !== 'DRAFT' && s !== 'NOT_INITIATED';
+}
+
 export default function Step11Sign({ onBack, signingToken, resumeToken, signerCtx: signerCtxProp, onDone }) {
   const { t } = useTranslation();
-  const { recoveredEmail, recoveryNonce } = useWizard();
+  // WIZARD-UX TASK-1 (Diego 2026-06-13): el memo EN MEMORIA del estado de la sesión de
+  // firma (signingSession) hace IDEMPOTENTE la re-entrada al Step 11. Al volver atrás y
+  // re-avanzar, sembramos el estado desde memoria al instante (sin spinner "Guardando…",
+  // que parecía "reenviando documentos") y solo refrescamos en background. El despacho
+  // del envelope es y sigue siendo SERVER-SIDE (kis-rule-0018) — aquí nunca se envía nada.
+  const { recoveredEmail, recoveryNonce, signingSession, setSigningSession } = useWizard();
   const signerCtx = signerCtxProp || {};
   const finish = onDone || (() => { /* terminal — permanece en la pantalla de éxito */ });
   // Back-only nav (top + bottom). El "avance" de este paso es el acto de firma
@@ -47,23 +61,20 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
       </div>
     );
   };
-  const [session, setSession] = useState(null); // { signerUrls, state }
+  // WIZARD-UX TASK-1: siembra desde el memo del contexto → re-entrada pinta el ESTADO
+  // al instante (sin re-leer). null solo en la PRIMERA entrada de la sesión de navegación.
+  const [session, setSession] = useState(signingSession || null); // { signerUrls, state }
   const [err, setErr] = useState('');
   // `initiated`: la sesión ya tiene el envelope despachado (server-side). Sembrada
-  // desde signerCtx (ya firmado) y refinada por la lectura read-only. Una vez true,
-  // NO se vuelve a poner false.
-  const [initiated, setInitiated] = useState(!!(signerCtx?.steps && signerCtx.steps.signed));
+  // desde signerCtx (ya firmado) o desde el memo del contexto, y refinada por la lectura
+  // read-only. Una vez true, NO se vuelve a poner false.
+  const [initiated, setInitiated] = useState(
+    !!(signerCtx?.steps && signerCtx.steps.signed)
+    || isInitiatedState(signingSession && signingSession.state)
+    || ((signingSession && signingSession.signerUrls) || []).length > 0
+  );
   const pollRef = useRef(null);
   const ipRef = useRef(undefined); // cache de la IP forense (best-effort) — solo para el dispatch preservado
-
-  // ¿El `state` devuelto por el backend indica que la sesión YA fue iniciada
-  // (envelope despachado)? Todo lo que no sea DRAFT/null/NOT_INITIATED cuenta como
-  // iniciada — INITIATED, IN_PROGRESS, COMPLETED, etc.
-  const isInitiatedState = (state) => {
-    if (!state) return false;
-    const s = String(state).toUpperCase();
-    return s !== 'DRAFT' && s !== 'NOT_INITIATED';
-  };
 
   // Lectura READ-ONLY del estado de la sesión: create_only:true crea/garantiza la
   // sesión DRAFT + tokens y devuelve members/state SIN despachar el envelope.
@@ -76,6 +87,9 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
       const res = await initiateSigningRead({ resumeToken, signingToken });
       log.info('[DBG sign] readState', { initial, state: res && res.state, n_urls: ((res && res.signerUrls) || []).length });
       setSession(res);
+      // WIZARD-UX TASK-1: persiste el estado en el memo del contexto (monótono: no
+      // des-despacha) → la próxima re-entrada al Step 11 pinta al instante sin re-leer.
+      setSigningSession(res);
       const urls = (res && res.signerUrls) || [];
       if (isInitiatedState(res && res.state) || urls.length > 0) setInitiated(true);
       if (res && res.state === 'COMPLETED' && pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -119,11 +133,20 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
   };
 
   useEffect(() => {
-    // Mount: lectura read-only + polling SIEMPRE que la sesión no esté completada —
-    // así el paso refleja solo la transición DRAFT→INITIATED cuando la regla
-    // server-side despacha (o cuando se levante el kill-switch).
-    readState(true).then((res) => {
-      if (!(res && res.state === 'COMPLETED')) startPolling();
+    // WIZARD-UX TASK-1: si ya teníamos el estado en el memo del contexto (re-entrada al
+    // Step 11 tras navegar atrás), NO mostramos error de carga inicial — el refresco es
+    // de FONDO (initial=false). Solo la PRIMERA entrada de la sesión (sin memo) muestra
+    // el spinner de carga. En ambos casos refrescamos el estado read-only y, si no está
+    // COMPLETED, arrancamos el polling para reflejar la transición DRAFT→INITIATED que
+    // dispara la regla server-side (kis-rule-0018). NUNCA despacha nada desde aquí.
+    const hadSeed = !!signingSession;
+    if (signingSession && signingSession.state === 'COMPLETED') {
+      // Ya completada en memoria → no re-leer ni pollear.
+      return undefined;
+    }
+    readState(!hadSeed).then((res) => {
+      const finalState = (res && res.state) || (signingSession && signingSession.state);
+      if (finalState !== 'COMPLETED') startPolling();
     });
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [signingToken, resumeToken]); // eslint-disable-line
@@ -153,14 +176,16 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
     );
   }
 
-  // Cargando el primer estado.
+  // Cargando el primer estado. WIZARD-UX TASK-1: copy NEUTRO de "consultando estado",
+  // NUNCA "Guardando…/Enviando…" (que sugería un reenvío a firma). Solo se ve en la
+  // PRIMERA entrada de la sesión (sin memo); las re-entradas saltan este bloque.
   if (session === null) {
     return (
       <div className="kis-card">
         {backNav('top')}
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800, fontSize: '1.2rem' }}>{t(stepLabelKey('s_sign'))}</h2>
         <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>
-          <span className="spinner-border spinner-border-sm me-2" />{t('signing.saving')}
+          <span className="spinner-border spinner-border-sm me-2" />{t('signing.signing.checking_status')}
         </div>
         {backNav('bottom')}
       </div>

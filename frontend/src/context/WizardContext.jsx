@@ -298,6 +298,36 @@ export function WizardProvider({ children }) {
     setSigningMembersRaw(Array.isArray(members) && members.length ? members : null);
   }, []);
 
+  // ── WIZARD-UX TASK-1 (Diego 2026-06-13) — memo EN MEMORIA del ESTADO de la sesión ──
+  // de firma (Step 11). Queja literal: al volver atrás y re-avanzar al paso final, el
+  // UI "parece que reenvía los documentos para la firma" porque cada re-entrada al Step
+  // 11 disparaba un initiateSigningSession create_only (READ ~12s) + re-warm de docs.
+  // El despacho real es SERVER-SIDE (kis-rule-0018) — esto NO reenvía nada — pero la
+  // re-lectura cara + el spinner "Guardando…" lo PARECEN. Cacheamos aquí { state,
+  // signerUrls } por sesión de navegación, igual que signingMembers: la re-entrada pinta
+  // el ESTADO al instante desde memoria y solo refresca en background. Una transición
+  // hacia un estado iniciado (INITIATED/IN_PROGRESS/COMPLETED) NUNCA retrocede a DRAFT.
+  // NO se persiste (KAL-7: vive solo en memoria; un F5 re-lee del servidor, que es la
+  // verdad). Se purga en clearSession (junto al resto del estado de firma).
+  const [signingSession, setSigningSessionRaw] = useState(null); // null = nunca leído
+  const setSigningSession = useCallback((next) => {
+    setSigningSessionRaw(prev => {
+      if (!next) return prev;   // no pisar con null/undefined
+      // Monotonía: una vez iniciada (envelope despachado server-side), no volver a DRAFT.
+      const initiated = (s) => {
+        if (!s) return false;
+        const u = String(s).toUpperCase();
+        return u !== 'DRAFT' && u !== 'NOT_INITIATED';
+      };
+      if (prev && initiated(prev.state) && !initiated(next.state)) {
+        // refresco transitorio "menos iniciado" → conserva el state ya iniciado
+        // (la sesión no des-despacha) pero acepta members/urls nuevos.
+        return { ...next, state: prev.state };
+      }
+      return next;
+    });
+  }, []);
+
   /**
    * Resuelve un documento del paquete a su entrada de cache { url, sha256, filename,
    * mimeType }. Pasa SIEMPRE por getDocumentBytes (api.js — única capa de fetch +
@@ -343,6 +373,7 @@ export function WizardProvider({ children }) {
     docCacheRef.current = {};
     setDocCache({});
     setSigningMembersRaw(null);
+    setSigningSessionRaw(null); // WIZARD-UX TASK-1: el memo de estado de firma muere con la sesión
     purgeDocumentBytesCache();
   }, []);
 
@@ -1055,6 +1086,7 @@ export function WizardProvider({ children }) {
       reviewConfirmedLocal, setReviewConfirmedLocal, // lock en vivo post-confirm (Diego 2026-06-12)
       reviewConfirmed,                            // input del mapeo central (catalog.stepEditMode)
       docCache, loadDocument, signingMembers, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual
+      signingSession, setSigningSession,          // WIZARD-UX TASK-1: memo en memoria del estado de la sesión de firma (Step 11 idempotente)
       billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
       signingForms, updateSigningForm,            // REBUILD-8-11: formularios de firma en memoria
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)

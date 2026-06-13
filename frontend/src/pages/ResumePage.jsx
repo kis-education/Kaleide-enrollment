@@ -30,6 +30,17 @@ import * as log from '../logger';
 // (no da la vuelta). El intervalo se limpia en cleanup y al resolver/rechazar la promesa.
 const RESUME_STAGE_KEYS = ['resume.stage.verifying', 'resume.stage.recovering', 'resume.stage.almost'];
 
+// WIZARD-UX TASK-2 (Diego 2026-06-13): barra de progreso durante la hidratación post
+// magic-link. El hydrate consolidado tarda ~30s de media (medido); el usuario solo veía
+// un spinner + texto rotativo, sin noción de "cuánto queda". Estimamos el tiempo medio y
+// avanzamos la barra ASINTÓTICAMENTE hacia el final SIN completarla en falso: se acerca a
+// ~95% siguiendo una curva que desacelera (1 - e^-t/τ), de modo que si tarda más de lo
+// estimado NUNCA "miente" llegando al 100%. Al resolver el hydrate, snap a 100% antes de
+// navegar. Es puramente UX de carga — no toca auth ni datos.
+const RESUME_EST_MS = 30000;   // duración media estimada del hydrate (ms)
+const RESUME_TICK_MS = 250;    // refresco de la barra
+const RESUME_ASYMPTOTE = 0.95; // techo del progreso "en curso" (nunca 100% hasta resolver)
+
 export default function ResumePage() {
   const { token } = useParams();
   const [searchParams] = useSearchParams();
@@ -37,6 +48,9 @@ export default function ResumePage() {
   const { t, i18n } = useTranslation();
   const { hydrateFromResume, recoveredEmail, setRecoveryNonce } = useWizard();
   const [stage, setStage] = useState(0);
+  // progress ∈ [0,1]; arranca en 0, se acerca asintóticamente a RESUME_ASYMPTOTE
+  // mientras corre el hydrate, y salta a 1 al resolver (justo antes de navegar).
+  const [progress, setProgress] = useState(0);
 
   // IDENTITY-FROM-LINK (2026-06-11): `?n=<email_id>` del magic link lleva la IDENTIDAD del
   // guardian (email_id, opaco, sin PII). Se captura aquí (en el hash, antes del scrub KAL-7
@@ -72,6 +86,19 @@ export default function ResumePage() {
       setStage(s => Math.min(s + 1, RESUME_STAGE_KEYS.length - 1));
     }, 7000);
 
+    // WIZARD-UX TASK-2: barra de progreso asintótica. progress = ASYMPTOTE·(1 - e^-t/τ)
+    // → crece rápido al principio y desacelera, sin alcanzar nunca el 100% mientras el
+    // hydrate sigue en vuelo. τ se calibra para que a RESUME_EST_MS la barra esté ~al 86%
+    // del techo (t=τ·2 ≈ duración estimada). Degrada con elegancia: si tarda más, sigue
+    // acercándose al techo sin completarse en falso.
+    const tau = RESUME_EST_MS / 2;
+    const startedAt = Date.now();
+    const progressTimer = setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const p = RESUME_ASYMPTOTE * (1 - Math.exp(-elapsed / tau));
+      setProgress(prev => (p > prev ? p : prev)); // monótona — nunca retrocede
+    }, RESUME_TICK_MS);
+
     // IDENTITY-FROM-LINK: persiste el `n` (email_id) en sessionStorage → la identidad del
     // enlace sobrevive a F5/incógnito y se reenvía en getAdmissionState + actos de firma.
     if (linkN) setRecoveryNonce(linkN);
@@ -104,21 +131,47 @@ export default function ResumePage() {
         setTimeout(() => { gasCall('warmBundle', { resume_token: token, n: linkN || undefined }).catch(() => {}); }, 4000);
         log.info('ResumePage: hydration complete, navigating to /apply');
         clearInterval(stageTimer);
+        clearInterval(progressTimer);
+        setProgress(1); // TASK-2: snap a 100% al resolver (la única vez que llega al final)
         navigate('/apply', { replace: true });
       })
       .catch(err => {
         log.error('ResumePage: resumeSession failed', { message: err.message });
         clearInterval(stageTimer);
+        clearInterval(progressTimer);
         navigate('/?resume_error=1', { replace: true });
       });
 
-    return () => clearInterval(stageTimer);
+    return () => { clearInterval(stageTimer); clearInterval(progressTimer); };
   }, [token]); // eslint-disable-line
+
+  // TASK-2: % entero para la barra + aria. En curso se topa a RESUME_ASYMPTOTE (95%);
+  // solo el snap final (progress===1) muestra 100%.
+  const pct = Math.round(progress * 100);
 
   return (
     <div style={{ textAlign: 'center', paddingTop: 80 }}>
       <div className="spinner" />
       <p style={{ color: 'var(--muted)' }} aria-live="polite">{t(RESUME_STAGE_KEYS[stage])}</p>
+      {/* Barra de progreso asintótica (TASK-2). Indica avance estimado sin completarse
+          en falso; el aria-valuenow refleja el % para lectores de pantalla. */}
+      <div
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={t(RESUME_STAGE_KEYS[stage])}
+        style={{
+          maxWidth: 320, margin: '20px auto 0', height: 8, borderRadius: 999,
+          background: 'rgba(0,0,0,0.08)', overflow: 'hidden',
+        }}
+      >
+        <div style={{
+          width: `${pct}%`, height: '100%', borderRadius: 999,
+          background: 'var(--teal-dk, #0f766e)',
+          transition: 'width 0.3s ease-out',
+        }} />
+      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
+import * as log from '../logger';
 import { useWizard } from '../context/WizardContext';
 import LangToggle from '../components/LangToggle';
 import HoneypotField from '../components/HoneypotField';
@@ -33,61 +34,53 @@ export default function LandingPage() {
   const [submitting,  setSubmitting]  = useState(false);
   const [err,         setErr]         = useState('');
   const [sent,           setSent]           = useState(false);
-  const [resumed,        setResumed]        = useState(false);
-  const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
 
   const validateEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!validateEmail(email)) { setEmailErr(t('error.invalid_email')); return; }
-    if (!consent) { setErr(t('error.consent_required')); return; }
-
-    setEmailErr('');
-    setErr('');
-    setSubmitting(true);
-
+  // WIZARD-UX (Diego 2026-06-13) — ENVÍO OPTIMISTA + MENSAJE GENÉRICO (privacidad /
+  // anti-enumeración, alineado con KAL-10 silent-ack). Antes la landing ramificaba el
+  // UI en 3 pantallas distintas (already_submitted / resumed / sent) según existiera o
+  // no una solicitud previa para el email → un atacante que conociera un email podía
+  // inferir, por el mensaje que recibía, si esa familia está matriculando. Ahora:
+  //   1. Validamos en local (formato de email + consentimiento) — única condición que
+  //      bloquea el avance, no revela nada del servidor.
+  //   2. Pintamos INMEDIATAMENTE la pantalla genérica "te hemos enviado un enlace" (UN
+  //      solo mensaje, idéntico para TODOS los casos: nueva, en curso, ya enviada, o
+  //      email inexistente).
+  //   3. Disparamos la petición real (sendMagicLink → init nuevo si "not found") en
+  //      SEGUNDO PLANO (fire-and-forget) — su resultado NUNCA se refleja en el UI, así
+  //      que ni el mensaje ni el timing distinguen "existe" de "no existe".
+  // El warm best-effort + el seed de estado del wizard se conservan dentro del kick de
+  // fondo. KAL-7: el resume_token nuevo nunca llega al cliente aquí — viaja por email.
+  const sendAccessLink = async () => {
     // DL-E38 a1: remember the email the family typed as the per-guardian
     // discriminator. Persisted in sessionStorage so the magic-link resume
     // (ResumePage) can re-send it → backend re-resolves the guardian server-side.
     setRecoveredEmail(email);
 
     try {
-      // ── DL-E39 · ENTRADA UNIFICADA ────────────────────────────────────────
-      // Una sola acción de email, gobernada por si el email está asociado.
-      // (1) RECUPERAR primero: el servidor resuelve el email contra `primary_email`
-      //     Y contra los emails de guardian del grupo (sendMagicLink_ →
-      //     findOpenGroupsByGuardianEmail_). Así CUALQUIER tutor asociado recupera
-      //     su solicitud, no solo el que la inició. El email del link va al inbox
-      //     del tutor que lo pidió → la identidad per-guardian se deriva server-side.
-      // (2) Si el email NO está asociado a ningún grupo abierto, INICIAR uno nuevo.
-      // Resultado constante ("revisa tu email") en ambos casos → anti-enumeración.
-      // El estado real (editar vs ver, último paso) lo resuelve el destino del
-      // magic link (resumeSession_), NO la landing.
+      // (1) RECUPERAR primero: el servidor resuelve el email contra `primary_email` Y
+      //     contra los emails de guardian del grupo (sendMagicLink_ →
+      //     findOpenGroupsByGuardianEmail_). El link va al inbox del tutor que lo pidió.
       let recovered = false;
       try {
-        const sent = await gasCall('sendMagicLink', { primary_email: email });
+        const sentRes = await gasCall('sendMagicLink', { primary_email: email });
         recovered = true;
-        // SPEC-WIZ-WARMUP-V2 — auto-invocación CONCURRENTE del wizard a su propio
-        // /exec: kick fire-and-forget (SIN await) del precalentado del bundle de
-        // entrada, con el ticket opaco que mintió el backend (el resume_token nuevo
-        // solo viaja por email). La ejecución GAS sigue viva server-side aunque esta
-        // pestaña se cierre. Best-effort: el catch vacío es deliberado.
-        if (sent && sent.warm_ticket) gasCall('warmBundle', { ticket: sent.warm_ticket }).catch(() => {});
+        // SPEC-WIZ-WARMUP-V2 — kick fire-and-forget del precalentado del bundle de
+        // entrada (el resume_token nuevo solo viaja por email). Best-effort.
+        if (sentRes && sentRes.warm_ticket) gasCall('warmBundle', { ticket: sentRes.warm_ticket }).catch(() => {});
       } catch (recErr) {
-        // Solo "Enrollment group not found" (email no asociado) cae a iniciar
-        // nuevo. Cualquier otro error (rate-limit, validación, red) se propaga.
-        if (!/not found/i.test((recErr && recErr.message) || '')) throw recErr;
+        // Solo "Enrollment group not found" (email no asociado) cae a iniciar nuevo.
+        // Cualquier otro error (rate-limit, validación, red) se traga SILENCIOSAMENTE:
+        // el usuario ya vio el mensaje genérico (anti-enum) → no exponemos el fallo.
+        if (!/not found/i.test((recErr && recErr.message) || '')) {
+          log.warn('LandingPage: sendMagicLink failed (silenciado, anti-enum)', { message: recErr && recErr.message });
+          return;
+        }
       }
 
-      if (recovered) {
-        // Recuperación: link enviado al inbox del tutor. El estado lo gobierna
-        // el destino del link, no la landing.
-        setResumed(true);
-        setSent(true);
-        return;
-      }
+      if (recovered) return; // link enviado; el estado lo gobierna el destino del link.
 
       // ── Sin grupo asociado → iniciar una solicitud nueva ──────────────────
       let recaptcha_token = null;
@@ -101,24 +94,34 @@ export default function LandingPage() {
         preferred_language: navigator.language?.startsWith('en') ? 'en' : 'es',
         recaptcha_token,
       });
-      // SPEC-WIZ-WARMUP-V2: los paths already_submitted/resumed del init también
-      // envían magic link → mismo kick fire-and-forget del precalentado.
+      // SPEC-WIZ-WARMUP-V2: los paths del init también envían magic link → mismo kick.
       if (data.warm_ticket) gasCall('warmBundle', { ticket: data.warm_ticket }).catch(() => {});
-      if (data.already_submitted) {
-        setAlreadySubmitted(true);
-        setSent(true);
-        return;
-      }
+      // already_submitted: el backend ya mandó el link de "ver mi solicitud"; nada que
+      // pintar (el mensaje genérico ya está). Para los demás casos, sembramos el estado
+      // del wizard en memoria por si la familia abre el link en esta misma pestaña.
+      if (data.already_submitted) return;
       setEnrollmentGroupId(data.enrollment_group_id || data.application_id);
       setResumeToken(data.resumed ? null : (data.resume_token || null));
       setRecognition(data.recognition);
       updateStep('email', { primary_email: email, verified: false });
-      setResumed(!!data.resumed);
-      setSent(true);
     } catch (e) {
-      setErr(e.message);
-      setSubmitting(false);
+      // Cualquier fallo del kick de fondo se traga: el usuario ya vio el mensaje
+      // genérico. Loguear (redactado) para diagnóstico, NUNCA mostrar al usuario.
+      log.warn('LandingPage: kick de envío falló (silenciado, anti-enum)', { message: e && e.message });
     }
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!validateEmail(email)) { setEmailErr(t('error.invalid_email')); return; }
+    if (!consent) { setErr(t('error.consent_required')); return; }
+
+    setEmailErr('');
+    setErr('');
+    setSubmitting(true);
+    // OPTIMISTA: pinta la pantalla genérica YA. El envío real corre en background.
+    setSent(true);
+    sendAccessLink();
   };
 
   const header = (
@@ -135,70 +138,10 @@ export default function LandingPage() {
   );
 
   if (sent) {
-    if (alreadySubmitted) {
-      return (
-        <div className="wizard-layout">
-          {header}
-          <div className="landing-hero">
-            <img src={LOGO} alt="KIS" className="landing-logo" />
-            <div style={{
-              maxWidth: 580, margin: '0 auto', padding: '32px 28px',
-              background: '#e8f5e9', border: '2px solid #43a047',
-              borderRadius: 12, textAlign: 'center',
-            }}>
-              <div style={{
-                width: 72, height: 72, background: '#c8e6c9', borderRadius: '50%',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                margin: '0 auto 20px',
-              }}>
-                <i className="bi bi-check-circle-fill" style={{ fontSize: '2.2rem', color: '#2e7d32' }} />
-              </div>
-              <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: '#1b5e20', marginBottom: 16 }}>
-                {t('consent.already_submitted_title')}
-              </h1>
-              <p style={{ color: '#2e4a2f', lineHeight: 1.5, marginBottom: 12, fontSize: '1rem' }}>
-                {t('consent.already_submitted_subtitle_sent', { email })}
-              </p>
-              <p style={{ color: '#2e4a2f', lineHeight: 1.5, fontSize: '0.92rem', marginBottom: 0 }}>
-                {t('consent.already_submitted_note')}
-              </p>
-            </div>
-          </div>
-        </div>
-      );
-    }
-    if (resumed) {
-      return (
-        <div className="wizard-layout">
-          {header}
-          <div className="landing-hero">
-            <img src={LOGO} alt="KIS" className="landing-logo" />
-            <div style={{
-              maxWidth: 580, margin: '0 auto', padding: '32px 28px',
-              background: '#fff8e1', border: '2px solid #f0a500',
-              borderRadius: 12, textAlign: 'center',
-            }}>
-              <div style={{
-                width: 72, height: 72, background: '#ffe082', borderRadius: '50%',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                margin: '0 auto 20px',
-              }}>
-                <i className="bi bi-info-circle-fill" style={{ fontSize: '2.2rem', color: '#b45309' }} />
-              </div>
-              <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: '#92400e', marginBottom: 16 }}>
-                {t('consent.resumed_title')}
-              </h1>
-              <p style={{ color: '#5c4400', lineHeight: 1.5, marginBottom: 12, fontSize: '1rem' }}>
-                {t('consent.resumed_subtitle', { email })}
-              </p>
-              <p style={{ color: '#5c4400', lineHeight: 1.5, fontSize: '0.92rem', marginBottom: 0 }}>
-                {t('consent.resumed_note')}
-              </p>
-            </div>
-          </div>
-        </div>
-      );
-    }
+    // WIZARD-UX (Diego 2026-06-13): UN SOLO mensaje genérico para CUALQUIER supuesto
+    // (nueva, en curso, ya enviada, o email inexistente) — anti-enumeración (KAL-10).
+    // El UI NO valida ni revela frente al usuario si existe o no una solicitud previa:
+    // "si alguien conoce mi email y entra ahí, podría saber si estoy matriculando".
     return (
       <div className="wizard-layout">
         {header}
