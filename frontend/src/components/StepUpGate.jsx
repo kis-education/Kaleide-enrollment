@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
 import * as log from '../logger';
+import LangToggle from './LangToggle';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
@@ -121,6 +122,9 @@ export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSe
       <div className="kis-card" style={{
         maxWidth: 440, width: '100%', padding: '28px 26px', textAlign: 'center',
       }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+          <LangToggle />
+        </div>
         <img src={LOGO} alt="KIS" style={{ height: 48, marginBottom: 14 }} />
 
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -130,7 +134,7 @@ export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSe
           </strong>
         </div>
         <p style={{ color: 'var(--muted)', fontSize: '0.9rem', marginBottom: 10 }}>
-          {t('stepup.gate_subtitle')}
+          {t(codeSent ? 'stepup.gate_subtitle' : 'stepup.gate_subtitle_unsent')}
         </p>
         <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: 18 }}>
           <i className="bi bi-clock me-1" />{t('stepup.gate_duration_note')}
