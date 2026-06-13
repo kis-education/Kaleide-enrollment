@@ -17,6 +17,14 @@ import * as log from '../../logger';
 //   uno = un archivo + una casilla de texto libre. Cero archivos es válido (no
 //   obligatorio). El backend guarda la descripción en recFiles.description con un
 //   rec_type_code genérico ('OTHER').
+//
+// WIZARD-DOCS2 (2026-06-13): patrón "añadir ítem" como en Step2Persons (tutores/
+// alumnos). Estado inicial = CERO paneles: solo el botón "Añadir archivo". Cada
+// pulsación abre UN panel (descripción + selector). NO se auto-añade fila vacía
+// tras subir; para otro archivo hay que volver a pulsar "Añadir archivo". Cada
+// panel se puede quitar; quitar el último deja CERO paneles (sigue siendo
+// opcional). Las subidas existentes (hidratación) se muestran como paneles ya
+// completados.
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -203,19 +211,17 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
 
   // Semilla desde la hidratación: cada documento subido (origin='WIZARD') se
   // convierte en una fila ya-completada del adjuntador genérico. Si no hay
-  // ninguno, arrancamos con UNA fila vacía lista para adjuntar (opcional).
-  const seedRows = () => {
-    const existing = (stepData.documents || []).filter(d => d && d.file_id);
-    if (existing.length) {
-      return existing.map(d => ({
+  // ninguno, arrancamos con CERO paneles (patrón "añadir ítem" de Step2Persons):
+  // el usuario verá solo el botón "Añadir archivo".
+  const seedRows = () =>
+    (stepData.documents || [])
+      .filter(d => d && d.file_id)
+      .map(d => ({
         id:          newRowId(),
         description: d.description || '',
         file_id:     d.file_id,
         file_name:   d.file_name || '',
       }));
-    }
-    return [{ id: newRowId(), description: '', file_id: '', file_name: '' }];
-  };
 
   const [rows, setRows] = useState(seedRows);
 
@@ -231,13 +237,9 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   };
 
   const handleUploaded = (rowId, doc) => {
-    setRows(prev => {
-      const next = prev.map(r => r.id === rowId ? { ...r, ...doc } : r);
-      // Tras una subida exitosa, añadimos automáticamente una nueva fila vacía
-      // para facilitar adjuntar otro (sin obligar).
-      const hasEmpty = next.some(r => !r.file_id);
-      return hasEmpty ? next : [...next, { id: newRowId(), description: '', file_id: '', file_name: '' }];
-    });
+    // WIZARD-DOCS2: NO se auto-añade una fila vacía tras subir. Para otro archivo,
+    // el usuario vuelve a pulsar "Añadir archivo" (patrón Step2Persons).
+    setRows(prev => prev.map(r => r.id === rowId ? { ...r, ...doc } : r));
   };
 
   const handleAddRow = () => {
@@ -245,11 +247,9 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   };
 
   const handleRemoveRow = (rowId) => {
-    setRows(prev => {
-      const next = prev.filter(r => r.id !== rowId);
-      // Conservamos siempre al menos una fila vacía visible.
-      return next.length ? next : [{ id: newRowId(), description: '', file_id: '', file_name: '' }];
-    });
+    // WIZARD-DOCS2: quitar el último panel deja CERO paneles (sigue siendo opcional),
+    // igual que se puede quitar un tutor/alumno en Step2Persons.
+    setRows(prev => prev.filter(r => r.id !== rowId));
   };
 
   const persist = () => updateStep('documents', uploadedDocs());
@@ -274,6 +274,14 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
       {locked && <LockedBanner onUnlock={onUnlock} />}
 
       <div className="kis-card" style={locked ? { pointerEvents: 'none', opacity: 0.7 } : {}}>
+        {/* WIZARD-DOCS2: estado inicial sin paneles → solo aviso + botón "Añadir archivo"
+            (patrón Step2Persons). Cada panel abre al pulsar el botón; se puede quitar. */}
+        {rows.length === 0 && (
+          <p className="mb-3" style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>
+            {t('doc.empty_hint')}
+          </p>
+        )}
+
         {rows.map(row => (
           <GenericAttachment
             key={row.id}
@@ -288,8 +296,8 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
           />
         ))}
 
-        <button type="button" className="btn-secondary-kis" onClick={handleAddRow}>
-          <i className="bi bi-plus-circle me-1" /> {t('doc.add')}
+        <button type="button" className="add-btn" onClick={handleAddRow}>
+          <i className="bi bi-plus-lg me-1" /> {t('doc.add')}
         </button>
       </div>
 
