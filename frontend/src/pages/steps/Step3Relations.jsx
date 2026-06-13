@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
+import { translateRelationLabel } from '../../utils/enumLabels';
 import LockedBanner from '../../components/LockedBanner';
 import StepNav from '../../components/StepNav';
 import * as log from '../../logger';
@@ -210,7 +211,7 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
                 >
                   <option value="">{t('relation.none')}</option>
                   {relationTypes.filter(rt => rt.id).map(rt => (
-                    <option key={rt.id} value={rt.id}>{rt.label || rt.id}</option>
+                    <option key={rt.id} value={rt.id}>{translateRelationLabel(rt.label, t) || rt.id}</option>
                   ))}
                 </select>
                 <span style={{ color: 'var(--muted)' }}>{t('relation.of')}</span>
@@ -264,7 +265,7 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
                     >
                       <option value="">{t('relation.none')}</option>
                       {relationTypes.filter(rt => rt.id).map(rt => (
-                        <option key={rt.id} value={rt.id}>{rt.label || rt.id}</option>
+                        <option key={rt.id} value={rt.id}>{translateRelationLabel(rt.label, t) || rt.id}</option>
                       ))}
                     </select>
                     <span style={{ color: 'var(--muted)' }}>{t('relation.of')}</span>

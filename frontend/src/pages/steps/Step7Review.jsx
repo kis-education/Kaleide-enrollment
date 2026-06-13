@@ -6,6 +6,7 @@ import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del ca
 import { gasCall, fetchLookups, fetchQuestions } from '../../api';
 import StepNav from '../../components/StepNav';
 import { openDocument } from '../../utils/documentProxy';
+import { translateRelationLabel, translateGender, translateIdType } from '../../utils/enumLabels';
 import { CONSENT_TEXTS } from '../../consentTexts';
 import * as log from '../../logger';
 
@@ -224,7 +225,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         <DataRow label={t('field.place_of_birth')}value={g.place_of_birth} />
         <DataRow label={t('field.nationality')}   value={g.nationalities?.[0]?.country_id} />
         {g.ids?.[0] && (
-          <DataRow label={t('field.id_number')} value={`${g.ids[0].id_type_id}: ${g.ids[0].id_number}`} />
+          <DataRow label={t('field.id_number')} value={`${translateIdType(g.ids[0].id_type_id, t)}: ${g.ids[0].id_number}`} />
         )}
         <DataRow label={t('field.address_line_1')} value={g.address?.address_line_1} />
         <DataRow label={t('field.address_line_2')} value={g.address?.address_line_2} />
@@ -286,7 +287,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         <DataRow label={t('field.last_name')}     value={a.last_name} />
         <DataRow label={t('field.date_of_birth')} value={a.date_of_birth} />
         <DataRow label={t('field.place_of_birth')}value={a.place_of_birth} />
-        <DataRow label={t('field.gender')}        value={a.gender} />
+        <DataRow label={t('field.gender')}        value={translateGender(a.gender, t)} />
         <DataRow label={t('field.nationality')}   value={a.nationalities?.[0]?.country_id} />
         <DataRow label={t('field.mother_tongue')} value={a.mother_tongue} />
         <DataRow label={t('field.start_date')}    value={email?.desired_start_date} />
@@ -377,7 +378,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
             const gName = [g.first_name, g.last_name].filter(Boolean).join(' ');
             const aName = [a.first_name, a.last_name].filter(Boolean).join(' ');
             const relLabel = r.relation_type_id
-              ? resolveLabel(lookups.relationTypes, r.relation_type_id)
+              ? translateRelationLabel(resolveLabel(lookups.relationTypes, r.relation_type_id), t)
               : '—';
             return (
               <div key={i} style={{ display: 'flex', gap: 12, padding: '7px 0', fontSize: '0.88rem', borderBottom: '1px solid var(--bg)', alignItems: 'center', flexWrap: 'wrap' }}>
