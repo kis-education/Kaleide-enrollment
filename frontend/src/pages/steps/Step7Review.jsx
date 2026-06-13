@@ -490,8 +490,16 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
       {(documents || []).length > 0 && (
         <SectionCard title={t('step.documents')} icon="bi-folder-fill">
           {documents.map((d, i) => {
+            // WIZARD-DOCS (2026-06-13): adjuntador genérico → mostramos el texto
+            // libre del usuario (description). Compat: filas antiguas con un tipo
+            // tasado siguen mostrando su label vía doc.<document_type>; fallback al
+            // nombre del archivo o un genérico si no hay descripción.
             const docKey = `doc.${d.document_type}`;
-            const label = i18n.exists(docKey) ? t(docKey) : d.document_type;
+            const label = (d.description && d.description.trim())
+              ? d.description.trim()
+              : (d.document_type && d.document_type !== 'other' && i18n.exists(docKey))
+                ? t(docKey)
+                : (d.file_name || t('doc.generic_label'));
             return (
               <div key={i} style={{ display: 'flex', gap: 12, padding: '5px 0', fontSize: '0.88rem', borderBottom: '1px solid var(--bg)', alignItems: 'center' }}>
                 <span style={{ color: 'var(--muted)', minWidth: 170, flexShrink: 0 }}>{label}</span>

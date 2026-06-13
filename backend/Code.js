@@ -3435,11 +3435,23 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
   let documents = [];
   if (topRead[3].ok) {
     const fileById = {};
-    (topRead[3].data || []).forEach(f => { fileById[f.file_id] = f; });
+    // WIZARD-DOCS (2026-06-13) — bug "listado fantasma" del Step 7: el read filtra
+    // recFiles por origin_reference=group_id, lo que captura TODO fichero del grupo,
+    // incluido el PDF de consentimiento firmado (origin='WIZARD_SUBMIT', escrito por
+    // submitEnrollmentSession_, Code.js:4275) y cualquier fichero generado por el
+    // sistema / paquete de firma. El resumen de "documentos subidos" debe mostrar
+    // SOLO las subidas REALES de la familia (las que pasan por uploadDocument_, que
+    // escribe origin='WIZARD', Code.js:5161). Filtramos por ese conjunto exacto.
+    (topRead[3].data || [])
+      .filter(f => f && f.origin === 'WIZARD' && !f.deleted_at)
+      .forEach(f => { fileById[f.file_id] = f; });
     documents = Object.values(fileById).map(f => ({
       document_id:   f.file_id,
       file_id:       f.file_id,
       document_type: _docTypeFromRecType_(f.rec_type_code),
+      // WIZARD-DOCS: texto libre del adjuntador genérico (qué es el archivo). El
+      // frontend lo muestra preferentemente sobre el label de tipo tasado.
+      description:   f.description || '',
       file_name:     f.file_name,
       mimeType:      f.mime_type,
       uploaded_at:   f.created_at,
@@ -5063,6 +5075,14 @@ function uploadDocument_(p) {
   const enrollmentId      = p.enrollment_id || null;
   const { base64, mimeType, filename, document_type } = p;
   if (!base64) throw new Error('Missing base64');
+  // WIZARD-DOCS (2026-06-13): adjuntador genérico. La familia describe en texto
+  // libre qué es cada archivo ("informe médico", "documento personal"…). No hay
+  // tipos tasados obligatorios. KAL-5: sanitizamos el texto (tope 200 chars,
+  // sin CR/LF para no contaminar logs — KAL-11). Se guarda en recFiles.description.
+  // appsheetEscape_ se aplica más abajo SOLO si llega a un Filter (aquí no — va a
+  // un Add como valor de columna; AppSheet API v2 parametriza el body JSON).
+  let uploadDescription = (typeof p.description === 'string') ? p.description : '';
+  uploadDescription = uploadDescription.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 200);
   if (enrollmentId) {
     assertValidUuid_(enrollmentId, 'enrollment_id');
     // KAL-4: post-submit uploads target a specific enrollment; verify it
@@ -5162,7 +5182,8 @@ function uploadDocument_(p) {
     origin_reference:         enrollmentGroupId || enrollmentId,
     document_date:            null,
     signed_at:                null,
-    description:              null,
+    // WIZARD-DOCS: texto libre del adjuntador genérico (qué es el archivo).
+    description:              uploadDescription || null,
     language:                 null,
     was_originally_paper:     false,
     created_at:               now,

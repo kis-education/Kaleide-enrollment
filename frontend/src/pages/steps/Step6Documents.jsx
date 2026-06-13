@@ -8,13 +8,15 @@ import StepNav from '../../components/StepNav';
 import StepUpReverify from '../../components/StepUpReverify';
 import * as log from '../../logger';
 
-const DOCUMENT_TYPES = [
-  { key: 'passport',        labelKey: 'doc.passport'        },
-  { key: 'birth_cert',      labelKey: 'doc.birth_cert'      },
-  { key: 'report_card',     labelKey: 'doc.report_card'     },
-  { key: 'medical_cert',    labelKey: 'doc.medical_cert'    },
-  { key: 'photo',           labelKey: 'doc.photo'           },
-];
+// WIZARD-DOCS (2026-06-13): adjuntador GENÉRICO opcional.
+// Diego: "Hay una serie de casos tasados para subir archivos (DNI, etc.) pero no
+// es necesario. Lo que haría falta es la posibilidad de subir archivos, NO
+// obligatorio, y que el usuario decida qué archivo es: un adjuntador genérico,
+// donde el usuario describe en una casilla qué tipo de archivo es."
+// → Eliminamos la rejilla fija DOCUMENT_TYPES. El usuario añade N adjuntos; cada
+//   uno = un archivo + una casilla de texto libre. Cero archivos es válido (no
+//   obligatorio). El backend guarda la descripción en recFiles.description con un
+//   rec_type_code genérico ('OTHER').
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -25,16 +27,19 @@ function fileToBase64(file) {
   });
 }
 
-function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded, existing, onStepUpVerified, onActivity }) {
-  const { t }    = useTranslation();
-  const [status, setStatus] = useState(existing ? 'success' : '');
-  // CLI 82 / KAL-NEW-5: ya no guardamos una drive_url pública; guardamos el
-  // file_id interno y resolvemos los bytes on-demand vía getDocument.
-  const [fileId, setFileId] = useState(existing?.file_id || '');
+let _rowSeq = 0;
+const newRowId = () => `doc_row_${++_rowSeq}_${Date.now()}`;
+
+/**
+ * Una fila del adjuntador genérico: descripción (texto libre) + archivo.
+ * Sube vía gasCall('uploadDocument', { description, … }) al seleccionar el archivo.
+ */
+function GenericAttachment({ row, enrollmentGroupId, resumeToken, onUploaded, onDescriptionChange, onRemove, onStepUpVerified, onActivity }) {
+  const { t } = useTranslation();
+  const [status, setStatus] = useState(row.file_id ? 'success' : '');
+  const [fileId, setFileId] = useState(row.file_id || '');
   const [err,    setErr]    = useState('');
   const [viewing, setViewing] = useState(false);
-  // DL-E39: una acción gateada (subir/ver) puede devolver STEPUP_REQUIRED.
-  // Guardamos la acción pendiente para reintentarla tras verificar.
   const [stepUpRetry, setStepUpRetry] = useState(null); // null | () => void
 
   const isStepUpError = (e) => e?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(e?.message || '');
@@ -49,15 +54,15 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
         enrollment_group_id: enrollmentGroupId,
         application_id:      enrollmentGroupId, // legacy alias
         base64,
-        mimeType:      file.type,
-        filename:      file.name,
-        document_type: docType,
+        mimeType:    file.type,
+        filename:    file.name,
+        // WIZARD-DOCS: el usuario describe qué es el archivo (texto libre, opcional).
+        description: (row.description || '').trim(),
       });
       setFileId(data.file_id);
       setStatus('success');
-      onUploaded({ document_type: docType, file_id: data.file_id });
+      onUploaded(row.id, { file_id: data.file_id, file_name: file.name, description: (row.description || '').trim() });
     } catch (e) {
-      // DL-E39: el backend exige step-up fresco → mostrar StepUpReverify + reintentar.
       if (isStepUpError(e)) {
         log.warn('Step6: uploadDocument requires step-up');
         setStatus('');
@@ -82,7 +87,6 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
     try {
       await openDocument({ file_id: fileId, resume_token: resumeToken });
     } catch (e) {
-      // DL-E39: getDocument gateado → step-up + reintento.
       if (isStepUpError(e)) {
         log.warn('Step6: getDocument requires step-up');
         setStepUpRetry(() => () => handleView());
@@ -95,28 +99,52 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
     }
   };
 
-  return (
-    <div className="mb-4">
-      <label className="form-label fw-semibold">{t(DOCUMENT_TYPES.find(d => d.key === docType)?.labelKey || docType)}</label>
+  const inputId = `file_${row.id}`;
 
-      <div
-        className="upload-zone"
-        onDragOver={e => e.preventDefault()}
-        onDrop={e => { e.preventDefault(); log.info('[DBG docs] drop', { docType }); onActivity && onActivity(); handleFile(e.dataTransfer.files[0]); }}
-        onClick={() => { log.info('[DBG docs] upload-zone click', { docType }); onActivity && onActivity(); document.getElementById(`file_${docType}`).click(); }}
-      >
-        <i className="bi bi-cloud-arrow-up" style={{ fontSize: '1.5rem', color: 'var(--teal)' }} />
-        <p style={{ margin: '6px 0 0', color: 'var(--muted)', fontSize: '0.88rem' }}>
-          {t('doc.drag_or_click')}
-        </p>
-        <input
-          id={`file_${docType}`}
-          type="file"
-          accept=".pdf,.jpg,.jpeg,.png"
-          style={{ display: 'none' }}
-          onChange={e => handleFile(e.target.files[0])}
-        />
+  return (
+    <div className="mb-4 doc-attachment" style={{ borderBottom: '1px solid var(--bg)', paddingBottom: 16 }}>
+      <div className="d-flex justify-content-between align-items-start mb-2">
+        <label className="form-label fw-semibold mb-0">{t('doc.describe_label')}</label>
+        <button
+          type="button"
+          className="btn btn-link p-0 text-danger"
+          style={{ fontSize: '0.85rem' }}
+          onClick={() => onRemove(row.id)}
+        >
+          <i className="bi bi-x-circle me-1" />{t('doc.remove')}
+        </button>
       </div>
+
+      <input
+        type="text"
+        className="form-control mb-2"
+        maxLength={200}
+        placeholder={t('doc.describe_placeholder')}
+        value={row.description || ''}
+        onChange={e => onDescriptionChange(row.id, e.target.value)}
+        disabled={status === 'success'}
+      />
+
+      {status !== 'success' && (
+        <div
+          className="upload-zone"
+          onDragOver={e => e.preventDefault()}
+          onDrop={e => { e.preventDefault(); onActivity && onActivity(); handleFile(e.dataTransfer.files[0]); }}
+          onClick={() => { onActivity && onActivity(); document.getElementById(inputId).click(); }}
+        >
+          <i className="bi bi-cloud-arrow-up" style={{ fontSize: '1.5rem', color: 'var(--teal)' }} />
+          <p style={{ margin: '6px 0 0', color: 'var(--muted)', fontSize: '0.88rem' }}>
+            {t('doc.drag_or_click')}
+          </p>
+          <input
+            id={inputId}
+            type="file"
+            accept=".pdf,.jpg,.jpeg,.png"
+            style={{ display: 'none' }}
+            onChange={e => handleFile(e.target.files[0])}
+          />
+        </div>
+      )}
 
       {status === 'uploading' && (
         <div className="upload-status" style={{ background: 'var(--teal-lt)', color: 'var(--teal-dk)' }}>
@@ -127,10 +155,6 @@ function DocumentUploader({ docType, enrollmentGroupId, resumeToken, onUploaded,
         <div className="upload-status success">
           <i className="bi bi-check-circle me-1" />
           {t('doc.uploaded')} &nbsp;
-          {/* DL-E39 ENMIENDA (gate de entrada): "Ver" siempre disponible — la PII
-              está protegida por el gate de entrada del wizard. Al pulsar Ver el
-              backend aún puede devolver STEPUP_REQUIRED si la frescura server-side
-              expiró (defensa en profundidad, manejado en handleView). */}
           {fileId && (
             <button
               type="button"
@@ -176,32 +200,66 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     enrollmentGroupId, resumeToken, stepData, updateStep,
     markStepUpFresh, touchActivity,
   } = useWizard();
-  const [documents, setDocuments] = useState(stepData.documents || []);
-  // DBG-SESSION (bug 3): si locked=true (expediente enviado → completedSteps incluye
-  // este paso) la card lleva pointerEvents:none → el click de subida NO dispara su
-  // handler (no aparecerá '[DBG docs] upload-zone click').
-  useEffect(() => { log.info('[DBG docs] render', { locked, n_existing: (stepData.documents || []).length }); }, [locked]); // eslint-disable-line
-  // DL-E39 ENMIENDA (gate de entrada): sin enmascarado per-campo. La PII está
-  // protegida por el gate de entrada del wizard; aquí los documentos se muestran
-  // con normalidad. markStepUpFresh/touchActivity siguen para el retry server-side
-  // de subir/ver y para el reset del contador de inactividad.
 
-  const handleUploaded = (doc) => {
-    setDocuments(prev => {
-      const next = prev.filter(d => d.document_type !== doc.document_type);
-      return [...next, doc];
+  // Semilla desde la hidratación: cada documento subido (origin='WIZARD') se
+  // convierte en una fila ya-completada del adjuntador genérico. Si no hay
+  // ninguno, arrancamos con UNA fila vacía lista para adjuntar (opcional).
+  const seedRows = () => {
+    const existing = (stepData.documents || []).filter(d => d && d.file_id);
+    if (existing.length) {
+      return existing.map(d => ({
+        id:          newRowId(),
+        description: d.description || '',
+        file_id:     d.file_id,
+        file_name:   d.file_name || '',
+      }));
+    }
+    return [{ id: newRowId(), description: '', file_id: '', file_name: '' }];
+  };
+
+  const [rows, setRows] = useState(seedRows);
+
+  useEffect(() => { log.info('[DBG docs] render', { locked, n_existing: (stepData.documents || []).length }); }, [locked]); // eslint-disable-line
+
+  // `documents` derivado: solo las filas con un file_id subido (lo que persiste).
+  const uploadedDocs = () => rows
+    .filter(r => r.file_id)
+    .map(r => ({ file_id: r.file_id, file_name: r.file_name || '', description: (r.description || '').trim() }));
+
+  const handleDescriptionChange = (rowId, value) => {
+    setRows(prev => prev.map(r => r.id === rowId ? { ...r, description: value } : r));
+  };
+
+  const handleUploaded = (rowId, doc) => {
+    setRows(prev => {
+      const next = prev.map(r => r.id === rowId ? { ...r, ...doc } : r);
+      // Tras una subida exitosa, añadimos automáticamente una nueva fila vacía
+      // para facilitar adjuntar otro (sin obligar).
+      const hasEmpty = next.some(r => !r.file_id);
+      return hasEmpty ? next : [...next, { id: newRowId(), description: '', file_id: '', file_name: '' }];
     });
   };
 
-  const handleBack = () => {
-    updateStep('documents', documents);
-    onBack();
+  const handleAddRow = () => {
+    setRows(prev => [...prev, { id: newRowId(), description: '', file_id: '', file_name: '' }]);
   };
 
+  const handleRemoveRow = (rowId) => {
+    setRows(prev => {
+      const next = prev.filter(r => r.id !== rowId);
+      // Conservamos siempre al menos una fila vacía visible.
+      return next.length ? next : [{ id: newRowId(), description: '', file_id: '', file_name: '' }];
+    });
+  };
+
+  const persist = () => updateStep('documents', uploadedDocs());
+
+  const handleBack = () => { persist(); onBack(); };
   const handleNext = () => {
-    log.info('Step6: onNext documents', documents);
-    updateStep('documents', documents);
-    onNext('documents', documents);
+    const docs = uploadedDocs();
+    log.info('Step6: onNext documents', { n: docs.length });
+    updateStep('documents', docs);
+    onNext('documents', docs);
   };
 
   return (
@@ -216,25 +274,29 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
       {locked && <LockedBanner onUnlock={onUnlock} />}
 
       <div className="kis-card" style={locked ? { pointerEvents: 'none', opacity: 0.7 } : {}}>
-        {DOCUMENT_TYPES.map(doc => (
-          <DocumentUploader
-            key={doc.key}
-            docType={doc.key}
+        {rows.map(row => (
+          <GenericAttachment
+            key={row.id}
+            row={row}
             enrollmentGroupId={enrollmentGroupId}
             resumeToken={resumeToken}
             onUploaded={handleUploaded}
-            existing={documents.find(d => d.document_type === doc.key)}
+            onDescriptionChange={handleDescriptionChange}
+            onRemove={handleRemoveRow}
             onStepUpVerified={markStepUpFresh}
             onActivity={touchActivity}
           />
         ))}
+
+        <button type="button" className="btn-secondary-kis" onClick={handleAddRow}>
+          <i className="bi bi-plus-circle me-1" /> {t('doc.add')}
+        </button>
       </div>
 
       <div className="d-flex justify-content-between mt-4">
         <button className="btn-secondary-kis" onClick={handleBack}>
           <i className="bi bi-arrow-left me-1" /> {t('nav.back')}
         </button>
-        {/* WPERF-1 (criterios 1+2): no se bloquea ni muestra "Guardando…" por save en vuelo. */}
         <button className="btn-primary-kis" onClick={handleNext}>
           {t('nav.continue')} <i className="bi bi-arrow-right ms-1" />
         </button>
