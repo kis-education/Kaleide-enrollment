@@ -4550,15 +4550,11 @@ function sendVerificationCode_(p) {
   cache.put('verify_' + enrollmentGroupId, code, 600); // 10 min TTL
 
   const lang = p.preferred_language || 'es';
-  const subject = lang === 'en'
-    ? 'Your Kaleide verification code'
-    : 'Tu c\u00f3digo de verificaci\u00f3n de Kaleide';
-
-  const body = lang === 'en'
-    ? '<p>Your verification code is: <strong style="font-size:1.5em;letter-spacing:4px;">' + code + '</strong></p><p>This code expires in 10 minutes.</p>'
-    : '<p>Tu c\u00f3digo de verificaci\u00f3n es: <strong style="font-size:1.5em;letter-spacing:4px;">' + code + '</strong></p><p>Este c\u00f3digo caduca en 10 minutos.</p>';
-
-  sendAsAlias_(primary_email, subject, buildFamilyEmail_(subject, body));
+  // WIZARD-TERMINAL P4 (P253): el render+env\u00edo del email OTP lo gobierna el KMS v\u00eda el
+  // endpoint S\u00cdNCRONO sys-public.sendAuthCode (el c\u00f3digo NO se persiste en sysNotificationLog).
+  // La generaci\u00f3n/cache/rate-limit del c\u00f3digo siguen AQU\u00cd (l\u00f3gica de auth) \u2014 solo el email
+  // sale por el KMS. Sin fallback local: si el KMS falla, el throw propaga \u2192 {ok:false}.
+  sendViaKmsAuthCode_(primary_email, { OTP_CODE: code, LANG: lang });
 
   return { sent: true };
 }
