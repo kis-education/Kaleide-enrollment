@@ -343,7 +343,20 @@ Windows Schannel: añade `--ssl-no-revoke` a curl si la red corporativa bloquea 
 
 ## Email sending
 
-Transactional emails (application received, etc.) use `GmailApp.sendEmail` with `from: ADMISSIONS_EMAIL` so they appear from `admissions@kaleide.org` instead of the deploying account. This requires `admissions@kaleide.org` to be configured as a **"Send mail as" alias** in the deploying Gmail account (Settings → Accounts → Send mail as). Without the alias, Gmail silently falls back to the deploying account address.
+> **★ MIGRADO AL MOTOR DEL KMS (2026-06-25, wizard @185 + KMS @766). El wizard YA NO manda los emails transaccionales vía `GmailApp.sendEmail`.** El texto histórico de abajo (alias "Send mail as" del `GmailApp` local) está SUPERSEDIDO — se conserva solo como registro.
+
+Los **5 emails del wizard** (los 4 transaccionales: magic-link, magic-link-multi, confirmación-familia, notificación-interna de submit + el email de OTP) los **renderiza y envía el motor del KMS**, no el GAS del wizard:
+
+- **Los 4 transaccionales** → `kmsProxy_('sys-public.sendNotification', …)` vía el helper `sendViaKmsNotify_` (`backend/Code.js:6702`, firma HMAC con `NOTIFY_HMAC_SECRET` compartido) → KMS `sysPublic_sendNotification` (`kis-app/kms-server/sys/notify-public.gs:101`, whitelist `:63`). Las funciones locales `sendMagicLinkEmail_`/`sendMagicLinkMultiEmail_`/`sendFamilyConfirmationEmail_` **fueron ELIMINADAS** (`Code.js:5738`). Realiza **P213** (endpoint KMS) + **P214** (refactor wizard).
+- **El OTP** → `kmsProxy_('sys-public.sendAuthCode', …)` vía `sendViaKmsAuthCode_` (`backend/Code.js:6737`) → KMS `sysPublic_sendAuthCode` (`notify-public.gs:139`), endpoint **síncrono**, el código **NO se persiste** en `sysNotificationLog`. La **generación y verificación del código siguen wizard-side** (lógica de auth); solo el render+envío salieron al KMS. Realiza **P253**.
+
+**Pre-requisito de Diego (una vez):** generar `NOTIFY_HMAC_SECRET` y copiarlo a las Script Properties de AMBOS GAS (wizard + KMS). El contenido/plantilla de cada email vive en el catálogo del KMS (`sysNotificationTemplates_T` + `locales/`), no en el wizard.
+
+Cross-ref: `kis-app/docs/kms/decisions/enr.md` (ENMIENDA del flujo + bug OTP RESUELTO) + `kis-app/docs/kms/operational-pending.md` fila "wizard-terminal" (DESPLEGADO @766/@185).
+
+---
+
+**(Histórico — SUPERSEDIDO 2026-06-25, no aplica al wizard actual):** Transactional emails (application received, etc.) use `GmailApp.sendEmail` with `from: ADMISSIONS_EMAIL` so they appear from `admissions@kaleide.org` instead of the deploying account. This requires `admissions@kaleide.org` to be configured as a **"Send mail as" alias** in the deploying Gmail account (Settings → Accounts → Send mail as). Without the alias, Gmail silently falls back to the deploying account address.
 
 ## Autonomy — main branch
 
