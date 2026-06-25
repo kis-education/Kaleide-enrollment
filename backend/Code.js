@@ -4317,55 +4317,16 @@ function submitEnrollmentSession_(p) {
   const qbResponseMap = {};
   qbResRows.forEach(r => { qbResponseMap[r.question_id] = r.response_text; });
 
-  // Generate one signed consent PDF for the session and write it as a recFiles
-  // row scoped to every enrollment in the group (DL-R09 / DL-R13).
-  try {
-    const pdfMeta = generateConsentPdf_(enrollmentGroupId, app, enrichedGuardians, applicants, consentRows, p.esignature || '', now, qbResponseMap);
-    const pdfFileId = generateUuid_();
-    appsheetRequest_(T.REC_FILES, 'Add', [{
-      file_id:                  pdfFileId,
-      school_id:                SCHOOL_ID,
-      rec_type_code:            REC_TYPE_BY_DOCUMENT_TYPE.signed_consent_record,
-      drive_file_id:            pdfMeta.drive_file_id,
-      drive_folder_id:          pdfMeta.drive_folder_id,
-      file_name:                pdfMeta.file_name,
-      original_filename:        pdfMeta.file_name,
-      mime_type:                pdfMeta.mime_type,
-      file_size_bytes:          pdfMeta.file_size_bytes,
-      file_hash_sha256:         null,
-      status:                   'ACTIVE',
-      upload_idempotency_token: 'consent_pdf:' + enrollmentGroupId,
-      origin:                   'WIZARD_SUBMIT',
-      origin_reference:         enrollmentGroupId,
-      document_date:            now,
-      signed_at:                now,
-      description:              'Signed consent record generated at submit',
-      language:                 lang,
-      was_originally_paper:     false,
-      created_at:               now,
-      created_by:               'SYSTEM:WIZARD',
-      updated_at:               now,
-      updated_by:               'SYSTEM:WIZARD',
-    }]);
-    // One scope per enrollment — primary on the first, secondary on the rest
-    // (DL-R13: exactly one primary scope per recFiles row).
-    const scopeRows = enrollmentIds.map((eid, i) => ({
-      scope_id:               generateUuid_(),
-      school_id:              SCHOOL_ID,
-      file_id:                pdfFileId,
-      scope_type_code:        'enr_admission_school',
-      scope_target_id:        eid,
-      is_primary:             i === 0,
-      shortcut_drive_file_id: null,
-      created_at:             now,
-      created_by:             'SYSTEM:WIZARD',
-      updated_at:             now,
-      updated_by:             'SYSTEM:WIZARD',
-    }));
-    if (scopeRows.length) appsheetRequest_(T.REC_SCOPES, 'Add', scopeRows);
-  } catch (pdfErr) {
-    Logger.log('PDF generation error (non-fatal): ' + pdfErr.message);
-  }
+  // P262 (2026-06-25) — ELIMINADA la generación del "Signed Consent Record" PDF en el submit.
+  // Por el principio de Diego (el wizard NO fabrica documentos; el motor del KMS genera) y tras
+  // una auditoría read-only cross-repo: este PDF era REDUNDANTE — los consentimientos GDPR ya se
+  // persisten CANÓNICAMENTE en `sysConsentsLog` (handler KMS `enr_submitGdprConsents`, Step 9: 24
+  // campos por consentimiento incl. texto mostrado, versión, persona, timestamp, IP/UA y SELLO
+  // TSA criptográfico). El PDF era WRITE-ONLY: NINGÚN lector en NINGUNO de los dos repos lo
+  // consume (cero hits de `SIGNED_CONSENT`/`WIZARD_SUBMIT` como evidencia requerida; no se adjunta
+  // a emails ni al paquete de firma). Las filas `recFiles` históricas con origin='WIZARD_SUBMIT'
+  // quedan intactas (no se borra dato) — solo se deja de escribir y se elimina `generateConsentPdf_`.
+  // Cross-ref: kis-app operational-pending §P262 + KMS `enr/signing-status.gs` (sysConsentsLog canónico).
 
   // Materialise scopes for pre-submit uploads: files captured during Step6
   // have a recFiles row but no recScopes (no enrollment_id existed yet).
@@ -6108,143 +6069,14 @@ function appsheetRequestBatch_(specs) {
 }
 
 // ─── PDF generation ───────────────────────────────────────────────────────────
-
-/**
- * Generates a PDF summary of a submitted application.
- * Guardians are enriched person objects (with .emails and .phones arrays).
- * Applicants are plain person rows.
- * desired_start_date is read from app.desired_start_date (application level).
- * Profession/employer and adaptation data are read from qbResponseMap.
- *
- * @param {string} applicationId
- * @param {Object} app           - Application row (has desired_start_date, source)
- * @param {Array}  guardians     - Enriched guardian person rows (.emails, .phones, .address)
- * @param {Array}  applicants    - Applicant person rows
- * @param {Array}  consentRows   - Consent rows as written to sysConsentsLog
- * @param {string} esignature    - Typed e-signature name
- * @param {string} submittedAt   - ISO submission timestamp
- * @param {Object} qbResponseMap - { [question_id]: response_text }
- * @returns {string} Drive URL of the generated PDF
- */
-function generateConsentPdf_(applicationId, app, guardians, applicants, consentRows, esignature, submittedAt, qbResponseMap) {
-  const qbMap = qbResponseMap || {};
-  const docTitle = 'Signed Consent Record — ' + applicationId;
-  const doc  = DocumentApp.create(docTitle);
-  const body = doc.getBody();
-  const nl   = () => body.appendParagraph('');
-
-  // ── Title ──────────────────────────────────────────────────────────────────
-  body.appendParagraph('Kaleide International School — Signed Consent Record')
-    .setHeading(DocumentApp.ParagraphHeading.HEADING1);
-  body.appendParagraph('Application ID: ' + applicationId);
-  body.appendParagraph('Submitted: ' + formatTimestamp_(submittedAt));
-  nl();
-
-  // ── Application details ────────────────────────────────────────────────────
-  body.appendParagraph('Application Details')
-    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
-  if (app && app.desired_start_date) body.appendParagraph('Desired start date: ' + app.desired_start_date);
-  if (app && app.source)             body.appendParagraph('Source: ' + app.source);
-  nl();
-
-  // ── Guardians ──────────────────────────────────────────────────────────────
-  body.appendParagraph('Guardians / Tutores')
-    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
-
-  guardians.forEach((g, i) => {
-    const emails = (g.emails || []).map(e =>
-      (e.value || '') + (e.is_emergency ? ' [Emergency]' : '')
-    ).filter(e => e.trim()).join(', ');
-    const phones = (g.phones || []).map(ph =>
-      (ph.value || '') + (ph.is_whatsapp ? ' (WhatsApp)' : '') + (ph.is_telegram ? ' (Telegram)' : '')
-      + (ph.is_emergency ? ' [Emergency]' : '')
-    ).filter(Boolean).join(', ');
-
-    body.appendParagraph((i + 1) + '. ' + (g.first_name || '') + ' ' + (g.last_name || ''))
-      .setBold(true);
-    if (emails) body.appendParagraph('   Email: ' + emails);
-    if (phones) body.appendParagraph('   Phone: ' + phones);
-    const gAddr = g.address;
-    if (gAddr && gAddr.address_line_1) {
-      body.appendParagraph('   Address: ' + [gAddr.address_line_1, gAddr.address_line_2, gAddr.city, gAddr.province, gAddr.country_id, gAddr.zip].filter(Boolean).join(', '));
-    }
-    nl();
-  });
-
-  if (qbMap[QB_PROFESSION_ID] || qbMap[QB_EMPLOYER_ID]) {
-    body.appendParagraph('Guardian Additional Details (from questions)')
-      .setItalic(true);
-    if (qbMap[QB_PROFESSION_ID]) body.appendParagraph('   Profession: ' + qbMap[QB_PROFESSION_ID]);
-    if (qbMap[QB_EMPLOYER_ID])   body.appendParagraph('   Employer: '   + qbMap[QB_EMPLOYER_ID]);
-    nl();
-  }
-
-  // ── Applicants ─────────────────────────────────────────────────────────────
-  body.appendParagraph('Applicants / Alumnos')
-    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
-
-  applicants.forEach((a, i) => {
-    body.appendParagraph((i + 1) + '. ' + (a.first_name || '') + ' ' + (a.last_name || ''))
-      .setBold(true);
-    if (a.date_of_birth) body.appendParagraph('   Date of birth: ' + a.date_of_birth);
-    nl();
-  });
-
-  if (qbMap[QB_HAS_ADAPTATION_ID] || qbMap[QB_ADAPTATION_NOTES_ID]) {
-    body.appendParagraph('Applicant Additional Details (from questions)')
-      .setItalic(true);
-    if (qbMap[QB_HAS_ADAPTATION_ID])   body.appendParagraph('   Adaptation needs: ' + qbMap[QB_HAS_ADAPTATION_ID]);
-    if (qbMap[QB_ADAPTATION_NOTES_ID]) body.appendParagraph('   Adaptation notes: ' + qbMap[QB_ADAPTATION_NOTES_ID]);
-    nl();
-  }
-
-  // ── Consents ───────────────────────────────────────────────────────────────
-  body.appendParagraph('Consents / Consentimientos')
-    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
-
-  consentRows.forEach(c => {
-    body.appendParagraph('Consent type: ' + (c.consent_type || ''))
-      .setBold(true);
-    if (c.consent_text_shown) {
-      body.appendParagraph('Statement shown to family:');
-      body.appendParagraph(c.consent_text_shown)
-        .setItalic(true);
-    }
-    body.appendParagraph('Decision: ' + (c.consented ? 'Accepted / Aceptado' : 'Declined / Rechazado'));
-    body.appendParagraph('Consent timestamp: ' + formatTimestamp_(c.consent_timestamp));
-    if (c.ip_address) body.appendParagraph('IP address: ' + c.ip_address);
-    nl();
-  });
-
-  // ── E-signature ────────────────────────────────────────────────────────────
-  body.appendParagraph('Electronic Signature / Firma Electrónica')
-    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
-  body.appendParagraph('Typed name: ' + (esignature || '(not provided)'));
-  body.appendParagraph('Submission timestamp: ' + formatTimestamp_(submittedAt));
-
-  doc.saveAndClose();
-
-  // Export Google Doc as PDF, save to Drive, remove intermediate Doc
-  const docFile = DriveApp.getFileById(doc.getId());
-  const pdfBlob = docFile.getAs('application/pdf');
-  pdfBlob.setName('consent_record_' + applicationId + '.pdf');
-
-  const folder  = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
-  const pdfFile = folder.createFile(pdfBlob);
-  // CLI 82 / KAL-NEW-5: el PDF NO se comparte públicamente. El consentimiento firmado (PII de
-  // menores + firma) queda privado al dueño del deployment. El read-back para
-  // revisión se sirve vía getDocument_ (proxy de bytes gateado por token).
-
-  docFile.setTrashed(true);
-
-  return {
-    drive_file_id:   pdfFile.getId(),
-    drive_folder_id: folder.getId(),
-    mime_type:       'application/pdf',
-    file_name:       pdfBlob.getName(),
-    file_size_bytes: pdfBlob.getBytes().length,
-  };
-}
+// P262 (2026-06-25) — `generateConsentPdf_` (generaba el "Signed Consent Record" PDF en el
+// submit) ELIMINADA. El wizard ya NO fabrica documentos (principio de Diego: el motor del KMS
+// genera). Era REDUNDANTE con `sysConsentsLog` (KMS `enr_submitGdprConsents`, Step 9 — registro
+// canónico de 24 campos por consentimiento incl. texto/versión/persona/timestamp/IP-UA + sello
+// TSA) y WRITE-ONLY: ningún lector en ninguno de los dos repos lo consume. Las filas `recFiles`
+// históricas con origin='WIZARD_SUBMIT' quedan intactas (no se borra dato). Ver el comentario en
+// `submitEnrollmentSession_` + kis-app operational-pending §P262. (Helpers DocApp/Drive que SOLO
+// usaba esta función quedan sin caller — inertes; no se borran por seguridad de blast-radius.)
 
 // ─── Signing token resolution (Ola 4 — P37) ──────────────────────────────────
 
