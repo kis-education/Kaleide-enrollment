@@ -1867,7 +1867,14 @@ function initEnrollmentSession_(p) {
       // init path the group was located by primary_email==normalizedEmail, so
       // these coincide; non-primary-guardian recovery is served by the magic-link
       // recovery service (sendMagicLink_ → findOpenGroupsByGuardianEmail_).
-      sendMagicLinkEmail_(normalizedEmail, grp.resume_token, lang, false);
+      // WIZARD-TERMINAL P3: contenido gobernado por el KMS.
+      sendViaKmsNotify_('WIZARD_MAGIC_LINK', normalizedEmail, {
+        family_name:      '',
+        resume_url:       RESUME_BASE_URL + grp.resume_token,
+        report_url:       REPORT_BASE_URL + grp.resume_token,
+        gdpr_block:       _kmsRenderGdprBlock_(false),
+        admissions_email: ADMISSIONS_EMAIL,
+      });
       // SPEC-WIZ-WARMUP-V2: el usuario clicará el link en ~1 min — precalienta.
       warmTicketSubmitted = _mintWarmTicket_([{ t: grp.resume_token, n: null, e: normalizedEmail, l: lang }]);
     } catch (e) {
@@ -1940,7 +1947,14 @@ function initEnrollmentSession_(p) {
     const lang = winner.preferred_language || (p.preferred_language || 'es');
     // DL-E38 a1: send to the email the family typed (per-guardian); coincides with
     // winner.primary_email in the init path (group located by primary_email).
-    sendMagicLinkEmail_(normalizedEmail, winner.resume_token, lang, false);
+    // WIZARD-TERMINAL P3: contenido gobernado por el KMS.
+    sendViaKmsNotify_('WIZARD_MAGIC_LINK', normalizedEmail, {
+      family_name:      '',
+      resume_url:       RESUME_BASE_URL + winner.resume_token,
+      report_url:       REPORT_BASE_URL + winner.resume_token,
+      gdpr_block:       _kmsRenderGdprBlock_(false),
+      admissions_email: ADMISSIONS_EMAIL,
+    });
     return {
       resumed:             true,
       count:               1,                // post-abandon: only the winner remains addressable
@@ -2019,7 +2033,19 @@ function initEnrollmentSession_(p) {
   // resume_token is never delivered to the attacker so it is effectively
   // unreachable. Acceptable trade-off.
   _checkMagicLinkRateLimit_((p.primary_email || '').toLowerCase().trim());
-  sendMagicLinkEmail_(p.primary_email, resumeToken, lang, true);
+  // WIZARD-TERMINAL P3: contenido gobernado por el KMS. Init de la 1ª solicitud →
+  // isFirstApp true (muestra el bloque GDPR).
+  sendViaKmsNotify_('WIZARD_MAGIC_LINK', p.primary_email, {
+    family_name:      '',
+    resume_url:       RESUME_BASE_URL + resumeToken,
+    report_url:       REPORT_BASE_URL + resumeToken,
+    gdpr_block:       _kmsRenderGdprBlock_(true),
+    admissions_email: ADMISSIONS_EMAIL,
+  });
+  // NOTA (WIZARD-TERMINAL): el aviso interno "nueva sesión iniciada" + el de
+  // "magic-link no solicitado" siguen por el path local (sendInternalEmail_) porque NO
+  // están entre las 4 plantillas canónicas del KMS (WIZARD_INTERNAL_NOTIFICATION = submit).
+  // Migrarlos requiere 2 plantillas KMS nuevas (fuera del alcance nombrado) — ver reporte.
   sendInternalEmail_(
     '[KIS Admissions] New enrollment session started',
     buildApplicationInitiatedBody_(enrollmentGroupId, p.primary_email, now)
@@ -2416,7 +2442,16 @@ function sendMagicLink_(p) {
     // Gracia OTP-skip anclada al resume_token recién rotado (single-use, 10 min).
     _mintMagicLinkNonce_(tokenToSend, grp.enrollment_group_id);
     const langP1 = grp.preferred_language || 'es';
-    sendMagicLinkEmail_(destEmail, tokenToSend, langP1, undefined, nEmailId);
+    // WIZARD-TERMINAL P3: el contenido lo gobierna el KMS. Path 1 (single session, p.ej.
+    // desde dentro del wizard) → isFirstApp false (sin bloque GDPR).
+    const resumeUrlP1 = RESUME_BASE_URL + tokenToSend + (nEmailId ? '?n=' + nEmailId : '');
+    sendViaKmsNotify_('WIZARD_MAGIC_LINK', destEmail, {
+      family_name:      '',
+      resume_url:       resumeUrlP1,
+      report_url:       REPORT_BASE_URL + tokenToSend,
+      gdpr_block:       _kmsRenderGdprBlock_(false),
+      admissions_email: ADMISSIONS_EMAIL,
+    });
     // SPEC-WIZ-WARMUP-V2: ticket para que el frontend dispare warmBundle fire-and-forget
     // con el token NUEVO (que solo viaja por email). Identidad warm = la del click real.
     return { sent: true, warm_ticket: _mintWarmTicket_([{ t: tokenToSend, n: nEmailId, e: destEmail, l: langP1 }]) };
@@ -2499,7 +2534,15 @@ function sendMagicLink_(p) {
       // open session — which is the common case under the new single-session policy.
       const nEmailId = findEmailIdForGuardian_(grps[0].enrollment_group_id, identityEmail, emailsHintByGroup[grps[0].enrollment_group_id]);
       _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
-      sendMagicLinkEmail_(p.primary_email, grps[0].resume_token, lang, false, nEmailId);
+      // WIZARD-TERMINAL P3: contenido gobernado por el KMS. isFirstApp false (recuperación).
+      const resumeUrlR = RESUME_BASE_URL + grps[0].resume_token + (nEmailId ? '?n=' + nEmailId : '');
+      sendViaKmsNotify_('WIZARD_MAGIC_LINK', p.primary_email, {
+        family_name:      '',
+        resume_url:       resumeUrlR,
+        report_url:       REPORT_BASE_URL + grps[0].resume_token,
+        gdpr_block:       _kmsRenderGdprBlock_(false),
+        admissions_email: ADMISSIONS_EMAIL,
+      });
       // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
       return { sent: true, warm_ticket: _mintWarmTicket_([{ t: grps[0].resume_token, n: nEmailId, e: identityEmail, l: lang }]) };
     } else {
@@ -2507,7 +2550,15 @@ function sendMagicLink_(p) {
       // del guardian en SU grupo. La gracia OTP-skip se ancla al resume_token de cada grupo.
       const nEmailIds = grps.map(g => findEmailIdForGuardian_(g.enrollment_group_id, identityEmail, emailsHintByGroup[g.enrollment_group_id]));
       grps.forEach(g => _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id));
-      sendMagicLinkMultiEmail_(p.primary_email, grps.map(g => g.resume_token), lang, nEmailIds);
+      // WIZARD-TERMINAL P3: la lista de enlaces la pre-renderiza el wizard en UN placeholder;
+      // el resto del contenido (saludo, footer) lo gobierna el KMS. El report link usa el
+      // primer token (reportUnsolicited_ bloquea el email, no la sesión — cualquiera vale).
+      sendViaKmsNotify_('WIZARD_MAGIC_LINK_MULTI', p.primary_email, {
+        family_name:        '',
+        resume_links_block: _kmsRenderResumeLinksBlock_(grps.map(g => g.resume_token), nEmailIds, lang),
+        report_url:         REPORT_BASE_URL + grps[0].resume_token,
+        admissions_email:   ADMISSIONS_EMAIL,
+      });
       // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
       return { sent: true, warm_ticket: _mintWarmTicket_(grps.map((g, i) => ({ t: g.resume_token, n: nEmailIds[i] || null, e: identityEmail, l: lang }))) };
     }
@@ -4353,14 +4404,20 @@ function submitEnrollmentSession_(p) {
     Logger.log('rec scope materialisation error (non-fatal): ' + scopeErr.message);
   }
 
-  // Send family confirmation (bilingual)
-  sendFamilyConfirmationEmail_(app.primary_email, enrollmentGroupId, applicants, app.preferred_language || 'es');
-
-  // Send internal notification
-  sendInternalEmail_(
-    '[KIS Admissions] Enrollment session submitted \u2014 action required',
-    buildApplicationSubmittedBody_(enrollmentGroupId, now, enrichedGuardians, applicants, app, qbResponseMap)
-  );
+  // WIZARD-TERMINAL P3: confirmaci\u00f3n a la familia + notificaci\u00f3n interna v\u00eda el motor del
+  // KMS (el contenido lo gobierna el KMS). El wizard pre-renderiza los nombres y la tabla.
+  // P72: si el KMS falla, el throw propaga y el handler devuelve {ok:false} \u2014 NO cae a
+  // Gmail local (single-source). El submit en s\u00ed ya est\u00e1 persistido arriba.
+  const applicantNames = applicants.map(a => ((a.first_name || '') + ' ' + (a.last_name || '')).trim()).filter(Boolean).join(', ');
+  sendViaKmsNotify_('WIZARD_FAMILY_CONFIRMATION', app.primary_email, {
+    family_name:     '',
+    applicant_names: applicantNames,
+    enrollment_id:   enrollmentGroupId,
+  });
+  sendViaKmsNotify_('WIZARD_INTERNAL_NOTIFICATION', ADMISSIONS_EMAIL, {
+    enrollment_id:    enrollmentGroupId,
+    applicants_table: _kmsRenderApplicantsTable_(enrollmentGroupId, now, enrichedGuardians, applicants, app, qbResponseMap),
+  });
 
   return {
     submitted:           true,
@@ -5682,157 +5739,11 @@ function sendInternalEmail_(subject, bodyHtml) {
   sendAsAlias_(ADMISSIONS_EMAIL, subject, buildInternalEmail_(subject, bodyHtml));
 }
 
-/**
- * Sends magic link email to the family.
- * @param {string} email
- * @param {string} resumeToken
- * @param {string} lang - 'en' or 'es'
- */
-function sendMagicLinkEmail_(email, resumeToken, lang, isFirstApp, nEmailId) {
-  // IDENTITY-FROM-LINK (2026-06-11): `?n=` lleva el email_id del guardian destino (opaco,
-  // sin PII, ya existe) — resuelve la identidad server-side al recuperar. Viaja SOLO en la
-  // URL de resume, NO en la de report. El frontend lo strippea de la URL al instante
-  // (KAL-7) y lo reenvía a resume/hydrate/getAdmissionState. La gracia OTP-skip NO viaja
-  // en `n`: se ancla al resume_token recién rotado (_mintMagicLinkNonce_).
-  const resumeUrl = RESUME_BASE_URL + resumeToken + (nEmailId ? '?n=' + nEmailId : '');
-  const reportUrl = REPORT_BASE_URL + resumeToken;
-  const isEn = lang === 'en';
-
-  const subject = isEn
-    ? 'Your Kaleide application link'
-    : 'Tu enlace de solicitud de Kaleide';
-
-  const gdprBlock = isFirstApp
-    ? '<div style="margin:24px 0;padding:16px;background:#f2f4f7;border-left:4px solid #00a19a;border-radius:4px;font-size:0.9em;color:#4a5568;">'
-      + '<strong>EN — Data Protection:</strong><br>' + CONSENT_TEXTS.gdpr.en
-      + '<br><br>'
-      + '<strong>ES — Protección de datos:</strong><br>' + CONSENT_TEXTS.gdpr.es
-      + '<br><br><em>You accepted these terms when submitting the consent form. / Aceptaste estos t\u00e9rminos al enviar el formulario de consentimiento.</em>'
-      + '</div>'
-    : '';
-
-  // Anti-abuse footer \u2014 present on every magic-link send.
-  // "Esto no es m\u00edo" \u2192 /report endpoint blocks the email for ~6h + alerts staff.
-  const securityFooter = isEn
-    ? '<div style="margin:32px 0 0;padding:16px;background:#fff8e1;border-left:4px solid #f0a500;border-radius:4px;font-size:0.85em;color:#5c4400;">'
-      + '<strong>Did you not request this?</strong><br>'
-      + 'Someone started a Kaleide application using your email. If it was not you, '
-      + 'simply ignore this message \u2014 nothing is created until you click the link above. '
-      + 'The link will expire in 7 days.<br><br>'
-      + 'If you are receiving multiple of these without requesting them, '
-      + '<a href="' + reportUrl + '" style="color:#0066cc;">report as unsolicited</a> '
-      + 'or contact <a href="mailto:' + ADMISSIONS_EMAIL + '" style="color:#0066cc;">' + ADMISSIONS_EMAIL + '</a>.'
-      + '</div>'
-    : '<div style="margin:32px 0 0;padding:16px;background:#fff8e1;border-left:4px solid #f0a500;border-radius:4px;font-size:0.85em;color:#5c4400;">'
-      + '<strong>\u00bfNo has sido t\u00fa?</strong><br>'
-      + 'Alguien ha iniciado una solicitud en Kaleide con tu correo. Si no has sido t\u00fa, '
-      + 'puedes ignorar este mensaje \u2014 no se crea nada hasta que pulses el enlace de arriba. '
-      + 'El enlace caducar\u00e1 en 7 d\u00edas.<br><br>'
-      + 'Si recibes varios sin haberlos pedido, '
-      + '<a href="' + reportUrl + '" style="color:#0066cc;">rep\u00f3rtalo como no solicitado</a> '
-      + 'o escr\u00edbenos a <a href="mailto:' + ADMISSIONS_EMAIL + '" style="color:#0066cc;">' + ADMISSIONS_EMAIL + '</a>.'
-      + '</div>';
-
-  const body = isEn
-    ? '<p>Click the link below to access your application:</p>'
-      + '<p style="margin:24px 0;"><a href="' + resumeUrl + '" style="background:#00a19a;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;">Start Application</a></p>'
-      + '<p style="color:#6b7c93;font-size:0.9em;">Or copy this URL into your browser:<br>' + resumeUrl + '</p>'
-      + gdprBlock
-      + '<p>This link will take you directly to your application. Keep it safe.</p>'
-      + securityFooter
-    : '<p>Haz clic en el enlace de abajo para acceder a tu solicitud:</p>'
-      + '<p style="margin:24px 0;"><a href="' + resumeUrl + '" style="background:#00a19a;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;">Iniciar solicitud</a></p>'
-      + '<p style="color:#6b7c93;font-size:0.9em;">O copia esta URL en tu navegador:<br>' + resumeUrl + '</p>'
-      + gdprBlock
-      + '<p>Este enlace te lleva directamente a tu solicitud. Gu\u00e1rdalo en un lugar seguro.</p>'
-      + securityFooter;
-
-  sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
-  // SPEC-WIZ-WARMUP-V2 (2026-06-12): el ack sincrono al KMS (_enqueueWarmHydrate_)
-  // se RETIRA del camino del envio - costaba 8-15s del e2e de sendMagicLink y es
-  // redundante: el kick warmBundle (frontend, fire-and-forget) llama enr.wizardHydrate,
-  // cuyo wrapper warm del KMS cachea su propio output -> la L2 se ceba igual, fuera
-  // del camino del usuario.
-}
-
-/**
- * Sends a resume email with one link per open application (for families with multiple apps).
- */
-function sendMagicLinkMultiEmail_(email, resumeTokens, lang, nEmailIds) {
-  const isEn = lang === 'en';
-
-  const subject = isEn
-    ? 'Your Kaleide application links'
-    : 'Tus enlaces de solicitud de Kaleide';
-
-  const linkItems = resumeTokens.map((token, idx) => {
-    // IDENTITY-FROM-LINK: `?n=` lleva el email_id del guardian en ESTE grupo (paralelo al
-    // token). La gracia OTP-skip se ancla al resume_token (no a `n`), minteada en el caller.
-    const nEmailId = (nEmailIds && nEmailIds[idx]) || null;
-    const url = RESUME_BASE_URL + token + (nEmailId ? '?n=' + nEmailId : '');
-    const label = isEn
-      ? 'Application ' + (idx + 1)
-      : 'Solicitud ' + (idx + 1);
-    return '<p style="margin:12px 0;"><a href="' + url + '" style="background:#00a19a;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;">' + label + '</a>'
-      + '<span style="color:#6b7c93;font-size:0.85em;margin-left:12px;">' + url + '</span></p>';
-  }).join('');
-
-  // For the multi-link email we use the FIRST token for the report link.
-  // reportUnsolicited_ blocks the email address, not the individual session,
-  // so any of the tokens is equivalent.
-  const reportUrl = REPORT_BASE_URL + resumeTokens[0];
-  const securityFooter = isEn
-    ? '<div style="margin:32px 0 0;padding:16px;background:#fff8e1;border-left:4px solid #f0a500;border-radius:4px;font-size:0.85em;color:#5c4400;">'
-      + '<strong>Did you not request this?</strong><br>'
-      + 'If none of these applications is yours, '
-      + '<a href="' + reportUrl + '" style="color:#0066cc;">report as unsolicited</a> '
-      + 'or contact <a href="mailto:' + ADMISSIONS_EMAIL + '" style="color:#0066cc;">' + ADMISSIONS_EMAIL + '</a>.'
-      + '</div>'
-    : '<div style="margin:32px 0 0;padding:16px;background:#fff8e1;border-left:4px solid #f0a500;border-radius:4px;font-size:0.85em;color:#5c4400;">'
-      + '<strong>\u00bfNo has sido t\u00fa?</strong><br>'
-      + 'Si ninguna de estas solicitudes es tuya, '
-      + '<a href="' + reportUrl + '" style="color:#0066cc;">rep\u00f3rtalo como no solicitado</a> '
-      + 'o escr\u00edbenos a <a href="mailto:' + ADMISSIONS_EMAIL + '" style="color:#0066cc;">' + ADMISSIONS_EMAIL + '</a>.'
-      + '</div>';
-
-  const body = isEn
-    ? '<p>We found ' + resumeTokens.length + ' open application(s) for your email. Click a link below to resume:</p>'
-      + linkItems
-      + '<p>Each link goes directly to that application. Keep them safe.</p>'
-      + securityFooter
-    : '<p>Hemos encontrado ' + resumeTokens.length + ' solicitud(es) abierta(s) para tu correo. Haz clic en un enlace para continuar:</p>'
-      + linkItems
-      + '<p>Cada enlace va directamente a esa solicitud. Gu\u00e1rdalos en un lugar seguro.</p>'
-      + securityFooter;
-
-  sendAsAlias_(email, subject, buildFamilyEmail_(subject, body));
-  // SPEC-WIZ-WARMUP-V2 (2026-06-12): ack L2 sincrono retirado (ver sendMagicLinkEmail_).
-}
-
-
-/**
- * Sends bilingual EN/ES confirmation email to the family on submission.
- *
- * @param {string} email
- * @param {string} sessionId  - enrollment_group_id (label shown to the family)
- * @param {Array}  applicants
- * @param {string} lang
- */
-function sendFamilyConfirmationEmail_(email, sessionId, applicants, lang) {
-  const names = applicants.map(a => (a.first_name || '') + ' ' + (a.last_name || '')).join(', ');
-
-  const body =
-    '<h2 style="color:#00a19a;">Thank you / Gracias</h2>' +
-    '<p><strong>EN:</strong> Your enrollment application has been received. We will review it and be in touch shortly.</p>' +
-    '<p><strong>Applicant(s):</strong> ' + names + '</p>' +
-    '<p><strong>Application ID:</strong> ' + sessionId + '</p>' +
-    '<hr style="border:none;border-top:1px solid #e3e7ed;margin:24px 0;">' +
-    '<p><strong>ES:</strong> Hemos recibido tu solicitud de matr\u00edcula. La revisaremos y nos pondremos en contacto contigo en breve.</p>' +
-    '<p><strong>Alumno/s:</strong> ' + names + '</p>' +
-    '<p><strong>N\u00famero de solicitud:</strong> ' + sessionId + '</p>';
-
-  sendAsAlias_(email, 'Kaleide enrollment application received / Solicitud de matr\u00edcula recibida', buildFamilyEmail_('Enrollment application received', body));
-}
+// NOTA (WIZARD-TERMINAL P3, 2026-06-25): sendMagicLinkEmail_, sendMagicLinkMultiEmail_ y
+// sendFamilyConfirmationEmail_ FUERON ELIMINADAS. El contenido de esos 3 emails (+ la
+// notificacion interna de submit) lo gobierna ahora el motor del KMS via sendViaKmsNotify_
+// (plantillas sysNotificationTemplates_T). El bloque GDPR / la lista multi-link / la tabla
+// de solicitantes se pre-renderizan en helpers _kmsRender*_ (junto a sendViaKmsNotify_).
 
 // ─── Email builders ───────────────────────────────────────────────────────────
 
@@ -6754,6 +6665,157 @@ function kmsProxy_(action, payload) {
 
   Logger.log('[kmsProxy_] action=' + action + ' ok requestId=' + envelope.requestId.substring(0, 8) + '...');
   return resp.data;
+}
+
+// ─── WIZARD-TERMINAL Parte 3/4 — envío de emails vía el motor único del KMS (P214) ──
+// El contenido de los emails transaccionales del wizard lo gobierna el KMS (plantillas
+// sysNotificationTemplates_T). El wizard ya NO renderiza/envía estos emails localmente:
+// firma cada request con HMAC-SHA256 (secreto compartido NOTIFY_HMAC_SECRET) y delega.
+
+/**
+ * @private — hex estable de un byte[] firmado (output de computeHmacSha256Signature,
+ * bytes -128..127). DEBE casar con notify_bytesToHex_ del KMS (notify-public.gs).
+ */
+function _kmsNotifyHex_(bytes) {
+  var hex = '';
+  for (var i = 0; i < bytes.length; i++) {
+    var b = (bytes[i] & 0xFF).toString(16);
+    if (b.length === 1) b = '0' + b;
+    hex += b;
+  }
+  return hex;
+}
+
+/**
+ * Envía una plantilla transaccional vía el endpoint firmado del KMS
+ * `sys-public.sendNotification` (WIZARD-TERMINAL Parte 3, P214). Construye el contrato
+ * canónico { template_code, recipient, context, nonce, timestamp, signature } con
+ * canonical = template_code\nrecipient\nJSON.stringify(context)\nnonce\ntimestamp
+ * (idéntico a notify-public.gs) y reusa kmsProxy_ (Bearer OAuth + envelope).
+ *
+ * Fail-closed: sin NOTIFY_HMAC_SECRET en Script Properties → throw NOTIFY_NOT_CONFIGURED
+ * (el handler devuelve {ok:false}; NUNCA cae a Gmail local — single-source: el contenido
+ * lo gobierna el KMS, P72). KAL-11: NO loguea el context (PII) en claro.
+ *
+ * @param {string} templateCode  uno de WIZARD_MAGIC_LINK | WIZARD_MAGIC_LINK_MULTI |
+ *                               WIZARD_FAMILY_CONFIRMATION | WIZARD_INTERNAL_NOTIFICATION.
+ * @param {string} recipient     email destino.
+ * @param {Object} context       valores de placeholder (resume_url, gdpr_block, etc.).
+ * @returns {Object} respuesta del KMS ({ sent, correlation_id }).
+ */
+function sendViaKmsNotify_(templateCode, recipient, context) {
+  var secret = PropertiesService.getScriptProperties().getProperty('NOTIFY_HMAC_SECRET');
+  if (!secret) {
+    var e = new Error('NOTIFY_HMAC_SECRET no configurado en Script Properties del wizard — Diego debe copiarlo del KMS (manual_initNotifyHmacSecret)');
+    e.code = 'NOTIFY_NOT_CONFIGURED';
+    throw e;
+  }
+  context = context || {};
+  var nonce = Utilities.getUuid();
+  var ts = new Date().toISOString();
+  var canonical = String(templateCode) + '\n' + String(recipient) + '\n' +
+                  JSON.stringify(context) + '\n' + nonce + '\n' + ts;
+  var sig = _kmsNotifyHex_(Utilities.computeHmacSha256Signature(canonical, secret));
+  Logger.log(redact_('[sendViaKmsNotify_] template=' + templateCode + ' to=' + recipient));
+  return kmsProxy_('sys-public.sendNotification', {
+    template_code: templateCode,
+    recipient:     recipient,
+    context:       context,
+    nonce:         nonce,
+    timestamp:     ts,
+    signature:     sig,
+  });
+}
+
+/**
+ * Envía el código OTP de verificación vía el endpoint SÍNCRONO firmado del KMS
+ * `sys-public.sendAuthCode` (WIZARD-TERMINAL Parte 4, P253). Análogo a sendViaKmsNotify_
+ * pero apuntando al endpoint síncrono de auth (render+envío inmediato, sin persistir el
+ * código en sysNotificationLog). El contrato HMAC es idéntico. La generación/cache/
+ * rate-limit del código siguen en el wizard (lógica de auth); solo render+envío van al KMS.
+ *
+ * @param {string} recipient  email destino (primary_email del grupo).
+ * @param {Object} context    { OTP_CODE, LANG }.
+ * @returns {Object} respuesta del KMS ({ sent }).
+ */
+function sendViaKmsAuthCode_(recipient, context) {
+  var secret = PropertiesService.getScriptProperties().getProperty('NOTIFY_HMAC_SECRET');
+  if (!secret) {
+    var e = new Error('NOTIFY_HMAC_SECRET no configurado en Script Properties del wizard — Diego debe copiarlo del KMS (manual_initNotifyHmacSecret)');
+    e.code = 'NOTIFY_NOT_CONFIGURED';
+    throw e;
+  }
+  context = context || {};
+  var templateCode = 'WIZARD_OTP';
+  var nonce = Utilities.getUuid();
+  var ts = new Date().toISOString();
+  var canonical = templateCode + '\n' + String(recipient) + '\n' +
+                  JSON.stringify(context) + '\n' + nonce + '\n' + ts;
+  var sig = _kmsNotifyHex_(Utilities.computeHmacSha256Signature(canonical, secret));
+  // KAL-11: NO loguear el OTP_CODE. Solo el destinatario redactado.
+  Logger.log(redact_('[sendViaKmsAuthCode_] OTP to=' + recipient));
+  return kmsProxy_('sys-public.sendAuthCode', {
+    template_code: templateCode,
+    recipient:     recipient,
+    context:       context,
+    nonce:         nonce,
+    timestamp:     ts,
+    signature:     sig,
+  });
+}
+
+/**
+ * @private — bloque HTML del aviso GDPR (bilingüe EN/ES), pre-renderizado por el wizard
+ * para la plantilla magic-link (placeholder {{GDPR_BLOCK}}). Solo en la 1ª solicitud de
+ * la familia (isFirstApp). Movido aquí desde el builder sendMagicLinkEmail_ (golden).
+ * @param {boolean} isFirstApp
+ * @returns {string} HTML o '' si no aplica.
+ */
+function _kmsRenderGdprBlock_(isFirstApp) {
+  if (!isFirstApp) return '';
+  return '<div style="margin:24px 0;padding:16px;background:#f2f4f7;border-left:4px solid #00a19a;border-radius:4px;font-size:0.9em;color:#4a5568;">'
+    + '<strong>EN — Data Protection:</strong><br>' + CONSENT_TEXTS.gdpr.en
+    + '<br><br>'
+    + '<strong>ES — Protección de datos:</strong><br>' + CONSENT_TEXTS.gdpr.es
+    + '<br><br><em>You accepted these terms when submitting the consent form. / Aceptaste estos términos al enviar el formulario de consentimiento.</em>'
+    + '</div>';
+}
+
+/**
+ * @private — bloque HTML de la lista de magic-links (recuperación multi-guardián),
+ * pre-renderizado para la plantilla magic-link-multi (placeholder {{RESUME_LINKS_BLOCK}}).
+ * Movido aquí desde el builder sendMagicLinkMultiEmail_ (golden). Cada link lleva su `?n=`
+ * (email_id) paralelo al token, igual que el builder original.
+ * @param {string[]} resumeTokens
+ * @param {string[]} nEmailIds
+ * @param {string}   lang
+ * @returns {string} HTML.
+ */
+function _kmsRenderResumeLinksBlock_(resumeTokens, nEmailIds, lang) {
+  var isEn = lang === 'en';
+  return (resumeTokens || []).map(function(token, idx) {
+    var nEmailId = (nEmailIds && nEmailIds[idx]) || null;
+    var url = RESUME_BASE_URL + token + (nEmailId ? '?n=' + nEmailId : '');
+    var label = isEn ? ('Application ' + (idx + 1)) : ('Solicitud ' + (idx + 1));
+    return '<p style="margin:12px 0;"><a href="' + url + '" style="background:#00a19a;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;">' + label + '</a>'
+      + '<span style="color:#6b7c93;font-size:0.85em;margin-left:12px;">' + url + '</span></p>';
+  }).join('');
+}
+
+/**
+ * @private — tabla HTML de solicitantes/tutores para el email interno de staff,
+ * pre-renderizada para la plantilla internal-notification (placeholder {{APPLICANTS_TABLE}}).
+ * Reusa el builder existente buildApplicationSubmittedBody_ (golden, ya arma la tabla).
+ * @param {string} applicationId
+ * @param {string} timestamp
+ * @param {Array}  guardians
+ * @param {Array}  applicants
+ * @param {Object} app
+ * @param {Object} qbResponseMap
+ * @returns {string} HTML (cuerpo interno completo, que la plantilla envuelve).
+ */
+function _kmsRenderApplicantsTable_(applicationId, timestamp, guardians, applicants, app, qbResponseMap) {
+  return buildApplicationSubmittedBody_(applicationId, timestamp, guardians, applicants, app, qbResponseMap);
 }
 
 /**
