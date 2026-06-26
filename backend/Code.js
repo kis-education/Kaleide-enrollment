@@ -2042,14 +2042,22 @@ function initEnrollmentSession_(p) {
     gdpr_block:       _kmsRenderGdprBlock_(true),
     admissions_email: ADMISSIONS_EMAIL,
   });
-  // NOTA (WIZARD-TERMINAL): el aviso interno "nueva sesión iniciada" + el de
-  // "magic-link no solicitado" siguen por el path local (sendInternalEmail_) porque NO
-  // están entre las 4 plantillas canónicas del KMS (WIZARD_INTERNAL_NOTIFICATION = submit).
-  // Migrarlos requiere 2 plantillas KMS nuevas (fuera del alcance nombrado) — ver reporte.
-  sendInternalEmail_(
-    '[KIS Admissions] New enrollment session started',
-    buildApplicationInitiatedBody_(enrollmentGroupId, p.primary_email, now)
-  );
+  // EMAIL-MIGRATION-2 (2026-06-25): el aviso interno "nueva sesión iniciada" migra al
+  // motor único del KMS (plantilla kis-tpl-wizard-session-started). golden =
+  // buildApplicationInitiatedBody_. El wizard pre-renderiza el timestamp con
+  // formatTimestamp_ (igual que el golden) → {{STARTED_AT}}. P72: si el KMS falla el
+  // throw propaga; NO cae a Gmail local (single-source). El header de sesión ya está
+  // insertado arriba, así que el throw solo evita el aviso, no corrompe la sesión.
+  try {
+    sendViaKmsNotify_('WIZARD_SESSION_STARTED', ADMISSIONS_EMAIL, {
+      enrollment_id: enrollmentGroupId,
+      primary_email: p.primary_email,
+      started_at:    formatTimestamp_(now),
+    });
+  } catch (notifyErr) {
+    // El aviso interno es no-crítico para la familia (ya tiene su magic-link).
+    Logger.log(redact_('initEnrollmentSession_: WIZARD_SESSION_STARTED notify failed (non-fatal): ' + (notifyErr && notifyErr.message)));
+  }
 
   // D-E18: recognize legacy families by email against personalData_S.
   // Non-fatal — if the lookup fails, recognition is empty and the wizard
@@ -2677,19 +2685,22 @@ function reportUnsolicited_(p) {
       }
     }
 
-    sendInternalEmail_(
-      '[KIS Admissions] Unsolicited magic-link reported',
-      '<p>A recipient marked their enrollment magic-link as unsolicited.</p>'
-      + '<ul>'
-      + '<li><strong>Group ID:</strong> ' + (group.enrollment_group_id || '') + '</li>'
-      + '<li><strong>Email:</strong> ' + email + '</li>'
-      + '<li><strong>Created at:</strong> ' + (group.created_at || '') + '</li>'
-      + '<li><strong>Reported at:</strong> ' + nowIso + '</li>'
-      + (group.submitted_at ? '<li><strong>Note:</strong> session was already submitted; NOT abandoned (preserves family access to submitted record).</li>' : '<li><strong>Session abandoned:</strong> yes</li>')
-      + '</ul>'
-      + '<p>The email has been temporarily blocked (~6h) for new magic-link sends. '
-      + 'Review the session and decide whether to extend the block, contact the apparent victim, or delete the row.</p>'
-    );
+    // EMAIL-MIGRATION-2 (2026-06-25): el aviso interno "magic-link no solicitado" migra
+    // al motor único del KMS (plantilla kis-tpl-wizard-unsolicited-reported). golden = HTML
+    // inline de esta función. El wizard pre-renderiza el <li> de estado de sesión
+    // (abandonada vs ya enviada) → {{SESSION_STATUS_NOTE}}; el resto del cuerpo (incluido
+    // el aviso de bloqueo ~6h) lo provee la plantilla. P72/anti-enumeración: si el KMS
+    // falla, se traga el error (el endpoint devuelve {reported:true} igual).
+    var sessionStatusNote = group.submitted_at
+      ? '<li><strong>Note:</strong> session was already submitted; NOT abandoned (preserves family access to submitted record).</li>'
+      : '<li><strong>Session abandoned:</strong> yes</li>';
+    sendViaKmsNotify_('WIZARD_UNSOLICITED_REPORTED', ADMISSIONS_EMAIL, {
+      enrollment_id:       group.enrollment_group_id || '',
+      reporter_email:      email,
+      created_at:          group.created_at || '',
+      reported_at:         nowIso,
+      session_status_note: sessionStatusNote,
+    });
   } catch (e) {
     Logger.log('reportUnsolicited_ swallowed error: ' + e.message);
   }
@@ -4396,65 +4407,12 @@ function submitEnrollmentSession_(p) {
  *
  * @param {Object} p - { enrollment_group_id?|application_id?, primary_email }
  */
-/**
- * Sends HTML email from the admissions@ alias via Gmail Advanced Service (raw RFC822).
- * Uses only gmail.send scope — avoids the Settings API scope escalation that
- * GmailApp.sendEmail triggers when sending from a non-primary alias.
- * The blank line separating headers from body is explicit (not filtered) so
- * Gmail can locate the body correctly.
- */
-function sendAsAlias_(toEmail, subject, htmlBody, replyTo) {
-  // DBG-TRACE: duración del envío de email (Gmail alias / fallback MailApp).
-  var _dbgM0 = Date.now();
-  _dbgEv_('mail_send', 'start');
-  // KAL-NEW-13 (2026-06-06): robust delivery. The OTP step-up (DL-E39) surfaced
-  // that a single un-caught failure inside the Gmail Advanced Service (alias not
-  // configured as "Send mail as", advanced service disabled, transient Gmail
-  // error) made the *whole* email silently fail to arrive — the family clicks
-  // "send code" and nothing reaches the inbox. We now: (1) try the canonical
-  // admissions@ alias send, (2) on ANY failure fall back to MailApp.sendEmail
-  // from the deployer account so the message STILL gets delivered, and (3) log
-  // the outcome (redacted, KAL-11) so the path is observable in Stackdriver.
-  // Throw only if BOTH paths fail, so the dispatcher returns a clear error
-  // instead of a happy { ok:true } over a message that never left.
-  try {
-    const encodedBody = Utilities.base64Encode(htmlBody, Utilities.Charset.UTF_8);
-    const headers = [
-      'From: ' + FROM_NAME + ' <' + ADMISSIONS_EMAIL + '>',
-      'To: ' + toEmail,
-      ...(replyTo ? ['Reply-To: ' + replyTo] : []),
-      'Subject: =?UTF-8?B?' + Utilities.base64Encode(subject, Utilities.Charset.UTF_8) + '?=',
-      'MIME-Version: 1.0',
-      'Content-Type: text/html; charset=UTF-8',
-      'Content-Transfer-Encoding: base64',
-    ];
-    const raw = Utilities.base64EncodeWebSafe(
-      headers.join('\r\n') + '\r\n\r\n' + encodedBody
-    ).replace(/=+$/, '');
-    Gmail.Users.Messages.send({ raw: raw }, 'me');
-    _dbgEv_('mail_sent', 'alias ' + (Date.now() - _dbgM0) + 'ms');
-    Logger.log(redact_('[sendAsAlias_] sent via alias to=' + toEmail + ' subject=' + subject));
-  } catch (aliasErr) {
-    Logger.log(redact_('[sendAsAlias_] alias send FAILED (' + (aliasErr && aliasErr.message) +
-      ') — falling back to MailApp deployer account for to=' + toEmail));
-    try {
-      MailApp.sendEmail({
-        to: toEmail,
-        subject: subject,
-        htmlBody: htmlBody,
-        name: FROM_NAME,
-        ...(replyTo ? { replyTo: replyTo } : {}),
-      });
-      Logger.log(redact_('[sendAsAlias_] sent via MailApp fallback to=' + toEmail));
-    } catch (fallbackErr) {
-      Logger.log(redact_('[sendAsAlias_] BOTH alias and MailApp send failed for to=' + toEmail +
-        ' — alias:' + (aliasErr && aliasErr.message) + ' fallback:' + (fallbackErr && fallbackErr.message)));
-      const err = new Error('Email could not be delivered (alias + fallback both failed)');
-      err.code = 'EMAIL_SEND_FAILED';
-      throw err;
-    }
-  }
-}
+// EMAIL-MIGRATION-2 (2026-06-25): sendAsAlias_ ELIMINADA. Era el único transporte de
+// email local del wizard (Gmail Advanced Service raw RFC822 + fallback MailApp), usado
+// solo por sendInternalEmail_ (también eliminado). Tras migrar las 2 últimas
+// notificaciones staff-internas (sesión iniciada + magic-link no solicitado) al motor
+// único del KMS vía sendViaKmsNotify_, el wizard envía CERO emails localmente — todo el
+// render+envío vive en el KMS. No quedan llamadores de Gmail/MailApp en este archivo.
 
 function sendVerificationCode_(p) {
   let enrollmentGroupId;
@@ -5687,14 +5645,11 @@ function saveHealth_(enrollmentGroupId, healthData) {  // eslint-disable-line no
 
 // ─── Email helpers ────────────────────────────────────────────────────────────
 
-/**
- * Sends a branded internal email to admissions@kaleide.org.
- * @param {string} subject
- * @param {string} bodyHtml - inner HTML content (no shell)
- */
-function sendInternalEmail_(subject, bodyHtml) {
-  sendAsAlias_(ADMISSIONS_EMAIL, subject, buildInternalEmail_(subject, bodyHtml));
-}
+// EMAIL-MIGRATION-2 (2026-06-25): sendInternalEmail_ ELIMINADO junto con sendAsAlias_.
+// Las 2 notificaciones staff-internas que lo usaban (sesión iniciada + magic-link no
+// solicitado) migraron al motor único del KMS vía sendViaKmsNotify_ (plantillas
+// kis-tpl-wizard-session-started / kis-tpl-wizard-unsolicited-reported). El wizard ya NO
+// envía email localmente.
 
 // NOTA (WIZARD-TERMINAL P3, 2026-06-25): sendMagicLinkEmail_, sendMagicLinkMultiEmail_ y
 // sendFamilyConfirmationEmail_ FUERON ELIMINADAS. El contenido de esos 3 emails (+ la
@@ -9458,4 +9413,22 @@ function manual_diagResponsesRetrieval() {
   Logger.log('  qbResponses by enrollment_id: ' + byEnrollment);
   Logger.log('=== fin manual_diagResponsesRetrieval ===');
   return { group: byGroup, person: byPerson, enrollment: byEnrollment };
+}
+
+/**
+ * EMAIL-MIGRATION-2 (2026-06-25) — setter param-accepting del secreto HMAC compartido.
+ * Pone la Script Property `NOTIFY_HMAC_SECRET` AL VALOR DADO (no genera uno nuevo) para
+ * que el orquestador siembre el MISMO valor en wizard + KMS en una sola operación
+ * `clasp run --params` SIN exponer el secreto. NO loguea el valor (KAL-11) — solo su
+ * longitud. Espejo exacto del homónimo del KMS (kms-server/_manual.gs). Este es el
+ * setter de la CLAVE CORRECTA que firma sendViaKmsNotify_/sendViaKmsAuthCode_
+ * (`NOTIFY_HMAC_SECRET`), distinto de `WIZARD_NOTIFY_SECRET` (gate KMS→wizard de
+ * notifyLiveStateChange — NO tocar aquí).
+ *
+ * @param {string} value El secreto compartido (mismo en wizard y KMS).
+ * @returns {{ ok: boolean, len: number }}
+ */
+function manual_setNotifyHmacSecret(value) {
+  PropertiesService.getScriptProperties().setProperty('NOTIFY_HMAC_SECRET', value);
+  return { ok: true, len: (value || '').length };
 }
