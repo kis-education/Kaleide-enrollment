@@ -6230,7 +6230,8 @@ function resolveSigningToken_(p) {
  * `{ drained:false }` (HTTP 200, NUNCA 403, NUNCA revela si el secreto existe). El
  * secreto solo autoriza DISPARAR el drenado; el trabajo real (y su auth KAL-4) vive en
  * el KMS (sys_drainJobQueue verifica además el QB_SERVICE_TOKEN). Red de seguridad si
- * el bot/secret fallan: el trigger time-driven KMS `sys_runJobQueue` (~1 min).
+ * el bot/secret fallan: el trigger time-driven KMS `sys_runJobQueue` (cada 5 min —
+ * mínimo de GAS everyMinutes(5)).
  *
  * @param {{ _secret?: string, limit?: number, schoolId?: string }} payload
  * @returns {{ drained: boolean, report?: Object }}
