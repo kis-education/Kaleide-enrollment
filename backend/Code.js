@@ -141,9 +141,6 @@ const T = {
   MILESTONES:                'sysMilestones',
   MILESTONE_TYPES:           'sysMilestoneTypes',
   // Lookup / reference tables
-  LOOKUP_ALLERGIES:       'foodAllergies',
-  LOOKUP_DIETARY:         'dietaryRequirements',
-  LOOKUP_MEDICAL:         'medicalConditions',
   LOOKUP_RELATION_TYPES:  'relationTypes',
 };
 
