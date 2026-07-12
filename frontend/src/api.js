@@ -31,6 +31,19 @@ export function primeLookups(lookups) {
   _lookupsFlight = null;
 }
 
+/**
+ * Persists the NEAE (Necesidades Específicas de Apoyo Educativo) declaration
+ * captured in the Paso 4 "Salud y apoyo" sub-section. Direct wizard-side write
+ * to the enr* staging tables (action 'saveNeae'). KAL-4: the backend derives the
+ * group from the resume_token and validates each person_id against it.
+ *
+ * @param {string} resumeToken  the family session bearer token
+ * @param {Array}  neaeData     [{ person_id, conditions:[…], supports:[…], source_locale }]
+ */
+export function saveNeae(resumeToken, neaeData) {
+  return gasCall('saveNeae', { resume_token: resumeToken, neae: neaeData });
+}
+
 export function fetchLookups() {
   if (_lookupsCache)  return Promise.resolve(_lookupsCache);
   if (_lookupsFlight) return _lookupsFlight;

@@ -84,6 +84,7 @@ const initialStepData = {
   persons:   [],
   relations: [],
   health:    [],
+  neae:      [],
   questions: [],
   documents: [],
 };
@@ -813,6 +814,14 @@ export function WizardProvider({ children }) {
         allergies: p.allergies || [],
         dietary:   p.dietary   || [],
         medical:   p.medical   || [],
+      })),
+      // NEAE staging (Paso 4 "Salud y apoyo"). Espejo de la hidratación de salud:
+      // el backend adjunta `neae` (condiciones) + `neae_support` (apoyos) a cada
+      // applicant. Degrada a [] si las tablas staging aún no existen.
+      neae: persons.filter(p => p.person_type_id === 'applicant').map(p => ({
+        person_id:  p.person_id,
+        conditions: p.neae         || [],
+        supports:   p.neae_support || [],
       })),
       questions: responsesDict,
       documents,

@@ -111,6 +111,13 @@ const T = {
   PERSON_MEDICAL:       'enrPersonMedicalConditions',
   PERSON_ALLERGIES:     'enrPersonFoodAllergies',
   PERSON_DIETARY:       'enrPersonDietaryRequirements',
+  // NEAE staging (Necesidades Específicas de Apoyo Educativo, RGPD Art. 9).
+  // Captured in the Paso 4 "Salud y apoyo" sub-section (family declaration,
+  // no signature). Append-only (DL-E16). Promoted to core neaeConditionsLog /
+  // neaeSupportLog by the KMS (separate wave). Design: kis-app
+  // docs/kms/design/neae-module-2026-07-12.md §5.
+  PERSON_NEAE:          'enrPersonNeae',
+  PERSON_NEAE_SUPPORT:  'enrPersonNeaeSupport',
   REC_FILES:            'recFiles',                // canonical document storage (DL-R09)
   REC_SCOPES:           'recScopes',               // file ↔ entity polymorphic M:N (DL-R13)
   INTERVIEWS:           'enrInterviews',
@@ -1550,6 +1557,10 @@ function doPost(e) {
       // ── Actions that keep their name (payload shape may have changed) ───────
       case 'sendMagicLink':        result = sendMagicLink_(payload);        break;
       case 'saveStep':             result = saveStep_(payload);             break;
+      // NEAE staging (Paso 4 "Salud y apoyo"). Direct wizard-side write to the
+      // enr* staging tables (mirror del capture de salud). KAL-4 + edit-lock +
+      // append-only DL-E16, dentro del propio handler.
+      case 'saveNeae':             result = saveNeae_(payload);             break;
       case 'sendVerificationCode': result = sendVerificationCode_(payload); break;
       case 'verifyEmail':          result = verifyEmail_(payload);          break;
       case 'fetchQuestions':       result = fetchQuestions_(payload);       break;
@@ -3633,6 +3644,10 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
     { table: T.PERSON_MEDICAL,       action: 'Find', selector: { Filter: pidFilter } },
     { table: T.PERSON_ALLERGIES,     action: 'Find', selector: { Filter: pidFilter } },
     { table: T.PERSON_DIETARY,       action: 'Find', selector: { Filter: pidFilter } },
+    // NEAE staging (Paso 4 "Salud y apoyo"). Defensive: si las tablas aún no
+    // existen en AppSheet, el spec devuelve ok=false → pickRows() da [] (P72).
+    { table: T.PERSON_NEAE,          action: 'Find', selector: { Filter: pidFilter } },
+    { table: T.PERSON_NEAE_SUPPORT,  action: 'Find', selector: { Filter: pidFilter } },
   ]);
   const pickRows = (i) => personDetailRead[i].ok ? (personDetailRead[i].data || []) : [];
   const nationalities    = pickRows(0);
@@ -3643,6 +3658,11 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
   const medical          = pickRows(5);
   const allergies        = pickRows(6);
   const dietary          = pickRows(7);
+  // Only ACTIVE NEAE rows hydrate the wizard (append-only DL-E16: superseded
+  // rows carry is_active=false). AppSheet returns booleans as "TRUE"/"FALSE".
+  const neaeActive_      = (r) => r && r.is_active !== false && r.is_active !== 'FALSE' && r.is_active !== 'false';
+  const neae             = pickRows(8).filter(neaeActive_);
+  const neaeSupport      = pickRows(9).filter(neaeActive_);
 
   // Batch-fetch address value rows (emails/phones already fetched by enrollment_group_id in topRead).
   const addrIds = personAddrJoins.map(r => r.address_id).filter(Boolean);
@@ -3671,6 +3691,19 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
       medical:           medical.filter(x => x.person_id === pid),
       allergies:         allergies.filter(x => x.person_id === pid),
       dietary:           dietary.filter(x => x.person_id === pid),
+      // NEAE staging (Paso 4 "Salud y apoyo") — mapeo a la forma que consume el
+      // frontend (conditions / supports). Solo columnas reales del staging.
+      neae:              neae.filter(x => x.person_id === pid).map(r => ({
+        category_code:            r.category_code || null,
+        diagnosis_status:         r.diagnosis_status || null,
+        observations:             r.observations || null,
+      })),
+      neae_support:      neaeSupport.filter(x => x.person_id === pid).map(r => ({
+        support_type:   r.support_type || null,
+        provider_scope: r.provider_scope || null,
+        is_current:     r.is_current === false || r.is_current === 'FALSE' || r.is_current === 'false' ? false : true,
+        observations:   r.observations || null,
+      })),
     };
   });
 
@@ -5533,6 +5566,166 @@ function saveHealth_(enrollmentGroupId, healthData) {  // eslint-disable-line no
       if (rows.length) appsheetRequest_(T.PERSON_MEDICAL, 'Add', rows);
     }
   });
+}
+
+/**
+ * NEAE staging capture — Paso 4 "Salud y apoyo" (DL-E16 append-only).
+ *
+ * Espejo del capture de salud del wizard, adaptado a NEAE (Necesidades
+ * Específicas de Apoyo Educativo, RGPD Art. 9). Escribe SOLO a las tablas
+ * staging `enrPersonNeae` + `enrPersonNeaeSupport` (nunca al core — el KMS
+ * promociona a `neaeConditionsLog`/`neaeSupportLog` en otra ola). La familia es
+ * anónima y sin identidad legal en el wizard → la declaración se captura como
+ * borrador SIN firma; la atestación ocurre en la firma de matrícula (design §3).
+ *
+ * Seguridad (mismas capas que los demás handlers de mutación):
+ *   - KAL-4 IDOR: `enrollment_group_id` derivado del `resume_token`, NUNCA del
+ *     payload; cada `person_id` se valida contra las personas del grupo del token.
+ *   - Edit-lock: `assertGroupEditable_` rechaza grupos ya enviados/abandonados.
+ *   - KAL-5: `assertValidUuid_` + `appsheetEscape_` en todo filtro.
+ *   - KAL-11: logs redactados (`redact_`).
+ *
+ * Código defensivo (Diego 2026-06-06 / P72): las tablas staging pueden no existir
+ * todavía en AppSheet. Los writes se envuelven en try/catch — una tabla ausente
+ * o un silent reject se LOGUEA (redactado) y degrada sin romper el flujo de la
+ * familia y SIN fingir éxito de fila. La falta de tabla NO bloquea el paso.
+ *
+ * @param {Object} p - { resume_token, neae: [ { person_id, conditions:[…], supports:[…], source_locale } ] }
+ */
+function saveNeae_(p) {
+  // KAL-4: derive the authorised group_id from resume_token; never trust the
+  // payload's enrollment_group_id. (Cross-check happens inside the helper.)
+  const enrollmentGroupId = requireResumeToken_(p);
+
+  // Edit-lock defense in depth: a submitted/abandoned group is not editable by
+  // the family. Throws Error{code:'NOT_EDITABLE'} → doPost maps to HTTP 200
+  // {ok:false,error} (P72 structured reject, never HTTP 403).
+  assertGroupEditable_(enrollmentGroupId);
+  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: no servir stale tras un write del grupo
+
+  const neaeData = Array.isArray(p && p.neae) ? p.neae
+                 : (p && p.neae && Array.isArray(p.neae.neae) ? p.neae.neae : []);
+  if (!Array.isArray(neaeData) || !neaeData.length) {
+    return { saved: true, step: 'neae' };
+  }
+
+  // KAL-4: resolve the applicant person_ids that actually belong to this group.
+  // Any person_id in the payload that is not an applicant of the token's group
+  // is skipped (defense against IDOR / cross-group writes).
+  const groupPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
+  }) || [];
+  const validPersonIds = {};
+  groupPersons.forEach(per => {
+    if (per && per.person_type_id === 'applicant' && per.person_id) {
+      validPersonIds[per.person_id] = true;
+    }
+  });
+
+  const nowIso = new Date().toISOString();
+  neaeData.forEach(entry => {
+    const personId = entry && entry.person_id;
+    if (!personId) return;
+    assertValidUuid_(personId, 'person_id'); // KAL-5: strict validation before any filter
+    if (!validPersonIds[personId]) {
+      Logger.log(redact_('[saveNeae_] skip: person_id not an applicant of the token group: ' + personId));
+      return; // KAL-4: never write NEAE for a person outside the token's group
+    }
+    saveNeaeForPerson_(personId, entry, nowIso);
+  });
+
+  return { saved: true, step: 'neae' };
+}
+
+/**
+ * Persists one applicant's NEAE declaration (append-only, DL-E16).
+ *
+ * Per person, the previous ACTIVE set is superseded (is_active → false via Edit)
+ * and the new complete set is inserted (Add). The wizard always sends the full
+ * current set for the person (like the health capture), so wholesale-per-person
+ * supersede is the correct append-only semantics.
+ *
+ * Payload is 1:1 with the real staging columns (P72 — no invented fields):
+ *   enrPersonNeae:        record_id, school_id, person_id, category_code,
+ *                         diagnosis_status, provenance, observations, is_active,
+ *                         source_locale, created_at, created_by
+ *   (la columna willing_to_share_reports del staging queda SIN usar — decisión
+ *    Diego 2026-07-12: no aporta acción accionable; no se referencia en read/write)
+ *   enrPersonNeaeSupport: record_id, school_id, person_id, support_type,
+ *                         provider_scope, is_current, observations, is_active,
+ *                         source_locale, created_at, created_by
+ *
+ * @param {string} personId  applicant person_id (already validated to the group)
+ * @param {Object} entry      { conditions:[…], supports:[…], source_locale }
+ * @param {string} nowIso     ISO timestamp for created_at
+ */
+function saveNeaeForPerson_(personId, entry, nowIso) {
+  const escId        = appsheetEscape_(personId);           // KAL-5
+  const sourceLocale = (entry && entry.source_locale) || null;
+
+  // ── enrPersonNeae (Q2 diagnóstico / Q3 condición / Q4 compartir informes) ──
+  try {
+    const prev = appsheetRequest_(T.PERSON_NEAE, 'Find', [], {
+      Filter: '"person_id" = "' + escId + '" && "is_active" = true'
+    }) || [];
+    const editRows = prev
+      .filter(r => r && r.record_id)
+      .map(r => ({ record_id: r.record_id, is_active: false }));
+    if (editRows.length) appsheetRequest_(T.PERSON_NEAE, 'Edit', editRows);
+
+    const conditions = Array.isArray(entry && entry.conditions) ? entry.conditions : [];
+    const addRows = conditions
+      .filter(c => c && c.category_code)
+      .map(c => ({
+        record_id:                generateUuid_(),
+        school_id:                SCHOOL_ID,
+        person_id:                personId,
+        category_code:            String(c.category_code),
+        diagnosis_status:         c.diagnosis_status || null,
+        provenance:               'FAMILY_DECLARED',              // staging: always family-declared
+        observations:             c.observations || null,
+        is_active:                true,
+        source_locale:            sourceLocale,
+        created_at:               nowIso,
+        created_by:               'SYSTEM:WIZARD',                // anonymous wizard actor
+      }));
+    if (addRows.length) appsheetRequest_(T.PERSON_NEAE, 'Add', addRows);
+  } catch (e) {
+    // Defensive (P72): staging table may not exist yet, or a silent reject.
+    // Never block the family flow; log redacted, do NOT fake row success.
+    Logger.log(redact_('[saveNeae_] enrPersonNeae write deferred/failed for ' + personId + ': ' + (e && e.message)));
+  }
+
+  // ── enrPersonNeaeSupport (Q1 apoyo centro previo / Q5 apoyo externo actual) ──
+  try {
+    const prevS = appsheetRequest_(T.PERSON_NEAE_SUPPORT, 'Find', [], {
+      Filter: '"person_id" = "' + escId + '" && "is_active" = true'
+    }) || [];
+    const editRowsS = prevS
+      .filter(r => r && r.record_id)
+      .map(r => ({ record_id: r.record_id, is_active: false }));
+    if (editRowsS.length) appsheetRequest_(T.PERSON_NEAE_SUPPORT, 'Edit', editRowsS);
+
+    const supports = Array.isArray(entry && entry.supports) ? entry.supports : [];
+    const addRowsS = supports
+      .filter(s => s && s.support_type)
+      .map(s => ({
+        record_id:      generateUuid_(),
+        school_id:      SCHOOL_ID,
+        person_id:      personId,
+        support_type:   String(s.support_type),
+        provider_scope: s.provider_scope || null,
+        is_current:     (s.is_current === undefined || s.is_current === null) ? true : !!s.is_current,
+        observations:   s.observations || null,
+        is_active:      true,
+        source_locale:  sourceLocale,
+        created_at:     nowIso,
+        created_by:     'SYSTEM:WIZARD',
+      }));
+    if (addRowsS.length) appsheetRequest_(T.PERSON_NEAE_SUPPORT, 'Add', addRowsS);
+  } catch (e) {
+    Logger.log(redact_('[saveNeae_] enrPersonNeaeSupport write deferred/failed for ' + personId + ': ' + (e && e.message)));
+  }
 }
 
 // ENR-E6 (2026-06-06): saveInterviews_ + case 'interviews' eliminados del
@@ -8336,6 +8529,51 @@ function manual_testReviewStepRejected() {
       (e.code ? ' (code=' + e.code + ')' : ''));
   }
   Logger.log('=== fin manual_testReviewStepRejected ===');
+}
+
+/**
+ * NEAE staging capture test — verifica que saveNeae_ escribe el set NEAE de un
+ * applicant al staging (`enrPersonNeae` + `enrPersonNeaeSupport`) con la semántica
+ * append-only DL-E16 (supersede de la fila activa previa) y payload 1:1.
+ *
+ * Pre-requisito: rellenar RESUME_TOKEN con el resume_token de un grupo DRAFT real
+ * y PERSON_ID con el person_id de un applicant de ESE grupo. Como las tablas
+ * staging pueden no existir todavía en AppSheet, el handler degrada defensivo
+ * (P72) — un "deferred/failed" en Logs con las tablas ausentes es el resultado
+ * ESPERADO (no un fallo del handler). Con las tablas creadas, verificar en
+ * AppSheet que aparecen las filas is_active=TRUE + provenance=FAMILY_DECLARED.
+ * Ejecutar desde el editor GAS (o `clasp run manual_testNeaeStaging`) y leer Logs.
+ */
+function manual_testNeaeStaging() {
+  const RESUME_TOKEN = 'RELLENAR_CON_RESUME_TOKEN_DRAFT_REAL';
+  const PERSON_ID    = 'RELLENAR_CON_PERSON_ID_APPLICANT_DEL_GRUPO';
+  Logger.log('=== manual_testNeaeStaging ===');
+  if (RESUME_TOKEN.indexOf('RELLENAR') === 0 || PERSON_ID.indexOf('RELLENAR') === 0) {
+    Logger.log('  ? SKIP: rellena RESUME_TOKEN (grupo DRAFT) + PERSON_ID (applicant del grupo).');
+    return;
+  }
+  try {
+    const res = saveNeae_({
+      resume_token: RESUME_TOKEN,
+      neae: [{
+        person_id: PERSON_ID,
+        source_locale: 'es',
+        conditions: [
+          { category_code: 'ASD', diagnosis_status: 'DIAGNOSED', observations: 'Informe psicopedagógico disponible.' },
+          { category_code: 'LANGUAGE', diagnosis_status: 'IN_EVALUATION', observations: null },
+        ],
+        supports: [
+          { support_type: 'LOGOPEDIA', provider_scope: 'PRIOR_SCHOOL', is_current: false, observations: 'Apoyo en el centro anterior.' },
+          { support_type: 'EXTERNAL_PSYCH', provider_scope: 'EXTERNAL_CURRENT', is_current: true, observations: null },
+        ],
+      }],
+    });
+    Logger.log('  ✓ saveNeae_ devolvió: ' + JSON.stringify(res) +
+      ' (revisar en AppSheet enrPersonNeae/enrPersonNeaeSupport las filas is_active=TRUE; con tablas ausentes, ver "deferred/failed" arriba — esperado P72).');
+  } catch (e) {
+    Logger.log('  ✗ FAIL (excepción no tolerada): ' + e.message + (e.code ? ' (code=' + e.code + ')' : ''));
+  }
+  Logger.log('=== fin manual_testNeaeStaging ===');
 }
 
 /**
