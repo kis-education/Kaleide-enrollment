@@ -5594,7 +5594,7 @@ function saveHealth_(enrollmentGroupId, healthData) {  // eslint-disable-line no
  */
 function saveNeae_(p) {
   // KAL-4: derive the authorised group_id from resume_token; never trust the
-  // payload's enrollment_group_id. (Cross-check happens inside the helper.)
+  // payload's enrollment_group_id. The KMS re-derives the group from the token too.
   const enrollmentGroupId = requireResumeToken_(p);
 
   // Edit-lock defense in depth: a submitted/abandoned group is not editable by
@@ -5609,123 +5609,17 @@ function saveNeae_(p) {
     return { saved: true, step: 'neae' };
   }
 
-  // KAL-4: resolve the applicant person_ids that actually belong to this group.
-  // Any person_id in the payload that is not an applicant of the token's group
-  // is skipped (defense against IDOR / cross-group writes).
-  const groupPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-  }) || [];
-  const validPersonIds = {};
-  groupPersons.forEach(per => {
-    if (per && per.person_type_id === 'applicant' && per.person_id) {
-      validPersonIds[per.person_id] = true;
-    }
-  });
-
-  const nowIso = new Date().toISOString();
-  neaeData.forEach(entry => {
-    const personId = entry && entry.person_id;
-    if (!personId) return;
-    assertValidUuid_(personId, 'person_id'); // KAL-5: strict validation before any filter
-    if (!validPersonIds[personId]) {
-      Logger.log(redact_('[saveNeae_] skip: person_id not an applicant of the token group: ' + personId));
-      return; // KAL-4: never write NEAE for a person outside the token's group
-    }
-    saveNeaeForPerson_(personId, entry, nowIso);
+  // THIN-CLIENT (2026-07-12): la escritura del staging NEAE vive en el KMS (único
+  // escritor con auth+validación) — espejo EXACTO del proxy de salud del case
+  // 'health' de saveStep_. El wizard YA NO escribe enrPersonNeae/Support directo:
+  // proxea al endpoint del KMS, que re-deriva el grupo del resume_token (KAL-4),
+  // valida person∈grupo, y persiste append-only (DL-E16). Cero writes locales.
+  kmsProxy_('enr.wizardSaveNeae', {
+    resume_token: p.resume_token,
+    neae:         neaeData,
   });
 
   return { saved: true, step: 'neae' };
-}
-
-/**
- * Persists one applicant's NEAE declaration (append-only, DL-E16).
- *
- * Per person, the previous ACTIVE set is superseded (is_active → false via Edit)
- * and the new complete set is inserted (Add). The wizard always sends the full
- * current set for the person (like the health capture), so wholesale-per-person
- * supersede is the correct append-only semantics.
- *
- * Payload is 1:1 with the real staging columns (P72 — no invented fields):
- *   enrPersonNeae:        record_id, school_id, person_id, category_code,
- *                         diagnosis_status, provenance, observations, is_active,
- *                         source_locale, created_at, created_by
- *   (la columna willing_to_share_reports del staging queda SIN usar — decisión
- *    Diego 2026-07-12: no aporta acción accionable; no se referencia en read/write)
- *   enrPersonNeaeSupport: record_id, school_id, person_id, support_type,
- *                         provider_scope, is_current, observations, is_active,
- *                         source_locale, created_at, created_by
- *
- * @param {string} personId  applicant person_id (already validated to the group)
- * @param {Object} entry      { conditions:[…], supports:[…], source_locale }
- * @param {string} nowIso     ISO timestamp for created_at
- */
-function saveNeaeForPerson_(personId, entry, nowIso) {
-  const escId        = appsheetEscape_(personId);           // KAL-5
-  const sourceLocale = (entry && entry.source_locale) || null;
-
-  // ── enrPersonNeae (Q2 diagnóstico / Q3 condición / Q4 compartir informes) ──
-  try {
-    const prev = appsheetRequest_(T.PERSON_NEAE, 'Find', [], {
-      Filter: '"person_id" = "' + escId + '" && "is_active" = true'
-    }) || [];
-    const editRows = prev
-      .filter(r => r && r.record_id)
-      .map(r => ({ record_id: r.record_id, is_active: false }));
-    if (editRows.length) appsheetRequest_(T.PERSON_NEAE, 'Edit', editRows);
-
-    const conditions = Array.isArray(entry && entry.conditions) ? entry.conditions : [];
-    const addRows = conditions
-      .filter(c => c && c.category_code)
-      .map(c => ({
-        record_id:                generateUuid_(),
-        school_id:                SCHOOL_ID,
-        person_id:                personId,
-        category_code:            String(c.category_code),
-        diagnosis_status:         c.diagnosis_status || null,
-        provenance:               'FAMILY_DECLARED',              // staging: always family-declared
-        observations:             c.observations || null,
-        is_active:                true,
-        source_locale:            sourceLocale,
-        created_at:               nowIso,
-        created_by:               'SYSTEM:WIZARD',                // anonymous wizard actor
-      }));
-    if (addRows.length) appsheetRequest_(T.PERSON_NEAE, 'Add', addRows);
-  } catch (e) {
-    // Defensive (P72): staging table may not exist yet, or a silent reject.
-    // Never block the family flow; log redacted, do NOT fake row success.
-    Logger.log(redact_('[saveNeae_] enrPersonNeae write deferred/failed for ' + personId + ': ' + (e && e.message)));
-  }
-
-  // ── enrPersonNeaeSupport (Q1 apoyo centro previo / Q5 apoyo externo actual) ──
-  try {
-    const prevS = appsheetRequest_(T.PERSON_NEAE_SUPPORT, 'Find', [], {
-      Filter: '"person_id" = "' + escId + '" && "is_active" = true'
-    }) || [];
-    const editRowsS = prevS
-      .filter(r => r && r.record_id)
-      .map(r => ({ record_id: r.record_id, is_active: false }));
-    if (editRowsS.length) appsheetRequest_(T.PERSON_NEAE_SUPPORT, 'Edit', editRowsS);
-
-    const supports = Array.isArray(entry && entry.supports) ? entry.supports : [];
-    const addRowsS = supports
-      .filter(s => s && s.support_type)
-      .map(s => ({
-        record_id:      generateUuid_(),
-        school_id:      SCHOOL_ID,
-        person_id:      personId,
-        support_type:   String(s.support_type),
-        provider_scope: s.provider_scope || null,
-        is_current:     (s.is_current === undefined || s.is_current === null) ? true : !!s.is_current,
-        observations:   s.observations || null,
-        is_active:      true,
-        source_locale:  sourceLocale,
-        created_at:     nowIso,
-        created_by:     'SYSTEM:WIZARD',
-      }));
-    if (addRowsS.length) appsheetRequest_(T.PERSON_NEAE_SUPPORT, 'Add', addRowsS);
-  } catch (e) {
-    Logger.log(redact_('[saveNeae_] enrPersonNeaeSupport write deferred/failed for ' + personId + ': ' + (e && e.message)));
-  }
 }
 
 // ENR-E6 (2026-06-06): saveInterviews_ + case 'interviews' eliminados del
