@@ -338,26 +338,28 @@ function assertUniqueGuardianEmails_(persons) {
  * enrEnrollments (mismo motivo por el que los consents GDPR se difieren a submit);
  * el wizard es thin client que escribe a enr* (DL-E41). TODO Diego: alta de columnas.
  *
- * @param {string} enrollmentGroupId  derivado del token (KAL-4)
+ * @param {string} resumeToken  bearer del grupo — el KMS deriva el group server-side (KAL-4)
  * @param {{attested:boolean, attestant_guardian?:string, attested_at?:string, attestation_version?:string}} att
  */
-function persistSoleGuardianAttestation_(enrollmentGroupId, att) {
+function persistSoleGuardianAttestation_(resumeToken, att) {
   if (!att || att.attested !== true) return;
   try {
-    appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-      enrollment_group_id:               enrollmentGroupId,
-      sole_guardian_attested:            true,
-      sole_guardian_attested_at:         att.attested_at || new Date().toISOString(),
-      sole_guardian_attestant:           att.attestant_guardian || null,
-      sole_guardian_attestation_version: att.attestation_version || null,
-    }]);
-    Logger.log(redact_('[persistSoleGuardianAttestation_] registrada atestación tutor único group=' +
-      enrollmentGroupId + ' attestant=' + (att.attestant_guardian || '?') + ' ver=' + (att.attestation_version || '?')));
+    // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): la escritura se porta al KMS (único escritor).
+    // KAL-4: el grupo lo deriva el KMS del resume_token, no viaja ningún group_id.
+    // Best-effort preservado: columnas sole_guardian_* quizá no creadas aún (P72) — el
+    // KMS reporta persisted:false sin lanzar; cualquier otro fallo cae a este catch.
+    const res = kmsProxy_('enr.wizardPersistAttestation', {
+      resume_token:        resumeToken,
+      attested:            true,
+      attested_at:         att.attested_at || new Date().toISOString(),
+      attestant_guardian:  att.attestant_guardian || null,
+      attestation_version: att.attestation_version || null,
+    });
+    Logger.log(redact_('[persistSoleGuardianAttestation_] atestación tutor único → KMS persisted=' +
+      (res && res.persisted) + ' attestant=' + (att.attestant_guardian || '?') + ' ver=' + (att.attestation_version || '?')));
   } catch (e) {
-    // P72 / columnas no creadas aún → no rompe el flujo (regla "la falta de columna
-    // AppSheet NO congela"). Se loguea redactado; alta pendiente como TODO de Diego.
-    Logger.log(redact_('[persistSoleGuardianAttestation_] best-effort fail (¿columnas no creadas? P72) group=' +
-      enrollmentGroupId + ': ' + e.message));
+    // No rompe el flujo (regla "la falta de columna AppSheet NO congela"). Log redactado.
+    Logger.log(redact_('[persistSoleGuardianAttestation_] best-effort fail (KMS proxy): ' + e.message));
   }
 }
 
@@ -1929,14 +1931,12 @@ function initEnrollmentSession_(p) {
     // Auto-abandon the losers (best-effort; failure to mark does not block the
     // re-send to the winner). They'll otherwise resurface on the next init and
     // need to be re-evaluated.
-    const nowIso = new Date().toISOString();
+    // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): la escritura se porta al KMS
+    // (enr.wizardAbandonSession). KAL-4: el grupo lo deriva el KMS del resume_token
+    // del PROPIO loser (fila ya leída de BD por este init), nunca de un id suelto.
     losers.forEach(loser => {
       try {
-        appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-          enrollment_group_id: loser.enrollment_group_id,
-          abandoned_at:        nowIso,
-          updated_at:          nowIso,
-        }]);
+        kmsProxy_('enr.wizardAbandonSession', { resume_token: loser.resume_token });
         // KAL-11: redact UUID + email.
         Logger.log(redact_('initEnrollmentSession_: auto-abandoned ' + loser.enrollment_group_id +
                    ' (lower-progress parallel session for ' + normalizedEmail +
@@ -1967,59 +1967,26 @@ function initEnrollmentSession_(p) {
     };
   }
 
-  const enrollmentGroupId = generateUuid_();
-  const resumeToken       = generateUuid_();
-  const now               = new Date().toISOString();
-  const lang              = p.preferred_language || 'es';
+  const now  = new Date().toISOString();
+  const lang = p.preferred_language || 'es';
 
-  // ── Resolve source_id from enrEnrollmentSources (Capa 2 catalog) ───────────
-  // sourceCode is already whitelist-validated above against VALID_SOURCES; escape
-  // applied as defense in depth (KAL-5).
-  let sourceId = null;
-  try {
-    const sources = appsheetRequest_(T.ENROLLMENT_SOURCES, 'Find', [], {
-      Filter: '"source_code" = "' + appsheetEscape_(sourceCode) + '"'
-    });
-    if (sources && sources[0]) sourceId = sources[0].source_id;
-  } catch (e) {
-    // Non-fatal: source_id stays null if catalog not yet seeded
-    Logger.log('initEnrollmentSession_: enrEnrollmentSources lookup failed: ' + e.message);
-  }
-
-  // ── Resolve program_id ─────────────────────────────────────────────────────
-  // If the frontend supplied program_id, trust it. Otherwise resolve the active
-  // ADMISSION_SCHOOL program for this tenant. If none exists yet, programId
-  // stays null and the wizard proceeds — operationally Diego must seed an
-  // active program in enrPrograms before the school goes live.
-  let programId = p.program_id || null;
-  if (!programId) {
-    try {
-      const programs = appsheetRequest_(T.PROGRAMS, 'Find', [], {
-        Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "program_type_code" = "ADMISSION_SCHOOL" && ISBLANK([deleted_at])'
-      });
-      if (programs && programs.length) programId = programs[0].program_id;
-    } catch (e) {
-      Logger.log('initEnrollmentSession_: enrPrograms lookup failed: ' + e.message);
-    }
-  }
-
-  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Add', [{
-    enrollment_group_id:    enrollmentGroupId,
-    school_id:              SCHOOL_ID,
-    program_id:             programId,
-    source_id:              sourceId,
-    requester_person_table: null,  // resolved at submit when guardians are known
-    requester_person_id:    null,
-    primary_email:          p.primary_email,
-    preferred_language:     lang,
-    resume_token:           resumeToken,
-    magic_link_token:       null,
-    submitted_at:           null,
-    desired_start_date:     null,  // staged here at saveStep('application'); propagated to enrEnrollments at submit
-    source_locale:          lang,
-    created_at:             now,
-    updated_at:             now,
-  }]);
+  // ── P1-B (WIZARD-DIRECT-WRITE-MIGRATION): creación de sesión → KMS ─────────
+  // La creación del grupo + emisión y persistencia del resume_token (CSPRNG) se
+  // porta al KMS (enr.wizardCreateSession, DL-E41 §328 — el wizard deja de mintar/
+  // persistir el token localmente). El KMS resuelve server-side:
+  //   - source_id desde el catálogo Capa 2 (mismo resolver probado de
+  //     enr_createEnrollment / enr.inviteFamily; sourceCode ya whitelist-validado aquí);
+  //   - program_id fallback al programa ADMISSION_SCHOOL activo (no-fatal, null si el
+  //     catálogo no está sembrado — mismo comportamiento del lookup histórico local);
+  //   - columnas del Add verbatim del escritor dorado (histórico Code.js:2006-2022).
+  const created = kmsProxy_('enr.wizardCreateSession', {
+    primary_email:      p.primary_email,
+    program_id:         p.program_id || null,
+    source_code:        sourceCode,
+    preferred_language: lang,
+  });
+  const enrollmentGroupId = created.enrollment_group_id;
+  const resumeToken       = created.resume_token;
 
   // NOTE: GDPR consent record is intentionally deferred to submit time.
   // At init we have no enrEnrollments to attach the consent to, and the
@@ -2429,19 +2396,17 @@ function sendMagicLink_(p) {
     // Renew token + created_at for non-submitted sessions so the new link is
     // always valid for a fresh 7-day window regardless of when the session was
     // originally created. Also invalidates any previously sent magic links.
+    // P1-B: la renovación la hace el KMS (enr.wizardTouchSession) — minta el token
+    // nuevo server-side (CSPRNG) y lo persiste; si no pudo persistir (P72) devuelve
+    // renewed:false con el token vivo (mismo fallback que el batch multi histórico).
     let tokenToSend = grp.resume_token;
     if (!grp.submitted_at) {
-      const nowIso   = new Date().toISOString();
-      const newToken = generateUuid_();
-      appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-        enrollment_group_id: grp.enrollment_group_id,
-        resume_token:        newToken,
-        created_at:          nowIso,
-        updated_at:          nowIso,
-      }]);
-      tokenToSend = newToken;
-      // KAL-11: redact group_id UUID before persisting to Stackdriver.
-      Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
+      const touch = kmsProxy_('enr.wizardTouchSession', { resume_token: grp.resume_token });
+      tokenToSend = (touch && touch.resume_token) || grp.resume_token;
+      if (touch && touch.renewed) {
+        // KAL-11: redact group_id UUID before persisting to Stackdriver.
+        Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
+      }
     }
 
     // IDENTITY-FROM-LINK (2026-06-11): `n` := email_id de la fila enrEmails del guardian
@@ -2488,47 +2453,38 @@ function sendMagicLink_(p) {
     // new link is valid for a fresh 7-day window. Submitted/AD sessions keep
     // their EXISTING resume_token untouched (no created_at reset) — exactly like
     // Path 1 — so recovery into signing reuses the live token.
-    const nowIso = new Date().toISOString();
-    // PERF sendMagicLink (2026-06-12): renovaciones de token (Edits) + lectura de
-    // enrEmails por grupo en UN solo batch paralelo (antes: 1 Edit serial por grupo
-    // + 1 Find serial por findEmailIdForGuardian_, ~3-5s cada uno). Mismas filas,
-    // mismos filtros — solo serie→paralelo. Si un Edit del batch falla, ese grupo
-    // conserva su token original (mismo fallback que antes).
+    // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): las renovaciones (Edits) se portan al KMS
+    // — un enr.wizardTouchSession por grupo NO-submitted (el KMS minta y persiste el
+    // token server-side). Si una renovación falla, ese grupo conserva su token
+    // original (mismo fallback que el batch histórico). La lectura de enrEmails por
+    // grupo sigue en UN batch paralelo (read-only, PERF 2026-06-12 intacta).
     const sorted = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    const renewSpecs = [];
-    const renewIdx   = {};   // group_id → posicion en renewSpecs
-    const newTokens  = {};   // group_id → token nuevo propuesto
+    const newTokens = {};   // group_id → token nuevo persistido por el KMS
     sorted.forEach(g => {
       if (g.submitted_at) return; // submitted: send existing token, do not renew
-      const newToken = generateUuid_();
-      newTokens[g.enrollment_group_id] = newToken;
-      renewIdx[g.enrollment_group_id] = renewSpecs.length;
-      renewSpecs.push({ table: T.ENROLLMENT_GROUPS, action: 'Edit', rows: [{
-        enrollment_group_id: g.enrollment_group_id,
-        resume_token:        newToken,
-        created_at:          nowIso,
-        updated_at:          nowIso,
-      }] });
+      try {
+        const touch = kmsProxy_('enr.wizardTouchSession', { resume_token: g.resume_token });
+        if (touch && touch.renewed && touch.resume_token) {
+          newTokens[g.enrollment_group_id] = touch.resume_token;
+        } else {
+          // KAL-11: redact group_id UUID.
+          Logger.log(redact_('sendMagicLink_: token not renewed for group ' + g.enrollment_group_id + ' (KMS fallback — keeps live token)'));
+        }
+      } catch (e) {
+        Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message));
+      }
     });
-    const emailSpecsBase = renewSpecs.length;
-    sorted.forEach(g => {
-      renewSpecs.push({ table: T.EMAILS, action: 'Find', selector: {
-        Filter: '"enrollment_group_id" = "' + appsheetEscape_(g.enrollment_group_id) + '"' } });
-    });
-    const batchRes = appsheetRequestBatch_(renewSpecs);
+    const emailSpecs = sorted.map(g => ({ table: T.EMAILS, action: 'Find', selector: {
+      Filter: '"enrollment_group_id" = "' + appsheetEscape_(g.enrollment_group_id) + '"' } }));
+    const batchRes = appsheetRequestBatch_(emailSpecs);
     const emailsHintByGroup = {};
     sorted.forEach((g, i) => {
-      const r = batchRes[emailSpecsBase + i];
+      const r = batchRes[i];
       emailsHintByGroup[g.enrollment_group_id] = (r && r.ok) ? (r.data || []) : null;
     });
     const grps = sorted.map(g => {
       const gid = g.enrollment_group_id;
-      if (!(gid in newTokens)) return g; // submitted: token vivo intacto
-      const r = batchRes[renewIdx[gid]];
-      if (r && r.ok) return { ...g, resume_token: newTokens[gid] };
-      // KAL-11: redact group_id UUID.
-      Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + gid + ': ' + ((r && r.error) || 'batch error')));
-      return g; // fall back to original token on error
+      return (gid in newTokens) ? { ...g, resume_token: newTokens[gid] } : g;
     });
 
     // IDENTITY-FROM-LINK (2026-06-11): el link va al email tecleado (p.primary_email =
@@ -2609,11 +2565,10 @@ function abandonSession_(p) {
   if (grp.submitted_at) throw new Error('Cannot abandon a submitted application');
   if (grp.abandoned_at) return { abandoned: true }; // idempotent
 
-  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-    enrollment_group_id: grp.enrollment_group_id,
-    abandoned_at:        new Date().toISOString(),
-    updated_at:          new Date().toISOString(),
-  }]);
+  // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): la escritura se porta al KMS
+  // (enr.wizardAbandonSession). KAL-4: el grupo lo deriva el KMS del resume_token.
+  // El KMS re-chequea submitted/abandoned server-side (mismas reglas de arriba).
+  kmsProxy_('enr.wizardAbandonSession', { resume_token: token });
 
   return { abandoned: true };
 }
@@ -2674,11 +2629,9 @@ function reportUnsolicited_(p) {
     //     be able to view what they sent).
     if (!group.submitted_at && !group.abandoned_at) {
       try {
-        appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-          enrollment_group_id: group.enrollment_group_id,
-          abandoned_at:        nowIso,
-          updated_at:          nowIso,
-        }]);
+        // P1-B: escritura portada al KMS (enr.wizardAbandonSession). KAL-4: el grupo
+        // sale del resume_token (que ES la autorización de este endpoint).
+        kmsProxy_('enr.wizardAbandonSession', { resume_token: token });
         // KAL-11: redact UUID.
         Logger.log(redact_('reportUnsolicited_: abandoned ' + group.enrollment_group_id));
       } catch (abandonErr) {
@@ -3979,7 +3932,8 @@ function saveStep_(p) {
         persons:      Array.isArray(payload) ? payload : (payload.persons || []),
       });
       // CLI 8: atestación de tutor único — sigue siendo dato del payload (group-scoped).
-      persistSoleGuardianAttestation_(enrollmentGroupId, p.sole_guardian_attestation);
+      // P1-B: viaja el resume_token (el KMS deriva el grupo, KAL-4), no el group_id.
+      persistSoleGuardianAttestation_(p.resume_token, p.sole_guardian_attestation);
       break;
     case 'relations':
       kmsProxy_('enr.wizardSaveRelations', {
@@ -4048,38 +4002,6 @@ function submitEnrollmentSession_(p) {
   const group = groups && groups[0];
   if (!group) throw new Error('Enrollment group not found');
 
-  // ── Resolve the initial state (RQ = Requested) ─────────────────────────────
-  // Diego 2026-05-19 found that the AppSheet multi-AND filter on sysStates_T
-  // wasn't selecting the right row: the wizard wrote to_state_id = UUID of IN
-  // (a70e878a-...) into sysStateTransitionLog instead of UUID of RQ
-  // (6e434294-...). Root cause: AppSheet's Selector expression parser
-  // misbehaves with three chained "[col] = value AND [col] = value AND [col] = value"
-  // — it appears to ignore the filter and return the full table. statusTypes[0]
-  // then picks the first row by display_order, which for KIS is IN.
-  //
-  // Switching to fetch-all-then-filter in memory. For sysStates_T this is
-  // ~10 rows so the cost is negligible. Safer than depending on a filter
-  // parser quirk.
-  const allStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
-  const rqStateRow = allStates.find(r =>
-    r.school_id === SCHOOL_ID &&
-    r.entity_type_code === 'ENR_ADMISSION_SCHOOL' &&
-    r.state_code === 'RQ' &&
-    !r.deleted_at
-  );
-  if (!rqStateRow || !rqStateRow.state_id) {
-    Logger.log('submitEnrollmentSession_: sysStates_T has no RQ row for school=' + SCHOOL_ID +
-               ' entity_type=ENR_ADMISSION_SCHOOL. Total rows scanned: ' + allStates.length +
-               '. state_codes seen: ' + allStates.filter(r => r.school_id === SCHOOL_ID).map(r => r.state_code).join(','));
-    throw new Error(
-      'Configuration error: sysStates_T is missing an active row with state_code="RQ" + ' +
-      'entity_type_code="ENR_ADMISSION_SCHOOL" for school "' + SCHOOL_ID + '". ' +
-      'Seed it via Admin → Catálogos → Estados de programa before accepting submissions.'
-    );
-  }
-  const rqStateId = rqStateRow.state_id;
-  Logger.log('submitEnrollmentSession_: resolved RQ state_id=' + rqStateId);
-
   // ── Fetch persons captured in this group ───────────────────────────────────
   const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
     Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
@@ -4140,113 +4062,50 @@ function submitEnrollmentSession_(p) {
     });
   }
 
-  // ── Identify the requester (first guardian) if not yet recorded ────────────
-  if (!group.requester_person_id && guardians.length) {
-    appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-      enrollment_group_id:    enrollmentGroupId,
-      requester_person_table: 'enrPersons',
-      requester_person_id:    guardians[0].person_id,
-      updated_at:             now,
-    }]);
-  }
-
-  // ── Create one enrEnrollments row per applicant (or update if re-submitting) ──
-  // When a staff member reverts an application to IN and the family re-submits,
-  // existing enrollment rows must be updated to RQ state rather than duplicated.
-  const existingEnrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-  }) || [];
-  // Map applicant_person_id → existing enrollment_id for quick lookup
-  const existingByApplicant = {};
-  existingEnrollments.forEach(function(e) {
-    if (e.applicant_person_id) existingByApplicant[e.applicant_person_id] = e.enrollment_id;
-  });
-
+  // ── P1-B (WIZARD-DIRECT-WRITE-MIGRATION): materialización enr* del submit → KMS ──
+  // requester (primer guardian) + 1 enrEnrollments por aplicante (Add, o Edit→RQ en
+  // re-submit de reopen) + dual-write P71 + submitted_at en el grupo — TODO lo persiste
+  // el KMS (enr.wizardPersistSubmitEnrollments → writer único enr_persistSubmit_,
+  // paridad verbatim con el código histórico de este handler, incluida la resolución
+  // del estado RQ fetch-all-then-filter y su fail-fast de configuración). KAL-4: el
+  // grupo se re-deriva del resume_token server-side; aplicantes/guardians salen de
+  // enrPersons del grupo en el KMS — nada de ids del payload. Síncrono: un fallo
+  // propaga (sin éxito falso), coherente con la semántica histórica.
+  // Devuelve enrollment_ids + rq_state_id, con los que este handler construye las
+  // transiciones y consentimientos que persiste enr.wizardPersistSubmitSideEffects (P1-A).
   const desiredStartDate = p.desired_start_date || null;
-  const enrollmentIds = [];
-  // P1-A (WIZARD-DIRECT-WRITE-MIGRATION): las escrituras a tablas CROSS-CUTTING
-  // (sysStateTransitionLog + sysConsentsLog + recScopes) YA NO se hacen directo
-  // desde este backend anónimo — se recogen aquí y se PORTAN al KMS (único escritor)
-  // en UNA llamada al final del submit. Cierre de agujero de seguridad.
-  const stateTransitionRows = [];
-  applicants.forEach(applicant => {
-    const existingId = existingByApplicant[applicant.person_id];
-    const enrollmentId = existingId || generateUuid_();
-    // submitted_at lives on enrEnrollmentGroups (the session header), NOT on
-    // each enrEnrollments row — DL-E15. The per-enrollment "submitted" moment
-    // is reflected by current_state_id transitioning to RQ (logged in
-    // sysStateTransitionLog below). AppSheet rejected the whole row silently
-    // when we tried to write submitted_at here ("'submitted_at' is not a
-    // valid table column name") — caught 2026-05-18 by Diego's first
-    // end-to-end test.
-    if (existingId) {
-      // Re-submit: update existing enrollment to RQ state
-      appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
-        enrollment_id:      enrollmentId,
-        current_state_id:   rqStateId,
-        desired_start_date: desiredStartDate,
-        updated_at:         now,
-      }]);
-    } else {
-      appsheetRequest_(T.ENROLLMENTS, 'Add', [{
-        enrollment_id:          enrollmentId,
-        enrollment_group_id:    enrollmentGroupId,
-        program_id:             group.program_id || null,
-        school_id:              SCHOOL_ID,
-        applicant_person_table: 'enrPersons',
-        applicant_person_id:    applicant.person_id,
-        current_state_id:       rqStateId,
-        desired_start_date:     desiredStartDate,
-        source_locale:          group.preferred_language || group.source_locale || 'es',
-        created_at:             now,
-        updated_at:             now,
-      }]);
-    }
-    enrollmentIds.push(enrollmentId);
-
-    // Per-enrollment state transition log entry (null → RQ).
-    // mode_actually_used='MANUAL': the wizard submit IS the user's manual
-    // action that triggers this transition; AUTOMATIC is reserved for
-    // handler-fired transitions (timer expirations, upstream completion).
-    // Consistent with the other transition log writes in this codebase
-    // (promoteEnrollment_, the staff state-change flow) which also use MANUAL.
-    // P1-A: recoger la fila (mismas columnas) — la escribe el KMS al final del submit.
-    stateTransitionRows.push({
-      log_id:             generateUuid_(),
-      school_id:          SCHOOL_ID,
-      entity_type_code:   'ENR_ADMISSION_SCHOOL',
-      entity_id:          enrollmentId,
-      transition_id:      null,
-      from_state_id:      null,
-      to_state_id:        rqStateId,
-      mode_actually_used: 'MANUAL',
-      transitioned_by:    'SYSTEM:WIZARD',
-      transitioned_at:    now,
-      notes:              'Enrollment requested by family',
-      created_at:         now,
-      created_by:         'SYSTEM:WIZARD',
-    });
-
-    // ── P71 fix — dual-write canónico DL-S37 §workflow ────────────────────────
-    // El Add anterior ya intenta escribir current_state_id, pero AppSheet
-    // ha rechazado silenciosamente este campo en otras escrituras del wizard
-    // (precedente: submitted_at, caught 2026-05-18 — ver comentario ~línea 1202).
-    // Aplicar Edit explícito como en saveStep_ case 'review' y promoteEnrollment_.
-    // Idempotente: si AppSheet ya escribió rqStateId en el Add, el Edit no
-    // cambia nada; si no lo escribió, el Edit lo corrige.
-    appsheetRequest_(T.ENROLLMENTS, 'Edit', [{
-      enrollment_id:    enrollmentId,
-      current_state_id: rqStateId,
-      updated_at:       now,
-    }]);
+  const persistRes = kmsProxy_('enr.wizardPersistSubmitEnrollments', {
+    resume_token:       p.resume_token,
+    desired_start_date: desiredStartDate,
   });
+  const enrollmentIds = (persistRes && persistRes.enrollment_ids) || [];
+  const rqStateId     = (persistRes && persistRes.rq_state_id) || null;
+  Logger.log('submitEnrollmentSession_: KMS persisted enrollments=' + enrollmentIds.length +
+             ' rq_state_id=' + rqStateId);
 
-  // ── Mark the group as submitted ────────────────────────────────────────────
-  appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-    enrollment_group_id: enrollmentGroupId,
-    submitted_at:        now,
-    updated_at:          now,
-  }]);
+  // Per-enrollment state transition log entry (null → RQ).
+  // mode_actually_used='MANUAL': the wizard submit IS the user's manual
+  // action that triggers this transition; AUTOMATIC is reserved for
+  // handler-fired transitions (timer expirations, upstream completion).
+  // P1-A: recoger las filas (mismas columnas) — las escribe el KMS al final del submit
+  // (enr.wizardPersistSubmitSideEffects). submitted_at vive en enrEnrollmentGroups
+  // (DL-E15), no en cada enrEnrollments — el momento per-enrollment lo refleja la
+  // transición a RQ.
+  const stateTransitionRows = enrollmentIds.map(enrollmentId => ({
+    log_id:             generateUuid_(),
+    school_id:          SCHOOL_ID,
+    entity_type_code:   'ENR_ADMISSION_SCHOOL',
+    entity_id:          enrollmentId,
+    transition_id:      null,
+    from_state_id:      null,
+    to_state_id:        rqStateId,
+    mode_actually_used: 'MANUAL',
+    transitioned_by:    'SYSTEM:WIZARD',
+    transitioned_at:    now,
+    notes:              'Enrollment requested by family',
+    created_at:         now,
+    created_by:         'SYSTEM:WIZARD',
+  }));
 
   const lang = p.language || group.preferred_language || 'es';
 
@@ -5550,54 +5409,12 @@ function verifyRecaptcha_(p) {
 // self-contained dead code (sysPersonRelations bidirectional insert lived here
 // pre-DL-C migration). History preserved in git.
 
-/**
- * Upserts health records for each person.
- *
- * No FK to the session — rows key off person_id which already ties back to the
- * enrollment_group_id via enrPersons. The first arg is kept for signature
- * symmetry with the other step savers.
- *
- * @param {string} enrollmentGroupId  (unused; kept for symmetry)
- * @param {Array}  healthData - [{ person_id, allergies, dietary, medical }]
- */
-function saveHealth_(enrollmentGroupId, healthData) {  // eslint-disable-line no-unused-vars
-  if (!Array.isArray(healthData)) return;
-
-  healthData.forEach(h => {
-    const { person_id } = h;
-    if (!person_id) return;
-
-    if (Array.isArray(h.allergies)) {
-      const rows = h.allergies.filter(x => !x.record_id).map(x => ({
-        record_id:       generateUuid_(),
-        person_id,
-        food_allergy_id: x.food_allergy_id || null,
-        observations:    x.observations || null,
-      }));
-      if (rows.length) appsheetRequest_(T.PERSON_ALLERGIES, 'Add', rows);
-    }
-
-    if (Array.isArray(h.dietary)) {
-      const rows = h.dietary.filter(x => !x.record_id).map(x => ({
-        record_id:    generateUuid_(),
-        person_id,
-        diet_id:      x.diet_id || null,
-        observations: x.observations || null,
-      }));
-      if (rows.length) appsheetRequest_(T.PERSON_DIETARY, 'Add', rows);
-    }
-
-    if (Array.isArray(h.medical)) {
-      const rows = h.medical.filter(x => !x.record_id).map(x => ({
-        record_id:            generateUuid_(),
-        person_id,
-        medical_condition_id: x.medical_condition_id || null,
-        observations:         x.observations || null,
-      }));
-      if (rows.length) appsheetRequest_(T.PERSON_MEDICAL, 'Add', rows);
-    }
-  });
-}
+// NOTE: saveHealth_ DELETED 2026-07-12 (P1-B dead-code). It had ZERO callers —
+// the live health path moved to the KMS: saveStep_ → case 'health' →
+// kmsProxy_('enr.wizardSaveHealth', …) → enr_persistHealth_ (KMS is the single
+// writer). The local function still wrote DIRECTLY to enrPersonFoodAllergies /
+// enrPersonDietaryRequirements / enrPersonMedicalConditions (last direct enr*
+// health writes in this backend). History preserved in git.
 
 /**
  * NEAE staging capture — Paso 4 "Salud y apoyo" (DL-E16 append-only).
@@ -7507,11 +7324,9 @@ function adminCleanupOrphanSessions() {
   const failures = [];
   toAbandon.forEach(s => {
     try {
-      appsheetRequest_(T.ENROLLMENT_GROUPS, 'Edit', [{
-        enrollment_group_id: s.enrollment_group_id,
-        abandoned_at:        now.toISOString(),
-        updated_at:          now.toISOString(),
-      }]);
+      // P1-B: escritura portada al KMS (enr.wizardAbandonSession). KAL-4: el grupo lo
+      // deriva el KMS del resume_token de la PROPIA fila leída (nunca un id suelto).
+      kmsProxy_('enr.wizardAbandonSession', { resume_token: s.resume_token });
       // KAL-11: redact group_id (UUID) and email before persisting to Stackdriver.
       Logger.log(redact_('abandoned: ' + s.enrollment_group_id + ' email=' + s.primary_email) + ' age_days=' + Math.round((now - new Date(s.created_at)) / 86400000));
       actuallyAbandoned++;

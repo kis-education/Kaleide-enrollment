@@ -133,7 +133,22 @@ Migración:
 - Diego verificó paridad funcional via 4 `manual_testPromoteToCore*` desde GAS editor (commit hashes 61e8111 + 233c57f + fda5a99, deploy KMS @225 v0.7.90).
 - CLI 63 borró el endpoint local del wizard.
 
-Regla derivada: cualquier operación staff sobre tablas core (`personalData_S`, `participantAssessment`, etc.) vive en KMS, NO en el wizard. El wizard solo escribe a tablas `enr*` (staging) y tablas legacy del SMS bajo el grupo familiar (que `enr_promoteToCore` migra después).
+Regla derivada: cualquier operación staff sobre tablas core (`personalData_S`, `participantAssessment`, etc.) vive en KMS, NO en el wizard. *(Histórico: "el wizard solo escribe a tablas enr* (staging)…" — ★ SUPERSEDIDO por P1-B, ver nota siguiente.)*
+
+### ★ El wizard NO escribe NINGUNA tabla AppSheet — TODA escritura vive en el KMS (P1-A + P1-B, 2026-07-12)
+
+Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un problema serio de seguridad que permite hackeos."*
+
+- **P1-A** portó las escrituras cross-cutting (`sysStateTransitionLog`, `sysConsentsLog`, `recFiles`, `recScopes`) → `kmsProxy_('enr.wizardPersistSubmitSideEffects' / 'enr.wizardPersistUpload')`.
+- **P1-B** portó las escrituras `enr*` de lifecycle de sesión → endpoints KMS síncronos en `kis-app/kms-server/enr/wizard-gateway.gs` (auth = `service_token` + `resume_token` KAL-4, verificados handler-side):
+  - creación de sesión → `enr.wizardCreateSession` (el KMS minta + persiste el `resume_token`; resuelve `source_id` del catálogo Capa 2 + fallback de `program_id`);
+  - renovación de token del magic-link → `enr.wizardTouchSession` (token minted server-side; submitted no renueva; fallo P72 → devuelve el token vivo con `renewed:false`);
+  - abandono (start-over / report-unsolicited / auto-abandon de sesiones paralelas / cleanup admin) → `enr.wizardAbandonSession` (idempotente; submitted nunca se abandona);
+  - atestación tutor único → `enr.wizardPersistAttestation` (best-effort P72);
+  - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
+- `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
+- **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
+- **Las LECTURAS AppSheet directas permanecen** (resumeSession_, fetchLookups_, hydrate, recognizeFamily_, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C** (pendiente).
 
 ### resume_token URL clean + Referrer-Policy: no-referrer (KAL-7 cerrado 2026-05-30)
 
