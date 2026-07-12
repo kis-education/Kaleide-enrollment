@@ -4164,6 +4164,11 @@ function submitEnrollmentSession_(p) {
 
   const desiredStartDate = p.desired_start_date || null;
   const enrollmentIds = [];
+  // P1-A (WIZARD-DIRECT-WRITE-MIGRATION): las escrituras a tablas CROSS-CUTTING
+  // (sysStateTransitionLog + sysConsentsLog + recScopes) YA NO se hacen directo
+  // desde este backend anónimo — se recogen aquí y se PORTAN al KMS (único escritor)
+  // en UNA llamada al final del submit. Cierre de agujero de seguridad.
+  const stateTransitionRows = [];
   applicants.forEach(applicant => {
     const existingId = existingByApplicant[applicant.person_id];
     const enrollmentId = existingId || generateUuid_();
@@ -4205,7 +4210,8 @@ function submitEnrollmentSession_(p) {
     // handler-fired transitions (timer expirations, upstream completion).
     // Consistent with the other transition log writes in this codebase
     // (promoteEnrollment_, the staff state-change flow) which also use MANUAL.
-    appsheetRequest_(T.STATE_TRANSITION_LOG, 'Add', [{
+    // P1-A: recoger la fila (mismas columnas) — la escribe el KMS al final del submit.
+    stateTransitionRows.push({
       log_id:             generateUuid_(),
       school_id:          SCHOOL_ID,
       entity_type_code:   'ENR_ADMISSION_SCHOOL',
@@ -4219,7 +4225,7 @@ function submitEnrollmentSession_(p) {
       notes:              'Enrollment requested by family',
       created_at:         now,
       created_by:         'SYSTEM:WIZARD',
-    }]);
+    });
 
     // ── P71 fix — dual-write canónico DL-S37 §workflow ────────────────────────
     // El Add anterior ya intenta escribir current_state_id, pero AppSheet
@@ -4303,7 +4309,8 @@ function submitEnrollmentSession_(p) {
       });
     });
   });
-  if (consentRows.length) appsheetRequest_(T.CONSENTS_LOG, 'Add', consentRows);
+  // P1-A: `consentRows` (registro LEGAL de consentimientos) se PORTA al KMS al final
+  // del submit — el wizard anónimo ya no escribe sysConsentsLog directo.
 
   // (Local var renamed to keep downstream PDF / email code unchanged below)
   const app = group;  // alias to minimise the diff in email/PDF builders
@@ -4365,12 +4372,15 @@ function submitEnrollmentSession_(p) {
   // Materialise scopes for pre-submit uploads: files captured during Step6
   // have a recFiles row but no recScopes (no enrollment_id existed yet).
   // Now that the N enrollments exist, fan out one scope per (file, enrollment).
+  // P1-A: los reads (Find) siguen aquí (no son el vector — no mutan); solo la ESCRITURA
+  // de los scopes se PORTA al KMS. Se recogen en `submitRecScopes` y se envían junto al
+  // resto de escrituras cross-cutting en la única llamada al KMS de abajo.
+  const submitRecScopes = [];
   try {
     if (enrollmentIds.length) {
       const preSubmitFiles = appsheetRequest_(T.REC_FILES, 'Find', [], {
         Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "origin" = "WIZARD" && "origin_reference" = "' + appsheetEscape_(enrollmentGroupId) + '"'
       }) || [];
-      const newScopes = [];
       preSubmitFiles.forEach(f => {
         // Skip any file that already has a scope (idempotency on retry)
         const existing = appsheetRequest_(T.REC_SCOPES, 'Find', [], {
@@ -4378,7 +4388,7 @@ function submitEnrollmentSession_(p) {
         }) || [];
         if (existing.length) return;
         enrollmentIds.forEach((eid, i) => {
-          newScopes.push({
+          submitRecScopes.push({
             scope_id:               generateUuid_(),
             school_id:              SCHOOL_ID,
             file_id:                f.file_id,
@@ -4393,11 +4403,23 @@ function submitEnrollmentSession_(p) {
           });
         });
       });
-      if (newScopes.length) appsheetRequest_(T.REC_SCOPES, 'Add', newScopes);
     }
   } catch (scopeErr) {
     Logger.log('rec scope materialisation error (non-fatal): ' + scopeErr.message);
   }
+
+  // ── P1-A: escrituras cross-cutting del submit → KMS (único escritor) ──────────
+  // sysStateTransitionLog + sysConsentsLog + recScopes se persisten en el KMS, que
+  // re-deriva el grupo del resume_token (KAL-4) y fuerza school_id server-side. El
+  // wizard anónimo ya NO tiene write directo a sys*/rec*. Síncrono (mirror del proxy
+  // de documentos): un fallo se propaga (sin éxito falso) — coherente con la semántica
+  // síncrona del código original.
+  kmsProxy_('enr.wizardPersistSubmitSideEffects', {
+    resume_token:      p.resume_token,
+    state_transitions: stateTransitionRows,
+    consents:          consentRows,
+    rec_scopes:        submitRecScopes,
+  });
 
   // WIZARD-TERMINAL P3: confirmaci\u00f3n a la familia + notificaci\u00f3n interna v\u00eda el motor del
   // KMS (el contenido lo gobierna el KMS). El wizard pre-renderiza los nombres y la tabla.
@@ -5159,8 +5181,10 @@ function uploadDocument_(p) {
   const now           = new Date().toISOString();
   const recTypeCode   = REC_TYPE_BY_DOCUMENT_TYPE[document_type] || 'OTHER';
 
-  // ── recFiles row (DL-R09) ──────────────────────────────────────────────────
-  appsheetRequest_(T.REC_FILES, 'Add', [{
+  // ── recFiles row (DL-R09) — P1-A: metadata VERBATIM; la escribe el KMS ───────
+  // El BLOB ya está en Drive (arriba, wizard-side con el scope drive); aquí solo se
+  // construye la fila de metadata (mismas columnas) que persistirá el KMS.
+  const recFileRow = {
     file_id:                  fileId,
     school_id:                SCHOOL_ID,
     rec_type_code:            recTypeCode,
@@ -5185,25 +5209,32 @@ function uploadDocument_(p) {
     created_by:               'SYSTEM:WIZARD',
     updated_at:               now,
     updated_by:               'SYSTEM:WIZARD',
-  }]);
+  };
 
   // ── Primary scope (only if we already have an enrollment_id) ───────────────
   // Pre-submit uploads (enrollment_id == null) defer scopes to submitEnrollmentSession_.
-  if (enrollmentId) {
-    appsheetRequest_(T.REC_SCOPES, 'Add', [{
-      scope_id:                generateUuid_(),
-      school_id:               SCHOOL_ID,
-      file_id:                 fileId,
-      scope_type_code:         'enr_admission_school',
-      scope_target_id:         enrollmentId,
-      is_primary:              true,
-      shortcut_drive_file_id:  null,
-      created_at:              now,
-      created_by:              'SYSTEM:WIZARD',
-      updated_at:              now,
-      updated_by:              'SYSTEM:WIZARD',
-    }]);
-  }
+  const recScopeRow = enrollmentId ? {
+    scope_id:                generateUuid_(),
+    school_id:               SCHOOL_ID,
+    file_id:                 fileId,
+    scope_type_code:         'enr_admission_school',
+    scope_target_id:         enrollmentId,
+    is_primary:              true,
+    shortcut_drive_file_id:  null,
+    created_at:              now,
+    created_by:              'SYSTEM:WIZARD',
+    updated_at:              now,
+    updated_by:              'SYSTEM:WIZARD',
+  } : null;
+
+  // ── P1-A: recFiles + recScope → KMS (único escritor). El wizard anónimo ya NO
+  // escribe recFiles/recScopes directo. KAL-4: grupo del resume_token; school_id +
+  // origin_reference forzados server-side. Síncrono (mirror de enr_persistDocument_).
+  kmsProxy_('enr.wizardPersistUpload', {
+    resume_token: p.resume_token,
+    rec_file:     recFileRow,
+    rec_scope:    recScopeRow,
+  });
 
   return {
     file_id:     fileId,
