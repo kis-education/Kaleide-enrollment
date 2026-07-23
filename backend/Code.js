@@ -977,6 +977,33 @@ function assertStepUpFresh_(enrollmentGroupId) {
   // Fresco.
 }
 
+/**
+ * ★ SEC WIZ-SIGNTOKEN (audit 2026-07-22): el `signing_token` es el bearer del ACTO
+ * de firma (consentimientos GDPR legalmente vinculantes). NO debe servirse al
+ * cliente antes de que el step-up (DL-E39) pruebe posesión del buzón — de lo
+ * contrario un resume_token filtrado obtiene el signing_token del signing_context
+ * (getAdmissionState_ / resumeSession_ pii-gated) y forja los 7 consentimientos.
+ *
+ * Cuando `fresh` es false, devuelve una COPIA superficial del signing_context con
+ * `signing_token` vaciado (null), conservando el resto de campos no sensibles
+ * (signer_id / session_id / guardian_person_id) y los flags hermanos de nivel
+ * superior (signing_available / signing_status / signing_ready) intactos. Fresco,
+ * o signing_context nulo → passthrough sin cambios.
+ *
+ * @param {Object|null} signingContext
+ * @param {boolean} fresh — resultado de _isStepUpFresh_ para el grupo del token.
+ * @returns {Object|null}
+ */
+function _redactSigningTokenIfNotFresh_(signingContext, fresh) {
+  if (!signingContext || fresh) return signingContext;
+  var redacted = {};
+  for (var k in signingContext) {
+    if (Object.prototype.hasOwnProperty.call(signingContext, k)) redacted[k] = signingContext[k];
+  }
+  redacted.signing_token = null;
+  return redacted;
+}
+
 // ─── WIZARD-CACHE (2026-06-12, arquitectura dictada por Diego) ────────────────
 //
 // "Los datos cacheados los debería tener el Wizard: usuario pide magic link → el
@@ -3432,12 +3459,20 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
   // de los ~20 reads de detalle por persona.)
   if (!(opts && opts.skipPiiGate) && !_isStepUpFresh_(id)) {
     Logger.log(redact_('[resumeSession_] PII-gated (sin step-up) group=' + id));
+    // ★ SEC WIZ-SIGNTOKEN: `admission.signing_context` lleva el signing_token en
+    // claro; en la rama pii-gated (sin step-up) NO debe cruzar al cliente. Redacta
+    // solo el token, conservando el resto del bloque admission (estado/flags).
+    var gatedAdmission = admission
+      ? Object.assign({}, admission, {
+          signing_context: _redactSigningTokenIfNotFresh_(admission.signing_context, false),
+        })
+      : admission;
     return {
       group,
       application: group,
       enrollments,
       persons: [], relations: [], documents: [], responses: [], interviews: [],
-      admission,
+      admission: gatedAdmission,
       recovered_guardian_person_id: recoveredGuardianId,
       step_up_fresh: false,
       pii_gated: true,
@@ -3745,7 +3780,8 @@ function getAdmissionState_(p) {
           signing_ready:     admC.signing_ready,
           signing_status:    admC.signing_status || null,
           signing_available: admC.signing_available,
-          signing_context:   admC.signing_context,
+          // ★ SEC WIZ-SIGNTOKEN: no servir el signing_token pre-step-up.
+          signing_context:   _redactSigningTokenIfNotFresh_(admC.signing_context, stepUpFresh),
           editable:          admC.editable,
           step_up_fresh:     stepUpFresh,
         };
@@ -3853,7 +3889,8 @@ function getAdmissionState_(p) {
     signing_ready:     admission.signing_ready,
     signing_status:    admission.signing_status || null,
     signing_available: admission.signing_available,
-    signing_context:   admission.signing_context,
+    // ★ SEC WIZ-SIGNTOKEN: no servir el signing_token pre-step-up.
+    signing_context:   _redactSigningTokenIfNotFresh_(admission.signing_context, stepUpFresh),
     editable:          admission.editable,   // URGENT-PASS3 BUG A: state-driven editabilidad
     step_up_fresh:     stepUpFresh,
   };
@@ -4370,7 +4407,21 @@ function sendVerificationCode_(p) {
   const uuidHex = Utilities.getUuid().replace(/-/g, '').slice(0, 8);
   const code = (100000 + (parseInt(uuidHex, 16) % 900000)).toString();
   const cache = CacheService.getScriptCache();
-  cache.put('verify_' + enrollmentGroupId, code, 600); // 10 min TTL
+  // ★ SEC WIZ-STEPUP-CACHE (audit 2026-07-22): NAMESPACING de la clave OTP. El
+  // camino step-up y el camino signup NO comparten la clave de cache. El camino
+  // signup (NO-stepup, sin token/reCAPTCHA) toma group+email del PAYLOAD, así que
+  // un atacante con un resume_token filtrado podía POST signup con SU propio email
+  // → el servidor cacheaba el código bajo `verify_<G>` y se lo enviaba al atacante,
+  // que luego lo canjeaba en el canje step-up (que leía esa MISMA clave) → step-up
+  // fresco → PII completa del menor (colapso de DL-E39). Con el namespacing, el
+  // canje step-up SOLO confía en `stepup_verify_<G>`, sembrado EXCLUSIVAMENTE por el
+  // camino step-up (que deriva el grupo del token, KAL-4, y envía al primary_email
+  // REAL del grupo — nunca a un email del payload). El signup no puede sembrar esa
+  // clave. El camino signup conserva `verify_<G>` intacto (byte-neutro).
+  const codeKey = (p && p.stepup === true)
+    ? 'stepup_verify_' + enrollmentGroupId
+    : 'verify_' + enrollmentGroupId;
+  cache.put(codeKey, code, 600); // 10 min TTL
 
   const lang = p.preferred_language || 'es';
   // WIZARD-TERMINAL P4 (P253): el render+env\u00edo del email OTP lo gobierna el KMS v\u00eda el
@@ -4413,10 +4464,21 @@ function verifyEmail_(p) {
 
   const cache    = CacheService.getScriptCache();
 
+  // ★ SEC WIZ-STEPUP-CACHE (audit 2026-07-22): el canje step-up lee/limpia bajo la
+  // clave NAMESPACED `stepup_verify_<G>` (+ su propio bucket de lockout), NUNCA la
+  // clave `verify_<G>` del signup. Así el código canjeado en step-up SOLO puede
+  // haber sido emitido por el camino step-up (que envía al primary_email real del
+  // grupo derivado del token). El camino signup conserva `verify_<G>` /
+  // `verify_attempts_<G>` intactos (byte-neutro). Ver sendVerificationCode_.
+  const isStepUp = (p && p.stepup === true);
+  const codeKey = isStepUp ? 'stepup_verify_' + enrollmentGroupId : 'verify_' + enrollmentGroupId;
+
   // KAL-NEW-2.b: lockout de intentos (anti fuerza-bruta 10^6). 5 intentos fallidos
   // por group → TOO_MANY_ATTEMPTS sin revelar si el código era correcto. TTL 10 min
   // (mismo que el código). Acierto → borra contador + código.
-  const attemptsKey = 'verify_attempts_' + enrollmentGroupId;
+  const attemptsKey = isStepUp
+    ? 'stepup_verify_attempts_' + enrollmentGroupId
+    : 'verify_attempts_' + enrollmentGroupId;
   const attempts = parseInt(cache.get(attemptsKey) || '0', 10);
   if (attempts >= 5) {
     const errLock = new Error('Too many verification attempts; request a new code');
@@ -4424,7 +4486,7 @@ function verifyEmail_(p) {
     throw errLock;
   }
 
-  const stored = cache.get('verify_' + enrollmentGroupId);
+  const stored = cache.get(codeKey);
   if (!stored) throw new Error('Verification code expired or not found');
   if (stored !== code.toString()) {
     cache.put(attemptsKey, String(attempts + 1), 600);
@@ -4432,7 +4494,7 @@ function verifyEmail_(p) {
   }
 
   cache.remove(attemptsKey);
-  cache.remove('verify_' + enrollmentGroupId);
+  cache.remove(codeKey);
 
   // DL-E39 step-up: acierto en flujo step-up → marca el grupo como fresco
   // durante STEPUP_INACTIVITY_MS. Los handlers de PII (assertStepUpFresh_)
@@ -5449,6 +5511,13 @@ function saveNeae_(p) {
   // the family. Throws Error{code:'NOT_EDITABLE'} → doPost maps to HTTP 200
   // {ok:false,error} (P72 structured reject, never HTTP 403).
   assertGroupEditable_(enrollmentGroupId);
+
+  // ★ SEC WIZ-NEAE (audit 2026-07-22): los datos NEAE son PII de salud sensible del
+  // menor — exigen step-up fresco (DL-E39), en paridad EXACTA con el case 'health'
+  // de saveStep_ (que ya gatea persons/relations/health). Sin este gate un
+  // resume_token filtrado podía escribir/enriquecer NEAE sin probar posesión del
+  // buzón. KAL-4: enrollmentGroupId derivado del token, nunca del payload.
+  assertStepUpFresh_(enrollmentGroupId);
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: no servir stale tras un write del grupo
 
   const neaeData = Array.isArray(p && p.neae) ? p.neae
@@ -6422,6 +6491,11 @@ function saveBillingInfo_(p) {
   // (resume_token+recovered_email) [canónico] o signing_token [back-compat].
   // DL-A.4 — endpoint encolado: el KMS devuelve al instante {queued,job_id}.
   const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
+  // ★ SEC WIZ-SIGNTOKEN (audit 2026-07-22): step-up fresco OBLIGATORIO antes de
+  // persistir datos de firma (paridad con initiateSigningSession_). Un resume_token
+  // filtrado NO puede forjar consentimientos/billing sin probar posesión del buzón.
+  // enrollment_group_id derivado del token (KAL-4), nunca del payload.
+  assertStepUpFresh_(sctx.enrollment_group_id);
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
@@ -6507,6 +6581,10 @@ function submitGdprConsents_(p) {
   // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado
   // (era ~95s síncrono): el KMS devuelve al instante {queued,job_id}.
   const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
+  // ★ SEC WIZ-SIGNTOKEN (audit 2026-07-22): step-up fresco OBLIGATORIO antes de
+  // persistir consentimientos GDPR (legalmente vinculantes). Paridad con
+  // initiateSigningSession_. Grupo derivado del token (KAL-4), nunca del payload.
+  assertStepUpFresh_(sctx.enrollment_group_id);
 
   if (!Array.isArray(p.consents) || !p.consents.length) {
     throw new Error('consents must be a non-empty array');
@@ -6539,6 +6617,10 @@ function submitGdprConsents_(p) {
 function confirmReview_(p) {
   // DL-A.3 — identidad unificada (colapso del signing_token). DL-A.4 — encolado.
   const sctx = requireSignerIdentity_(p); // PERF-WIZ: guardian lo valida el resolver único del KMS (anti-P245)
+  // ★ SEC WIZ-SIGNTOKEN (audit 2026-07-22): step-up fresco OBLIGATORIO antes de
+  // confirmar la revisión (evidencia del acto de firma). Paridad con
+  // initiateSigningSession_. Grupo derivado del token (KAL-4), nunca del payload.
+  assertStepUpFresh_(sctx.enrollment_group_id);
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
@@ -8922,6 +9004,68 @@ function manual_testStepUpGrace() {
 
   cache.remove(gKey); cache.remove(sKey);
   Logger.log('=== manual_testStepUpGrace: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
+  return { pass: pass };
+}
+
+/**
+ * ★ SEC WIZ-STEPUP-CACHE (audit 2026-07-22) — test del NAMESPACING de la clave OTP.
+ * Ejecutar desde el editor GAS (o clasp run). Opera 100% sobre el ScriptCache (no
+ * toca BD, no envía email). Demuestra que el bypass queda cerrado y el flujo legítimo
+ * intacto, verificando el aislamiento de claves que sendVerificationCode_/verifyEmail_
+ * usan según `p.stepup`:
+ *
+ *   (a) BYPASS CERRADO: un código sembrado bajo `verify_<G>` (lo que hace el camino
+ *       SIGNUP con el email del atacante, SIN token/reCAPTCHA) NO existe bajo
+ *       `stepup_verify_<G>` (lo que LEE el canje step-up) → el canje step-up no lo ve.
+ *   (b) FLUJO LEGÍTIMO INTACTO: un código sembrado bajo `stepup_verify_<G>` (lo que
+ *       hace el camino STEP-UP, que envía al primary_email REAL del grupo) SÍ es la
+ *       clave que lee el canje step-up.
+ *   (c) SIGNUP INTACTO: el camino signup sigue usando `verify_<G>` (byte-neutro).
+ *
+ * Nota: usamos las MISMAS expresiones de clave que el código de producción para que
+ * el test falle si alguien renombra una sola de las dos ramas.
+ *
+ * Lee PASS/FAIL en los Logs.
+ */
+function manual_testStepUpKeyNamespacing() {
+  Logger.log('=== manual_testStepUpKeyNamespacing (SEC WIZ-STEPUP-CACHE) ===');
+  var cache = CacheService.getScriptCache();
+  var G = Utilities.getUuid();
+  var signupKey = 'verify_' + G;         // clave del camino signup (payload email)
+  var stepupKey = 'stepup_verify_' + G;  // clave del camino step-up (primary_email real)
+  var pass = true;
+  cache.remove(signupKey); cache.remove(stepupKey);
+
+  // (a) BYPASS: el atacante siembra bajo la clave signup; el canje step-up lee la
+  //     clave step-up → NO encuentra el código → bypass cerrado.
+  cache.put(signupKey, '111111', 600);
+  var stepupSeesSignupCode = cache.get(stepupKey);
+  if (stepupSeesSignupCode === null) {
+    Logger.log('  a) bypass (signup siembra, step-up lee) → ✓ PASS (step-up NO ve el código del atacante)');
+  } else {
+    Logger.log('  a) bypass → ✗ FAIL (step-up leyó ' + stepupSeesSignupCode + ' del camino signup)'); pass = false;
+  }
+
+  // (b) LEGÍTIMO: el camino step-up siembra bajo su propia clave; el canje step-up
+  //     lee esa MISMA clave → el flujo de recuperación real sigue funcionando.
+  cache.put(stepupKey, '654321', 600);
+  var stepupSeesStepupCode = cache.get(stepupKey);
+  if (stepupSeesStepupCode === '654321') {
+    Logger.log('  b) legítimo (step-up siembra y lee) → ✓ PASS (canje step-up ve su propio código)');
+  } else {
+    Logger.log('  b) legítimo → ✗ FAIL (esperaba 654321, leyó ' + stepupSeesStepupCode + ')'); pass = false;
+  }
+
+  // (c) SIGNUP intacto: la clave del camino signup NO se contamina con la del step-up.
+  var signupStill = cache.get(signupKey);
+  if (signupStill === '111111') {
+    Logger.log('  c) signup intacto (verify_<G> byte-neutro) → ✓ PASS');
+  } else {
+    Logger.log('  c) signup intacto → ✗ FAIL (verify_<G> = ' + signupStill + ')'); pass = false;
+  }
+
+  cache.remove(signupKey); cache.remove(stepupKey);
+  Logger.log('=== manual_testStepUpKeyNamespacing: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
   return { pass: pass };
 }
 
