@@ -1615,6 +1615,9 @@ function doPost(e) {
       // Implementación en sección "WS4 — Wizard pre-firma proxies a KMS".
       case 'saveBillingInfo':         result = saveBillingInfo_(payload);         break;
       case 'getSavedBillingSplits':   result = getSavedBillingSplits_(payload);   break;
+      // DL-080-A — Step 8: presupuesto del borrador + elección de modalidad.
+      case 'getSubscriptionBudget':   result = getSubscriptionBudget_(payload);   break;
+      case 'applyPaymentModality':    result = applyPaymentModality_(payload);    break;
       case 'submitGdprConsents':      result = submitGdprConsents_(payload);      break;
       case 'confirmReview':           result = confirmReview_(payload);           break;
       case 'initiateSigningSession':  result = initiateSigningSession_(payload);  break;
@@ -6565,6 +6568,58 @@ function getSavedBillingSplits_(p) {
     } });
   }
   return data;
+}
+
+/**
+ * DL-080-A (B1) — Step 8: PRESUPUESTO del borrador + previews de modalidad.
+ *
+ * Proxy fino a `enr.wizardGetSubscriptionBudget`. El KMS deriva el grupo del
+ * `resume_token` (KAL-4) y devuelve el presupuesto REAL del/los borrador(es) —
+ * partidas, fechas, importes, descuento, reparto — más el preview read-only de cada
+ * modalidad activa del catálogo del tenant. LECTURA → NO invalida caché.
+ *
+ * El wizard NO calcula dinero: solo formatea `amount_cents/100` (un solo lector,
+ * guardarraíl money DL-080-A).
+ *
+ * @param {Object} p — { resume_token, n?, recovered_email? } o { signing_token }
+ * @returns {Object} `data` del KMS — { subscriptions:[…], modalities_available }
+ */
+function getSubscriptionBudget_(p) {
+  // Mismo gate de identidad que las demás LECTURAS del bloque Step 8
+  // (getSavedBillingSplits_): el KMS re-valida token/guardián en el proxy.
+  const sctx = requireSignerIdentity_(p);
+  return kmsProxy_('enr.wizardGetSubscriptionBudget', sctx.identity);
+}
+
+/**
+ * DL-080-A (B1) — Step 8: APLICA la modalidad elegida por la familia al BORRADOR.
+ *
+ * Proxy a `enr.wizardApplyModality`. El KMS valida server-side (KAL-4) que la
+ * suscripción pertenece al grupo del token, exige estado BORRADOR (si no →
+ * `NOT_EDITABLE`), y re-deriva el plan con el motor (`fin_upsertSubscriptionItem`
+ * con `modality_id`). Devuelve el presupuesto YA refrescado — el frontend repinta
+ * sin segunda llamada.
+ *
+ * KAL-5 capa 1 wizard-side: los dos UUID se validan ANTES de salir de aquí.
+ * ESCRITURA → invalida la caché del grupo (nunca servir stale tras un write).
+ *
+ * @param {Object} p — { resume_token|signing_token, subscription_id, modality_id }
+ * @returns {Object} `data` del KMS — { applied, already?, items_updated, budget }
+ */
+function applyPaymentModality_(p) {
+  p = p || {};
+  const subscriptionId = p.subscription_id ? String(p.subscription_id).trim() : '';
+  const modalityId     = p.modality_id     ? String(p.modality_id).trim()     : '';
+  assertValidUuid_(subscriptionId, 'subscription_id');   // KAL-5 capa 1
+  assertValidUuid_(modalityId,     'modality_id');
+
+  const sctx = requireSignerIdentity_(p);
+  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: nunca stale tras un write
+
+  return kmsProxy_('enr.wizardApplyModality', Object.assign({}, sctx.identity, {
+    subscription_id: subscriptionId,
+    modality_id:     modalityId,
+  }));
 }
 
 /**

@@ -91,6 +91,75 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   // siembra inicial; jamás pisa un formulario ya existente en el contexto.
   const [savedSplits, setSavedSplits] = useState(null);
 
+  // ── DL-080-A · PRESUPUESTO del borrador + elección de modalidad ──────────────
+  // El presupuesto sale SIEMPRE del motor del KMS (un solo lector). Este componente
+  // NO calcula dinero: solo formatea `amount_cents/100`. La elección se APLICA al
+  // borrador (opción A "el borrador ES el sitio") y la respuesta trae el presupuesto
+  // ya refrescado → repintado sin segunda llamada.
+  const [budget, setBudget]         = useState(null);   // null = cargando
+  const [budgetErr, setBudgetErr]   = useState('');     // fallo de LECTURA (degrada)
+  const [modalityErr, setModalityErr] = useState('');   // fallo de MONEY → PERSISTENTE
+  const [applying, setApplying]     = useState(null);   // modality_id en curso
+
+  useEffect(() => {
+    let alive = true;
+    if (!resumeToken && !signingToken) { setBudget({ subscriptions: [], modalities_available: false }); return undefined; }
+    gasCall('getSubscriptionBudget', signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }))
+      .then(res => {
+        if (!alive) return;
+        setBudget((res && typeof res === 'object') ? res : { subscriptions: [], modalities_available: false });
+      })
+      .catch(e => {
+        // Best-effort: el resto del Step 8 (reparto) debe funcionar igual.
+        log.warn('Step8Billing: getSubscriptionBudget failed', { message: e && e.message });
+        if (!alive) return;
+        setBudgetErr(t('signing.billing.budget.load_error'));
+        setBudget({ subscriptions: [], modalities_available: false });
+      });
+    return () => { alive = false; };
+  }, [resumeToken, signingToken, recoveryNonce, recoveredEmail]); // eslint-disable-line
+
+  // MONEY: no se finge éxito ni se pintan números falsos — se espera la respuesta del
+  // motor y se repinta con SUS céntimos. El fallo deja alerta PERSISTENTE (solo la
+  // descarta una acción del usuario), nunca un auto-dismiss silencioso.
+  const applyModality = (subscriptionId, modalityId) => {
+    if (locked || applying) return;
+    setModalityErr('');
+    setApplying(modalityId);
+    gasCall('applyPaymentModality', {
+      ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }),
+      subscription_id: subscriptionId,
+      modality_id:     modalityId,
+    })
+      .then(res => {
+        if (res && res.budget) setBudget(res.budget);
+        log.info('[DBG billing] modality applied', {
+          sub8: log.sid(subscriptionId), mod8: log.sid(modalityId),
+          applied: res && res.applied, items: res && res.items_updated,
+        });
+      })
+      .catch(e => {
+        const code = (e && (e.code || (e.error && e.error.code))) || '';
+        log.error('Step8Billing: applyPaymentModality failed', { message: e && e.message, code });
+        setModalityErr(code === 'NOT_EDITABLE'
+          ? t('signing.billing.modality.not_editable')
+          : t('signing.billing.modality.apply_error'));
+      })
+      .finally(() => setApplying(null));
+  };
+
+  const money = (cents, currency) => {
+    const n = Number(cents || 0) / 100;
+    try {
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'EUR' }).format(n);
+    } catch (e) { return n.toFixed(2) + ' ' + (currency || 'EUR'); }
+  };
+  const dateFmt = (iso) => {
+    if (!iso) return '—';
+    try { return new Date(iso + 'T00:00:00').toLocaleDateString(); } catch (e) { return String(iso); }
+  };
+
+
   // Construye el slice sembrado completo desde un reparto guardado normalizado (o
   // defaults si src=null). Compartido por la siembra inmediata y la revalidación.
   const buildSeed_ = (src) => {
@@ -298,6 +367,140 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
         onUnlock={onUnlock}
         error={err}
       >
+        {/* ── DL-080-A · Presupuesto del borrador + elección de modalidad ────── */}
+        {budget === null && (
+          <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginTop: 8 }}>
+            {t('signing.billing.budget.loading')}
+          </p>
+        )}
+        {budgetErr && (
+          <div className="alert alert-warning" role="alert" style={{ fontSize: '0.84rem', marginTop: 8 }}>
+            {budgetErr}
+          </div>
+        )}
+        {budget && (budget.subscriptions || []).map(sub => (
+          <div key={sub.subscription_id} style={{ marginBottom: 24 }}>
+            <h3 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '0.98rem', marginBottom: 4 }}>
+              {t('signing.billing.budget.title')}
+            </h3>
+            <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 12 }}>
+              {t('signing.billing.budget.subtitle')}
+            </p>
+
+            {/* Selector de modalidad — una tarjeta por modalidad activa del tenant. */}
+            {budget.modalities_available && (sub.modality_previews || []).length > 0 ? (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 600, fontSize: '0.88rem', marginBottom: 8 }}>
+                  {t('signing.billing.modality.title')}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                  {(sub.modality_previews || []).map(mp => {
+                    const selected = mp.modality_id === sub.applied_modality_id;
+                    const busy = applying === mp.modality_id;
+                    const disabled = locked || !sub.is_draft || !!applying;
+                    return (
+                      <button
+                        key={mp.modality_id}
+                        type="button"
+                        onClick={() => applyModality(sub.subscription_id, mp.modality_id)}
+                        disabled={disabled}
+                        aria-pressed={selected}
+                        style={{
+                          textAlign: 'left', minWidth: 210, flex: '1 1 210px',
+                          border: '2px solid ' + (selected ? 'var(--teal-dk)' : 'var(--border)'),
+                          background: selected ? 'rgba(0,161,154,0.06)' : '#fff',
+                          borderRadius: 8, padding: '10px 12px',
+                          cursor: disabled ? 'not-allowed' : 'pointer',
+                          opacity: disabled && !selected ? 0.6 : 1,
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--teal-dk)' }}>
+                          {mp.designation || mp.modality_code}
+                          {busy && <span style={{ marginLeft: 8, fontWeight: 400, fontSize: '0.78rem' }}>
+                            {t('signing.billing.modality.applying')}
+                          </span>}
+                        </div>
+                        <div style={{ fontSize: '0.84rem', marginTop: 4 }}>
+                          {mp.per_installment_cents != null
+                            ? t('signing.billing.modality.installments', {
+                                n: mp.installments, amount: money(mp.per_installment_cents, mp.currency_code) })
+                            : t('signing.billing.modality.installments_varied', { n: mp.installments })}
+                        </div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 2 }}>
+                          {t('signing.billing.modality.total', { amount: money(mp.total_cents, mp.currency_code) })}
+                        </div>
+                        {Number(mp.discount_cents || 0) > 0 && (
+                          <div style={{ fontSize: '0.8rem', color: '#1a7f37', fontWeight: 600, marginTop: 2 }}>
+                            {t('signing.billing.modality.saving', { amount: money(mp.discount_cents, mp.currency_code) })}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {!sub.is_draft && (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 8 }}>
+                    {t('signing.billing.modality.locked_hint')}
+                  </div>
+                )}
+              </div>
+            ) : (
+              budget.modalities_available === false && (
+                <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: 12 }}>
+                  {t('signing.billing.modality.unavailable_hint')}
+                </div>
+              )
+            )}
+
+            {/* Alerta PERSISTENTE de fallo money (no auto-dismiss). */}
+            {modalityErr && (
+              <div className="alert alert-danger" role="alert" style={{ fontSize: '0.84rem' }}>
+                {modalityErr}
+                <button type="button" className="btn-close float-end" aria-label="close"
+                  onClick={() => setModalityErr('')} />
+              </div>
+            )}
+
+            {/* Tabla del presupuesto REAL del borrador (importes del motor). */}
+            {((sub.budget && sub.budget.occurrences) || []).length > 0 ? (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table table-sm" style={{ fontSize: '0.84rem', marginBottom: 6 }}>
+                  <thead>
+                    <tr>
+                      <th>{t('signing.billing.budget.col_concept')}</th>
+                      <th>{t('signing.billing.budget.col_due')}</th>
+                      <th style={{ textAlign: 'right' }}>{t('signing.billing.budget.col_amount')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sub.budget.occurrences.map((o, i) => (
+                      <tr key={o.subscription_item_id + '_' + o.due_date + '_' + i}>
+                        <td>{o.concept}</td>
+                        <td>{dateFmt(o.due_date)}</td>
+                        <td style={{ textAlign: 'right' }}>{money(o.amount_cents, o.currency_code)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ fontWeight: 700 }}>
+                      <td colSpan={2}>{t('signing.billing.budget.total')}</td>
+                      <td style={{ textAlign: 'right' }}>
+                        {money(sub.budget.total_cents, sub.budget.currency_code)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            ) : (
+              !budgetErr && (
+                <p style={{ color: 'var(--muted)', fontSize: '0.84rem' }}>
+                  {t('signing.billing.budget.empty')}
+                </p>
+              )
+            )}
+          </div>
+        ))}
+
         <div style={{ marginTop: 8 }}>
           <h3 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '0.98rem', marginBottom: 4 }}>
             {t('signing.billing.split.title')}
