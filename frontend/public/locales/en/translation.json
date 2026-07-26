@@ -350,6 +350,8 @@
   "signing.billing.modality.applying": "applying…",
   "signing.billing.modality.locked_hint": "Your application is already confirmed: the payment option cannot be changed here. Please contact the school.",
   "signing.billing.modality.unavailable_hint": "The school's standard payment option will be applied.",
+  "signing.billing.modality.unavailable_option": "Not available for this application (the plan dates fall outside the contracted period).",
+  "signing.billing.modality.not_applicable": "That payment option cannot be applied to this application without recalculating the plan dates. Please contact the school.",
   "signing.billing.modality.not_editable": "Your application is already confirmed and the payment option cannot be changed from the wizard. Please contact the school.",
   "signing.billing.modality.apply_error": "We couldn't change the payment option. Please try again or contact the school.",
   "signing.billing.split.title": "Split between payers",

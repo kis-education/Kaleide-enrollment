@@ -350,6 +350,8 @@
   "signing.billing.modality.applying": "aplicando…",
   "signing.billing.modality.locked_hint": "Tu expediente ya está confirmado: la forma de pago no se puede cambiar desde aquí. Contacta con el colegio.",
   "signing.billing.modality.unavailable_hint": "Se aplicará la forma de pago estándar del colegio.",
+  "signing.billing.modality.unavailable_option": "No disponible para este expediente (las fechas del plan quedan fuera del periodo contratado).",
+  "signing.billing.modality.not_applicable": "Esa forma de pago no es aplicable a este expediente sin recalcular las fechas del plan. Contacta con el colegio.",
   "signing.billing.modality.not_editable": "Tu expediente ya está confirmado y la forma de pago no se puede cambiar desde el asistente. Contacta con el colegio.",
   "signing.billing.modality.apply_error": "No hemos podido cambiar la forma de pago. Inténtalo de nuevo o contacta con el colegio.",
   "signing.billing.split.title": "Reparto entre pagadores",

@@ -141,8 +141,9 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
       .catch(e => {
         const code = (e && (e.code || (e.error && e.error.code))) || '';
         log.error('Step8Billing: applyPaymentModality failed', { message: e && e.message, code });
-        setModalityErr(code === 'NOT_EDITABLE'
-          ? t('signing.billing.modality.not_editable')
+        setModalityErr(
+          code === 'NOT_EDITABLE'            ? t('signing.billing.modality.not_editable')
+          : code === 'MODALITY_NOT_APPLICABLE' ? t('signing.billing.modality.not_applicable')
           : t('signing.billing.modality.apply_error'));
       })
       .finally(() => setApplying(null));
@@ -397,7 +398,11 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
                   {(sub.modality_previews || []).map(mp => {
                     const selected = mp.modality_id === sub.applied_modality_id;
                     const busy = applying === mp.modality_id;
-                    const disabled = locked || !sub.is_draft || !!applying;
+                    // MONEY: una modalidad NO APLICABLE (su serie cae fuera del periodo
+                    // contratado → plan vacío) NO se ofrece como opción y el backend la
+                    // rechaza. Se muestra atenuada con su motivo, nunca con números falsos.
+                    const unavailable = mp.available === false;
+                    const disabled = locked || !sub.is_draft || !!applying || unavailable;
                     return (
                       <button
                         key={mp.modality_id}
@@ -411,7 +416,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
                           background: selected ? 'rgba(0,161,154,0.06)' : '#fff',
                           borderRadius: 8, padding: '10px 12px',
                           cursor: disabled ? 'not-allowed' : 'pointer',
-                          opacity: disabled && !selected ? 0.6 : 1,
+                          opacity: (disabled && !selected) || unavailable ? 0.55 : 1,
                         }}
                       >
                         <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--teal-dk)' }}>
@@ -420,16 +425,21 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
                             {t('signing.billing.modality.applying')}
                           </span>}
                         </div>
-                        <div style={{ fontSize: '0.84rem', marginTop: 4 }}>
+                        {unavailable && (
+                          <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
+                            {t('signing.billing.modality.unavailable_option')}
+                          </div>
+                        )}
+                        {!unavailable && <div style={{ fontSize: '0.84rem', marginTop: 4 }}>
                           {mp.per_installment_cents != null
                             ? t('signing.billing.modality.installments', {
                                 n: mp.installments, amount: money(mp.per_installment_cents, mp.currency_code) })
                             : t('signing.billing.modality.installments_varied', { n: mp.installments })}
-                        </div>
-                        <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 2 }}>
+                        </div>}
+                        {!unavailable && <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 2 }}>
                           {t('signing.billing.modality.total', { amount: money(mp.total_cents, mp.currency_code) })}
-                        </div>
-                        {Number(mp.discount_cents || 0) > 0 && (
+                        </div>}
+                        {!unavailable && Number(mp.discount_cents || 0) > 0 && (
                           <div style={{ fontSize: '0.8rem', color: '#1a7f37', fontWeight: 600, marginTop: 2 }}>
                             {t('signing.billing.modality.saving', { amount: money(mp.discount_cents, mp.currency_code) })}
                           </div>
