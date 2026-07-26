@@ -3357,12 +3357,26 @@ function resumeSession_(p) {
           return Object.assign({}, entry.data, { step_up_fresh: stepUpFresh });
         }
         // Sin step-up fresco: misma shape gateada del camino vivo (PII vaciada).
+        // ★ SEC WIZ-SIGNTOKEN residual (audit 2026-07-26): la entrada de cache la
+        // cocina el warm con {skipPiiGate:true} → `admission.signing_context` lleva
+        // el signing_token EN CLARO. Este retorno es el gemelo del cache-hit de
+        // getAdmissionState_ (`:3784`) y del constructor live pii-gated
+        // (buildResumeSessionData_ `:3465-3469`): sin step-up fresco el bearer del
+        // ACTO de firma NO cruza al cliente. `fresh=false` por construcción (esta
+        // rama es el `else` de `_isStepUpFresh_(id)`). Copia — NO se muta el objeto
+        // cacheado (Object.assign nuevo + el helper devuelve copia superficial).
+        var cachedAdmission = entry.data.admission || null;
+        var gatedCachedAdmission = cachedAdmission
+          ? Object.assign({}, cachedAdmission, {
+              signing_context: _redactSigningTokenIfNotFresh_(cachedAdmission.signing_context, false),
+            })
+          : cachedAdmission;
         return {
           group: entry.data.group,
           application: entry.data.group,
           enrollments: entry.data.enrollments || [],
           persons: [], relations: [], documents: [], responses: [], interviews: [],
-          admission: entry.data.admission || null,
+          admission: gatedCachedAdmission,
           recovered_guardian_person_id: entry.data.recovered_guardian_person_id || null,
           step_up_fresh: false,
           pii_gated: true,
@@ -9005,6 +9019,132 @@ function manual_testStepUpGrace() {
   cache.remove(gKey); cache.remove(sKey);
   Logger.log('=== manual_testStepUpGrace: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
   return { pass: pass };
+}
+
+/**
+ * ★ SEC WIZ-SIGNTOKEN residual (audit 2026-07-26) — test del cache-hit GATEADO de
+ * resumeSession_. Ejecutar desde el editor GAS. Cierra el prong (a): el bearer del
+ * ACTO de firma NO cruza al cliente sin step-up fresco POR NINGÚN camino de lectura,
+ * incluido el retorno de la entrada de cache (que el warm cocina con
+ * {skipPiiGate:true} → lleva el signing_token EN CLARO).
+ *
+ * Fase 1 — PURA (siempre corre, sin BD, sin cache):
+ *   (a) fresh=false → `signing_token` vaciado, hermanos del signing_context intactos.
+ *   (b) fresh=false → el objeto de ENTRADA no se muta (el cacheado sobrevive intacto
+ *       → el camino fresco posterior sigue sirviendo el token real).
+ *   (c) fresh=true  → passthrough: el token SÍ se sirve (flujo legítimo intacto).
+ *
+ * Fase 2 — INTEGRACIÓN (opcional): rellenar RESUME_TOKEN_REAL + GROUP_ID con valores
+ * reales de un grupo de pruebas. Siembra una entrada wz_res sintética (admission con
+ * token bien visible), y afirma:
+ *   (d) SIN step-up fresco → cache-hit → admission.signing_context.signing_token vacío
+ *       + pii_gated:true + los flags no-token (state_code/signing_ready/…) presentes.
+ *   (e) CON step-up fresco → cache-hit → el MISMO token sintético se sirve tal cual.
+ * Limpia siempre las claves que siembra.
+ */
+function manual_testResumeCacheHitRedactsToken() {
+  var RESUME_TOKEN_REAL = '';   // ← rellenar para la Fase 2 (opcional)
+  var GROUP_ID          = '';   // ← rellenar para la Fase 2 (opcional)
+
+  var pass = true;
+  Logger.log('=== manual_testResumeCacheHitRedactsToken ===');
+
+  // ── Fase 1 — pura ──────────────────────────────────────────────────────────
+  var SENTINEL = '11111111-2222-4333-8444-555555555555';
+  var ctx = {
+    signing_token:      SENTINEL,
+    signer_id:          'signer-1',
+    session_id:         'session-1',
+    guardian_person_id: 'guardian-1',
+  };
+
+  var gated = _redactSigningTokenIfNotFresh_(ctx, false);
+  if (!gated.signing_token && gated.signer_id === 'signer-1' &&
+      gated.session_id === 'session-1' && gated.guardian_person_id === 'guardian-1') {
+    Logger.log('  a) fresh=false → token vaciado, hermanos intactos → ✓ PASS');
+  } else {
+    Logger.log('  a) fresh=false → ✗ FAIL (token=' + gated.signing_token +
+               ' signer=' + gated.signer_id + ')'); pass = false;
+  }
+
+  if (ctx.signing_token === SENTINEL) {
+    Logger.log('  b) el objeto de entrada NO se muta (copia) → ✓ PASS');
+  } else {
+    Logger.log('  b) MUTÓ el objeto cacheado → ✗ FAIL'); pass = false;
+  }
+
+  var fresh = _redactSigningTokenIfNotFresh_(ctx, true);
+  if (fresh && fresh.signing_token === SENTINEL) {
+    Logger.log('  c) fresh=true → token servido (flujo legítimo) → ✓ PASS');
+  } else {
+    Logger.log('  c) fresh=true → ✗ FAIL (token=' + (fresh && fresh.signing_token) + ')'); pass = false;
+  }
+
+  // ── Fase 2 — integración (opcional) ────────────────────────────────────────
+  if (!RESUME_TOKEN_REAL || !GROUP_ID) {
+    Logger.log('  d/e) SALTADOS — rellena RESUME_TOKEN_REAL + GROUP_ID para el test ' +
+               'de integración del cache-hit real.');
+    Logger.log('=== manual_testResumeCacheHitRedactsToken: ' + (pass ? 'PASS' : 'FAIL') + ' (fase 1) ===');
+    return { pass: pass, phase2: false };
+  }
+
+  var cache  = CacheService.getScriptCache();
+  var wzKey  = _wzCacheKey_('res', GROUP_ID + '_' + _wzN_(null));
+  var sKey   = 'stepup_ok_' + GROUP_ID;
+  var gKey   = 'mlgrace_' + String(RESUME_TOKEN_REAL).trim();
+  try {
+    var entry = {
+      v: _getLiveStateVersion_(GROUP_ID),
+      data: {
+        group:       { enrollment_group_id: GROUP_ID, resume_token: RESUME_TOKEN_REAL },
+        enrollments: [],
+        admission: {
+          state_code: 'AD', state_label: 'Aprobada',
+          signing_ready: true, signing_status: 'PENDING', signing_available: true,
+          editable: false,
+          signing_context: {
+            signing_token: SENTINEL, signer_id: 'signer-1',
+            session_id: 'session-1', guardian_person_id: 'guardian-1',
+          },
+        },
+        recovered_guardian_person_id: null,
+      },
+    };
+    _wzCachePutChunked_(cache, wzKey, JSON.stringify(entry), 300);
+
+    // (d) sin step-up fresco (ni gracia) → cache-hit gateado.
+    cache.remove(sKey); cache.remove(gKey);
+    var resGated = resumeSession_({ resume_token: RESUME_TOKEN_REAL });
+    var admG = resGated && resGated.admission;
+    var tokenG = admG && admG.signing_context && admG.signing_context.signing_token;
+    if (resGated.pii_gated === true && !tokenG &&
+        admG && admG.state_code === 'AD' && admG.signing_ready === true) {
+      Logger.log('  d) cache-hit sin step-up → token vaciado + flags presentes → ✓ PASS');
+    } else {
+      Logger.log('  d) cache-hit sin step-up → ✗ FAIL (pii_gated=' + resGated.pii_gated +
+                 ' token=' + tokenG + ' state=' + (admG && admG.state_code) + ')'); pass = false;
+    }
+
+    // (e) con step-up fresco → el token SÍ se sirve (flujo legítimo intacto).
+    _wzCachePutChunked_(cache, wzKey, JSON.stringify(entry), 300);
+    _markStepUpFresh_(GROUP_ID, 'TEST');
+    var resFresh = resumeSession_({ resume_token: RESUME_TOKEN_REAL });
+    var admF = resFresh && resFresh.admission;
+    var tokenF = admF && admF.signing_context && admF.signing_context.signing_token;
+    if (tokenF === SENTINEL) {
+      Logger.log('  e) cache-hit con step-up fresco → token servido → ✓ PASS');
+    } else {
+      Logger.log('  e) cache-hit con step-up fresco → ✗ FAIL (token=' + tokenF + ')'); pass = false;
+    }
+  } catch (eInt) {
+    Logger.log('  d/e) EXCEPCIÓN en la fase 2: ' + redact_(String(eInt && eInt.message)));
+    pass = false;
+  } finally {
+    try { cache.remove(wzKey + '_meta'); cache.remove(sKey); cache.remove(gKey); } catch (eCl) {}
+  }
+
+  Logger.log('=== manual_testResumeCacheHitRedactsToken: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
+  return { pass: pass, phase2: true };
 }
 
 /**
