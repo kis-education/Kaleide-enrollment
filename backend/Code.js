@@ -1516,6 +1516,34 @@ function _mintWarmTicket_(items) {
 }
 
 /**
+ * WIZ-ENUM (audit 2026-07-27) — respuesta CONSTANTE del servicio de recuperación
+ * por email (`sendMagicLink_`, rama `primary_email`). Devuelve SIEMPRE la MISMA
+ * forma exista o no una solicitud para ese email: `{sent:true, warm_ticket:<uuid>}`.
+ *
+ * Por qué el ticket también en el camino "sin grupo": si `warm_ticket` solo
+ * apareciera cuando hay algo que precalentar, su PRESENCIA volvería a ser el
+ * oráculo de existencia que este fix cierra. Cuando no hay nada que calentar se
+ * mintea un ticket SEÑUELO — un ticket real (misma forma UUID, mismo TTL 300 s,
+ * single-use en `warmBundle_`) cuya lista de items está VACÍA: no dispara ningún
+ * warm, no toca ninguna sesión y no revela nada. `warmBundle_` responde `{ok:true}`
+ * para señuelo y real por igual (ver su rama de ticket).
+ *
+ * @param {?string} [ticket] - ticket real ya minteado, si lo hubo.
+ * @returns {{sent: boolean, warm_ticket: ?string}}
+ * @private
+ */
+function _magicLinkConstantAck_(ticket) {
+  var t = ticket || null;
+  if (!t) {
+    try {
+      t = generateUuid_();
+      CacheService.getScriptCache().put('wzwt_' + t, '[]', 300); // señuelo: 0 items
+    } catch (e) { t = null; }
+  }
+  return { sent: true, warm_ticket: t };
+}
+
+/**
  * STUB de compatibilidad del mecanismo V1 (trigger one-shot, RETIRADO por
  * SPEC-WIZ-WARMUP-V2 2026-06-12 — el trigger de GAS no garantizaba arranque a
  * tiempo; log real de Diego: getDocument 38-46s en frío pese al "warm"). El warm
@@ -2381,7 +2409,20 @@ function findEmailIdForGuardian_(groupId, email, emailsHint) {
  * Accepts the legacy `application_id` payload key as an alias for
  * `enrollment_group_id` so older frontend builds continue to work.
  *
- * @param {Object} p - { enrollment_group_id? | application_id? } or { primary_email }
+ * DOS CAMINOS con contratos de respuesta DISTINTOS:
+ *   - `enrollment_group_id` (uso interno del wizard, "Guardar y seguir luego"):
+ *     el caller ya conoce un UUID de grupo → no hay enumeración posible; los
+ *     errores SÍ se propagan (el wizard los muestra como toast).
+ *   - `primary_email` (servicio público de recuperación, la landing): respuesta
+ *     CONSTANTE `{sent:true, warm_ticket:<uuid>}` exista o no una solicitud para
+ *     ese email — WIZ-ENUM (audit 2026-07-27), mismo patrón anti-enumeración que
+ *     `recognizeFamily_` (KAL-10). Nunca lanza por "no encontrado"/bloqueo/fallo
+ *     de envío; el motivo real solo va a log redactado (KAL-11). Si el email no
+ *     tiene grupo, la creación de la solicitud nueva se delega server-side a
+ *     `initEnrollmentSession_` (verja reCAPTCHA fail-closed).
+ *
+ * @param {Object} p - { enrollment_group_id? | application_id? } or
+ *                     { primary_email, preferred_language?, recaptcha_token? }
  */
 function sendMagicLink_(p) {
   const groupId = p.enrollment_group_id || p.application_id;
@@ -2460,102 +2501,169 @@ function sendMagicLink_(p) {
     // con el token NUEVO (que solo viaja por email). Identidad warm = la del click real.
     return { sent: true, warm_ticket: _mintWarmTicket_([{ t: tokenToSend, n: nEmailId, e: destEmail, l: langP1 }]) };
   } else if (p.primary_email) {
-    // Find all non-abandoned sessions for this email — INCLUDING submitted/AD.
-    // DL-E38: recovery MUST work for submitted/AD families so the magic link can
-    // resume them into signing. We only exclude abandoned sessions; submitted
-    // sessions get their EXISTING token sent (token renewal is skipped below for
-    // them, mirroring Path 1's behaviour).
+    // ── WIZ-ENUM (audit 2026-07-27): ACK CONSTANTE anti-enumeración (KAL-10) ──
+    // ANTES: grupo existente → `{sent:true}`; sin grupo → `throw 'Enrollment group
+    // not found'`. Dos respuestas DISTINGUIBLES en un action del dispatcher público
+    // (manifest ANYONE_ANONYMOUS, sin verja reCAPTCHA) ⇒ oráculo: cualquiera con
+    // internet podía preguntar "¿esta familia está matriculando?" email a email.
+    // AHORA: TODO el trabajo (buscar grupo, rotar token, mandar el enlace, o crear
+    // la sesión nueva) es BEST-EFFORT SILENCIOSO y la respuesta es SIEMPRE la misma
+    // forma — `_magicLinkConstantAck_()`. Mismo patrón que `recognizeFamily_`
+    // (KAL-10, shape constante para el caller público) y `reportUnsolicited_`
+    // (ack incondicional). Lo "no encontrado" solo se registra en log REDACTADO
+    // (KAL-11), nunca en la respuesta.
+    //
+    // La decisión recuperar-vs-crear vive AHORA SERVER-SIDE (antes la tomaba el
+    // cliente ramificando sobre el propio oráculo: la landing leía "not found" y
+    // llamaba a initEnrollmentSession). Ver la rama "sin grupo" abajo.
     assertValidEmail_(p.primary_email, 'primary_email');
-    let rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"primary_email" = "' + appsheetEscape_(p.primary_email) + '" && ISBLANK([abandoned_at])'
-    });
-    // DL-E38 a1: a non-primary guardian recovers with their OWN email — locate
-    // open group(s) via enrEmails (guardians) when primary_email doesn't match.
-    // The link is sent to the typed email (p.primary_email) below, i.e. to the
-    // guardian's own inbox.
-    if (!rows || !rows.length) {
-      rows = findOpenGroupsByGuardianEmail_(p.primary_email);
+    const typedEmail = p.primary_email.toLowerCase().trim();
+
+    // Rate-limit ANTES del lookup: el cupo se consume igual exista o no el grupo
+    // (comprobarlo DESPUÉS haría que "no consumir cupo" fuese otro oráculo). Un
+    // bloqueo NO se surface: `BLOCKED_BY_REPORT` delata que ese email recibió un
+    // enlace alguna vez, y `RATE_LIMITED` delataría el tráfico previo del email.
+    // Se traga y se devuelve el mismo ack — el cupo SÍ se aplica (no se envía nada).
+    try {
+      _checkMagicLinkRateLimit_(typedEmail);
+      _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
+    } catch (eRate) {
+      Logger.log(redact_('sendMagicLink_: suppressed for ' + typedEmail +
+                 ' (' + ((eRate && eRate.code) || 'RATE') + ') — constant ack'));
+      return _magicLinkConstantAck_();
     }
-    if (!rows || !rows.length) throw new Error('Enrollment group not found');
-    _checkMagicLinkRateLimit_(p.primary_email.toLowerCase().trim());
 
-    // Renew tokens + created_at for NON-submitted sessions before sending so the
-    // new link is valid for a fresh 7-day window. Submitted/AD sessions keep
-    // their EXISTING resume_token untouched (no created_at reset) — exactly like
-    // Path 1 — so recovery into signing reuses the live token.
-    // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): las renovaciones (Edits) se portan al KMS
-    // — un enr.wizardTouchSession por grupo NO-submitted (el KMS minta y persiste el
-    // token server-side). Si una renovación falla, ese grupo conserva su token
-    // original (mismo fallback que el batch histórico). La lectura de enrEmails por
-    // grupo sigue en UN batch paralelo (read-only, PERF 2026-06-12 intacta).
-    const sorted = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    const newTokens = {};   // group_id → token nuevo persistido por el KMS
-    sorted.forEach(g => {
-      if (g.submitted_at) return; // submitted: send existing token, do not renew
-      try {
-        const touch = kmsProxy_('enr.wizardTouchSession', { resume_token: g.resume_token });
-        if (touch && touch.renewed && touch.resume_token) {
-          newTokens[g.enrollment_group_id] = touch.resume_token;
-        } else {
-          // KAL-11: redact group_id UUID.
-          Logger.log(redact_('sendMagicLink_: token not renewed for group ' + g.enrollment_group_id + ' (KMS fallback — keeps live token)'));
-        }
-      } catch (e) {
-        Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message));
+    try {
+      // Find all non-abandoned sessions for this email — INCLUDING submitted/AD.
+      // DL-E38: recovery MUST work for submitted/AD families so the magic link can
+      // resume them into signing. We only exclude abandoned sessions; submitted
+      // sessions get their EXISTING token sent (token renewal is skipped below for
+      // them, mirroring Path 1's behaviour).
+      let rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+        Filter: '"primary_email" = "' + appsheetEscape_(p.primary_email) + '" && ISBLANK([abandoned_at])'
+      });
+      // DL-E38 a1: a non-primary guardian recovers with their OWN email — locate
+      // open group(s) via enrEmails (guardians) when primary_email doesn't match.
+      // The link is sent to the typed email (p.primary_email) below, i.e. to the
+      // guardian's own inbox.
+      if (!rows || !rows.length) {
+        rows = findOpenGroupsByGuardianEmail_(p.primary_email);
       }
-    });
-    const emailSpecs = sorted.map(g => ({ table: T.EMAILS, action: 'Find', selector: {
-      Filter: '"enrollment_group_id" = "' + appsheetEscape_(g.enrollment_group_id) + '"' } }));
-    const batchRes = appsheetRequestBatch_(emailSpecs);
-    const emailsHintByGroup = {};
-    sorted.forEach((g, i) => {
-      const r = batchRes[i];
-      emailsHintByGroup[g.enrollment_group_id] = (r && r.ok) ? (r.data || []) : null;
-    });
-    const grps = sorted.map(g => {
-      const gid = g.enrollment_group_id;
-      return (gid in newTokens) ? { ...g, resume_token: newTokens[gid] } : g;
-    });
+      if (!rows || !rows.length) {
+        // WIZ-ENUM: sin grupo NO se lanza — ack constante. Y como la landing ya no
+        // puede ramificar (no hay señal), la creación de la solicitud nueva se hace
+        // AQUÍ, best-effort, delegando en el escritor probado `initEnrollmentSession_`
+        // (mismos parámetros que la landing le pasaba: primary_email + idioma +
+        // recaptcha_token). Su verja reCAPTCHA sigue siendo FAIL-CLOSED y es la que
+        // gobierna la creación: sin token válido NO se crea nada y NO se manda nada
+        // (un bot sin reCAPTCHA no gana capacidad nueva; el action `initEnrollmentSession`
+        // ya era público con esa misma verja). El `resume_token` que devuelve NO se
+        // propaga al cliente (KAL-7: viaja solo por email).
+        Logger.log(redact_('sendMagicLink_: no open group for ' + typedEmail + ' — constant ack (WIZ-ENUM)'));
+        let created = null;
+        try {
+          created = initEnrollmentSession_({
+            primary_email:      p.primary_email,
+            preferred_language: p.preferred_language || 'es',
+            recaptcha_token:    p.recaptcha_token || null,
+            source_code:        'WEB_PUBLIC',
+          });
+        } catch (eInit) {
+          // Sin reCAPTCHA válido / rate-limit / fallo del KMS → no se crea sesión.
+          // NUNCA se surface (delataría el camino tomado). KAL-11: redactado.
+          Logger.log(redact_('sendMagicLink_: new-session fallback not performed (' +
+                     ((eInit && eInit.message) || 'unknown') + ')'));
+        }
+        return _magicLinkConstantAck_(created && created.warm_ticket);
+      }
 
-    // IDENTITY-FROM-LINK (2026-06-11): el link va al email tecleado (p.primary_email =
-    // buzón del guardian dueño). `n` := email_id de la fila enrEmails de ESE email en
-    // CADA grupo recuperado (opaco, sin PII, ya existe). La identidad viaja en el enlace.
-    const identityEmail = p.primary_email.toLowerCase().trim();
+      // Renew tokens + created_at for NON-submitted sessions before sending so the
+      // new link is valid for a fresh 7-day window. Submitted/AD sessions keep
+      // their EXISTING resume_token untouched (no created_at reset) — exactly like
+      // Path 1 — so recovery into signing reuses the live token.
+      // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): las renovaciones (Edits) se portan al KMS
+      // — un enr.wizardTouchSession por grupo NO-submitted (el KMS minta y persiste el
+      // token server-side). Si una renovación falla, ese grupo conserva su token
+      // original (mismo fallback que el batch histórico). La lectura de enrEmails por
+      // grupo sigue en UN batch paralelo (read-only, PERF 2026-06-12 intacta).
+      const sorted = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      const newTokens = {};   // group_id → token nuevo persistido por el KMS
+      sorted.forEach(g => {
+        if (g.submitted_at) return; // submitted: send existing token, do not renew
+        try {
+          const touch = kmsProxy_('enr.wizardTouchSession', { resume_token: g.resume_token });
+          if (touch && touch.renewed && touch.resume_token) {
+            newTokens[g.enrollment_group_id] = touch.resume_token;
+          } else {
+            // KAL-11: redact group_id UUID.
+            Logger.log(redact_('sendMagicLink_: token not renewed for group ' + g.enrollment_group_id + ' (KMS fallback — keeps live token)'));
+          }
+        } catch (e) {
+          Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message));
+        }
+      });
+      const emailSpecs = sorted.map(g => ({ table: T.EMAILS, action: 'Find', selector: {
+        Filter: '"enrollment_group_id" = "' + appsheetEscape_(g.enrollment_group_id) + '"' } }));
+      const batchRes = appsheetRequestBatch_(emailSpecs);
+      const emailsHintByGroup = {};
+      sorted.forEach((g, i) => {
+        const r = batchRes[i];
+        emailsHintByGroup[g.enrollment_group_id] = (r && r.ok) ? (r.data || []) : null;
+      });
+      const grps = sorted.map(g => {
+        const gid = g.enrollment_group_id;
+        return (gid in newTokens) ? { ...g, resume_token: newTokens[gid] } : g;
+      });
 
-    const lang = grps[0].preferred_language || 'es';
-    if (grps.length === 1) {
-      // Use the single-link template (with full security footer + GDPR block)
-      // instead of the abridged multi template when there's actually only one
-      // open session — which is the common case under the new single-session policy.
-      const nEmailId = findEmailIdForGuardian_(grps[0].enrollment_group_id, identityEmail, emailsHintByGroup[grps[0].enrollment_group_id]);
-      _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
-      // WIZARD-TERMINAL P3: contenido gobernado por el KMS. isFirstApp false (recuperación).
-      const resumeUrlR = RESUME_BASE_URL + grps[0].resume_token + (nEmailId ? '?n=' + nEmailId : '');
-      sendViaKmsNotify_('WIZARD_MAGIC_LINK', p.primary_email, {
-        family_name:      '',
-        resume_url:       resumeUrlR,
-        report_url:       REPORT_BASE_URL + grps[0].resume_token,
-        gdpr_block:       _kmsRenderGdprBlock_(false),
-        admissions_email: ADMISSIONS_EMAIL,
-      });
-      // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
-      return { sent: true, warm_ticket: _mintWarmTicket_([{ t: grps[0].resume_token, n: nEmailId, e: identityEmail, l: lang }]) };
-    } else {
-      // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
-      // del guardian en SU grupo. La gracia OTP-skip se ancla al resume_token de cada grupo.
-      const nEmailIds = grps.map(g => findEmailIdForGuardian_(g.enrollment_group_id, identityEmail, emailsHintByGroup[g.enrollment_group_id]));
-      grps.forEach(g => _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id));
-      // WIZARD-TERMINAL P3: la lista de enlaces la pre-renderiza el wizard en UN placeholder;
-      // el resto del contenido (saludo, footer) lo gobierna el KMS. El report link usa el
-      // primer token (reportUnsolicited_ bloquea el email, no la sesión — cualquiera vale).
-      sendViaKmsNotify_('WIZARD_MAGIC_LINK_MULTI', p.primary_email, {
-        family_name:        '',
-        resume_links_block: _kmsRenderResumeLinksBlock_(grps.map(g => g.resume_token), nEmailIds, lang),
-        report_url:         REPORT_BASE_URL + grps[0].resume_token,
-        admissions_email:   ADMISSIONS_EMAIL,
-      });
-      // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
-      return { sent: true, warm_ticket: _mintWarmTicket_(grps.map((g, i) => ({ t: g.resume_token, n: nEmailIds[i] || null, e: identityEmail, l: lang }))) };
+      // IDENTITY-FROM-LINK (2026-06-11): el link va al email tecleado (p.primary_email =
+      // buzón del guardian dueño). `n` := email_id de la fila enrEmails de ESE email en
+      // CADA grupo recuperado (opaco, sin PII, ya existe). La identidad viaja en el enlace.
+      const identityEmail = p.primary_email.toLowerCase().trim();
+
+      const lang = grps[0].preferred_language || 'es';
+      if (grps.length === 1) {
+        // Use the single-link template (with full security footer + GDPR block)
+        // instead of the abridged multi template when there's actually only one
+        // open session — which is the common case under the new single-session policy.
+        const nEmailId = findEmailIdForGuardian_(grps[0].enrollment_group_id, identityEmail, emailsHintByGroup[grps[0].enrollment_group_id]);
+        _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
+        // WIZARD-TERMINAL P3: contenido gobernado por el KMS. isFirstApp false (recuperación).
+        const resumeUrlR = RESUME_BASE_URL + grps[0].resume_token + (nEmailId ? '?n=' + nEmailId : '');
+        sendViaKmsNotify_('WIZARD_MAGIC_LINK', p.primary_email, {
+          family_name:      '',
+          resume_url:       resumeUrlR,
+          report_url:       REPORT_BASE_URL + grps[0].resume_token,
+          gdpr_block:       _kmsRenderGdprBlock_(false),
+          admissions_email: ADMISSIONS_EMAIL,
+        });
+        // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
+        // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
+        return _magicLinkConstantAck_(_mintWarmTicket_([{ t: grps[0].resume_token, n: nEmailId, e: identityEmail, l: lang }]));
+      } else {
+        // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
+        // del guardian en SU grupo. La gracia OTP-skip se ancla al resume_token de cada grupo.
+        const nEmailIds = grps.map(g => findEmailIdForGuardian_(g.enrollment_group_id, identityEmail, emailsHintByGroup[g.enrollment_group_id]));
+        grps.forEach(g => _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id));
+        // WIZARD-TERMINAL P3: la lista de enlaces la pre-renderiza el wizard en UN placeholder;
+        // el resto del contenido (saludo, footer) lo gobierna el KMS. El report link usa el
+        // primer token (reportUnsolicited_ bloquea el email, no la sesión — cualquiera vale).
+        sendViaKmsNotify_('WIZARD_MAGIC_LINK_MULTI', p.primary_email, {
+          family_name:        '',
+          resume_links_block: _kmsRenderResumeLinksBlock_(grps.map(g => g.resume_token), nEmailIds, lang),
+          report_url:         REPORT_BASE_URL + grps[0].resume_token,
+          admissions_email:   ADMISSIONS_EMAIL,
+        });
+        // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
+        // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
+        return _magicLinkConstantAck_(_mintWarmTicket_(grps.map((g, i) => ({ t: g.resume_token, n: nEmailIds[i] || null, e: identityEmail, l: lang }))));
+      }
+    } catch (eSend) {
+      // WIZ-ENUM: cualquier fallo del camino de envío (AppSheet, KMS notify, …) se
+      // traga y devuelve el MISMO ack. Un error propagado aquí solo puede ocurrir
+      // cuando el grupo EXISTE → sería un oráculo residual. KAL-11: log redactado.
+      Logger.log(redact_('sendMagicLink_: send path failed for ' + typedEmail + ' — constant ack (' +
+                 ((eSend && eSend.message) || 'unknown') + ')'));
+      return _magicLinkConstantAck_();
     }
   } else {
     throw new Error('Missing enrollment_group_id or primary_email');
@@ -6977,7 +7085,12 @@ function warmBundle_(p) {
       if (pm) passes.push({ pass: pm });
     });
     _wzSelfFetchAll_(passes);
-    return { ok: true, phases: passes.length };
+    // WIZ-ENUM: el CONTEO de fases se queda en el log, no en la respuesta — un
+    // ticket señuelo (`_magicLinkConstantAck_`, 0 items) daría `phases:0` frente a
+    // `phases:3` de uno real, reabriendo por esta puerta el oráculo de existencia.
+    // Ningún consumidor lee `phases` (el frontend hace fire-and-forget `.catch()`).
+    Logger.log('[warmBundle_] ticket kicked, phases=' + passes.length);
+    return { ok: true };
   }
   // Sin ticket: mismo gate y semántica que el warm de la pantalla OTP (KAL-4 dentro).
   return warmSession_(p);
@@ -7830,6 +7943,86 @@ function manual_testRecognizeFamilyAntiEnum() {
   // } catch (e) {
   //   Logger.log('FAIL — recognizeFamily_ threw: ' + e.message);
   // }
+}
+
+/**
+ * WIZ-ENUM (audit 2026-07-27) — verifica que `sendMagicLink_` (rama `primary_email`)
+ * devuelve una respuesta INDISTINGUIBLE exista o no una solicitud para el email.
+ *
+ * Casos:
+ *   (a) Email SIN grupo (aleatorio, inexistente): NO lanza, devuelve
+ *       `{sent:true, warm_ticket:<uuid>}`, y NO crea sesión (sin reCAPTCHA válido
+ *       la creación server-side no se ejecuta) → se comprueba que no aparece
+ *       ninguna fila en enrEnrollmentGroups para ese email.
+ *   (b) Email bloqueado por reporte (`BLOCKED_BY_REPORT` simulado en ScriptCache):
+ *       tampoco lanza — mismo ack (un bloqueo delataría que ese email existió).
+ *   (c) Email CON grupo real (OPT-IN — Diego rellena EXISTING_EMAIL abajo):
+ *       misma forma exacta que (a). ATENCIÓN: este caso SÍ envía el magic link
+ *       real y rota el resume_token de esa sesión — por eso está desactivado por
+ *       defecto. Al ejecutarlo, la familia recibe el correo.
+ *
+ * Todo lo demás (el envío real, la rotación del token) se verifica por el flujo
+ * legítimo: el caso (c) manda el email; el caso (a) no manda nada.
+ */
+function manual_testSendMagicLinkConstantAck() {
+  var EXISTING_EMAIL = ''; // ← Diego: rellena SOLO si quieres ejecutar el caso (c).
+
+  function shapeOf(o) {
+    if (!o || typeof o !== 'object') return 'NOT_OBJECT';
+    return Object.keys(o).sort().join(',') + '|sent=' + o.sent +
+           '|warm_ticket=' + (o.warm_ticket ? 'uuid' : String(o.warm_ticket));
+  }
+
+  // ── (a) email inexistente ────────────────────────────────────────────────
+  var ghost = 'wizenum-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '@example.invalid';
+  var shapeA = null;
+  try {
+    var outA = sendMagicLink_({ primary_email: ghost });
+    shapeA = shapeOf(outA);
+    Logger.log('PASS (a) no-group NO lanza — shape: ' + shapeA);
+    Logger.log('PASS (a) sent===true: ' + (outA && outA.sent === true));
+  } catch (eA) {
+    Logger.log('FAIL (a) — sendMagicLink_ lanzó para un email sin grupo: ' + eA.message);
+  }
+  // Sin reCAPTCHA válido, el fallback de creación NO debe haber creado nada.
+  try {
+    var created = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+      Filter: '"primary_email" = "' + appsheetEscape_(ghost) + '"'
+    }) || [];
+    Logger.log('PASS (a) sin efectos (0 sesiones creadas): ' + (created.length === 0) +
+               ' (rows=' + created.length + ')');
+  } catch (eF) {
+    Logger.log('SKIP (a) verificación de efectos — Find falló: ' + eF.message);
+  }
+
+  // ── (b) email bloqueado por reporte → mismo ack, sin BLOCKED_BY_REPORT ────
+  var blocked = 'wizenum-blk-' + Date.now() + '@example.invalid';
+  try {
+    CacheService.getScriptCache().put(
+      'magic_blocked_' + Utilities.base64EncodeWebSafe(blocked), '1', 120);
+    var outB = sendMagicLink_({ primary_email: blocked });
+    Logger.log('PASS (b) bloqueado NO lanza — shape: ' + shapeOf(outB));
+    Logger.log('PASS (b) shape idéntica a (a): ' + (shapeOf(outB) === shapeA));
+  } catch (eB) {
+    Logger.log('FAIL (b) — el bloqueo se filtró como error: ' + (eB && eB.code) + ' ' + eB.message);
+  } finally {
+    try { CacheService.getScriptCache().remove('magic_blocked_' + Utilities.base64EncodeWebSafe(blocked)); } catch (eR) {}
+  }
+
+  // ── (c) email CON grupo (opt-in; ENVÍA email real) ───────────────────────
+  if (!EXISTING_EMAIL) {
+    Logger.log('SKIP (c) — rellena EXISTING_EMAIL para comparar con un grupo real ' +
+               '(ojo: envía el magic link de verdad y rota el resume_token).');
+    return;
+  }
+  try {
+    var outC = sendMagicLink_({ primary_email: EXISTING_EMAIL });
+    Logger.log('PASS (c) shape: ' + shapeOf(outC));
+    Logger.log('PASS (c) INDISTINGUIBLE de (a): ' + (shapeOf(outC) === shapeA));
+    Logger.log('NOTA (c): el magic link se ha enviado de verdad (flujo legítimo intacto).');
+  } catch (eC) {
+    Logger.log('FAIL (c) — sendMagicLink_ lanzó para un email CON grupo: ' + eC.message);
+  }
 }
 
 /**
