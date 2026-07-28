@@ -16,7 +16,10 @@ const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 export default function LandingPage() {
   const { t } = useTranslation();
   const [searchParams] = useSearchParams();
-  const { setEnrollmentGroupId, setResumeToken, updateStep, setRecognition, setRecoveredEmail } = useWizard();
+  // WIZ-ENUM: la landing ya no siembra estado del wizard desde la respuesta (el ack
+  // es constante por diseño anti-enumeración) — la sesión se entra SIEMPRE por el
+  // enlace del email (modelo canónico DL-E38: entrada única por magic-link).
+  const { setRecoveredEmail } = useWizard();
 
   useEffect(() => {
     if (!RECAPTCHA_SITE_KEY || document.querySelector('#recaptcha-script')) return;
@@ -48,7 +51,8 @@ export default function LandingPage() {
   //   2. Pintamos INMEDIATAMENTE la pantalla genérica "te hemos enviado un enlace" (UN
   //      solo mensaje, idéntico para TODOS los casos: nueva, en curso, ya enviada, o
   //      email inexistente).
-  //   3. Disparamos la petición real (sendMagicLink → init nuevo si "not found") en
+  //   3. Disparamos la petición real (UNA sola llamada a sendMagicLink; el SERVIDOR
+  //      decide recuperar-vs-crear — WIZ-ENUM, ya no hay señal que ramificar) en
   //      SEGUNDO PLANO (fire-and-forget) — su resultado NUNCA se refleja en el UI, así
   //      que ni el mensaje ni el timing distinguen "existe" de "no existe".
   // El warm best-effort + el seed de estado del wizard se conservan dentro del kick de
@@ -60,50 +64,31 @@ export default function LandingPage() {
     setRecoveredEmail(email);
 
     try {
-      // (1) RECUPERAR primero: el servidor resuelve el email contra `primary_email` Y
-      //     contra los emails de guardian del grupo (sendMagicLink_ →
-      //     findOpenGroupsByGuardianEmail_). El link va al inbox del tutor que lo pidió.
-      let recovered = false;
-      try {
-        const sentRes = await gasCall('sendMagicLink', { primary_email: email });
-        recovered = true;
-        // SPEC-WIZ-WARMUP-V2 — kick fire-and-forget del precalentado del bundle de
-        // entrada (el resume_token nuevo solo viaja por email). Best-effort.
-        if (sentRes && sentRes.warm_ticket) gasCall('warmBundle', { ticket: sentRes.warm_ticket }).catch(() => {});
-      } catch (recErr) {
-        // Solo "Enrollment group not found" (email no asociado) cae a iniciar nuevo.
-        // Cualquier otro error (rate-limit, validación, red) se traga SILENCIOSAMENTE:
-        // el usuario ya vio el mensaje genérico (anti-enum) → no exponemos el fallo.
-        if (!/not found/i.test((recErr && recErr.message) || '')) {
-          log.warn('LandingPage: sendMagicLink failed (silenciado, anti-enum)', { message: recErr && recErr.message });
-          return;
-        }
-      }
-
-      if (recovered) return; // link enviado; el estado lo gobierna el destino del link.
-
-      // ── Sin grupo asociado → iniciar una solicitud nueva ──────────────────
+      // WIZ-ENUM (audit 2026-07-27) — UNA SOLA llamada. `sendMagicLink` ya NO
+      // distingue "existe / no existe" (ack constante `{sent:true, warm_ticket}`,
+      // KAL-10): antes lanzaba "Enrollment group not found" y ESTE cliente
+      // ramificaba sobre ese error para llamar a `initEnrollmentSession` — es decir,
+      // la decisión recuperar-vs-crear se tomaba leyendo el propio oráculo. Ahora la
+      // decisión vive SERVER-SIDE: el backend recupera si hay grupo (contra
+      // `primary_email` Y contra los emails de guardian → findOpenGroupsByGuardianEmail_)
+      // y, si no lo hay, crea la solicitud nueva con `initEnrollmentSession_` (verja
+      // reCAPTCHA fail-closed) — por eso el token reCAPTCHA se calcula ANTES y viaja
+      // en esta llamada. El cliente ya no ve, ni necesita, ninguna señal de existencia.
       let recaptcha_token = null;
       if (RECAPTCHA_SITE_KEY && window.grecaptcha) {
         await new Promise(resolve => window.grecaptcha.ready(resolve));
         recaptcha_token = await window.grecaptcha.execute(RECAPTCHA_SITE_KEY, { action: 'init_application' });
       }
 
-      const data = await gasCall('initEnrollmentSession', {
+      const sentRes = await gasCall('sendMagicLink', {
         primary_email:      email,
         preferred_language: navigator.language?.startsWith('en') ? 'en' : 'es',
         recaptcha_token,
       });
-      // SPEC-WIZ-WARMUP-V2: los paths del init también envían magic link → mismo kick.
-      if (data.warm_ticket) gasCall('warmBundle', { ticket: data.warm_ticket }).catch(() => {});
-      // already_submitted: el backend ya mandó el link de "ver mi solicitud"; nada que
-      // pintar (el mensaje genérico ya está). Para los demás casos, sembramos el estado
-      // del wizard en memoria por si la familia abre el link en esta misma pestaña.
-      if (data.already_submitted) return;
-      setEnrollmentGroupId(data.enrollment_group_id || data.application_id);
-      setResumeToken(data.resumed ? null : (data.resume_token || null));
-      setRecognition(data.recognition);
-      updateStep('email', { primary_email: email, verified: false });
+      // SPEC-WIZ-WARMUP-V2 — kick fire-and-forget del precalentado del bundle de
+      // entrada (el resume_token nunca llega al cliente: viaja solo por email).
+      // Best-effort; el ticket es opaco (y constante por diseño anti-enumeración).
+      if (sentRes && sentRes.warm_ticket) gasCall('warmBundle', { ticket: sentRes.warm_ticket }).catch(() => {});
     } catch (e) {
       // Cualquier fallo del kick de fondo se traga: el usuario ya vio el mensaje
       // genérico. Loguear (redactado) para diagnóstico, NUNCA mostrar al usuario.

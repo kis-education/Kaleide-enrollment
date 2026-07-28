@@ -202,6 +202,19 @@ El frontend nunca expone el payload de recognition fuera del banner de Step 2 (`
 
 Test: `manual_testRecognizeFamilyAntiEnum` en `backend/Code.js`. Verifica shape constante con email no existente + (comentado) instrucciones para verificar shape también constante con email real conocido.
 
+### sendMagicLink — ack constante anti-enumeración (WIZ-ENUM, audit 2026-07-27)
+
+`sendMagicLink_` rama `primary_email` es el **servicio público de recuperación** (la landing lo llama sin autenticación; el manifest es `ANYONE_ANONYMOUS` y ese `case` del dispatcher no tiene verja reCAPTCHA). Antes devolvía `{sent:true}` con grupo y **lanzaba `'Enrollment group not found'`** sin él → dos respuestas distinguibles = **oráculo de existencia**: cualquiera podía preguntar email a email "¿esta familia está matriculando?".
+
+**Ahora la rama `primary_email` devuelve SIEMPRE la misma forma** — `_magicLinkConstantAck_()` → `{sent:true, warm_ticket:<uuid>}` — y todo el trabajo (buscar grupo, rotar token, enviar el enlace, crear la sesión nueva) es **best-effort silencioso**. Reglas derivadas, obligatorias para cualquier cambio futuro en este camino:
+
+1. **Nada de la respuesta puede depender de que el email exista** — ni un `throw`, ni un campo extra (`already_submitted`, ids del grupo, `recognition`), ni la **presencia** del `warm_ticket` (por eso el camino "sin grupo" mintea un **ticket señuelo** con 0 items; `warmBundle_` responde `{ok:true}` sin conteo de fases para no reabrir el oráculo por esa puerta).
+2. **El rate-limit se comprueba ANTES del lookup** (el cupo se consume exista o no el grupo) y **sus bloqueos no se surfacean**: `BLOCKED_BY_REPORT` delataría que ese email recibió un enlace alguna vez. El cupo se sigue APLICANDO (no se envía nada), solo no se cuenta.
+3. **La decisión recuperar-vs-crear vive SERVER-SIDE.** El cliente ya no puede ramificar (no hay señal): si el email no tiene grupo, `sendMagicLink_` delega en `initEnrollmentSession_` (verja reCAPTCHA **fail-closed** — sin token válido no se crea ni se envía nada). Por eso la landing manda el `recaptcha_token` **en la propia llamada a `sendMagicLink`** y ya no llama a `initEnrollmentSession` por su cuenta.
+4. La rama `enrollment_group_id` (uso interno "Guardar y seguir luego") **NO cambia**: el caller ya conoce un UUID, no hay enumeración, y sus errores siguen propagándose para el toast del wizard.
+
+Residual conocido (NO cerrado): el action público `initEnrollmentSession` sigue distinguiendo en su respuesta (`already_submitted` / `resumed` / creada), pero está **detrás de la verja reCAPTCHA fail-closed**. Test: `manual_testSendMagicLinkConstantAck`. Cross-ref: `kis-app/docs/kms/security/audit-2026-07-27.md` §C fila WIZ-ENUM + §KAL-10 (mismo patrón en `recognizeFamily_`).
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.
