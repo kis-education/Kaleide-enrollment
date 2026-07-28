@@ -1840,7 +1840,16 @@ function constantTimeEquals_(a, b) {
  * @returns {{ enrollment_group_id: string, resume_token: string,
  *             application_id: string }} (application_id is a legacy alias = enrollment_group_id)
  */
-function initEnrollmentSession_(p) {
+function initEnrollmentSession_(p, opts) {
+  // WIZ-ENUM (audit 2026-07-27) — `internal`: la llamada viene de `sendMagicLink_`,
+  // que YA consumió el cupo de magic-link (y ya aplicó el bloqueo por reporte) para
+  // ESTA MISMA acción del usuario. Sin esta marca, un alta nueva gastaría DOS de los
+  // 5 envíos/hora (uno por cada capa) → a partir del 3.er intento la familia se
+  // quedaría sin correo, y como la respuesta es constante por diseño anti-enumeración,
+  // el fallo sería INDISTINGUIBLE de un envío correcto. Mismo patrón `opts.internal`
+  // que `recognizeFamily_` (KAL-10). SOLO exime del cupo: la verja reCAPTCHA
+  // fail-closed de WEB_PUBLIC sigue aplicándose igual.
+  const internal = !!(opts && opts.internal);
   const sourceCode = (p.source_code || 'WEB_PUBLIC').toUpperCase();
   // P226 / KAL-NEW-4 (audit 2026-06-05, decisión Diego 2026-06-09): 'FAMILIES_APP'
   // QUITADO de VALID_SOURCES. El if/else if de abajo solo gatea KMS_INTERNAL (secret)
@@ -1922,7 +1931,7 @@ function initEnrollmentSession_(p) {
     // already_submitted response is always returned regardless.
     let warmTicketSubmitted = null;
     try {
-      _checkMagicLinkRateLimit_(normalizedEmail);
+      if (!internal) _checkMagicLinkRateLimit_(normalizedEmail);   // WIZ-ENUM: cupo ya consumido fuera
       const lang = grp.preferred_language || (p.preferred_language || 'es');
       // DL-E38 a1: send to the email the family typed (per-guardian). In the
       // init path the group was located by primary_email==normalizedEmail, so
@@ -1953,8 +1962,10 @@ function initEnrollmentSession_(p) {
     Filter: '"primary_email" = "' + appsheetEscape_(normalizedEmail) + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
   }) || [];
   if (existingOpen.length) {
-    _checkMagicLinkRateLimit_(normalizedEmail);
-    _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
+    if (!internal) {   // WIZ-ENUM: cupo ya consumido por `sendMagicLink_` para esta misma acción
+      _checkMagicLinkRateLimit_(normalizedEmail);
+      _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
+    }
 
     // Resolve person counts for all candidates in ONE query (filtered by OR).
     let personCountByGroup = {};
@@ -2058,7 +2069,7 @@ function initEnrollmentSession_(p) {
   // enrollment_group_id). Throwing here leaves an orphan row, but the
   // resume_token is never delivered to the attacker so it is effectively
   // unreachable. Acceptable trade-off.
-  _checkMagicLinkRateLimit_((p.primary_email || '').toLowerCase().trim());
+  if (!internal) _checkMagicLinkRateLimit_((p.primary_email || '').toLowerCase().trim());
   // WIZARD-TERMINAL P3: contenido gobernado por el KMS. Init de la 1ª solicitud →
   // isFirstApp true (muestra el bloque GDPR).
   sendViaKmsNotify_('WIZARD_MAGIC_LINK', p.primary_email, {
@@ -2567,7 +2578,7 @@ function sendMagicLink_(p) {
             preferred_language: p.preferred_language || 'es',
             recaptcha_token:    p.recaptcha_token || null,
             source_code:        'WEB_PUBLIC',
-          });
+          }, { internal: true });   // WIZ-ENUM: el cupo de magic-link YA se consumió arriba
         } catch (eInit) {
           // Sin reCAPTCHA válido / rate-limit / fallo del KMS → no se crea sesión.
           // NUNCA se surface (delataría el camino tomado). KAL-11: redactado.
