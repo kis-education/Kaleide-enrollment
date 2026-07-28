@@ -51,7 +51,8 @@ export default function LandingPage() {
   //   2. Pintamos INMEDIATAMENTE la pantalla genérica "te hemos enviado un enlace" (UN
   //      solo mensaje, idéntico para TODOS los casos: nueva, en curso, ya enviada, o
   //      email inexistente).
-  //   3. Disparamos la petición real (sendMagicLink → init nuevo si "not found") en
+  //   3. Disparamos la petición real (UNA sola llamada a sendMagicLink; el SERVIDOR
+  //      decide recuperar-vs-crear — WIZ-ENUM, ya no hay señal que ramificar) en
   //      SEGUNDO PLANO (fire-and-forget) — su resultado NUNCA se refleja en el UI, así
   //      que ni el mensaje ni el timing distinguen "existe" de "no existe".
   // El warm best-effort + el seed de estado del wizard se conservan dentro del kick de
