@@ -343,6 +343,30 @@ Precedente: CLI 22 + CLI 28 + CLI 33-36 + Frontend-9-10 + Frontend-12 (2026-05-2
 
 ## Deployment
 
+### MANDATORY — MURO DE DEPLOY: batería del wizard VERDE antes de CUALQUIER publicación (2026-07-28)
+
+**`npm run e2e:wizard` (desde `frontend/`) debe terminar VERDE antes de publicar nada** — ni el frontend a GitHub Pages, ni el backend con `clasp deploy`. **Cambio sin batería verde = NO deploy.** Es el equivalente al muro del KMS (`kis-app/CLAUDE.md` §"MANDATORY — MURO DE DEPLOY"), y nace de la regla de los dos repos (§"No se toca lo que funciona sin una forma de comprobar que sigue funcionando").
+
+```bash
+cd frontend
+npm run e2e:wizard          # compila su propio bundle + recorre los 6 caminos
+```
+
+- **Cómo se lee el resultado: la ÚLTIMA línea de stdout, `VEREDICTO: VERDE` o `VEREDICTO: ROJO — <motivo>`.** Es la única señal válida. **NO** basta "no vi ningún ✗" ni el código de salida cuando la salida pasa por una tubería (`| tail`, `| tee` devuelven el código del ÚLTIMO comando — así se coló un «error fatal» con exit 0 en el KMS el 2026-07-27). La batería imprime ese veredicto SIEMPRE, incluso ante error fatal, excepción no capturada o promesa no gestionada, y solo dice VERDE si recorrió TODOS los caminos declarados con 0 fallos.
+- **Prohibido repetir la batería hasta que salga verde**: un rojo se DIAGNOSTICA (cada camino imprime el detalle real: el paso donde aterrizó, los ms del avance, el payload que llegó), nunca se reintenta hasta pasar.
+- **Una ejecución con `E2E_FILTER` NO vale como muro** — la batería lo detecta y devuelve ROJO explícitamente ("ejecución PARCIAL").
+- **En CI ya es obligatorio**: `.github/workflows/deploy.yml` tiene un job `e2e` del que **depende** el job `build` → un push a `main` con la batería roja NO publica.
+
+**Qué cubre** (`frontend/e2e/run-wizard.mjs`, Playwright headless contra el backend simulado de `e2e/mock-backend.mjs`): `alta-nueva` (portada → enlace enviado, UNA sola petición, el cliente NO decide recuperar-vs-crear) · `ack-indistinguible` (email conocido vs desconocido → misma pantalla y misma secuencia de llamadas; y con un servidor que delata, el cliente sigue sin ramificar — el guardarraíl del casi-incidente WIZ-ENUM) · `recuperar-aterrizar` (magic-link → aterriza en el paso donde estaba + token fuera de la barra, KAL-7) · `guardar-paso` (avance optimista ≤200 ms medido EN LA PÁGINA + el `saveStep` lleva el valor nuevo + persiste al volver atrás) · `subir-documento` (bytes reales + confirmación visible) · `tramo-firma` (expediente admitido aterriza en el paso 8 y lo pinta).
+
+**Qué NO cubre (deliberado y declarado):** el **acto de firmar** no se consuma — es irreversible y su lógica vive en el motor del KMS, no en el wizard. Está declarado en `NO_CUBIERTAS_PERMITIDAS`; el resto de afirmaciones no ejecutadas hacen ROJO. Tampoco cubre el **backend GAS** (`backend/Code.js`) ni el OTP/step-up real: la batería entra con la gracia del magic-link (`step_up_fresh:true`), que es el camino que recorre una familia que acaba de pedir su enlace.
+
+**Datos y correos:** la batería **no manda ni un email y no toca ningún dato real**. Compila el bundle con `VITE_GAS_ENDPOINT=/__gas` y todo el tráfico muere en un servidor local; los datos son sintéticos en el dominio reservado `.invalid` (RFC 2606), que nunca puede ser el buzón de una familia. Todo lo externo (CDN, fuentes, reCAPTCHA, logo) se aborta en el navegador.
+
+**Cuando añadas o cambies un camino de la familia, la batería se amplía en el MISMO cambio.** Y antes de dar por buena una afirmación nueva, **rómpela a propósito** y comprueba que la batería sale ROJA nombrándola: una comprobación que nunca se ha visto fallar no es una red.
+
+### Publicación
+
 The wizard is served from a **fixed deployment URL**. `clasp push` only updates Head — users hit the deployment URL, which is frozen until redeployed.
 
 ```bash

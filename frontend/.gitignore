@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Batería E2E del wizard (bundle desechable con backend simulado)
+dist-e2e
+dist-e2e-*

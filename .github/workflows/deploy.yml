@@ -15,7 +15,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.
+  # Regla de los dos repos (CLAUDE.md §"No se toca lo que funciona sin una forma de
+  # comprobar que sigue funcionando"): el 2026-07-27 un cambio de seguridad estuvo a
+  # punto de romper el alta de solicitudes nuevas y no había NADA que lo cazara.
+  # `build` depende de este job: si la batería sale ROJA, no se publica nada.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      # Playwright NO es dependencia del wizard: se instala solo para la batería, sin
+      # tocar package.json ni el lock (--no-save) para no ensuciar el bundle publicado.
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      # La batería compila su propio bundle con backend SIMULADO (VITE_GAS_ENDPOINT=/__gas):
+      # no manda ni un email y no toca ningún dato real. No necesita los secretos.
+      - name: Batería del wizard (caminos reales de una familia)
+        run: npm run e2e:wizard
+        working-directory: frontend
+
   build:
+    needs: e2e
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
