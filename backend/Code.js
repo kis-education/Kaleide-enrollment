@@ -6357,8 +6357,20 @@ var PERF2_ = { kms_fetch_ms: null, adm: null };
 // SIN PII/tokens (KAL-11)}. doPost adjunta `_dbg` SOLO si el payload trae `_dbg:true`.
 // Estado global por ejecución — seguro en GAS (una ejecución = un hilo).
 var DBGT_ = { on: false, t0: 0, ev: [] };
+// WIZ-ENUM residual (verificación 2026-07-28): actions ANÓNIMOS cuya propiedad de
+// seguridad ES la respuesta CONSTANTE (anti-enumeración KAL-10). Para ellos el trace
+// `_dbg` NO se activa NUNCA, aunque el caller lo pida: la LISTA DE EVENTOS delata el
+// camino tomado y reabre justo el oráculo que cierra `_magicLinkConstantAck_`. Medido
+// en producción: un email CON grupo emite `kms_call enr.wizardTouchSession` +
+// `kms_call sys-public.sendNotification`; uno SIN grupo emite solo los dos Find. Es
+// decir, `{"_dbg":true}` convertía el ack constante en un oráculo de existencia
+// legible por cualquiera desde internet.
+var DBG_ENUM_SENSITIVE_ACTIONS_ = ['sendMagicLink', 'recognizeFamily', 'reportUnsolicited'];
+
 function _dbgStart_(payload) {
-  DBGT_.on = !!(payload && payload._dbg === true);
+  var action = payload && payload.action;
+  var sensitive = DBG_ENUM_SENSITIVE_ACTIONS_.indexOf(String(action)) !== -1;
+  DBGT_.on = !!(payload && payload._dbg === true) && !sensitive;
   DBGT_.t0 = Date.now();
   DBGT_.ev = [];
 }
