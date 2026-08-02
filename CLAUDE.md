@@ -379,13 +379,22 @@ clasp deploy \
 
 **Never create a new deployment** — always update the existing one above. A new deployment yields a new URL and breaks `admissions.kaleide.org`.
 
-### Auto-deploy via GitHub Actions (CI backend-deploy job)
+### ⚠️ NO hay auto-despliegue del BACKEND — empujar a `main` NO publica `backend/Code.js` (medido 2026-08-02)
 
-`.github/workflows/deploy.yml` includes a `backend-deploy` job that runs `clasp push --force` + `clasp deploy --deploymentId` on every push to `main`. It requires a GitHub secret:
+**Lo que CI hace de verdad en un empujón a `main`:** `e2e` (la batería del wizard) → `build` → `deploy` **a GitHub Pages**. Eso publica **el frontend y solo el frontend**.
 
-- **`CLASP_TOKEN`**: JSON content of `~/.clasprc.json` from Diego's local machine (contains OAuth refresh token). Add via: GitHub repo → Settings → Secrets → Actions → New secret → name `CLASP_TOKEN` → paste the full contents of `~/.clasprc.json`.
+**Lo que CI NO hace: NADA con `clasp`.** El backend GAS se publica **a mano**, con los dos comandos de §"Publicación" de aquí arriba. Un cambio en `backend/Code.js` empujado a `main` queda **en el repositorio y NO en la URL que usan las familias** hasta que alguien ejecuta ese `clasp push` + `clasp deploy`.
 
-Without this secret the job fails silently — the frontend-deploy (Pages) is unaffected.
+Comprobado así, no supuesto:
+
+```bash
+ls .github/workflows/                                  # → solo deploy.yml
+grep -c 'clasp' .github/workflows/deploy.yml           # → 0
+```
+
+**Esta sección decía lo contrario hasta el 2026-08-02**: afirmaba que `deploy.yml` incluía un trabajo `backend-deploy` con `clasp push --force` + `clasp deploy` en cada empujón a `main`, y explicaba cómo dar de alta un secreto `CLASP_TOKEN` para alimentarlo. **Ese trabajo no existe en el fichero** (ni el secreto se usa en ninguna parte). Es la misma clase de error que la auditoría del 2026-08-01 (§"Regla: para AUDITAR o DECIDIR sobre el wizard…" en `kis-app/CLAUDE.md`): **documentación que declara existente un mecanismo que no está**. Aquí el daño era el simétrico y peor — invitaba a dar por publicado un cambio de backend que seguía sin salir, o a no ejecutar el despliegue "porque ya lo hace CI".
+
+Si algún día se quiere ese trabajo, se **construye y se ve funcionar** antes de describirlo aquí.
 
 ### Smoke test technique — dos pasos (2026-05-29)
 

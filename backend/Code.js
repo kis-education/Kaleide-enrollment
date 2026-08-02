@@ -5251,7 +5251,14 @@ function uploadDocument_(p) {
     original_filename:        filename,
     mime_type:                mimeType,
     file_size_bytes:          blob.getBytes().length,
-    file_hash_sha256:         null,
+    // `file_hash_sha256` es REQUERIDA en recFiles: mandarla en `null` (o no mandarla)
+    // hace que AppSheet rechace la fila ENTERA con HTTP 400 y `db_insert` lance
+    // DB_ERROR — es decir, TODA subida de documento de una familia fallaba. Medido el
+    // 2026-08-02 con `manual_capturarErrorSubida` (kis-app), columna a columna.
+    // Se calcula aquí porque es aquí donde están los bytes: `decoded` ya pasó el límite
+    // de tamaño y la comprobación de número mágico, así que es exactamente el
+    // contenido que se acaba de subir a Drive.
+    file_hash_sha256:         sha256Hex_(decoded),
     status:                   'ACTIVE',
     upload_idempotency_token: idempotencyToken,
     origin:                   'WIZARD',
