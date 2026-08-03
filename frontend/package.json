@@ -8,6 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "e2e:wizard": "node e2e/run-wizard.mjs",
+    "robot:inscripcion": "E2E_BACKEND=real node e2e/run-wizard.mjs",
     "predeploy": "node e2e/run-wizard.mjs",
     "preview": "vite preview"
   },

@@ -53,14 +53,38 @@
  *     elementos es FALLO, no éxito: no comprobó nada.
  *   · RECONCILIACIÓN. Caminos ejecutados === caminos declarados, o ROJO.
  *
+ * ── Dos backends, UNA sola costura ───────────────────────────────────────────
+ * El navegador SIEMPRE habla con el servidor local de esta batería (el bundle se
+ * compila con `VITE_GAS_ENDPOINT=/__gas`; la URL de Google NO entra en el bundle).
+ * Lo único que cambia es a dónde va ese servidor cuando le llega la llamada:
+ *   · `E2E_BACKEND=mock` (por defecto) → `dispatch()` de `mock-backend.mjs`.
+ *   · `E2E_BACKEND=real`               → REENVÍA el payload tal cual al `/exec` del
+ *     wizard de verdad (que a su vez llama al KMS de verdad) y devuelve su JSON.
+ * El reenvío hace el DOBLE SALTO que exige una web app de GAS: POST sin seguir
+ * redirecciones → se captura la cabecera `Location:` → GET a ese URL, que es donde
+ * está el JSON (`CLAUDE.md` §"Smoke test technique — dos pasos"; `curl -L` NO vale
+ * porque convierte el POST en GET).
+ *
  * ── Seguridad de los datos ───────────────────────────────────────────────────
- * NO se manda ni un email y NO se toca ningún dato real: el bundle se compila con
- * `VITE_GAS_ENDPOINT=/__gas` y todo el tráfico muere en el servidor local de
- * `mock-backend.mjs`, con datos sintéticos en el dominio reservado `.invalid`.
- * Todo lo externo (CDN, fuentes, reCAPTCHA, logo) se ABORTA en el navegador.
+ * En modo `mock`: NO se manda ni un email y NO se toca ningún dato real — todo el
+ * tráfico muere en el servidor local, con datos sintéticos en el dominio reservado
+ * `.invalid`. Todo lo externo (CDN, fuentes, reCAPTCHA, logo) se ABORTA en el navegador.
+ *
+ * En modo `real`: se escribe en el sistema de verdad y SALEN CORREOS REALES. Por eso
+ * las identidades son desechables y reconocibles: los correos van SIEMPRE al buzón de
+ * pruebas que entra por `E2E_MAIL_BASE`, usando SUB-DIRECCIÓN de Gmail para que cada
+ * tutor sea distinto ante el sistema (`buzon+robot-t1@…`, `+robot-t2@…`; la
+ * recuperación es per-guardian, dos tutores con el mismo correo no ejercitan el
+ * camino real), y los apellidos llevan el marcador `ROBOT-<sello>` para poder
+ * localizar y borrar después la familia de prueba. Sin `E2E_GAS_URL` o sin
+ * `E2E_MAIL_BASE` el modo real NO arranca: ROJO inmediato, jamás un valor por defecto.
+ *
+ * ⚠️ Google tiene CUOTA DIARIA de envío. Un camino que muere por cuota NO es un
+ * defecto del camino de inscripción: la batería lo detecta y lo reporta como CUOTA.
  *
  * Uso:
- *   npm run e2e:wizard                        # build + batería completa
+ *   npm run e2e:wizard                        # build + batería completa (simulado)
+ *   npm run robot:inscripcion                 # la misma batería contra el sistema REAL
  *   E2E_SKIP_BUILD=1 npm run e2e:wizard       # reusa el bundle existente
  *   E2E_FILTER=alta npm run e2e:wizard        # subconjunto por nombre de camino
  *   E2E_HEADFUL=1 …                           # con navegador visible (depuración)
@@ -78,7 +102,17 @@ const FRONTEND = join(HERE, '..')
 const DIST_DIR = process.env.E2E_DIST || 'dist-e2e'
 const DIST     = join(FRONTEND, DIST_DIR)
 
-const LATENCY        = Number(process.env.E2E_LATENCY || 800)
+// ── Modo de backend: simulado (por defecto) o el sistema REAL ────────────────
+const BACKEND   = String(process.env.E2E_BACKEND || 'mock').toLowerCase()
+const REAL      = BACKEND === 'real'
+const GAS_URL   = process.env.E2E_GAS_URL || ''
+const MAIL_BASE = process.env.E2E_MAIL_BASE || ''
+
+// En modo simulado la latencia se INYECTA (es la que hace demostrable el avance
+// optimista). En modo real NO se inyecta nada: el backend de verdad ya tarda. Ahí
+// el valor solo sirve de latencia ESPERADA para dimensionar esperas y timeouts, y
+// lo que hace demostrable el avance optimista es la latencia REAL medida.
+const LATENCY        = Number(process.env.E2E_LATENCY || (REAL ? 4000 : 800))
 const FEEDBACK_BUDGET_MS = Number(process.env.E2E_FEEDBACK_MS || 200)
 const FILTER     = process.env.E2E_FILTER || ''
 const SKIP_BUILD = process.env.E2E_SKIP_BUILD === '1'
@@ -100,11 +134,27 @@ const NO_CUBIERTAS_PERMITIDAS = {
   },
 }
 
+// Añadidos SOLO en modo real: escenarios que el backend simulado puede fabricar y
+// el sistema de verdad no. No son un perdón general — cada uno con su motivo, y la
+// comprobación de "declarada pero HOY sí se cubre" sigue viva en ambos modos.
+const NO_CUBIERTAS_SOLO_REAL = {
+  'ack-indistinguible': {
+    'servidor-que-delata': 'el escenario hostil (servidor que devuelve el error legacy "Enrollment group not found") no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
+  },
+}
+if (REAL) {
+  for (const [camino, entradas] of Object.entries(NO_CUBIERTAS_SOLO_REAL)) {
+    NO_CUBIERTAS_PERMITIDAS[camino] = { ...(NO_CUBIERTAS_PERMITIDAS[camino] || {}), ...entradas }
+  }
+}
+
 // ── VEREDICTO — la ÚLTIMA línea de stdout, pase lo que pase ───────────────────
 let VERDICT_PRINTED = false
 function printVerdict(ok, reason) {
   VERDICT_PRINTED = true
-  console.log(ok ? '\nVEREDICTO: VERDE — batería del wizard completa sin fallos.' : `\nVEREDICTO: ROJO — ${reason}`)
+  const donde = (String(process.env.E2E_BACKEND || 'mock').toLowerCase() === 'real')
+    ? 'contra el sistema REAL' : 'contra el backend simulado'
+  console.log(ok ? `\nVEREDICTO: VERDE — batería del wizard completa sin fallos ${donde}.` : `\nVEREDICTO: ROJO — ${reason}`)
 }
 process.on('exit', (code) => {
   if (!VERDICT_PRINTED) console.log(`\nVEREDICTO: ROJO — la batería terminó SIN veredicto (código ${code}): recorrido abortado.`)
@@ -129,6 +179,59 @@ if (!(FEEDBACK_BUDGET_MS < LATENCY)) {
   printVerdict(false, `configuración inválida (E2E_FEEDBACK_MS=${FEEDBACK_BUDGET_MS} ≥ E2E_LATENCY=${LATENCY})`)
   process.exit(1)
 }
+
+// ── Modo real: sin destino y sin buzón NO se arranca. Jamás un valor por defecto ─
+// Un default aquí sería la peor clase de error posible: escribir en un sistema que
+// no es el que se creía, o mandar correos a una dirección que no es la de pruebas.
+if (BACKEND !== 'mock' && BACKEND !== 'real') {
+  printVerdict(false, `E2E_BACKEND="${BACKEND}" no es un modo válido (mock|real)`)
+  process.exit(1)
+}
+if (REAL && !/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(GAS_URL)) {
+  printVerdict(false, GAS_URL
+    ? `E2E_GAS_URL no parece el /exec de una web app de GAS: "${GAS_URL}"`
+    : 'modo real sin E2E_GAS_URL: no hay a dónde reenviar y NO se inventa un destino por defecto')
+  process.exit(1)
+}
+if (REAL && !/^[^\s@+]+@[^\s@]+\.[^\s@]+$/.test(MAIL_BASE)) {
+  printVerdict(false, MAIL_BASE
+    ? `E2E_MAIL_BASE no es una dirección base válida (sin sub-dirección "+"): "${MAIL_BASE}"`
+    : 'modo real sin E2E_MAIL_BASE: saldrían correos REALES y NO se inventa un buzón por defecto')
+  process.exit(1)
+}
+
+// ── Identidades del recorrido ────────────────────────────────────────────────
+// En simulado, las del fixture (dominio `.invalid`, nunca enruta). En real, unas
+// DESECHABLES y RECONOCIBLES: sub-dirección de Gmail por identidad (cada tutor es
+// distinto ante el sistema, que resuelve la recuperación per-guardian) y marcador
+// `ROBOT-<sello>` en el apellido para poder localizar y borrar la familia después.
+const SELLO = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)   // AAAAMMDDhhmmss
+const MARCA = `ROBOT-${SELLO}`
+const buzon = (etiqueta) => {
+  const [local, dominio] = MAIL_BASE.split('@')
+  return `${local}+${etiqueta}@${dominio}`
+}
+const DATOS = REAL
+  ? {
+      // Reutilizado entre corridas: tras la primera, este correo YA tiene expediente
+      // ⇒ es el lado "conocido" de la comparación anti-enumeración.
+      emailKnown:   buzon('robot-t1'),
+      // Único por corrida ⇒ genuinamente desconocido para el sistema.
+      emailUnknown: buzon(`robot-u${SELLO}`),
+      apellido:     MARCA,
+      // Sin magic-link real todavía no hay token de sesión: se usan valores con
+      // FORMA válida que el sistema debe rechazar. El encargo ROBOT-2 los sustituye
+      // por los de un expediente real recuperado.
+      resumeToken:  FIXTURE.resumeToken,
+      emailId:      FIXTURE.emailId,
+    }
+  : {
+      emailKnown:   FIXTURE.emailKnown,
+      emailUnknown: FIXTURE.emailUnknown,
+      apellido:     'PruebaE2E',
+      resumeToken:  FIXTURE.resumeToken,
+      emailId:      FIXTURE.emailId,
+    }
 
 // ── 1 · Build ────────────────────────────────────────────────────────────────
 function buildBundle() {
@@ -164,21 +267,68 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false }
 const dispatch = createDispatcher(scenario, record)
 
+// ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
+// Una web app de GAS contesta en DOS pasos: el POST devuelve 302 con `Location:`
+// y el JSON está en ese segundo URL. `curl -L` (y `redirect:'follow'`) NO valen:
+// convierten el POST en GET y el echo devuelve una página de error de Drive.
+// Verificado a mano con curl contra el /exec real antes de escribir esto.
+const CUOTA_RE = /Service invoked too many times|Limit Exceeded|too many times for one day|quota/i
+let cuotaVista = null            // mensaje literal de Google, si la cuota se agotó
+let cuotaDelCamino = null        // ídem, acotado al recorrido en curso
+let idaYVueltaMin = Infinity     // latencia REAL mínima observada (ms)
+
+async function reenviarAlBackendReal(payload) {
+  const t0 = Date.now()
+  try {
+    const salto1 = await fetch(GAS_URL, {
+      method: 'POST',
+      redirect: 'manual',                       // el 302 se maneja a mano: ver arriba
+      headers: { 'Content-Type': 'text/plain' },  // lo que manda el propio wizard
+      body: JSON.stringify(payload),
+    })
+    const destino = salto1.headers.get('location')
+    let texto
+    if (destino) {
+      texto = await (await fetch(destino)).text()
+    } else {
+      // Sin redirección (algunos errores de Google contestan directos): se lee tal cual.
+      texto = await salto1.text()
+    }
+    idaYVueltaMin = Math.min(idaYVueltaMin, Date.now() - t0)
+    if (CUOTA_RE.test(texto)) {
+      cuotaVista = cuotaDelCamino = texto.replace(/\s+/g, ' ').trim().slice(0, 240)
+      return { ok: false, error: { code: 'E2E_CUOTA', message: cuotaVista } }
+    }
+    try { return JSON.parse(texto) } catch {
+      // Google devolvió HTML (sesión, error de despliegue, página de consentimiento):
+      // se propaga el principio del cuerpo LITERAL, sin interpretarlo.
+      return { ok: false, error: { code: 'E2E_NO_JSON', message: texto.replace(/\s+/g, ' ').trim().slice(0, 240) } }
+    }
+  } catch (e) {
+    return { ok: false, error: { code: 'E2E_RED', message: String((e && e.message) || e).slice(0, 240) } }
+  }
+}
+
 function startServer() {
   const server = createServer((req, res) => {
     if (req.method === 'POST' && req.url.startsWith('/__gas')) {
       let body = ''
       req.on('data', (d) => { body += d })
-      req.on('end', () => {
+      req.on('end', async () => {
         let payload = {}
         try { payload = JSON.parse(body || '{}') } catch { /* payload vacío */ }
-        const out = dispatch(payload)
-        // Latencia simulada: sin ella no se puede distinguir un avance optimista
-        // de uno que espera al servidor.
-        setTimeout(() => {
+        const responder = (out) => {
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify(out))
-        }, LATENCY)
+        }
+        if (REAL) {
+          record({ action: payload && payload.action, payload })
+          return responder(await reenviarAlBackendReal(payload))
+        }
+        const out = dispatch(payload)
+        // Latencia simulada: sin ella no se puede distinguir un avance optimista
+        // de uno que espera al servidor. En real no se inyecta: ya tarda de verdad.
+        setTimeout(() => responder(out), LATENCY)
       })
       return
     }
@@ -307,6 +457,31 @@ async function esperarWizard(page, timeout = LATENCY * 3 + 15000) {
 /** Llamadas registradas de una acción concreta en el recorrido en curso. */
 const llamadas = (accion) => calls.filter(c => c.action === accion)
 
+/**
+ * Peticiones a /__gas todavía EN VUELO en la página (contador que alimenta el
+ * runner con los eventos de red de Playwright).
+ *
+ * Por qué existe: los envíos de la portada son fire-and-forget y ENCADENAN
+ * (`sendMagicLink` → `warmBundle`). Si la batería se va de la página a mitad de
+ * vuelo, el navegador aborta el fetch y la app registra un error de red que NO es
+ * suyo, sino del robot. Contra el backend simulado bastaba un temporizador fijo
+ * (la latencia la ponemos nosotros); contra el sistema REAL el tiempo lo decide
+ * Google —enviar el correo pasa por el KMS— y cualquier número fijo es una
+ * apuesta. Se espera al SILENCIO de red, no al reloj.
+ */
+const enVuelo = { n: 0 }
+async function esperarSilencioDeRed(msMax = 120000, msQuieto = 2500) {
+  const t0 = Date.now()
+  let desde = null
+  for (;;) {
+    if (enVuelo.n > 0) desde = null
+    else if (desde == null) desde = Date.now()
+    else if (Date.now() - desde >= msQuieto) return true
+    if (Date.now() - t0 > msMax) return false      // se reporta como lo que sea que falle después
+    await new Promise(r => setTimeout(r, 150))
+  }
+}
+
 // ── 5 · Contexto de un camino ────────────────────────────────────────────────
 class Camino {
   constructor(nombre) {
@@ -357,11 +532,12 @@ async function rellenarPortada(page, base, email) {
   // fuente de iconos y el <i> queda con tamaño cero (invisible para Playwright)
   // aunque la pantalla esté perfectamente pintada.
   await page.waitForFunction(() => !!document.querySelector('.bi-envelope-check'), { timeout: 10000 })
-  // Deja respirar a las llamadas de FONDO antes de irse de la página. El envío es
-  // fire-and-forget y encadena `sendMagicLink` → `warmBundle`: si la batería navega
-  // a mitad de vuelo, el navegador aborta el fetch y la app registra un error de red
-  // que NO es suyo, sino del robot. Se espera la cadena entera (2 saltos) + margen.
-  await page.waitForTimeout(LATENCY * 2 + 900)
+  // Deja respirar a las llamadas de FONDO antes de irse de la página (ver
+  // `esperarSilencioDeRed`). Con backend simulado la latencia la ponemos nosotros y
+  // basta el reloj; contra el sistema real el tiempo lo decide Google, así que se
+  // espera al silencio de red.
+  if (REAL) await esperarSilencioDeRed()
+  else await page.waitForTimeout(LATENCY * 2 + 900)
   return page.evaluate(sondaPantalla)
 }
 
@@ -369,7 +545,7 @@ async function caminoAltaNueva(page, base) {
   const c = new Camino('alta-nueva')
   scenario.magicLinkMode = 'constant'
 
-  const pantalla = await rellenarPortada(page, base, FIXTURE.emailUnknown)
+  const pantalla = await rellenarPortada(page, base, DATOS.emailUnknown)
 
   c.evidencia.elementos = pantalla.tarjetas + (pantalla.sobreEnviado ? 1 : 0)
   c.afirmar('la portada confirma el envío del enlace', pantalla.sobreEnviado,
@@ -381,7 +557,7 @@ async function caminoAltaNueva(page, base) {
     `se registraron ${envios.length} llamadas a sendMagicLink (se espera exactamente 1)`)
   if (envios.length) {
     c.afirmar('la petición lleva el email tecleado',
-      envios[0].payload && envios[0].payload.primary_email === FIXTURE.emailUnknown,
+      envios[0].payload && envios[0].payload.primary_email === DATOS.emailUnknown,
       `primary_email recibido: ${envios[0].payload && envios[0].payload.primary_email}`)
   } else {
     c.noCubierta('email-en-la-peticion', 'no hubo ninguna petición que inspeccionar')
@@ -398,11 +574,11 @@ async function caminoAckIndistinguible(page, base) {
   // (a) Email CONOCIDO vs DESCONOCIDO — el servidor responde igual (ack constante).
   scenario.magicLinkMode = 'constant'
   calls = []
-  const pantallaConocido = await rellenarPortada(page, base, FIXTURE.emailKnown)
+  const pantallaConocido = await rellenarPortada(page, base, DATOS.emailKnown)
   const accionesConocido = calls.map(x => x.action).join(',')
 
   calls = []
-  const pantallaDesconocido = await rellenarPortada(page, base, FIXTURE.emailUnknown)
+  const pantallaDesconocido = await rellenarPortada(page, base, DATOS.emailUnknown)
   const accionesDesconocido = calls.map(x => x.action).join(',')
 
   c.evidencia.elementos = pantallaConocido.tarjetas + pantallaDesconocido.tarjetas
@@ -419,11 +595,18 @@ async function caminoAckIndistinguible(page, base) {
   //     Que la app REGISTRE ese fallo del servidor es correcto (lo traga para el
   //     usuario y lo deja en el log, redactado): se declara como esperado, y si
   //     dejara de ocurrir el camino caería.
+  //     Contra el sistema REAL este escenario no se puede fabricar (el servidor es
+  //     el de verdad): se declara NO CUBIERTA con su motivo, nunca se finge verde.
+  if (REAL) {
+    c.noCubierta('servidor-que-delata',
+      'el escenario hostil (servidor que devuelve el error legacy "Enrollment group not found") no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre')
+    return c
+  }
   c.esperarErrorConsola(/sendMagicLink: server returned ok=false/,
     'escenario hostil deliberado: el servidor simulado delata que el email no existe; la app debe tragarse el fallo de cara al usuario pero SÍ registrarlo')
   scenario.magicLinkMode = 'legacy_error'
   calls = []
-  const pantallaLegacy = await rellenarPortada(page, base, FIXTURE.emailUnknown)
+  const pantallaLegacy = await rellenarPortada(page, base, DATOS.emailUnknown)
   const accionesLegacy = calls.map(x => x.action)
 
   c.afirmar('con un servidor que delata, la pantalla NO cambia',
@@ -443,7 +626,7 @@ async function caminoRecuperarAterrizar(page, base) {
   const c = new Camino('recuperar-aterrizar')
   scenario.stage = 'hasta_preguntas'   // completos 0..4 ⇒ aterriza en Documentos (5)
 
-  await page.goto(`${base}/#/resume/${FIXTURE.resumeToken}?n=${FIXTURE.emailId}`,
+  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
     { waitUntil: 'domcontentloaded', timeout: 30000 })
   await esperarWizard(page)
   const pantalla = await page.evaluate(sondaPantalla)
@@ -466,10 +649,10 @@ async function caminoRecuperarAterrizar(page, base) {
     c.fallos.push('la recuperación no llegó a pedir la sesión — hydrateSession nunca se llamó')
   } else {
     const p = hidrataciones[0].payload || {}
-    c.afirmar('la recuperación viaja con el token del enlace', p.resume_token === FIXTURE.resumeToken,
+    c.afirmar('la recuperación viaja con el token del enlace', p.resume_token === DATOS.resumeToken,
       `resume_token recibido: ${String(p.resume_token).slice(0, 8)}…`)
     c.afirmar('la recuperación viaja con la identidad del enlace (n = email_id)',
-      p.n === FIXTURE.emailId, `n recibido: ${p.n}`)
+      p.n === DATOS.emailId, `n recibido: ${p.n}`)
   }
   return c
 }
@@ -478,7 +661,7 @@ async function caminoGuardarPaso(page, base) {
   const c = new Camino('guardar-paso')
   scenario.stage = 'sin_fecha'   // sin fecha ⇒ aterriza en el paso 1 (índice 0)
 
-  await page.goto(`${base}/#/resume/${FIXTURE.resumeToken}?n=${FIXTURE.emailId}`,
+  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
     { waitUntil: 'domcontentloaded', timeout: 30000 })
   await esperarWizard(page)
 
@@ -504,9 +687,18 @@ async function caminoGuardarPaso(page, base) {
     c.fallos.push('al continuar, el wizard nunca avanzó al paso 2')
     return c
   }
-  c.afirmar(`el avance es inmediato (${ms} ms ≤ ${FEEDBACK_BUDGET_MS} ms)`,
-    ms <= FEEDBACK_BUDGET_MS,
-    `tardó ${ms} ms con una latencia simulada de ${LATENCY} ms: el avance está esperando al servidor en vez de ser optimista`)
+  // Anti-coladero: el avance solo demuestra ser OPTIMISTA si el servidor tarda más
+  // que el presupuesto. En simulado lo garantiza el invariante de arriba; contra el
+  // sistema real hay que MEDIRLO — si el backend contestara dentro del presupuesto,
+  // la afirmación se ejecutaría en vacío y eso NO es verde.
+  if (REAL && !(idaYVueltaMin > FEEDBACK_BUDGET_MS)) {
+    c.noCubierta('avance-optimista',
+      `el backend real contestó en ${idaYVueltaMin} ms, dentro del presupuesto de ${FEEDBACK_BUDGET_MS} ms: un avance "inmediato" podría venir del servidor y la medida no demuestra nada`)
+  } else {
+    c.afirmar(`el avance es inmediato (${ms} ms ≤ ${FEEDBACK_BUDGET_MS} ms)`,
+      ms <= FEEDBACK_BUDGET_MS,
+      `tardó ${ms} ms con una latencia ${REAL ? `REAL mínima de ${idaYVueltaMin}` : `simulada de ${LATENCY}`} ms: el avance está esperando al servidor en vez de ser optimista`)
+  }
 
   // El guardado sale con el valor nuevo (aunque el usuario ya haya avanzado).
   await page.waitForTimeout(LATENCY + 800)
@@ -522,7 +714,7 @@ async function caminoGuardarPaso(page, base) {
       !!(g.payload && g.payload.desired_start_date === FECHA),
       `desired_start_date recibido: ${g.payload && g.payload.desired_start_date} (se escribió ${FECHA})`)
     c.afirmar('el guardado va autenticado con el token de la sesión (KAL-4)',
-      g.resume_token === FIXTURE.resumeToken, 'el saveStep salió sin el resume_token de la sesión')
+      g.resume_token === DATOS.resumeToken, 'el saveStep salió sin el resume_token de la sesión')
   }
 
   // Persistencia visible: volver atrás y comprobar que el valor sigue.
@@ -551,7 +743,7 @@ async function caminoSubirDocumento(page, base) {
   const c = new Camino('subir-documento')
   scenario.stage = 'hasta_preguntas'   // aterriza directamente en Documentos (5)
 
-  await page.goto(`${base}/#/resume/${FIXTURE.resumeToken}?n=${FIXTURE.emailId}`,
+  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
     { waitUntil: 'domcontentloaded', timeout: 30000 })
   await esperarWizard(page)
 
@@ -594,7 +786,7 @@ async function caminoSubirDocumento(page, base) {
     c.afirmar('la subida lleva el nombre del archivo', p.filename === 'prueba-e2e.pdf',
       `filename recibido: ${p.filename}`)
     c.afirmar('la subida va autenticada con el token de la sesión (KAL-4)',
-      p.resume_token === FIXTURE.resumeToken, 'el uploadDocument salió sin el resume_token de la sesión')
+      p.resume_token === DATOS.resumeToken, 'el uploadDocument salió sin el resume_token de la sesión')
   } else {
     c.noCubierta('contenido-de-la-subida', 'no hubo ninguna subida que inspeccionar')
   }
@@ -607,7 +799,7 @@ async function caminoTramoFirma(page, base) {
   const c = new Camino('tramo-firma')
   scenario.stage = 'firma'   // ADMITIDA + firma abierta ⇒ primer paso de firma (7)
 
-  await page.goto(`${base}/#/resume/${FIXTURE.resumeToken}?n=${FIXTURE.emailId}`,
+  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
     { waitUntil: 'domcontentloaded', timeout: 30000 })
   await esperarWizard(page)
   await page.waitForTimeout(LATENCY + 800)   // el paso de firma lee su presupuesto
@@ -645,7 +837,14 @@ async function main() {
   const { chromium } = await loadPlaywright()
   const server = await startServer()
   const base = `http://127.0.0.1:${server.address().port}`
-  console.log(`[e2e] wizard servido en ${base} (backend simulado en /__gas, latencia ${LATENCY} ms)\n`)
+  if (REAL) {
+    console.log(`[robot] wizard servido en ${base} — /__gas REENVÍA al sistema REAL`)
+    console.log(`[robot] destino:  ${GAS_URL}`)
+    console.log(`[robot] correos:  ${DATOS.emailKnown} · ${DATOS.emailUnknown}  (buzón de pruebas, sub-dirección por identidad)`)
+    console.log(`[robot] marcador: ${MARCA}   ⚠️ SE ESCRIBE EN EL SISTEMA DE VERDAD Y SALEN CORREOS REALES\n`)
+  } else {
+    console.log(`[e2e] wizard servido en ${base} (backend simulado en /__gas, latencia ${LATENCY} ms)\n`)
+  }
 
   let browser
   try {
@@ -675,8 +874,16 @@ async function main() {
     })
     page.on('pageerror', (err) => erroresConsola.push(`excepción: ${String(err && err.message || err).slice(0, 300)}`))
 
+    // Contador de peticiones al backend en vuelo (ver `esperarSilencioDeRed`).
+    const esNuestra = (r) => r.url().includes('/__gas')
+    page.on('request',        (r) => { if (esNuestra(r)) enVuelo.n++ })
+    page.on('requestfinished',(r) => { if (esNuestra(r)) enVuelo.n-- })
+    page.on('requestfailed',  (r) => { if (esNuestra(r)) enVuelo.n-- })
+    enVuelo.n = 0
+
     calls = []
     unmockedActions = new Set()
+    cuotaDelCamino = null
     let c
     try {
       c = await def.fn(page, base)
@@ -713,10 +920,15 @@ async function main() {
     }
 
     c.llamadasTotales = totalLlamadas
+    // CUOTA: si Google cortó por límite de envío, el recorrido NO probó nada — pero
+    // eso NO es un defecto del camino de inscripción. Se marca aparte para no
+    // atribuir al producto un rojo que es de la cuota. Sigue sin ser verde.
+    c.cuota = cuotaDelCamino
     resultados.push(c)
 
-    const flag = c.fallos.length ? '✗' : '✓'
+    const flag = c.cuota ? '⚠' : (c.fallos.length ? '✗' : '✓')
     console.log(`  ${flag} ${c.nombre}  (${totalLlamadas} llamadas, ${c.evidencia.elementos || 0} elementos)`)
+    if (c.cuota) console.log(`      ⚠ CUOTA de Google (NO es defecto del camino): ${c.cuota}`)
     for (const n of c.notas)  console.log(`      ${n}`)
     for (const f of c.fallos) console.log(`      ✗ ${f}`)
     for (const nc of c.noCubiertas) console.log(`      · NO CUBIERTA «${nc.etiqueta}»: ${nc.motivo}`)
@@ -728,10 +940,13 @@ async function main() {
   server.close()
 
   // ── Resumen ────────────────────────────────────────────────────────────────
-  const conFallo = resultados.filter(r => r.fallos.length)
+  const conCuota = resultados.filter(r => r.cuota)
+  const conFallo = resultados.filter(r => r.fallos.length && !r.cuota)
   console.log(`\n  caminos ejecutados:  ${resultados.length} de ${seleccionados.length}`)
-  console.log(`  caminos en verde:    ${resultados.length - conFallo.length}`)
+  console.log(`  caminos en verde:    ${resultados.filter(r => !r.fallos.length && !r.cuota).length}`)
   console.log(`  caminos en rojo:     ${conFallo.length}`)
+  if (conCuota.length) console.log(`  caminos por CUOTA:   ${conCuota.length}  (no son defecto del camino de inscripción)`)
+  if (REAL) console.log(`  latencia real mín.:  ${idaYVueltaMin === Infinity ? 'n/d' : idaYVueltaMin + ' ms'}`)
 
   // Cobertura: lo no ejecutado exige motivo declarado; la lista no puede envejecer.
   const problemasCobertura = []
@@ -757,6 +972,13 @@ async function main() {
   // Reconciliación: un recorrido a medias no es verde.
   if (resultados.length !== seleccionados.length) {
     printVerdict(false, `recorrido incompleto: ${resultados.length} de ${seleccionados.length} caminos`)
+    process.exit(1)
+  }
+  // CUOTA antes que nada: en cuanto Google corta por límite de envío, todo lo que
+  // venga después es ruido. No es verde (no se probó), pero tampoco es un rojo del
+  // camino de inscripción — y atribuirlo mal cuesta un ciclo entero de diagnóstico.
+  if (conCuota.length) {
+    printVerdict(false, `CUOTA de Google agotada en ${conCuota.length} camino(s) (${conCuota.map(r => r.nombre).join(', ')}) — NO es un defecto del camino de inscripción; reintentar cuando el cupo se reponga. Mensaje literal: ${conCuota[0].cuota}`)
     process.exit(1)
   }
   if (conFallo.length) {
