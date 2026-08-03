@@ -343,6 +343,35 @@ Precedente: CLI 22 + CLI 28 + CLI 33-36 + Frontend-9-10 + Frontend-12 (2026-05-2
 
 ## Deployment
 
+### El control de escrituras directas vive en ESTE repo, y muerde en su CI (2026-08-03)
+
+**`node scripts/comprobar-escrituras-directas.mjs`** comprueba que `backend/Code.js` **no escribe
+(Add/Edit/Delete) DIRECTO a ninguna tabla de AppSheet** — el invariante de la §"★ El wizard NO
+escribe NINGUNA tabla AppSheet". No necesita `npm ci`, ni red, ni navegador (~1 s: solo lee
+ficheros), y **el trabajo `escrituras-directas` de `.github/workflows/deploy.yml` lo ejecuta en cada
+empujón a `main`; `build` depende de él ⇒ en ROJO no se publica**.
+
+**Por qué está aquí y no en el KMS.** Nació dentro de `kis-app/scripts/check-quality-gates.mjs`
+(gate `#wizard-no-direct-crosscutting-writes`) leyendo este repositorio como **hermano de checkout**.
+En la integración continua del KMS ese hermano **no existe** ⇒ el control se declaraba **INERTE** y
+**no comprobaba nada**: un control de seguridad que solo actúa si alguien tiene los dos repositorios
+clonados al lado. La salida perezosa era un credencial con acceso cruzado; la correcta es ésta —
+**el control se ejecuta donde vive el código que vigila**. El gate del KMS **importa este mismo
+fichero** (`scripts/escrituras-directas.mjs`) cuando tiene el hermano delante: **una sola
+implementación, dos invocadores**. Dos copias del mismo control divergen, y un control divergido
+miente.
+
+**Cubre cuatro formas** (las tres primeras son agujeros medidos, no imaginados): escritura con acción
+literal · **acción en variable** (indemostrable ⇒ infracción por sí misma) · **herencia de exención**
+(una flecha asignada tras una función exenta heredaba su permiso) · **transporte paralelo** (la URL
+de AppSheet fuera de `appsheetRequest_`/`appsheetRequestBatch_`). Las tres primeras se demostraron en
+ROJO el 2026-08-03 antes de dar el trabajo por hecho. **Límite honesto declarado en la cabecera del
+módulo**: es un detector por líneas, no un analizador sintáctico — un `eval()` seguiría siendo
+invisible.
+
+**Veredicto**: última línea, `VEREDICTO: VERDE|ROJO — <motivo>`, impresa **siempre** (también ante
+error fatal). Nunca se deduce del código de salida.
+
 ### MANDATORY — MURO DE DEPLOY: batería del wizard VERDE antes de CUALQUIER publicación (2026-07-28)
 
 **`npm run e2e:wizard` (desde `frontend/`) debe terminar VERDE antes de publicar nada** — ni el frontend a GitHub Pages, ni el backend con `clasp deploy`. **Cambio sin batería verde = NO deploy.** Es el equivalente al muro del KMS (`kis-app/CLAUDE.md` §"MANDATORY — MURO DE DEPLOY"), y nace de la regla de los dos repos (§"No se toca lo que funciona sin una forma de comprobar que sigue funcionando").

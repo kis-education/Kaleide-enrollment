@@ -15,6 +15,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # CONTROL DE SEGURIDAD — este backend se despliega como ANYONE_ANONYMOUS: cualquiera en
+  # internet puede invocar lo que esté en su dispatcher. Un backend así con credenciales de
+  # ESCRITURA de AppSheet es un vector de ataque directo, así que TODA escritura vive en el
+  # KMS y se alcanza vía kmsProxy_. Este trabajo comprueba que sigue siendo verdad.
+  #
+  # Vive AQUÍ y no en el KMS a propósito: el control nació allí leyendo este repositorio
+  # como hermano de checkout, y en la integración continua del KMS ese hermano no existe,
+  # así que se declaraba INERTE y no comprobaba nada. El control se ejecuta donde vive el
+  # código que vigila. `build` depende de él: en ROJO no se publica.
+  #
+  # No necesita `npm ci`, ni navegador, ni red: solo lee ficheros (~1 s).
+  escrituras-directas:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # El veredicto se lee de la ÚLTIMA línea, nunca del código de salida — pero el código
+      # de salida es lo que hace fallar este trabajo, así que NO se canaliza por una tubería
+      # (una tubería devuelve el código del último comando, y así se cuela un rojo como verde).
+      - name: Ninguna escritura directa a AppSheet desde el backend anónimo
+        run: node scripts/comprobar-escrituras-directas.mjs
+
   # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.
   # Regla de los dos repos (CLAUDE.md §"No se toca lo que funciona sin una forma de
   # comprobar que sigue funcionando"): el 2026-07-27 un cambio de seguridad estuvo a
@@ -52,7 +80,7 @@ jobs:
         working-directory: frontend
 
   build:
-    needs: e2e
+    needs: [e2e, escrituras-directas]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
