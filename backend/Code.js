@@ -1411,20 +1411,30 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
       var admEntry = {
         v: _getLiveStateVersion_(groupId),
         n: String(nParam || ''),
-        admission: {
-          state_code:        admSrc.state_code || null,
-          state_label:       admSrc.state_label || null,
-          signing_ready:     !!admSrc.signing_ready,
-          signing_status:    admSrc.signing_status || null,
-          signing_available: !!admSrc.signing_available,
-          signing_context:   (signingToken && guardianPid) ? {
+        admission: (function () {
+          // DL-E41 ★ ACOTACIÓN — del KMS se toman los HECHOS (fase, etiqueta de la fase,
+          // estado de la firma); las TRES banderas de pantalla las deriva ESTE cliente con
+          // su lector único. Antes se copiaban del KMS (`!!admSrc.signing_available`, etc.)
+          // mientras el pulse las calculaba aquí: dos cálculos del mismo dato que YA
+          // divergían en `signing_available`, y ese campo abre el avance 7→8.
+          var ctx = (signingToken && guardianPid) ? {
             signer_id:          signerId || null,
             session_id:         sessionId || null,
             guardian_person_id: guardianPid,
             signing_token:      signingToken,
-          } : null,
-          editable:          !!admSrc.editable,
-        },
+          } : null;
+          var d = derivarPantallaAdmision_(admSrc.state_code || null,
+                                           admSrc.signing_status || null, ctx);
+          return {
+            state_code:        admSrc.state_code || null,
+            state_label:       admSrc.state_label || null,
+            signing_status:    admSrc.signing_status || null,
+            signing_context:   ctx,
+            signing_ready:     d.signing_ready,
+            signing_available: d.signing_available,
+            editable:          d.editable,
+          };
+        })(),
       };
       out.admission = _wzCachePutChunked_(cache, _wzCacheKey_('adm', gidW + '_' + nW), JSON.stringify(admEntry), 1800);
     }
@@ -3030,6 +3040,43 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
  * @param {string|null} guardianPersonId  guardian resuelto server-side (a1)
  * @returns {{state_code, state_label, signing_available, signing_context, signing_ready, signing_status}}
  */
+/**
+ * DL-E41 ★ ACOTACIÓN 2026-08-02 — LAS TRES DERIVACIONES DE PANTALLA, EN UN SOLO SITIO.
+ *
+ * `editable`, `signing_available` y `signing_ready` **no son hechos del expediente**: son
+ * decisiones de presentación de ESTE cliente («¿puedo editar?», «¿enseño el puente a la
+ * firma?», «¿desbloqueo el avance?»). Diego lo cerró así: *«el KMS no tiene por qué saber
+ * nada de la estructura o del funcionamiento del Wizard… los estados de pantalla del wizard
+ * los gestiona el wizard»*.
+ *
+ * Hasta el 2026-08-03 se calculaban en DOS sitios —aquí y en el KMS— y **YA DIVERGÍAN**, no
+ * en teoría: para un expediente admitido cuyo contexto de firma no resuelve, el KMS decía
+ * `signing_available: (state === 'AD')` → **true**, y este cliente decía `!!signing_context`
+ * → **false**. Ese campo gobierna el avance 7→8. El propio KMS lo admitía en un comentario:
+ * «DEBEN permanecer idénticos a buildAdmissionContext_ del wizard». Dos cosas que «deben
+ * permanecer idénticas» a base de buena voluntad acaban divergiendo — y aquí ya lo habían
+ * hecho.
+ *
+ * Son funciones PURAS de datos que quien llama ya tiene: cero lecturas nuevas, cero latencia
+ * (esta ruta es justo donde vivió la regresión de 68 s, así que eso importa).
+ *
+ * @param {string|null} stateCode       fase real del expediente (HECHO, viene del KMS).
+ * @param {string|null} signingStatus   estado de la firma (HECHO, viene del KMS).
+ * @param {Object|null} signingContext  contexto de firma ya resuelto por este cliente.
+ * @returns {{editable:boolean, signing_available:boolean, signing_ready:boolean}}
+ */
+var WIZ_EDITABLE_STATE_CODES_ = { 'DRAFT': true, 'IN': true, 'NEEDS_MORE_INFO': true };
+
+function derivarPantallaAdmision_(stateCode, signingStatus, signingContext) {
+  return {
+    // Sin estado real (pre-envío) el borrador es editable; con estado, lo gobierna el estado.
+    editable:          stateCode ? !!WIZ_EDITABLE_STATE_CODES_[stateCode] : true,
+    // Hay puente a la firma si HAY contexto de firma resuelto — no por estar en 'AD'.
+    signing_available: !!signingContext,
+    signing_ready:     (signingStatus !== 'NOT_INITIATED'),
+  };
+}
+
 function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons, admHints) {
   // PERF-KMS2 (2026-06-11): admHints (OPCIONAL) = filas live ya bajadas por el caller en
   // su batch paralelo — {states, sessions, signersBySession}. Cada consumidor re-aplica
@@ -3070,8 +3117,8 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
 
   // URGENT-PASS3 BUG A: editabilidad state-driven (mismo conjunto que el KMS hydrate
   // wizard-datalayer.gs). Con estado real, locked salvo {DRAFT,IN,NEEDS_MORE_INFO}.
-  var EDITABLE_STATE_CODES_ = { 'DRAFT': true, 'IN': true, 'NEEDS_MORE_INFO': true };
-  out.editable = out.state_code ? !!EDITABLE_STATE_CODES_[out.state_code] : true;
+  // Lector ÚNICO de las derivaciones de pantalla (ver derivarPantallaAdmision_).
+  out.editable = derivarPantallaAdmision_(out.state_code, out.signing_status, null).editable;
 
   if (out.state_code === 'AD') {
     // Path 1 — guardian resolved from the email the family typed (a1, KAL-4).
@@ -3099,7 +3146,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
         admHints.sessions, admHints.signersBySession);
       if (PERF2_.adm) PERF2_.adm.ctx_path2_ms = Date.now() - perfP2;
     }
-    out.signing_available = !!out.signing_context;
+    out.signing_available = derivarPantallaAdmision_(out.state_code, out.signing_status, out.signing_context).signing_available;
 
     // P215 opción (a) RESUELTA (CLI AD-SPLIT, decisión Diego 2026-06-07): la
     // identidad de firma se deriva SOLO server-side — Path 1 (Vía 1, recovery link
@@ -3140,7 +3187,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
     // (signing_ready) and /sign resolves the signer from the email/link — never
     // silently locked. KAL-4 intact: everything is derived server-side from the
     // token's group, nothing from the payload.
-    out.signing_ready = (out.signing_status !== 'NOT_INITIATED');
+    out.signing_ready = derivarPantallaAdmision_(out.state_code, out.signing_status, out.signing_context).signing_ready;
   }
   return out;
 }
@@ -7377,15 +7424,19 @@ function hydrateSession_(p) {
     });
   }
 
-  // REOPEN-FIX (regresión DL-C) — honra el reopen del KMS conducido por `admission.editable`.
-  //   enr_wizardHydrate ya calcula `editable = !submitted_at || allInfo` (todas las enrollments
-  //   en IN/NEEDS_MORE_INFO). Si el grupo trae `submitted_at` pero el KMS lo declara editable
-  //   (reopen), anulamos `submitted_at` en la respuesta — restaura el efecto probado de
-  //   resumeSession_:2344, CONDUCIDO por el `editable` del KMS (sin re-implementar el check de
-  //   estado). El frontend (WizardContext) deriva el lock de `group.submitted_at` → así desbloquea
-  //   la UI al reabrir.
-  if (data.admission && data.admission.editable && data.group && data.group.submitted_at) {
-    Logger.log(redact_('hydrateSession_: KMS admission.editable=true (reopen) — submitted_at overridden to null for group ' + data.group.enrollment_group_id));
+  // REOPEN-FIX (regresión DL-C) — honra la reapertura: si el grupo trae `submitted_at` pero
+  //   el expediente está en una fase editable (reapertura del KMS), anulamos `submitted_at` en
+  //   la respuesta — restaura el efecto probado de resumeSession_:2344. El frontend
+  //   (WizardContext) deriva el bloqueo de `group.submitted_at`, así que esto desbloquea la UI.
+  //
+  //   2026-08-03: antes esto lo CONDUCÍA el `editable` que mandaba el KMS. Ya no: esa bandera
+  //   es una decisión de pantalla de ESTE cliente (DL-E41 ★ACOTACIÓN) y se deriva aquí, del
+  //   HECHO que sí manda el KMS —la fase—, con el mismo derivador único que usa el resto. No
+  //   es «re-implementar el check»: es dejar de tener DOS que pueden decir cosas distintas.
+  var _reabierto = data.admission
+    && derivarPantallaAdmision_(data.admission.state_code || null, null, null).editable;
+  if (_reabierto && data.group && data.group.submitted_at) {
+    Logger.log(redact_('hydrateSession_: fase editable (reapertura) — submitted_at anulado para el grupo ' + data.group.enrollment_group_id));
     data.group.submitted_at = null;
   }
 

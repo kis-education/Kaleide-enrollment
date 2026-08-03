@@ -89,6 +89,24 @@ jobs:
       - name: El receptor del aviso del KMS verifica ANTES de mirar el contenido
         run: node scripts/comprobar-receptor-firmado.mjs
 
+  pantalla-del-cliente:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # `editable`, `signing_available` y `signing_ready` son decisiones de PANTALLA, no
+      # hechos del expediente: las decide este cliente (DL-E41 ★ACOTACIÓN 2026-08-02). Se
+      # calculaban en dos sitios —aquí y en el KMS— y ya divergían en `signing_available`,
+      # que es el campo que abre el avance 7→8.
+      - name: Las banderas de pantalla salen de UN derivador y no se copian del KMS
+        run: node scripts/comprobar-pantalla-del-cliente.mjs
+
   # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.
   # Regla de los dos repos (CLAUDE.md §"No se toca lo que funciona sin una forma de
   # comprobar que sigue funcionando"): el 2026-07-27 un cambio de seguridad estuvo a
@@ -126,7 +144,7 @@ jobs:
         working-directory: frontend
 
   build:
-    needs: [e2e, escrituras-directas, selector-appsheet, receptor-firmado]
+    needs: [e2e, escrituras-directas, selector-appsheet, receptor-firmado, pantalla-del-cliente]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
