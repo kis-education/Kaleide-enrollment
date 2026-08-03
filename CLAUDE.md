@@ -15,6 +15,14 @@ No se construye una red por cambio, ni un gate por clase, ni una auditoría por 
 
 **Los dos controles de CI de este repo se CONSERVAN** (`comprobar-escrituras-directas.mjs` y `comprobar-selector-appsheet.mjs`): vigilan invariantes de seguridad y de datos, no patrones de estilo. Ver §"Deployment".
 
+## Máximo 500 líneas por documento vivo (Diego, 2026-08-03)
+
+**Un documento que ningún agente puede leer entero no es documentación: es lastre.** Peor que lastre — invita a *citarlo* sin haberlo leído, que es exactamente cómo nacen las afirmaciones falsas que esta misión está corrigiendo (precedente: la auditoría del 2026-08-01 declaró **inexistente** la batería `frontend/e2e/run-wizard.mjs`, que existe). **Máximo 500 líneas por documento vivo.** Lo que se pase, se parte por tema o se archiva.
+
+Aplica a los documentos que una sesión tiene que **leer para trabajar**. Los `decisions/` y design-logs del KMS son **registro append-only**: no se truncan por decreto — si crecen, se parten por módulo, nunca se recortan.
+
+**MEDIDO el 2026-08-03: este `CLAUDE.md` tiene 518 líneas** — lo pasa por poco, y es lo primero que se recorta cuando algo de aquí quede obsoleto (la §"Dos bearer tokens" y la §"Wizard steps canónicos" arrastran texto histórico ya SUPERSEDIDO que hoy solo se conserva por precaución). Recontar con `wc -l CLAUDE.md`.
+
 ## Project
 Public-facing enrollment wizard (admissions.kaleide.org). Families submit applications anonymously; data lands in the AppSheet tables shared with the KMS.
 
