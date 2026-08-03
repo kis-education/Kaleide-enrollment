@@ -7402,18 +7402,84 @@ function hydrateSession_(p) {
  * @param {Object} p — { notify_secret, enrollment_group_id, reason? }
  * @returns {{ok:boolean, bumped?:boolean, version?:number, reason?:string}}
  */
+/**
+ * DL-S106 — Verifica un aviso FIRMADO del KMS: firma, ventana y no-repetición, EN ESE ORDEN
+ * y ANTES de mirar nada del contenido. Espejo exacto de `notify_verifySignedRequest_` del
+ * KMS (`kms-server/sys/notify-public.gs`), que es el que ya verifica lo que este wizard le
+ * manda desde P214 — mismo algoritmo, mismo separador, misma anchura de ventana, misma
+ * codificación hexadecimal, y reusando `_kmsNotifyHex_` (no hay un segundo byte→hex).
+ *
+ * El canónico tiene las MISMAS CINCO RANURAS que el probado, en el mismo orden:
+ *   accion \n 'wizard' \n JSON.stringify(event) \n nonce \n timestamp
+ * La ranura 2 lleva la constante `'wizard'` (en el probado dice a quién va; aquí el
+ * destinatario es un solo sistema). Eso da SEPARACIÓN DE DOMINIO en los dos sentidos: un
+ * mensaje wizard→KMS lleva un email en esa ranura, así que jamás vale aquí; y uno de aquí
+ * jamás vale allí, porque su accion no está en la lista blanca de plantillas del KMS.
+ *
+ * RECHAZO EN SILENCIO: devuelve la MISMA forma sea cual sea el motivo. Distinguir «firma
+ * mala» de «caducado» de «repetido» le diría al atacante qué está afinando. El registro
+ * interno sí distingue, redactado (KAL-11).
+ *
+ * Dónde recuerda los sucesos ya aplicados: `CacheService.getScriptCache()`, con TTL IGUAL a
+ * la ventana. El compromiso es deliberado y hay que decirlo: esa memoria es DESALOJABLE, y
+ * por eso la ventana es estrecha — con ventana de 5 min y TTL de 5 min, la memoria solo
+ * tiene que sobrevivir lo que dura la ventana.
+ *
+ * @param {Object} p            cuerpo recibido: { action, event, nonce, timestamp, signature }.
+ * @param {string} expectedAction  accion que este receptor acepta (atada a la firma).
+ * @returns {{ok:boolean, event?:Object}}
+ */
+const KMS_NOTICE_WINDOW_MS_ = 5 * 60 * 1000;   // ±5 min — misma anchura que el KMS
+const KMS_NOTICE_NONCE_TTL_S_ = 300;           // = ventana: fuera de ella, el paso 2 ya rechaza
+
+function verifySignedKmsNotice_(p, expectedAction) {
+  const deny = function(motivo) {
+    Logger.log('[verifySignedKmsNotice_] rechazado — ' + motivo);
+    return { ok: false };
+  };
+  const secret = PropertiesService.getScriptProperties().getProperty('NOTIFY_HMAC_SECRET');
+  if (!secret) return deny('NOTIFY_HMAC_SECRET no configurado (fallo cerrado)');
+
+  const event = (p && p.event) || null;
+  if (!event || typeof event !== 'object') return deny('sin objeto event');
+
+  // 1 — FIRMA. Nada del contenido se mira antes de esto.
+  const canonical = String(expectedAction) + '\n' + 'wizard' + '\n' +
+                    JSON.stringify(event) + '\n' + String(p.nonce) + '\n' + String(p.timestamp);
+  const computed = _kmsNotifyHex_(Utilities.computeHmacSha256Signature(canonical, secret));
+  if (!p.signature || String(p.signature).trim().toLowerCase() !== computed) {
+    return deny('firma invalida o ausente');
+  }
+
+  // 2 — VENTANA. La firma CUBRE el timestamp, así que no es reescribible.
+  let ts = new Date(p.timestamp).getTime();
+  if (isNaN(ts)) ts = Number(p.timestamp);
+  if (isNaN(ts) || Math.abs(Date.now() - ts) > KMS_NOTICE_WINDOW_MS_) {
+    return deny('fuera de ventana');
+  }
+
+  // 3 — NO-REPETICION. KAL-5: validar la forma del identificador antes de usarlo de clave.
+  try { assertValidUuid_(p.nonce, 'nonce'); } catch (e) { return deny('nonce con forma invalida'); }
+  const cache = CacheService.getScriptCache();
+  const key = 'kmsnotice_nonce_' + p.nonce;
+  if (cache.get(key)) return deny('repetido (nonce ya usado) ' + String(p.nonce).slice(0, 8));
+  cache.put(key, '1', KMS_NOTICE_NONCE_TTL_S_);
+
+  return { ok: true, event: event };
+}
+
 function notifyLiveStateChange_(p) {
   p = p || {};
-  const expected = PropertiesService.getScriptProperties().getProperty('WIZARD_NOTIFY_SECRET');
-  const provided = p.notify_secret || '';
-  if (!expected || String(provided).trim() !== String(expected).trim()) {
-    Logger.log('[notifyLiveStateChange_] secreto inválido/ausente — no-op (estructurado, no 403)');
-    return { ok: false, reason: 'UNAUTHORIZED' };
-  }
-  const groupId = p.enrollment_group_id;
+  // DL-S106 — VERIFICAR ANTES DE MIRAR. Ni un solo campo del contenido se toca hasta que la
+  // firma, la ventana y la no-repetición hayan pasado. Antes bastaba con repetir el secreto
+  // que venía en el propio cuerpo, y esta función es alcanzable desde internet sin
+  // autenticación (está en el `switch(action)` del doPost `ANYONE_ANONYMOUS`).
+  const v = verifySignedKmsNotice_(p, 'notifyLiveStateChange');
+  if (!v.ok) return { ok: false, reason: 'UNAUTHORIZED' };
+  const groupId = v.event.enrollment_group_id;
   try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
   const version = _bumpLiveStateVersion_(groupId);
-  Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (p.reason || '?') + ' -> v' + version));
+  Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (v.event.reason || '?') + ' -> v' + version));
   return { ok: true, bumped: true, version: version };
 }
 
@@ -9900,4 +9966,87 @@ function manual_diagResponsesRetrieval() {
 function manual_setNotifyHmacSecret(value) {
   PropertiesService.getScriptProperties().setProperty('NOTIFY_HMAC_SECRET', value);
   return { ok: true, len: (value || '').length };
+}
+
+/**
+ * RED del receptor firmado (DL-S106). Comprueba que `notifyLiveStateChange_` RECHAZA lo que
+ * tiene que rechazar y ACEPTA lo legítimo. No se registra en el dispatcher: se ejecuta con la
+ * auth del propietario (`clasp run`).
+ *
+ * Un receptor al que nunca se le ha visto rechazar nada no está verificando: está dejando
+ * pasar. Por eso los cuatro rechazos son la parte importante, y la aceptación solo demuestra
+ * que el candado no está cerrado de más.
+ *
+ * NO manda ningún correo, NO toca AppSheet y NO usa datos reales: el identificador de grupo
+ * es sintético y lo único que la aceptación escribe es un contador en la memoria efímera.
+ *
+ * VEREDICTO en la ÚLTIMA línea, SIEMPRE — también ante excepción.
+ */
+function manual_testSignedWebhookReceiver() {
+  var fallos = [];
+  var lineas = [];
+  try {
+    var secret = PropertiesService.getScriptProperties().getProperty('NOTIFY_HMAC_SECRET');
+    if (!secret) throw new Error('NOTIFY_HMAC_SECRET no configurado en este GAS — la red no puede firmar nada');
+
+    var firmar = function(event, nonce, ts) {
+      var canonical = 'notifyLiveStateChange' + '\n' + 'wizard' + '\n' +
+                      JSON.stringify(event) + '\n' + nonce + '\n' + ts;
+      return _kmsNotifyHex_(Utilities.computeHmacSha256Signature(canonical, secret));
+    };
+    var sobre = function(event, nonce, ts) {
+      return { action: 'notifyLiveStateChange', event: event, nonce: nonce,
+               timestamp: ts, signature: firmar(event, nonce, ts) };
+    };
+    var evento = function() {
+      return { enrollment_group_id: Utilities.getUuid(), reason: 'PRUEBA', at: new Date().toISOString() };
+    };
+    var afirmar = function(nombre, obtenido, esperadoOk) {
+      var ok = !!(obtenido && obtenido.ok) === esperadoOk;
+      lineas.push((ok ? '  ok  ' : '  FALLO ') + nombre + ' → ok=' + !!(obtenido && obtenido.ok) +
+                  ' (esperado ' + esperadoOk + ')');
+      if (!ok) fallos.push(nombre);
+    };
+
+    // (a) sin firma — es también la FORMA LEGADA (el secreto dentro del cuerpo), que a partir
+    //     de ahora tiene que rechazarse igual que cualquier otra cosa sin firmar.
+    afirmar('(a) sin firma / forma legada con el secreto en el cuerpo',
+            notifyLiveStateChange_({ notify_secret: 'lo-que-sea',
+                                     enrollment_group_id: Utilities.getUuid() }), false);
+
+    // (b) firma invalida — un solo caracter cambiado.
+    var b = sobre(evento(), Utilities.getUuid(), new Date().toISOString());
+    b.signature = (b.signature.charAt(0) === 'a' ? 'b' : 'a') + b.signature.slice(1);
+    afirmar('(b) firma invalida (un caracter cambiado)', notifyLiveStateChange_(b), false);
+
+    // (c) caducado — firmado CORRECTAMENTE, pero fuera de ventana. Comprueba que la firma no
+    //     basta por si sola: repetir un mensaje viejo intacto tiene que fallar igual.
+    var tsViejo = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    afirmar('(c) caducado (20 min, firma correcta)',
+            notifyLiveStateChange_(sobre(evento(), Utilities.getUuid(), tsViejo)), false);
+
+    // (d) repetido — el MISMO identificador de suceso dos veces dentro de la ventana. El
+    //     primero tiene que pasar; el segundo, no.
+    var nonceRep = Utilities.getUuid();
+    var evRep = evento();
+    var tsRep = new Date().toISOString();
+    var primero = notifyLiveStateChange_(sobre(evRep, nonceRep, tsRep));
+    afirmar('(d.1) primero con ese identificador de suceso', primero, true);
+    afirmar('(d.2) repetido con el MISMO identificador', notifyLiveStateChange_(sobre(evRep, nonceRep, tsRep)), false);
+
+    // (e) legitimo con identificador fresco.
+    afirmar('(e) legitimo, identificador fresco',
+            notifyLiveStateChange_(sobre(evento(), Utilities.getUuid(), new Date().toISOString())), true);
+
+  } catch (e) {
+    fallos.push('EXCEPCION: ' + (e && e.message));
+    lineas.push('  FALLO excepcion — ' + (e && e.message));
+  } finally {
+    lineas.forEach(function(l) { Logger.log(l); });
+    var veredicto = fallos.length
+      ? 'VEREDICTO: ROJO — ' + fallos.length + ' caso(s): ' + fallos.join(' · ')
+      : 'VEREDICTO: VERDE';
+    Logger.log(veredicto);
+    return lineas.join('\n') + '\n' + veredicto;
+  }
 }

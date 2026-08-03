@@ -70,6 +70,25 @@ jobs:
       - name: Los filtros a AppSheet usan AND()/OR() como funciones, no infijos
         run: node scripts/comprobar-selector-appsheet.mjs
 
+  receptor-firmado:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # `notifyLiveStateChange_` es alcanzable desde internet SIN autenticación (está en el
+      # `switch(action)` del doPost ANYONE_ANONYMOUS). Hasta el 2026-08-03 se «autenticaba»
+      # comparando un secreto que venía DENTRO DEL PROPIO CUERPO: quien viera un mensaje
+      # podía repetirlo para siempre. Este trabajo vigila que verifique firma, ventana y
+      # no-repetición ANTES de mirar el contenido (DL-S106).
+      - name: El receptor del aviso del KMS verifica ANTES de mirar el contenido
+        run: node scripts/comprobar-receptor-firmado.mjs
+
   # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.
   # Regla de los dos repos (CLAUDE.md §"No se toca lo que funciona sin una forma de
   # comprobar que sigue funcionando"): el 2026-07-27 un cambio de seguridad estuvo a
@@ -107,7 +126,7 @@ jobs:
         working-directory: frontend
 
   build:
-    needs: [e2e, escrituras-directas, selector-appsheet]
+    needs: [e2e, escrituras-directas, selector-appsheet, receptor-firmado]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
