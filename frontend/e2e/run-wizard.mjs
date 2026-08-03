@@ -21,9 +21,12 @@
  *                          ("Enrollment group not found") el cliente NO ramifica
  *                          (cero `initEnrollmentSession`) — el guardarraíl exacto
  *                          del casi-incidente.
- *   3. recuperar-aterrizar— magic-link `/resume/<token>?n=<email_id>` → hidrata y
- *                          aterriza EN EL PASO DONDE ESTABA (no en el 1), con el
- *                          token borrado de la barra de direcciones (KAL-7).
+ *   3. recuperar-aterrizar— la familia PIDE su enlace en la portada y lo SIGUE:
+ *                          pedirlo emite un token nuevo, `/resume/<token>?n=<email_id>`
+ *                          hidrata y aterriza EN EL PASO DONDE ESTABA (no en el 1),
+ *                          con el token borrado de la barra (KAL-7). Los demás caminos
+ *                          de navegador entran siguiendo ese mismo enlace VIGENTE
+ *                          (ver `entrarPorElEnlace`).
  *   4. guardar-paso      — editar un paso y continuar: el avance es INMEDIATO
  *                          (≤ presupuesto, medido EN LA PÁGINA), el `saveStep` sale
  *                          con el valor nuevo, y al volver atrás el valor PERSISTE.
@@ -249,7 +252,15 @@ const DATOS = REAL
       // es genuinamente CONOCIDO por el sistema — que es lo que hace válida la comparación
       // anti-enumeración del camino siguiente. Antes el alta usaba el correo desconocido y
       // los dos lados de esa comparación eran desconocidos: se comparaban dos nadas.
-      emailKnown:   buzon('robot-t1'),
+      //
+      // ⚠️ ÚNICO POR CORRIDA, y no es cosmética: el cupo de magic-link es de **5 por correo
+      // y hora** (`Code.js:1741`) y por encima el servidor descarta la petición EN SILENCIO
+      // (ack constante, WIZ-ENUM). Una corrida gasta 3; **dos corridas seguidas con el
+      // correo fijo se comían el cupo** y la petición de enlace de la segunda no rotaba ni
+      // enviaba nada — justo cuando la condición de parada exige DOS corridas consecutivas.
+      // Con sello por corrida el contador arranca limpio y el correo sigue siendo conocido
+      // (lo da de alta `alta-nueva`) y localizable por el reset (marcador `+robot-`).
+      emailKnown:   buzon(`robot-t1-${SELLO}`),
       // Único por corrida ⇒ genuinamente desconocido para el sistema.
       emailUnknown: buzon(`robot-u${SELLO}`),
       apellido:     MARCA,
@@ -483,13 +494,9 @@ async function medirEnPagina(page, cond, hacerClick) {
   } catch { return -1 }
 }
 
-/** Espera a que el wizard pinte su stepper (fin de la hidratación). */
-async function esperarWizard(page, timeout = (REAL ? 120000 : LATENCY * 3 + 15000)) {
-  await page.waitForFunction(() => {
-    const pasos = document.querySelectorAll('.wizard-step')
-    return pasos.length > 0 && [...pasos].some(p => p.classList.contains('active'))
-  }, { timeout })
-}
+// `esperarWizard` se RETIRÓ: esperaba SOLO al stepper, así que un enlace rechazado se
+// manifestaba como tiempo de espera agotado en vez de decir que el token no valía. La espera
+// vive ahora dentro de `entrarPorElEnlace`, que distingue los dos finales observables.
 
 /** Llamadas registradas de una acción concreta en el recorrido en curso. */
 const llamadas = (accion) => calls.filter(c => c.action === accion)
@@ -600,6 +607,86 @@ function refrescarElEnlace(c, email) {
     'recupera: el enlace viajaría sin ?n= y la recuperación sería de GRUPO, no per-guardian. ' +
     `Motivo del sistema: ${s.email_id_ausente_motivo || '(no informado)'}`)
   return false
+}
+
+/**
+ * ENTRADA — el robot entra como entra una familia: siguiendo el enlace VIGENTE.
+ *
+ * ── El defecto que cierra, MEDIDO el 2026-08-03 contra el sistema real ──────────────
+ * El robot leía el enlace UNA vez (en `alta-nueva`) y lo reusaba en los cuatro caminos de
+ * navegador siguientes. Pero **pedir el enlace ROTA el `resume_token`**: `sendMagicLink_`
+ * (`origin/main:backend/Code.js:2605-2625`) llama a `enr.wizardTouchSession` por cada grupo
+ * NO enviado y el KMS minta y persiste un token nuevo. Como el camino inmediatamente
+ * siguiente (`ack-indistinguible`) pide el enlace del correo CONOCIDO, el token que el robot
+ * llevaba encima quedaba muerto y los cuatro caminos morían con
+ * `Unauthorized: resume_token not recognized` (`Code.js:483`).
+ *
+ * Medido, no razonado — dos lecturas de `enrEnrollmentGroups` con UNA petición de enlace en
+ * medio, mismo grupo `1d9c4668-…`:
+ *     tras el alta              resume_token = 7cacaa26-29e0-450f-8338-16acdc5068bf
+ *     tras UN sendMagicLink     resume_token = 14e3ead7-0f3d-46d7-9243-69326cc7e764
+ *
+ * ── Qué hace ───────────────────────────────────────────────────────────────────────
+ *   `pidiendolo:true`  — el acto COMPLETO de la familia: teclea su correo en la portada
+ *                        (⇒ `sendMagicLink` de verdad, que rota el token y manda el correo)
+ *                        y SIGUE el enlace recién emitido.
+ *   `pidiendolo:false` — SIGUE el enlace vigente, sin volver a pedirlo.
+ *
+ * ── Por qué NO se pide en los cuatro caminos (limitación medida, no pereza) ─────────
+ * El cupo de magic-link es de **5 por correo y hora** (`Code.js:1741`, `RATE_LIMITED`), y por
+ * encima el servidor **se traga la petición en silencio** — ack constante, sin rotar y sin
+ * mandar nada (WIZ-ENUM). Pedirlo en cada camino haría que a partir del sexto el acto que se
+ * dice medir dejara de ocurrir **sin que se note**: el robot seguiría entrando (el token vivo
+ * sigue sirviendo) sobre una petición que el servidor descartó. Ese verde sería peor que un
+ * rojo. Se pide UNA vez, en el camino que se llama justamente `recuperar-aterrizar`, y allí
+ * se AFIRMA que el enlace recién pedido es el que abre la sesión — si la rotación no ocurre
+ * (por cupo o por lo que sea), ese camino cae y lo dice.
+ *
+ * El robot no abre Gmail: lee del ORIGEN lo mismo que el correo lleva
+ * (`manual_robotEnlaceDeRecuperacion`, con su guardarraíl de marcador `+robot-`). Abrir el
+ * buzón no es parte del producto; llevar encima un token caducado sí era un defecto del robot.
+ */
+async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
+  if (REAL) {
+    if (pidiendolo) await rellenarPortada(page, base, DATOS.emailKnown)
+    const anterior = DATOS.resumeToken
+    const r = sonda('manual_robotEnlaceDeRecuperacion', [DATOS.emailKnown])
+    const s = r.resultado || {}
+    if (!r.ok || !s.ok) {
+      c.fallos.push(`no se pudo leer el enlace vigente del expediente: ${r.error || s.error}`)
+      return false
+    }
+    DATOS.resumeToken = s.resume_token
+    if (s.email_id) DATOS.emailId = s.email_id
+    if (pidiendolo) {
+      c.afirmar('pedir el enlace emite un token nuevo (la rotación de sendMagicLink_)',
+        !!DATOS.resumeToken && DATOS.resumeToken !== anterior,
+        `el resume_token NO cambió al pedir el enlace (${String(anterior).slice(0, 8)}… → ${String(DATOS.resumeToken).slice(0, 8)}…): o la rotación no ocurrió, o la petición se suprimió por cupo (5/hora) y el acto que este camino mide no llegó a pasar`)
+    }
+  }
+
+  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+    { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
+
+  // El aterrizaje tiene DOS finales observables, y se esperan LOS DOS: el stepper (sesión
+  // abierta) o el rebote a `#/?resume_error=1` (`ResumePage.jsx`, rama `.catch`). Antes se
+  // esperaba solo al stepper, así que un enlace RECHAZADO se manifestaba como un tiempo de
+  // espera agotado — el síntoma más caro de diagnosticar y el que menos dice.
+  const desenlace = await page.waitForFunction(() => {
+    if (/resume_error=1/.test(window.location.hash + window.location.search)) return 'rechazado'
+    const pasos = document.querySelectorAll('.wizard-step')
+    return (pasos.length && [...pasos].some(p => p.classList.contains('active'))) ? 'abierto' : false
+  }, { timeout: REAL ? 120000 : LATENCY * 3 + 15000 })
+    .then(h => h.jsonValue())
+    .catch(() => 'sin-desenlace')
+
+  if (desenlace !== 'abierto') {
+    c.fallos.push(desenlace === 'rechazado'
+      ? `el enlace NO abre la sesión: el wizard rebotó a la portada con resume_error=1 — el sistema no reconoce el token ${String(DATOS.resumeToken).slice(0, 8)}… del enlace`
+      : `el enlace no llegó a abrir la sesión ni a rebotar: el wizard no pintó el stepper dentro del tiempo de espera (token ${String(DATOS.resumeToken).slice(0, 8)}…)`)
+    return false
+  }
+  return true
 }
 
 /** Ejecuta la sonda de lectura de vuelta de un paso y vuelca su veredicto en el camino. */
@@ -769,9 +856,9 @@ async function caminoRecuperarAterrizar(page, base) {
   const c = new Camino('recuperar-aterrizar')
   scenario.stage = 'hasta_preguntas'   // completos 0..4 ⇒ aterriza en Documentos (5)
 
-  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
-    { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
-  await esperarWizard(page)
+  // Éste es EL camino de la entrada, así que aquí se hace el acto entero: pedir el enlace
+  // por la portada y seguir el que el sistema acaba de emitir.
+  if (!await entrarPorElEnlace(c, page, base, { pidiendolo: true })) return c
   const pantalla = await page.evaluate(sondaPantalla)
 
   c.evidencia.elementos = pantalla.pasos + pantalla.campos
@@ -811,9 +898,7 @@ async function caminoGuardarPaso(page, base) {
   const c = new Camino('guardar-paso')
   scenario.stage = 'sin_fecha'   // sin fecha ⇒ aterriza en el paso 1 (índice 0)
 
-  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
-    { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
-  await esperarWizard(page)
+  if (!await entrarPorElEnlace(c, page, base)) return c
 
   let pantalla = await page.evaluate(sondaPantalla)
   c.evidencia.elementos = pantalla.pasos + pantalla.campos
@@ -893,9 +978,7 @@ async function caminoSubirDocumento(page, base) {
   const c = new Camino('subir-documento')
   scenario.stage = 'hasta_preguntas'   // aterriza directamente en Documentos (5)
 
-  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
-    { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
-  await esperarWizard(page)
+  if (!await entrarPorElEnlace(c, page, base)) return c
 
   let pantalla = await page.evaluate(sondaPantalla)
 
@@ -1054,9 +1137,7 @@ async function caminoTramoFirma(page, base) {
   const c = new Camino('tramo-firma')
   scenario.stage = 'firma'   // ADMITIDA + firma abierta ⇒ primer paso de firma (7)
 
-  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
-    { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
-  await esperarWizard(page)
+  if (!await entrarPorElEnlace(c, page, base)) return c
   await page.waitForTimeout(LATENCY + 800)   // el paso de firma lee su presupuesto
 
   const pantalla = await page.evaluate(sondaPantalla)
