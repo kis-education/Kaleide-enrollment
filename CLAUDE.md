@@ -1,28 +1,19 @@
 # Kaleide-enrollment — Claude Context
 
-## No se toca lo que funciona sin una forma de comprobar que sigue funcionando (Diego, 2026-07-28)
+## La red es UNA — misión inscripción (Diego, 2026-08-03)
 
-**Regla de los DOS repos — `Kaleide-enrollment` (wizard) y `kis-app` (KMS). Sin excepción por repo, por tamaño del cambio, ni por urgencia.**
+> **SUSTITUYE, mientras dure la misión, a la regla anterior §"No se toca lo que funciona sin una forma de comprobar que sigue funcionando" (2026-07-28), que se conserva en git.** Motivo: nadie usa el wizard ni el KMS salvo Diego, no hay familias, y construir una red por cambio acabó costando más de lo que protegía.
 
-Cita literal de Diego, corrigiendo la propuesta de tratar al wizard como caso especial por no estar en producción:
+**La red es UNA: `npm run robot:inscripcion`** (desde `frontend/`) — la batería de este repo corriendo contra el **backend real** del wizard y el **KMS real**, con lectura de vuelta de la base de datos tras cada paso. `npm run e2e:wizard` (modo simulado) se conserva y debe seguir verde, pero **no es el oráculo de la misión**.
 
-> *"Ninguna está en producción, pero llevo semanas tratando de acabar ambas para poder ponerlas en producción. El cuidado de no romper cosas es en ambos repos."*
+No se construye una red por cambio, ni un gate por clase, ni una auditoría por hallazgo. **Medir siempre está permitido y va PRIMERO.**
 
-**Ninguno de los dos repos está en producción hoy, y los dos van a estarlo.** "Todavía no hay familias reales" NO es licencia para romper: es exactamente el periodo en el que se acumula el trabajo del que va a depender la puesta en producción.
+- Contexto, autorización y condición de parada → **`kis-app/docs/kms/plan/contexto-mision-inscripcion.md`**
+- Secuencia de trabajo (única fuente del orden) → **`kis-app/docs/kms/plan/encargos/00-README.md`**
 
-**La regla, operativa:**
+**Regla de evidencia.** Los docs describen **INTENCIÓN, no ESTADO**. ¿Qué hace el código? → el código vivo contra `origin/main` (**nunca el árbol de trabajo**: llegó a estar 13 commits por detrás y devolvía código viejo sin aviso). **¿Qué hay en la base de datos? → una consulta a la tabla, NADA MÁS.** ¿Qué está desplegado? → `clasp deployments`.
 
-1. **Antes de cambiar algo que ya funciona, tiene que existir una forma de comprobar que sigue funcionando** — una batería, un test de caracterización, un gate, un smoke con veredicto. Se ejecuta **antes** (línea base verde) y **después** (sigue verde). Un cambio cuya única verificación es "lo he leído y razono que está bien" **no está verificado**.
-2. **Si esa verificación NO existe para lo que vas a tocar, construirla es PARTE DEL TRABAJO, no un extra ni un TODO diferido.** No se pide permiso para construirla, no se aplaza a "otra tanda", no se entrega el cambio "y luego ya veremos".
-3. **Si construir la red no es viable en el alcance del encargo, el cambio NO se despliega.** Se reporta el bloqueo explícitamente (qué se quería tocar, qué red faltaba, por qué no era viable).
-4. **La comprobación tiene que poder salir ROJA.** Una batería que no se ha visto fallar nunca no es una red: es decoración. Se demuestra rompiendo a propósito lo que dice cubrir y verificando que lo nombra. Una afirmación que se ejecuta en vacío (cero datos, cero elementos, selector que ya no existe) **NO cuenta como verde** — cuenta como no cubierta, con su motivo.
-5. **El veredicto se lee en una línea explícita** (`VEREDICTO: VERDE|ROJO`), impresa siempre, incluso ante error fatal. NUNCA se deduce del código de salida (una tubería `| tail` devuelve el código del último comando) ni de "no vi ningún ✗".
-
-**Por qué existe esta regla (precedente, 2026-07-27/28).** El cambio de seguridad WIZ-ENUM (ack constante anti-enumeración en `sendMagicLink_`, §Security más abajo) se desplegó de forma autónoma y **estuvo a punto de romper el alta de solicitudes nuevas**: la portada (`LandingPage`) decidía "recuperar vs crear" leyendo precisamente la señal de existencia que el cambio eliminaba (ramificaba sobre el error `'Enrollment group not found'` para llamar a `initEnrollmentSession`). Lo cazó un agente razonando sobre el código, **no una comprobación automática** — porque este repo no tenía ninguna. El KMS sí tenía red. La asimetría era el problema.
-
-**La red de este repo: `frontend/e2e/run-wizard.mjs`** (`npm run e2e:wizard`). Recorre en navegador headless los caminos reales de una familia contra un backend simulado (ningún email sale, ningún dato real se toca), y afirma comportamiento observable: alta nueva desde cero, recuperación por enlace aterrizando en el paso donde estaba, guardado de paso con persistencia, subida de documento, tramo de firma, y el ack **indistinguible** entre email conocido y desconocido (el guardarraíl exacto del casi-incidente). Es **muro de deploy**: ver §"Deployment".
-
-Cross-ref: §"Regla — refactors preservan el código probado (ancla de código-de-oro)" (test de caracterización como puerta objetiva) · §"Deployment" (muro) · misma sección en `kis-app/CLAUDE.md`.
+**Los dos controles de CI de este repo se CONSERVAN** (`comprobar-escrituras-directas.mjs` y `comprobar-selector-appsheet.mjs`): vigilan invariantes de seguridad y de datos, no patrones de estilo. Ver §"Deployment".
 
 ## Project
 Public-facing enrollment wizard (admissions.kaleide.org). Families submit applications anonymously; data lands in the AppSheet tables shared with the KMS.
