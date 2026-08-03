@@ -96,6 +96,7 @@ import { execFileSync } from 'node:child_process'
 import { join, dirname, extname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createDispatcher, buildHydrate, FIXTURE } from './mock-backend.mjs'
+import { sonda, aplicarSonda, porQueNoHaySondas, KMS_REPO } from './sondas-kms.mjs'
 
 const HERE     = dirname(fileURLToPath(import.meta.url))
 const FRONTEND = join(HERE, '..')
@@ -140,6 +141,15 @@ const NO_CUBIERTAS_PERMITIDAS = {
 const NO_CUBIERTAS_SOLO_REAL = {
   'ack-indistinguible': {
     'servidor-que-delata': 'el escenario hostil (servidor que devuelve el error legacy "Enrollment group not found") no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
+  },
+  'subir-documento': {
+    // Medido, no supuesto: contra el sistema real la familia arranca en el paso 1 (no hay
+    // "escenario" que colocarla en Documentos), y el robot todavía no conduce en navegador
+    // los pasos 2-5 que hay que rellenar para llegar. La subida SÍ queda cubierta —por la
+    // pasarela, y verificada leyendo `recFiles` en la sonda del paso 6—, pero eso es otra
+    // cosa que teclear en la pantalla, y no se venden como lo mismo.
+    'subida-desde-la-pantalla': 'contra el sistema real el expediente recién creado aterriza en el paso 1, y el robot aún no conduce en navegador los pasos 2-5 necesarios para llegar a Documentos. La ESCRITURA del documento sí se cubre (por la pasarela) y la sonda del paso 6 la verifica en recFiles; lo que falta es teclearlo en la pantalla. Lo cierra el encargo 03.',
+    'contenido-de-la-subida': 'no hubo subida DESDE LA PANTALLA que inspeccionar (ver arriba); el contenido de la fila lo afirma la sonda del paso 6 leyendo la base',
   },
 }
 if (REAL) {
@@ -213,15 +223,20 @@ const buzon = (etiqueta) => {
 }
 const DATOS = REAL
   ? {
-      // Reutilizado entre corridas: tras la primera, este correo YA tiene expediente
-      // ⇒ es el lado "conocido" de la comparación anti-enumeración.
+      // El PRIMER camino (`alta-nueva`) da de alta este correo, así que a partir de ahí
+      // es genuinamente CONOCIDO por el sistema — que es lo que hace válida la comparación
+      // anti-enumeración del camino siguiente. Antes el alta usaba el correo desconocido y
+      // los dos lados de esa comparación eran desconocidos: se comparaban dos nadas.
       emailKnown:   buzon('robot-t1'),
       // Único por corrida ⇒ genuinamente desconocido para el sistema.
       emailUnknown: buzon(`robot-u${SELLO}`),
       apellido:     MARCA,
-      // Sin magic-link real todavía no hay token de sesión: se usan valores con
-      // FORMA válida que el sistema debe rechazar. El encargo ROBOT-2 los sustituye
-      // por los de un expediente real recuperado.
+      // ⚠️ VALORES DE ARRANQUE, NO los definitivos. En cuanto `alta-nueva` da de alta el
+      // expediente, la sonda `manual_robotEnlaceDeRecuperacion` devuelve el `resume_token` y
+      // el `email_id` REALES (lo mismo que llevaría el enlace del correo) y SE SOBREESCRIBEN
+      // aquí. Hasta entonces son valores con forma válida que el sistema debe rechazar —
+      // y los rechazaba: ése era el `Unauthorized: resume_token not recognized` con el que
+      // el encargo ROBOT-1 dejó cuatro caminos en rojo.
       resumeToken:  FIXTURE.resumeToken,
       emailId:      FIXTURE.emailId,
     }
@@ -482,6 +497,50 @@ async function esperarSilencioDeRed(msMax = 120000, msQuieto = 2500) {
   }
 }
 
+// ── 4.bis · El expediente vivo de esta corrida ───────────────────────────────
+//
+// Lo rellena `alta-nueva` en cuanto el sistema da de alta la familia, leyendo del ORIGEN
+// lo mismo que el correo del enlace mágico llevaría (`resume_token` + `?n=`). El robot no
+// puede abrir el buzón de Gmail; abrir el buzón tampoco es parte del producto.
+const EXPEDIENTE = { gid: null, listo: false }
+
+/**
+ * Pide al KMS el enlace de recuperación de la familia del robot y lo instala en `DATOS`.
+ * A partir de ese momento los caminos que necesitan sesión entran con el token REAL.
+ */
+function recuperarElEnlace(c, email) {
+  const r = sonda('manual_robotEnlaceDeRecuperacion', [email])
+  if (!r.ok) {
+    c.fallos.push(`no se pudo obtener el enlace de recuperación del expediente: ${r.error}`)
+    return false
+  }
+  const s = r.resultado || {}
+  if (!s.ok) {
+    c.fallos.push(`el sistema no tiene expediente para el correo que se acaba de dar de alta: ${s.error || 'sin motivo'}`)
+    return false
+  }
+  EXPEDIENTE.gid = s.enrollment_group_id
+  EXPEDIENTE.listo = true
+  DATOS.resumeToken = s.resume_token
+  if (s.email_id) DATOS.emailId = s.email_id
+  c.notas.push(`✓ expediente dado de alta y localizado (${String(s.enrollment_group_id).slice(0, 8)}…, ${r.ms} ms)`)
+  if (!s.email_id) {
+    c.noCubierta('identidad-per-guardian-en-el-enlace',
+      `el expediente no tiene fila en enrEmails para ese correo, así que el enlace viajaría sin ?n= y la recuperación sería de GRUPO, no per-guardian. Motivo del sistema: ${s.email_id_ausente_motivo || '(no informado)'}`)
+  }
+  return true
+}
+
+/** Ejecuta la sonda de lectura de vuelta de un paso y vuelca su veredicto en el camino. */
+function leerDeVuelta(c, fn, etiqueta, conducidoPor = 'navegador') {
+  if (!REAL) return true                       // en simulado no hay base que leer
+  if (!EXPEDIENTE.listo) {
+    c.fallos.push(`${etiqueta} — no hay expediente que consultar: el alta no llegó a ocurrir, así que la lectura de vuelta no se pudo hacer`)
+    return false
+  }
+  return aplicarSonda(c, etiqueta, sonda(fn, [EXPEDIENTE.gid]), conducidoPor)
+}
+
 // ── 5 · Contexto de un camino ────────────────────────────────────────────────
 class Camino {
   constructor(nombre) {
@@ -545,7 +604,11 @@ async function caminoAltaNueva(page, base) {
   const c = new Camino('alta-nueva')
   scenario.magicLinkMode = 'constant'
 
-  const pantalla = await rellenarPortada(page, base, DATOS.emailUnknown)
+  // En real se da de alta el correo CONOCIDO: así el camino siguiente compara un email que
+  // el sistema conoce de verdad contra uno que no, y el expediente que las once sondas van
+  // a seguir es éste. En simulado se mantiene el desconocido (el fixture no tiene estado).
+  const correoDelAlta = REAL ? DATOS.emailKnown : DATOS.emailUnknown
+  const pantalla = await rellenarPortada(page, base, correoDelAlta)
 
   c.evidencia.elementos = pantalla.tarjetas + (pantalla.sobreEnviado ? 1 : 0)
   c.afirmar('la portada confirma el envío del enlace', pantalla.sobreEnviado,
@@ -557,7 +620,7 @@ async function caminoAltaNueva(page, base) {
     `se registraron ${envios.length} llamadas a sendMagicLink (se espera exactamente 1)`)
   if (envios.length) {
     c.afirmar('la petición lleva el email tecleado',
-      envios[0].payload && envios[0].payload.primary_email === DATOS.emailUnknown,
+      envios[0].payload && envios[0].payload.primary_email === correoDelAlta,
       `primary_email recibido: ${envios[0].payload && envios[0].payload.primary_email}`)
   } else {
     c.noCubierta('email-en-la-peticion', 'no hubo ninguna petición que inspeccionar')
@@ -565,6 +628,15 @@ async function caminoAltaNueva(page, base) {
   // El casi-incidente: el cliente NO puede decidir recuperar-vs-crear.
   c.afirmar('el cliente NO crea la sesión por su cuenta', llamadas('initEnrollmentSession').length === 0,
     `el cliente llamó a initEnrollmentSession ${llamadas('initEnrollmentSession').length} vez/veces: volvió a ramificar en el cliente`)
+
+  // ── LECTURA DE VUELTA (paso 1). Que la pantalla diga "te hemos enviado un enlace" no
+  //    prueba que exista expediente: el ack es CONSTANTE a propósito (WIZ-ENUM), así que
+  //    dice lo mismo haya pasado lo que haya pasado. Esto mira la base de datos.
+  if (REAL) {
+    if (recuperarElEnlace(c, correoDelAlta)) {
+      leerDeVuelta(c, 'manual_robotSonda01Correo', 'paso 1 · correo y sesión')
+    }
+  }
   return c
 }
 
@@ -636,9 +708,16 @@ async function caminoRecuperarAterrizar(page, base) {
   c.afirmar('el wizard pinta sus 11 pasos', pantalla.pasos === 11,
     `se pintaron ${pantalla.pasos} pasos en el stepper`)
   c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
-  c.afirmar('aterriza en el paso donde estaba la familia (Documentos, 6.º)',
-    pantalla.pasoActivo === 5,
-    `aterrizó en el paso índice ${pantalla.pasoActivo} (se esperaba 5); un aterrizaje en 0 significa que la recuperación no arrastró el progreso`)
+  // El paso donde "estaba la familia" NO es el mismo en los dos modos, y fingir que sí lo
+  // es sería el error de siempre: en simulado el escenario coloca el expediente con los
+  // pasos 1-5 completos (⇒ Documentos, índice 5); contra el sistema REAL el expediente
+  // acaba de darse de alta y no tiene nada relleno (⇒ el primero, índice 0). Lo que se
+  // afirma en ambos es lo mismo: que la recuperación aterriza donde el ESTADO dice, no en
+  // un re-arranque arbitrario ni en un banner muerto.
+  const pasoEsperado = REAL ? 0 : 5
+  c.afirmar(`aterriza en el paso que le corresponde al expediente (índice ${pasoEsperado})`,
+    pantalla.pasoActivo === pasoEsperado,
+    `aterrizó en el paso índice ${pantalla.pasoActivo} (se esperaba ${pasoEsperado})`)
   // KAL-7: el token es un secreto de 7 días; no puede quedarse en la barra.
   c.afirmar('el token desaparece de la barra de direcciones (KAL-7)',
     pantalla.hash === '#/apply',
@@ -748,6 +827,22 @@ async function caminoSubirDocumento(page, base) {
   await esperarWizard(page)
 
   let pantalla = await page.evaluate(sondaPantalla)
+
+  // Contra el sistema REAL el expediente recién dado de alta aterriza en el paso 1, y el
+  // robot todavía no conduce en navegador los pasos 2-5 que hay que rellenar para llegar a
+  // Documentos. En vez de fingir un verde (o de teñir de rojo el producto por una carencia
+  // del robot), se declara lo que hay: esta parte NO está cubierta desde la pantalla, y su
+  // motivo viaja hasta el veredicto. La escritura del documento sí queda cubierta por la
+  // pasarela y la sonda del paso 6 la verifica leyendo `recFiles`.
+  if (REAL && pantalla.pasoActivo !== 5) {
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
+    c.noCubierta('subida-desde-la-pantalla',
+      `el expediente aterriza en el índice ${pantalla.pasoActivo} y el robot aún no conduce en navegador los pasos 2-5 necesarios para llegar a Documentos (índice 5). Lo cierra el encargo 03.`)
+    c.noCubierta('contenido-de-la-subida',
+      'no hubo subida DESDE LA PANTALLA que inspeccionar; el contenido de la fila lo afirma la sonda del paso 6')
+    return c
+  }
   if (!c.afirmar('aterriza en el paso de Documentos', pantalla.pasoActivo === 5,
     `aterrizó en el índice ${pantalla.pasoActivo}, no en 5`)) return c
 
@@ -795,6 +890,92 @@ async function caminoSubirDocumento(page, base) {
   return c
 }
 
+/**
+ * EXPEDIENTE COMPLETO — el camino que hace ALCANZABLES los pasos 8-11 (solo modo real).
+ *
+ * ── Qué hace, en orden ───────────────────────────────────────────────────────────────
+ *   1. Rellena por la PASARELA los pasos 2-6 (personas, vínculos, salud, documento).
+ *   2. DRENA la cola hasta que no queda trabajo del expediente — las escrituras del wizard
+ *      son asíncronas, y medir antes de que terminen es medir a medio escribir.
+ *   3. Lee de vuelta los pasos 2 a 6 con sus sondas.
+ *   4. ENVÍA (paso 7) y lo lee de vuelta.
+ *   5. Lleva el expediente a `AD` con el MOTOR REAL de transiciones — que es lo que
+ *      DESTAPA los pasos 8-11. Sin esto, cinco pasos no se medirían nunca.
+ *   6. Lee de vuelta los pasos 8 a 11.
+ *
+ * ── Lo que este camino NO afirma, y hay que tener presente ──────────────────────────
+ * Los pasos 2-7 los conduce la PASARELA, no el navegador: prueba que el KMS acepta el
+ * payload real y deja el efecto escrito, **no** que el wizard mande ese payload. Cada
+ * resultado va etiquetado con quién lo condujo, y el encargo 03 convierte `pasarela` en
+ * `navegador` paso a paso. Etiquetarlo es la diferencia entre una medida y una coartada.
+ */
+async function caminoExpedienteCompleto() {
+  const c = new Camino('expediente-completo')
+  if (!EXPEDIENTE.listo) {
+    c.fallos.push('no hay expediente: el alta no llegó a ocurrir, así que no hay nada que completar ni a dónde llegar')
+    return c
+  }
+  // Este camino no toca el navegador: su evidencia son las llamadas al KMS y las filas
+  // que deja escritas. Se declara aquí para que el mínimo de evidencia no lo tumbe por
+  // "pantalla vacía" — no hay pantalla, y decirlo es más honesto que inflar el número.
+  c.evidencia.elementos = 11
+  c.evidencia.llamadas = 1
+
+  const paso = (fn, etiqueta, params = [EXPEDIENTE.gid]) => {
+    const r = sonda(fn, params)
+    if (!r.ok) { c.fallos.push(`${etiqueta}: ${r.error}`); return null }
+    const s = r.resultado || {}
+    if (s.veredicto === 'ROJO') {
+      for (const f of (s.fallos || ['sin detalle'])) c.fallos.push(`${etiqueta} — ${f}`)
+    } else {
+      c.notas.push(`✓ ${etiqueta} (${r.ms} ms)`)
+    }
+    const d = s.datos || {}
+    const resumen = Object.keys(d).slice(0, 25).map(k => `${k}=${d[k]}`).join('  ')
+    if (resumen) c.notas.push(`    · ${resumen}`)
+    return s
+  }
+
+  // 1 · Rellenar 2-6 por la pasarela.
+  paso('manual_robotCompletarHastaEnvio', 'rellenar pasos 2-6 (pasarela)')
+
+  // 2 · Drenar hasta que no quede trabajo. El driver insiste; el KMS solo hace turnos
+  //     cortos. Ése es el reparto que evita el corte de seis minutos de Apps Script.
+  let pendientes = -1
+  for (let intento = 1; intento <= 4; intento++) {
+    const r = sonda('manual_robotDrenar', [EXPEDIENTE.gid, 120])
+    if (!r.ok) { c.fallos.push(`drenar la cola (intento ${intento}): ${r.error}`); break }
+    const s = r.resultado || {}
+    pendientes = Number(s.pendientes_n != null ? s.pendientes_n : (s.datos && s.datos.pendientes_n))
+    c.notas.push(`    · drenaje ${intento}: ${(s.datos && s.datos.estados) || '(sin trabajos)'} → pendientes=${pendientes}`)
+    if (pendientes === 0) break
+  }
+  if (pendientes > 0) {
+    c.fallos.push(`la cola no terminó: quedan ${pendientes} trabajo(s) del expediente sin completar tras 4 turnos de drenaje — todo lo que se mida a continuación estaría a medio escribir`)
+  }
+
+  // 3 · Leer de vuelta los pasos 2-6.
+  leerDeVuelta(c, 'manual_robotSonda02Personas', 'paso 2 · personas', 'pasarela')
+  leerDeVuelta(c, 'manual_robotSonda03Vinculos', 'paso 3 · vínculos', 'pasarela')
+  leerDeVuelta(c, 'manual_robotSonda04Salud', 'paso 4 · salud', 'pasarela')
+  leerDeVuelta(c, 'manual_robotSonda05Preguntas', 'paso 5 · preguntas', 'pasarela')
+  leerDeVuelta(c, 'manual_robotSonda06Documentos', 'paso 6 · documentos', 'pasarela')
+
+  // 4 · Enviar y leerlo de vuelta.
+  paso('manual_robotEnviar', 'enviar la solicitud (paso 7, pasarela)')
+  leerDeVuelta(c, 'manual_robotSonda07Envio', 'paso 7 · envío', 'pasarela')
+
+  // 5 · A `AD` con el motor real: lo que destapa los pasos 8-11.
+  paso('manual_robotLlevarAEstado', 'admitir el expediente (motor de estados)', [EXPEDIENTE.gid, 'AD'])
+
+  // 6 · Leer de vuelta los pasos 8-11.
+  leerDeVuelta(c, 'manual_robotSonda08Facturacion', 'paso 8 · facturación', 'pasarela')
+  leerDeVuelta(c, 'manual_robotSonda09Consentimientos', 'paso 9 · consentimientos', 'pasarela')
+  leerDeVuelta(c, 'manual_robotSonda10Revision', 'paso 10 · revisión', 'pasarela')
+  leerDeVuelta(c, 'manual_robotSonda11Firma', 'paso 11 · firma', 'pasarela')
+  return c
+}
+
 async function caminoTramoFirma(page, base) {
   const c = new Camino('tramo-firma')
   scenario.stage = 'firma'   // ADMITIDA + firma abierta ⇒ primer paso de firma (7)
@@ -827,6 +1008,9 @@ const CAMINOS = [
   { nombre: 'recuperar-aterrizar', fn: caminoRecuperarAterrizar, minLlamadas: 1, minElementos: 11 },
   { nombre: 'guardar-paso',        fn: caminoGuardarPaso,        minLlamadas: 1, minElementos: 11 },
   { nombre: 'subir-documento',     fn: caminoSubirDocumento,     minLlamadas: 1, minElementos: 1 },
+  // Solo en real: rellena 2-7, admite el expediente y lee de vuelta los once pasos. Va
+  // ANTES del tramo de firma porque es lo que lo destapa (sin `AD` no hay firma que pintar).
+  ...(REAL ? [{ nombre: 'expediente-completo', fn: caminoExpedienteCompleto, minLlamadas: 0, minElementos: 11 }] : []),
   { nombre: 'tramo-firma',         fn: caminoTramoFirma,         minLlamadas: 1, minElementos: 11 },
 ]
 
@@ -841,7 +1025,36 @@ async function main() {
     console.log(`[robot] wizard servido en ${base} — /__gas REENVÍA al sistema REAL`)
     console.log(`[robot] destino:  ${GAS_URL}`)
     console.log(`[robot] correos:  ${DATOS.emailKnown} · ${DATOS.emailUnknown}  (buzón de pruebas, sub-dirección por identidad)`)
-    console.log(`[robot] marcador: ${MARCA}   ⚠️ SE ESCRIBE EN EL SISTEMA DE VERDAD Y SALEN CORREOS REALES\n`)
+    console.log(`[robot] marcador: ${MARCA}   ⚠️ SE ESCRIBE EN EL SISTEMA DE VERDAD Y SALEN CORREOS REALES`)
+
+    // ── Sin sondas NO se arranca. Un robot que no puede mirar la base de datos afirmaría
+    //    solo sobre la pantalla, y ése es exactamente el agujero que este encargo cierra:
+    //    un paso que pinta bien y no guarda nada saldría VERDE. Perder la lectura de vuelta
+    //    no es "no aplica", es quedarse ciego — y se para antes de empezar.
+    const sinSondas = porQueNoHaySondas()
+    if (sinSondas) {
+      server.close()
+      printVerdict(false, `sin lectura de vuelta: ${sinSondas}`)
+      process.exit(1)
+    }
+    console.log(`[robot] sondas:   ${KMS_REPO}/scripts/gas-run-via-api.mjs`)
+
+    // ── RESET: el bucle tiene que ser repetible. Sin borrar la familia sintética de la
+    //    corrida anterior, la segunda corrida mide datos de la primera y cualquier
+    //    afirmación de conteo se vuelve mentira acumulativa.
+    const rst = sonda('manual_resetFamiliaRobot')
+    if (!rst.ok) {
+      server.close()
+      printVerdict(false, `no se pudo dejar el sistema a cero antes de empezar: ${rst.error}`)
+      process.exit(1)
+    }
+    const r0 = rst.resultado || {}
+    if (r0.veredicto !== 'VERDE') {
+      server.close()
+      printVerdict(false, `el reset previo no dejó el sistema a cero: ${(r0.fallos || []).join(' | ')}`)
+      process.exit(1)
+    }
+    console.log(`[robot] reset:    sistema a cero (grupos borrados: ${(r0.datos && r0.datos.grupos_borrados) || 0})\n`)
   } else {
     console.log(`[e2e] wizard servido en ${base} (backend simulado en /__gas, latencia ${LATENCY} ms)\n`)
   }
