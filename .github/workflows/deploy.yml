@@ -43,6 +43,33 @@ jobs:
       - name: Ninguna escritura directa a AppSheet desde el backend anónimo
         run: node scripts/comprobar-escrituras-directas.mjs
 
+  # CONTROL DE ALCANCE — los filtros que este backend manda a AppSheet tienen que estar
+  # escritos en el lenguaje que AppSheet entiende. `AND`/`OR` son FUNCIONES: puestos entre
+  # medias, AppSheet NO da error — se queda con la PRIMERA condición y descarta el resto en
+  # silencio. Medido el 2026-08-03: en `recFiles` eso devolvía las 23 filas vivas de la
+  # escuela (21 familias) a una familia que tenía 3; en la recuperación por email hacía que
+  # las guardas `ISBLANK` no se aplicaran y un expediente abandonado pasara por «ya enviada».
+  #
+  # La batería de navegador NO puede cazar esto: corre contra un backend simulado y nunca
+  # llega a construir un Selector. Por eso este control existe aparte. `build` depende de él.
+  #
+  # No necesita `npm ci`, ni navegador, ni red: lee el traductor real y lo ejecuta (~1 s).
+  selector-appsheet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Sin tubería: el veredicto se lee de la última línea, pero es el código de salida el
+      # que hace fallar el trabajo, y una tubería devolvería el del último comando.
+      - name: Los filtros a AppSheet usan AND()/OR() como funciones, no infijos
+        run: node scripts/comprobar-selector-appsheet.mjs
+
   # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.
   # Regla de los dos repos (CLAUDE.md §"No se toca lo que funciona sin una forma de
   # comprobar que sigue funcionando"): el 2026-07-27 un cambio de seguridad estuvo a
@@ -80,7 +107,7 @@ jobs:
         working-directory: frontend
 
   build:
-    needs: [e2e, escrituras-directas]
+    needs: [e2e, escrituras-directas, selector-appsheet]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

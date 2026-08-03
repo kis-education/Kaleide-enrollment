@@ -5851,6 +5851,90 @@ function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, app
 // ─── AppSheet API helper ──────────────────────────────────────────────────────
 
 /**
+ * Parte una expresión por el operador dado, pero SOLO al NIVEL SUPERIOR: ignora los que
+ * caen dentro de paréntesis o dentro de una cadena entrecomillada.
+ *
+ * Partir por texto plano (un `split('&&')`) rompería dos cosas reales de este backend:
+ * los filtros que agrupan alternativas entre paréntesis —`(a || b) && c`, que hay— y
+ * cualquier valor que contenga `&&` dentro de las comillas.
+ *
+ * @param {string} expr
+ * @param {string} op  '&&' o '||'
+ * @returns {string[]} las partes, sin espacios sobrantes y sin vacíos
+ */
+function wizardPartirNivelSuperior_(expr, op) {
+  var partes = [], nivel = 0, comilla = false, actual = '';
+  for (var i = 0; i < expr.length; i++) {
+    var c = expr.charAt(i);
+    if (c === '"') comilla = !comilla;
+    if (!comilla) {
+      if (c === '(') nivel++;
+      if (c === ')') nivel--;
+      if (nivel === 0 && expr.substr(i, op.length) === op) {
+        partes.push(actual); actual = ''; i += op.length - 1; continue;
+      }
+    }
+    actual += c;
+  }
+  partes.push(actual);
+  return partes
+    .map(function (p) { return p.trim(); })
+    .filter(function (p) { return p.length; });
+}
+
+/**
+ * Traduce un filtro estilo SQL al lenguaje de expresiones de AppSheet.
+ *
+ *   "columna" = "valor"   →   [columna] = "valor"
+ *   a && b                →   AND(a, b)          ← FUNCIÓN, no infijo
+ *   a || b                →   OR(a, b)
+ *   true / false          →   TRUE / FALSE
+ *
+ * ── POR QUÉ ESTO NO ES UN `.replace(/&&/g,'AND')` (medido, 2026-08-03) ────────────────
+ * Durante mucho tiempo lo fue, y producía `[a] = "x" AND [b] = "y"`. En AppSheet `AND` es
+ * una FUNCIÓN, no un operador infijo, y esa forma **no da error**: se queda con la PRIMERA
+ * condición y **descarta el resto en silencio**. Medido contra AppSheet real, sin margen:
+ *
+ *   · `recFiles` con `school_id` como primera condición → devolvía las 23 filas VIVAS DE LA
+ *     ESCUELA (21 familias distintas) para un expediente que tenía 3. Cada familia recibía
+ *     los documentos de todas las demás.
+ *   · `enrEnrollmentGroups` con el email como primera condición → sin fuga (el email acota),
+ *     pero las guardas se caían: `email` solo → 1 fila · `email && NOT(ISBLANK(submitted_at))
+ *     && ISBLANK(abandoned_at)` infijo → 1 · la misma con `AND()` → 0. Es decir, un grupo
+ *     ABANDONADO o SIN ENVIAR se trataba como «ya enviada» en `initEnrollmentSession_`.
+ *
+ * Un filtro inválido devolvería 0 y saltaría a la vista el primer día; éste devolvía de MÁS
+ * o de menos sin quejarse. Por eso vivió tanto.
+ *
+ * Comprobado por `scripts/comprobar-selector-appsheet.mjs` (trabajo de integración continua),
+ * que ejecuta esta misma función aislada. La batería de navegador NO cubre esto: corre contra
+ * un backend simulado y nunca llega a construir un Selector.
+ *
+ * @param {string} filtro
+ * @returns {string} la expresión en el lenguaje de AppSheet
+ */
+function wizardTraducirFiltro_(filtro) {
+  function conv(expr) {
+    expr = String(expr).trim();
+    // Quita un paréntesis envolvente redundante — pero solo si de verdad envuelve al TODO.
+    if (expr.charAt(0) === '(' && expr.charAt(expr.length - 1) === ')') {
+      var dentro = expr.slice(1, -1);
+      if (wizardPartirNivelSuperior_(dentro, '&&').length +
+          wizardPartirNivelSuperior_(dentro, '||').length >= 2) expr = dentro;
+    }
+    var ands = wizardPartirNivelSuperior_(expr, '&&');
+    if (ands.length > 1) return 'AND(' + ands.map(conv).join(', ') + ')';
+    var ors = wizardPartirNivelSuperior_(expr, '||');
+    if (ors.length > 1) return 'OR(' + ors.map(conv).join(', ') + ')';
+    return expr
+      .replace(/"(\w+)"\s*(=|!=|<=|>=|<|>)/g, '[$1] $2')
+      .replace(/\btrue\b/g, 'TRUE')
+      .replace(/\bfalse\b/g, 'FALSE');
+  }
+  return conv(filtro);
+}
+
+/**
  * Executes an AppSheet API v2 action on a table.
  * @param {string} table  - Table name
  * @param {string} action - 'Add', 'Edit', 'Find', 'Delete'
@@ -5889,15 +5973,7 @@ function appsheetRequest_(table, action, rows, selector, debugOut) {
   if (rows && rows.length > 0) body.Rows = rows.map(sanitize_);
   if (selector) {
     if (selector.Filter) {
-      // Convert SQL-like Filter to AppSheet FILTER() formula syntax.
-      // "column_name" = "value"  →  [column_name] = "value"
-      // &&  →  AND,   ||  →  OR,   true/false  →  TRUE/FALSE
-      const expr = selector.Filter
-        .replace(/"(\w+)"\s*(=|!=|<=|>=|<|>)/g, '[$1] $2')
-        .replace(/&&/g, 'AND')
-        .replace(/\|\|/g, 'OR')
-        .replace(/\btrue\b/g, 'TRUE')
-        .replace(/\bfalse\b/g, 'FALSE');
+      const expr = wizardTraducirFiltro_(selector.Filter);
       body.Properties.Selector = 'FILTER("' + table + '", ' + expr + ')';
     } else {
       body.Properties = { ...body.Properties, ...selector };
@@ -5997,12 +6073,7 @@ function appsheetRequestBatch_(specs) {
     if (spec.rows && spec.rows.length > 0) body.Rows = spec.rows.map(sanitize_);
     if (spec.selector) {
       if (spec.selector.Filter) {
-        const expr = spec.selector.Filter
-          .replace(/"(\w+)"\s*(=|!=|<=|>=|<|>)/g, '[$1] $2')
-          .replace(/&&/g, 'AND')
-          .replace(/\|\|/g, 'OR')
-          .replace(/\btrue\b/g, 'TRUE')
-          .replace(/\bfalse\b/g, 'FALSE');
+        const expr = wizardTraducirFiltro_(spec.selector.Filter);
         body.Properties.Selector = 'FILTER("' + spec.table + '", ' + expr + ')';
       } else {
         body.Properties = Object.assign({}, body.Properties, spec.selector);

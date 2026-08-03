@@ -372,6 +372,47 @@ invisible.
 **Veredicto**: última línea, `VEREDICTO: VERDE|ROJO — <motivo>`, impresa **siempre** (también ante
 error fatal). Nunca se deduce del código de salida.
 
+### Los filtros a AppSheet: `AND`/`OR` son FUNCIONES, y el control lo vigila en CI (2026-08-03)
+
+**`node scripts/comprobar-selector-appsheet.mjs`** comprueba que el traductor de filtros de
+`backend/Code.js` (`wizardTraducirFiltro_`) emite `AND(a, b)` / `OR(a, b)` **como funciones**.
+Trabajo `selector-appsheet` en `.github/workflows/deploy.yml`; **`build` depende de él ⇒ en ROJO no
+se publica**. No necesita `npm ci`, ni red, ni navegador (~1 s).
+
+**El defecto que vigila, medido — no razonado.** El backend traducía `&&` con
+`.replace(/&&/g, 'AND')`, produciendo `[a] = "x" AND [b] = "y"`. En el lenguaje de expresiones de
+AppSheet eso **no da error**: se queda con la **PRIMERA** condición y **descarta el resto en
+silencio**. Medido contra AppSheet real el 2026-08-03, desde el repositorio hermano:
+
+| filtro | primera condición | resultado del infijo |
+|---|---|---|
+| `recFiles`: `school_id && origin_reference` | `school_id` (casa TODO) | **23 filas vivas de la escuela, 21 familias distintas**, para un expediente que tenía 3 |
+| recuperación: `primary_email && NOT(ISBLANK(submitted_at)) && ISBLANK(abandoned_at)` | el email (acota) | sin fuga, pero **las guardas se caen**: solo-email → 1 · con guardas infijas → 1 · con `AND()` → **0** |
+
+O sea: **fuga de documentos entre familias** por un lado, y por otro `initEnrollmentSession_`
+tratando como *«ya enviada»* un expediente **abandonado o sin enviar**. Un filtro *inválido*
+devolvería 0 y saltaría a la vista el primer día; éste devolvía de más o de menos sin quejarse —
+por eso vivió tanto.
+
+**Por qué un control aparte y no la batería.** `npm run e2e:wizard` corre contra un backend
+**simulado**: nunca llega a construir un Selector, así que **no puede salir roja por esto**.
+Declararla como red de este cambio habría sido decorar. Este control lee el traductor REAL del
+fuente, lo ejecuta aislado y afirma sobre lo que produce.
+
+**Se exigió ROJA antes de dar nada por hecho**, dos veces: cambiando el troceador por un
+`split('&&')` de texto plano (rojo: nombra el caso del `&&` dentro de comillas) y devolviendo la
+emisión al infijo (rojo: 5 de 7). También salió roja **por sí sola** cuando el traductor todavía no
+existía como función propia — una comprobación que no encuentra lo que dice medir no puede salir
+verde.
+
+**Lo que afirma y lo que no**: afirma la **FORMA** (funciones, paréntesis, comillas, sin `&&`/`||`
+sueltos fuera de comillas). **NO** afirma que el filtro devuelva las filas correctas — eso solo lo
+dice AppSheet, y se midió aparte. Cuando toques `wizardTraducirFiltro_` o añadas una forma de filtro
+nueva, **el caso se añade en el MISMO cambio** y se rompe a propósito antes de darlo por bueno.
+
+Cross-ref: `kis-app/docs/kms/loop-backlog.md` §"HALLAZGO GRAVE (2026-08-03)" (el mismo defecto en el
+KMS, arreglado y desplegado @1184) · §"No se toca lo que funciona…".
+
 ### MANDATORY — MURO DE DEPLOY: batería del wizard VERDE antes de CUALQUIER publicación (2026-07-28)
 
 **`npm run e2e:wizard` (desde `frontend/`) debe terminar VERDE antes de publicar nada** — ni el frontend a GitHub Pages, ni el backend con `clasp deploy`. **Cambio sin batería verde = NO deploy.** Es el equivalente al muro del KMS (`kis-app/CLAUDE.md` §"MANDATORY — MURO DE DEPLOY"), y nace de la regla de los dos repos (§"No se toca lo que funciona sin una forma de comprobar que sigue funcionando").
