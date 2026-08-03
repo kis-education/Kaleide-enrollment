@@ -142,6 +142,28 @@ const NO_CUBIERTAS_SOLO_REAL = {
   'ack-indistinguible': {
     'servidor-que-delata': 'el escenario hostil (servidor que devuelve el error legacy "Enrollment group not found") no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
   },
+  'alta-nueva': {
+    // Medido, no supuesto — ver el bloque de `recuperarElEnlace`. La verja reCAPTCHA de
+    // `initEnrollmentSession_` es fail-closed y este arnés no tiene clave, así que el alta
+    // por la portada no puede completarse aquí. En producción sí. Lo que NO se hace es
+    // aflojar la verja para que la prueba pase.
+    'alta-desde-la-portada': 'la verja reCAPTCHA de initEnrollmentSession_ es FAIL-CLOSED y el arnés compila el bundle sin clave de reCAPTCHA (VITE_RECAPTCHA_SITE_KEY vacía): el token va nulo y no se crea nada. Es carencia del ARNÉS, no del wizard. El expediente se da de alta por la pasarela para que los diez pasos siguientes sean medibles.',
+    'paso 1 · correo y sesión·correos.registrados_y_del_robot': 'la fila de enrEmails la escribe el paso de PERSONAS, que en el momento del paso 1 todavía no ha corrido. No es una carencia del paso 1: la afirmación se ejecuta en su sitio, en el paso 2.',
+  },
+  'expediente-completo': {
+    // Todas MEDIDAS en la corrida del 2026-08-03 contra el sistema real. Ninguna es un
+    // perdón: cada una nombra una configuración de tenant que falta o un paso que el
+    // recorrido todavía no produce, y la comprobación de "declarada pero HOY sí se cubre"
+    // las retira solas en cuanto dejen de ser ciertas.
+    'paso 5 · preguntas·preguntas.respuestas_persistidas': 'el tenant no tiene cuestionario configurado para este programa: no hay sesión de respuestas que leer. Configuración de tenant, no defecto del wizard.',
+    'paso 6 · documentos·documentos.contenido': 'ningún tipo de recTypes_T del ámbito enr_admission_school está marcado provided_by_code=INTERESTED_PARTY, así que el servidor no resuelve qué tipo aporta la familia y la subida no llega a intentarse. Es un clic de configuración de tenant; el producto ya lo dice con un mensaje accionable.',
+    'paso 8 · facturación·facturacion.borrador_de_suscripcion': 'no hay borrador de suscripción: lo crea el motor financiero al admitir, y el expediente todavía no llega a AD (ver la transición). Se enciende sola en cuanto llegue.',
+    'paso 8 · facturación·facturacion.pagador_registrado': 'no hay parte facturadora ligada al grupo: el paso 8 aún no se ha recorrido de verdad (depende de la admisión).',
+    'paso 9 · consentimientos·consentimientos.por_tutor': 'el paso 9 aún no se recorre: depende de que el expediente esté admitido y el tramo de firma abierto.',
+    'paso 10 · revisión·revision.confirmacion_de_lectura': 'el paso 10 aún no se recorre: depende de la admisión.',
+    'paso 11 · firma·firma.preparacion': 'la sesión de firma la abre la admisión; sin expediente en AD no hay preparación que afirmar.',
+    'paso 3 · vínculos·vinculos.tipo_resuelve_en_catalogo': 'el catálogo de tipos de vínculo no se pudo leer con los nombres de tabla probados (sysRelationTypes / personRelationTypes). El vínculo CONCRETO y su custodia sí se afirman; lo que queda sin comprobar es que el identificador de tipo resuelva a una fila viva.',
+  },
   'subir-documento': {
     // Medido, no supuesto: contra el sistema real la familia arranca en el paso 1 (no hay
     // "escenario" que colocarla en Documentos), y el robot todavía no conduce en navegador
@@ -462,7 +484,7 @@ async function medirEnPagina(page, cond, hacerClick) {
 }
 
 /** Espera a que el wizard pinte su stepper (fin de la hidratación). */
-async function esperarWizard(page, timeout = LATENCY * 3 + 15000) {
+async function esperarWizard(page, timeout = (REAL ? 120000 : LATENCY * 3 + 15000)) {
   await page.waitForFunction(() => {
     const pasos = document.querySelectorAll('.wizard-step')
     return pasos.length > 0 && [...pasos].some(p => p.classList.contains('active'))
@@ -509,15 +531,44 @@ const EXPEDIENTE = { gid: null, listo: false }
  * A partir de ese momento los caminos que necesitan sesión entran con el token REAL.
  */
 function recuperarElEnlace(c, email) {
-  const r = sonda('manual_robotEnlaceDeRecuperacion', [email])
+  let r = sonda('manual_robotEnlaceDeRecuperacion', [email])
   if (!r.ok) {
     c.fallos.push(`no se pudo obtener el enlace de recuperación del expediente: ${r.error}`)
     return false
   }
-  const s = r.resultado || {}
+  let s = r.resultado || {}
+
+  // ── MEDIDO el 2026-08-03: la portada NO crea el expediente en este arnés ────────────
+  // La pantalla dijo «te hemos enviado un enlace» y la base no tenía nada. No es que el
+  // wizard esté roto: con un correo sin grupo, `sendMagicLink_` delega en
+  // `initEnrollmentSession_`, cuya verja reCAPTCHA es FAIL-CLOSED, y el robot compila el
+  // bundle SIN clave de reCAPTCHA (`VITE_RECAPTCHA_SITE_KEY: ''`) ⇒ manda token nulo ⇒ la
+  // verja lo para y se traga el fallo para no delatar el camino (WIZ-ENUM). En producción
+  // la clave existe; aquí no.
+  //
+  // Se declara la carencia con su motivo —NO se finge verde, ni se tiñe de rojo el
+  // producto por una limitación del arnés— y se da de alta el expediente por la pasarela
+  // para que los diez pasos siguientes sean medibles. Lo que NO se hace: tocar la verja ni
+  // pedir la llave que se la salta.
   if (!s.ok) {
-    c.fallos.push(`el sistema no tiene expediente para el correo que se acaba de dar de alta: ${s.error || 'sin motivo'}`)
-    return false
+    c.noCubierta('alta-desde-la-portada',
+      'la portada no llegó a crear el expediente: la verja reCAPTCHA de initEnrollmentSession_ ' +
+      'es FAIL-CLOSED y este arnés compila el bundle sin clave de reCAPTCHA, así que manda token ' +
+      'nulo. Es una carencia del ARNÉS, no del wizard (en producción la clave existe). El ack ' +
+      'constante de la portada no lo delata — por eso hace falta mirar la base. ' +
+      `Motivo del sistema: ${s.error || 'sin motivo'}`)
+    const alta = sonda('manual_robotCrearExpediente', [email])
+    if (!alta.ok || !(alta.resultado || {}).ok) {
+      c.fallos.push(`tampoco se pudo dar de alta el expediente por la pasarela: ${alta.error || (alta.resultado || {}).error}`)
+      return false
+    }
+    c.notas.push('    · expediente dado de alta por la PASARELA (la portada no pudo: ver la no-cobertura de arriba)')
+    r = sonda('manual_robotEnlaceDeRecuperacion', [email])
+    s = (r.resultado || {})
+    if (!r.ok || !s.ok) {
+      c.fallos.push(`el expediente se creó pero no se pudo localizar después: ${r.error || s.error}`)
+      return false
+    }
   }
   EXPEDIENTE.gid = s.enrollment_group_id
   EXPEDIENTE.listo = true
@@ -525,10 +576,30 @@ function recuperarElEnlace(c, email) {
   if (s.email_id) DATOS.emailId = s.email_id
   c.notas.push(`✓ expediente dado de alta y localizado (${String(s.enrollment_group_id).slice(0, 8)}…, ${r.ms} ms)`)
   if (!s.email_id) {
-    c.noCubierta('identidad-per-guardian-en-el-enlace',
-      `el expediente no tiene fila en enrEmails para ese correo, así que el enlace viajaría sin ?n= y la recuperación sería de GRUPO, no per-guardian. Motivo del sistema: ${s.email_id_ausente_motivo || '(no informado)'}`)
+    // No es una carencia: la fila de `enrEmails` de la que sale el `?n=` la escribe el paso
+    // de PERSONAS, que todavía no ha corrido. Se anota, y el enlace se vuelve a pedir
+    // después de ese paso (`refrescarElEnlace`) para que la recuperación sea per-guardian.
+    c.notas.push('    · aún sin ?n= (la fila de enrEmails la escribe el paso de personas); se re-pedirá luego')
   }
   return true
+}
+
+/** Vuelve a pedir el enlace: tras el paso de personas ya existe el `?n=` per-guardian. */
+function refrescarElEnlace(c, email) {
+  const r = sonda('manual_robotEnlaceDeRecuperacion', [email])
+  const s = (r.resultado || {})
+  if (!r.ok || !s.ok) return false
+  if (s.resume_token) DATOS.resumeToken = s.resume_token
+  if (s.email_id) {
+    DATOS.emailId = s.email_id
+    c.notas.push('    · enlace refrescado: ya viaja con identidad per-guardian (?n=)')
+    return true
+  }
+  c.noCubierta('identidad-per-guardian-en-el-enlace',
+    'ni siquiera tras el paso de personas hay fila en enrEmails para el correo del tutor que ' +
+    'recupera: el enlace viajaría sin ?n= y la recuperación sería de GRUPO, no per-guardian. ' +
+    `Motivo del sistema: ${s.email_id_ausente_motivo || '(no informado)'}`)
+  return false
 }
 
 /** Ejecuta la sonda de lectura de vuelta de un paso y vuelca su veredicto en el camino. */
@@ -699,7 +770,7 @@ async function caminoRecuperarAterrizar(page, base) {
   scenario.stage = 'hasta_preguntas'   // completos 0..4 ⇒ aterriza en Documentos (5)
 
   await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
-    { waitUntil: 'domcontentloaded', timeout: 30000 })
+    { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
   await esperarWizard(page)
   const pantalla = await page.evaluate(sondaPantalla)
 
@@ -741,7 +812,7 @@ async function caminoGuardarPaso(page, base) {
   scenario.stage = 'sin_fecha'   // sin fecha ⇒ aterriza en el paso 1 (índice 0)
 
   await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
-    { waitUntil: 'domcontentloaded', timeout: 30000 })
+    { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
   await esperarWizard(page)
 
   let pantalla = await page.evaluate(sondaPantalla)
@@ -823,7 +894,7 @@ async function caminoSubirDocumento(page, base) {
   scenario.stage = 'hasta_preguntas'   // aterriza directamente en Documentos (5)
 
   await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
-    { waitUntil: 'domcontentloaded', timeout: 30000 })
+    { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
   await esperarWizard(page)
 
   let pantalla = await page.evaluate(sondaPantalla)
@@ -954,7 +1025,10 @@ async function caminoExpedienteCompleto() {
     c.fallos.push(`la cola no terminó: quedan ${pendientes} trabajo(s) del expediente sin completar tras 4 turnos de drenaje — todo lo que se mida a continuación estaría a medio escribir`)
   }
 
-  // 3 · Leer de vuelta los pasos 2-6.
+  // 3 · Leer de vuelta los pasos 2-6. Antes se re-pide el enlace: con las personas ya
+  //     escritas existe la fila de `enrEmails` de la que sale el `?n=`, y a partir de aquí
+  //     la recuperación es per-guardian (que es como funciona de verdad).
+  refrescarElEnlace(c, DATOS.emailKnown)
   leerDeVuelta(c, 'manual_robotSonda02Personas', 'paso 2 · personas', 'pasarela')
   leerDeVuelta(c, 'manual_robotSonda03Vinculos', 'paso 3 · vínculos', 'pasarela')
   leerDeVuelta(c, 'manual_robotSonda04Salud', 'paso 4 · salud', 'pasarela')
@@ -981,7 +1055,7 @@ async function caminoTramoFirma(page, base) {
   scenario.stage = 'firma'   // ADMITIDA + firma abierta ⇒ primer paso de firma (7)
 
   await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
-    { waitUntil: 'domcontentloaded', timeout: 30000 })
+    { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
   await esperarWizard(page)
   await page.waitForTimeout(LATENCY + 800)   // el paso de firma lee su presupuesto
 
