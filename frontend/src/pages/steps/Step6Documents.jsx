@@ -15,8 +15,13 @@ import * as log from '../../logger';
 // donde el usuario describe en una casilla qué tipo de archivo es."
 // → Eliminamos la rejilla fija DOCUMENT_TYPES. El usuario añade N adjuntos; cada
 //   uno = un archivo + una casilla de texto libre. Cero archivos es válido (no
-//   obligatorio). El backend guarda la descripción en recFiles.description con un
-//   rec_type_code genérico ('OTHER').
+//   obligatorio). El backend guarda la descripción en recFiles.description.
+// ★ CORRECCIÓN 2026-08-04: esta nota decía «con un rec_type_code genérico ('OTHER')»
+//   y ESO ERA EL DEFECTO, no el diseño. `'OTHER'` no existe en el catálogo del tenant:
+//   el servidor rechazaba TODA subida de familia con [INVALID_REC_TYPE] mientras la
+//   pantalla dejaba adjuntar y avanzar. El tipo lo pone ahora el catálogo, resuelto por
+//   el KMS (DL-R16); el wizard no manda ninguno. Ver el bloque «EL TIPO DE DOCUMENTO LO
+//   PONE EL CATÁLOGO» en `backend/Code.js`.
 //
 // WIZARD-DOCS2 (2026-06-13): patrón "añadir ítem" como en Step2Persons (tutores/
 // alumnos). Estado inicial = CERO paneles: solo el botón "Añadir archivo". Cada
