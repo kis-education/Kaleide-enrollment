@@ -104,15 +104,29 @@ export function sonda(fn, params = [], timeoutMs = 420000) {
 /**
  * Aplica el resultado de una sonda a un camino de la batería.
  *
- * Las tres salidas posibles, y ninguna se confunde con otra:
+ * Las cuatro salidas posibles, y ninguna se confunde con otra:
  *   · la sonda no se pudo ejecutar        → FALLO (cobertura perdida, no "no aplica")
  *   · la sonda dice ROJO                  → FALLO con el mensaje literal de la sonda
  *   · la sonda declara afirmaciones sin cubrir → NO CUBIERTA con su motivo (nunca verde)
+ *   · el paso NO lo condujo el navegador  → NO CUBIERTA, aunque la base diga que sí
+ *
+ * ── La etiqueta es VINCULANTE (encargo 08, Diego 2026-08-04) ────────────────────────
+ * Hasta hoy `conducidoPor` solo se IMPRIMÍA. Con eso, un verde de los once significaba
+ * «el KMS acepta los once mensajes», no «una familia puede completar la inscripción
+ * usando el wizard» — y la condición de parada decía lo segundo. Ahora un paso que NO
+ * condujo el navegador **no cuenta para el verde**: se declara NO CUBIERTO con su
+ * motivo, y esa declaración exige entrada en `NO_CUBIERTAS_PERMITIDAS` o el veredicto
+ * es ROJO. Que la base de datos tenga la fila sigue siendo información útil y se
+ * imprime; lo que ya no se admite es venderla como prueba de que la pantalla funciona.
+ *
+ * Un ROJO de la sonda SIGUE siendo fallo lo conduzca quien lo conduzca: si el efecto no
+ * está escrito, no está escrito.
  *
  * @param {object} camino — instancia de `Camino` de run-wizard.mjs
  * @param {string} etiqueta
  * @param {{ok:boolean, resultado?:any, error?:string}} r
- * @param {string} conducidoPor — 'navegador' | 'pasarela'; se imprime junto al resultado.
+ * @param {string} conducidoPor — 'navegador' o cualquier otra cosa (pasarela, no
+ *   alcanzado, caído…). Solo 'navegador' a secas cuenta para el verde de los once.
  */
 export function aplicarSonda(camino, etiqueta, r, conducidoPor = 'navegador') {
   if (!r.ok) {
@@ -121,6 +135,13 @@ export function aplicarSonda(camino, etiqueta, r, conducidoPor = 'navegador') {
   }
   const s = r.resultado || {}
   const cabecera = `${etiqueta} [conducido por: ${conducidoPor}]`
+  if (conducidoPor !== 'navegador') {
+    camino.noCubierta(`${etiqueta}·conducido-por-navegador`,
+      `este paso NO se recorrió pulsando botones (${conducidoPor}). La base de datos dice ` +
+      `«${s.veredicto || '?'}», lo cual prueba que el efecto está o no está escrito — pero NO ` +
+      `prueba que una familia pueda hacerlo desde la pantalla, que es lo que la condición de ` +
+      `parada exige. No cuenta para el verde de los once.`)
+  }
   if (s.veredicto === 'VERDE') {
     camino.notas.push(`✓ ${cabecera} — la base de datos confirma el paso (${r.ms} ms)`)
   } else {

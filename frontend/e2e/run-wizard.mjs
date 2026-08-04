@@ -171,6 +171,12 @@ const NO_CUBIERTAS_SOLO_REAL = {
     // paso 11 solo llega a emitirla cuando la preparación SÍ ocurre — antes se cortaba antes.
     'paso 11 · firma·firma.acto_consumado_click_and_sign': 'no se llama al proveedor Click & Sign: el interruptor CLICK_AND_SIGN_SUSPENDED_ está prohibido tocar y el acto es irreversible y sale a un tercero. Se cubre TODO lo anterior —sesión, firmantes, tokens y paquete— y se corta exactamente en el salto al proveedor.',
     'paso 3 · vínculos·vinculos.tipo_resuelve_en_catalogo': 'el catálogo de tipos de vínculo no se pudo leer con los nombres de tabla probados (sysRelationTypes / personRelationTypes). El vínculo CONCRETO y su custodia sí se afirman; lo que queda sin comprobar es que el identificador de tipo resuelva a una fila viva.',
+    // ── La ÚNICA no-cobertura de conducción legítima (encargo 08) ────────────────────
+    // Lo que el navegador podría conducir del paso 11 es el ACTO de firmar, y ése está
+    // PROHIBIDO: sale a Click & Sign, es irreversible, y el interruptor
+    // CLICK_AND_SIGN_SUSPENDED_ no se toca. Todo lo anterior —sesión, firmantes, tokens y
+    // paquete— lo prepara el motor del KMS al admitir y se lee de vuelta.
+    'paso 11 · firma·conducido-por-navegador': 'el paso 11 se recorre hasta el BORDE del acto y ahí se corta a propósito: firmar sale a un tercero (Click & Sign) y es irreversible. Lo que el navegador sí conduce son los pasos 8, 9 y 10 que llevan hasta él; la preparación de la firma la produce el motor del KMS al admitir y se lee de vuelta en la base.',
   },
   'subir-documento': {
     // Medido, no supuesto: contra el sistema real la familia arranca en el paso 1 (no hay
@@ -562,6 +568,11 @@ async function loadPlaywright() {
 
 // Ruido benigno DOCUMENTADO: recursos externos que el sandbox aborta a propósito
 // (CDN de iconos, fuentes de Google, logo de GitHub, reCAPTCHA). Nada más.
+// ── Inventario de lo que el arnés le quita al navegador ──────────────────────
+// Origen → nº de peticiones abortadas. Se imprime al final de la corrida: un sandbox que
+// recorta sin decir qué recorta es una fuente de rojos falsos difíciles de diagnosticar.
+const abortadas = new Map()
+
 const CONSOLA_PERMITIDA = [
   /Failed to load resource/i,
   /net::ERR_FAILED/i,
@@ -916,14 +927,25 @@ function drenar(c, etiqueta, turnos = 20) {
   c.fallos.push(`la cola no terminó ${etiqueta}: quedan ${pendientes} trabajo(s) del expediente por correr tras ${turnos} turnos de drenaje — todo lo que se mida a continuación estaría a medio escribir`)
 }
 
+// Quién condujo cada paso y con qué resultado. Se imprime al final: la tabla de los once
+// pasos es LA respuesta a la pregunta que el encargo 08 hace, y tenerla que reconstruir a
+// mano desde el registro es justo lo que invita a contarla mal.
+const CONDUCTORES = new Map()
+
 /** Ejecuta la sonda de lectura de vuelta de un paso y vuelca su veredicto en el camino. */
 function leerDeVuelta(c, fn, etiqueta, conducidoPor = 'navegador') {
   if (!REAL) return true                       // en simulado no hay base que leer
   if (!EXPEDIENTE.listo) {
     c.fallos.push(`${etiqueta} — no hay expediente que consultar: el alta no llegó a ocurrir, así que la lectura de vuelta no se pudo hacer`)
+    CONDUCTORES.set(etiqueta, { quien: conducidoPor, estado: 'sin expediente' })
     return false
   }
-  return aplicarSonda(c, etiqueta, sonda(fn, [EXPEDIENTE.gid]), conducidoPor)
+  const verde = aplicarSonda(c, etiqueta, sonda(fn, [EXPEDIENTE.gid]), conducidoPor)
+  CONDUCTORES.set(etiqueta, {
+    quien: conducidoPor,
+    estado: conducidoPor !== 'navegador' ? 'NO CUBIERTO' : (verde ? 'verde' : 'rojo'),
+  })
+  return verde
 }
 
 // ── 5 · Contexto de un camino ────────────────────────────────────────────────
@@ -1337,36 +1359,445 @@ async function caminoSubirDocumento(page, base) {
   return c
 }
 
+// ── 6.bis · CONDUCIR POR NAVEGADOR ───────────────────────────────────────────
+//
+// Todo lo de aquí abajo pulsa lo que pulsaría una familia. No hay ni un atajo por la
+// pasarela: si un paso no se puede completar desde la pantalla, el camino CAE y dice en
+// qué paso y con qué mensaje del propio wizard — que es exactamente el hallazgo que se
+// busca (encargo 08: «si el wizard te obliga a hacer algo raro para avanzar, eso es un
+// hallazgo, no un obstáculo del arnés»).
+
+const BTN_SIGUIENTE = 'button.btn-primary-kis:not([disabled])'
+const BTN_EDITAR    = 'button.btn-secondary-kis:has(i.bi-pencil)'
+
+/** Índice del paso activo del stepper (-1 si no hay stepper). */
+const dondeEstoy = (page) => page.evaluate(sondaPasoActivo)
+
+/** Lo que el propio wizard dice cuando no deja avanzar (aviso sticky o inline). */
+const quejaDelWizard = (page) => page.evaluate(() => {
+  const n = document.querySelector('[role="alert"], .field-error')
+  return n ? (n.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 220) : ''
+})
+
 /**
- * EXPEDIENTE COMPLETO — el camino que hace ALCANZABLES los pasos 8-11 (solo modo real).
+ * Un paso ya guardado se recupera PROTEGIDO tras su banner. Para tocarlo hay que pulsar
+ * «Editar», igual que la familia. Devuelve true si hizo falta desbloquear.
+ */
+async function desbloquear(page) {
+  const b = await page.$(BTN_EDITAR)
+  if (!b) return false
+  await b.click()
+  await page.waitForTimeout(150)
+  return true
+}
+
+/**
+ * Pulsa «Continuar» y espera a que el stepper marque `destino`. Si no avanza, el fallo
+ * NOMBRA el paso donde se quedó y la queja literal del wizard: un «no avanzó» mudo
+ * obliga a repetir la corrida para diagnosticar, y repetir es lo que la casa prohíbe.
+ */
+async function continuar(c, page, destino, etiqueta, msMax = 45000) {
+  // Un paso que todavía está cargando su contenido (el cuestionario, el paquete
+  // contractual) deshabilita su «Continuar». Se ESPERA a que sea pulsable en vez de
+  // declarar que «no hay botón»: ese diagnóstico acusaría al wizard de algo que solo
+  // era prisa del robot.
+  try {
+    await page.waitForFunction(() => [...document.querySelectorAll('button.btn-primary-kis')].some(b => !b.disabled),
+      null, { timeout: msMax })
+  } catch {
+    const queja = await quejaDelWizard(page)
+    c.fallos.push(`${etiqueta} — la pantalla nunca ofreció un botón «Continuar» pulsable en ${msMax} ms${queja ? `; dice: «${queja}»` : ''}`)
+    return false
+  }
+  const botones = await page.$$(BTN_SIGUIENTE)
+  await botones[0].click()
+  try {
+    await page.waitForFunction((d) => {
+      const p = [...document.querySelectorAll('.wizard-step')]
+      return p.findIndex(x => x.classList.contains('active')) === d
+    }, destino, { timeout: msMax })
+    c.notas.push(`✓ ${etiqueta} [conducido por: navegador]`)
+    return true
+  } catch {
+    const donde = await dondeEstoy(page)
+    const queja = await quejaDelWizard(page)
+    c.fallos.push(`${etiqueta} — al pulsar «Continuar» el wizard NO avanzó al paso ${destino + 1} ` +
+      `(se quedó en el ${donde + 1})${queja ? `; el propio wizard dice: «${queja}»` : '; y sin decir por qué'}`)
+    return false
+  }
+}
+
+/** Pulsa un `.add-btn` por su texto visible. */
+async function pulsarAñadir(page, texto) {
+  const b = await page.$(`button.add-btn:has-text(${JSON.stringify(texto)})`)
+  if (!b) return false
+  await b.click()
+  await page.waitForTimeout(150)
+  return true
+}
+
+/**
+ * PASO 2 · Personas — dos tutores y dos hijos, tecleados en la pantalla.
+ *
+ * La forma (2+2, apellido con el marcador de la corrida) NO es capricho: es la que las
+ * sondas 2 y 3 afirman. Antes la producía la pasarela; ahora la produce el teclado.
+ */
+async function conducirPersonas(c, page) {
+  await desbloquear(page)
+  // Por defecto el paso trae 1 tutor + 1 alumno. La familia del robot tiene 2 y 2.
+  if (!await pulsarAñadir(page, 'Añadir otro tutor')) {
+    c.fallos.push('paso 2 · personas — la pantalla no ofrece «Añadir otro tutor»'); return false
+  }
+  if (!await pulsarAñadir(page, 'Añadir otro alumno')) {
+    c.fallos.push('paso 2 · personas — la pantalla no ofrece «Añadir otro alumno»'); return false
+  }
+  const secciones = await page.$$('.dynamic-section')
+  if (secciones.length !== 4) {
+    c.fallos.push(`paso 2 · personas — se esperaban 4 fichas de persona (2 tutores + 2 alumnos) y hay ${secciones.length}`)
+    return false
+  }
+  const gente = [
+    { nombre: 'Tutor1', tutor: true,  correo: DATOS.emailKnown,   nac: '1985-03-04' },
+    { nombre: 'Tutor2', tutor: true,  correo: DATOS.emailKnown.replace('+robot-t1', '+robot-t2'), nac: '1986-07-19' },
+    { nombre: 'Hijo1',  tutor: false, correo: null,               nac: '2017-05-12' },
+    { nombre: 'Hijo2',  tutor: false, correo: null,               nac: '2019-09-30' },
+  ]
+  for (let i = 0; i < 4; i++) {
+    const sec = secciones[i]
+    const p = gente[i]
+    // Los campos del núcleo son los `form-control` SIN el sufijo `-sm` (los `-sm` son de
+    // correos, teléfonos y colegios previos). Orden de la fila: nombre, 2.º nombre,
+    // apellidos, [fecha], lugar de nacimiento, [tipo doc], nº de documento.
+    const nucleo = await sec.$$('input.form-control:not(.form-control-sm):not([type="date"])')
+    if (nucleo.length < 3) {
+      c.fallos.push(`paso 2 · personas — la ficha ${i + 1} no pinta los campos de nombre (${nucleo.length} campos de texto)`)
+      return false
+    }
+    await nucleo[0].fill(p.nombre)
+    await nucleo[2].fill(DATOS.apellido)                 // marcador ROBOT-<sello>
+    const fecha = await sec.$('input[type="date"]')
+    if (fecha) await fecha.fill(p.nac)
+    // Teléfono: obligatorio para CADA tutor (el firmante lo necesita). Se teclea como lo
+    // teclea una familia — país en el desplegable y número nacional en el campo.
+    if (p.tutor) {
+      const antes = (await sec.$$('input[type="tel"]')).length
+      const añadir = await sec.$('button.add-btn:has-text("Añadir teléfono")')
+      if (!añadir) { c.fallos.push(`paso 2 · personas — la ficha ${i + 1} no ofrece «Añadir teléfono»`); return false }
+      await añadir.click()
+      await page.waitForTimeout(150)
+      const tels = await sec.$$('input[type="tel"]')
+      if (tels.length <= antes) { c.fallos.push(`paso 2 · personas — «Añadir teléfono» no añadió ninguna fila en la ficha ${i + 1}`); return false }
+      const fila = tels[tels.length - 1]
+      const selects = await sec.$$('select.form-select-sm')
+      // El desplegable de país de la fila de teléfono es el que lleva la opción 'ES'.
+      for (const s of selects) {
+        const tieneES = await s.$('option[value="ES"]')
+        if (tieneES) { await s.selectOption('ES'); break }
+      }
+      await fila.fill(`61234${String(1000 + i).slice(-4)}`)
+      await fila.evaluate(el => el.blur())
+      // Correo propio de cada tutor: es su credencial de identidad per-guardian, y el
+      // wizard exige que no se repita entre tutores.
+      if (i > 0) {
+        const añadirCorreo = await sec.$('button.add-btn:has-text("Añadir correo")')
+        if (añadirCorreo) {
+          await añadirCorreo.click()
+          await page.waitForTimeout(150)
+          const correos = await sec.$$('input[type="email"]')
+          if (correos.length) await correos[correos.length - 1].fill(p.correo)
+        }
+      }
+    }
+  }
+  return continuar(c, page, 2, 'paso 2 · personas')
+}
+
+/**
+ * PASO 3 · Vínculos — la fila que estaba EN DISPUTA desde que se midieron 509 vínculos
+ * vivos. Aquí se declara desde la pantalla: tipo de vínculo en los cuatro pares
+ * tutor→hijo, y custodia SOLO para el tutor 1 (que es lo que la sonda 3 afirma).
+ */
+async function conducirVinculos(c, page) {
+  await desbloquear(page)
+  // El paso carga su catálogo de tipos al entrar: se espera a que el desplegable tenga
+  // algo que elegir en vez de dormir un rato fijo.
+  try {
+    await page.waitForFunction(() => {
+      const s = document.querySelector('select.form-select-sm')
+      return !!s && s.options.length > 1
+    }, null, { timeout: 60000 })
+  } catch {
+    c.fallos.push('paso 3 · vínculos — el desplegable de tipo de vínculo nunca se pobló: el catálogo del tenant no llegó a la pantalla')
+    return false
+  }
+  // Solo las tarjetas tutor→alumno: son las ÚNICAS que llevan las casillas de custodia y
+  // recogida. Las de hermano↔hermano se dejan como se las encuentra la familia que no
+  // sabe qué poner — si el wizard las persiste igual, eso lo dirá la sonda, no el robot.
+  const tarjetas = await page.$$('.kis-card:has(input[id^="custodial_"])')
+  if (!tarjetas.length) { c.fallos.push('paso 3 · vínculos — la pantalla no pinta ninguna tarjeta de vínculo tutor→alumno'); return false }
+  let pares = 0
+  for (const t of tarjetas) {
+    const sel = await t.$('select.form-select-sm')
+    if (!sel) continue
+    const opciones = await sel.$$eval('option', os => os.map(o => o.value).filter(Boolean))
+    if (!opciones.length) continue
+    await sel.selectOption(opciones[0])
+    // Custodia: los dos primeros pares son del tutor 1 (el orden de pintado es
+    // tutores × alumnos). Marcarla arrastra "autorizado a recoger" (regla del wizard).
+    // El tutor 2 NO declara custodia —así la sonda 3 puede afirmar el ATRIBUTO del
+    // vínculo y no solo su existencia—, pero sí recogida, porque cada alumno tiene que
+    // quedar cubierto por alguien o el paso no deja avanzar.
+    const cust = await t.$('input.form-check-input[id^="custodial_"]')
+    const pick = await t.$('input.form-check-input[id^="pickup_"]')
+    if (pares < 2) { if (cust) await cust.check() }
+    else if (pick) { await pick.check() }
+    pares++
+  }
+  if (pares < 4) {
+    c.fallos.push(`paso 3 · vínculos — la pantalla solo ofrece ${pares} pares tutor→alumno (se esperaban 4: dos tutores × dos alumnos)`)
+    return false
+  }
+  return continuar(c, page, 3, 'paso 3 · vínculos')
+}
+
+/**
+ * PASO 4 · Salud — una alergia, una dieta y una condición médica para el primer alumno,
+ * elegidas del catálogo del tenant como las elige la familia: escribiendo y pulsando la
+ * sugerencia. Si el catálogo está vacío, se dice; no se inventa un id.
+ */
+async function conducirSalud(c, page) {
+  await desbloquear(page)
+  const grupos = await page.$$('.input-group input.form-control')
+  if (grupos.length < 3) {
+    c.noCubierta('paso 4 · salud·eleccion-desde-la-pantalla',
+      `la pantalla de salud solo ofrece ${grupos.length} buscadores (se esperaban al menos 3: alergias, dieta y condiciones médicas)`)
+    return continuar(c, page, 4, 'paso 4 · salud')
+  }
+  let elegidos = 0
+  for (let i = 0; i < 3; i++) {
+    await grupos[i].click()
+    await grupos[i].fill('a')
+    let opcion = null
+    try {
+      opcion = await page.waitForSelector('.border.rounded.mt-1 > div', { timeout: 4000 })
+    } catch { /* catálogo sin coincidencias: se cuenta abajo */ }
+    if (!opcion) { await grupos[i].fill(''); continue }
+    await opcion.click()
+    elegidos++
+    await page.waitForTimeout(120)
+  }
+  if (elegidos < 3) {
+    c.noCubierta('paso 4 · salud·eleccion-desde-la-pantalla',
+      `solo se pudieron elegir ${elegidos} de 3 elementos de salud desde la pantalla: el catálogo del tenant no ofrece sugerencias para los tres buscadores`)
+  }
+  return continuar(c, page, 4, 'paso 4 · salud')
+}
+
+/** PASO 5 · Cuestionario — se responde lo que el tenant tenga configurado. */
+async function conducirPreguntas(c, page) {
+  await desbloquear(page)
+  // El paso carga sus conjuntos de preguntas al entrar y mientras tanto deshabilita el
+  // avance. Se espera a que termine de cargar antes de contar qué hay que responder.
+  try {
+    await page.waitForFunction(() => [...document.querySelectorAll('button.btn-primary-kis')].some(b => !b.disabled),
+      null, { timeout: 90000 })
+  } catch {
+    c.fallos.push('paso 5 · preguntas — el cuestionario nunca terminó de cargar: el botón de avanzar siguió deshabilitado')
+    return false
+  }
+  const campos = await page.$$('input[type="radio"], input[type="checkbox"], textarea, select.form-select')
+  c.notas.push(`    · el cuestionario del tenant pinta ${campos.length} control(es) de respuesta`)
+  for (const r of await page.$$('input[type="radio"]')) { try { await r.check(); } catch { /* agrupados */ } }
+  for (const t of await page.$$('textarea')) { try { await t.fill('Respuesta del robot de inscripción.'); } catch { /* bloqueado */ } }
+  if (!campos.length) {
+    c.noCubierta('paso 5 · preguntas·respuesta-desde-la-pantalla',
+      'el tenant no tiene ninguna pregunta configurada para este programa: no hay nada que responder en la pantalla. Es configuración de tenant, no defecto del wizard.')
+  }
+  return continuar(c, page, 5, 'paso 5 · preguntas')
+}
+
+/** PASO 6 · Documentos — adjuntar un archivo de verdad y esperar su confirmación. */
+async function conducirDocumentos(c, page) {
+  await desbloquear(page)
+  const añadir = await page.$('button.add-btn')
+  if (!añadir) { c.fallos.push('paso 6 · documentos — la pantalla no ofrece el botón de añadir archivo'); return false }
+  await añadir.click()
+  await page.waitForSelector('.doc-attachment', { timeout: 15000 })
+  await page.fill('.doc-attachment input[type="text"]', `Documento del robot ${MARCA}`)
+  await page.setInputFiles('.doc-attachment input[type="file"]', {
+    name: `${MARCA}-doc.pdf`,
+    mimeType: 'application/pdf',
+    buffer: Buffer.from(`%PDF-1.4\n% documento sintetico del robot ${MARCA}\n`),
+  })
+  let subido = false
+  try { await page.waitForSelector('.upload-status.success', { timeout: 120000 }); subido = true } catch { /* abajo */ }
+  const subidas = llamadas('uploadDocument')
+  c.afirmar('paso 6 · documentos — la subida sale desde la pantalla con los bytes del archivo',
+    subidas.length >= 1 && !!(subidas[0].payload && subidas[0].payload.base64 && subidas[0].payload.base64.length > 10),
+    `llamadas uploadDocument=${subidas.length}` +
+      (subidas.length ? `, base64 de ${((subidas[0].payload || {}).base64 || '').length} caracteres` : ''))
+  if (!c.afirmar('paso 6 · documentos — la pantalla confirma la subida', subido,
+    'nunca apareció la confirmación visible de archivo subido (.upload-status.success)' +
+      (await quejaDelWizard(page) ? `; el wizard dice: «${await quejaDelWizard(page)}»` : ''))) return false
+  return continuar(c, page, 6, 'paso 6 · documentos')
+}
+
+/**
+ * PASO 7 · Revisión y ENVÍO — el acto que transiciona el expediente a RQ y dispara los
+ * correos. Se firma con el nombre, se marcan los dos consentimientos y se envía.
+ */
+async function conducirEnvio(c, page) {
+  const esig = await page.$('.esig-field')
+  if (!esig) { c.fallos.push('paso 7 · envío — la pantalla de revisión no ofrece el campo de firma manuscrita'); return false }
+  await esig.fill(`Tutor1 ${DATOS.apellido}`)
+  for (const id of ['#consent_gdpr', '#consent_legal']) {
+    const ch = await page.$(id)
+    if (!ch) { c.fallos.push(`paso 7 · envío — falta el consentimiento ${id} en la pantalla de revisión`); return false }
+    await ch.check()
+  }
+  const botones = await page.$$(BTN_SIGUIENTE)
+  if (!botones.length) { c.fallos.push('paso 7 · envío — no hay botón de enviar pulsable'); return false }
+  await botones[botones.length - 1].click()
+  try {
+    await page.waitForFunction(() => /#\/confirmation/.test(window.location.hash), null, { timeout: 60000 })
+  } catch {
+    const queja = await quejaDelWizard(page)
+    c.fallos.push(`paso 7 · envío — tras pulsar «Enviar solicitud» el wizard no llegó a la confirmación${queja ? `; dice: «${queja}»` : ''}`)
+    return false
+  }
+  // El envío vuela en segundo plano (UX-3): se espera a que salga de verdad.
+  const t0 = Date.now()
+  while (!llamadas('submitEnrollmentSession').length && Date.now() - t0 < 90000) await page.waitForTimeout(300)
+  if (REAL) await esperarSilencioDeRed(60000)
+  if (!c.afirmar('paso 7 · envío — el envío sale desde la pantalla',
+    llamadas('submitEnrollmentSession').length >= 1,
+    `ningún submitEnrollmentSession salió en ${Date.now() - t0} ms tras pulsar enviar`)) return false
+  c.notas.push('✓ paso 7 · envío [conducido por: navegador]')
+  return true
+}
+
+/** PASO 8 · Facturación — reparto entre pagadores y modalidad, desde la pantalla. */
+async function conducirFacturacion(c, page) {
+  await desbloquear(page)
+  const antes = llamadas('saveBillingInfo').length
+  const botones = await page.$$(BTN_SIGUIENTE)
+  if (!botones.length) {
+    const queja = await quejaDelWizard(page)
+    c.fallos.push(`paso 8 · facturación — el paso no ofrece botón para continuar${queja ? `; dice: «${queja}»` : ''}`)
+    return false
+  }
+  await botones[0].click()
+  try {
+    await page.waitForFunction(() => {
+      const p = [...document.querySelectorAll('.wizard-step')]
+      return p.findIndex(x => x.classList.contains('active')) === 8
+    }, null, { timeout: 60000 })
+  } catch {
+    const queja = await quejaDelWizard(page)
+    c.fallos.push(`paso 8 · facturación — no avanzó al paso 9 (se quedó en el ${(await dondeEstoy(page)) + 1})${queja ? `; dice: «${queja}»` : ''}`)
+    return false
+  }
+  const t0 = Date.now()
+  while (llamadas('saveBillingInfo').length === antes && Date.now() - t0 < 60000) await page.waitForTimeout(300)
+  c.afirmar('paso 8 · facturación — el reparto de pago sale desde la pantalla',
+    llamadas('saveBillingInfo').length > antes,
+    `ningún saveBillingInfo salió en ${Date.now() - t0} ms tras continuar`)
+  c.notas.push('✓ paso 8 · facturación [conducido por: navegador]')
+  return true
+}
+
+/** PASO 9 · Consentimientos — los 7 del RGPD, marcados uno a uno por el tutor. */
+async function conducirConsentimientos(c, page) {
+  await desbloquear(page)
+  try { await page.waitForSelector('input[type="checkbox"][id^="consent_"]', { timeout: 60000 }) }
+  catch {
+    c.fallos.push('paso 9 · consentimientos — la pantalla nunca pintó ni un consentimiento que marcar')
+    return false
+  }
+  const generales = await page.$$('input[type="checkbox"][id^="consent_"]')
+  const imagen    = await page.$$('input[type="checkbox"][id^="img_"]')
+  for (const ch of [...generales, ...imagen]) { try { await ch.check() } catch { /* bloqueado */ } }
+  c.notas.push(`    · consentimientos marcados: ${generales.length} generales + ${imagen.length} de derechos de imagen`)
+  const antes = llamadas('submitGdprConsents').length
+  if (!await continuar(c, page, 9, 'paso 9 · consentimientos')) return false
+  const t0 = Date.now()
+  while (llamadas('submitGdprConsents').length === antes && Date.now() - t0 < 60000) await page.waitForTimeout(300)
+  return c.afirmar('paso 9 · consentimientos — el acto sale desde la pantalla',
+    llamadas('submitGdprConsents').length > antes,
+    `ningún submitGdprConsents salió en ${Date.now() - t0} ms tras confirmar`)
+}
+
+/**
+ * PASO 10 · Revisión de la documentación contractual. CAMINO DE DINERO: se recorre y se
+ * confirma la lectura, que es el acto de la familia; no se toca ni un importe.
+ */
+async function conducirRevisionContractual(c, page) {
+  await desbloquear(page)
+  // El paso precarga el paquete contractual al entrar; se espera a que ofrezca algo que
+  // aceptar en vez de dormir un rato fijo.
+  try {
+    await page.waitForFunction(() => {
+      const bs = [...document.querySelectorAll('button.btn-primary-kis')]
+      return bs.some(b => !b.disabled)
+    }, null, { timeout: 120000 })
+  } catch {
+    const queja = await quejaDelWizard(page)
+    c.fallos.push(`paso 10 · revisión — el paquete contractual nunca llegó a la pantalla: no hay nada que revisar${queja ? `; dice: «${queja}»` : ''}`)
+    return false
+  }
+  // «Aceptar y siguiente» documento a documento hasta que el paso se dé por leído.
+  for (let i = 0; i < 12; i++) {
+    const b = await page.$(BTN_SIGUIENTE)
+    if (!b) break
+    await b.click()
+    await page.waitForTimeout(800)
+    if ((await dondeEstoy(page)) === 10) break
+  }
+  if ((await dondeEstoy(page)) !== 10) {
+    const queja = await quejaDelWizard(page)
+    c.fallos.push(`paso 10 · revisión — la confirmación de lectura no llevó al paso de firma (se quedó en el ${(await dondeEstoy(page)) + 1})${queja ? `; dice: «${queja}»` : ''}`)
+    return false
+  }
+  c.afirmar('paso 10 · revisión — la confirmación de lectura sale desde la pantalla',
+    llamadas('confirmReview').length >= 1,
+    `ningún confirmReview salió tras recorrer la documentación`)
+  c.notas.push('✓ paso 10 · revisión [conducido por: navegador]')
+  return true
+}
+
+/**
+ * EXPEDIENTE COMPLETO — los once pasos, PULSANDO BOTONES (solo modo real).
+ *
+ * ── Qué cambió el 2026-08-04 (encargo 08) ───────────────────────────────────────────
+ * Hasta hoy este camino conducía DIEZ de los once pasos llamando al KMS por la pasarela.
+ * Con ese reparto, un verde significaba «el KMS acepta los once mensajes», NO «una
+ * familia puede completar la inscripción usando el wizard» — que es lo que la condición
+ * de parada dice. Ahora los pasos 2→10 los conduce el NAVEGADOR: se teclea en los
+ * campos, se marcan las casillas y se pulsa «Continuar», como lo haría la familia.
  *
  * ── Qué hace, en orden ───────────────────────────────────────────────────────────────
- *   1. Rellena por la PASARELA los pasos 2-6 (personas, vínculos, salud, documento).
- *   2. DRENA la cola hasta que no queda trabajo del expediente — las escrituras del wizard
- *      son asíncronas, y medir antes de que terminen es medir a medio escribir.
- *   3. Lee de vuelta los pasos 2 a 6 con sus sondas.
- *   4. ENVÍA (paso 7) y lo lee de vuelta.
- *   5. Lleva el expediente a `AD` con el MOTOR REAL de transiciones — que es lo que
- *      DESTAPA los pasos 8-11. Sin esto, cinco pasos no se medirían nunca.
- *   6. Lee de vuelta los pasos 8 a 11.
+ *   1. Entra PIDIENDO el enlace (rota el token y abre la ventana de step-up de 10 min).
+ *   2. Conduce por navegador personas, vínculos, salud, cuestionario y documentos.
+ *   3. Envía desde la pantalla de revisión (paso 7) y DRENA la cola — las escrituras del
+ *      wizard son asíncronas, y medir antes de que terminen es medir a medio escribir.
+ *   4. Lee de vuelta los pasos 1-7 con sus sondas.
+ *   5. Lleva el expediente a `AD` con el MOTOR REAL de transiciones. Esto NO es uno de
+ *      los once pasos: es un acto del PERSONAL en el KMS, no de la familia en el wizard.
+ *      Es lo que DESTAPA los pasos 8-11; sin ello no se medirían nunca.
+ *   6. Vuelve a entrar por el enlace y conduce por navegador facturación, consentimientos
+ *      y revisión contractual. Lee de vuelta los pasos 8-11.
  *
- * ── Lo que este camino NO afirma, y hay que tener presente ──────────────────────────
- * Los pasos 2-7 los conduce la PASARELA, no el navegador: prueba que el KMS acepta el
- * payload real y deja el efecto escrito, **no** que el wizard mande ese payload. Cada
- * resultado va etiquetado con quién lo condujo, y el encargo 03 convierte `pasarela` en
- * `navegador` paso a paso. Etiquetarlo es la diferencia entre una medida y una coartada.
+ * ── La etiqueta es VINCULANTE ────────────────────────────────────────────────────────
+ * Cada lectura de vuelta va etiquetada con QUIÉN condujo el paso. Un paso conducido por
+ * `pasarela` YA NO cuenta para el verde de los once: `aplicarSonda` lo convierte en NO
+ * CUBIERTO con su motivo. La pasarela solo sobrevive donde el navegador no puede llegar,
+ * y ahí se declara en vez de disimularse.
  */
-async function caminoExpedienteCompleto() {
+async function caminoExpedienteCompleto(page, base) {
   const c = new Camino('expediente-completo')
-  if (!EXPEDIENTE.listo) {
-    c.fallos.push('no hay expediente: el alta no llegó a ocurrir, así que no hay nada que completar ni a dónde llegar')
-    return c
-  }
-  // Este camino no toca el navegador: su evidencia son las llamadas al KMS y las filas
-  // que deja escritas. Se declara aquí para que el mínimo de evidencia no lo tumbe por
-  // "pantalla vacía" — no hay pantalla, y decirlo es más honesto que inflar el número.
-  c.evidencia.elementos = 11
-  c.evidencia.llamadas = 1
+  // Autosuficiente: si el camino del alta no dejó expediente (o se filtró la corrida),
+  // este camino lo da de alta él mismo en vez de morir con «no hay expediente».
+  if (!EXPEDIENTE.listo && !recuperarElEnlace(c, DATOS.emailKnown)) return c
 
   const paso = (fn, etiqueta, params = [EXPEDIENTE.gid]) => {
     const r = sonda(fn, params)
@@ -1383,29 +1814,59 @@ async function caminoExpedienteCompleto() {
     return s
   }
 
-  // 1 · Rellenar 2-6 por la pasarela.
-  paso('manual_robotCompletarHastaEnvio', 'rellenar pasos 2-6 (pasarela)')
+  // ── 1 · ENTRAR PIDIENDO EL ENLACE ──────────────────────────────────────────────────
+  // No es cosmética: pedirlo abre la ventana DURA de step-up (10 min) que los pasos 2-6
+  // necesitan para poder guardar PII. Sin ella, `saveStep` de personas/vínculos/salud
+  // responde STEPUP_REQUIRED y el recorrido no puede ni empezar.
+  if (!await entrarPorElEnlace(c, page, base, { pidiendolo: true })) return c
+  const pantalla0 = await page.evaluate(sondaPantalla)
+  c.evidencia.elementos = pantalla0.pasos + pantalla0.campos
+  c.afirmar('el wizard pinta sus 11 pasos', pantalla0.pasos === 11,
+    `se pintaron ${pantalla0.pasos} pasos en el stepper`)
+  c.afirmar('sin pantalla de error', !pantalla0.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
 
-  // 2 · Drenar hasta que no quede trabajo. El driver insiste; el KMS solo hace turnos
-  //     cortos. Ése es el reparto que evita el corte de seis minutos de Apps Script.
-  drenar(c, 'tras rellenar 2-6')
+  // El expediente recién creado aterriza en el paso 2 (índice 1): AppSheet pre-rellena
+  // `desired_start_date`, así que el paso 1 cuenta como completo (medido — ver el
+  // comentario largo de `caminoRecuperarAterrizar`). Si aterrizara antes, se avanza
+  // pulsando, que es lo que haría la familia.
+  let donde = await dondeEstoy(page)
+  while (donde < 1) {
+    if (!await continuar(c, page, donde + 1, `paso ${donde + 1} · avanzar hasta personas`)) return c
+    donde = await dondeEstoy(page)
+  }
+  if (donde !== 1) {
+    c.fallos.push(`el expediente aterrizó en el paso ${donde + 1} y no en el 2 (personas): el recorrido por navegador empieza ahí`)
+    return c
+  }
 
-  // 3 · Leer de vuelta los pasos 2-6. Antes se re-pide el enlace: con las personas ya
-  //     escritas existe la fila de `enrEmails` de la que sale el `?n=`, y a partir de aquí
-  //     la recuperación es per-guardian (que es como funciona de verdad).
+  // ── 2 · LOS PASOS 2-6, PULSANDO BOTONES ────────────────────────────────────────────
+  // Un paso que cae CORTA el recorrido: seguir pulsando sobre una pantalla que no avanzó
+  // solo produce fallos derivados que tapan el primero, que es el único que dice algo.
+  if (!await conducirPersonas(c, page))    return c
+  if (!await conducirVinculos(c, page))    return c
+  if (!await conducirSalud(c, page))       return c
+  if (!await conducirPreguntas(c, page))   return c
+  if (!await conducirDocumentos(c, page))  return c
+
+  // ── 3 · ENVIAR desde la pantalla de revisión, y drenar ──────────────────────────────
+  if (!await conducirEnvio(c, page))       return c
+  drenar(c, 'tras el recorrido 2-7 por navegador')
+
+  // ── 4 · Leer de vuelta 1-7. Antes se re-pide el enlace: con las personas ya escritas
+  //       existe la fila de `enrEmails` de la que sale el `?n=`, y a partir de aquí la
+  //       recuperación es per-guardian (que es como funciona de verdad).
   refrescarElEnlace(c, DATOS.emailKnown)
-  leerDeVuelta(c, 'manual_robotSonda02Personas', 'paso 2 · personas', 'pasarela')
-  leerDeVuelta(c, 'manual_robotSonda03Vinculos', 'paso 3 · vínculos', 'pasarela')
-  leerDeVuelta(c, 'manual_robotSonda04Salud', 'paso 4 · salud', 'pasarela')
-  leerDeVuelta(c, 'manual_robotSonda05Preguntas', 'paso 5 · preguntas', 'pasarela')
-  leerDeVuelta(c, 'manual_robotSonda06Documentos', 'paso 6 · documentos', 'pasarela')
+  leerDeVuelta(c, 'manual_robotSonda01Correo', 'paso 1 · correo y sesión', 'navegador')
+  leerDeVuelta(c, 'manual_robotSonda02Personas', 'paso 2 · personas', 'navegador')
+  leerDeVuelta(c, 'manual_robotSonda03Vinculos', 'paso 3 · vínculos', 'navegador')
+  leerDeVuelta(c, 'manual_robotSonda04Salud', 'paso 4 · salud', 'navegador')
+  leerDeVuelta(c, 'manual_robotSonda05Preguntas', 'paso 5 · preguntas', 'navegador')
+  leerDeVuelta(c, 'manual_robotSonda06Documentos', 'paso 6 · documentos', 'navegador')
+  leerDeVuelta(c, 'manual_robotSonda07Envio', 'paso 7 · envío', 'navegador')
 
-  // 4 · Enviar y leerlo de vuelta.
-  paso('manual_robotEnviar', 'enviar la solicitud (paso 7, pasarela)')
-  leerDeVuelta(c, 'manual_robotSonda07Envio', 'paso 7 · envío', 'pasarela')
-
-  // 5 · A `AD` con el motor real: lo que destapa los pasos 8-11.
-  paso('manual_robotLlevarAEstado', 'admitir el expediente (motor de estados)', [EXPEDIENTE.gid, 'AD'])
+  // ── 5 · ADMITIR. Esto NO es uno de los once pasos: es un acto del PERSONAL en el KMS,
+  //       no de la familia en el wizard. Es lo que DESTAPA los pasos 8-11.
+  paso('manual_robotLlevarAEstado', 'admitir el expediente (acto del personal, motor de estados)', [EXPEDIENTE.gid, 'AD'])
 
   // 5.bis · DRENAR OTRA VEZ, y no es cautela: es lo que hacía imposible el paso 11.
   //
@@ -1424,11 +1885,37 @@ async function caminoExpedienteCompleto() {
   // del paso 8.
   drenar(c, 'tras admitir')
 
-  // 6 · Leer de vuelta los pasos 8-11.
-  leerDeVuelta(c, 'manual_robotSonda08Facturacion', 'paso 8 · facturación', 'pasarela')
-  leerDeVuelta(c, 'manual_robotSonda09Consentimientos', 'paso 9 · consentimientos', 'pasarela')
-  leerDeVuelta(c, 'manual_robotSonda10Revision', 'paso 10 · revisión', 'pasarela')
-  leerDeVuelta(c, 'manual_robotSonda11Firma', 'paso 11 · firma', 'pasarela')
+  // ── 6 · LOS PASOS 8-10, PULSANDO BOTONES ───────────────────────────────────────────
+  // Se vuelve a entrar por el enlace: la ventana de step-up de la primera entrada ya
+  // caducó (10 min duros) y los tres actos de firma la exigen. Es además lo que hace la
+  // familia de verdad — recibe el aviso de admisión y vuelve por su enlace.
+  if (!await entrarPorElEnlace(c, page, base, { pidiendolo: true })) return c
+  const trasAdmitir = await dondeEstoy(page)
+  c.notas.push(`    · tras la admisión, el enlace aterriza en el paso ${trasAdmitir + 1}`)
+  if (!c.afirmar('un expediente admitido aterriza en el tramo de firma (paso 8.º)',
+    trasAdmitir === 7,
+    `aterrizó en el paso ${trasAdmitir + 1}: con la firma abierta la familia se quedaría atascada antes de facturación`)) {
+    leerDeVuelta(c, 'manual_robotSonda08Facturacion', 'paso 8 · facturación', 'navegador (no alcanzado)')
+    leerDeVuelta(c, 'manual_robotSonda09Consentimientos', 'paso 9 · consentimientos', 'navegador (no alcanzado)')
+    leerDeVuelta(c, 'manual_robotSonda10Revision', 'paso 10 · revisión', 'navegador (no alcanzado)')
+    leerDeVuelta(c, 'manual_robotSonda11Firma', 'paso 11 · firma', 'navegador (no alcanzado)')
+    return c
+  }
+
+  const ok8  = await conducirFacturacion(c, page)
+  const ok9  = ok8 && await conducirConsentimientos(c, page)
+  const ok10 = ok9 && await conducirRevisionContractual(c, page)
+  if (REAL) await esperarSilencioDeRed(60000)
+  drenar(c, 'tras los actos de firma')
+
+  // ── 7 · Leer de vuelta 8-11 ────────────────────────────────────────────────────────
+  leerDeVuelta(c, 'manual_robotSonda08Facturacion', 'paso 8 · facturación', ok8 ? 'navegador' : 'navegador (caído)')
+  leerDeVuelta(c, 'manual_robotSonda09Consentimientos', 'paso 9 · consentimientos', ok9 ? 'navegador' : 'navegador (no alcanzado)')
+  leerDeVuelta(c, 'manual_robotSonda10Revision', 'paso 10 · revisión', ok10 ? 'navegador' : 'navegador (no alcanzado)')
+  // El paso 11 lo PREPARA el motor del KMS al admitir (sesión, firmantes, tokens,
+  // paquete). Lo que el navegador podría conducir es el ACTO de firmar, y ése está
+  // PROHIBIDO: sale a Click & Sign y es irreversible. Se lee de vuelta la preparación.
+  leerDeVuelta(c, 'manual_robotSonda11Firma', 'paso 11 · firma', 'navegador (hasta el borde del acto)')
   return c
 }
 
@@ -1464,7 +1951,7 @@ const CAMINOS = [
   { nombre: 'subir-documento',     fn: caminoSubirDocumento,     minLlamadas: 1, minElementos: 1 },
   // Solo en real: rellena 2-7, admite el expediente y lee de vuelta los once pasos. Va
   // ANTES del tramo de firma porque es lo que lo destapa (sin `AD` no hay firma que pintar).
-  ...(REAL ? [{ nombre: 'expediente-completo', fn: caminoExpedienteCompleto, minLlamadas: 0, minElementos: 11 }] : []),
+  ...(REAL ? [{ nombre: 'expediente-completo', fn: caminoExpedienteCompleto, minLlamadas: 8, minElementos: 11 }] : []),
   { nombre: 'tramo-firma',         fn: caminoTramoFirma,         minLlamadas: 1, minElementos: 11 },
 ]
 
@@ -1528,8 +2015,29 @@ async function main() {
 
   for (const def of seleccionados) {
     const context = await browser.newContext({ viewport: VIEWPORT, locale: 'es-ES' })
-    // Sandbox sin egreso: se aborta TODO lo externo (CDN, fuentes, logo, reCAPTCHA).
-    await context.route(/^https?:\/\/(?!127\.0\.0\.1|localhost)/, r => r.abort())
+    // ── Sandbox sin egreso, PERO con inventario ─────────────────────────────────────
+    // Se aborta TODO lo externo, igual que antes. Lo que cambia (encargo 08) es que ya
+    // no se aborta A CIEGAS: cada URL abortada queda registrada por ORIGEN y el runner
+    // la imprime al final, de modo que se pueda AFIRMAR —y no suponer— qué se le está
+    // quitando a la página.
+    //
+    // MEDIDO el 2026-08-04, y por eso NO se levanta ninguna excepción: lo único que se
+    // aborta es de TERCEROS y ninguna de esas peticiones la necesita la aplicación para
+    // funcionar (fuente e iconos de CDN, favicon, reCAPTCHA, eco de IP best-effort del
+    // acto de firma). Todo lo que la aplicación SÍ necesita va a `/__gas` en 127.0.0.1
+    // y NUNCA entró en esta regla — o sea, el obstáculo que este encargo venía a quitar
+    // no estaba aquí. Estaba en el DESMONTAJE (una petición de fondo en vuelo al cerrar
+    // el camino), y se cerró esperando silencio de red antes de juzgar.
+    //
+    // ⚠️ Se PROBÓ sustituir la hoja de iconos por una local (para que los `<i>` tuvieran
+    // caja y Playwright no los viese invisibles) y se REVIRTIÓ tras medirlo: esa hoja va
+    // pineada con `integrity` en el HTML, así que el navegador BLOQUEA cualquier
+    // sustituto —«Failed to find a valid digest in the integrity attribute»— y encima
+    // añade un error de consola que el arnés cuenta como fallo. El remedio era peor.
+    await context.route(/^https?:\/\/(?!127\.0\.0\.1|localhost)/, (r) => {
+      try { const o = new URL(r.request().url()).origin; abortadas.set(o, (abortadas.get(o) || 0) + 1) } catch { /* URL rara */ }
+      return r.abort()
+    })
     const page = await context.newPage()
 
     const erroresConsola = []
@@ -1640,6 +2148,17 @@ async function main() {
   if (conCuota.length) console.log(`  caminos por CUOTA:   ${conCuota.length}  (no son defecto del camino de inscripción)`)
   if (conTransporte.length) console.log(`  caminos por TRANSPORTE: ${conTransporte.length}  (el arnés no pudo leer la respuesta; no son defecto del camino)`)
   if (REAL) console.log(`  latencia real mín.:  ${idaYVueltaMin === Infinity ? 'n/d' : idaYVueltaMin + ' ms'}`)
+  // Inventario del sandbox: qué se le quitó al navegador y qué se le fabricó.
+  const inv = [...abortadas.entries()].sort((a, b) => b[1] - a[1]).map(([o, n]) => `${o}×${n}`)
+  console.log(`  red externa:         ${inv.length ? inv.join('  ') : 'ninguna petición externa'}`)
+  console.log('                       (todo lo de arriba es de TERCEROS; las llamadas de la aplicación van a /__gas en 127.0.0.1 y nunca se abortan)')
+  if (CONDUCTORES.size) {
+    console.log('\n  LOS ONCE PASOS — quién los condujo:')
+    for (const [etiqueta, v] of CONDUCTORES) {
+      const marca = v.estado === 'verde' ? '✓' : v.estado === 'rojo' ? '✗' : '·'
+      console.log(`    ${marca} ${etiqueta.padEnd(30)} ${String(v.quien).padEnd(34)} ${v.estado}`)
+    }
+  }
 
   // Cobertura: lo no ejecutado exige motivo declarado; la lista no puede envejecer.
   const problemasCobertura = []
