@@ -1051,6 +1051,47 @@ function drenar(c, etiqueta, turnos = 20) {
 // mano desde el registro es justo lo que invita a contarla mal.
 const CONDUCTORES = new Map()
 
+/**
+ * Ejecuta un LOTE de sondas en UNA sola llamada y vuelca cada veredicto por separado.
+ *
+ * Mismo contrato que `leerDeVuelta` para cada pieza —etiqueta, quién condujo, no-cubiertas,
+ * tabla de los once— pero un solo salto doble contra Apps Script en vez de cinco. La razón
+ * está medida: el segundo tramo del salto devuelve HTTP 404 cuando el POST tarda, y eso no
+ * se arregla desde aquí; lo que sí está en nuestra mano es TIRAR MENOS VECES.
+ *
+ * Si el lote entero no se puede leer, caen las cinco piezas nombradas — no se silencia
+ * ninguna: perder la lectura de vuelta es cobertura perdida, no «no aplica».
+ */
+function leerLoteDeVuelta(c, fn, conducidoPor = 'navegador') {
+  if (!REAL) return true
+  if (!EXPEDIENTE.listo) {
+    c.fallos.push('lote de lecturas de vuelta — no hay expediente que consultar: el alta no llegó a ocurrir')
+    return false
+  }
+  const r = sonda(fn, [EXPEDIENTE.gid])
+  const piezas = (r.ok && r.resultado && Array.isArray(r.resultado.lote)) ? r.resultado.lote : null
+  if (!piezas || !piezas.length) {
+    const motivo = r.ok ? 'el lote no devolvió ninguna pieza' : r.error
+    for (const etq of ['paso 1 · correo y sesión', 'paso 2 · personas', 'paso 3 · vínculos',
+      'paso 4 · salud', 'paso 5 · preguntas']) {
+      c.fallos.push(`${etq} — la lectura de vuelta NO se pudo hacer (lote): ${motivo}`)
+      CONDUCTORES.set(etq, { quien: conducidoPor, estado: 'lectura perdida' })
+    }
+    return false
+  }
+  let todasVerdes = true
+  for (const p of piezas) {
+    const ok = aplicarSonda(c, p.etiqueta, { ok: true, resultado: p.sonda, ms: r.ms }, conducidoPor)
+    CONDUCTORES.set(p.etiqueta, {
+      quien: conducidoPor,
+      estado: conducidoPor !== 'navegador' ? 'NO CUBIERTO' : (ok ? 'verde' : 'rojo'),
+    })
+    if (!ok) todasVerdes = false
+  }
+  c.notas.push(`    · lote de ${piezas.length} lecturas en UNA tirada (${r.ms} ms) — antes eran ${piezas.length} saltos dobles`)
+  return todasVerdes
+}
+
 /** Ejecuta la sonda de lectura de vuelta de un paso y vuelca su veredicto en el camino. */
 function leerDeVuelta(c, fn, etiqueta, conducidoPor = 'navegador') {
   if (!REAL) return true                       // en simulado no hay base que leer
@@ -1722,6 +1763,22 @@ async function conducirSalud(c, page) {
     c.noCubierta('paso 4 · salud·eleccion-desde-la-pantalla',
       `solo se pudieron elegir ${elegidos} de 3 elementos de salud desde la pantalla: el catálogo del tenant no ofrece sugerencias para los tres buscadores`)
   }
+
+  // ── ¿QUEDÓ REGISTRADA LA ELECCIÓN? El paso se afirma a sí mismo ────────────────────
+  //
+  // MEDIDO el 2026-08-04 (corrida d6): la sonda dijo `salud.alergias.vigentes_esperadas =
+  // 0 (se esperaba 1)` en las tres tablas, y NO se podía atribuir — ¿no guarda el
+  // producto, o no registra la elección el robot? Elegir culpable sin poder separarlos
+  // habría sido inventar. Esta comprobación los separa EN LA PANTALLA, antes de mirar la
+  // base: si la elección no deja rastro visible aquí, el defecto es del CONDUCTOR y lo
+  // dice; si lo deja y la base sale vacía, el defecto es del PRODUCTO y la sonda lo dirá.
+  const marcados = await page.$$eval('.badge',
+    ns => ns.map(n => (n.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean))
+  c.notas.push(`    · elecciones de salud visibles en la pantalla: ${marcados.length}${marcados.length ? ` (${marcados.slice(0, 4).join(' · ')})` : ''}`)
+  if (elegidos > 0 && !c.afirmar('paso 4 · salud — la elección queda registrada en la pantalla',
+    marcados.length >= elegidos,
+    `se eligieron ${elegidos} elementos del buscador y la pantalla muestra ${marcados.length} marcados: el robot pulsa la sugerencia pero NO deja la elección puesta, así que lo que se mida después en la base no dice nada del producto`)) return false
+
   return continuar(c, page, 4, 'paso 4 · salud')
 }
 
@@ -2025,11 +2082,10 @@ async function caminoExpedienteCompleto(page, base) {
   // de ahí la recuperación es per-guardian, que es como funciona de verdad.
   drenar(c, 'tras conducir 2-5 por navegador')
   refrescarElEnlace(c, DATOS.emailKnown)
-  leerDeVuelta(c, 'manual_robotSonda01Correo', 'paso 1 · correo y sesión', 'navegador')
-  leerDeVuelta(c, 'manual_robotSonda02Personas', 'paso 2 · personas', 'navegador')
-  leerDeVuelta(c, 'manual_robotSonda03Vinculos', 'paso 3 · vínculos', 'navegador')
-  leerDeVuelta(c, 'manual_robotSonda04Salud', 'paso 4 · salud', 'navegador')
-  leerDeVuelta(c, 'manual_robotSonda05Preguntas', 'paso 5 · preguntas', 'navegador')
+  // Las cinco en UNA sola tirada: cada sonda era un salto doble entero, y el segundo tramo
+  // falla con HTTP 404 cuando el POST tarda (del lado de Google, ya medido). Once tiradas
+  // eran once oportunidades de morir por algo ajeno al camino de inscripción.
+  leerLoteDeVuelta(c, 'manual_robotSondasDelUnoAlCinco', 'navegador')
 
   // ── 4 · Documentos y envío, y su lectura de vuelta ──────────────────────────────────
   if (!await conducirDocumentos(c, page))  return c
@@ -2137,6 +2193,32 @@ async function caminoTramoFirma(page, base) {
   return c
 }
 
+/**
+ * SALUD DESDE LA PANTALLA — elegir alergia, dieta y condición médica y comprobar que la
+ * elección QUEDA PUESTA. Separa dos culpables que hasta hoy se confundían: «el producto no
+ * guarda» y «el robot no registra la elección».
+ */
+async function caminoSaludDesdeLaPantalla(page, base) {
+  const c = new Camino('salud-desde-la-pantalla')
+  scenario.stage = 'hasta_preguntas'
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  // Retroceder hasta Salud (índice 3) como lo haría la familia: con el botón «Atrás».
+  for (let i = 0; i < 6 && (await dondeEstoy(page)) > 3; i++) {
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!atras) break
+    await atras.click()
+    await page.waitForTimeout(250)
+  }
+  const donde = await dondeEstoy(page)
+  const pantalla = await page.evaluate(sondaPantalla)
+  c.evidencia.elementos = pantalla.pasos + pantalla.campos
+  if (!c.afirmar('se llega al paso de Salud pulsando «Atrás»', donde === 3,
+    `se quedó en el índice ${donde}`)) return c
+  await desbloquear(page)
+  await conducirSalud(c, page)
+  return c
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -2147,6 +2229,10 @@ const CAMINOS = [
   // ANTES del tramo de firma porque es lo que lo destapa (sin `AD` no hay firma que pintar).
   ...(REAL ? [{ nombre: 'expediente-completo', fn: caminoExpedienteCompleto, minLlamadas: 8, minElementos: 11 }] : []),
   { nombre: 'tramo-firma',         fn: caminoTramoFirma,         minLlamadas: 1, minElementos: 11 },
+  // Ejercita el paso 4 DESDE LA PANTALLA también en simulado. Nació para contestar, sin
+  // gastar una corrida de 35 min, si el `0 de 1` de la salud contra el sistema real era
+  // del producto o del conductor. Se queda: era cobertura que faltaba.
+  { nombre: 'salud-desde-la-pantalla', fn: caminoSaludDesdeLaPantalla, minLlamadas: 1, minElementos: 11 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

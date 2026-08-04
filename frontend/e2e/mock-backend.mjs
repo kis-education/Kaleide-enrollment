@@ -78,7 +78,24 @@ const LOOKUPS = {
     { relation_type_id: 'rt_father', designation: 'Padre',   inverse_relation_type_id: 'rt_child' },
     { relation_type_id: 'rt_child',  designation: 'Hijo/a',  inverse_relation_type_id: 'rt_mother' },
   ],
-  allergies: [], dietary: [], medical: [],
+  // Catálogo de salud CON contenido. Estaba vacío, y un catálogo vacío no es un motivo
+  // válido para no cubrir un paso — la propia batería lo prohíbe con todas las letras
+  // («NO se admite como motivo "los datos simulados están vacíos": eso se ARREGLA»).
+  // Sin él, el paso 4 no se podía ejercitar desde la pantalla ni en simulado, y por eso
+  // un `0 de 1` contra el sistema real no se podía atribuir: ¿no guarda el producto, o no
+  // registra la elección el robot? Con esto, esa pregunta se contesta sin gastar corrida.
+  allergies: [
+    { id: 'al_lactosa',   label: 'Lactosa' },
+    { id: 'al_cacahuete', label: 'Cacahuete' },
+  ],
+  dietary: [
+    { id: 'di_vegetariana', label: 'Vegetariana' },
+    { id: 'di_halal',       label: 'Halal' },
+  ],
+  medical: [
+    { id: 'me_asma',    label: 'Asma' },
+    { id: 'me_alergia', label: 'Alergia estacional' },
+  ],
 };
 
 /**
