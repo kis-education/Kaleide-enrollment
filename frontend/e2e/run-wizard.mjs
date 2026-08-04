@@ -672,20 +672,28 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
   // abierta) o el rebote a `#/?resume_error=1` (`ResumePage.jsx`, rama `.catch`). Antes se
   // esperaba solo al stepper, así que un enlace RECHAZADO se manifestaba como un tiempo de
   // espera agotado — el síntoma más caro de diagnosticar y el que menos dice.
+  // El tiempo de espera es GENEROSO a propósito y se MIDE: el hidratado real de un
+  // expediente tarda 12-22 s (medido el 2026-08-04 con tres llamadas seguidas al `/exec`:
+  // 22.069 / 13.161 / 12.040 ms), pero se ha visto un caso ajeno de 94 s sin explicar. Lo
+  // que NO se hace es subir el número a ciegas: se imprime SIEMPRE lo que tardó, de modo que
+  // un aterrizaje lento deje número en el registro en vez de un tiempo agotado mudo.
+  const tEntrada = Date.now()
   const desenlace = await page.waitForFunction(() => {
     if (/resume_error=1/.test(window.location.hash + window.location.search)) return 'rechazado'
     const pasos = document.querySelectorAll('.wizard-step')
     return (pasos.length && [...pasos].some(p => p.classList.contains('active'))) ? 'abierto' : false
-  }, { timeout: REAL ? 120000 : LATENCY * 3 + 15000 })
+  }, { timeout: REAL ? 180000 : LATENCY * 3 + 15000 })
     .then(h => h.jsonValue())
     .catch(() => 'sin-desenlace')
+  const msEntrada = Date.now() - tEntrada
 
   if (desenlace !== 'abierto') {
     c.fallos.push(desenlace === 'rechazado'
-      ? `el enlace NO abre la sesión: el wizard rebotó a la portada con resume_error=1 — el sistema no reconoce el token ${String(DATOS.resumeToken).slice(0, 8)}… del enlace`
-      : `el enlace no llegó a abrir la sesión ni a rebotar: el wizard no pintó el stepper dentro del tiempo de espera (token ${String(DATOS.resumeToken).slice(0, 8)}…)`)
+      ? `el enlace NO abre la sesión: el wizard rebotó a la portada con resume_error=1 — el sistema no reconoce el token ${String(DATOS.resumeToken).slice(0, 8)}… del enlace (${msEntrada} ms)`
+      : `el enlace no llegó a abrir la sesión ni a rebotar: el wizard no pintó el stepper en ${msEntrada} ms (token ${String(DATOS.resumeToken).slice(0, 8)}…)`)
     return false
   }
+  c.notas.push(`✓ el enlace abre la sesión (aterrizaje en ${msEntrada} ms)`)
   return true
 }
 
@@ -868,11 +876,21 @@ async function caminoRecuperarAterrizar(page, base) {
   c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
   // El paso donde "estaba la familia" NO es el mismo en los dos modos, y fingir que sí lo
   // es sería el error de siempre: en simulado el escenario coloca el expediente con los
-  // pasos 1-5 completos (⇒ Documentos, índice 5); contra el sistema REAL el expediente
-  // acaba de darse de alta y no tiene nada relleno (⇒ el primero, índice 0). Lo que se
-  // afirma en ambos es lo mismo: que la recuperación aterriza donde el ESTADO dice, no en
-  // un re-arranque arbitrario ni en un banner muerto.
-  const pasoEsperado = REAL ? 0 : 5
+  // pasos 1-5 completos (⇒ Documentos, índice 5).
+  //
+  // ── Contra el sistema REAL el expediente recién dado de alta aterriza en el índice 1,
+  //    no en el 0, y eso es CORRECTO. MEDIDO el 2026-08-04, no supuesto: un expediente
+  //    creado por la pasarela y sin tocar ya trae `desired_start_date` puesta —
+  //      hydrateSession → group.desired_start_date = "2026-04-08"  (la fecha de creación)
+  //    — aunque el KMS la inserta explícitamente a NULL (`enr/wizard-gateway.gs:778`): quien
+  //    la rellena es el **Initial Value de la columna en AppSheet**. El wizard marca el paso
+  //    0 completo cuando hay fecha (`WizardContext.jsx`, `hasStartDate` → `completed.add(0)`),
+  //    así que el primer paso incompleto ES el 1. La expectativa anterior (0) venía de
+  //    suponer que "no tiene nada relleno"; la tabla dice otra cosa y gana la tabla.
+  //    ⚠️ Que AppSheet pre-rellene esa fecha es un HALLAZGO del producto (la familia se
+  //    encuentra el paso 1 dado por hecho, con la fecha de hoy). Anotado en
+  //    `kis-app/docs/kms/pendiente-tras-verde.md`; no se arregla aquí.
+  const pasoEsperado = REAL ? 1 : 5
   c.afirmar(`aterriza en el paso que le corresponde al expediente (índice ${pasoEsperado})`,
     pantalla.pasoActivo === pasoEsperado,
     `aterrizó en el paso índice ${pantalla.pasoActivo} (se esperaba ${pasoEsperado})`)
@@ -902,9 +920,55 @@ async function caminoGuardarPaso(page, base) {
 
   let pantalla = await page.evaluate(sondaPantalla)
   c.evidencia.elementos = pantalla.pasos + pantalla.campos
-  if (!c.afirmar('aterriza en el primer paso incompleto', pantalla.pasoActivo === 0,
-    `aterrizó en el índice ${pantalla.pasoActivo}, no en 0`)) return c
+  // Contra el sistema real el primer paso incompleto es el 1, porque AppSheet pre-rellena
+  // `desired_start_date` al crear el expediente (medido — ver el comentario largo en
+  // `caminoRecuperarAterrizar`). En simulado el escenario `sin_fecha` lo deja en el 0.
+  const aterrizajeEsperado = REAL ? 1 : 0
+  if (!c.afirmar(`aterriza en el primer paso incompleto (índice ${aterrizajeEsperado})`,
+    pantalla.pasoActivo === aterrizajeEsperado,
+    `aterrizó en el índice ${pantalla.pasoActivo}, no en ${aterrizajeEsperado}`)) return c
   c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
+
+  // Para editar la FECHA hay que estar en el paso de la fecha. Si la familia aterrizó más
+  // adelante (el caso real: el paso 0 ya cuenta como completo), vuelve atrás como volvería
+  // ella — con el botón «Atrás». Es un acto de la familia, no un atajo del robot: retomar y
+  // corregir un paso ya dado es exactamente lo que este camino dice medir.
+  // OJO con los selectores: «Atrás» (StepNav) y «Editar» (LockedBanner) comparten la MISMA
+  // clase `btn-secondary-kis` (`components/LockedBanner.jsx:16`). Lo que los distingue es el
+  // icono: el de editar lleva `i.bi-pencil`. Coger «el primer .btn-secondary-kis» pulsaría el
+  // que estuviera antes en el DOM —y el banner va arriba—, así que se nombran por separado.
+  const ATRAS  = 'button.btn-secondary-kis:not(:has(i.bi-pencil))'
+  const EDITAR = 'button.btn-secondary-kis:has(i.bi-pencil)'
+
+  if (pantalla.pasoActivo > 0) {
+    const volver = await page.$(ATRAS)
+    if (!volver) {
+      c.fallos.push(`aterrizó en el índice ${pantalla.pasoActivo} y el paso no ofrece botón «Atrás»: no hay forma de volver al paso de la fecha`)
+      return c
+    }
+    await volver.click()
+    try {
+      await page.waitForFunction(() => {
+        const pasos = [...document.querySelectorAll('.wizard-step')]
+        return pasos.findIndex(p => p.classList.contains('active')) === 0
+      }, { timeout: 15000 })
+    } catch {
+      c.fallos.push('al pulsar «Atrás» el wizard no volvió al paso de la fecha (índice 0)')
+      return c
+    }
+    // Un paso ya completado se recupera BLOQUEADO tras su banner: para tocarlo hay que pulsar
+    // «Editar». Es el gesto de la familia que vuelve a cambiar la fecha, no un atajo.
+    const editar = await page.$(EDITAR)
+    if (editar) {
+      await editar.click()
+      c.notas.push('✓ el paso ya completado se recupera bloqueado y se desbloquea con «Editar»')
+    }
+    // Si el campo sigue sin poder tocarse, el camino cae AQUÍ y lo dice, en vez de fallar
+    // más abajo con un «no se pudo escribir la fecha» que no nombra la causa.
+    const editable = await page.$eval('input[type="date"], #mid', el => !el.disabled).catch(() => false)
+    if (!c.afirmar('tras «Editar», el paso de la fecha vuelve a ser editable', editable,
+      'el campo sigue deshabilitado: la familia no podría corregir su fecha al volver')) return c
+  }
 
   // Editar: pasar a "fecha concreta" y escribir una fecha que la batería controla.
   const FECHA = '2027-01-11'
