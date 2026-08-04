@@ -1800,15 +1800,47 @@ async function conducirPreguntas(c, page) {
     c.fallos.push('paso 5 · preguntas — el cuestionario no terminó de cargar en 240 s: el botón de avanzar siguió deshabilitado')
     return false
   }
-  const campos = await page.$$('input[type="radio"], input[type="checkbox"], textarea, select.form-select')
+  const campos = await page.$$('input[type="radio"], input[type="checkbox"], textarea, select.form-select, input[type="text"], input[type="number"], input[type="date"]')
   c.notas.push(`    · el cuestionario del tenant pinta ${campos.length} control(es) de respuesta`)
-  for (const r of await page.$$('input[type="radio"]')) { try { await r.check(); } catch { /* agrupados */ } }
-  for (const t of await page.$$('textarea')) { try { await t.fill('Respuesta del robot de inscripción.'); } catch { /* bloqueado */ } }
   if (!campos.length) {
     c.noCubierta('paso 5 · preguntas·respuesta-desde-la-pantalla',
       'el tenant no tiene ninguna pregunta configurada para este programa: no hay nada que responder en la pantalla. Es configuración de tenant, no defecto del wizard.')
+    return continuar(c, page, 5, 'paso 5 · preguntas')
   }
-  return continuar(c, page, 5, 'paso 5 · preguntas')
+
+  // ── RESPONDER DE VERDAD, y no solo pasar por el paso ────────────────────────────────
+  // MEDIDO en d6: la pantalla pintó **47 controles** y `saveResponses` NO se llamó ni una
+  // vez. No era avería del servidor (`fetchQuestions` vino sano) ni transporte: es que el
+  // conductor solo marcaba radios y rellenaba áreas de texto, y con eso `responses` se
+  // quedaba vacío — y `Step5Questions.handleNext` solo manda filas por las preguntas
+  // RESPONDIDAS, así que no llamaba a nadie. Cero sesiones era el comportamiento CORRECTO
+  // del producto ante un formulario en blanco. El defecto era del robot.
+  let respondidos = 0
+  for (const r of await page.$$('input[type="radio"]')) { try { await r.check(); respondidos++ } catch { /* agrupados */ } }
+  for (const ch of await page.$$('input[type="checkbox"]')) { try { await ch.check(); respondidos++ } catch { /* bloqueado */ } }
+  for (const t of await page.$$('textarea')) { try { await t.fill('Respuesta del robot de inscripción.'); respondidos++ } catch { /* bloqueado */ } }
+  for (const s of await page.$$('select.form-select')) {
+    try {
+      const ops = await s.$$eval('option', os => os.map(o => o.value).filter(Boolean))
+      if (ops.length) { await s.selectOption(ops[0]); respondidos++ }
+    } catch { /* bloqueado */ }
+  }
+  for (const i of await page.$$('input[type="text"], input[type="number"]')) {
+    try { await i.fill('Robot'); respondidos++ } catch { /* bloqueado */ }
+  }
+  c.notas.push(`    · controles respondidos desde la pantalla: ${respondidos} de ${campos.length}`)
+  if (!c.afirmar('paso 5 · preguntas — el robot responde de verdad antes de continuar',
+    respondidos > 0,
+    `la pantalla pinta ${campos.length} controles y el robot no consiguió responder ninguno: continuar así mandaría un formulario en blanco, y entonces CERO respuestas guardadas sería lo correcto — no diría nada del producto`)) return false
+
+  const antes = llamadas('saveResponses').length
+  if (!await continuar(c, page, 5, 'paso 5 · preguntas')) return false
+  // El guardado del cuestionario vuela en segundo plano: se ESPERA a que salga.
+  const t0 = Date.now()
+  while (llamadas('saveResponses').length === antes && Date.now() - t0 < 60000) await page.waitForTimeout(300)
+  return c.afirmar('paso 5 · preguntas — las respuestas salen desde la pantalla',
+    llamadas('saveResponses').length > antes,
+    `se respondieron ${respondidos} controles y NINGÚN saveResponses salió en ${Date.now() - t0} ms: o el paso no reconoce lo tecleado como respuesta, o no lo envía`)
 }
 
 /** PASO 6 · Documentos — adjuntar un archivo de verdad y esperar su confirmación. */
