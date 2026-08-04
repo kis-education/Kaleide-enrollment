@@ -462,8 +462,19 @@ function startServer() {
           const out = await reenviarAlBackendReal(payload, accion)
           // Se registra TAMBIÉN lo que contestó el servidor. Antes solo se guardaba la
           // pregunta, y un rojo obligaba a repetir la corrida entera para saber la
-          // respuesta — que es justo lo que la casa prohíbe. Sin PII: `ok` y el código.
-          record({ action: accion, payload, respuesta: { ok: !!(out && out.ok), codigo: (out && out.error && out.error.code) || null } })
+          // respuesta — que es justo lo que la casa prohíbe.
+          // El MOTIVO va con el código: el wizard devuelve `error` como CADENA cuando el
+          // fallo no lleva código (`doPost`, rama sin `err.code`), y guardando solo el
+          // código esos rojos salían como «(sin código de error)» — sin una palabra de
+          // por qué. Medido el 2026-08-04: costó una corrida entera no saberlo. El texto
+          // ya viene saneado del servidor (`sanitizeErrorForClient_`: emails y UUID
+          // redactados, 200 caracteres), y aquí se recorta otra vez.
+          const errObj = out && out.error
+          record({ action: accion, payload, respuesta: {
+            ok:     !!(out && out.ok),
+            codigo: (errObj && errObj.code) || null,
+            motivo: (typeof errObj === 'string' ? errObj : (errObj && errObj.message) || '').slice(0, 200) || null,
+          } })
           return responder(out)
         }
         const out = dispatch(payload)
@@ -1522,7 +1533,7 @@ async function main() {
     // es la evidencia que convierte un rojo en diagnosticable sin repetir la corrida.
     const negativas = calls.filter(x => x.respuesta && !x.respuesta.ok)
     for (const x of negativas) {
-      console.log(`      ↩ el servidor contestó ok=false a «${x.action}»${x.respuesta.codigo ? ` [${x.respuesta.codigo}]` : ' (sin código de error)'}`)
+      console.log(`      ↩ el servidor contestó ok=false a «${x.action}»${x.respuesta.codigo ? ` [${x.respuesta.codigo}]` : ' (sin código de error)'}${x.respuesta.motivo ? ` — ${x.respuesta.motivo}` : ''}`)
     }
     for (const f of c.fallos) console.log(`      ✗ ${f}`)
     for (const nc of c.noCubiertas) console.log(`      · NO CUBIERTA «${nc.etiqueta}»: ${nc.motivo}`)

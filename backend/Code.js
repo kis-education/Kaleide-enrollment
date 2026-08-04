@@ -4734,60 +4734,19 @@ function fetchQuestions_(p) {
   // via doPost del KMS bajo `qb-public.resolveSetForConsumer` con auth por
   // service token. Script Properties `KMS_DEPLOYMENT_URL` + `QB_SERVICE_TOKEN`
   // son REQUERIDAS — el path legacy AppSheet fue eliminado (W1, 2026-06-11).
-  const props        = PropertiesService.getScriptProperties();
-  const kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
-  const serviceToken = props.getProperty('QB_SERVICE_TOKEN');
-  if (!kmsUrl || !serviceToken) {
-    throw new Error('fetchQuestions_: Script Properties KMS_DEPLOYMENT_URL y QB_SERVICE_TOKEN son requeridas (path legacy eliminado W1-2026-06-11)');
-  }
-
-  if (kmsUrl && serviceToken) {
-    const kmsPayload = {
-      action: 'qb-public.resolveSetForConsumer',
-      payload: {
-        service_token: serviceToken,
-        consumer_code: 'ADMISSIONS_WIZARD',
-        context_code:  contextCode,
-        receptor:      { locale: lang },
-        school_id:     SCHOOL_ID,
-      },
-      requestId: generateUuid_(),
-    };
-
-    // El KMS es `access: ANYONE` → Google exige login de plataforma ANTES del
-    // doPost. Sin el header Authorization, el POST se redirige a la página de
-    // sign-in (HTML) → HTTP 401 y nunca llega al dispatcher qb-public. El Bearer
-    // OAuth token autentica como la cuenta deployadora del wizard y pasa ese gate;
-    // la auth de aplicación sigue siendo el service_token del payload. Mismo patrón
-    // que kmsProxy_ (commit 7851f2a) — fetchQuestions_ había quedado sin él, así que
-    // al activarse el path KMS (Script Properties puestas) las preguntas daban 401.
-    const httpResp = UrlFetchApp.fetch(kmsUrl, {
-      method:             'post',
-      contentType:        'text/plain',
-      headers:            { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      payload:            JSON.stringify(kmsPayload),
-      followRedirects:    true,
-      muteHttpExceptions: true,
-    });
-
-    const status = httpResp.getResponseCode();
-    const text   = httpResp.getContentText();
-    if (status !== 200) {
-      throw new Error('KMS qb-public HTTP ' + status + ': ' + redact_(text.slice(0, 200)));
-    }
-    let envelope;
-    try {
-      envelope = JSON.parse(text);
-    } catch (parseErr) {
-      throw new Error('KMS qb-public: non-JSON response: ' + redact_(text.slice(0, 200)));
-    }
-    if (!envelope || envelope.success !== true) {
-      const errPayload = envelope && envelope.error ? envelope.error : { code: 'UNKNOWN', message: 'no error object' };
-      throw new Error('KMS qb-public ' + errPayload.code + ': ' + errPayload.message);
-    }
-
-    return fetchQuestions_adaptKmsResponse_(envelope.data, lang);
-  }
+  //
+  // ★ 2026-08-04 — este camino tenía su PROPIA copia del salto HTTP al KMS (el mismo
+  // `UrlFetchApp.fetch` + Bearer + parseo, escrito aparte). Dos transportes del mismo
+  // salto DIVERGEN, y éste divergió justo donde importa: cuando `kmsProxy_` aprendió a
+  // reintentar el `echo` ilegible, las PREGUNTAS se habrían quedado sin reintento, y su
+  // fallo medido —«KMS qb-public: non-JSON response: <!doctype html…»— es exactamente
+  // el que el reintento cura. Ahora usa el transporte ÚNICO: uno solo que arreglar.
+  return fetchQuestions_adaptKmsResponse_(kmsProxy_('qb-public.resolveSetForConsumer', {
+    consumer_code: 'ADMISSIONS_WIZARD',
+    context_code:  contextCode,
+    receptor:      { locale: lang },
+    school_id:     SCHOOL_ID,
+  }), lang);
 }
 
 /**
@@ -6527,48 +6486,81 @@ function kmsProxy_(action, payload) {
     requestId: generateUuid_(),
   };
 
-  let httpResp;
-  _dbgEv_('kms_call', action);
-  const perfFetchT0 = Date.now(); // PERF-KMS2: aísla el hop HTTP wizard→KMS
-  try {
-    // El KMS es `access: ANYONE` → Google exige login a nivel de plataforma
-    // ANTES de llegar al doPost. Un POST anónimo se redirige a la página de
-    // sign-in (HTML) y nunca ejecuta el dispatcher → HTTP 401. El header
-    // `Authorization: Bearer <OAuth token>` autentica la request como la
-    // cuenta deployadora del wizard, pasando ese gate de plataforma. La
-    // auth a nivel de aplicación sigue siendo el `service_token` en el
-    // payload (DL-Q05 / QB_SERVICE_TOKEN) — el bearer solo abre la puerta.
-    httpResp = UrlFetchApp.fetch(kmsUrl, {
-      method:             'post',
-      contentType:        'text/plain',
-      headers:            { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      payload:            JSON.stringify(envelope),
-      followRedirects:    true,
-      muteHttpExceptions: true,
-    });
-  } catch (netErr) {
-    const err = new Error('KMS proxy network error: ' + netErr.message);
-    err.code = 'KMS_NETWORK_ERROR';
-    throw err;
+  // ── El salto se REINTENTA, y por eso el `requestId` NO cambia entre intentos ──
+  //
+  // MEDIDO el 2026-08-04 contra el `/exec` del KMS (8 peticiones seguidas): **2 de 8**
+  // devolvieron una página de Google —la de identificarse, y la de Drive con 404— en
+  // vez del JSON. Es el segundo tramo del doble salto de una web app de GAS (el `echo`),
+  // y **releerlo NO recupera**: 3 relecturas de cada `Location:` fallido dieron otra vez
+  // la página. Lo que sí recupera es **repetir la petición**.
+  //
+  // Repetirla era inaceptable —la acción YA se ejecutó cuando el `echo` falla, así que un
+  // reintento de `enr.wizardCreateSession` crearía DOS expedientes y uno de
+  // `sys-public.sendNotification` mandaría DOS correos—, así que primero se arregló el
+  // otro lado: el `doPost` del KMS guarda su respuesta bajo el `requestId` y un POST
+  // repetido con el MISMO `requestId` **devuelve la guardada sin re-ejecutar nada**
+  // (`kis-app/kms-server/_index.gs`, caché `xsreq_`, 10 min). Por eso el sobre se arma
+  // FUERA del bucle: reusar el `requestId` es lo que hace seguro el reintento.
+  //
+  // Solo se reintenta lo que NO se pudo LEER (respuesta no-JSON o HTTP ≠ 200). Un error
+  // de negocio del KMS llega en JSON y se propaga tal cual, sin repetirse.
+  //
+  // Lo que la familia veía sin esto: «tu enlace no funciona» (rebote a la portada con
+  // `resume_error=1`) cuando el que falló fue el transporte, no su expediente.
+  const KMS_INTENTOS = 3;
+  let status = 0;
+  let text   = '';
+  let resp   = null;
+  let ultimoFallo = null;   // {codigo, mensaje} del último intento ilegible
+  for (let intento = 1; intento <= KMS_INTENTOS; intento++) {
+    let httpResp;
+    _dbgEv_('kms_call', action + (intento > 1 ? ' (reintento ' + intento + ')' : ''));
+    const perfFetchT0 = Date.now(); // PERF-KMS2: aísla el hop HTTP wizard→KMS
+    try {
+      // El KMS es `access: ANYONE` → Google exige login a nivel de plataforma
+      // ANTES de llegar al doPost. Un POST anónimo se redirige a la página de
+      // sign-in (HTML) y nunca ejecuta el dispatcher → HTTP 401. El header
+      // `Authorization: Bearer <OAuth token>` autentica la request como la
+      // cuenta deployadora del wizard, pasando ese gate de plataforma. La
+      // auth a nivel de aplicación sigue siendo el `service_token` en el
+      // payload (DL-Q05 / QB_SERVICE_TOKEN) — el bearer solo abre la puerta.
+      httpResp = UrlFetchApp.fetch(kmsUrl, {
+        method:             'post',
+        contentType:        'text/plain',
+        headers:            { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+        payload:            JSON.stringify(envelope),
+        followRedirects:    true,
+        muteHttpExceptions: true,
+      });
+    } catch (netErr) {
+      ultimoFallo = { codigo: 'KMS_NETWORK_ERROR', mensaje: 'KMS proxy network error: ' + netErr.message };
+      httpResp = null;
+    }
+    if (httpResp) {
+      PERF2_.kms_fetch_ms = Date.now() - perfFetchT0; // PERF-KMS2 (KAL-11: solo ms)
+      _dbgEv_('kms_resp', action + ' ' + PERF2_.kms_fetch_ms + 'ms');
+      Logger.log('[PERF] kmsProxy_ action=' + action + ' fetch_ms=' + PERF2_.kms_fetch_ms);
+      status = httpResp.getResponseCode();
+      text   = httpResp.getContentText();
+      if (status !== 200) {
+        ultimoFallo = { codigo: 'KMS_HTTP_ERROR', mensaje: 'KMS proxy HTTP ' + status + ': ' + redact_(text.slice(0, 200)) };
+      } else {
+        try {
+          resp = JSON.parse(text);
+          ultimoFallo = null;
+          break;                                   // se leyó la respuesta: se acabó
+        } catch (parseErr) {
+          ultimoFallo = { codigo: 'KMS_BAD_RESPONSE', mensaje: 'KMS proxy non-JSON response: ' + redact_(text.slice(0, 200)) };
+        }
+      }
+    }
+    Logger.log('[kmsProxy_] transporte ilegible en el intento ' + intento + '/' + KMS_INTENTOS +
+               ' de ' + action + ' — ' + (ultimoFallo && ultimoFallo.codigo));
+    if (intento < KMS_INTENTOS) Utilities.sleep(1200);
   }
-  PERF2_.kms_fetch_ms = Date.now() - perfFetchT0; // PERF-KMS2 (KAL-11: solo ms)
-  _dbgEv_('kms_resp', action + ' ' + PERF2_.kms_fetch_ms + 'ms');
-  Logger.log('[PERF] kmsProxy_ action=' + action + ' fetch_ms=' + PERF2_.kms_fetch_ms);
-
-  const status = httpResp.getResponseCode();
-  const text   = httpResp.getContentText();
-  if (status !== 200) {
-    const err = new Error('KMS proxy HTTP ' + status + ': ' + redact_(text.slice(0, 200)));
-    err.code = 'KMS_HTTP_ERROR';
-    throw err;
-  }
-
-  let resp;
-  try {
-    resp = JSON.parse(text);
-  } catch (parseErr) {
-    const err = new Error('KMS proxy non-JSON response: ' + redact_(text.slice(0, 200)));
-    err.code = 'KMS_BAD_RESPONSE';
+  if (ultimoFallo) {
+    const err = new Error(ultimoFallo.mensaje);
+    err.code = ultimoFallo.codigo;
     throw err;
   }
 
