@@ -626,6 +626,23 @@ function startServer() {
           // ya viene saneado del servidor (`sanitizeErrorForClient_`: emails y UUID
           // redactados, 200 caracteres), y aquí se recorta otra vez.
           const errObj = out && out.error
+          // ── LA LÍNEA LITERAL DE LO QUE SALE DEL NAVEGADOR (2026-08-04) ──────────────────
+          // Autorizado tras la corrida de las 19:05, donde la pregunta «¿salió el saveStep
+          // con step:'relations'?» NO se pudo contestar con la salida: el arnés registraba la
+          // llamada pero no la imprimía nunca. Hubo que sustituirla por la lectura de vuelta
+          // —que es más fuerte cuando el dato LLEGA a la base—, pero **no sirve de nada
+          // cuando el fallo está aguas arriba**: si la escritura no sale del navegador, o sale
+          // y muere en el transporte, la base está vacía por dos motivos distintos y la
+          // lectura de vuelta no los distingue.
+          // Se imprime el NOMBRE del paso y si el servidor lo acusó — NUNCA el contenido del
+          // paso, que es PII de la familia (KAL-11). `step` es un identificador cerrado
+          // ('persons', 'relations', 'health'…), no un dato personal.
+          if (REAL && accion === 'saveStep') {
+            const paso = (payload && payload.step) || '(sin step)'
+            const ack = (out && out.ok) ? 'ok' :
+              `NO (${(errObj && errObj.code) || (typeof errObj === 'string' ? 'error' : 'sin código')})`
+            traza(`→ saveStep step='${paso}' — acuse del servidor: ${ack}`)
+          }
           record({ action: accion, payload, respuesta: {
             ok:     !!(out && out.ok),
             codigo: (errObj && errObj.code) || null,
