@@ -30,7 +30,29 @@ function buildInitialRelations(persons, existingRelations) {
       );
       return found
         ? { ...found, _kind: 'ga', is_custodial: parseBool(found.is_custodial), is_pick_up_authorized: parseBool(found.is_pick_up_authorized) }
-        : { _uid: `${gId}__${aId}`, _kind: 'ga', guardian_person_id: gId, applicant_person_id: aId, relation_type_id: '', is_custodial: false, is_pick_up_authorized: false };
+        // ── LOS DOS EXTREMOS SE LLAMAN person_id_a / person_id_b ─────────────────────
+        // Y no es una preferencia de nombres: es el contrato del ÚNICO escritor. El KMS
+        // descarta EN SILENCIO todo vínculo que no traiga los dos
+        // (`enr_persistRelations_`, `kis-app/…/enr/wizard-gateway.gs:1031`: `if (!r ||
+        // !r.person_id_a || !r.person_id_b) return;`) y de ahí salen `from_person_id` /
+        // `to_person_id`.
+        //
+        // Aquí ponía `guardian_person_id` / `applicant_person_id`, así que **ningún
+        // vínculo tutor↔hijo creado en esta pantalla llegaba a guardarse jamás** — sin
+        // error, sin aviso: la familia veía el paso guardado y con él se perdían la
+        // CUSTODIA y la AUTORIZACIÓN DE RECOGIDA. Medido por el robot el 2026-08-04 con
+        // el navegador conduciendo el paso: `vinculos.n = 0` en la misma corrida en que
+        // `personas.n = 4` salía en verde. Se escribía lo de al lado y esto no.
+        //
+        // Los nombres de tutor/aplicante nacieron en la LECTURA de vuelta, que los
+        // estampa como alias de from/to (`backend/Code.js:3615`) — de ahí se copiaron a
+        // la creación, donde no valen. Las parejas hermano↔hermano de más abajo SIEMPRE
+        // usaron `person_id_a`/`person_id_b`, y por eso ésas sí se guardaban: la misma
+        // pantalla nombraba de dos maneras la misma cosa. Ahora, de una.
+        //
+        // El ORDEN es parte del dato: `a` es el tutor y `b` el hijo, que es como el
+        // escritor los coloca (`from` = a, `to` = b) y como la lectura los devuelve.
+        : { _uid: `${gId}__${aId}`, _kind: 'ga', person_id_a: gId, person_id_b: aId, relation_type_id: '', is_custodial: false, is_pick_up_authorized: false };
     });
   });
 
