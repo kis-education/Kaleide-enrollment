@@ -807,7 +807,7 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
  * @param {string} etiqueta — de qué drenaje se trata, para que la salida lo diga.
  * @param {number} [turnos=4]
  */
-function drenar(c, etiqueta, turnos = 4) {
+function drenar(c, etiqueta, turnos = 8) {
   let pendientes = -1
   for (let intento = 1; intento <= turnos; intento++) {
     const r = sonda('manual_robotDrenar', [EXPEDIENTE.gid, 120])
