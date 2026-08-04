@@ -833,6 +833,7 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
 function drenar(c, etiqueta, turnos = 20) {
   let pendientes = -1
   let fallidos = 0
+  let esperando = 0
   let motivos = ''
   for (let intento = 1; intento <= turnos; intento++) {
     // ── POR QUÉ 40 s y no 120 (MEDIDO el 2026-08-04) ────────────────────────────────
@@ -847,8 +848,9 @@ function drenar(c, etiqueta, turnos = 20) {
     const s = r.resultado || {}
     pendientes = Number(s.pendientes_n != null ? s.pendientes_n : (s.datos && s.datos.pendientes_n))
     fallidos = Number(s.fallidos_n != null ? s.fallidos_n : (s.datos && s.datos.fallidos_n)) || 0
+    esperando = Number(s.esperando_n != null ? s.esperando_n : (s.datos && s.datos.esperando_reintento_n)) || 0
     motivos = s.fallidos_motivos || (s.datos && s.datos.motivos) || ''
-    c.notas.push(`    · drenaje ${etiqueta} ${intento}: ${(s.datos && s.datos.estados) || '(sin trabajos)'} → pendientes=${pendientes} fallidos=${fallidos}`)
+    c.notas.push(`    · drenaje ${etiqueta} ${intento}: ${(s.datos && s.datos.estados) || '(sin trabajos)'} → pendientes=${pendientes} esperando=${esperando} fallidos=${fallidos}`)
     // ── PENDIENTE ≠ FALLIDO (2026-08-04, MEDIDO) ────────────────────────────────────
     // Un trabajo en `Failed` es TERMINAL: agotó sus intentos y no va a correr por muchos
     // turnos más que se le den. Antes contaba como pendiente, así que con los dos
@@ -859,6 +861,11 @@ function drenar(c, etiqueta, turnos = 20) {
     if (pendientes === 0) {
       if (fallidos > 0) {
         c.fallos.push(`la cola terminó ${etiqueta} con ${fallidos} trabajo(s) MUERTOS (agotaron sus intentos): ${String(motivos).slice(0, 400)} — su efecto no ocurrió, así que lo que dependa de él estará sin escribir`)
+      }
+      if (esperando > 0) {
+        // Un trabajo que ya falló y espera su reintento (respaldo de 2, 4, 8, 16, 32 min)
+        // NO va a correr dentro de esta ventana: esperarlo son veinte turnos tirados.
+        c.fallos.push(`la cola quedó ${etiqueta} con ${esperando} trabajo(s) esperando su reintento tras fallar: ${String(motivos).slice(0, 400)} — no corren dentro de esta corrida, así que su efecto no está escrito`)
       }
       return
     }
