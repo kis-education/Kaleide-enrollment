@@ -340,8 +340,41 @@ let idaYVueltaMin = Infinity     // latencia REAL mínima observada (ms)
 //
 // Ahora se marca aparte, igual que la CUOTA: sigue sin ser verde (no se probó
 // nada), pero NO se atribuye al camino de inscripción.
-const TRANSPORTE_ROTO_RE = /unable to open the file|Page Not Found|Moved Temporarily|<!DOCTYPE html/i
+const TRANSPORTE_ROTO_RE = /unable to open the file|Page Not Found|Moved Temporarily|<!DOCTYPE html|<HTML>/i
 let transporteDelCamino = null   // {accion, codigo, mensaje} del recorrido en curso
+
+// ── Reintento: SOLO acciones de LECTURA, y se re-hace la llamada ENTERA ───────
+// El `echo` de GAS es de UN SOLO USO. MEDIDO el 2026-08-04: se capturó un
+// `Location:` y se leyó tres veces —
+//     lectura 1 → {"ok":false,"error":"Unauthorized: resum…    (el JSON)
+//     lectura 2 → <HTML><HEAD><TITLE>Moved Temporarily…
+//     lectura 3 → <HTML><HEAD><TITLE>Moved Temporarily…
+// — así que releer el mismo `Location:` NO recupera nada: la única forma de volver
+// a tener respuesta es repetir el POST. Y repetir un POST **vuelve a ejecutar la
+// acción**: en `sendMagicLink` mandaría otro correo, rotaría otra vez el token y
+// gastaría otro punto del cupo — y de paso rompería la afirmación «sale UNA sola
+// petición de enlace», que es lo que este robot existe para vigilar.
+//
+// Por eso el reintento va con LISTA BLANCA de acciones sin efecto: repetirlas no
+// cambia nada del sistema. Todo lo demás se reporta como transporte roto y punto.
+// Es deliberadamente corta; ampliarla exige demostrar que la acción no escribe.
+const ACCIONES_REPETIBLES = new Set([
+  'hydrateSession',   // lectura: arma el estado de la sesión, no escribe
+  'warmBundle',       // precalentado best-effort, idempotente por diseño
+])
+const REINTENTOS = 2
+
+async function unSaltoDoble(payload) {
+  const salto1 = await fetch(GAS_URL, {
+    method: 'POST',
+    redirect: 'manual',                       // el 302 se maneja a mano: ver arriba
+    headers: { 'Content-Type': 'text/plain' },  // lo que manda el propio wizard
+    body: JSON.stringify(payload),
+  })
+  const destino = salto1.headers.get('location')
+  // Sin redirección (algunos errores de Google contestan directos): se lee tal cual.
+  return destino ? (await fetch(destino)).text() : salto1.text()
+}
 
 async function reenviarAlBackendReal(payload, accion) {
   const t0 = Date.now()
@@ -350,20 +383,17 @@ async function reenviarAlBackendReal(payload, accion) {
       { accion: String(accion || '(sin acción)'), codigo, mensaje: String(mensaje).slice(0, 200) }
     return { ok: false, error: { code: codigo, message: String(mensaje).slice(0, 240) } }
   }
+  const repetible = ACCIONES_REPETIBLES.has(String(accion || ''))
   try {
-    const salto1 = await fetch(GAS_URL, {
-      method: 'POST',
-      redirect: 'manual',                       // el 302 se maneja a mano: ver arriba
-      headers: { 'Content-Type': 'text/plain' },  // lo que manda el propio wizard
-      body: JSON.stringify(payload),
-    })
-    const destino = salto1.headers.get('location')
-    let texto
-    if (destino) {
-      texto = await (await fetch(destino)).text()
-    } else {
-      // Sin redirección (algunos errores de Google contestan directos): se lee tal cual.
-      texto = await salto1.text()
+    let texto = ''
+    let ultimoFallo = ''
+    for (let intento = 0; intento <= (repetible ? REINTENTOS : 0); intento++) {
+      texto = await unSaltoDoble(payload)
+      if (CUOTA_RE.test(texto)) break                       // la cuota no se reintenta
+      try { JSON.parse(texto); break } catch { /* sigue */ }
+      ultimoFallo = texto.replace(/\s+/g, ' ').trim()
+      if (!repetible) break
+      if (intento < REINTENTOS) await new Promise(r => setTimeout(r, 1500))
     }
     idaYVueltaMin = Math.min(idaYVueltaMin, Date.now() - t0)
     if (CUOTA_RE.test(texto)) {
@@ -371,10 +401,10 @@ async function reenviarAlBackendReal(payload, accion) {
       return { ok: false, error: { code: 'E2E_CUOTA', message: cuotaVista } }
     }
     try { return JSON.parse(texto) } catch {
-      // Google devolvió HTML (el `echo` que no abre, error de despliegue, consentimiento):
-      // el arnés NO PUDO LEER la respuesta. No se sabe qué hizo el servidor, así que no se
-      // afirma nada sobre él — se marca como transporte roto con el cuerpo LITERAL.
-      const cuerpo = texto.replace(/\s+/g, ' ').trim()
+      // El arnés NO PUDO LEER la respuesta (ni tras los reintentos, si los hubo). No se
+      // sabe qué hizo el servidor, así que no se afirma nada sobre él: transporte roto
+      // con el cuerpo LITERAL, y aparte del veredicto del producto.
+      const cuerpo = ultimoFallo || texto.replace(/\s+/g, ' ').trim()
       return transporte(TRANSPORTE_ROTO_RE.test(cuerpo) ? 'E2E_TRANSPORTE' : 'E2E_NO_JSON', cuerpo)
     }
   } catch (e) {
@@ -1038,12 +1068,22 @@ async function caminoGuardarPaso(page, base) {
       `tardó ${ms} ms con una latencia ${REAL ? `REAL mínima de ${idaYVueltaMin}` : `simulada de ${LATENCY}`} ms: el avance está esperando al servidor en vez de ser optimista`)
   }
 
-  // El guardado sale con el valor nuevo (aunque el usuario ya haya avanzado).
-  await page.waitForTimeout(LATENCY + 800)
+  // El guardado sale con el valor nuevo (aunque el usuario ya haya avanzado). Se ESPERA a
+  // que salga, no se duerme un rato fijo: contra el sistema real el guardado es
+  // fire-and-forget y el momento en que sale lo decide la aplicación, no nuestro reloj.
+  // Con `waitForTimeout(LATENCY + 800)` la misma corrida daba 4 llamadas una vez y 1 la
+  // siguiente — un rojo intermitente que acusaba al wizard de no guardar cuando lo único
+  // que pasaba es que el robot dejaba de mirar demasiado pronto.
+  const esperaGuardado = REAL ? 60000 : LATENCY + 800
+  const t0Guardado = Date.now()
+  while (!llamadas('saveStep').length && Date.now() - t0Guardado < esperaGuardado) {
+    await page.waitForTimeout(250)
+  }
+  if (REAL) await esperarSilencioDeRed(30000)
   const guardados = llamadas('saveStep')
   c.evidencia.llamadas = calls.length - antes
   if (!guardados.length) {
-    c.fallos.push('el paso editado NUNCA se guardó — ningún saveStep salió tras continuar')
+    c.fallos.push(`el paso editado NUNCA se guardó — ningún saveStep salió en ${Date.now() - t0Guardado} ms tras continuar`)
   } else {
     const g = guardados[guardados.length - 1].payload || {}
     c.afirmar('el guardado lleva el paso correcto', g.step === 'application',
