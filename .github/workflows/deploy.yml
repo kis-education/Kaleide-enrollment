@@ -107,6 +107,30 @@ jobs:
       - name: Las banderas de pantalla salen de UN derivador y no se copian del KMS
         run: node scripts/comprobar-pantalla-del-cliente.mjs
 
+  # CONTROL DE DATOS CON PESO LEGAL — `sysConsentsLog` es el libro que prueba qué consintió
+  # una familia. Hasta el 2026-08-04 el resolvedor de tipos del wizard tenía un respaldo
+  # `|| raw.toUpperCase()`: cualquier cadena sin correspondencia en el catálogo se convertía
+  # en un «código» y se escribía en ese libro. Medido en la base antes de quitarlo: 12 filas
+  # con `consent_type='LEGAL'`, un código que no existe en el catálogo Capa 2 y que nadie
+  # lee. Y este dispatcher es ANYONE_ANONYMOUS: cualquiera podía elegir el código.
+  #
+  # No necesita `npm ci`, ni navegador, ni red: extrae el resolvedor real y lo ejecuta (~1 s).
+  codigos-de-consentimiento:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Sin tubería: el veredicto se lee de la última línea, pero es el código de salida el
+      # que hace fallar el trabajo, y una tubería devolvería el del último comando.
+      - name: Ningún consentimiento se registra con un código inventado
+        run: node scripts/comprobar-codigos-de-consentimiento.mjs
+
   # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.
   # Regla de los dos repos (CLAUDE.md §"No se toca lo que funciona sin una forma de
   # comprobar que sigue funcionando"): el 2026-07-27 un cambio de seguridad estuvo a
@@ -144,7 +168,7 @@ jobs:
         working-directory: frontend
 
   build:
-    needs: [e2e, escrituras-directas, selector-appsheet, receptor-firmado, pantalla-del-cliente]
+    needs: [e2e, escrituras-directas, selector-appsheet, receptor-firmado, pantalla-del-cliente, codigos-de-consentimiento]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

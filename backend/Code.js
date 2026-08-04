@@ -38,6 +38,67 @@ const CONSENT_TEXTS = {
   },
 };
 
+// ─── Tipos de consentimiento: el catálogo manda, y no se inventa ninguno ─────
+//
+// Aquí vivía, DENTRO de `submitEnrollmentSession_`, esto:
+//
+//     function canonicalConsentType_(raw) {
+//       return CONSENT_TYPE_MAP[raw] || raw.toUpperCase();
+//     }
+//
+// Ese `|| raw.toUpperCase()` **fabricaba un código de catálogo**: cualquier cadena que
+// llegara sin correspondencia se convertía en un «código» y se ESCRIBÍA en
+// `sysConsentsLog` — el libro que existe para probar qué consintió una familia. Y este
+// backend es `ANYONE_ANONYMOUS`: cualquiera podía elegir el código.
+//
+// MEDIDO en la base antes de tocar nada (2026-08-04, consulta a `sysConsentsLog`): de
+// 1.175 filas vivas, **12 con `consent_type='LEGAL'`** — un código que NO está en el
+// catálogo Capa 2 (`kis-app/config/sys-consent-types.json`) y que **nadie lee** (grep en
+// los dos repositorios: cero lectores). Salía del `type:'legal'` del paso 7, que no es un
+// consentimiento sino la **atestación de exactitud** de la solicitud.
+//
+// Ahora: correspondencia EXPLÍCITA o error accionable. Nunca un código inventado, y nunca
+// «otro valor por defecto» —que sería el mismo defecto con otra cara—. La atestación se
+// EXIGE (el servidor pide lo mismo que la pantalla) pero no se registra como consentimiento:
+// darle un código de catálogo propio sería inventarse una entrada del catálogo.
+//
+// El catálogo Capa 2 vive en el KMS; esta lista es su espejo y la comprobación
+// `scripts/comprobar-codigos-de-consentimiento.mjs` exige que todo lo que este mapa emite
+// esté dentro de ella.
+var CATALOGO_CONSENT_TYPES = ['GDPR_SCHOOL', 'IMAGE_RIGHTS', 'COMMERCIAL_COMMS', 'PLATFORM_GROUPS'];
+
+// Tipos que manda el cliente → código del catálogo. `gdpr_data_processing` es alias viejo.
+var CONSENT_TYPE_MAP = {
+  gdpr:                  'GDPR_SCHOOL',
+  gdpr_data_processing:  'GDPR_SCHOOL',
+  image_rights:          'IMAGE_RIGHTS',
+  commercial_comms:      'COMMERCIAL_COMMS',
+  platform_groups:       'PLATFORM_GROUPS',
+};
+
+// Declaraciones que NO son consentimientos: se exigen, pero no van al libro de
+// consentimientos porque no tienen (ni deben inventarse) un código de catálogo.
+var DECLARACIONES_NO_CONSENTIMIENTO = { legal: 'atestación de exactitud de la solicitud' };
+
+/**
+ * Resuelve el código de catálogo de un tipo de consentimiento del cliente.
+ *
+ * @param {string} raw
+ * @returns {string|null} el código del catálogo, o `null` si es una declaración que NO es
+ *                        un consentimiento (y por tanto NO se registra).
+ * @throws  {Error} `UNKNOWN_CONSENT_TYPE` si no tiene correspondencia — jamás se inventa.
+ */
+function wizardCodigoDeConsentimiento_(raw) {
+  var clave = String(raw == null ? '' : raw).trim();
+  if (Object.prototype.hasOwnProperty.call(CONSENT_TYPE_MAP, clave)) return CONSENT_TYPE_MAP[clave];
+  if (Object.prototype.hasOwnProperty.call(DECLARACIONES_NO_CONSENTIMIENTO, clave)) return null;
+  var e = new Error('Tipo de consentimiento sin correspondencia en el catálogo: "' + clave + '". ' +
+    'La solicitud no se envía: un consentimiento solo se registra con un código del catálogo, ' +
+    'nunca con uno inventado. Códigos válidos: ' + CATALOGO_CONSENT_TYPES.join(', ') + '.');
+  e.code = 'UNKNOWN_CONSENT_TYPE';
+  throw e;
+}
+
 // Stable question UUIDs for enrollment question bank — never regenerate
 const QB_PROFESSION_ID       = 'a1b2c3d4-0020-0000-0000-000000000000';
 const QB_EMPLOYER_ID         = 'a1b2c3d4-0021-0000-0000-000000000000';
@@ -4264,6 +4325,22 @@ function submitEnrollmentSession_(p) {
     throw eNoAcep;
   }
 
+  // ── LA ATESTACIÓN DE EXACTITUD SE EXIGE, PERO NO ES UN CONSENTIMIENTO ────────────────
+  // La pantalla de revisión la exige (`Step7Review.jsx:146`) y hasta hoy el servidor NO la
+  // comprobaba: solo la ESCRIBÍA, con un código inventado (ver `wizardCodigoDeConsentimiento_`).
+  // Ahora el servidor exige lo mismo que la pantalla, y no la registra como consentimiento.
+  var _atestacion = _consentsIn.filter(function (c) { return c && c.type === 'legal'; })[0];
+  if (!_atestacion || _atestacion.accepted !== true) {
+    var eSinAtest = new Error('Falta la declaración de que los datos de la solicitud son exactos. ' +
+      'Márcala en la pantalla de revisión y vuelve a enviar.');
+    eSinAtest.code = 'ACCURACY_ATTESTATION_REQUIRED';
+    throw eSinAtest;
+  }
+  // Y los tipos se resuelven ANTES de crear nada: si alguno no tuviera correspondencia en el
+  // catálogo, el envío no puede quedarse a medias (expedientes creados, transición hecha) por
+  // un fallo que se destapa al escribir los consentimientos.
+  _consentsIn.forEach(function (c) { wizardCodigoDeConsentimiento_(c && c.type); });
+
   const now = new Date().toISOString();
 
   // Load the group header
@@ -4389,21 +4466,15 @@ function submitEnrollmentSession_(p) {
   const signerPersonId = guardians[0] ? guardians[0].person_id : null;
   let consentRows = [];
   const consents = Array.isArray(p.consents) ? p.consents.slice() : [];
-  // Map legacy frontend consent type strings to canonical sysConsentsLog codes.
-  // Frontend sends 'gdpr'; 'gdpr_data_processing' is a legacy alias.
-  const CONSENT_TYPE_MAP = {
-    gdpr:                  'GDPR_SCHOOL',
-    gdpr_data_processing:  'GDPR_SCHOOL',
-    image_rights:          'IMAGE_RIGHTS',
-    commercial_comms:      'COMMERCIAL_COMMS',
-    platform_groups:       'PLATFORM_GROUPS',
-  };
-  function canonicalConsentType_(raw) {
-    return CONSENT_TYPE_MAP[raw] || raw.toUpperCase();
-  }
+  // El mapa de tipos y su resolvedor viven en el ámbito del módulo
+  // (`wizardCodigoDeConsentimiento_`): un solo sitio, y comprobable desde fuera.
 
   enrollmentIds.forEach(eid => {
     consents.forEach(c => {
+      // `null` ⇒ NO es un consentimiento (la atestación de exactitud del paso 7). Se exigió
+      // arriba; no se registra en el libro de consentimientos con un código que no existe.
+      var codigo = wizardCodigoDeConsentimiento_(c && c.type);
+      if (!codigo) return;
       consentRows.push({
         consent_id:             generateUuid_(),
         school_id:              SCHOOL_ID,
@@ -4411,7 +4482,7 @@ function submitEnrollmentSession_(p) {
         entity_id:              eid,
         signer_table:           'enrPersons',
         signer_id:              signerPersonId,
-        consent_type:           canonicalConsentType_(c.type),
+        consent_type:           codigo,
         consent_use:            null,
         consented:              c.accepted,
         consent_text_shown:     c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
