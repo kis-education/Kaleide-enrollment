@@ -832,6 +832,8 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
  */
 function drenar(c, etiqueta, turnos = 20) {
   let pendientes = -1
+  let fallidos = 0
+  let motivos = ''
   for (let intento = 1; intento <= turnos; intento++) {
     // ── POR QUÉ 40 s y no 120 (MEDIDO el 2026-08-04) ────────────────────────────────
     // El turno de 120 s se pasó del transporte: `curl: (28) Operation timed out after
@@ -844,10 +846,24 @@ function drenar(c, etiqueta, turnos = 20) {
     if (!r.ok) { c.fallos.push(`drenar la cola ${etiqueta} (intento ${intento}): ${r.error}`); return }
     const s = r.resultado || {}
     pendientes = Number(s.pendientes_n != null ? s.pendientes_n : (s.datos && s.datos.pendientes_n))
-    c.notas.push(`    · drenaje ${etiqueta} ${intento}: ${(s.datos && s.datos.estados) || '(sin trabajos)'} → pendientes=${pendientes}`)
-    if (pendientes === 0) return
+    fallidos = Number(s.fallidos_n != null ? s.fallidos_n : (s.datos && s.datos.fallidos_n)) || 0
+    motivos = s.fallidos_motivos || (s.datos && s.datos.motivos) || ''
+    c.notas.push(`    · drenaje ${etiqueta} ${intento}: ${(s.datos && s.datos.estados) || '(sin trabajos)'} → pendientes=${pendientes} fallidos=${fallidos}`)
+    // ── PENDIENTE ≠ FALLIDO (2026-08-04, MEDIDO) ────────────────────────────────────
+    // Un trabajo en `Failed` es TERMINAL: agotó sus intentos y no va a correr por muchos
+    // turnos más que se le den. Antes contaba como pendiente, así que con los dos
+    // `RULE_ACTION:Failed` del permiso de Drive este bucle gastaba SIEMPRE sus 20 turnos
+    // —una pasada llegó a durar ~230 s— y empujaba a las sondas contra el corte de seis
+    // minutos de Apps Script. Ahora se para cuando no queda nada por CORRER, y lo que
+    // murió se dice UNA vez, con su motivo, en vez de esperarlo en vano.
+    if (pendientes === 0) {
+      if (fallidos > 0) {
+        c.fallos.push(`la cola terminó ${etiqueta} con ${fallidos} trabajo(s) MUERTOS (agotaron sus intentos): ${String(motivos).slice(0, 400)} — su efecto no ocurrió, así que lo que dependa de él estará sin escribir`)
+      }
+      return
+    }
   }
-  c.fallos.push(`la cola no terminó ${etiqueta}: quedan ${pendientes} trabajo(s) del expediente sin completar tras ${turnos} turnos de drenaje — todo lo que se mida a continuación estaría a medio escribir`)
+  c.fallos.push(`la cola no terminó ${etiqueta}: quedan ${pendientes} trabajo(s) del expediente por correr tras ${turnos} turnos de drenaje — todo lo que se mida a continuación estaría a medio escribir`)
 }
 
 /** Ejecuta la sonda de lectura de vuelta de un paso y vuelca su veredicto en el camino. */
