@@ -409,6 +409,18 @@ const ACCIONES_REPETIBLES = new Set([
 //
 // Lo que NO se hace, y no se hará: fabricar una respuesta. El cliente recibe el error tal
 // cual, y su reacción sigue siendo observable.
+//
+// ── Y NO se arregla cambiando de cliente HTTP. MEDIDO el 2026-08-04 ──────────────────
+// Se sospechaba del `fetch` de Node (undici) a través del proxy de salida, porque el
+// `CLAUDE.md` del KMS documenta que `curl` túnela donde undici falla. Se midió: cuatro
+// saltos dobles contra el `/exec` real con `fetchLookups` (lectura pública, sin
+// escrituras ni correos), alternando lector —
+//     node 43.1 s → JSON bueno      ·  curl 48.2 s → JSON bueno
+//     node 34.5 s → HTML de Google  ·  curl 37.6 s → HTML de Google
+// Los DOS lectores fallan igual y en la misma tanda ⇒ **el fallo está en el lado de
+// Google, no en el cliente**. Muestra corta (4) y se dice como tal: no se afirma una tasa,
+// se afirma que cambiar de cliente NO es el remedio. Nótese de paso la latencia real:
+// 34-48 s por llamada, que es lo que hace que una corrida dure lo que dura.
 const EFECTO_VERIFICADO_EN_LA_BASE = new Set([
   'sendMagicLink',    // la rotación del resume_token se comprueba leyendo enrEnrollmentGroups
 ])
