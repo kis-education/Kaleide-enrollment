@@ -386,6 +386,35 @@ const REINTENTOS = 2
 const RELECTURAS = 3          // relecturas del MISMO Location tras un fallo del echo
 const RELECTURA_ESPERA_MS = 1200
 
+/**
+ * ¿Es este cuerpo la COMPROBACIÓN DE SALUD del wizard en vez de la respuesta a la petición?
+ *
+ * MEDIDO el 2026-08-04, y con esto se acaba una incógnita que llevaba tres corridas: las
+ * respuestas «con `ok` falso y SIN error de ninguna forma» (`hydrateSession`,
+ * `fetchQuestions`, `warmBundle`, `warmSession`) traían de claves **`status,ts`** — que es
+ * exactamente, y solo, lo que devuelve el `doGet` del wizard
+ * (`origin/main:backend/Code.js:1583-1585`, `{status:'ok', ts:<iso>}`).
+ *
+ * O sea: el segundo tramo del doble salto de Apps Script degradó a un **GET normal de la
+ * aplicación web**, que ejecuta el `doGet`, en vez de reproducir el resultado del POST. Es
+ * la misma familia que el «`echo` de un solo uso» ya anotado — **transporte**, no producto.
+ *
+ * Por qué importa arreglarlo aquí: ese cuerpo ES JSON válido, así que el arnés lo daba por
+ * respuesta buena y se lo entregaba a la aplicación. El cliente leía `ok` como falso y
+ * pintaba *«Unknown server error»*, o rebotaba a la portada con un enlace bueno. **Un rojo
+ * inventado por el instrumento**, acusando al producto de algo que no hizo.
+ *
+ * El reconocimiento es ESTRECHO a propósito: exactamente dos claves, `status` y `ts`, y sin
+ * `ok`. Toda respuesta de verdad del wizard trae `ok`, así que esto no puede tragarse una.
+ */
+function esComprobacionDeSalud(texto) {
+  let o
+  try { o = JSON.parse(texto) } catch { return false }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return false
+  const claves = Object.keys(o)
+  return claves.length === 2 && claves.includes('status') && claves.includes('ts')
+}
+
 async function unSaltoDoble(payload) {
   const salto1 = await fetch(GAS_URL, {
     method: 'POST',
@@ -402,7 +431,11 @@ async function unSaltoDoble(payload) {
   let ultimo = ''
   for (let lectura = 1; lectura <= RELECTURAS; lectura++) {
     ultimo = await (await fetch(destino)).text()
-    try { JSON.parse(ultimo); return ultimo } catch { /* sigue */ }
+    // La comprobación de salud es JSON válido pero NO es la respuesta: se relee como si no
+    // se hubiera podido leer nada, que es lo que de verdad ha pasado.
+    if (!esComprobacionDeSalud(ultimo)) {
+      try { JSON.parse(ultimo); return ultimo } catch { /* sigue */ }
+    }
     if (CUOTA_RE.test(ultimo)) return ultimo          // la cuota no se releé: es respuesta
     if (lectura < RELECTURAS) await new Promise(r => setTimeout(r, RELECTURA_ESPERA_MS))
   }
@@ -423,7 +456,9 @@ async function reenviarAlBackendReal(payload, accion) {
     for (let intento = 0; intento <= (repetible ? REINTENTOS : 0); intento++) {
       texto = await unSaltoDoble(payload)
       if (CUOTA_RE.test(texto)) break                       // la cuota no se reintenta
-      try { JSON.parse(texto); break } catch { /* sigue */ }
+      if (!esComprobacionDeSalud(texto)) {
+        try { JSON.parse(texto); break } catch { /* sigue */ }
+      }
       ultimoFallo = texto.replace(/\s+/g, ' ').trim()
       if (!repetible) break
       if (intento < REINTENTOS) await new Promise(r => setTimeout(r, 1500))
@@ -432,6 +467,14 @@ async function reenviarAlBackendReal(payload, accion) {
     if (CUOTA_RE.test(texto)) {
       cuotaVista = cuotaDelCamino = texto.replace(/\s+/g, ' ').trim().slice(0, 240)
       return { ok: false, error: { code: 'E2E_CUOTA', message: cuotaVista } }
+    }
+    if (esComprobacionDeSalud(texto)) {
+      // El transporte contestó con la COMPROBACIÓN DE SALUD del wizard (`doGet`) en vez de
+      // con el resultado del POST. NO es una respuesta del servidor a esta petición: no se
+      // le entrega a la aplicación como si lo fuera (eso pintaba «Unknown server error» y
+      // echaba a la familia con un enlace bueno). Va al cubo de TRANSPORTE, que es lo que es.
+      return transporte('E2E_TRANSPORTE',
+        `el segundo tramo del salto devolvió la comprobación de salud del wizard (doGet: ${texto.replace(/\s+/g, ' ').trim().slice(0, 120)}) en vez del resultado del POST`)
     }
     try { return JSON.parse(texto) } catch {
       // El arnés NO PUDO LEER la respuesta (ni tras los reintentos, si los hubo). No se
