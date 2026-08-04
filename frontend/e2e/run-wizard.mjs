@@ -432,6 +432,23 @@ const EFECTO_VERIFICADO_EN_LA_BASE = new Set([
   'uploadDocument',   // documentos → sonda 6
   'saveNeae',         // NEAE, best-effort por diseño; no hay afirmación que dependa del acuse
   'warmBundle',       // precalentado best-effort: por definición no afirma nada
+  // ── El que ha matado d4, d5, d6 y d8, y NO es del arnés ──────────────────────────
+  // MEDIDO: `getLiveStateVersion` lo llama la APLICACIÓN, no el robot — `WizardPage.jsx:170`,
+  // dentro de un `setInterval(tick, 30 * 1000)` que corre mientras hay sesión abierta y la
+  // pestaña visible. El arnés no añade ni una llamada suya (en `mock-backend.mjs` solo está
+  // el simulacro). O sea: NO se puede quitar sin dejar de recorrer lo que recorre la familia.
+  //
+  // Entonces, ¿por qué mata él y no otros? Porque es EL MÁS FRECUENTE: un pulso cada 30 s
+  // durante todo el rato que la página está abierta. Con un transporte que falla del orden
+  // de la mitad de las veces, el que más tira es el que más cae. No es que esté roto: es
+  // que tiene más papeletas.
+  //
+  // Y perder su respuesta NO cuesta cobertura: es un contador de detección de cambio. Si se
+  // pierde un pulso, el siguiente (30 s después) lo recoge; y nada de lo que el robot
+  // AFIRMA depende de él — el estado del expediente se lee de la base con las sondas, no de
+  // este contador. Lo mismo vale para el detalle que dispara (`getAdmissionState`).
+  'getLiveStateVersion',
+  'getAdmissionState',
 ])
 // Acciones de ESTE recorrido cuyo acuse se perdió por transporte (para no contar como
 // fallo del producto el error de consola que el propio arnés provoca).
