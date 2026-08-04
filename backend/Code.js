@@ -3682,7 +3682,12 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
     documents = Object.values(fileById).map(f => ({
       document_id:   f.file_id,
       file_id:       f.file_id,
-      document_type: _docTypeFromRecType_(f.rec_type_code),
+      // `document_type` YA NO viaja (2026-08-04): era la lectura inversa de un mapa de
+      // tipos tasados escrito a mano, retirado con el respaldo `'OTHER'` que rompía la
+      // subida. El resumen del paso 7 ya prefería la descripción libre y cae solo al
+      // nombre del archivo cuando no la hay (`Step7Review.jsx:497-502`), que es lo
+      // correcto para un adjuntador genérico. El tipo real, si alguien lo necesita,
+      // sigue yendo abajo tal cual lo escribió el catálogo: `rec_type_code`.
       // WIZARD-DOCS: texto libre del adjuntador genérico (qué es el archivo). El
       // frontend lo muestra preferentemente sobre el label de tipo tasado.
       description:   f.description || '',
@@ -5077,36 +5082,33 @@ function saveResponses_(p) {
   return { saved: outResponses.length };
 }
 
-/**
- * Maps a wizard document_type to a canonical recTypes_T code.
- * The values on the right must exist in the tenant's recTypes_T catalog
- * (Capa 3, DL-R08). If a document_type is not mapped here it falls through
- * to 'OTHER' — operationally that means the file uploads successfully but
- * sorts to the catch-all bucket.
+/*
+ * ── EL TIPO DE DOCUMENTO LO PONE EL CATÁLOGO, NO EL CLIENTE (2026-08-04) ──────────────
+ *
+ * Aquí vivían `REC_TYPE_BY_DOCUMENT_TYPE` (seis tipos tasados escritos a mano) y su
+ * lectura inversa `_docTypeFromRecType_`. Los DOS quedan ELIMINADOS, y no por limpieza:
+ * el mapa era el defecto.
+ *
+ * Medido en la corrida del robot del 2026-08-04, desde el navegador:
+ *     ✗ el servidor RECHAZÓ uploadDocument — [INVALID_REC_TYPE]
+ *       El tipo de documento "OTHER" no está entre los que la familia puede aportar…
+ *       Permitidos: APPLICATION_DOCUMENTATION
+ * La pantalla dejaba adjuntar el archivo y dejaba avanzar; el servidor lo tiraba. Para la
+ * familia, un documento que cree haber entregado y que NO está.
+ *
+ * La causa exacta: desde WIZARD-DOCS (2026-06-13) el paso 6 es un **adjuntador genérico**
+ * —la familia describe en texto libre qué es cada archivo y NO elige tipo
+ * (`Step6Documents.jsx`, `gasCall('uploadDocument', …)` sin `document_type`)—, así que
+ * `document_type` llegaba SIEMPRE `undefined` y el respaldo `|| 'OTHER'` inventaba un
+ * código que **no existe en el catálogo del tenant**. Un respaldo escrito a mano no es una
+ * red: es una invención que el catálogo no tiene por qué respaldar.
+ *
+ * Ahora el wizard **no manda tipo**. Lo resuelve el KMS contra `recTypes_T`
+ * (`enr_wizardPersistUpload` → `rec_resolveInterestedPartyType_`, DL-R16): un solo tipo
+ * marcado como aportado por la familia ⇒ lo asigna el servidor; varios ⇒ error accionable
+ * que los NOMBRA; ninguno ⇒ error que dice qué configurar. En los tres casos el tipo sale
+ * del catálogo del tenant, y ninguno es un default silencioso.
  */
-const REC_TYPE_BY_DOCUMENT_TYPE = {
-  passport:              'ID_PASSPORT',
-  birth_cert:            'BIRTH_CERTIFICATE',
-  report_card:           'SCHOOL_REPORT',
-  medical_cert:          'MEDICAL_CERTIFICATE',
-  photo:                 'PHOTO_ID',
-  signed_consent_record: 'SIGNED_CONSENT',
-};
-
-/**
- * Inverse lookup of REC_TYPE_BY_DOCUMENT_TYPE — given a recTypes_T code,
- * returns the wizard's legacy document_type key (used by the Step6 UI to
- * key uploaded files by type). Returns 'other' for unmapped codes.
- * @param {string} recTypeCode
- * @returns {string}
- */
-function _docTypeFromRecType_(recTypeCode) {
-  const keys = Object.keys(REC_TYPE_BY_DOCUMENT_TYPE);
-  for (let i = 0; i < keys.length; i++) {
-    if (REC_TYPE_BY_DOCUMENT_TYPE[keys[i]] === recTypeCode) return keys[i];
-  }
-  return 'other';
-}
 
 /**
  * Accepts a base64-encoded file, saves to Drive, writes a recFiles row.
@@ -5114,8 +5116,9 @@ function _docTypeFromRecType_(recTypeCode) {
  * DL-R09 / DL-R13: documents now live in the rec* module (canonical):
  *   - recFiles row with status='ACTIVE', origin='WIZARD',
  *     origin_reference=enrollment_group_id (so submit can find pre-submit
- *     uploads of this session) and rec_type_code resolved from the wizard's
- *     legacy document_type.
+ *     uploads of this session). El `rec_type_code` NO lo pone el wizard: lo
+ *     resuelve el KMS contra el catálogo del tenant (DL-R16) — ver el bloque
+ *     «EL TIPO DE DOCUMENTO LO PONE EL CATÁLOGO» aquí arriba.
  *   - recScopes are NOT written here. The canonical scope_type for admissions
  *     ('enr_admission_school' per config/kis/recScopeTypes_T.json) targets
  *     enrEnrollments.enrollment_id, which does not exist pre-submit. Scopes
@@ -5130,7 +5133,7 @@ function _docTypeFromRecType_(recTypeCode) {
  * enrollment_id directly; in that case the primary scope is written immediately.
  *
  * @param {Object} p - { enrollment_id?|enrollment_group_id?|application_id?,
- *                       base64, mimeType, filename, document_type,
+ *                       base64, mimeType, filename, description?,
  *                       upload_idempotency_token? }
  * @returns {{ file_id: string, document_id: string }}
  *   (document_id is a legacy alias = file_id, kept for frontend compat)
@@ -5153,7 +5156,7 @@ function uploadDocument_(p) {
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const enrollmentId      = p.enrollment_id || null;
-  const { base64, mimeType, filename, document_type } = p;
+  const { base64, mimeType, filename } = p;
   if (!base64) throw new Error('Missing base64');
   // WIZARD-DOCS (2026-06-13): adjuntador genérico. La familia describe en texto
   // libre qué es cada archivo ("informe médico", "documento personal"…). No hay
@@ -5242,7 +5245,6 @@ function uploadDocument_(p) {
   const driveFileId   = file.getId();
   const fileId        = generateUuid_();
   const now           = new Date().toISOString();
-  const recTypeCode   = REC_TYPE_BY_DOCUMENT_TYPE[document_type] || 'OTHER';
 
   // ── recFiles row (DL-R09) — P1-A: metadata VERBATIM; la escribe el KMS ───────
   // El BLOB ya está en Drive (arriba, wizard-side con el scope drive); aquí solo se
@@ -5250,7 +5252,10 @@ function uploadDocument_(p) {
   const recFileRow = {
     file_id:                  fileId,
     school_id:                SCHOOL_ID,
-    rec_type_code:            recTypeCode,
+    // `rec_type_code` NO va: lo pone el KMS desde el catálogo del tenant
+    // (`enr_wizardPersistUpload` → `rec_resolveInterestedPartyType_`, DL-R16). Mandarlo
+    // desde aquí sería volver a decidir en el cliente lo que decide el catálogo — y eso
+    // es exactamente lo que rechazaba el servidor con [INVALID_REC_TYPE].
     drive_file_id:            driveFileId,
     drive_folder_id:          folder.getId(),
     file_name:                filename,
@@ -8767,7 +8772,7 @@ function manual_testUploadDocumentMimeGuard() {
   // Caso A — UNSUPPORTED_MIME
   try {
     uploadDocument_({ resume_token: RESUME_TOKEN, base64: b64('<html></html>'),
-      mimeType: 'text/html', filename: 'evil.html', document_type: 'passport' });
+      mimeType: 'text/html', filename: 'evil.html' });
     Logger.log('  ✗ FAIL Caso A: text/html ACEPTADO');
   } catch (e) {
     Logger.log((e.code === 'UNSUPPORTED_MIME' ? '  ✓ PASS' : '  ? UNEXPECTED') +
@@ -8777,7 +8782,7 @@ function manual_testUploadDocumentMimeGuard() {
   // Caso B — MIME_MAGIC_MISMATCH (declara PDF pero los bytes no empiezan por %PDF)
   try {
     uploadDocument_({ resume_token: RESUME_TOKEN, base64: b64('NOT-A-REAL-PDF-FILE'),
-      mimeType: 'application/pdf', filename: 'fake.pdf', document_type: 'passport' });
+      mimeType: 'application/pdf', filename: 'fake.pdf' });
     Logger.log('  ✗ FAIL Caso B: PDF con magic inválido ACEPTADO');
   } catch (e) {
     Logger.log((e.code === 'MIME_MAGIC_MISMATCH' ? '  ✓ PASS' : '  ? UNEXPECTED') +
@@ -8788,7 +8793,7 @@ function manual_testUploadDocumentMimeGuard() {
   try {
     const big = '%PDF-1.4\n' + new Array(11 * 1024 * 1024).join('A'); // ~11 MB
     uploadDocument_({ resume_token: RESUME_TOKEN, base64: b64(big),
-      mimeType: 'application/pdf', filename: 'huge.pdf', document_type: 'passport' });
+      mimeType: 'application/pdf', filename: 'huge.pdf' });
     Logger.log('  ✗ FAIL Caso C: PDF > 10 MB ACEPTADO');
   } catch (e) {
     Logger.log((e.code === 'FILE_TOO_LARGE' ? '  ✓ PASS' : '  ? UNEXPECTED') +
