@@ -343,26 +343,43 @@ let idaYVueltaMin = Infinity     // latencia REAL mínima observada (ms)
 const TRANSPORTE_ROTO_RE = /unable to open the file|Page Not Found|Moved Temporarily|<!DOCTYPE html|<HTML>/i
 let transporteDelCamino = null   // {accion, codigo, mensaje} del recorrido en curso
 
-// ── Reintento: SOLO acciones de LECTURA, y se re-hace la llamada ENTERA ───────
-// El `echo` de GAS es de UN SOLO USO. MEDIDO el 2026-08-04: se capturó un
-// `Location:` y se leyó tres veces —
-//     lectura 1 → {"ok":false,"error":"Unauthorized: resum…    (el JSON)
-//     lectura 2 → <HTML><HEAD><TITLE>Moved Temporarily…
-//     lectura 3 → <HTML><HEAD><TITLE>Moved Temporarily…
-// — así que releer el mismo `Location:` NO recupera nada: la única forma de volver
-// a tener respuesta es repetir el POST. Y repetir un POST **vuelve a ejecutar la
-// acción**: en `sendMagicLink` mandaría otro correo, rotaría otra vez el token y
-// gastaría otro punto del cupo — y de paso rompería la afirmación «sale UNA sola
-// petición de enlace», que es lo que este robot existe para vigilar.
+// ── Reintento de la LECTURA, que sirve TAMBIÉN para las escrituras ────────────
 //
-// Por eso el reintento va con LISTA BLANCA de acciones sin efecto: repetirlas no
-// cambia nada del sistema. Todo lo demás se reporta como transporte roto y punto.
-// Es deliberadamente corta; ampliarla exige demostrar que la acción no escribe.
+// ⚠️ CORRECCIÓN DE UNA MEDICIÓN ANTERIOR (2026-08-04). Aquí ponía que el `echo` es de
+// un solo uso y que releer el mismo `Location:` «NO recupera nada», así que el único
+// reintento posible era repetir el POST — y por eso quedaba vedado a las escrituras.
+// Esa medición existió, pero medía otra cosa: releía un `Location:` **ya consumido por
+// una lectura CON ÉXITO**. Claro que la segunda vez daba «Moved Temporarily»: el vale
+// ya se había gastado. **Lo que nunca se midió es el caso que importa** — releer un
+// `Location:` cuya PRIMERA lectura FALLÓ.
+//
+// Medido el 2026-08-04 contra el `/exec` real, 42 peticiones con una acción inexistente
+// (no escribe nada, mismo doble salto), en dos tandas de 12 y 30:
+//     primera lectura OK = 41   ·   FALLÓ = 1  («unable to open the file»)
+//     de la que falló: RECUPERA releyendo el MISMO Location = 1  (a la 1.ª relectura)
+// O sea: un fallo del `echo` **no consume el vale**. La respuesta sigue ahí y se puede
+// volver a pedir. La muestra es corta —un solo fallo— y por eso lo que se afirma es
+// exactamente eso y nada más: que releer tras un fallo RECUPERÓ, y que releer NO
+// re-ejecuta nada. Si un día no recuperase, el camino sigue cayendo en TRANSPORTE, que
+// es donde debe caer.
+//
+// Consecuencia, que es la que arregla el rojo: **el reintento va en la LECTURA, no en
+// el POST.** La acción se ejecutó UNA sola vez —el POST no se repite—, así que releer
+// es seguro para `sendMagicLink` igual que para `hydrateSession`: no manda otro correo,
+// no rota otro token, no gasta otro punto del cupo, y no rompe la afirmación «sale UNA
+// sola petición de enlace». Por eso ya no hace falta lista blanca alguna para recuperar
+// el caso normal.
+//
+// La lista blanca SOBREVIVE para el caso distinto y peor: cuando ni releyendo se
+// obtiene respuesta (o el POST mismo falla). Ahí sí hay que repetir la llamada entera, y
+// eso sigue vedado a todo lo que escriba.
 const ACCIONES_REPETIBLES = new Set([
   'hydrateSession',   // lectura: arma el estado de la sesión, no escribe
   'warmBundle',       // precalentado best-effort, idempotente por diseño
 ])
 const REINTENTOS = 2
+const RELECTURAS = 3          // relecturas del MISMO Location tras un fallo del echo
+const RELECTURA_ESPERA_MS = 1200
 
 async function unSaltoDoble(payload) {
   const salto1 = await fetch(GAS_URL, {
@@ -373,7 +390,18 @@ async function unSaltoDoble(payload) {
   })
   const destino = salto1.headers.get('location')
   // Sin redirección (algunos errores de Google contestan directos): se lee tal cual.
-  return destino ? (await fetch(destino)).text() : salto1.text()
+  if (!destino) return salto1.text()
+  // La respuesta se pide hasta `RELECTURAS` veces AL MISMO `Location:` — sin repetir el
+  // POST, así que la acción no se vuelve a ejecutar (ver el bloque de arriba). Se para en
+  // cuanto el cuerpo es JSON, que es la única señal de haber leído de verdad.
+  let ultimo = ''
+  for (let lectura = 1; lectura <= RELECTURAS; lectura++) {
+    ultimo = await (await fetch(destino)).text()
+    try { JSON.parse(ultimo); return ultimo } catch { /* sigue */ }
+    if (CUOTA_RE.test(ultimo)) return ultimo          // la cuota no se releé: es respuesta
+    if (lectura < RELECTURAS) await new Promise(r => setTimeout(r, RELECTURA_ESPERA_MS))
+  }
+  return ultimo
 }
 
 async function reenviarAlBackendReal(payload, accion) {
@@ -764,6 +792,32 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
   }
   c.notas.push(`✓ el enlace abre la sesión (aterrizaje en ${msEntrada} ms)`)
   return true
+}
+
+/**
+ * Drena la cola de trabajos del expediente hasta que no quede ninguno.
+ *
+ * El reparto es el de siempre: **el driver insiste** (Node, sin límite) y **el KMS hace
+ * turnos cortos** (Apps Script corta a los seis minutos). Se llama DOS veces en el
+ * recorrido —tras rellenar los pasos 2-6 y **tras admitir**— porque las dos cosas encolan
+ * trabajo. Ver el bloque 5.bis de `caminoExpedienteCompleto` para lo segundo, que es lo
+ * que tenía el paso 11 en rojo.
+ *
+ * @param {Camino} c
+ * @param {string} etiqueta — de qué drenaje se trata, para que la salida lo diga.
+ * @param {number} [turnos=4]
+ */
+function drenar(c, etiqueta, turnos = 4) {
+  let pendientes = -1
+  for (let intento = 1; intento <= turnos; intento++) {
+    const r = sonda('manual_robotDrenar', [EXPEDIENTE.gid, 120])
+    if (!r.ok) { c.fallos.push(`drenar la cola ${etiqueta} (intento ${intento}): ${r.error}`); return }
+    const s = r.resultado || {}
+    pendientes = Number(s.pendientes_n != null ? s.pendientes_n : (s.datos && s.datos.pendientes_n))
+    c.notas.push(`    · drenaje ${etiqueta} ${intento}: ${(s.datos && s.datos.estados) || '(sin trabajos)'} → pendientes=${pendientes}`)
+    if (pendientes === 0) return
+  }
+  c.fallos.push(`la cola no terminó ${etiqueta}: quedan ${pendientes} trabajo(s) del expediente sin completar tras ${turnos} turnos de drenaje — todo lo que se mida a continuación estaría a medio escribir`)
 }
 
 /** Ejecuta la sonda de lectura de vuelta de un paso y vuelca su veredicto en el camino. */
@@ -1238,18 +1292,7 @@ async function caminoExpedienteCompleto() {
 
   // 2 · Drenar hasta que no quede trabajo. El driver insiste; el KMS solo hace turnos
   //     cortos. Ése es el reparto que evita el corte de seis minutos de Apps Script.
-  let pendientes = -1
-  for (let intento = 1; intento <= 4; intento++) {
-    const r = sonda('manual_robotDrenar', [EXPEDIENTE.gid, 120])
-    if (!r.ok) { c.fallos.push(`drenar la cola (intento ${intento}): ${r.error}`); break }
-    const s = r.resultado || {}
-    pendientes = Number(s.pendientes_n != null ? s.pendientes_n : (s.datos && s.datos.pendientes_n))
-    c.notas.push(`    · drenaje ${intento}: ${(s.datos && s.datos.estados) || '(sin trabajos)'} → pendientes=${pendientes}`)
-    if (pendientes === 0) break
-  }
-  if (pendientes > 0) {
-    c.fallos.push(`la cola no terminó: quedan ${pendientes} trabajo(s) del expediente sin completar tras 4 turnos de drenaje — todo lo que se mida a continuación estaría a medio escribir`)
-  }
+  drenar(c, 'tras rellenar 2-6')
 
   // 3 · Leer de vuelta los pasos 2-6. Antes se re-pide el enlace: con las personas ya
   //     escritas existe la fila de `enrEmails` de la que sale el `?n=`, y a partir de aquí
@@ -1267,6 +1310,23 @@ async function caminoExpedienteCompleto() {
 
   // 5 · A `AD` con el motor real: lo que destapa los pasos 8-11.
   paso('manual_robotLlevarAEstado', 'admitir el expediente (motor de estados)', [EXPEDIENTE.gid, 'AD'])
+
+  // 5.bis · DRENAR OTRA VEZ, y no es cautela: es lo que hacía imposible el paso 11.
+  //
+  // MEDIDO el 2026-08-04. El expediente estaba en `AD` —los dos, comprobado con
+  // `manual_robotLlevarAEstado` sobre el grupo de la corrida anterior: `ya-en-AD | ya-en-AD`—
+  // y aun así `firma.sesiones_n = 0`. La causa NO era que no llegara a admitirse (eso se
+  // dio por hecho sin mirar): es que **admitir no abre la sesión de firma de forma
+  // síncrona**. Desde PERF-RSAD (2026-07-30, Diego), la transición **ENCOLA** la evaluación
+  // de las reglas del tenant en vez de correrla en línea —
+  // `kis-app/kms-server/sys/transition-engine.gs:307`, `sys_enqueueJob_(…,
+  // 'EVALUATE_TRANSITION_RULES', …)` — y de esa evaluación sale la acción `INITIATE_SIGNING`
+  // que crea la sesión (`sys/scheduled-rules.gs:4097`, vía `enr_initiateSigningSession`).
+  // Sin un turno de cola DESPUÉS de admitir, ese trabajo no lo corre nadie: el robot leía
+  // los pasos 8-11 sobre un expediente admitido cuyos efectos aún no habían ocurrido, y le
+  // echaba la culpa al producto. Lo mismo explicaba el borrador de suscripción ausente
+  // del paso 8.
+  drenar(c, 'tras admitir')
 
   // 6 · Leer de vuelta los pasos 8-11.
   leerDeVuelta(c, 'manual_robotSonda08Facturacion', 'paso 8 · facturación', 'pasarela')
