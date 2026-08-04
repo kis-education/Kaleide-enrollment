@@ -807,10 +807,17 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
  * @param {string} etiqueta — de qué drenaje se trata, para que la salida lo diga.
  * @param {number} [turnos=4]
  */
-function drenar(c, etiqueta, turnos = 8) {
+function drenar(c, etiqueta, turnos = 20) {
   let pendientes = -1
   for (let intento = 1; intento <= turnos; intento++) {
-    const r = sonda('manual_robotDrenar', [EXPEDIENTE.gid, 120])
+    // ── POR QUÉ 40 s y no 120 (MEDIDO el 2026-08-04) ────────────────────────────────
+    // El turno de 120 s se pasó del transporte: `curl: (28) Operation timed out after
+    // 360.000 ms`. El presupuesto solo se mira ENTRE trabajos, así que el tiempo real de
+    // una llamada es «presupuesto + lo que dure el trabajo que lo rebase», y los trabajos
+    // que genera la admisión (generar un PDF, tocar Drive) duran minutos. Con 40 s el
+    // margen hasta los 360 s del corte de Apps Script da para un trabajo largo entero.
+    // Turnos altos porque los lotes son pequeños: admitir dejó 16 trabajos en cola.
+    const r = sonda('manual_robotDrenar', [EXPEDIENTE.gid, 40])
     if (!r.ok) { c.fallos.push(`drenar la cola ${etiqueta} (intento ${intento}): ${r.error}`); return }
     const s = r.resultado || {}
     pendientes = Number(s.pendientes_n != null ? s.pendientes_n : (s.datos && s.datos.pendientes_n))
