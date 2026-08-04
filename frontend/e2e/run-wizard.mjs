@@ -868,7 +868,13 @@ function recuperarElEnlace(c, email) {
   EXPEDIENTE.listo = true
   DATOS.resumeToken = s.resume_token
   if (s.email_id) DATOS.emailId = s.email_id
-  c.notas.push(`✓ expediente dado de alta y localizado (${String(s.enrollment_group_id).slice(0, 8)}…, ${r.ms} ms)`)
+  // ── El identificador ENTERO y la hora, en la salida ─────────────────────────────
+  // El reset de la corrida siguiente BORRA este expediente. Si un rojo hay que cruzarlo
+  // después con la base, el registro es la única copia que queda — y con el id recortado a
+  // ocho caracteres no se puede consultar nada. Hoy se perdieron dos expedientes de un rojo
+  // de vínculos por exactamente esto: evidencia destruida por higiene.
+  console.log(`  … ${new Date().toISOString().slice(11, 19)}  EXPEDIENTE DE ESTA CORRIDA: ${s.enrollment_group_id}  (${DATOS.emailKnown})`)
+  c.notas.push(`✓ expediente dado de alta y localizado (${s.enrollment_group_id}, ${r.ms} ms)`)
   if (!s.email_id) {
     // No es una carencia: la fila de `enrEmails` de la que sale el `?n=` la escribe el paso
     // de PERSONAS, que todavía no ha corrido. Se anota, y el enlace se vuelve a pedir

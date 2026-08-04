@@ -29,6 +29,7 @@ export const FIXTURE = {
   guardian1Id:    'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa',
   guardian2Id:    'aaaaaaaa-2222-4222-8222-aaaaaaaaaaaa',
   applicantId:    'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb',
+  applicant2Id:   'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb',
   // El nombre que la batería localiza en el formulario y reescribe (marcador único).
   guardian1Name:  'RobotUnoE2E',
   applicantName:  'RobotHijoE2E',
@@ -73,10 +74,18 @@ const LOOKUPS = {
     designation:      'Admisión Curso 2026/27 (E2E)',
     period_starts_on: FIXTURE.startDateSep,
   }],
+  // ── LA FORMA ES LA DEL SERVIDOR DE VERDAD, no una inventada ─────────────────────
+  // Aquí ponía `{relation_type_id, designation}`. El KMS sirve `{id, label}` — lo arma el
+  // mapeo `lk()` de `kms-server/enr/wizard-gateway.gs:663-668` — y la pantalla lee `rt.id`
+  // y `rt.label` (`Step3Relations.jsx:235-236`). Con la forma vieja NINGUNA opción del
+  // desplegable tenía valor ⇒ no se podía elegir tipo ⇒ «Continuar» quedaba deshabilitado.
+  // Un banco de pruebas que sirve un contrato distinto del real no puede cazar nada: por
+  // eso la batería pasaba en verde con el paso 3 roto. Un simulado que miente es peor que
+  // no tenerlo.
   relationTypes: [
-    { relation_type_id: 'rt_mother', designation: 'Madre',   inverse_relation_type_id: 'rt_child' },
-    { relation_type_id: 'rt_father', designation: 'Padre',   inverse_relation_type_id: 'rt_child' },
-    { relation_type_id: 'rt_child',  designation: 'Hijo/a',  inverse_relation_type_id: 'rt_mother' },
+    { id: 'rt_mother', label: 'Madre',  inverse_relation_type_id: 'rt_child' },
+    { id: 'rt_father', label: 'Padre',  inverse_relation_type_id: 'rt_child' },
+    { id: 'rt_child',  label: 'Hijo/a', inverse_relation_type_id: 'rt_mother' },
   ],
   // Catálogo de salud CON contenido. Estaba vacío, y un catálogo vacío no es un motivo
   // válido para no cubrir un paso — la propia batería lo prohíbe con todas las letras
@@ -137,6 +146,12 @@ export function buildHydrate(stage) {
     guardian(FIXTURE.guardian1Id, FIXTURE.guardian1Name),
     guardian(FIXTURE.guardian2Id, 'RobotDosE2E'),
     applicant(FIXTURE.applicantId, FIXTURE.applicantName),
+    // DOS aplicantes, no uno. Con uno solo la pantalla pintaba sus dos tarjetas YA
+    // RELLENAS desde la hidratación ⇒ el paso salía LIMPIO, `isStepDirty` decía que no y
+    // NO se guardaba nada: el alta de vínculos no se ejercitaba jamás. La familia del
+    // robot contra el sistema real son 2 tutores y 2 hijos; el banco tiene que serlo
+    // también o mide otro caso.
+    applicant(FIXTURE.applicant2Id, 'RobotHijoDosE2E'),
   ];
   const relations = [
     { relation_id: 'r1', pair_id: 'p1', from_person_id: FIXTURE.guardian1Id, to_person_id: FIXTURE.applicantId,
