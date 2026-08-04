@@ -165,6 +165,11 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'paso 9 · consentimientos·consentimientos.por_tutor': 'el paso 9 aún no se recorre: depende de que el expediente esté admitido y el tramo de firma abierto.',
     'paso 10 · revisión·revision.confirmacion_de_lectura': 'el paso 10 aún no se recorre: depende de la admisión.',
     'paso 11 · firma·firma.preparacion': 'la sesión de firma la abre la admisión; sin expediente en AD no hay preparación que afirmar.',
+    // LA ÚNICA no-cobertura DELIBERADA de todo el recorrido, y la única que no se retira
+    // nunca: el acto de firmar sale a un tercero y es irreversible. El interruptor
+    // `CLICK_AND_SIGN_SUSPENDED_` está PROHIBIDO tocar. Se declara aquí porque la sonda del
+    // paso 11 solo llega a emitirla cuando la preparación SÍ ocurre — antes se cortaba antes.
+    'paso 11 · firma·firma.acto_consumado_click_and_sign': 'no se llama al proveedor Click & Sign: el interruptor CLICK_AND_SIGN_SUSPENDED_ está prohibido tocar y el acto es irreversible y sale a un tercero. Se cubre TODO lo anterior —sesión, firmantes, tokens y paquete— y se corta exactamente en el salto al proveedor.',
     'paso 3 · vínculos·vinculos.tipo_resuelve_en_catalogo': 'el catálogo de tipos de vínculo no se pudo leer con los nombres de tabla probados (sysRelationTypes / personRelationTypes). El vínculo CONCRETO y su custodia sí se afirman; lo que queda sin comprobar es que el identificador de tipo resuelva a una fila viva.',
   },
   'subir-documento': {
