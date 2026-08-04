@@ -1560,6 +1560,29 @@ const dondeEstoy = (page) => page.evaluate(sondaPasoActivo)
  */
 const traza = (txt) => console.log(`  … ${new Date().toISOString().slice(11, 19)}  ${txt}`)
 
+// ── PALANCA CERRADA POR MEDICIÓN: la pestaña en segundo plano NO se puede ─────────────
+//
+// La idea era buena y el número la justificaba: el wizard consulta un contador de cambio
+// cada 30 s mientras la pestaña está VISIBLE (`WizardPage.jsx:170` + `setInterval(tick,
+// 30 * 1000)`), así que un drenaje de cuatro minutos son OCHO pulsos que no cubren nada y
+// que, con un transporte que falla del orden de la mitad de las veces, son riesgo puro.
+// El propio wizard YA trae la regla que lo evitaría — `document.visibilityState ===
+// 'hidden'` → salta el tick — y nadie la había ejercitado nunca.
+//
+// Se intentó de la única forma honesta (abrir otra pestaña de verdad y traerla al frente,
+// que es lo que hace una persona) y SE MIDIÓ antes de darlo por bueno:
+//     antes              : visible
+//     con otra al frente : visible   ← no cambia
+//     al volver          : visible
+// En Chromium headless `bringToFront()` NO pone la primera pestaña en oculto. O sea: desde
+// el navegador no hay forma honesta de recorrer ese camino, y la alternativa —falsear
+// `visibilityState` desde dentro de la página— sería mentirle al producto para que se
+// comporte distinto, que es justo lo que no se hace aquí.
+//
+// Queda cerrado con su medición, no con una excusa. Si algún día la batería corre con
+// navegador visible, o Playwright expone la visibilidad, se reabre — y entonces se mide
+// otra vez antes de creerlo.
+
 /** Lo que el propio wizard dice cuando no deja avanzar (aviso sticky o inline). */
 const quejaDelWizard = (page) => page.evaluate(() => {
   const n = document.querySelector('[role="alert"], .field-error')
