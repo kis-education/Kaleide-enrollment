@@ -127,11 +127,21 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
     const aId = a.person_id || a._uid;
     return !relations.some(r =>
       r._kind === 'ga' &&
-      (r.applicant_person_id === aId || r.person_id_b === aId) &&
+      (r.applicant_person_id === aId || r.person_id_b === aId || r.to_person_id === aId) &&
       (r.is_custodial || r.is_pick_up_authorized)
     );
   });
-  const missingRelationType = relations.some(r => r._kind === 'ga' && !r.relation_type_id);
+  // TODO par necesita su tipo, no solo los tutor→hijo (2026-08-04). La asimetría anterior
+  // (`r._kind === 'ga'`) dejaba salir el par hermano↔hermano con el tipo VACÍO, y
+  // `sysPersonRelations.relation_type_id` es REQUERIDA (Ref) — medido contra AppSheet real:
+  // «Can't add or update a row because a required value is missing. Missing value in column:
+  // relation_type_id. Expected data type: Ref». El Add reventaba y **se perdía el paso
+  // entero, incluidos los cuatro vínculos buenos**.
+  // Se pide en vez de inventarlo: el desplegable del par de hermanos ya existe y sus opciones
+  // salen del catálogo que sirve el KMS (`relationTypes`), así que aquí no se escribe ni un
+  // código de dominio. No enviar el par sería la otra salida, y es peor: perdería en silencio
+  // una relación que la familia declaró.
+  const missingRelationType = relations.some(r => !r.relation_type_id);
   const validationOk = uncoveredApplicants.length === 0 && !missingRelationType;
 
   const handleNext = () => {
@@ -215,8 +225,15 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
         {/* Guardian → Applicant */}
         {gaRelations.map((rel, relIdx) => {
           const idx = relations.indexOf(rel);
-          const g = persons.find(p => (p.person_id || p._uid) === (rel.guardian_person_id || rel.person_id_a));
-          const a = persons.find(p => (p.person_id || p._uid) === (rel.applicant_person_id || rel.person_id_b));
+          // LOS TRES NOMBRES, o la tarjeta no se pinta (2026-08-04). `resumeSession_` estampa
+          // el alias `guardian_person_id` (backend/Code.js:3615) pero `hydrateSession_` —que
+          // es el camino VIVO— NO lo hace: sus filas traen `from_person_id`/`to_person_id` a
+          // secas. Sin este tercer nombre, `find` no encontraba a nadie y el `return null` de
+          // abajo **se comía todas las tarjetas tutor→hijo**: una familia que vuelve a su
+          // solicitud veía el paso sin tarjetas, sin sus casillas de custodia y sin salida
+          // (medido: 4 vínculos hidratados → 1 desplegable y 0 casillas en pantalla).
+          const g = persons.find(p => (p.person_id || p._uid) === (rel.person_id_a || rel.guardian_person_id || rel.from_person_id));
+          const a = persons.find(p => (p.person_id || p._uid) === (rel.person_id_b || rel.applicant_person_id || rel.to_person_id));
           if (!g || !a) return null;
           const gName = [g.first_name, g.last_name].filter(Boolean).join(' ') || t('guardian.title', { n: relIdx + 1 });
           const aName = [a.first_name, a.last_name].filter(Boolean).join(' ') || t('applicant.title', { n: relIdx + 1 });
@@ -269,8 +286,8 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
             <h6 className="mt-2 mb-2" style={{ color: 'var(--muted)' }}>{t('relation.between_applicants')}</h6>
             {aaRelations.map((rel, relIdx) => {
               const idx = relations.indexOf(rel);
-              const pA = persons.find(p => (p.person_id || p._uid) === rel.person_id_a);
-              const pB = persons.find(p => (p.person_id || p._uid) === rel.person_id_b);
+              const pA = persons.find(p => (p.person_id || p._uid) === (rel.person_id_a || rel.from_person_id));
+              const pB = persons.find(p => (p.person_id || p._uid) === (rel.person_id_b || rel.to_person_id));
               if (!pA || !pB) return null;
               const nameA = [pA.first_name, pA.last_name].filter(Boolean).join(' ') || t('applicant.unnamed');
               const nameB = [pB.first_name, pB.last_name].filter(Boolean).join(' ') || t('applicant.unnamed');
