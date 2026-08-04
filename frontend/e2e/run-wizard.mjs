@@ -325,8 +325,31 @@ let cuotaVista = null            // mensaje literal de Google, si la cuota se ag
 let cuotaDelCamino = null        // ídem, acotado al recorrido en curso
 let idaYVueltaMin = Infinity     // latencia REAL mínima observada (ms)
 
-async function reenviarAlBackendReal(payload) {
+// ── TRANSPORTE ROTO ≠ el sistema dijo que no ─────────────────────────────────
+// El doble salto de GAS falla a veces en el SEGUNDO tramo: el `/exec` ejecuta la
+// acción y devuelve su 302, pero el `echo` contesta la página de Drive «Sorry,
+// unable to open the file at this time» en vez del JSON. Reproducido a mano con
+// curl el 2026-08-04: 1 de cada 3 lecturas del mismo `Location:`.
+//
+// Antes eso se convertía en un `{ok:false}` que se le entregaba a la aplicación
+// como si fuese la RESPUESTA DEL SERVIDOR. La aplicación entonces se comportaba
+// distinto (no encadenaba `warmBundle`, pintaba otra cosa) y el robot le echaba
+// la culpa al producto: `la secuencia de llamadas es la misma en ambos casos` salió
+// ROJA porque el arnés no pudo LEER una respuesta, no porque el wizard ramificara.
+// Un rojo así es peor que no tener robot: acusa al inocente.
+//
+// Ahora se marca aparte, igual que la CUOTA: sigue sin ser verde (no se probó
+// nada), pero NO se atribuye al camino de inscripción.
+const TRANSPORTE_ROTO_RE = /unable to open the file|Page Not Found|Moved Temporarily|<!DOCTYPE html/i
+let transporteDelCamino = null   // {accion, codigo, mensaje} del recorrido en curso
+
+async function reenviarAlBackendReal(payload, accion) {
   const t0 = Date.now()
+  const transporte = (codigo, mensaje) => {
+    transporteDelCamino = transporteDelCamino ||
+      { accion: String(accion || '(sin acción)'), codigo, mensaje: String(mensaje).slice(0, 200) }
+    return { ok: false, error: { code: codigo, message: String(mensaje).slice(0, 240) } }
+  }
   try {
     const salto1 = await fetch(GAS_URL, {
       method: 'POST',
@@ -348,12 +371,14 @@ async function reenviarAlBackendReal(payload) {
       return { ok: false, error: { code: 'E2E_CUOTA', message: cuotaVista } }
     }
     try { return JSON.parse(texto) } catch {
-      // Google devolvió HTML (sesión, error de despliegue, página de consentimiento):
-      // se propaga el principio del cuerpo LITERAL, sin interpretarlo.
-      return { ok: false, error: { code: 'E2E_NO_JSON', message: texto.replace(/\s+/g, ' ').trim().slice(0, 240) } }
+      // Google devolvió HTML (el `echo` que no abre, error de despliegue, consentimiento):
+      // el arnés NO PUDO LEER la respuesta. No se sabe qué hizo el servidor, así que no se
+      // afirma nada sobre él — se marca como transporte roto con el cuerpo LITERAL.
+      const cuerpo = texto.replace(/\s+/g, ' ').trim()
+      return transporte(TRANSPORTE_ROTO_RE.test(cuerpo) ? 'E2E_TRANSPORTE' : 'E2E_NO_JSON', cuerpo)
     }
   } catch (e) {
-    return { ok: false, error: { code: 'E2E_RED', message: String((e && e.message) || e).slice(0, 240) } }
+    return transporte('E2E_RED', String((e && e.message) || e))
   }
 }
 
@@ -370,8 +395,13 @@ function startServer() {
           res.end(JSON.stringify(out))
         }
         if (REAL) {
-          record({ action: payload && payload.action, payload })
-          return responder(await reenviarAlBackendReal(payload))
+          const accion = payload && payload.action
+          const out = await reenviarAlBackendReal(payload, accion)
+          // Se registra TAMBIÉN lo que contestó el servidor. Antes solo se guardaba la
+          // pregunta, y un rojo obligaba a repetir la corrida entera para saber la
+          // respuesta — que es justo lo que la casa prohíbe. Sin PII: `ok` y el código.
+          record({ action: accion, payload, respuesta: { ok: !!(out && out.ok), codigo: (out && out.error && out.error.code) || null } })
+          return responder(out)
         }
         const out = dispatch(payload)
         // Latencia simulada: sin ella no se puede distinguir un avance optimista
@@ -414,6 +444,15 @@ const CONSOLA_PERMITIDA = [
   /ERR_BLOCKED_BY_CLIENT/i,
   /ERR_CONNECTION_REFUSED/i,
 ]
+
+// ⚠️ `page.waitForFunction(fn, ARG, OPCIONES)` — el segundo parámetro posicional es el
+// ARGUMENTO de la función, NO las opciones. Escribir `waitForFunction(fn, { timeout: X })`
+// NO da error: pasa `{timeout:X}` como argumento a la página y aplica el tiempo de espera
+// POR DEFECTO de Playwright, 30 s. Aquí lo hacían LOS CINCO call-sites, y se pagó caro:
+// `recuperar-aterrizar` y `tramo-firma` cayeron con «no pintó el stepper en 30006 ms» /
+// «30005 ms» —el 30 exacto delata el defecto— mientras el fichero decía esperar 180 s.
+// Cuando falla una espera, mirar PRIMERO si el número es sospechosamente 30.000.
+// Siempre: `waitForFunction(fn, null, { timeout })`.
 
 // ── 4 · Sondas observables (sin `eval`: la CSP del wizard prohíbe unsafe-eval) ─
 
@@ -488,7 +527,7 @@ async function medirEnPagina(page, cond, hacerClick) {
     const handle = await page.waitForFunction(() => {
       const s = window.__e2eFb
       return (s && s.at != null && s.clickAt != null) ? { ms: s.at - s.clickAt } : false
-    }, { timeout: LATENCY + 5000 })
+    }, null, { timeout: LATENCY + 5000 })
     const { ms } = await handle.jsonValue()
     return Math.round(ms)
   } catch { return -1 }
@@ -682,7 +721,7 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
     if (/resume_error=1/.test(window.location.hash + window.location.search)) return 'rechazado'
     const pasos = document.querySelectorAll('.wizard-step')
     return (pasos.length && [...pasos].some(p => p.classList.contains('active'))) ? 'abierto' : false
-  }, { timeout: REAL ? 180000 : LATENCY * 3 + 15000 })
+  }, null, { timeout: REAL ? 180000 : LATENCY * 3 + 15000 })
     .then(h => h.jsonValue())
     .catch(() => 'sin-desenlace')
   const msEntrada = Date.now() - tEntrada
@@ -756,7 +795,7 @@ async function rellenarPortada(page, base, email) {
   // Se espera por PRESENCIA en el DOM, no por visibilidad: el sandbox bloquea la
   // fuente de iconos y el <i> queda con tamaño cero (invisible para Playwright)
   // aunque la pantalla esté perfectamente pintada.
-  await page.waitForFunction(() => !!document.querySelector('.bi-envelope-check'), { timeout: 10000 })
+  await page.waitForFunction(() => !!document.querySelector('.bi-envelope-check'), null, { timeout: 10000 })
   // Deja respirar a las llamadas de FONDO antes de irse de la página (ver
   // `esperarSilencioDeRed`). Con backend simulado la latencia la ponemos nosotros y
   // basta el reloj; contra el sistema real el tiempo lo decide Google, así que se
@@ -951,7 +990,7 @@ async function caminoGuardarPaso(page, base) {
       await page.waitForFunction(() => {
         const pasos = [...document.querySelectorAll('.wizard-step')]
         return pasos.findIndex(p => p.classList.contains('active')) === 0
-      }, { timeout: 15000 })
+      }, null, { timeout: 15000 })
     } catch {
       c.fallos.push('al pulsar «Atrás» el wizard no volvió al paso de la fecha (índice 0)')
       return c
@@ -1025,7 +1064,7 @@ async function caminoGuardarPaso(page, base) {
     await page.waitForFunction(() => {
       const pasos = [...document.querySelectorAll('.wizard-step')]
       return pasos.findIndex(p => p.classList.contains('active')) === 0
-    }, { timeout: 10000 })
+    }, null, { timeout: 10000 })
     // Al volver, el paso queda protegido (banner + "Editar"): el valor debe seguir
     // visible aunque el campo esté bloqueado.
     const valor = await page.evaluate(() => {
@@ -1316,6 +1355,7 @@ async function main() {
     calls = []
     unmockedActions = new Set()
     cuotaDelCamino = null
+    transporteDelCamino = null
     let c
     try {
       c = await def.fn(page, base)
@@ -1356,12 +1396,22 @@ async function main() {
     // eso NO es un defecto del camino de inscripción. Se marca aparte para no
     // atribuir al producto un rojo que es de la cuota. Sigue sin ser verde.
     c.cuota = cuotaDelCamino
+    // TRANSPORTE: el arnés no pudo LEER una respuesta. No se sabe qué hizo el servidor,
+    // así que nada de lo que este recorrido observó después es atribuible al producto.
+    c.transporte = transporteDelCamino
     resultados.push(c)
 
-    const flag = c.cuota ? '⚠' : (c.fallos.length ? '✗' : '✓')
+    const flag = (c.cuota || c.transporte) ? '⚠' : (c.fallos.length ? '✗' : '✓')
     console.log(`  ${flag} ${c.nombre}  (${totalLlamadas} llamadas, ${c.evidencia.elementos || 0} elementos)`)
     if (c.cuota) console.log(`      ⚠ CUOTA de Google (NO es defecto del camino): ${c.cuota}`)
+    if (c.transporte) console.log(`      ⚠ TRANSPORTE del arnés roto (NO es defecto del camino): la respuesta de «${c.transporte.accion}» no se pudo leer [${c.transporte.codigo}] — ${c.transporte.mensaje}`)
     for (const n of c.notas)  console.log(`      ${n}`)
+    // Toda respuesta que NO vino en verde se imprime, aunque el camino haya salido bien:
+    // es la evidencia que convierte un rojo en diagnosticable sin repetir la corrida.
+    const negativas = calls.filter(x => x.respuesta && !x.respuesta.ok)
+    for (const x of negativas) {
+      console.log(`      ↩ el servidor contestó ok=false a «${x.action}»${x.respuesta.codigo ? ` [${x.respuesta.codigo}]` : ' (sin código de error)'}`)
+    }
     for (const f of c.fallos) console.log(`      ✗ ${f}`)
     for (const nc of c.noCubiertas) console.log(`      · NO CUBIERTA «${nc.etiqueta}»: ${nc.motivo}`)
 
@@ -1372,12 +1422,14 @@ async function main() {
   server.close()
 
   // ── Resumen ────────────────────────────────────────────────────────────────
-  const conCuota = resultados.filter(r => r.cuota)
-  const conFallo = resultados.filter(r => r.fallos.length && !r.cuota)
+  const conCuota      = resultados.filter(r => r.cuota)
+  const conTransporte = resultados.filter(r => r.transporte && !r.cuota)
+  const conFallo      = resultados.filter(r => r.fallos.length && !r.cuota && !r.transporte)
   console.log(`\n  caminos ejecutados:  ${resultados.length} de ${seleccionados.length}`)
   console.log(`  caminos en verde:    ${resultados.filter(r => !r.fallos.length && !r.cuota).length}`)
   console.log(`  caminos en rojo:     ${conFallo.length}`)
   if (conCuota.length) console.log(`  caminos por CUOTA:   ${conCuota.length}  (no son defecto del camino de inscripción)`)
+  if (conTransporte.length) console.log(`  caminos por TRANSPORTE: ${conTransporte.length}  (el arnés no pudo leer la respuesta; no son defecto del camino)`)
   if (REAL) console.log(`  latencia real mín.:  ${idaYVueltaMin === Infinity ? 'n/d' : idaYVueltaMin + ' ms'}`)
 
   // Cobertura: lo no ejecutado exige motivo declarado; la lista no puede envejecer.
@@ -1411,6 +1463,13 @@ async function main() {
   // camino de inscripción — y atribuirlo mal cuesta un ciclo entero de diagnóstico.
   if (conCuota.length) {
     printVerdict(false, `CUOTA de Google agotada en ${conCuota.length} camino(s) (${conCuota.map(r => r.nombre).join(', ')}) — NO es un defecto del camino de inscripción; reintentar cuando el cupo se reponga. Mensaje literal: ${conCuota[0].cuota}`)
+    process.exit(1)
+  }
+  // TRANSPORTE antes que el rojo de producto, por el mismo motivo que la CUOTA: si el
+  // arnés no pudo leer la respuesta, lo que el recorrido «observó» después no acusa a nadie.
+  if (conTransporte.length) {
+    const t = conTransporte[0].transporte
+    printVerdict(false, `TRANSPORTE del arnés roto en ${conTransporte.length} camino(s) (${conTransporte.map(r => r.nombre).join(', ')}) — el doble salto de GAS no devolvió JSON al leer la respuesta de «${t.accion}» [${t.codigo}], así que NO se sabe qué hizo el servidor y NO es un defecto del camino de inscripción. Mensaje literal: ${t.mensaje}`)
     process.exit(1)
   }
   if (conFallo.length) {
