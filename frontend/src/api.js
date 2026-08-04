@@ -269,7 +269,32 @@ export function readQuestionsCacheSync(lang) {
   return persisted ? persisted.data : null;
 }
 
+/**
+ * UN CATÁLOGO VACÍO NO SE GUARDA COMO BUENO (2026-08-04).
+ *
+ * El cuestionario se apagaba entero, en silencio y durante media hora, por esta cadena:
+ * el servidor convertía cualquier fallo en `{sets:[]}` → la hidratación lo sembraba aquí
+ * como catálogo bueno → `fetchQuestions` cortocircuitaba contra esa caché y NO volvía a
+ * salir a red en toda la ventana de revalidación (30 min) → ni recargar lo arreglaba, y
+ * «Continuar» guardaba vacío sin decirle nada a la familia.
+ *
+ * La raíz era que un vacío podía significar dos cosas incompatibles («falló» / «este
+ * colegio no tiene preguntas») y el código no podía distinguirlas. El servidor ya no las
+ * confunde (retira la clave cuando falla, en vez de mandar vacío); aquí ponemos la otra
+ * mitad: **el vacío nunca se CACHEA**. Si el catálogo llega vacío se sirve igual —una
+ * escuela puede no tener preguntas— pero no se guarda, así que la siguiente vez se vuelve
+ * a preguntar. Coste: una llamada de más en el caso raro de catálogo legítimamente vacío.
+ * A cambio, ningún fallo se queda pegado.
+ *
+ * MEDIDO contra el sistema real (2026-08-04, `fetchQuestions` sobre el despliegue vivo):
+ * 6 conjuntos / 53 preguntas ⇒ hoy un `{sets:[]}` de este tenant SOLO puede ser un fallo.
+ */
+function _catalogoUtilizable(data) {
+  return !!(data && typeof data === 'object' && Array.isArray(data.sets) && data.sets.length > 0);
+}
+
 function _persistQuestions(key, data) {
+  if (!_catalogoUtilizable(data)) return;   // ver _catalogoUtilizable: el vacío no se cachea
   _questionsCache[key] = data;
   try {
     sessionStorage.setItem(QCACHE_PREFIX + key, JSON.stringify({ data, expiresAt: Date.now() + QCACHE_TTL_MS }));
@@ -312,7 +337,9 @@ export function purgeQuestionsCache() {
  * @param {Object} data — catálogo { sets:[…] }
  */
 export function primeQuestions(lang, data) {
-  if (!data || typeof data !== 'object') return;
+  // `typeof data === 'object'` dejaba pasar `{sets:[]}` como catálogo bueno: era el
+  // primer eslabón del apagón silencioso del cuestionario. Ver `_catalogoUtilizable`.
+  if (!_catalogoUtilizable(data)) return;
   const key = lang || 'es';
   _persistQuestions(key, data);
 }

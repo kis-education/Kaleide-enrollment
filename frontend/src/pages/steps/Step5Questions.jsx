@@ -18,6 +18,12 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
   const _cached = readQuestionsCacheSync(i18n.language);
   const [sets,     setSets]     = useState(_cached?.sets || []);
   const [loading,  setLoading]  = useState(!_cached);
+  // «NO HAY PREGUNTAS» Y «NO SE PUDO CARGAR» NO SON LO MISMO (2026-08-04). El `.catch`
+  // dejaba `sets` vacío y la pantalla pintaba «No se encontraron preguntas»: al fallar el
+  // catálogo se le decía a la familia una cosa FALSA, y «Continuar» guardaba vacío tan
+  // ancho. Ahora el fallo se nombra, no deja avanzar, y ofrece reintentar.
+  const [catalogoFallo, setCatalogoFallo] = useState(false);
+  const [intento,       setIntento]       = useState(0);
   // stepData.questions is normalized to a dict by hydrateFromResume; fall back to {}
   // (never to [] — the dirty check compares against the dict shape).
   const [responses, setResponses] = useState(
@@ -37,11 +43,13 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
     if (cached) { setSets(cached.sets || []); setLoading(false); }
     else { setLoading(true); }
     fetchQuestions(i18n.language)
-      .then(data => { if (alive) setSets(data.sets || []); })
-      .catch(() => { if (alive && !cached) setSets([]); })
+      .then(data => { if (alive) { setSets(data.sets || []); setCatalogoFallo(false); } })
+      // Con catálogo cacheado delante, una revalidación fallida no es un problema para la
+      // familia (sigue viendo sus preguntas). SIN catálogo, sí lo es: se dice.
+      .catch(() => { if (alive && !cached) { setSets([]); setCatalogoFallo(true); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [i18n.language]); // eslint-disable-line
+  }, [i18n.language, intento]); // eslint-disable-line
 
   // ── DBG-SESSION (bug 2): qué llega al render. audience_category_id + has_q por
   // pregunta + nº de hijos/tutores + claves de respuesta (prefijos 8 chars) son
@@ -126,6 +134,9 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
   // When there are no questions, Continue persists an empty dict and advances.
   const handleContinueEmpty = () => { updateStep('questions', {}); onNext('questions', {}); };
   const nextHandler = sets.length ? handleNext : handleContinueEmpty;
+  // Con el catálogo caído NO se avanza: avanzar guardaría un cuestionario vacío como si
+  // la familia lo hubiera dejado en blanco a propósito. Ése era el daño real del defecto.
+  const avanceBloqueado = loading || catalogoFallo;
 
   // Mejora 3a: la CABECERA se pinta SIEMPRE (incluso durante la carga); el spinner
   // vive SOLO en el área de contenido — la página ya no parece vacía/rota al esperar.
@@ -136,12 +147,22 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
         <p style={{ color: 'var(--muted)' }}>{t('step5.subtitle')}</p>
       </div>
 
-      <StepNav position="top" onBack={handleBack} onNext={nextHandler} savePending={savePending} nextDisabled={loading} />
+      <StepNav position="top" onBack={handleBack} onNext={nextHandler} savePending={savePending} nextDisabled={avanceBloqueado} />
 
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
       {loading ? (
         <StepSkeleton rows={5} />
+      ) : catalogoFallo ? (
+        <div className="kis-card" role="alert" data-e2e="catalogo-caido">
+          <p style={{ color: 'var(--danger, #c92a2a)', fontWeight: 600, marginBottom: '.5rem' }}>
+            {t('step5.catalog_failed')}
+          </p>
+          <button type="button" className="btn-primary-kis" data-e2e="catalogo-reintentar"
+            onClick={() => { setLoading(true); setIntento(n => n + 1); }}>
+            {t('step5.catalog_retry')}
+          </button>
+        </div>
       ) : !sets.length ? (
         <div className="kis-card">
           <p style={{ color: 'var(--muted)' }}>{t('step5.no_questions')}</p>
@@ -163,7 +184,7 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
         </div>
       )}
 
-      <StepNav onBack={handleBack} onNext={nextHandler} savePending={savePending} nextDisabled={loading} />
+      <StepNav onBack={handleBack} onNext={nextHandler} savePending={savePending} nextDisabled={avanceBloqueado} />
     </>
   );
 }

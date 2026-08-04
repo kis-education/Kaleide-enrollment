@@ -105,6 +105,8 @@
   "relType.other": "Other",
   "step5.subtitle": "Please answer the following questions.",
   "step5.no_questions": "No questions found for this context.",
+  "step5.catalog_failed": "We couldn't load the questionnaire. It isn't that there are no questions: it didn't reach us. Please try again — don't continue yet, or it would be saved blank.",
+  "step5.catalog_retry": "Try again",
   "step6.subtitle": "Optionally attach any files you'd like to include (medical reports, ID, school transcripts…). Describe each one. PDF, JPG, and PNG accepted (max 10 MB).",
   "step7.subtitle": "Summary of your application.",
   "step7.submitted_title": "Application Submitted",

@@ -105,6 +105,8 @@
   "relType.other": "Otro/a",
   "step5.subtitle": "Por favor, responde las siguientes preguntas.",
   "step5.no_questions": "No se encontraron preguntas para este contexto.",
+  "step5.catalog_failed": "No hemos podido cargar el cuestionario. No es que no haya preguntas: no nos ha llegado. Vuelve a intentarlo — no continúes todavía, o se guardaría en blanco.",
+  "step5.catalog_retry": "Volver a intentarlo",
   "step6.subtitle": "Adjunta opcionalmente los archivos que quieras incluir (informes médicos, DNI, boletines de notas…). Describe cada uno. Se aceptan PDF, JPG y PNG (máx. 10 MB).",
   "step7.subtitle": "Resumen de tu solicitud.",
   "step7.submitted_title": "Solicitud enviada",

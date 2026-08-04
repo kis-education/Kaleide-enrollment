@@ -329,7 +329,7 @@ const record = (c) => { calls.push({ ...c, at: Date.now() }) }
 record.unmocked = (a) => { unmockedActions.add(String(a)) }
 
 // Escenario MUTABLE que los caminos reconfiguran antes de navegar.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok' }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -2326,6 +2326,108 @@ async function caminoSaludDesdeLaPantalla(page, base) {
   return c
 }
 
+/**
+ * EL CUESTIONARIO NO SE APAGA EN SILENCIO — defecto 3 de la definición de hecho.
+ *
+ * Lo que rompía a la familia: el servidor convertía CUALQUIER fallo del catálogo en
+ * `{sets:[]}`; el cliente lo sembraba como catálogo bueno y lo servía de su caché 30 min
+ * sin volver a salir a red; la pantalla decía «No se encontraron preguntas» —una cosa
+ * FALSA— y «Continuar» guardaba un cuestionario vacío. Ni recargar lo arreglaba.
+ *
+ * Este camino recorre las tres afirmaciones, en la pantalla:
+ *   (a) con el servidor sano, el paso 5 PINTA preguntas de verdad;
+ *   (b) con el catálogo caído, la familia ve un fallo NOMBRADO (no «no hay preguntas»)
+ *       y NO puede avanzar (avanzar guardaría en blanco);
+ *   (c) el fallo NO SE PEGA: en cuanto el servidor vuelve, «Volver a intentarlo» pinta
+ *       las preguntas — sin esperar la ventana de revalidación de 30 minutos.
+ */
+async function caminoCuestionarioNoSeApaga(page, base) {
+  const c = new Camino('cuestionario-no-se-apaga')
+  scenario.stage = 'hasta_preguntas'
+  scenario.preguntasMode = 'ok'
+  // El fallo del catálogo se PROVOCA aquí: que quede registrado en consola es lo correcto
+  // (antes se tragaba en silencio). Se declara para que no cuente como ruido, y la batería
+  // exige que haya ocurrido de verdad — si no ocurre, este camino no midió nada.
+  c.esperarErrorConsola(/gasCall fetchQuestions: server returned ok=false/,
+    'el catálogo se tumba a propósito para comprobar que la familia se entera')
+
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  if (!await irAPreguntas(c, page)) return c
+
+  await page.waitForTimeout(LATENCY + 600)
+  let vista = await page.evaluate(sondaPreguntas)
+  c.evidencia.elementos = vista.campos + vista.tarjetas
+  c.afirmar('(a) con el servidor sano el cuestionario PINTA preguntas',
+    vista.preguntas >= 1,
+    `el paso 5 pintó ${vista.preguntas} preguntas: con catálogo servido, cero preguntas es el apagón`)
+
+  // ── Servidor caído + sesión nueva: es como llega una familia cuyo servidor falla.
+  scenario.preguntasMode = 'caido'
+  // Sesión LIMPIA de verdad: borrar los almacenes NO basta —la caché de MÓDULO de
+  // `api.js` vive en el contexto de JavaScript de la página y sobrevive a un cambio de
+  // hash—. `about:blank` tira ese contexto, que es lo que hace una familia que abre el
+  // enlace en un navegador nuevo mientras el servidor está caído.
+  await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+  await page.goto('about:blank')
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  if (!await irAPreguntas(c, page)) return c
+  await page.waitForTimeout(LATENCY + 900)
+
+  vista = await page.evaluate(sondaPreguntas)
+  c.afirmar('(b.1) un catálogo caído se NOMBRA como fallo, no como «no hay preguntas»',
+    vista.avisoCaido && !vista.diceNoHayPreguntas,
+    `aviso de fallo=${vista.avisoCaido} · dice «no hay preguntas»=${vista.diceNoHayPreguntas}: ` +
+    'la familia se creería que este colegio no pregunta nada')
+  c.afirmar('(b.2) con el catálogo caído NO se puede avanzar',
+    vista.continuarDeshabilitado,
+    'el botón «Continuar» estaba pulsable: avanzar guardaría el cuestionario en blanco')
+
+  // ── (c) el fallo NO se queda pegado: vuelve el servidor y se reintenta.
+  scenario.preguntasMode = 'ok'
+  const reintentar = await page.$('[data-e2e="catalogo-reintentar"]')
+  if (!c.afirmar('(c.1) la pantalla ofrece reintentar', !!reintentar,
+    'sin botón de reintento la familia solo puede recargar — y con la caché envenenada eso no servía de nada')) return c
+  await reintentar.click()
+  await page.waitForTimeout(LATENCY + 900)
+  vista = await page.evaluate(sondaPreguntas)
+  c.afirmar('(c.2) el fallo NO se pega: al volver el servidor, el cuestionario aparece',
+    vista.preguntas >= 1 && !vista.avisoCaido,
+    `tras reintentar: preguntas=${vista.preguntas} aviso=${vista.avisoCaido}. ` +
+    'Éste es el corazón del defecto: un vacío cacheado apagaba el paso durante 30 minutos')
+  return c
+}
+
+/** Sonda del paso 5. Distingue las tres pantallas posibles: preguntas / vacío / fallo. */
+const sondaPreguntas = () => {
+  const txt = (document.body.textContent || '').replace(/\s+/g, ' ')
+  const continuar = [...document.querySelectorAll('button.btn-primary-kis')]
+    .filter(b => !b.hasAttribute('data-e2e'))
+  return {
+    preguntas:  document.querySelectorAll('.qb-question, [data-qb-question]').length ||
+                document.querySelectorAll('.form-label').length,
+    campos:     document.querySelectorAll('input, select, textarea').length,
+    tarjetas:   document.querySelectorAll('.kis-card').length,
+    avisoCaido: !!document.querySelector('[data-e2e="catalogo-caido"]'),
+    diceNoHayPreguntas: /No se encontraron preguntas|No questions found/.test(txt),
+    continuarDeshabilitado: continuar.length > 0 && continuar.every(b => b.disabled),
+  }
+}
+
+/** Lleva la pantalla al paso 5 (Preguntas, índice 4) desde donde esté, con «Atrás». */
+async function irAPreguntas(c, page) {
+  for (let i = 0; i < 8 && (await dondeEstoy(page)) > 4; i++) {
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!atras) break
+    await atras.click()
+    await page.waitForTimeout(250)
+  }
+  const donde = await dondeEstoy(page)
+  if (!c.afirmar('se llega al paso de Preguntas', donde === 4,
+    `se quedó en el índice ${donde}`)) return false
+  await desbloquear(page)
+  return true
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -2340,6 +2442,9 @@ const CAMINOS = [
   // gastar una corrida de 35 min, si el `0 de 1` de la salud contra el sistema real era
   // del producto o del conductor. Se queda: era cobertura que faltaba.
   { nombre: 'salud-desde-la-pantalla', fn: caminoSaludDesdeLaPantalla, minLlamadas: 1, minElementos: 11 },
+  // Defecto 3 de la definición de hecho: el cuestionario se apagaba entero, en silencio
+  // y durante media hora, por un fallo pasajero del servidor. Ver el camino.
+  { nombre: 'cuestionario-no-se-apaga', fn: caminoCuestionarioNoSeApaga, minLlamadas: 1, minElementos: 2 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

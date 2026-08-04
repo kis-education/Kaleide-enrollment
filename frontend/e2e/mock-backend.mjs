@@ -108,13 +108,57 @@ const LOOKUPS = {
 };
 
 /**
+ * CATÁLOGO DE PREGUNTAS — real, no vacío. Hasta el 2026-08-04 este banco servía
+ * `{ sets: [] }` en la hidratación Y en `fetchQuestions`: es decir, simulaba
+ * PERMANENTEMENTE el estado que rompía a la familia (cuestionario apagado) y la batería
+ * salía verde igual, porque nadie afirmaba nada sobre el paso 5. Ahora el banco sirve un
+ * catálogo de verdad y el fallo se pide EXPLÍCITAMENTE con `scenario.preguntasMode`.
+ *
+ * Forma: la que emite `fetchQuestions_adaptKmsResponse_` del backend real.
+ */
+const QUESTIONS = {
+  context: { context_id: 'ctx-e2e', context_code: 'ENROLLMENT', designation: 'ENROLLMENT', is_active: true },
+  sets: [{
+    set_id: 'set-e2e-1',
+    set_code: 'E2E_BASICO',
+    context_id: 'ctx-e2e',
+    designation: 'Preguntas del robot',
+    description: '',
+    is_active: true,
+    is_default_for_context: true,
+    items: [
+      {
+        set_id: 'set-e2e-1', question_id: 'q-e2e-1', display_order: 0,
+        question: {
+          question_id: 'q-e2e-1', question_code: 'e2e_texto',
+          response_type_id: 'TEXT', response_type_code: 'TEXT',
+          is_required: false, audience_category_id: null,
+          question_text: 'Cuenta algo del robot', help_text: '', placeholder_text: '',
+          options: [], conditions: [],
+        },
+      },
+      {
+        set_id: 'set-e2e-1', question_id: 'q-e2e-2', display_order: 1,
+        question: {
+          question_id: 'q-e2e-2', question_code: 'e2e_texto_2',
+          response_type_id: 'TEXT', response_type_code: 'TEXT',
+          is_required: false, audience_category_id: null,
+          question_text: 'Y otra cosa más', help_text: '', placeholder_text: '',
+          options: [], conditions: [],
+        },
+      },
+    ],
+  }],
+};
+
+/**
  * Construye la respuesta de `hydrateSession` para una ETAPA del expediente.
  * La etapa decide qué datos trae → y por tanto en qué paso aterriza el wizard
  * (WizardContext.hydrateFromResume infiere `completedSteps` de los datos).
  *
  * @param {'sin_fecha'|'hasta_preguntas'|'firma'} stage
  */
-export function buildHydrate(stage) {
+export function buildHydrate(stage, preguntasMode) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -132,7 +176,12 @@ export function buildHydrate(stage) {
     documents:      [],
     responses:      [],
     lookups:        LOOKUPS,
-    questions:      { sets: [] },
+    // El servidor ARREGLADO no manda `{sets:[]}` cuando falla: RETIRA la clave y marca
+    // `questions_no_disponible` (backend/Code.js, wizardResolverPreguntasDeHidratacion_).
+    // Por eso el modo de fallo aquí no siembra vacío — no manda catálogo.
+    ...(preguntasMode === 'caido'
+      ? { questions_no_disponible: true }
+      : { questions: QUESTIONS }),
     billing_splits: { payers: [], per_participant: [] },
     live_version:   1,
     admission:      null,
@@ -218,7 +267,7 @@ export function createDispatcher(scenario, record) {
     initEnrollmentSession: (p) => ({ ok: true, enrollment_group_id: FIXTURE.groupId }),
 
     // ── Recuperación / sesión ────────────────────────────────────────────────
-    hydrateSession: () => ({ ok: true, ...buildHydrate(scenario.stage) }),
+    hydrateSession: () => ({ ok: true, ...buildHydrate(scenario.stage, scenario.preguntasMode) }),
     getAdmissionState: () => {
       const h = buildHydrate(scenario.stage);
       return { ok: true, ...(h.admission || { state_code: null }) };
@@ -229,7 +278,9 @@ export function createDispatcher(scenario, record) {
 
     // ── Catálogos ────────────────────────────────────────────────────────────
     fetchLookups:   () => ({ ok: true, ...LOOKUPS }),
-    fetchQuestions: () => ({ ok: true, ctx: 'ENROLLMENT', sets: [] }),
+    fetchQuestions: () => (scenario.preguntasMode === 'caido'
+      ? { ok: false, error: { code: 'E2E_QUESTIONS_DOWN', message: 'catálogo caído (simulado)' } }
+      : { ok: true, ...QUESTIONS }),
 
     // ── Guardado de pasos ────────────────────────────────────────────────────
     saveStep: (p) => {

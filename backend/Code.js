@@ -4940,7 +4940,20 @@ function manual_diagFetchQuestions() {
  * @private
  */
 function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
-  if (!kmsData) return { sets: [] };
+  // «EL SERVIDOR NO CONTESTÓ» NO ES «ESTE COLEGIO NO TIENE PREGUNTAS» (2026-08-04).
+  //
+  // Aquí ponía `if (!kmsData) return { sets: [] };`: un payload AUSENTE del KMS —o sea,
+  // un FALLO— salía por la misma puerta que un catálogo legítimamente vacío. Con las dos
+  // cosas indistinguibles, ningún consumidor podía decidir bien: el frontend guardaba ese
+  // vacío como catálogo bueno y lo servía media hora (`api.js`, ventana de revalidación).
+  // Un catálogo vacío sigue siendo representable —`{sets:[]}` con `kmsData` presente—;
+  // lo que ya no se representa como vacío es el fallo.
+  if (!kmsData) {
+    var eSinCatalogo = new Error('El servicio de preguntas no devolvió catálogo. ' +
+      'No es que este colegio no tenga preguntas: es que la respuesta vino vacía.');
+    eSinCatalogo.code = 'QUESTIONS_CATALOG_UNAVAILABLE';
+    throw eSinCatalogo;
+  }
 
   const ctx = {
     context_id:    kmsData.context_id,
@@ -5004,6 +5017,40 @@ function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
   });
 
   return { context: ctx, sets: sets };
+}
+
+/**
+ * Resuelve el catálogo de preguntas que viaja PLEGADO en la hidratación, distinguiendo
+ * las dos cosas que hasta hoy se confundían:
+ *
+ *   - el KMS mandó catálogo → se adapta al shape `{ context, sets }` del cliente;
+ *   - el KMS no lo mandó, o el adaptador reventó → **no hay catálogo**: se RETIRA la
+ *     clave `questions` y se marca `questions_no_disponible`.
+ *
+ * Por qué retirar la clave en vez de mandar `{sets:[]}`: `{sets:[]}` significa «este
+ * colegio no tiene preguntas», y el cliente tiene derecho a creérselo y cachearlo. Un
+ * fallo no puede viajar con ese disfraz — la ausencia de la clave hace que el cliente
+ * pida el catálogo por su cuenta (`fetchQuestions`), que es un fallo NO pegajoso.
+ *
+ * Muta `data` y lo devuelve (el llamante ya trabaja sobre ese objeto).
+ *
+ * @param {Object} data — payload de hidratación (se muta)
+ * @param {string} lang
+ * @returns {Object} el mismo `data`
+ * @private
+ */
+function wizardResolverPreguntasDeHidratacion_(data, lang) {
+  if (!data) return data;
+  if (!data.questions) return data;   // el KMS no plegó catálogo: el cliente lo pedirá
+  try {
+    data.questions = fetchQuestions_adaptKmsResponse_(data.questions, lang || 'es');
+  } catch (e) {
+    delete data.questions;
+    data.questions_no_disponible = true;
+    Logger.log('[hydrate] catálogo de preguntas NO disponible (no se manda vacío para que ' +
+               'nadie lo cachee como bueno): ' + redact_(String(e && e.message)).slice(0, 160));
+  }
+  return data;
 }
 
 /**
@@ -7365,10 +7412,16 @@ function hydrateSession_(p) {
   // adaptamos aquí al shape { sets:[…] } que consume el frontend — mismo adaptador que
   // el path fetchQuestions legacy → el wizard ya NO necesita la llamada fetchQuestions
   // suelta (DL-C-B la elimina del frontend). No es PII (catálogo estático).
-  if (data && data.questions) {
-    try { data.questions = fetchQuestions_adaptKmsResponse_(data.questions, (p && p.language) || 'es'); }
-    catch (e) { data.questions = { sets: [] }; }
-  }
+  //
+  // ★ 2026-08-04 — aquí vivía `catch (e) { data.questions = { sets: [] }; }`: CUALQUIER
+  //   excepción del adaptador se convertía en un catálogo VACÍO que viajaba al cliente
+  //   con pinta de bueno. El cliente lo sembraba (`primeQuestions`) y lo servía de su
+  //   caché durante la ventana de revalidación (30 min) SIN volver a salir a red: un
+  //   fallo de un segundo apagaba el cuestionario media hora, con «Continuar» guardando
+  //   vacío y sin que nada se lo dijera a la familia. Ahora el fallo NO se disfraza de
+  //   catálogo: se retira la clave y se marca, para que el cliente sepa que no tiene
+  //   catálogo (y lo pida por su cuenta) en vez de creerse que no hay preguntas.
+  wizardResolverPreguntasDeHidratacion_(data, (p && p.language) || 'es');
 
   // B (WIZARD-STEPUP) — honrar la frescura REAL de 10 min (decisión Diego). Antes se
   //   reportaba `step_up_fresh: graceOk` (solo el nonce de magic-link) → en una recarga
