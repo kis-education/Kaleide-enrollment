@@ -437,8 +437,11 @@ const EFECTO_VERIFICADO_EN_LA_BASE = new Set([
 // fallo del producto el error de consola que el propio arnés provoca).
 let degradacionesDelCamino = new Set()
 const REINTENTOS = 2
-const RELECTURAS = 3          // relecturas del MISMO Location tras un fallo del echo
-const RELECTURA_ESPERA_MS = 1200
+const RELECTURAS = 4          // relecturas del MISMO Location tras un fallo del echo
+// 8 s, y creciendo con cada intento (8/16/24). MEDIDO: el eco falla con HTTP 404 cuando
+// el POST tarda (91,5 s frente a 32,5 s del sano), asi que reintentar a 1,2 s era
+// reintentar dentro del mismo parpadeo y declarar roto lo que solo estaba tardando.
+const RELECTURA_ESPERA_MS = 8000
 
 /**
  * ¿Es este cuerpo la COMPROBACIÓN DE SALUD del wizard en vez de la respuesta a la petición?
@@ -491,12 +494,22 @@ async function unSaltoDoble(payload) {
     // Google». Leyendo el salto A MANO se puede DECIR a dónde manda y con qué código, que es
     // la diferencia entre un fallo diagnosticable y uno que obliga a repetir la corrida.
     const r2 = await fetch(destino, { redirect: 'manual' })
-    if (r2.status >= 300 && r2.status < 400) {
-      const donde = r2.headers.get('location') || '(sin cabecera Location)'
-      let host = donde
-      try { host = new URL(donde, destino).host + new URL(donde, destino).pathname.slice(0, 40) } catch { /* relativa rara */ }
-      ultimo = `[E2E_SALTO2_REDIRIGE] el eco contestó ${r2.status} y manda a ${host} en vez de devolver el resultado`
-      if (lectura < RELECTURAS) { await new Promise(r => setTimeout(r, RELECTURA_ESPERA_MS)); continue }
+    // ── Qué contesta el eco cuando falla, MEDIDO el 2026-08-04 con UNA sola llamada ────
+    // No es una redirección: es **HTTP 404** con la página de producto de Google. Y no es
+    // aleatorio — correlaciona con un POST largo:
+    //     salto1 302 → salto2 HTTP 200, 32.459 ms  (sano)
+    //     salto1 302 → salto2 HTTP 404, 91.557 ms  (roto)
+    // O sea: cuando el `doPost` del wizard tarda, el vale del eco todavía no tiene la
+    // respuesta guardada cuando se va a recoger. Por eso ahora (a) se DICE el código —
+    // «HTTP 404» es diagnosticable, «HTML de Google» no lo era— y (b) la relectura espera
+    // en la escala del problema, no en la de antes: con 1,2 s se reintentaba tres veces
+    // dentro del mismo parpadeo y se declaraba roto lo que solo estaba tardando.
+    if (r2.status !== 200) {
+      const donde = r2.headers.get('location')
+      ultimo = `[E2E_SALTO2_HTTP_${r2.status}] el eco contestó ${r2.status}` +
+        (donde ? ` y manda a ${String(donde).slice(0, 80)}` : ' (sin cabecera Location)') +
+        ' en vez de devolver el resultado del POST'
+      if (lectura < RELECTURAS) { await new Promise(r => setTimeout(r, RELECTURA_ESPERA_MS * lectura)); continue }
       return ultimo
     }
     ultimo = await r2.text()
@@ -601,6 +614,12 @@ function startServer() {
             // Las claves distinguen las dos formas posibles (una respuesta de trabajo que trae
             // su propio `ok`, o un objeto vacío) sin sacar ni un valor: solo nombres.
             claves: (!errObj && out && typeof out === 'object') ? Object.keys(out).slice(0, 12).join(',') : null,
+            // La VERJA de re-verificación, tal como la reporta el servidor. Es un booleano,
+            // no lleva ni un dato de la familia, y sin él la pérdida de cobertura de los
+            // pasos de PII era invisible: el robot conducía tres pasos cuyas escrituras el
+            // servidor iba a rechazar, y solo se notaba como «error de consola».
+            stepUpFresh: (out && typeof out === 'object' && 'step_up_fresh' in out)
+              ? !!out.step_up_fresh : null,
           } })
           return responder(out)
         }
@@ -940,6 +959,34 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
   }
   c.notas.push(`✓ el enlace abre la sesión (aterrizaje en ${msEntrada} ms)`)
   return true
+}
+
+/**
+ * ¿Quedó abierta la VERJA de re-verificación (DL-E39) al entrar?
+ *
+ * ── Por qué existe, MEDIDO el 2026-08-04 ────────────────────────────────────────────
+ * El robot condujo por navegador personas, vínculos y salud; el wizard le dejó avanzar los
+ * tres pasos; y el servidor rechazó los TRES `saveStep` con `STEPUP_REQUIRED`. La cobertura
+ * se perdía EN SILENCIO: los pasos «se recorrían» y no escribían nada.
+ *
+ * `STEPUP_REQUIRED` **no es un defecto del wizard**: es su verja haciendo su trabajo. Los
+ * pasos que tocan PII (personas / vínculos / salud) exigen una ventana de step-up fresca, y
+ * la única que el robot tiene es la GRACIA del magic-link — de UN SOLO USO y 10 minutos
+ * DUROS, sin deslizar. Cuando esa ventana no está abierta, conducir esos pasos es teatro.
+ *
+ * Así que se COMPRUEBA antes, leyendo lo que el propio servidor dice (`step_up_fresh` de la
+ * hidratación). Ni se debilita la verja, ni se abre un atajo que un tercero pudiera usar:
+ * solo se mira el semáforo antes de cruzar.
+ *
+ * @returns {boolean|null} true/false según el servidor; null si no lo dijo.
+ */
+function verjaAbierta() {
+  const hidrataciones = calls.filter(c => c.action === 'hydrateSession' || c.action === 'resumeSession')
+  for (let i = hidrataciones.length - 1; i >= 0; i--) {
+    const v = hidrataciones[i].respuesta && hidrataciones[i].respuesta.stepUpFresh
+    if (v === true || v === false) return v
+  }
+  return null
 }
 
 /**
@@ -1937,6 +1984,26 @@ async function caminoExpedienteCompleto(page, base) {
   }
 
   // ── 2 · LOS PASOS 2-6, PULSANDO BOTONES ────────────────────────────────────────────
+  // ── LA VERJA, ANTES DE CRUZARLA ────────────────────────────────────────────────────
+  // Los pasos 2, 3 y 4 tocan PII y el servidor exige una ventana de step-up fresca. Si no
+  // está abierta, conducirlos es teatro: el wizard deja avanzar y el servidor rechaza cada
+  // guardado (MEDIDO el 2026-08-04). Se mira el semáforo, y si está en rojo se dice y no se
+  // finge haber recorrido nada.
+  const verja = verjaAbierta()
+  c.notas.push(`    · verja de re-verificación al entrar: ${verja === null ? 'el servidor no lo dijo' : (verja ? 'ABIERTA' : 'CERRADA')}`)
+  if (verja === false) {
+    c.noCubierta('pasos-de-PII-desde-la-pantalla',
+      'la hidratación llegó con step_up_fresh=false: el servidor va a rechazar con STEPUP_REQUIRED ' +
+      'cada guardado de personas, vínculos y salud. NO es un defecto del wizard —es su verja DL-E39 ' +
+      'funcionando—, sino de la ENTRADA del robot: la única ventana que tiene es la gracia del ' +
+      'magic-link, de un solo uso y 10 min duros. Conducir esos tres pasos sin ella sería teatro, ' +
+      'así que no se conducen y la cobertura se declara perdida en vez de perderse en silencio.')
+    leerDeVuelta(c, 'manual_robotSonda02Personas', 'paso 2 · personas', 'navegador (verja cerrada)')
+    leerDeVuelta(c, 'manual_robotSonda03Vinculos', 'paso 3 · vínculos', 'navegador (verja cerrada)')
+    leerDeVuelta(c, 'manual_robotSonda04Salud', 'paso 4 · salud', 'navegador (verja cerrada)')
+    return c
+  }
+
   // Un paso que cae CORTA el recorrido: seguir pulsando sobre una pantalla que no avanzó
   // solo produce fallos derivados que tapan el primero, que es el único que dice algo.
   if (!await conducirPersonas(c, page))    return c
