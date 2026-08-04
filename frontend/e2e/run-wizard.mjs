@@ -319,6 +319,12 @@ const MIME = {
 // Registro de llamadas del recorrido en curso.
 let calls = []
 let unmockedActions = new Set()
+// Registros `[DBG …]` que emite el PRODUCTO por consola. NO son errores: se guardan
+// aparte para que una afirmación pueda CITARLOS al fallar. Antes se tiraban a la basura
+// (el capturador solo miraba `type()==='error'`), y por eso un rojo del paso 5 no podía
+// decir si lo tecleado llegaba al estado o si lo que fallaba era el envío: había que
+// volver a correr a ciegas 35 min. Se vacía por recorrido, como `calls`.
+let registrosDbg = []
 const record = (c) => { calls.push({ ...c, at: Date.now() }) }
 record.unmocked = (a) => { unmockedActions.add(String(a)) }
 
@@ -1878,9 +1884,15 @@ async function conducirPreguntas(c, page) {
   // El guardado del cuestionario vuela en segundo plano: se ESPERA a que salga.
   const t0 = Date.now()
   while (llamadas('saveResponses').length === antes && Date.now() - t0 < 60000) await page.waitForTimeout(300)
+  // El propio producto registra `[DBG Step5] catalog {n_sets, n_responses, …}` cada vez
+  // que cambian sus respuestas. Se CITA el último para que el rojo decida SOLO cuál de
+  // las dos ramas es, sin volver a correr: `n_responses = 0` tras responder ⇒ lo tecleado
+  // NO llega al estado del componente; `n_responses > 0` sin llamada ⇒ falla el ENVÍO.
+  const ultimoDbg = [...registrosDbg].reverse().find(r => r.includes('[DBG Step5] catalog'))
+    || '(el producto no emitió ningún «[DBG Step5] catalog»: no se puede separar estado de envío — mirar que el registro siga vivo en Step5Questions.jsx)'
   return c.afirmar('paso 5 · preguntas — las respuestas salen desde la pantalla',
     llamadas('saveResponses').length > antes,
-    `se respondieron ${respondidos} controles y NINGÚN saveResponses salió en ${Date.now() - t0} ms: o el paso no reconoce lo tecleado como respuesta, o no lo envía`)
+    `se respondieron ${respondidos} controles y NINGÚN saveResponses salió en ${Date.now() - t0} ms: o el paso no reconoce lo tecleado como respuesta, o no lo envía.\n        Último registro del producto → ${ultimoDbg}`)
 }
 
 /** PASO 6 · Documentos — adjuntar un archivo de verdad y esperar su confirmación. */
@@ -2405,8 +2417,20 @@ async function main() {
 
     const erroresConsola = []
     page.on('console', (msg) => {
-      if (msg.type() !== 'error') return
       const t = msg.text()
+      // Los `[DBG …]` del producto se CAPTURAN (no se cuentan como fallo) y luego se
+      // sigue con la red de errores INTACTA: si alguno llegara como `error`, cuenta
+      // igual. El logger emite `console.log('[ENR INFO] …', {objeto})` y `text()` rinde
+      // ese objeto como «JSHandle@object», así que el 2.º argumento se resuelve aparte.
+      if (t.includes('[DBG')) {
+        const args = msg.args()
+        void (async () => {
+          let datos = ''
+          try { if (args[1]) datos = JSON.stringify(await args[1].jsonValue()) } catch { /* la página ya no está */ }
+          registrosDbg.push(`${t.replace(' JSHandle@object', '')} ${datos}`.slice(0, 900))
+        })()
+      }
+      if (msg.type() !== 'error') return
       if (CONSOLA_PERMITIDA.some(re => re.test(t))) return
       erroresConsola.push(t.slice(0, 300))
     })
@@ -2421,6 +2445,7 @@ async function main() {
 
     calls = []
     unmockedActions = new Set()
+    registrosDbg = []
     cuotaDelCamino = null
     transporteDelCamino = null
     degradacionesDelCamino = new Set()
