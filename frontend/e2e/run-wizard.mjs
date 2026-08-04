@@ -1481,11 +1481,24 @@ async function main() {
         problemasCobertura.push(`${r.nombre} · «${nc.etiqueta}» quedó SIN cubrir (${nc.motivo}) y no está declarada en NO_CUBIERTAS_PERMITIDAS`)
       }
     }
-    for (const etiqueta of Object.keys(permitidas)) {
-      const declaradaYCubierta = !r.noCubiertas.some(nc => nc.etiqueta === etiqueta)
-      if (declaradaYCubierta) {
-        problemasCobertura.push(`${r.nombre} · «${etiqueta}» está declarada como no cubierta pero HOY sí se cubre — retira la entrada de NO_CUBIERTAS_PERMITIDAS`)
+    // «Declarada pero HOY sí se cubre» SOLO puede afirmarse de un camino que LLEGÓ AL
+    // FINAL. Un camino que aborta a mitad (entrada fallida, transporte roto) nunca ejecuta
+    // sus `noCubierta`, así que la ausencia no significa «ya se cubre»: significa que no
+    // se llegó a mirar. MEDIDO: con la entrada rota, `tramo-firma` hacía que el robot
+    // pidiera retirar «firma-consumada» — que es la no-cobertura MÁS legítima que tiene
+    // (no se firma de verdad). Seguir ese consejo habría borrado una declaración honesta
+    // y dejado el acto irreversible sin declarar. Un consejo derivado de un recorrido a
+    // medias es peor que ningún consejo.
+    const llegoAlFinal = !r.fallos.length && !r.cuota && !r.transporte
+    if (llegoAlFinal) {
+      for (const etiqueta of Object.keys(permitidas)) {
+        const declaradaYCubierta = !r.noCubiertas.some(nc => nc.etiqueta === etiqueta)
+        if (declaradaYCubierta) {
+          problemasCobertura.push(`${r.nombre} · «${etiqueta}» está declarada como no cubierta pero HOY sí se cubre — retira la entrada de NO_CUBIERTAS_PERMITIDAS`)
+        }
       }
+    } else if (Object.keys(permitidas).length) {
+      console.log(`      (cobertura de «${r.nombre}» no evaluada: el camino no llegó al final, así que «no la declaró» no prueba que se cubra)`)
     }
   }
   if (problemasCobertura.length) {
