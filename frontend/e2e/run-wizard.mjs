@@ -2010,21 +2010,31 @@ async function caminoExpedienteCompleto(page, base) {
   if (!await conducirVinculos(c, page))    return c
   if (!await conducirSalud(c, page))       return c
   if (!await conducirPreguntas(c, page))   return c
-  if (!await conducirDocumentos(c, page))  return c
 
-  // ── 3 · ENVIAR desde la pantalla de revisión, y drenar ──────────────────────────────
-  if (!await conducirEnvio(c, page))       return c
-  drenar(c, 'tras el recorrido 2-7 por navegador')
-
-  // ── 4 · Leer de vuelta 1-7. Antes se re-pide el enlace: con las personas ya escritas
-  //       existe la fila de `enrEmails` de la que sale el `?n=`, y a partir de aquí la
-  //       recuperación es per-guardian (que es como funciona de verdad).
+  // ── 3 · LEER DE VUELTA 1-5 **ANTES** DE SEGUIR ──────────────────────────────────────
+  //
+  // Por qué aquí y no al final del recorrido, MEDIDO el 2026-08-04 (corrida d5): el paso 6
+  // cayó con `INVALID_REC_TYPE` y el camino se cortó ANTES de leer nada. Resultado: cinco
+  // pasos conducidos con la verja abierta —incluido el 3, el de los 509 vínculos que llevan
+  // el día entero en disputa— y CERO medidas. La lectura estaba detrás del paso más frágil.
+  //
+  // Ahora lo ya conducido se mide en cuanto está escrito. Cuesta un drenaje más (turnos de
+  // cola, no llamadas al wizard) y a cambio ningún fallo posterior puede volver a llevarse
+  // por delante una medida que YA se había ganado. Se re-pide antes el enlace: con las
+  // personas ya escritas existe la fila de `enrEmails` de la que sale el `?n=`, y a partir
+  // de ahí la recuperación es per-guardian, que es como funciona de verdad.
+  drenar(c, 'tras conducir 2-5 por navegador')
   refrescarElEnlace(c, DATOS.emailKnown)
   leerDeVuelta(c, 'manual_robotSonda01Correo', 'paso 1 · correo y sesión', 'navegador')
   leerDeVuelta(c, 'manual_robotSonda02Personas', 'paso 2 · personas', 'navegador')
   leerDeVuelta(c, 'manual_robotSonda03Vinculos', 'paso 3 · vínculos', 'navegador')
   leerDeVuelta(c, 'manual_robotSonda04Salud', 'paso 4 · salud', 'navegador')
   leerDeVuelta(c, 'manual_robotSonda05Preguntas', 'paso 5 · preguntas', 'navegador')
+
+  // ── 4 · Documentos y envío, y su lectura de vuelta ──────────────────────────────────
+  if (!await conducirDocumentos(c, page))  return c
+  if (!await conducirEnvio(c, page))       return c
+  drenar(c, 'tras documentos y envío')
   leerDeVuelta(c, 'manual_robotSonda06Documentos', 'paso 6 · documentos', 'navegador')
   leerDeVuelta(c, 'manual_robotSonda07Envio', 'paso 7 · envío', 'navegador')
 
