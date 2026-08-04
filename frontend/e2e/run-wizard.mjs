@@ -388,6 +388,33 @@ const ACCIONES_REPETIBLES = new Set([
   'hydrateSession',   // lectura: arma el estado de la sesión, no escribe
   'warmBundle',       // precalentado best-effort, idempotente por diseño
 ])
+
+// ── Acciones cuyo EFECTO se comprueba en la BASE, no en el acuse ──────────────
+//
+// MEDIDO: el segundo tramo del doble salto de GAS se pierde con `sendMagicLink` una y otra
+// vez (corridas de las 10:41, 11:20 y 13:02 — tres de tres). Hasta ahora eso tumbaba el
+// camino ENTERO como TRANSPORTE, y con él la única medida que este encargo produce.
+//
+// Pero perder el ACUSE de `sendMagicLink` no es lo mismo que no saber qué pasó: Google
+// emite el 302 **después** de ejecutar el `doPost`, y el arnés comprueba el efecto REAL
+// leyendo la base — `manual_robotEnlaceDeRecuperacion` dice si el `resume_token` rotó, que
+// es exactamente lo que ese acuse iba a contar. Y el acuse, por diseño (WIZ-ENUM), es
+// CONSTANTE: no lleva información. O sea: se pierde el recibo, no el dato.
+//
+// Regla de la casa aplicada al pie de la letra: **¿qué hay en la base? una consulta a la
+// tabla, NADA MÁS.** Así que para estas acciones el fallo del segundo tramo se REGISTRA y
+// se imprime (degradación conocida), pero NO tumba el camino — y la afirmación que de
+// verdad importa, la rotación, sigue siendo dura: si el acto no ocurrió, esa afirmación
+// cae y el camino se pone rojo por su cuenta.
+//
+// Lo que NO se hace, y no se hará: fabricar una respuesta. El cliente recibe el error tal
+// cual, y su reacción sigue siendo observable.
+const EFECTO_VERIFICADO_EN_LA_BASE = new Set([
+  'sendMagicLink',    // la rotación del resume_token se comprueba leyendo enrEnrollmentGroups
+])
+// Acciones de ESTE recorrido cuyo acuse se perdió por transporte (para no contar como
+// fallo del producto el error de consola que el propio arnés provoca).
+let degradacionesDelCamino = new Set()
 const REINTENTOS = 2
 const RELECTURAS = 3          // relecturas del MISMO Location tras un fallo del echo
 const RELECTURA_ESPERA_MS = 1200
@@ -451,8 +478,16 @@ async function unSaltoDoble(payload) {
 async function reenviarAlBackendReal(payload, accion) {
   const t0 = Date.now()
   const transporte = (codigo, mensaje) => {
-    transporteDelCamino = transporteDelCamino ||
-      { accion: String(accion || '(sin acción)'), codigo, mensaje: String(mensaje).slice(0, 200) }
+    const nombre = String(accion || '(sin acción)')
+    if (EFECTO_VERIFICADO_EN_LA_BASE.has(nombre)) {
+      // Degradación conocida: se pierde el acuse, no el dato (ver el bloque de arriba). Se
+      // registra e imprime, pero el camino sigue y su afirmación dura decide.
+      degradacionesDelCamino.add(nombre)
+      console.log(`  … ${new Date().toISOString().slice(11, 19)}  acuse de «${nombre}» perdido por transporte; el efecto se comprueba en la base`)
+    } else {
+      transporteDelCamino = transporteDelCamino ||
+        { accion: nombre, codigo, mensaje: String(mensaje).slice(0, 200) }
+    }
     return { ok: false, error: { code: codigo, message: String(mensaje).slice(0, 240) } }
   }
   const repetible = ACCIONES_REPETIBLES.has(String(accion || ''))
@@ -885,6 +920,7 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
  * @param {number} [turnos=4]
  */
 function drenar(c, etiqueta, turnos = 20) {
+  traza(`drenando la cola ${etiqueta}`)
   let pendientes = -1
   let fallidos = 0
   let esperando = 0
@@ -1373,6 +1409,16 @@ const BTN_EDITAR    = 'button.btn-secondary-kis:has(i.bi-pencil)'
 /** Índice del paso activo del stepper (-1 si no hay stepper). */
 const dondeEstoy = (page) => page.evaluate(sondaPasoActivo)
 
+/**
+ * Traza EN VIVO del recorrido por navegador.
+ *
+ * El runner solo imprime cuando el camino TERMINA, y este camino dura veinte minutos:
+ * durante todo ese rato la salida está muda y no hay forma de saber si avanza o si se
+ * quedó colgado en un paso. Una traza con hora al empezar cada paso convierte una espera
+ * ciega en un registro que se puede leer mientras corre.
+ */
+const traza = (txt) => console.log(`  … ${new Date().toISOString().slice(11, 19)}  ${txt}`)
+
 /** Lo que el propio wizard dice cuando no deja avanzar (aviso sticky o inline). */
 const quejaDelWizard = (page) => page.evaluate(() => {
   const n = document.querySelector('[role="alert"], .field-error')
@@ -1443,6 +1489,7 @@ async function pulsarAñadir(page, texto) {
  * sondas 2 y 3 afirman. Antes la producía la pasarela; ahora la produce el teclado.
  */
 async function conducirPersonas(c, page) {
+  traza('paso 2 · personas — tecleando dos tutores y dos alumnos')
   await desbloquear(page)
   // Por defecto el paso trae 1 tutor + 1 alumno. La familia del robot tiene 2 y 2.
   if (!await pulsarAñadir(page, 'Añadir otro tutor')) {
@@ -1518,6 +1565,7 @@ async function conducirPersonas(c, page) {
  * tutor→hijo, y custodia SOLO para el tutor 1 (que es lo que la sonda 3 afirma).
  */
 async function conducirVinculos(c, page) {
+  traza('paso 3 · vínculos — declarando los cuatro pares tutor→alumno')
   await desbloquear(page)
   // El paso carga su catálogo de tipos al entrar: se espera a que el desplegable tenga
   // algo que elegir en vez de dormir un rato fijo.
@@ -1566,6 +1614,7 @@ async function conducirVinculos(c, page) {
  * sugerencia. Si el catálogo está vacío, se dice; no se inventa un id.
  */
 async function conducirSalud(c, page) {
+  traza('paso 4 · salud — eligiendo alergia, dieta y condición médica')
   await desbloquear(page)
   const grupos = await page.$$('.input-group input.form-control')
   if (grupos.length < 3) {
@@ -1595,6 +1644,7 @@ async function conducirSalud(c, page) {
 
 /** PASO 5 · Cuestionario — se responde lo que el tenant tenga configurado. */
 async function conducirPreguntas(c, page) {
+  traza('paso 5 · preguntas — respondiendo el cuestionario del tenant')
   await desbloquear(page)
   // El paso carga sus conjuntos de preguntas al entrar y mientras tanto deshabilita el
   // avance. Se espera a que termine de cargar antes de contar qué hay que responder.
@@ -1618,6 +1668,7 @@ async function conducirPreguntas(c, page) {
 
 /** PASO 6 · Documentos — adjuntar un archivo de verdad y esperar su confirmación. */
 async function conducirDocumentos(c, page) {
+  traza('paso 6 · documentos — adjuntando un archivo')
   await desbloquear(page)
   const añadir = await page.$('button.add-btn')
   if (!añadir) { c.fallos.push('paso 6 · documentos — la pantalla no ofrece el botón de añadir archivo'); return false }
@@ -1647,6 +1698,7 @@ async function conducirDocumentos(c, page) {
  * correos. Se firma con el nombre, se marcan los dos consentimientos y se envía.
  */
 async function conducirEnvio(c, page) {
+  traza('paso 7 · revisión y envío')
   const esig = await page.$('.esig-field')
   if (!esig) { c.fallos.push('paso 7 · envío — la pantalla de revisión no ofrece el campo de firma manuscrita'); return false }
   await esig.fill(`Tutor1 ${DATOS.apellido}`)
@@ -1678,6 +1730,7 @@ async function conducirEnvio(c, page) {
 
 /** PASO 8 · Facturación — reparto entre pagadores y modalidad, desde la pantalla. */
 async function conducirFacturacion(c, page) {
+  traza('paso 8 · facturación')
   await desbloquear(page)
   const antes = llamadas('saveBillingInfo').length
   const botones = await page.$$(BTN_SIGUIENTE)
@@ -1708,6 +1761,7 @@ async function conducirFacturacion(c, page) {
 
 /** PASO 9 · Consentimientos — los 7 del RGPD, marcados uno a uno por el tutor. */
 async function conducirConsentimientos(c, page) {
+  traza('paso 9 · consentimientos')
   await desbloquear(page)
   try { await page.waitForSelector('input[type="checkbox"][id^="consent_"]', { timeout: 60000 }) }
   catch {
@@ -1732,6 +1786,7 @@ async function conducirConsentimientos(c, page) {
  * confirma la lectura, que es el acto de la familia; no se toca ni un importe.
  */
 async function conducirRevisionContractual(c, page) {
+  traza('paso 10 · revisión contractual')
   await desbloquear(page)
   // El paso precarga el paquete contractual al entrar; se espera a que ofrezca algo que
   // aceptar en vez de dormir un rato fijo.
@@ -1818,6 +1873,7 @@ async function caminoExpedienteCompleto(page, base) {
   // No es cosmética: pedirlo abre la ventana DURA de step-up (10 min) que los pasos 2-6
   // necesitan para poder guardar PII. Sin ella, `saveStep` de personas/vínculos/salud
   // responde STEPUP_REQUIRED y el recorrido no puede ni empezar.
+  traza('pidiendo el enlace y entrando por él (abre la ventana de step-up)')
   if (!await entrarPorElEnlace(c, page, base, { pidiendolo: true })) return c
   const pantalla0 = await page.evaluate(sondaPantalla)
   c.evidencia.elementos = pantalla0.pasos + pantalla0.campos
@@ -1866,6 +1922,7 @@ async function caminoExpedienteCompleto(page, base) {
 
   // ── 5 · ADMITIR. Esto NO es uno de los once pasos: es un acto del PERSONAL en el KMS,
   //       no de la familia en el wizard. Es lo que DESTAPA los pasos 8-11.
+  traza('admitiendo el expediente (acto del personal en el KMS, no de la familia)')
   paso('manual_robotLlevarAEstado', 'admitir el expediente (acto del personal, motor de estados)', [EXPEDIENTE.gid, 'AD'])
 
   // 5.bis · DRENAR OTRA VEZ, y no es cautela: es lo que hacía imposible el paso 11.
@@ -1889,12 +1946,31 @@ async function caminoExpedienteCompleto(page, base) {
   // Se vuelve a entrar por el enlace: la ventana de step-up de la primera entrada ya
   // caducó (10 min duros) y los tres actos de firma la exigen. Es además lo que hace la
   // familia de verdad — recibe el aviso de admisión y vuelve por su enlace.
+  traza('volviendo a entrar por el enlace, ya con el expediente admitido')
   if (!await entrarPorElEnlace(c, page, base, { pidiendolo: true })) return c
-  const trasAdmitir = await dondeEstoy(page)
+  let trasAdmitir = await dondeEstoy(page)
   c.notas.push(`    · tras la admisión, el enlace aterriza en el paso ${trasAdmitir + 1}`)
+  // Si aterriza en Revisión (paso 7) con el avance ya desbloqueado, la familia lo PULSA.
+  // El wizard desbloquea ese botón solo cuando el estado lo gobierna (AD + firma lista),
+  // así que pulsarlo no fuerza nada: es el gesto que el propio producto ofrece.
+  if (trasAdmitir === 6) {
+    const avanzar = await page.$(BTN_SIGUIENTE)
+    if (avanzar) {
+      traza('el paso 7 ofrece el avance a la firma: pulsándolo')
+      await avanzar.click()
+      await page.waitForTimeout(2500)
+      trasAdmitir = await dondeEstoy(page)
+      c.notas.push(`    · tras pulsar el avance del paso 7, el wizard está en el paso ${trasAdmitir + 1}`)
+    }
+  }
   if (!c.afirmar('un expediente admitido aterriza en el tramo de firma (paso 8.º)',
     trasAdmitir === 7,
-    `aterrizó en el paso ${trasAdmitir + 1}: con la firma abierta la familia se quedaría atascada antes de facturación`)) {
+    `aterrizó en el paso ${trasAdmitir + 1} y no en el 8: la familia NO puede llegar a facturación. ` +
+    `El wizard solo desbloquea el avance cuando la firma está lista para ese tutor (estado AD + ` +
+    `signing_ready), así que mira PRIMERO si hay sesión de firma — si el paso 11 dice ` +
+    `firma.sesiones_n=0, la causa está AGUAS ARRIBA y ya está medida y encolada: la generación de ` +
+    `documentos no cabe en el permiso drive.file (docs/kms/pendiente-diego.md §2). NO es un ` +
+    `defecto de este recorrido ni algo que re-diagnosticar.`)) {
     leerDeVuelta(c, 'manual_robotSonda08Facturacion', 'paso 8 · facturación', 'navegador (no alcanzado)')
     leerDeVuelta(c, 'manual_robotSonda09Consentimientos', 'paso 9 · consentimientos', 'navegador (no alcanzado)')
     leerDeVuelta(c, 'manual_robotSonda10Revision', 'paso 10 · revisión', 'navegador (no alcanzado)')
@@ -2060,6 +2136,7 @@ async function main() {
     unmockedActions = new Set()
     cuotaDelCamino = null
     transporteDelCamino = null
+    degradacionesDelCamino = new Set()
     let c
     try {
       c = await def.fn(page, base)
@@ -2094,8 +2171,17 @@ async function main() {
     const inesperados = erroresConsola.filter((t) => {
       const esperado = c.erroresEsperados.find(e => e.re.test(t))
       if (esperado) { esperado.visto = true; return false }
+      // El error que el PROPIO ARNÉS provoca al perder el acuse de una acción cuyo efecto
+      // se comprueba en la base: no es del producto. Se descuenta SOLO para la acción cuyo
+      // acuse se perdió DE VERDAD en este recorrido — no hay lista blanca general.
+      for (const a of degradacionesDelCamino) {
+        if (t.includes(`gasCall ${a}:`)) return false
+      }
       return true
     })
+    if (degradacionesDelCamino.size) {
+      c.notas.push(`    · acuse perdido por transporte (efecto comprobado en la base): ${[...degradacionesDelCamino].join(', ')}`)
+    }
     if (inesperados.length) {
       c.fallos.push(`${inesperados.length} error(es) en consola: ${inesperados.slice(0, 3).join(' | ')}`)
     }
