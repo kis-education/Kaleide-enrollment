@@ -423,6 +423,15 @@ const ACCIONES_REPETIBLES = new Set([
 // 34-48 s por llamada, que es lo que hace que una corrida dure lo que dura.
 const EFECTO_VERIFICADO_EN_LA_BASE = new Set([
   'sendMagicLink',    // la rotación del resume_token se comprueba leyendo enrEnrollmentGroups
+  // Los pasos que el navegador conduce tienen CADA UNO su sonda de lectura de vuelta
+  // (`manual_robotSonda02..07`): si el efecto no está escrito, esa sonda lo dice y el camino
+  // cae por ahí. Perder el acuse de la escritura no añade información — y sí tumbaba el
+  // recorrido entero por un fallo que ya sabemos que es del lado de Google.
+  'saveStep',         // personas / vínculos / salud / fecha → sondas 2, 3, 4 y 1
+  'saveResponses',    // cuestionario → sonda 5
+  'uploadDocument',   // documentos → sonda 6
+  'saveNeae',         // NEAE, best-effort por diseño; no hay afirmación que dependa del acuse
+  'warmBundle',       // precalentado best-effort: por definición no afirma nada
 ])
 // Acciones de ESTE recorrido cuyo acuse se perdió por transporte (para no contar como
 // fallo del producto el error de consola que el propio arnés provoca).
@@ -475,7 +484,22 @@ async function unSaltoDoble(payload) {
   // cuanto el cuerpo es JSON, que es la única señal de haber leído de verdad.
   let ultimo = ''
   for (let lectura = 1; lectura <= RELECTURAS; lectura++) {
-    ultimo = await (await fetch(destino)).text()
+    // ── El segundo tramo se lee SIN seguir redirecciones a ciegas ────────────────────
+    // MEDIDO el 2026-08-04: cuando falla, lo que llega es una PÁGINA DE PRODUCTO de Google
+    // («Web word processing…»), igual con `node` que con `curl`. Siguiendo la redirección en
+    // silencio, esa página es todo lo que se ve y el diagnóstico se queda en «HTML de
+    // Google». Leyendo el salto A MANO se puede DECIR a dónde manda y con qué código, que es
+    // la diferencia entre un fallo diagnosticable y uno que obliga a repetir la corrida.
+    const r2 = await fetch(destino, { redirect: 'manual' })
+    if (r2.status >= 300 && r2.status < 400) {
+      const donde = r2.headers.get('location') || '(sin cabecera Location)'
+      let host = donde
+      try { host = new URL(donde, destino).host + new URL(donde, destino).pathname.slice(0, 40) } catch { /* relativa rara */ }
+      ultimo = `[E2E_SALTO2_REDIRIGE] el eco contestó ${r2.status} y manda a ${host} en vez de devolver el resultado`
+      if (lectura < RELECTURAS) { await new Promise(r => setTimeout(r, RELECTURA_ESPERA_MS)); continue }
+      return ultimo
+    }
+    ultimo = await r2.text()
     // La comprobación de salud es JSON válido pero NO es la respuesta: se relee como si no
     // se hubiera podido leer nada, que es lo que de verdad ha pasado.
     if (!esComprobacionDeSalud(ultimo)) {
@@ -1660,11 +1684,16 @@ async function conducirPreguntas(c, page) {
   await desbloquear(page)
   // El paso carga sus conjuntos de preguntas al entrar y mientras tanto deshabilita el
   // avance. Se espera a que termine de cargar antes de contar qué hay que responder.
+  // 240 s y no 90: la latencia REAL medida del sistema es de 34-48 s por llamada (ver el
+  // bloque de EFECTO_VERIFICADO_EN_LA_BASE), y el cuestionario encadena varias. Con 90 s el
+  // arnés declaraba «nunca terminó de cargar» a los 90 s exactos — un rojo del reloj, no del
+  // producto. El número se sube CON la medida delante, no a ciegas: si un día vuelve a
+  // agotarse, lo que hay que mirar es cuántas llamadas encadena el paso, no subirlo otra vez.
   try {
     await page.waitForFunction(() => [...document.querySelectorAll('button.btn-primary-kis')].some(b => !b.disabled),
-      null, { timeout: 90000 })
+      null, { timeout: 240000 })
   } catch {
-    c.fallos.push('paso 5 · preguntas — el cuestionario nunca terminó de cargar: el botón de avanzar siguió deshabilitado')
+    c.fallos.push('paso 5 · preguntas — el cuestionario no terminó de cargar en 240 s: el botón de avanzar siguió deshabilitado')
     return false
   }
   const campos = await page.$$('input[type="radio"], input[type="checkbox"], textarea, select.form-select')
@@ -2071,16 +2100,27 @@ async function main() {
     // ── RESET: el bucle tiene que ser repetible. Sin borrar la familia sintética de la
     //    corrida anterior, la segunda corrida mide datos de la primera y cualquier
     //    afirmación de conteo se vuelve mentira acumulativa.
-    const rst = sonda('manual_resetFamiliaRobot')
+    // ── El reset se REPITE una vez si quedó algo, y no es cautela ────────────────────
+    // MEDIDO el 2026-08-04 (corrida de las 13:18): el reset barrió y AUN ASÍ quedó 1 grupo,
+    // porque otra sesión creó su expediente de prueba —con el mismo marcador `+robot-`—
+    // MIENTRAS el reset corría. El barrido tarda minutos: es una ventana de carrera real,
+    // no una rareza. Repetirlo una vez la cierra sin aflojar el invariante: se sigue
+    // EXIGIENDO cero al final, solo se da una segunda pasada antes de rendirse.
+    let rst = sonda('manual_resetFamiliaRobot')
+    let r0 = rst.ok ? (rst.resultado || {}) : {}
+    if (rst.ok && r0.veredicto !== 'VERDE') {
+      console.log(`[robot] reset:    quedaba algo (${(r0.fallos || []).join(' | ')}) — segunda pasada`)
+      rst = sonda('manual_resetFamiliaRobot')
+      r0 = rst.ok ? (rst.resultado || {}) : {}
+    }
     if (!rst.ok) {
       server.close()
       printVerdict(false, `no se pudo dejar el sistema a cero antes de empezar: ${rst.error}`)
       process.exit(1)
     }
-    const r0 = rst.resultado || {}
     if (r0.veredicto !== 'VERDE') {
       server.close()
-      printVerdict(false, `el reset previo no dejó el sistema a cero: ${(r0.fallos || []).join(' | ')}`)
+      printVerdict(false, `el reset previo no dejó el sistema a cero ni en la segunda pasada: ${(r0.fallos || []).join(' | ')} — si otra sesión está creando expedientes del robot a la vez, hay que esperarla: dos corridas sobre el mismo tenant se comen los turnos de cola la una a la otra`)
       process.exit(1)
     }
     console.log(`[robot] reset:    sistema a cero (grupos borrados: ${(r0.datos && r0.datos.grupos_borrados) || 0})\n`)
@@ -2193,6 +2233,40 @@ async function main() {
     })
     if (degradacionesDelCamino.size) {
       c.notas.push(`    · acuse perdido por transporte (efecto comprobado en la base): ${[...degradacionesDelCamino].join(', ')}`)
+    }
+
+    // ── El servidor RECHAZA una escritura de la familia: eso se NOMBRA ────────────────
+    // MEDIDO en la corrida de las 13:21: el navegador rellenó personas, vínculos y salud, el
+    // wizard le dejó avanzar los tres pasos, y el servidor contestó `STEPUP_REQUIRED` a los
+    // TRES `saveStep`. Sin esto, eso solo asomaba como «error de consola» — la forma más
+    // fácil de leerlo por encima.
+    //
+    // ⚠️ CUIDADO CON A QUIÉN SE ACUSA. `STEPUP_REQUIRED` NO es un defecto del wizard: es su
+    // verja de re-verificación (DL-E39) funcionando. La misma corrida lo demuestra — acto
+    // seguido el cliente pidió un código (`sendVerificationCode`, `StepUpGate`), que es
+    // exactamente lo que el producto debe hacer. Lo que falla es el ARNÉS: entra con la
+    // gracia del magic-link, que es de UN SOLO USO y dura 10 min duros, y para cuando
+    // conduce los pasos de PII esa ventana ya no está. El robot todavía no sabe pasar la
+    // verja; mientras no sepa, esto es cobertura perdida y así se dice.
+    // Solo en modo real: en simulado hay un escenario HOSTIL deliberado que devuelve error
+    // a propósito, y contarlo aquí sería inventar un rojo.
+    if (REAL) {
+      const rechazos = calls.filter(x => x.respuesta && !x.respuesta.ok &&
+        x.respuesta.codigo && !String(x.respuesta.codigo).startsWith('E2E_'))
+      const porCodigo = {}
+      for (const r of rechazos) (porCodigo[r.respuesta.codigo] = porCodigo[r.respuesta.codigo] || []).push(r.action)
+      for (const [cod, acciones] of Object.entries(porCodigo)) {
+        const detalle = `${acciones.length} llamada(s) —${[...new Set(acciones)].join(', ')}`
+        if (cod === 'STEPUP_REQUIRED') {
+          c.noCubierta('paso-conducido-tras-la-verja-de-re-verificacion',
+            `el servidor exigió re-verificación (STEPUP_REQUIRED) en ${detalle}. NO es un defecto del wizard —` +
+            ` es su verja DL-E39 haciendo su trabajo—, sino una carencia del ROBOT: entra con la gracia del` +
+            ` magic-link (un solo uso, 10 min duros) y para cuando conduce los pasos de PII esa ventana ya no` +
+            ` está. Lo que esos pasos escribieron NO se puede dar por bueno.`)
+        } else {
+          c.fallos.push(`el servidor RECHAZÓ ${detalle} con [${cod}]: la pantalla dejó avanzar igual, así que la familia creería que quedó guardado`)
+        }
+      }
     }
     if (inesperados.length) {
       c.fallos.push(`${inesperados.length} error(es) en consola: ${inesperados.slice(0, 3).join(' | ')}`)
