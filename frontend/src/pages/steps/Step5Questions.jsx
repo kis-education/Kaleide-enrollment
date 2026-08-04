@@ -111,7 +111,12 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
         respondent_type_category_id: 'client',
         responses:                   rows,
       });
-      enqueueSave(saveFactory);
+      // INDEPENDIENTE (2026-08-04): las respuestas no dependen de ningún guardado anterior
+      // —van contra el expediente, que existe desde el paso 1—, así que NO se ponen a la
+      // cola detrás de personas/vínculos/salud. Medido en campo: con 48 respuestas ya en el
+      // estado de la pantalla, NINGUNA llamada salió en 60 s porque la cadena estaba
+      // ocupada. Sigue contando para el indicador y sigue siendo reintentable.
+      enqueueSave(saveFactory, { independiente: true });
     }
     log.info('Step5: onNext questions', responses);
     updateStep('questions', responses);

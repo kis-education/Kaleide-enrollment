@@ -148,6 +148,9 @@ export function WizardProvider({ children }) {
   // ya iniciada re-resolvería la misma promesa settleada — los saves de paso usan
   // factories, que es el caso que cubre el botón.
   const lastFailedSaveRef = useRef(null);
+  // Guardados INDEPENDIENTES en vuelo (no van en el eslabón, pero el envío final SÍ tiene
+  // que esperarlos). Se limpian al settle para que la lista no crezca durante la sesión.
+  const sueltosRef = useRef([]);
   // WPERF-1 criterio 4 (auto-avance guard): se pone a true en CUALQUIER navegación
   // MANUAL (botón atrás/adelante, avance de firma). El JUMP async de enterSigning lo
   // resetea al hacer click y lo comprueba antes de saltar: si el usuario navegó a mano
@@ -166,19 +169,46 @@ export function WizardProvider({ children }) {
    * @param {() => Promise<any>} saveFn
    * @returns {Promise<any>} la promesa del save (para que el caller la awaite si quiere)
    */
-  const enqueueSave = useCallback((saveFn) => {
+  // ── UNA COLA ÚNICA MATA A QUIEN NO DEPENDE DE NADIE (medido 2026-08-04) ──────────────
+  // La cola encadena TODO guardado detrás del anterior. Eso es correcto para lo que sí tiene
+  // orden (personas → vínculos: el vínculo necesita el `person_id` que estampa el de
+  // personas), y es MORTAL para lo que no: si una llamada anterior no vuelve, el eslabón
+  // nunca avanza y **todo lo que venga detrás se queda dentro del navegador para siempre,
+  // sin error y sin aviso**. Y no vuelve fácil: `gasCall` no lleva temporizador, y el doble
+  // salto de GAS falla en su segundo tramo de forma reproducible.
+  //
+  // MEDIDO con el bundle real en navegador (reproducción con el servidor colgando UNA
+  // respuesta): la 1.ª llamada sale y no vuelve; la familia corrige una respuesta y pulsa
+  // Continuar, y la 2.ª **no sale en 30 s** — ni saldrá. En campo, el paso 5 mandó 48
+  // respuestas al estado y **ninguna llamada salió en 60 s**.
+  //
+  // `independiente: true` saca de la cadena a los guardados que NO dependen de ningún otro
+  // (las respuestas del cuestionario: van contra el expediente, que existe desde el paso 1).
+  // Siguen contando para el indicador y siguen siendo reintentables — lo único que se les
+  // quita es tener que esperar a algo con lo que no tienen nada que ver.
+  const enqueueSave = useCallback((saveFn, opts) => {
+    const independiente = !!(opts && opts.independiente);
     pendingCountRef.current += 1;
     setSaveState('saving');
     const _t0 = Date.now();                          // DBG-SESSION timing
-    log.info('[DBG savequeue] enqueue', { pending: pendingCountRef.current });
-    const run = saveTailRef.current
-      .catch(() => {})                 // un fallo previo no debe abortar la cola
-      .then(() => saveFn());           // ejecuta EN ORDEN tras el anterior
-    // El tail avanza pase lo que pase; el conteo decrece al settle.
-    saveTailRef.current = run.then(
+    log.info('[DBG savequeue] enqueue', { pending: pendingCountRef.current, independiente });
+    const run = independiente
+      ? Promise.resolve().then(() => saveFn())       // sin esperar a nadie: no depende de nadie
+      : saveTailRef.current
+        .catch(() => {})               // un fallo previo no debe abortar la cola
+        .then(() => saveFn());         // ejecuta EN ORDEN tras el anterior
+    // El tail avanza pase lo que pase; el conteo decrece al settle. Un guardado
+    // independiente NO entra en el tail: si entrara, volvería a poder bloquear a los que
+    // sí van en orden, que es justo lo que se está corrigiendo.
+    const seguimiento = run.then(
       () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; lastFailedSaveRef.current = null; setSaveState('idle'); } },
       (e) => { pendingCountRef.current -= 1; lastFailedSaveRef.current = saveFn; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: e && e.code, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; setSaveState('error'); }
     );
+    if (!independiente) saveTailRef.current = seguimiento;
+    else {
+      sueltosRef.current.push(seguimiento);
+      seguimiento.then(() => { sueltosRef.current = sueltosRef.current.filter(p => p !== seguimiento); });
+    }
     return run;
   }, []);
 
@@ -204,7 +234,12 @@ export function WizardProvider({ children }) {
   const awaitPendingSave = useCallback(() => {
     const _t0 = Date.now();                          // DBG-SESSION timing
     log.info('[DBG savequeue] await start');
-    return saveTailRef.current.then(
+    // Los guardados INDEPENDIENTES no van en el eslabón (por eso no los bloquea nadie),
+    // así que esperar solo al eslabón dejaría de esperarlos — y el envío final saldría con
+    // el cuestionario todavía en vuelo. Se espera a AMBAS cosas: la cadena ordenada y los
+    // sueltos. Sin esto, el arreglo del bloqueo habría cambiado una pérdida silenciosa por
+    // otra.
+    return Promise.all([saveTailRef.current, ...sueltosRef.current]).then(
       () => log.info('[DBG savequeue] await resolved', { ms: Date.now() - _t0 }),
       () => log.warn('[DBG savequeue] await rejected', { ms: Date.now() - _t0 })
     ).catch(() => {});

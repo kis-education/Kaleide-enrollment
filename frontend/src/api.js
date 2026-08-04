@@ -385,16 +385,42 @@ export async function gasCall(action, payload = {}) {
   const body = JSON.stringify({ action, _hp: '', _dbg: true, ...payload });
   const t0   = performance.now();
 
+  // ── UNA LLAMADA QUE NO VUELVE NO PUEDE DURAR PARA SIEMPRE (medido 2026-08-04) ─────────
+  // `fetch` sin `signal` no tiene límite: si el servidor no contesta, la promesa NO se
+  // resuelve NUNCA. Y eso no se queda en una llamada — la cola de guardados encadena, así
+  // que una sola que no vuelve deja al navegador **guardando nada, en silencio, para
+  // siempre**. Reproducido con el bundle real: servidor que no contesta una respuesta ⇒ el
+  // guardado siguiente no sale en 30 s ni saldría nunca.
+  //
+  // El tope NO es una política de latencia: el sistema real tarda 34-48 s por llamada
+  // medidos, y el propio arnés espera hasta 240 s a que cargue el cuestionario. Es una red
+  // contra el caso «no vuelve»: pasado el tope se ABORTA y el error entra por el camino que
+  // ya existe (la cola marca `error` y ofrece «Reintentar»), en vez de quedarse colgado.
+  // Reintentar es seguro: las escrituras del KMS usan claves deterministas, así que repetir
+  // cae en la misma fila.
+  const TOPE_MS = 240000;
+  const abortador = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const corte = abortador ? setTimeout(() => abortador.abort(), TOPE_MS) : null;
   let res;
   try {
     res = await fetch(GAS_ENDPOINT, {
       method:  'POST',
       headers: { 'Content-Type': 'text/plain' }, // avoid CORS preflight on GAS
       body,
+      ...(abortador ? { signal: abortador.signal } : {}),
     });
   } catch (fetchErr) {
+    const abortada = fetchErr && (fetchErr.name === 'AbortError' || /abort/i.test(fetchErr.message || ''));
+    if (abortada) {
+      log.error(`gasCall ${action}: sin respuesta en ${TOPE_MS} ms — se corta`, { action });
+      const e = new Error(`El servidor no respondió a "${action}". Vuelve a intentarlo.`);
+      e.code = 'SIN_RESPUESTA';
+      throw e;
+    }
     log.error(`gasCall ${action}: network/fetch error`, { message: fetchErr.message });
     throw fetchErr;
+  } finally {
+    if (corte) clearTimeout(corte);
   }
 
   const elapsed = Math.round(performance.now() - t0);
