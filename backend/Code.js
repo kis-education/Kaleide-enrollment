@@ -4218,6 +4218,52 @@ function submitEnrollmentSession_(p) {
   assertGroupEditable_(enrollmentGroupId);
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
+  // ── UN CONSENTIMIENTO QUE NADIE DIO NO SE REGISTRA (2026-08-04) ──────────────────────
+  //
+  // Aquí vivía esto, con el comentario «Ensure GDPR consent is captured even if frontend
+  // forgot to include it»:
+  //
+  //     if (!consents.some(c => c.type === 'gdpr' || …)) {
+  //       consents.push({ type: 'gdpr', accepted: true, consent_text_shown: … });
+  //     }
+  //
+  // Es decir: si el consentimiento RGPD no llegaba, **el servidor lo inventaba y lo marcaba
+  // como ACEPTADO**, y lo escribía en `sysConsentsLog` firmado con la identidad del primer
+  // tutor. Eso no es un dato por defecto: es **registrar que una familia consintió algo que
+  // nunca consintió**, en la tabla que existe precisamente para probar lo contrario. Y el
+  // dispatcher de este backend es `ANYONE_ANONYMOUS`: cualquiera en internet podía provocarlo
+  // llamando a `submitEnrollmentSession` sin consentimientos.
+  //
+  // MEDIDO antes de quitarlo, para saber si rompía algo: el cliente **siempre** manda el
+  // consentimiento (`Step7Review.jsx:188-189`, incondicional) y **siempre aceptado**, porque
+  // el envío está gateado antes (`:145-146`: sin marcar, `return` con error y no se envía).
+  // El único otro llamante es `manual_testSubmitReplayRejected`, que espera `NOT_EDITABLE` —
+  // lanza mucho antes de llegar aquí. ⇒ Para el camino de la familia esto es **byte-neutro**.
+  //
+  // Y donde antes había una invención silenciosa ahora hay un **error explícito**: cambiar una
+  // mentira callada por una caída callada no habría sido arreglarlo. El servidor exige lo
+  // mismo que exige la pantalla — ni más (no inventa) ni menos (no deja pasar un expediente
+  // sin la base legal para tratarlo).
+  // Se comprueba ANTES de crear nada: si faltara el consentimiento y se lanzara al final,
+  // el envío quedaría a medias — expedientes creados y transición hecha, sin base legal.
+  var _consentsIn = Array.isArray(p.consents) ? p.consents : [];
+  var gdprDado = _consentsIn.filter(function (c) {
+    return c && (c.type === 'gdpr' || c.type === 'gdpr_data_processing');
+  })[0];
+  if (!gdprDado) {
+    var eSinGdpr = new Error('La solicitud no incluye el consentimiento de protección de datos. ' +
+      'Sin él no se puede tramitar, y el servidor no lo da por dado en tu nombre: márcalo en la ' +
+      'pantalla de revisión y vuelve a enviar.');
+    eSinGdpr.code = 'GDPR_CONSENT_REQUIRED';
+    throw eSinGdpr;
+  }
+  if (gdprDado.accepted !== true) {
+    var eNoAcep = new Error('El consentimiento de protección de datos figura como NO aceptado. ' +
+      'La solicitud no se envía: sin esa base legal no se pueden tratar los datos de la familia.');
+    eNoAcep.code = 'GDPR_CONSENT_REFUSED';
+    throw eNoAcep;
+  }
+
   const now = new Date().toISOString();
 
   // Load the group header
@@ -4356,48 +4402,6 @@ function submitEnrollmentSession_(p) {
     return CONSENT_TYPE_MAP[raw] || raw.toUpperCase();
   }
 
-  // ── UN CONSENTIMIENTO QUE NADIE DIO NO SE REGISTRA (2026-08-04) ──────────────────────
-  //
-  // Aquí vivía esto, con el comentario «Ensure GDPR consent is captured even if frontend
-  // forgot to include it»:
-  //
-  //     if (!consents.some(c => c.type === 'gdpr' || …)) {
-  //       consents.push({ type: 'gdpr', accepted: true, consent_text_shown: … });
-  //     }
-  //
-  // Es decir: si el consentimiento RGPD no llegaba, **el servidor lo inventaba y lo marcaba
-  // como ACEPTADO**, y lo escribía en `sysConsentsLog` firmado con la identidad del primer
-  // tutor. Eso no es un dato por defecto: es **registrar que una familia consintió algo que
-  // nunca consintió**, en la tabla que existe precisamente para probar lo contrario. Y el
-  // dispatcher de este backend es `ANYONE_ANONYMOUS`: cualquiera en internet podía provocarlo
-  // llamando a `submitEnrollmentSession` sin consentimientos.
-  //
-  // MEDIDO antes de quitarlo, para saber si rompía algo: el cliente **siempre** manda el
-  // consentimiento (`Step7Review.jsx:188-189`, incondicional) y **siempre aceptado**, porque
-  // el envío está gateado antes (`:145-146`: sin marcar, `return` con error y no se envía).
-  // El único otro llamante es `manual_testSubmitReplayRejected`, que espera `NOT_EDITABLE` —
-  // lanza mucho antes de llegar aquí. ⇒ Para el camino de la familia esto es **byte-neutro**.
-  //
-  // Y donde antes había una invención silenciosa ahora hay un **error explícito**: cambiar una
-  // mentira callada por una caída callada no habría sido arreglarlo. El servidor exige lo
-  // mismo que exige la pantalla — ni más (no inventa) ni menos (no deja pasar un expediente
-  // sin la base legal para tratarlo).
-  var gdprDado = consents.filter(function (c) {
-    return c && (c.type === 'gdpr' || c.type === 'gdpr_data_processing');
-  })[0];
-  if (!gdprDado) {
-    var eSinGdpr = new Error('La solicitud no incluye el consentimiento de protección de datos. ' +
-      'Sin él no se puede tramitar, y el servidor no lo da por dado en tu nombre: márcalo en la ' +
-      'pantalla de revisión y vuelve a enviar.');
-    eSinGdpr.code = 'GDPR_CONSENT_REQUIRED';
-    throw eSinGdpr;
-  }
-  if (gdprDado.accepted !== true) {
-    var eNoAcep = new Error('El consentimiento de protección de datos figura como NO aceptado. ' +
-      'La solicitud no se envía: sin esa base legal no se pueden tratar los datos de la familia.');
-    eNoAcep.code = 'GDPR_CONSENT_REFUSED';
-    throw eNoAcep;
-  }
   enrollmentIds.forEach(eid => {
     consents.forEach(c => {
       consentRows.push({
