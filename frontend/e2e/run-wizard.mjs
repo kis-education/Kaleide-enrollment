@@ -474,6 +474,13 @@ function startServer() {
             ok:     !!(out && out.ok),
             codigo: (errObj && errObj.code) || null,
             motivo: (typeof errObj === 'string' ? errObj : (errObj && errObj.message) || '').slice(0, 200) || null,
+            // Y si NO hay error de ninguna forma, las CLAVES de lo que llegó. Medido el
+            // 2026-08-04: `hydrateSession`, `fetchQuestions`, `warmBundle` y `warmSession`
+            // volvieron con `ok` falso y **sin error, sin código y sin mensaje** — o sea que
+            // ni el código ni el motivo dicen nada, y la corrida no deja con qué diagnosticar.
+            // Las claves distinguen las dos formas posibles (una respuesta de trabajo que trae
+            // su propio `ok`, o un objeto vacío) sin sacar ni un valor: solo nombres.
+            claves: (!errObj && out && typeof out === 'object') ? Object.keys(out).slice(0, 12).join(',') : null,
           } })
           return responder(out)
         }
@@ -1533,7 +1540,7 @@ async function main() {
     // es la evidencia que convierte un rojo en diagnosticable sin repetir la corrida.
     const negativas = calls.filter(x => x.respuesta && !x.respuesta.ok)
     for (const x of negativas) {
-      console.log(`      ↩ el servidor contestó ok=false a «${x.action}»${x.respuesta.codigo ? ` [${x.respuesta.codigo}]` : ' (sin código de error)'}${x.respuesta.motivo ? ` — ${x.respuesta.motivo}` : ''}`)
+      console.log(`      ↩ el servidor contestó ok=false a «${x.action}»${x.respuesta.codigo ? ` [${x.respuesta.codigo}]` : ' (sin código de error)'}${x.respuesta.motivo ? ` — ${x.respuesta.motivo}` : ''}${x.respuesta.claves ? ` — sin error de ninguna forma; claves de la respuesta: ${x.respuesta.claves}` : ''}`)
     }
     for (const f of c.fallos) console.log(`      ✗ ${f}`)
     for (const nc of c.noCubiertas) console.log(`      · NO CUBIERTA «${nc.etiqueta}»: ${nc.motivo}`)
