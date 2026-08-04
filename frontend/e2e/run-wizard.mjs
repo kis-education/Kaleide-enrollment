@@ -1560,6 +1560,19 @@ async function main() {
       c.fallos.push(`el recorrido se rompió: ${String(e && e.message || e).slice(0, 240)}`)
     }
 
+    // ── ANTES DE JUZGAR, DEJAR QUE EL FONDO TERMINE (2026-08-04, MEDIDO) ─────────────
+    // `warmBundle` es precalentado best-effort que el cliente dispara en SEGUNDO PLANO. Si
+    // el camino acaba con esa petición en vuelo, se aborta y el cliente escribe
+    // `network/fetch error {message: Failed to fetch}` — que este bloque contaba como
+    // fallo del producto. Medido en las corridas de las 10:03 y 10:24: tumbó
+    // `recuperar-aterrizar` y `guardar-paso`, y en `ack-indistinguible` hizo que la
+    // secuencia de llamadas difiriera (`conocido=[sendMagicLink]` ·
+    // `desconocido=[sendMagicLink,warmBundle]`) — o sea, el arnés acusando al producto de
+    // ruido que causaba él mismo al desmontar.
+    // Esperar silencio de red antes de juzgar NO tapa nada: si la llamada de fondo falla de
+    // verdad, su error llega igual; lo que desaparece es el aborto por desmontaje.
+    if (REAL) await esperarSilencioDeRed(30000)
+
     // Evidencia mínima: un recorrido que no leyó nada no comprobó nada.
     const totalLlamadas = calls.length
     if (totalLlamadas < def.minLlamadas) {
