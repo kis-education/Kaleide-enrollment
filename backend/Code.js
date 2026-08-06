@@ -859,10 +859,30 @@ function assertGroupEditable_(enrollmentGroupId) {
  * @private
  */
 function _resolveStepUpGroup_(p) {
+  // ★ ORDEN CORREGIDO 2026-08-06 — antes el `signing_token` GANABA al `resume_token`.
+  //
+  // El step-up prueba UNA cosa: que tienes acceso al buzón del expediente. Para eso le
+  // basta el GRUPO, y el `resume_token` lo da. Preguntar primero por el token de firma le
+  // metía una dependencia dura de una sesión de firma VIVA y no terminal a algo que no
+  // firma nada: si esa sesión no existía, el KMS respondía
+  //   SIGNING_TOKEN_INVALID · "signing identity rejected: SESSION_NOT_FOUND"
+  // y la familia que volvía tras el bloqueo de pantalla se quedaba fuera al pedir el OTP.
+  //
+  // La pista que lo delató (Diego, probándolo): al RECARGAR la página del OTP sí entraba.
+  // La recarga rehace el estado sin arrastrar el token de firma, así que la misma llamada
+  // caía a la rama del `resume_token` y resolvía sin problema. Esa asimetría era el bug.
+  //
+  // KAL-4 INTACTA: los dos tokens se verifican server-side y los dos derivan el grupo
+  // server-side, NUNCA del payload. Solo cambia CUÁL se pregunta primero. El token de
+  // firma sigue siendo la vía cuando de verdad se está en el tramo de firma y no hay
+  // `resume_token` a mano.
+  if (p && p.resume_token) {
+    return { enrollment_group_id: requireResumeToken_(p) };
+  }
   if (p && p.signing_token) {
     return requireSigningToken_(p); // { enrollment_group_id, guardian_person_id, ... }
   }
-  // requireResumeToken_ devuelve el enrollment_group_id como string.
+  // Sin ninguno de los dos: requireResumeToken_ lanza el UNAUTHORIZED que corresponde.
   return { enrollment_group_id: requireResumeToken_(p) };
 }
 
