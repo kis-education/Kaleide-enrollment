@@ -5,9 +5,23 @@
  * por guardian. `GDPR_SCHOOL` es bloqueante (rechazarlo impide avanzar a review/sign).
  * Los demás (image rights × 4 usos, comms, platform groups) son opcionales.
  *
- * `code` = `consent_type_code` que espera el handler KMS `enr.submitGdprConsents`
- * (flat, e.g. `IMAGE_RIGHTS_INTERNAL_GALLERY`). El texto mostrado se envía como
- * `consent_text_shown` (auditoría GDPR — debe coincidir con lo que el guardian vio).
+ * DOS CAMPOS DISTINTOS, y confundirlos fue el error que esto corrige (DL-S111):
+ *   - `id`   = identidad DE PANTALLA. Clave de React, clave del estado del formulario y
+ *              del `id`/`htmlFor` de cada casilla. NO viaja al servidor. Es única por
+ *              casilla, que es lo que la pantalla necesita.
+ *   - `code` = `consent_type_code` del CATÁLOGO (`config/sys-consent-types.json`), que es
+ *              lo que se transmite. Los cuatro usos de imagen comparten `IMAGE_RIGHTS` y
+ *              se distinguen por `consent_use`, que es exactamente lo que el catálogo
+ *              declara (`requires_use: true`, `granularity: "per_use"`).
+ *
+ * Antes `code` hacía los dos papeles a la vez, así que para tener casillas distintas se
+ * inventaron cuatro códigos planos (`IMAGE_RIGHTS_INTERNAL_GALLERY`…) que NO están en el
+ * catálogo. Eso metió 794 fichas fuera de catálogo en el registro de consentimientos.
+ * El catálogo no se ensancha para que quepa lo que un escritor metió mal: se arregla el
+ * escritor (DL-S111 §3).
+ *
+ * El texto mostrado se envía como `consent_text_shown` (auditoría GDPR — debe coincidir
+ * con lo que el guardian vio).
  *
  * Stage 1: textos hardcoded aquí (Capa 2 SaaS per DL-E27 §1 "se hardcodea en el
  * frontend"). TODO Fase 2: fetcher backend `enr.getConsentTexts` para centralizar
@@ -18,6 +32,7 @@ export const SIGNING_CONSENT_TEXT_VERSION = 'v1';
 
 export const SIGNING_CONSENTS = [
   {
+    id:   'GDPR_SCHOOL',
     code: 'GDPR_SCHOOL',
     consent_use: null,
     blocking: true,
@@ -31,7 +46,8 @@ export const SIGNING_CONSENTS = [
     },
   },
   {
-    code: 'IMAGE_RIGHTS_INTERNAL_GALLERY',
+    id:   'IMAGE_RIGHTS_INTERNAL_GALLERY',
+    code: 'IMAGE_RIGHTS',
     consent_use: 'INTERNAL_GALLERY',
     blocking: false,
     label: {
@@ -44,7 +60,8 @@ export const SIGNING_CONSENTS = [
     },
   },
   {
-    code: 'IMAGE_RIGHTS_NEWSLETTER',
+    id:   'IMAGE_RIGHTS_NEWSLETTER',
+    code: 'IMAGE_RIGHTS',
     consent_use: 'NEWSLETTER',
     blocking: false,
     label: {
@@ -57,7 +74,8 @@ export const SIGNING_CONSENTS = [
     },
   },
   {
-    code: 'IMAGE_RIGHTS_SOCIAL_MEDIA',
+    id:   'IMAGE_RIGHTS_SOCIAL_MEDIA',
+    code: 'IMAGE_RIGHTS',
     consent_use: 'SOCIAL_MEDIA',
     blocking: false,
     label: {
@@ -70,7 +88,8 @@ export const SIGNING_CONSENTS = [
     },
   },
   {
-    code: 'IMAGE_RIGHTS_WEB_PUBLIC',
+    id:   'IMAGE_RIGHTS_WEB_PUBLIC',
+    code: 'IMAGE_RIGHTS',
     consent_use: 'WEB_PUBLIC',
     blocking: false,
     label: {
@@ -83,6 +102,7 @@ export const SIGNING_CONSENTS = [
     },
   },
   {
+    id:   'COMMERCIAL_COMMS',
     code: 'COMMERCIAL_COMMS',
     consent_use: null,
     blocking: false,
@@ -96,6 +116,7 @@ export const SIGNING_CONSENTS = [
     },
   },
   {
+    id:   'PLATFORM_GROUPS',
     code: 'PLATFORM_GROUPS',
     consent_use: null,
     blocking: false,

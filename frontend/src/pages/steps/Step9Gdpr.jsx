@@ -93,7 +93,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   const submit = () => {
     if (locked) { onAdvance(); return; } // solo lectura: avanza sin guardar
     const gdprSchool = generalConsents.find(c => c.blocking);
-    if (gdprSchool && genState[gdprSchool.code] !== true) {
+    if (gdprSchool && genState[gdprSchool.id] !== true) {
       setErr(t('signing.gdpr.must_accept_blocking'));
       return;
     }
@@ -112,7 +112,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
     generalConsents.forEach(c => consents.push({
       consent_type_code:    c.code,
       consent_use:          c.consent_use || null,
-      consented:            genState[c.code] === true,
+      consented:            genState[c.id] === true,
       consent_text_shown:   c.text[lang],
       subject_person_id:    guardianPersonId || null,
       subject_person_table: guardianPersonId ? 'enrPersons' : null,
@@ -121,7 +121,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
     imageSubjects.forEach(s => imageConsents.forEach(c => consents.push({
       consent_type_code:    c.code,
       consent_use:          c.consent_use || null,
-      consented:            !!(imgState[s.id] && imgState[s.id][c.code]),
+      consented:            !!(imgState[s.id] && imgState[s.id][c.id]),
       consent_text_shown:   c.text[lang],
       subject_person_id:    s.id,
       subject_person_table: s.table,
@@ -129,8 +129,8 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
     })));
     log.info('[DBG gdpr] submit', {
       consents_n: consents.length,
-      gen_true:   generalConsents.filter(c => genState[c.code] === true).length,
-      img_true:   imageSubjects.reduce((n, s) => n + imageConsents.filter(c => !!(imgState[s.id] && imgState[s.id][c.code])).length, 0),
+      gen_true:   generalConsents.filter(c => genState[c.id] === true).length,
+      img_true:   imageSubjects.reduce((n, s) => n + imageConsents.filter(c => !!(imgState[s.id] && imgState[s.id][c.id])).length, 0),
     });
     // Factory encolada. `res.blocked` (rechazo de consentimiento bloqueante
     // server-side) se convierte en rechazo de la promesa → misma vía de surfacing
@@ -171,12 +171,12 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
       >
         {/* Consentimientos GENERALES (per-guardian: GDPR + comms + plataforma) */}
         {generalConsents.map(c => (
-          <div key={c.code} className="consent-block" style={{ borderBottom: '1px solid var(--bg)', paddingBottom: 12, marginBottom: 12 }}>
+          <div key={c.id} className="consent-block" style={{ borderBottom: '1px solid var(--bg)', paddingBottom: 12, marginBottom: 12 }}>
             <p style={{ fontSize: '0.86rem', color: 'var(--text)', marginBottom: 8 }}>{c.text[lang]}</p>
             <div className="form-check">
-              <input type="checkbox" className="form-check-input" id={'consent_' + c.code}
-                checked={!!genState[c.code]} onChange={() => toggleGen(c.code)} />
-              <label className="form-check-label fw-semibold" htmlFor={'consent_' + c.code} style={{ fontSize: '0.85rem' }}>
+              <input type="checkbox" className="form-check-input" id={'consent_' + c.id}
+                checked={!!genState[c.id]} onChange={() => toggleGen(c.id)} />
+              <label className="form-check-label fw-semibold" htmlFor={'consent_' + c.id} style={{ fontSize: '0.85rem' }}>
                 {c.label[lang]}{c.blocking && <span style={{ color: '#c0392b' }}> *</span>}
               </label>
             </div>
@@ -196,10 +196,10 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
                   <i className={`bi ${s.kind === 'self' ? 'bi-person-badge' : 'bi-person'} me-1`} />{s.name}
                 </div>
                 {imageConsents.map(c => (
-                  <div key={s.id + '_' + c.code} className="form-check" style={{ marginBottom: 6 }}>
-                    <input type="checkbox" className="form-check-input" id={'img_' + s.id + '_' + c.code}
-                      checked={!!(imgState[s.id] && imgState[s.id][c.code])} onChange={() => toggleImg(s.id, c.code)} />
-                    <label className="form-check-label" htmlFor={'img_' + s.id + '_' + c.code} style={{ fontSize: '0.84rem' }}>
+                  <div key={s.id + '_' + c.id} className="form-check" style={{ marginBottom: 6 }}>
+                    <input type="checkbox" className="form-check-input" id={'img_' + s.id + '_' + c.id}
+                      checked={!!(imgState[s.id] && imgState[s.id][c.id])} onChange={() => toggleImg(s.id, c.id)} />
+                    <label className="form-check-label" htmlFor={'img_' + s.id + '_' + c.id} style={{ fontSize: '0.84rem' }}>
                       {c.label[lang]}
                     </label>
                   </div>
