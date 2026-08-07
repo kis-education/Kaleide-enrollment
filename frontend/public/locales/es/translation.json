@@ -492,5 +492,13 @@
   "neae.sup.EXTERNAL_PSYCH": "Psicología externa",
   "neae.sup.OTHER": "Otro",
   "neae.scope.PRIOR_SCHOOL": "En el centro anterior",
-  "neae.scope.EXTERNAL_CURRENT": "Externo actual"
+  "neae.scope.EXTERNAL_CURRENT": "Externo actual",
+  "step7.correction_cta": "Necesito corregir algo de mi solicitud",
+  "step7.correction_label": "¿Qué necesitas corregir?",
+  "step7.correction_placeholder": "Por ejemplo: nos hemos equivocado en la fecha de nacimiento de Marta.",
+  "step7.correction_send": "Enviar la petición",
+  "step7.correction_sending": "Enviando…",
+  "step7.correction_sent": "Hemos recibido tu petición. El colegio te escribirá para decirte cómo seguir.",
+  "step7.correction_failed": "No hemos podido registrar tu petición. Escríbenos a admisiones@kaleide.org y lo resolvemos.",
+  "common.cancel": "Cancelar"
 }

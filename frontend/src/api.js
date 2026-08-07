@@ -44,6 +44,21 @@ export function saveNeae(resumeToken, neaeData) {
   return gasCall('saveNeae', { resume_token: resumeToken, neae: neaeData });
 }
 
+/**
+ * La familia pide poder corregir una solicitud que YA envió (cola 18.quater).
+ *
+ * El wizard no decide nada: manda el hecho y devuelve lo que el KMS conteste. Puede
+ * volver `requested:false` con un motivo (p.ej. que el colegio aún no lo tenga
+ * declarado) — la pantalla DEBE distinguirlo de un «sí», porque decirle a una familia
+ * que su petición está cursada cuando no lo está la deja esperando para siempre.
+ *
+ * @param {string} resumeToken
+ * @param {string} [note] lo que la familia quiere corregir, en sus palabras
+ */
+export function requestCorrection(resumeToken, note) {
+  return gasCall('requestCorrection', { resume_token: resumeToken, note: note || null });
+}
+
 export function fetchLookups() {
   if (_lookupsCache)  return Promise.resolve(_lookupsCache);
   if (_lookupsFlight) return _lookupsFlight;

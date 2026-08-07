@@ -1737,6 +1737,7 @@ function doPost(e) {
       // DL-080-A — Step 8: presupuesto del borrador + elección de modalidad.
       case 'getSubscriptionBudget':   result = getSubscriptionBudget_(payload);   break;
       case 'applyPaymentModality':    result = applyPaymentModality_(payload);    break;
+      case 'requestCorrection':       result = requestCorrection_(payload);       break;
       case 'submitGdprConsents':      result = submitGdprConsents_(payload);      break;
       case 'confirmReview':           result = confirmReview_(payload);           break;
       case 'initiateSigningSession':  result = initiateSigningSession_(payload);  break;
@@ -7019,6 +7020,41 @@ function applyPaymentModality_(p) {
     subscription_id: subscriptionId,
     modality_id:     modalityId,
   }));
+}
+
+/**
+ * La familia PIDE CORREGIR una solicitud que ya envió (cola 18.quater, decisión de
+ * Diego 2026-08-07, opción C).
+ *
+ * Hasta hoy, la familia que se equivocaba no tenía ningún botón: tenía que escribir a
+ * admisiones y esperar a que alguien del colegio devolviera la solicitud a borrador a
+ * mano.
+ *
+ * Proxy FINO a `enr.wizardRequestCorrection`. El wizard NO decide nada: no mira en qué
+ * situación está el expediente, no lo reabre, no manda ningún correo. El KMS completa
+ * UNA MARCA —el hecho de que la familia lo pidió— y lo que ocurra después lo declara
+ * el colegio con sus avisos automáticos.
+ *
+ * KAL-4: el grupo lo deriva el KMS del `resume_token`; aquí se valida primero con
+ * `requireResumeToken_` (defensa en dos capas, igual que el resto de mutaciones).
+ * ESCRITURA ⇒ se invalida la caché del grupo (nunca servir algo viejo tras escribir).
+ *
+ * El KMS puede responder `requested:false` con un motivo —por ejemplo si el colegio
+ * todavía no ha declarado la marca—. Eso se devuelve TAL CUAL: la pantalla tiene que
+ * poder decirle a la familia que escriba a admisiones en vez de dejarla esperando un
+ * «hecho» que no ha hecho nada.
+ *
+ * @param {{ resume_token:string, note?:string }} p
+ * @returns {{ ok:boolean, requested:boolean, marked:number, reason?:string }}
+ */
+function requestCorrection_(p) {
+  p = p || {};
+  requireResumeToken_(p);                    // KAL-4 capa wizard (el KMS re-valida)
+  _wzCacheInvalidate_(p.resume_token);       // WIZARD-CACHE: nunca stale tras un write
+  return kmsProxy_('enr.wizardRequestCorrection', {
+    resume_token: String(p.resume_token),
+    note: p.note ? String(p.note).slice(0, 500) : null,
+  });
 }
 
 /**

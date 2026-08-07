@@ -329,7 +329,7 @@ const record = (c) => { calls.push({ ...c, at: Date.now() }) }
 record.unmocked = (a) => { unmockedActions.add(String(a)) }
 
 // Escenario MUTABLE que los caminos reconfiguran antes de navegar.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok' }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok' }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -2428,6 +2428,78 @@ async function irAPreguntas(c, page) {
   return true
 }
 
+/**
+ * PEDIR CORREGIR — una familia que YA envió se da cuenta de un error y lo pide desde
+ * la pantalla (cola 18.quater, decisión de Diego 2026-08-07).
+ *
+ * Lo que afirma, y son DOS cosas, no una:
+ *   · que el botón EXISTE en la pantalla de «solicitud enviada» y que al enviarlo la
+ *     familia ve que su petición quedó cursada;
+ *   · y —lo que de verdad importa— que cuando el KMS contesta que NO quedó cursada
+ *     (p.ej. el colegio aún no lo tiene declarado) la pantalla lo dice, en vez de
+ *     enseñar el mismo «hecho» de siempre.
+ *
+ * El segundo es el que protege a la familia: un «hecho» falso la deja esperando una
+ * respuesta que nadie va a mandar, y nadie se entera nunca. Por eso los dos casos se
+ * recorren de verdad, no solo el bueno.
+ */
+async function caminoPedirCorreccion(page, base) {
+  const c = new Camino('pedir-correccion')
+  scenario.stage = 'enviada'
+  scenario.correccionMode = 'ok'
+
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  await page.waitForTimeout(LATENCY + 400)
+
+  const pantalla = await page.evaluate(sondaPantalla)
+  c.evidencia.elementos = pantalla.pasos + pantalla.campos + pantalla.tarjetas
+  c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
+  c.afirmar('una solicitud ya enviada aterriza en Revisión (paso 7.º)',
+    pantalla.pasoActivo === 6,
+    `aterrizó en el índice ${pantalla.pasoActivo} (se esperaba 6)`)
+
+  // ── (a) el camino bueno: pedirlo y ver que quedó cursado ────────────────────
+  const abrir = await page.$('[data-testid="correction-open"]')
+  if (!c.afirmar('la pantalla de «solicitud enviada» ofrece corregir',
+        !!abrir, 'no hay ningún sitio donde pedirlo: la familia sigue teniendo que escribir a admisiones')) {
+    return c
+  }
+  await abrir.click()
+  await page.waitForTimeout(150)
+  const nota = await page.$('[data-testid="correction-note"]')
+  if (nota) await nota.type('nos equivocamos en la fecha de nacimiento')
+  const enviar = await page.$('[data-testid="correction-send"]')
+  if (!c.afirmar('el formulario de corrección tiene botón de enviar', !!enviar, 'no se pintó')) return c
+  await enviar.click()
+  await page.waitForTimeout(LATENCY + 600)
+  c.evidencia.llamadas++
+  c.afirmar('cursada la petición, la familia ve que llegó',
+    !!(await page.$('[data-testid="correction-result-ok"]')),
+    'no se pintó la confirmación: la familia no sabe si su petición salió')
+
+  // ── (b) el caso que protege: el KMS dice que NO quedó cursada ───────────────
+  scenario.correccionMode = 'no_declarada'
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  await page.waitForTimeout(LATENCY + 400)
+  const abrir2 = await page.$('[data-testid="correction-open"]')
+  if (!c.afirmar('se puede volver a pedir tras recargar', !!abrir2, 'el botón desapareció')) return c
+  await abrir2.click()
+  await page.waitForTimeout(150)
+  const enviar2 = await page.$('[data-testid="correction-send"]')
+  if (!c.afirmar('el botón de enviar sigue ahí en el segundo caso', !!enviar2, 'no se pintó')) return c
+  await enviar2.click()
+  await page.waitForTimeout(LATENCY + 600)
+  c.evidencia.llamadas++
+  const fallo = await page.$('[data-testid="correction-result-failed"]')
+  const falsoOk = await page.$('[data-testid="correction-result-ok"]')
+  c.afirmar('si NO quedó cursada, se le dice a la familia (y NO se le dice que sí)',
+    !!fallo && !falsoOk,
+    falsoOk
+      ? 'la pantalla dijo «recibida» con una petición que el KMS NO cursó — la familia se queda esperando para siempre'
+      : 'no se pintó ningún aviso: el botón no hizo nada visible')
+  return c
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -2445,6 +2517,8 @@ const CAMINOS = [
   // Defecto 3 de la definición de hecho: el cuestionario se apagaba entero, en silencio
   // y durante media hora, por un fallo pasajero del servidor. Ver el camino.
   { nombre: 'cuestionario-no-se-apaga', fn: caminoCuestionarioNoSeApaga, minLlamadas: 1, minElementos: 2 },
+  // Cola 18.quater — la familia pide corregir su solicitud ya enviada.
+  { nombre: 'pedir-correccion',    fn: caminoPedirCorreccion,    minLlamadas: 2, minElementos: 11 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

@@ -165,7 +165,7 @@ export function buildHydrate(stage, preguntasMode) {
     primary_email:       FIXTURE.emailKnown,
     program_id:          FIXTURE.programId,
     desired_start_date:  stage === 'sin_fecha' ? null : FIXTURE.startDateSep,
-    submitted_at:        stage === 'firma' ? '2026-07-01T10:00:00Z' : null,
+    submitted_at:        (stage === 'firma' || stage === 'enviada') ? '2026-07-01T10:00:00Z' : null,
   };
 
   const base = {
@@ -217,6 +217,28 @@ export function buildHydrate(stage, preguntasMode) {
       persons,
       relations,
       responses: [{ question_id: 'q1', respondent_id: FIXTURE.guardian1Id, response_text: 'sí' }],
+    };
+  }
+
+  if (stage === 'enviada') {
+    // Expediente YA ENVIADO y SIN admitir: la familia aterriza en Revisión (índice 6)
+    // viendo «solicitud enviada». Es la pantalla donde vive «necesito corregir algo»
+    // (cola 18.quater). No es lo mismo que `firma`: ahí ya está admitida y el wizard
+    // la lleva al tramo de firma, donde ese botón no pinta nada.
+    return {
+      ...base,
+      persons,
+      relations,
+      responses: [{ question_id: 'q1', respondent_id: FIXTURE.guardian1Id, response_text: 'sí' }],
+      recovered_guardian_person_id: FIXTURE.guardian1Id,
+      admission: {
+        state_code:        'RQ',
+        state_label:       'Solicitada',
+        editable:          false,     // enviada ⇒ bloqueada para editar
+        signing_available: false,
+        signing_ready:     false,
+        signing_status:    null,
+      },
     };
   }
 
@@ -274,6 +296,13 @@ export function createDispatcher(scenario, record) {
     },
     getLiveStateVersion: () => ({ ok: true, version: 1 }),
     abandonSession:      () => ({ ok: true, abandoned: true }),
+    // Cola 18.quater — la familia pide corregir. `correccionMode` decide qué contesta
+    // el KMS: 'ok' (marca completada) o 'no_declarada' (el colegio aún no la declaró).
+    // Los DOS tienen que verse distintos en pantalla; ése es el fondo del asunto.
+    requestCorrection: () => (scenario.correccionMode === 'no_declarada'
+      ? { ok: true, requested: false, marked: 0, reason: 'MILESTONE_TYPE_NOT_FOUND' }
+      : { ok: true, requested: true, marked: 1 }),
+
     reportUnsolicited:   () => ({ ok: true }),
 
     // ── Catálogos ────────────────────────────────────────────────────────────

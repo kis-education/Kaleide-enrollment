@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
 import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
-import { gasCall, fetchLookups, fetchQuestions } from '../../api';
+import { gasCall, fetchLookups, fetchQuestions, requestCorrection } from '../../api';
 import StepNav from '../../components/StepNav';
 import { openDocument } from '../../utils/documentProxy';
 import { translateRelationLabel, translateGender, translateIdType } from '../../utils/enumLabels';
@@ -17,6 +17,102 @@ function parseBool(val) {
   if (typeof val === 'boolean') return val;
   if (typeof val === 'string')  return val.toLowerCase() === 'true' || val === '1';
   return Boolean(val);
+}
+
+/**
+ * «Necesito corregir algo» — para la familia que ya envió y se dio cuenta de un error
+ * (cola 18.quater, decisión de Diego 2026-08-07).
+ *
+ * Antes de esto, la familia que se equivocaba no tenía dónde pulsar: tenía que escribir
+ * a admisiones y esperar. Ahora lo pide desde aquí y el colegio se entera al momento.
+ *
+ * TRES ESTADOS Y NI UNO MÁS, y el tercero es el que importa:
+ *   · cerrado    — un enlace discreto, para no competir con «solicitud enviada»
+ *   · abierto    — un hueco para escribir QUÉ quiere corregir, y el botón de enviar
+ *   · contestado — lo que de verdad pasó
+ *
+ * POR QUÉ ESTO **NO** CIERRA AL INSTANTE (y sí lo hace el resto de la aplicación): la
+ * regla de cerrar en el envío existe porque la fila optimista ya le enseña al usuario
+ * el resultado. Aquí no hay ninguna fila que enseñar, y el resultado **no se puede
+ * adivinar**: el KMS puede contestar que la petición quedó cursada, o que no —por
+ * ejemplo, si el colegio aún no lo tiene declarado—. Fingir un «hecho» dejaría a la
+ * familia esperando una respuesta que nadie va a mandar. Así que se espera la respuesta
+ * real y se dice cuál de las dos fue.
+ */
+function CorrectionRequest({ resumeToken, t }) {
+  const [abierto, setAbierto] = useState(false);
+  const [texto, setTexto]     = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const [resultado, setResultado] = useState(null);   // 'ok' | 'no' | 'error'
+
+  async function enviar() {
+    setEnviando(true);
+    try {
+      const r = await requestCorrection(resumeToken, texto);
+      setResultado(r && r.requested ? 'ok' : 'no');
+      if (!r || !r.requested) {
+        log.warn('Step7: la petición de corrección no quedó cursada', { reason: r && r.reason });
+      }
+    } catch (e) {
+      log.error('Step7: requestCorrection failed', { message: e.message });
+      setResultado('error');
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  if (resultado === 'ok') {
+    return (
+      <p data-testid="correction-result-ok"
+         style={{ color: '#1b5e20', fontSize: '0.9rem', marginTop: 14, marginBottom: 0 }}>
+        <i className="bi bi-check-circle-fill me-2" />{t('step7.correction_sent')}
+      </p>
+    );
+  }
+  // Ni cursada ni error del transporte: en los dos casos la familia necesita SABER que
+  // esto no ha llegado, y qué hacer en su lugar. Un aviso callado sería lo mismo que
+  // no tener el botón, pero además engañoso.
+  if (resultado === 'no' || resultado === 'error') {
+    return (
+      <p data-testid="correction-result-failed"
+         style={{ color: '#b23c17', fontSize: '0.9rem', marginTop: 14, marginBottom: 0 }}>
+        <i className="bi bi-exclamation-triangle-fill me-2" />{t('step7.correction_failed')}
+      </p>
+    );
+  }
+
+  if (!abierto) {
+    return (
+      <button type="button" className="btn btn-link p-0 mt-3"
+        data-testid="correction-open"
+        style={{ fontSize: '0.9rem', color: 'var(--teal-dk)' }}
+        onClick={() => setAbierto(true)}>
+        <i className="bi bi-pencil-square me-2" />{t('step7.correction_cta')}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-3" data-testid="correction-form">
+      <label className="form-label fw-semibold" htmlFor="correction_note" style={{ fontSize: '0.9rem' }}>
+        {t('step7.correction_label')}
+      </label>
+      <textarea id="correction_note" className="form-control" rows={3} maxLength={500}
+        data-testid="correction-note"
+        placeholder={t('step7.correction_placeholder')}
+        value={texto} onChange={e => setTexto(e.target.value)} />
+      <div className="d-flex gap-2 mt-2">
+        <button type="button" className="btn btn-outline-secondary btn-sm"
+          onClick={() => { setAbierto(false); setTexto(''); }} disabled={enviando}>
+          {t('common.cancel')}
+        </button>
+        <button type="button" className="btn btn-primary btn-sm"
+          data-testid="correction-send" onClick={enviar} disabled={enviando}>
+          {enviando ? t('step7.correction_sending') : t('step7.correction_send')}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // ─── Presentational components ────────────────────────────────────────────────
@@ -544,6 +640,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
               <li>{t('confirmation.next_2')}</li>
               <li>{t('confirmation.next_3')}</li>
             </ul>
+            <CorrectionRequest resumeToken={resumeToken} t={t} />
           </div>
           {/* DL-E38 merge: bottom nav mirrors the top — Back + (state-driven)
               advance-to-signing "Continuar". Same positions as steps 1-6. */}

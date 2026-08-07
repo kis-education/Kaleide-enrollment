@@ -492,5 +492,13 @@
   "neae.sup.EXTERNAL_PSYCH": "External psychology",
   "neae.sup.OTHER": "Other",
   "neae.scope.PRIOR_SCHOOL": "At the previous school",
-  "neae.scope.EXTERNAL_CURRENT": "External, current"
+  "neae.scope.EXTERNAL_CURRENT": "External, current",
+  "step7.correction_cta": "I need to correct something in my application",
+  "step7.correction_label": "What do you need to correct?",
+  "step7.correction_placeholder": "For example: we got Marta’s date of birth wrong.",
+  "step7.correction_send": "Send request",
+  "step7.correction_sending": "Sending…",
+  "step7.correction_sent": "We have received your request. The school will write to you with the next steps.",
+  "step7.correction_failed": "We could not register your request. Please write to admisiones@kaleide.org and we will sort it out.",
+  "common.cancel": "Cancel"
 }
