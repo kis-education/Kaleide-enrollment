@@ -4634,20 +4634,21 @@ function submitEnrollmentSession_(p) {
     rec_scopes:        submitRecScopes,
   });
 
-  // WIZARD-TERMINAL P3: confirmaci\u00f3n a la familia + notificaci\u00f3n interna v\u00eda el motor del
-  // KMS (el contenido lo gobierna el KMS). El wizard pre-renderiza los nombres y la tabla.
-  // P72: si el KMS falla, el throw propaga y el handler devuelve {ok:false} \u2014 NO cae a
-  // Gmail local (single-source). El submit en s\u00ed ya est\u00e1 persistido arriba.
-  const applicantNames = applicants.map(a => ((a.first_name || '') + ' ' + (a.last_name || '')).trim()).filter(Boolean).join(', ');
-  sendViaKmsNotify_('WIZARD_FAMILY_CONFIRMATION', app.primary_email, {
-    family_name:     '',
-    applicant_names: applicantNames,
-    enrollment_id:   enrollmentGroupId,
-  });
-  sendViaKmsNotify_('WIZARD_INTERNAL_NOTIFICATION', ADMISSIONS_EMAIL, {
-    enrollment_id:    enrollmentGroupId,
-    applicants_table: _kmsRenderApplicantsTable_(enrollmentGroupId, now, enrichedGuardians, applicants, app, qbResponseMap),
-  });
+  // ── Los dos correos del envio los pide el KMS, NO el wizard (tramo D, Paso 2) ──
+  // Retirados el 2026-08-07. El wizard reporta un HECHO ("la familia envio el
+  // formulario") y quien decide que se manda es la configuracion del centro:
+  //   · a la familia   -> kis-rule-0014 "Solicitud recibida - confirmacion a la familia"
+  //   · a admisiones   -> kis-rule-0015 "Solicitud recibida - aviso interno staff"
+  // Las dos cuelgan de la entrada en RQ (SUBMITTED_STATE_ENTERED_AT, occurrence FIRST).
+  //
+  // POR QUE AHORA, medido el 2026-08-07: Diego encendio kis-rule-0014, y hay 13 pasos a
+  // RQ registrados => la regla YA tiene de donde arrancar. Con estas dos llamadas vivas,
+  // la siguiente solicitud enviada mandaria el MISMO correo DOS VECES a la misma familia.
+  // (Un agente sostuvo que no podia dispararse "porque el envio no registra paso alguno";
+  // la medicion lo desmiente: los pasos se registran, y los fabrica este mismo fichero.)
+  //
+  // PROHIBIDO devolver estas llamadas: duplicarian el correo. Si algun dia la familia deja
+  // de recibirlo, lo que falla es la regla del centro, y se arregla en su pantalla.
 
   return {
     submitted:           true,
