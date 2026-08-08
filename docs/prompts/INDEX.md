@@ -6,7 +6,7 @@ lanzables sin dependencias**. Cada prompt va en un solo code-block 4-backtick,
 listo para copy-paste de un click al CLI local.
 
 **Branch canónico**: TODOS los CLIs aquí van directo a `main` del repo
-`Kaleide-enrollment`. NUNCA `develop`. NUNCA branches nuevas. Per CLAUDE.md
+`Kaleide-enrollment`. NUNCA la rama de kis-app (`master`). NUNCA branches nuevas. Per CLAUDE.md
 §"Regla canónica de branches".
 
 ## Tabla resumen
@@ -47,7 +47,7 @@ hardening + complejidad de testing:
 
 ## Items BLOQUEADOS por dependencia (no incluidos en este lote)
 
-- **SSRF-1 / SSRF-KEY** del driver Click & Sign → vive en KMS (`kis-app/develop`),
+- **SSRF-1 / SSRF-KEY** del driver Click & Sign → vive en KMS (`kis-app/master`),
   no en wizard. Diferible Stage 1 si CLI 83 (PRIVESC) se cierra primero.
 - **KAL-NEW-9 mitad canónica** — espera al refactor S-SIGN + DL-S65
   `sysLegalActsLog` (vive en KMS, no en wizard). Este lote solo cubre la mitad
@@ -57,4 +57,4 @@ hardening + complejidad de testing:
 
 - `/home/user/kis-app/docs/kms/plan/readiness-2026-06-03/06-security-findings-integration.md` — análisis de hallazgos de los 5 audits del wizard.
 - `/home/user/Kaleide-enrollment/CLAUDE.md` §Security — historia de items KAL-* cerrados.
-- `/home/user/kis-app/docs/kms/prompts/security-CLI-{20,21,23,24,25}-*.md` — prompts antiguos pre-readiness; algunos cubren mismos hallazgos pero apuntan a `develop` (rama equivocada por inercia 2026-05-29) → estos KAL-N prompts los reemplazan y usan `main` canónico.
+- `/home/user/kis-app/docs/kms/prompts/security-CLI-{20,21,23,24,25}-*.md` — prompts antiguos pre-readiness; algunos cubren mismos hallazgos pero apuntan a la rama de kis-app (rama equivocada por inercia 2026-05-29; entonces se llamaba `develop`) → estos KAL-N prompts los reemplazan y usan `main` canónico.

@@ -3,21 +3,30 @@
 #
 # QUÉ ES: ejecuta cada hora el ciclo de auditoría de seguridad descrito en
 #   kis-app/docs/kms/security/AUDIT-LOOP.md contra AMBOS repos
-#   (kis-app@develop + Kaleide-enrollment@main), consolida los hallazgos en
+#   (kis-app + Kaleide-enrollment@main), consolida los hallazgos en
 #   docs/kms/security/audit-<fecha>.md y vuelca lo accionable a
-#   docs/kms/loop-backlog.md — y los PUBLICA en kis-app/develop.
+#   docs/kms/loop-backlog.md — y los PUBLICA en la rama del KMS de kis-app.
+#
+#   QUÉ RAMA DE kis-app: `master`. Desde la decisión D39 (2026-08-08) kis-app va
+#   a UNA SOLA rama, `master`, con el KMS. Mientras dure la transición la verja
+#   la resuelve EN EJECUCIÓN (ver el paso «Verja»): usa `develop` mientras esa
+#   rama exista —es donde está el KMS hasta que se haga la fusión— y pasa a
+#   `master` sola en cuanto se borre. Así no hace falta cronometrar este fichero
+#   con el plan, y NUNCA escribe en `master` antes de la fusión.
 #   SOLO DOCUMENTA. Nunca remedia código ni despliega (ni clasp, ni gas:build).
 #
 # POR QUÉ VIVE EN EL WIZARD (Kaleide-enrollment) Y NO EN kis-app:
-#   `on: schedule` SOLO dispara desde la RAMA POR DEFECTO del repo. La rama por
-#   defecto de kis-app es `master` (Assessment Matrix, producción, PROHIBIDO
-#   tocar) — un cron colgado ahí no dispararía nunca. La rama por defecto del
-#   wizard es `main`, así que aquí SÍ dispara. Por eso el scheduler durable
-#   vive en el wizard aunque la mayoría de los informes aterricen en kis-app.
+#   `on: schedule` SOLO dispara desde la RAMA POR DEFECTO del repo. Cuando esto
+#   se montó, la rama por defecto de kis-app era `master` y llevaba OTRA app en
+#   producción (Assessment Matrix), así que un cron colgado ahí no dispararía
+#   nunca sobre el KMS. La rama por defecto del wizard es `main` y aquí SÍ
+#   dispara. Se queda donde está: mover el cron a kis-app tras la fusión es
+#   posible, pero es un cambio aparte que hay que medir, no un efecto colateral
+#   de renombrar una rama.
 #
 # POR QUÉ NECESITA UN PAT (AUDIT_PUSH_TOKEN):
 #   el GITHUB_TOKEN nativo de una corrida solo alcanza a SU propio repositorio
-#   (Kaleide-enrollment). Publicar los informes en kis-app/develop exige un
+#   (Kaleide-enrollment). Publicar los informes en kis-app exige un
 #   token con acceso cruzado a kis-education/kis-app.
 #
 # SECRETOS REQUERIDOS (Settings → Secrets and variables → Actions, en
@@ -31,7 +40,8 @@
 #       - Repository access: kis-education/kis-app  (Contents: Read and write)
 #       - Repository access: kis-education/Kaleide-enrollment (Contents: Read)
 #       Se usa para clonar ambos repos en la verja barata y para el push de los
-#       informes a kis-app/develop. NUNCA se escribe en `master` de ningún repo.
+#       informes a la rama del KMS de kis-app. Solo se escribe DOCUMENTACIÓN, y
+#       solo en esa rama: en el wizard NUNCA se escribe nada.
 #
 # CÓMO SE LEE EL RESULTADO: la verja barata (bash, sin coste de Claude) decide
 #   si hay código nuevo comparando los tips actuales con los SHAs de la última
@@ -96,12 +106,27 @@ jobs:
           git config --global user.email "audit-bot@users.noreply.github.com"
 
           rm -rf /tmp/kisapp /tmp/wiz
-          git clone --depth 1 --branch develop https://github.com/kis-education/kis-app.git            /tmp/kisapp
-          git clone --depth 1 --branch main    https://github.com/kis-education/Kaleide-enrollment.git /tmp/wiz
+
+          # ── Qué rama de kis-app lleva el KMS (transición D39, 2026-08-08) ──
+          # El destino es `master`. Mientras `develop` siga existiendo es esa la
+          # que lo lleva (la fusión es el paso 4 del plan), así que se prefiere
+          # y NUNCA se escribe en `master` antes de tiempo. En cuanto `develop`
+          # se borre (paso 5), esto pasa a `master` solo, sin tocar el fichero.
+          # Cuando ya no exista `develop`, este bloque se puede reducir a
+          # KIS_BRANCH=master.
+          KIS_BRANCH=master
+          if git ls-remote --exit-code --heads https://github.com/kis-education/kis-app.git develop >/dev/null 2>&1; then
+            KIS_BRANCH=develop
+          fi
+          echo "Rama del KMS en kis-app: $KIS_BRANCH"
+          echo "kis_branch=$KIS_BRANCH" >> "$GITHUB_OUTPUT"
+
+          git clone --depth 1 --branch "$KIS_BRANCH" https://github.com/kis-education/kis-app.git            /tmp/kisapp
+          git clone --depth 1 --branch main          https://github.com/kis-education/Kaleide-enrollment.git /tmp/wiz
 
           KIS_TIP=$(git -C /tmp/kisapp rev-parse HEAD)
           WIZ_TIP=$(git -C /tmp/wiz    rev-parse HEAD)
-          echo "Tip actual kis-app@develop:            $KIS_TIP"
+          echo "Tip actual kis-app@$KIS_BRANCH:        $KIS_TIP"
           echo "Tip actual Kaleide-enrollment@main:    $WIZ_TIP"
 
           # Última auditoría (los nombres audit-YYYY-MM-DD.md ordenan cronológico).
@@ -114,7 +139,10 @@ jobs:
           echo "Última auditoría: $LATEST"
 
           LINE=$(grep -m1 'Commit auditado' "$LATEST" || true)
-          KIS_SHA=$(printf '%s' "$LINE" | grep -oE 'kis-app@develop [0-9a-f]+'          | awk '{print $2}' || true)
+          # Acepta las dos ramas: los informes viejos dicen `kis-app@develop` y
+          # los nuevos dirán `kis-app@master`. Si solo se aceptara una, la verja
+          # dejaría de parsear y auditaría de más en cada corrida.
+          KIS_SHA=$(printf '%s' "$LINE" | grep -oE 'kis-app@(develop|master) [0-9a-f]+' | awk '{print $2}' || true)
           WIZ_SHA=$(printf '%s' "$LINE" | grep -oE 'Kaleide-enrollment@main [0-9a-f]+'  | awk '{print $2}' || true)
           echo "SHA auditado kis-app:  ${KIS_SHA:-<ninguno>}"
           echo "SHA auditado wizard:   ${WIZ_SHA:-<ninguno>}"
@@ -156,15 +184,17 @@ jobs:
             --allowedTools "Bash,Read,Grep,Glob,Edit,Write,WebFetch,Task"
           prompt: |
             Ejecuta el ciclo de auditoría de seguridad definido en
-            docs/kms/security/AUDIT-LOOP.md contra kis-app@develop y
+            docs/kms/security/AUDIT-LOOP.md contra
+            kis-app@${{ steps.gate.outputs.kis_branch }} y
             Kaleide-enrollment@main.
 
             Preparación: la credencial git ya está configurada globalmente en
             este runner (cualquier `git clone`/`git push` de
             https://github.com/kis-education/... se autentica solo) y la identidad
-            de commit ya es el bot de auditoría. Clona kis-app@develop en un
-            directorio de trabajo, lee allí docs/kms/security/AUDIT-LOOP.md y
-            sigue su especificación al pie de la letra.
+            de commit ya es el bot de auditoría. Clona
+            kis-app@${{ steps.gate.outputs.kis_branch }} en un directorio de
+            trabajo, lee allí docs/kms/security/AUDIT-LOOP.md y sigue su
+            especificación al pie de la letra.
 
             Reglas (no negociables):
             - Trabaja en worktrees/checkouts AISLADOS (nunca un checkout
@@ -176,15 +206,16 @@ jobs:
             - Consolida los hallazgos en docs/kms/security/audit-<fecha>.md.
               INCLUYE, con este formato EXACTO para que la verja barata del cron
               lo pueda parsear en la próxima corrida, la línea:
-              **Commit auditado:** `kis-app@develop <sha-corto>` · `Kaleide-enrollment@main <sha-corto>`
+              **Commit auditado:** `kis-app@${{ steps.gate.outputs.kis_branch }} <sha-corto>` · `Kaleide-enrollment@main <sha-corto>`
               (los SHAs cortos de los tips que auditaste).
             - Vuelca lo ACCIONABLE a docs/kms/loop-backlog.md DEDUPLICANDO primero
               contra su contenido (no repitas hallazgos ya listados).
             - SOLO DOCUMENTAR: nunca remedies código ni despliegues (ni clasp, ni
               gas:build, ni cdn:push).
             - Haz commit + push SOLO de documentación (docs/kms/security/*,
-              docs/kms/loop-backlog.md) a kis-app/develop (rebase antes de pushear;
-              NUNCA a master). No pushees nada al wizard.
+              docs/kms/loop-backlog.md) a kis-app/${{ steps.gate.outputs.kis_branch }}
+              (rebase antes de pushear). Esa es la ÚNICA rama en la que escribes:
+              ninguna otra, y nada en el wizard.
             - Trailers OBLIGATORIOS en el commit:
               Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
               Claude-Session: https://claude.ai/code/session_013BjEPNYz1oenbi9pKZhQ3b

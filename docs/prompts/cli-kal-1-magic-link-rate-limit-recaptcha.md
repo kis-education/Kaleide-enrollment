@@ -5,7 +5,7 @@ La PRIMERA LÍNEA literal del reporte final debe ser exactamente:
 
 # Lectura obligatoria previa
 Lee estos archivos antes de operar para tener contexto sin re-derivarlo:
-1. `/home/user/Kaleide-enrollment/CLAUDE.md` — convenciones wizard + branch canónico `main` (NUNCA `develop` ni ramas nuevas) + flow `clasp push --force` + `clasp deploy --deploymentId AKfycbyzyAR6J3_2UAiE6tCyNHVawoGfMNNbZEaurp99cRI76IYbiqGVEeQQcTxsgAqUFnGk0w`.
+1. `/home/user/Kaleide-enrollment/CLAUDE.md` — convenciones wizard + branch canónico `main` (NUNCA la rama de kis-app ni ramas nuevas) + flow `clasp push --force` + `clasp deploy --deploymentId AKfycbyzyAR6J3_2UAiE6tCyNHVawoGfMNNbZEaurp99cRI76IYbiqGVEeQQcTxsgAqUFnGk0w`.
 2. `/home/user/kis-app/docs/kms/plan/readiness-2026-06-03/06-security-findings-integration.md` §3.2 (KAL-NEW-2) + §3.3 (KAL-NEW-4) + §4 (KAL-NEW-12) — descripción canónica de los 3 hallazgos.
 3. `/home/user/Kaleide-enrollment/backend/Code.js` líneas 512-630 (`_checkMagicLinkRateLimit_`, `initEnrollmentSession_`, validación reCAPTCHA + KMS_INTERNAL) y líneas 1899-1950 (`sendVerificationCode_` + `verifyEmail_`).
 
