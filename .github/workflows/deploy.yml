@@ -131,6 +131,25 @@ jobs:
       - name: Ningún consentimiento se registra con un código inventado
         run: node scripts/comprobar-codigos-de-consentimiento.mjs
 
+  no-escribe-estado:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # D33 / DL-S115: el envío completa la marca APPLICATION_FORM_COMPLETED y una regla
+      # mueve la ficha IN→RQ por el motor del KMS. El wizard NO escribe el estado ni dispara
+      # por su cuenta el correo de «solicitud recibida». Este control lo vigila donde vive el
+      # código (aquí, no en el KMS, donde sería inerte). `build` depende de él ⇒ en ROJO no
+      # se publica.
+      - name: El wizard no escribe el estado ni manda el correo del envío
+        run: node scripts/comprobar-que-el-wizard-no-escribe-estado.mjs
+
   # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.
   # Regla de los dos repos (CLAUDE.md §"No se toca lo que funciona sin una forma de
   # comprobar que sigue funcionando"): el 2026-07-27 un cambio de seguridad estuvo a
@@ -168,7 +187,7 @@ jobs:
         working-directory: frontend
 
   build:
-    needs: [e2e, escrituras-directas, selector-appsheet, receptor-firmado, pantalla-del-cliente, codigos-de-consentimiento]
+    needs: [e2e, escrituras-directas, selector-appsheet, receptor-firmado, pantalla-del-cliente, codigos-de-consentimiento, no-escribe-estado]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

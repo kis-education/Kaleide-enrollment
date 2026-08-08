@@ -4449,41 +4449,23 @@ function submitEnrollmentSession_(p) {
   // grupo se re-deriva del resume_token server-side; aplicantes/guardians salen de
   // enrPersons del grupo en el KMS — nada de ids del payload. Síncrono: un fallo
   // propaga (sin éxito falso), coherente con la semántica histórica.
-  // Devuelve enrollment_ids + rq_state_id, con los que este handler construye las
-  // transiciones y consentimientos que persiste enr.wizardPersistSubmitSideEffects (P1-A).
+  // Devuelve enrollment_ids con los que este handler construye los consentimientos que
+  // persiste enr.wizardPersistSubmitSideEffects (P1-A). El wizard YA NO fija ni registra el
+  // estado (D33 / DL-S115): la ficha nace en su estado de partida y la marca
+  // APPLICATION_FORM_COMPLETED —completada KMS-side por enr.wizardPersistSubmitEnrollments—
+  // dispara la transición por el motor, que deja el rastro en sysStateTransitionLog.
   const desiredStartDate = p.desired_start_date || null;
   const persistRes = kmsProxy_('enr.wizardPersistSubmitEnrollments', {
     resume_token:       p.resume_token,
     desired_start_date: desiredStartDate,
   });
   const enrollmentIds = (persistRes && persistRes.enrollment_ids) || [];
-  const rqStateId     = (persistRes && persistRes.rq_state_id) || null;
-  Logger.log('submitEnrollmentSession_: KMS persisted enrollments=' + enrollmentIds.length +
-             ' rq_state_id=' + rqStateId);
+  Logger.log('submitEnrollmentSession_: KMS persisted enrollments=' + enrollmentIds.length);
 
-  // Per-enrollment state transition log entry (null → RQ).
-  // mode_actually_used='MANUAL': the wizard submit IS the user's manual
-  // action that triggers this transition; AUTOMATIC is reserved for
-  // handler-fired transitions (timer expirations, upstream completion).
-  // P1-A: recoger las filas (mismas columnas) — las escribe el KMS al final del submit
-  // (enr.wizardPersistSubmitSideEffects). submitted_at vive en enrEnrollmentGroups
-  // (DL-E15), no en cada enrEnrollments — el momento per-enrollment lo refleja la
-  // transición a RQ.
-  const stateTransitionRows = enrollmentIds.map(enrollmentId => ({
-    log_id:             generateUuid_(),
-    school_id:          SCHOOL_ID,
-    entity_type_code:   'ENR_ADMISSION_SCHOOL',
-    entity_id:          enrollmentId,
-    transition_id:      null,
-    from_state_id:      null,
-    to_state_id:        rqStateId,
-    mode_actually_used: 'MANUAL',
-    transitioned_by:    'SYSTEM:WIZARD',
-    transitioned_at:    now,
-    notes:              'Enrollment requested by family',
-    created_at:         now,
-    created_by:         'SYSTEM:WIZARD',
-  }));
+  // D33 / DL-S115 — el wizard YA NO fabrica la fila de transición de estado. La transición
+  // IN→RQ la ejecuta el motor del KMS al completarse la marca APPLICATION_FORM_COMPLETED, y
+  // es él quien deja el rastro en sysStateTransitionLog. El KMS ya descartaba estas filas
+  // (enr_wizardPersistSubmitSideEffects → state_transitions_ignored); aquí se retiran de raíz.
 
   const lang = p.language || group.preferred_language || 'es';
 
@@ -4639,7 +4621,6 @@ function submitEnrollmentSession_(p) {
   // síncrona del código original.
   kmsProxy_('enr.wizardPersistSubmitSideEffects', {
     resume_token:      p.resume_token,
-    state_transitions: stateTransitionRows,
     consents:          consentRows,
     rec_scopes:        submitRecScopes,
   });
