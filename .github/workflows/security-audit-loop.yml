@@ -1,0 +1,193 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# LOOP DE AUDITORÍA DE SEGURIDAD — scheduler DURABLE (GitHub Actions)
+#
+# QUÉ ES: ejecuta cada hora el ciclo de auditoría de seguridad descrito en
+#   kis-app/docs/kms/security/AUDIT-LOOP.md contra AMBOS repos
+#   (kis-app@develop + Kaleide-enrollment@main), consolida los hallazgos en
+#   docs/kms/security/audit-<fecha>.md y vuelca lo accionable a
+#   docs/kms/loop-backlog.md — y los PUBLICA en kis-app/develop.
+#   SOLO DOCUMENTA. Nunca remedia código ni despliega (ni clasp, ni gas:build).
+#
+# POR QUÉ VIVE EN EL WIZARD (Kaleide-enrollment) Y NO EN kis-app:
+#   `on: schedule` SOLO dispara desde la RAMA POR DEFECTO del repo. La rama por
+#   defecto de kis-app es `master` (Assessment Matrix, producción, PROHIBIDO
+#   tocar) — un cron colgado ahí no dispararía nunca. La rama por defecto del
+#   wizard es `main`, así que aquí SÍ dispara. Por eso el scheduler durable
+#   vive en el wizard aunque la mayoría de los informes aterricen en kis-app.
+#
+# POR QUÉ NECESITA UN PAT (AUDIT_PUSH_TOKEN):
+#   el GITHUB_TOKEN nativo de una corrida solo alcanza a SU propio repositorio
+#   (Kaleide-enrollment). Publicar los informes en kis-app/develop exige un
+#   token con acceso cruzado a kis-education/kis-app.
+#
+# SECRETOS REQUERIDOS (Settings → Secrets and variables → Actions, en
+#   github.com/kis-education/Kaleide-enrollment):
+#   • ANTHROPIC_API_KEY   — API key de Anthropic (console.anthropic.com).
+#       Alternativa por suscripción Pro/Max/Team: crea el secreto
+#       CLAUDE_CODE_OAUTH_TOKEN (con `claude setup-token`) y cambia la línea
+#       `anthropic_api_key:` de abajo por
+#       `claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`.
+#   • AUDIT_PUSH_TOKEN    — PAT fine-grained con:
+#       - Repository access: kis-education/kis-app  (Contents: Read and write)
+#       - Repository access: kis-education/Kaleide-enrollment (Contents: Read)
+#       Se usa para clonar ambos repos en la verja barata y para el push de los
+#       informes a kis-app/develop. NUNCA se escribe en `master` de ningún repo.
+#
+# CÓMO SE LEE EL RESULTADO: la verja barata (bash, sin coste de Claude) decide
+#   si hay código nuevo comparando los tips actuales con los SHAs de la última
+#   auditoría (`**Commit auditado:**`). Si NO hay código nuevo, el job termina
+#   VERDE sin invocar a Claude (no se duplican informes).
+#
+# ESQUEMA DE LA ACTION (verificado en code.claude.com/docs/en/github-actions,
+#   ejemplo "Run on a schedule", 2026-08): `anthropics/claude-code-action@v1`;
+#   el input `prompt` activa el "automation mode"; `--model` y `--allowedTools`
+#   se pasan como argumentos CLI dentro de `claude_args`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Security audit loop (durable scheduler)
+
+on:
+  schedule:
+    # Horario, minuto 17 (off-minute) para no colisionar con la flota de crons.
+    - cron: '17 * * * *'
+  workflow_dispatch: {}
+
+# Una corrida a la vez: nunca dos auditorías solapadas escribiendo a la vez.
+concurrency:
+  group: security-audit-loop
+  cancel-in-progress: false
+
+# Permisos mínimos. `contents: read` sobre ESTE repo (el wizard); la escritura
+# de los informes va a kis-app vía AUDIT_PUSH_TOKEN, no vía GITHUB_TOKEN.
+# `id-token: write` lo exige la propia action para su autenticación (todos los
+# ejemplos oficiales lo incluyen); no concede acceso a ningún repo por sí solo.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # El working dir del runner. Todo el trabajo real ocurre en clones
+      # frescos en /tmp; este checkout solo da un repo git válido de contexto.
+      - name: Checkout (wizard, contexto)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # VERJA BARATA — sin Claude, sin coste de tokens. Clona ambos repos con el
+      # PAT, lee el SHA de la última auditoría y lo compara con los tips. Además
+      # deja configurada la credencial git GLOBAL (con el PAT, vía insteadOf, sin
+      # exponer el token en URLs) y la identidad del bot, que el paso de Claude
+      # hereda en el mismo runner para poder clonar y hacer push.
+      - name: Verja — ¿hay código nuevo desde la última auditoría?
+        id: gate
+        env:
+          AUDIT_PUSH_TOKEN: ${{ secrets.AUDIT_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Credencial git global: cualquier https://github.com/... usa el PAT,
+          # sin que el token aparezca en las URLs de los remotos (insteadOf).
+          git config --global url."https://x-access-token:${AUDIT_PUSH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global user.name  "kaleide-audit-bot"
+          git config --global user.email "audit-bot@users.noreply.github.com"
+
+          rm -rf /tmp/kisapp /tmp/wiz
+          git clone --depth 1 --branch develop https://github.com/kis-education/kis-app.git            /tmp/kisapp
+          git clone --depth 1 --branch main    https://github.com/kis-education/Kaleide-enrollment.git /tmp/wiz
+
+          KIS_TIP=$(git -C /tmp/kisapp rev-parse HEAD)
+          WIZ_TIP=$(git -C /tmp/wiz    rev-parse HEAD)
+          echo "Tip actual kis-app@develop:            $KIS_TIP"
+          echo "Tip actual Kaleide-enrollment@main:    $WIZ_TIP"
+
+          # Última auditoría (los nombres audit-YYYY-MM-DD.md ordenan cronológico).
+          LATEST=$(ls /tmp/kisapp/docs/kms/security/audit-*.md 2>/dev/null | sort | tail -1 || true)
+          if [ -z "$LATEST" ]; then
+            echo "No hay auditorías previas → hay que auditar."
+            echo "has_new_code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Última auditoría: $LATEST"
+
+          LINE=$(grep -m1 'Commit auditado' "$LATEST" || true)
+          KIS_SHA=$(printf '%s' "$LINE" | grep -oE 'kis-app@develop [0-9a-f]+'          | awk '{print $2}' || true)
+          WIZ_SHA=$(printf '%s' "$LINE" | grep -oE 'Kaleide-enrollment@main [0-9a-f]+'  | awk '{print $2}' || true)
+          echo "SHA auditado kis-app:  ${KIS_SHA:-<ninguno>}"
+          echo "SHA auditado wizard:   ${WIZ_SHA:-<ninguno>}"
+
+          # Si no se pudo parsear alguno de los SHAs → auditar (fail-safe: mejor
+          # una auditoría de más que saltarse código nuevo por un parseo frágil).
+          if [ -z "$KIS_SHA" ] || [ -z "$WIZ_SHA" ]; then
+            echo "No se pudo parsear el SHA auditado → auditar por seguridad."
+            echo "has_new_code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Los SHAs del informe son cortos: hay código nuevo si el tip NO empieza
+          # por el SHA auditado.
+          NEW=false
+          case "$KIS_TIP" in "$KIS_SHA"*) ;; *) NEW=true ;; esac
+          case "$WIZ_TIP" in "$WIZ_SHA"*) ;; *) NEW=true ;; esac
+
+          if [ "$NEW" = "true" ]; then
+            echo "Hay código nuevo en al menos un repo → se audita."
+            echo "has_new_code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Sin código nuevo en ningún repo → no se audita (no se duplica informe)."
+            echo "has_new_code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Auditoría (Claude Code, solo si hay código nuevo)
+        if: steps.gate.outputs.has_new_code == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Se pasa el GITHUB_TOKEN nativo para NO depender de tener instalada la
+          # Claude GitHub App en este repo (el push real va a kis-app vía el PAT
+          # ya configurado como credencial git global en la verja).
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: |
+            --model claude-opus-4-8
+            --max-turns 200
+            --allowedTools "Bash,Read,Grep,Glob,Edit,Write,WebFetch,Task"
+          prompt: |
+            Ejecuta el ciclo de auditoría de seguridad definido en
+            docs/kms/security/AUDIT-LOOP.md contra kis-app@develop y
+            Kaleide-enrollment@main.
+
+            Preparación: la credencial git ya está configurada globalmente en
+            este runner (cualquier `git clone`/`git push` de
+            https://github.com/kis-education/... se autentica solo) y la identidad
+            de commit ya es el bot de auditoría. Clona kis-app@develop en un
+            directorio de trabajo, lee allí docs/kms/security/AUDIT-LOOP.md y
+            sigue su especificación al pie de la letra.
+
+            Reglas (no negociables):
+            - Trabaja en worktrees/checkouts AISLADOS (nunca un checkout
+              compartido). Auditoría ESTÁTICA: sin credenciales, sin explotación
+              en vivo, sin sacar PII (solo agregados redactados).
+            - Lanza agentes background ADVERSARIALES estáticos por superficie
+              (auth/IDOR row-scope, KAL-4/KAL-5/KIS-4, webhooks/HMAC, PII/KIS-11,
+              dinero/fin*, wizard anónimo). NO modifiques código de aplicación.
+            - Consolida los hallazgos en docs/kms/security/audit-<fecha>.md.
+              INCLUYE, con este formato EXACTO para que la verja barata del cron
+              lo pueda parsear en la próxima corrida, la línea:
+              **Commit auditado:** `kis-app@develop <sha-corto>` · `Kaleide-enrollment@main <sha-corto>`
+              (los SHAs cortos de los tips que auditaste).
+            - Vuelca lo ACCIONABLE a docs/kms/loop-backlog.md DEDUPLICANDO primero
+              contra su contenido (no repitas hallazgos ya listados).
+            - SOLO DOCUMENTAR: nunca remedies código ni despliegues (ni clasp, ni
+              gas:build, ni cdn:push).
+            - Haz commit + push SOLO de documentación (docs/kms/security/*,
+              docs/kms/loop-backlog.md) a kis-app/develop (rebase antes de pushear;
+              NUNCA a master). No pushees nada al wizard.
+            - Trailers OBLIGATORIOS en el commit:
+              Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+              Claude-Session: https://claude.ai/code/session_013BjEPNYz1oenbi9pKZhQ3b
+
+            Si no hubiera código nuevo tras sincronizar (no debería, la verja ya
+            lo comprobó), limpia y termina sin crear informe.
