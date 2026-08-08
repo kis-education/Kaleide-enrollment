@@ -7,6 +7,7 @@ import LockedBanner from '../../components/LockedBanner';
 import StepNav from '../../components/StepNav';
 import StepUpReverify from '../../components/StepUpReverify';
 import * as log from '../../logger';
+import { confirmarYQuitar } from '../../lib/quitar';
 
 // WIZARD-DOCS (2026-06-13): adjuntador GENÉRICO opcional.
 // Diego: "Hay una serie de casos tasados para subir archivos (DNI, etc.) pero no
@@ -251,10 +252,29 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     setRows(prev => [...prev, { id: newRowId(), description: '', file_id: '', file_name: '' }]);
   };
 
+  // Aviso de que un documento se retira, cuando el servidor no explica por qué no pudo.
+  const [avisoQuitar, setAvisoQuitar] = useState('');
+
   const handleRemoveRow = (rowId) => {
     // WIZARD-DOCS2: quitar el último panel deja CERO paneles (sigue siendo opcional),
     // igual que se puede quitar un tutor/alumno en Step2Persons.
-    setRows(prev => prev.filter(r => r.id !== rowId));
+    //
+    // ★ 2026-08-08 — y si el archivo YA SE SUBIÓ, el servidor tiene que enterarse. Antes
+    // solo desaparecía el panel: el archivo seguía guardado, seguía contando como aportado
+    // y volvía a salir al recuperar la solicitud. El archivo NO se destruye — queda marcado
+    // para retirar, que es lo que puede hacer una familia; borrarlo de verdad es del colegio.
+    const antes = rows;
+    const fila  = antes.find(r => r.id === rowId) || {};
+    confirmarYQuitar({
+      resumeToken,
+      clase: 'DOCUMENTO',
+      id: fila.file_id,
+      pregunta: t('quitar.confirmar_documento'),
+      motivoPorDefecto: t('quitar.no_se_pudo'),
+      quitarDeLaPantalla: () => { setAvisoQuitar(''); setRows(antes.filter(r => r.id !== rowId)); },
+      volverAPonerlo: () => setRows(antes),
+      avisar: (m) => setAvisoQuitar(m || t('quitar.no_se_pudo')),
+    });
   };
 
   const persist = () => updateStep('documents', uploadedDocs());
@@ -281,6 +301,12 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
       <div className="kis-card" style={locked ? { pointerEvents: 'none', opacity: 0.7 } : {}}>
         {/* WIZARD-DOCS2: estado inicial sin paneles → solo aviso + botón "Añadir archivo"
             (patrón Step2Persons). Cada panel abre al pulsar el botón; se puede quitar. */}
+        {avisoQuitar && (
+          <div className="alert alert-warning py-2 px-3 mb-3" role="alert" style={{ fontSize: '0.9rem' }}>
+            {avisoQuitar}
+          </div>
+        )}
+
         {rows.length === 0 && (
           <p className="mb-3" style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>
             {t('doc.empty_hint')}

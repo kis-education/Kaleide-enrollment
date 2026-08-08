@@ -9,6 +9,7 @@ import StepNav from '../../components/StepNav';
 import { generateUuid } from '../../utils/uuid';
 import { validatePhone } from '../../utils/phone';
 import { parseBool, preparePersonForUI, preparePersonsForUI, deriveSameAddressFlags, addressIsEmpty_, ADDRESS_FIELDS } from './personShape';
+import { confirmarYQuitar } from '../../lib/quitar';
 
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
@@ -310,7 +311,7 @@ function PreviousSchoolRow({ school, onChange, onRemove, birthYear }) {
   );
 }
 
-function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit }) {
+function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar }) {
   const { t } = useTranslation();
   // UX-2: resaltado por-campo. `inv(field)` consulta si está marcado inválido; editar un
   // campo lo limpia (vía onFieldEdit, subido al estado del padre).
@@ -335,10 +336,18 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
     );
     u('emails', next);
   };
+  // Quitar un correo YA GUARDADO tiene que llegar al servidor: si solo desaparece de la
+  // pantalla, al volver a entrar sigue ahí (y sigue recibiendo los avisos del colegio).
   const removeEmail = (i) => {
-    const next = [...(person.emails || [])];
-    next.splice(i, 1);
-    u('emails', next);
+    const antes = [...(person.emails || [])];
+    const em = antes[i] || {};
+    pedirQuitar({
+      clase: 'CORREO',
+      id: em.email_id,
+      pregunta: t('quitar.confirmar_correo'),
+      quitarDeLaPantalla: () => { const n = [...antes]; n.splice(i, 1); u('emails', n); },
+      volverAPonerlo: () => u('emails', antes),
+    });
   };
 
   // Single-default enforcement for phones
@@ -510,9 +519,14 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
             countryISO={person.address?.country_id || ''}
             onChange={val => updatePhone(i, val)}
             onRemove={() => {
-              const next = [...person.phones];
-              next.splice(i, 1);
-              u('phones', next);
+              const antes = [...person.phones];
+              pedirQuitar({
+                clase: 'TELEFONO',
+                id: ph.phone_id,
+                pregunta: t('quitar.confirmar_telefono'),
+                quitarDeLaPantalla: () => { const n = [...antes]; n.splice(i, 1); u('phones', n); },
+                volverAPonerlo: () => u('phones', antes),
+              });
             }}
           />
         ))}
@@ -680,6 +694,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const {
     stepData, updateStep, recognition,
     touchActivity, setValidationError,
+    resumeToken,                       // para avisar al servidor de lo que la familia QUITA
   } = useWizard();
   const primaryEmail = stepData.email?.primary_email || '';
 
@@ -758,10 +773,32 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
 
   const addPerson = (type) => setPersons([...persons, emptyPerson(type)]);
 
+  /**
+   * QUITAR de la solicitud — un solo camino para las tres cosas que se quitan en este paso
+   * (persona, correo, teléfono). Se pregunta antes, desaparece al instante, y si el servidor
+   * dice que NO se pudo se vuelve a ver con el motivo. Nunca se finge que se quitó.
+   */
+  const pedirQuitar = (o) => confirmarYQuitar({
+    resumeToken,
+    clase:               o.clase,
+    id:                  o.id,
+    pregunta:            o.pregunta,
+    motivoPorDefecto:    t('quitar.no_se_pudo'),
+    quitarDeLaPantalla:  o.quitarDeLaPantalla,
+    volverAPonerlo:      o.volverAPonerlo,
+    avisar:              (m) => setErr(m || t('quitar.no_se_pudo')),
+  });
+
   const removePerson = (i) => {
-    const next = [...persons];
-    next.splice(i, 1);
-    setPersons(next);
+    const antes = [...persons];
+    const p = antes[i] || {};
+    pedirQuitar({
+      clase: 'PERSONA',
+      id: p.person_id,
+      pregunta: t('quitar.confirmar_persona'),
+      quitarDeLaPantalla: () => { const n = [...antes]; n.splice(i, 1); setPersons(n); setErr(''); },
+      volverAPonerlo: () => setPersons(antes),
+    });
   };
 
   const handleBack = () => {
@@ -971,6 +1008,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               isFirst={guardianIdx === 0}
               onChange={val => updatePerson(i, val)}
               onRemove={() => removePerson(i)}
+              pedirQuitar={pedirQuitar}
               firstPersonId={firstPersonId}
               primaryEmail={primaryEmail}
               invalidFields={invalidFields}
@@ -1015,6 +1053,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               isFirst={applicantIdx === 0}
               onChange={val => updatePerson(i, val)}
               onRemove={() => removePerson(i)}
+              pedirQuitar={pedirQuitar}
               firstPersonId={firstPersonId}
               primaryEmail={primaryEmail}
               invalidFields={invalidFields}

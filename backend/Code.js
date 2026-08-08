@@ -1738,6 +1738,7 @@ function doPost(e) {
       case 'getSubscriptionBudget':   result = getSubscriptionBudget_(payload);   break;
       case 'applyPaymentModality':    result = applyPaymentModality_(payload);    break;
       case 'requestCorrection':       result = requestCorrection_(payload);       break;
+      case 'retirarDelExpediente':    result = retirarDelExpediente_(payload);    break;
       case 'submitGdprConsents':      result = submitGdprConsents_(payload);      break;
       case 'confirmReview':           result = confirmReview_(payload);           break;
       case 'initiateSigningSession':  result = initiateSigningSession_(payload);  break;
@@ -7085,6 +7086,58 @@ function requestCorrection_(p) {
   return kmsProxy_('enr.wizardRequestCorrection', {
     resume_token: String(p.resume_token),
     note: p.note ? String(p.note).slice(0, 500) : null,
+  });
+}
+
+/**
+ * La familia QUITA de su solicitud algo que ella misma añadió: una persona, un correo, un
+ * teléfono, un vínculo o un documento subido.
+ *
+ * Hasta hoy el asistente sabía añadir y corregir, y NO sabía quitar: este despachador tenía
+ * 46 acciones y ninguna borraba. Una familia que metía un tutor por error no podía
+ * deshacerlo, y esas personas acababan en el resumen y en el paquete de firma.
+ *
+ * Proxy FINO a `enr.wizardRetirar`. El wizard NO decide nada: no mira en qué situación está
+ * el expediente, no elige qué se puede quitar, no borra nada por su cuenta — y **no escribe
+ * en ninguna tabla**, que es la regla de este repositorio desde P1-A/P1-B.
+ *
+ * KAL-4: el expediente lo deriva el KMS del `resume_token`; aquí se valida primero con
+ * `requireResumeToken_` (dos capas, igual que el resto de mutaciones). Lo que se quita viaja
+ * IDENTIFICADO en `retirar[]` — nunca «lo que no venga en el mensaje se borra», que con un
+ * envío a medias vaciaría el expediente entero.
+ *
+ * ESCRITURA ⇒ se invalida la caché del grupo (nunca servir algo viejo tras escribir).
+ *
+ * La respuesta trae el veredicto DE CADA elemento (`QUITADO` / `YA_ESTABA` / `RECHAZADO` /
+ * `NO_SE_PUEDE` / `NO_SE_PUDO`) y, cuando la solicitud ya está enviada, un `bloqueado` con
+ * su `mensaje`. Se devuelve TAL CUAL: la pantalla tiene que poder distinguir «se fue» de
+ * «no se pudo», porque decirle a una familia que quitó algo que sigue ahí es justo el fallo
+ * que esto viene a cerrar.
+ *
+ * @param {{ resume_token:string, retirar:Array<{clase:string,id:string}> }} p
+ * @returns {{ ok:boolean, retirados:number, resultados:Array<Object>,
+ *             bloqueado?:string, mensaje?:string }}
+ */
+function retirarDelExpediente_(p) {
+  p = p || {};
+  requireResumeToken_(p);                    // KAL-4 capa wizard (el KMS re-valida)
+  _wzCacheInvalidate_(p.resume_token);       // WIZARD-CACHE: nunca stale tras un write
+  var lote = Array.isArray(p.retirar) ? p.retirar : [];
+  // Tope defensivo: quitar es un acto de la familia sobre su propia pantalla, no un lote
+  // masivo. Un mensaje con miles de elementos es ruido o un abuso, no un uso.
+  if (lote.length > 50) {
+    var e = new Error('Demasiados elementos a quitar de una vez.');
+    e.code = 'BAD_REQUEST';
+    throw e;
+  }
+  return kmsProxy_('enr.wizardRetirar', {
+    resume_token: String(p.resume_token),
+    retirar: lote.map(function (it) {
+      return {
+        clase: it && it.clase ? String(it.clase).toUpperCase().slice(0, 20) : '',
+        id:    it && it.id    ? String(it.id).slice(0, 64) : '',
+      };
+    }),
   });
 }
 

@@ -2500,6 +2500,127 @@ async function caminoPedirCorreccion(page, base) {
   return c
 }
 
+/**
+ * QUITAR ALGO DE LA SOLICITUD — cola 18.bis.8.
+ *
+ * Lo que rompía a la familia: los botones de quitar solo borraban DE LA PANTALLA. Al
+ * guardar se mandaba la lista superviviente y el servidor guardaba lo que llegaba, sin
+ * tocar lo que dejaba de venir ⇒ **quitar no se guardaba nunca**, y al volver a entrar
+ * seguía todo ahí. Diego lo intentó dos veces y las dos siguió midiendo 22 personas.
+ *
+ * Este camino recorre las tres afirmaciones, EN LA PANTALLA:
+ *   (a) quitar a una persona **sale hacia el servidor** (no se queda en el navegador) y
+ *       la persona deja de verse;
+ *   (b) si el servidor dice que **NO se puede** (el último tutor, el solicitante), la
+ *       persona **VUELVE A VERSE** y se le dice por qué — jamás se finge que se quitó;
+ *   (c) con la solicitud **ya enviada**, tampoco se finge: vuelve y se le explica que
+ *       puede pedir la corrección.
+ *
+ * (b) y (c) son el fondo del asunto: una pantalla que trata un «no» como un «sí» deja a
+ * la familia creyendo que quitó a alguien que sigue en su expediente.
+ */
+async function caminoQuitarDeLaSolicitud(page, base) {
+  const c = new Camino('quitar-de-la-solicitud')
+  scenario.stage = 'hasta_preguntas'
+  scenario.quitarMode = 'ok'
+
+  // La confirmación es un `window.confirm`: sin aceptarlo, el navegador lo descarta solo
+  // y el camino mediría un botón que nunca actuó.
+  const aceptarConfirmacion = async (dlg) => { try { await dlg.accept() } catch { /* ya cerrado */ } }
+  page.on('dialog', aceptarConfirmacion)
+
+  // Se cuentan las llamadas que salen DE VERDAD: es la afirmación central (a).
+  let llamadasQuitar = 0
+  let ultimoCuerpo = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'retirarDelExpediente') { llamadasQuitar++; ultimoCuerpo = body }
+  }
+  page.on('request', espiar)
+
+  const limpiar = () => { page.off('dialog', aceptarConfirmacion); page.off('request', espiar) }
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    // Retroceder hasta Personas (índice 1) como lo haría la familia.
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(200)
+
+    const contarPersonas = () => page.$$eval('.dynamic-section-header',
+      (h) => h.filter(x => /Tutor|Guardian|Alumno|Student/i.test(x.textContent || '')).length)
+
+    const antes = await contarPersonas()
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    if (!c.afirmar('hay más de una persona con la que probar', antes >= 2,
+      `solo se pintaron ${antes} personas: sin una segunda, quitar dejaría la solicitud inválida y no se mediría nada`)) return c
+
+    // ── (a) se quita, y SALE hacia el servidor ────────────────────────────────
+    const botones = await page.$$('.dynamic-section-header button.remove-btn')
+    if (!c.afirmar('la persona que la familia añadió tiene botón de quitar', botones.length >= 1,
+      'no hay ningún botón de quitar: la familia no puede deshacer lo que metió por error')) return c
+    await botones[botones.length - 1].click()
+    await page.waitForTimeout(LATENCY + 600)
+    c.evidencia.llamadas += llamadasQuitar
+
+    c.afirmar('quitar a una persona SALE hacia el servidor', llamadasQuitar >= 1,
+      'el botón no mandó nada: el borrado se queda en el navegador y al volver a entrar la persona sigue ahí (el defecto de 18.bis.8)')
+    const lote = ultimoCuerpo && Array.isArray(ultimoCuerpo.retirar) ? ultimoCuerpo.retirar : []
+    c.afirmar('lo que se quita viaja IDENTIFICADO, no «lo que no mando bórralo»',
+      lote.length === 1 && lote[0].clase === 'PERSONA' && !!lote[0].id,
+      `lo enviado fue ${JSON.stringify(lote).slice(0, 120)} — un borrado por omisión vaciaría la solicitud entera con un envío a medias`)
+    c.afirmar('la persona deja de verse', (await contarPersonas()) === antes - 1,
+      `siguen pintándose ${await contarPersonas()} de ${antes}`)
+
+    // ── (b) el servidor dice que NO se puede ⇒ VUELVE, y se dice por qué ──────
+    scenario.quitarMode = 'no_se_puede'
+    const restantes = await contarPersonas()
+    const botones2 = await page.$$('.dynamic-section-header button.remove-btn')
+    if (!c.afirmar('queda alguien más con botón de quitar', botones2.length >= 1, 'no quedó ninguno')) return c
+    await botones2[botones2.length - 1].click()
+    await page.waitForTimeout(LATENCY + 900)
+    const trasRechazo = await contarPersonas()
+    const texto = (await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' '))).toLowerCase()
+    c.afirmar('si el servidor dice que NO se puede, la persona VUELVE A VERSE',
+      trasRechazo === restantes,
+      `quedaron ${trasRechazo} de ${restantes}: la pantalla dio por quitada a una persona que sigue en el expediente`)
+    c.afirmar('y se le dice por qué', texto.includes('al menos un tutor'),
+      'no se pintó el motivo: la familia ve reaparecer a alguien sin saber qué pasó')
+
+    // ── (c) ya enviada ⇒ tampoco se finge ─────────────────────────────────────
+    scenario.quitarMode = 'enviada'
+    const botones3 = await page.$$('.dynamic-section-header button.remove-btn')
+    if (botones3.length) {
+      const previas = await contarPersonas()
+      await botones3[botones3.length - 1].click()
+      await page.waitForTimeout(LATENCY + 900)
+      const texto3 = (await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' '))).toLowerCase()
+      c.afirmar('con la solicitud ya enviada, la persona sigue ahí',
+        (await contarPersonas()) === previas,
+        'se quitó de la pantalla algo que el servidor NO quitó')
+      c.afirmar('y se le dice que puede pedir que se la devuelvan para corregirla',
+        texto3.includes('corregir'),
+        'no se pintó ninguna salida: la familia se queda sin saber qué hacer')
+    } else {
+      c.fallos.push('(c) no se pudo ejercitar: no quedó ningún botón de quitar')
+    }
+    return c
+  } finally {
+    limpiar()
+    scenario.quitarMode = 'ok'
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -2519,6 +2640,7 @@ const CAMINOS = [
   { nombre: 'cuestionario-no-se-apaga', fn: caminoCuestionarioNoSeApaga, minLlamadas: 1, minElementos: 2 },
   // Cola 18.quater — la familia pide corregir su solicitud ya enviada.
   { nombre: 'pedir-correccion',    fn: caminoPedirCorreccion,    minLlamadas: 2, minElementos: 11 },
+  { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

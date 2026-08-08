@@ -305,6 +305,32 @@ export function createDispatcher(scenario, record) {
 
     reportUnsolicited:   () => ({ ok: true }),
 
+    // Cola 18.bis.8 — la familia QUITA algo de su solicitud. `quitarMode` decide qué
+    // contesta el KMS, y los tres tienen que verse DISTINTOS en pantalla:
+    //   · 'ok'         → se quitó de verdad;
+    //   · 'no_se_puede'→ es el último tutor / el solicitante / el correo de vuelta;
+    //   · 'enviada'    → la solicitud ya está enviada, no se quita nada.
+    // El caso que protege es el segundo y el tercero: si la pantalla los trata como un
+    // «sí», la familia cree que quitó a alguien que sigue en su expediente — y ése es
+    // exactamente el defecto que este cambio vino a cerrar.
+    retirarDelExpediente: (p) => {
+      const it = (Array.isArray(p.retirar) ? p.retirar : [])[0] || {};
+      if (scenario.quitarMode === 'enviada') {
+        return { ok: true, retirados: 0, resultados: [],
+          bloqueado: 'YA_ENVIADA',
+          mensaje: 'Tu solicitud ya está enviada, así que desde aquí no se puede quitar nada. '
+            + 'Puedes pedirnos que te la devolvamos para corregirla.' };
+      }
+      if (scenario.quitarMode === 'no_se_puede') {
+        return { ok: true, retirados: 0, resultados: [{ clase: it.clase, id: it.id,
+          estado: 'NO_SE_PUEDE',
+          motivo: 'La solicitud necesita al menos un tutor. Añade el otro tutor primero y '
+            + 'después quita éste.' }] };
+      }
+      return { ok: true, retirados: 1,
+        resultados: [{ clase: it.clase, id: it.id, estado: 'QUITADO', arrastrado: 2 }] };
+    },
+
     // ── Catálogos ────────────────────────────────────────────────────────────
     fetchLookups:   () => ({ ok: true, ...LOOKUPS }),
     fetchQuestions: () => (scenario.preguntasMode === 'caido'

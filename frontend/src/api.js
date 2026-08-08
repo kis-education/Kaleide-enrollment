@@ -59,6 +59,34 @@ export function requestCorrection(resumeToken, note) {
   return gasCall('requestCorrection', { resume_token: resumeToken, note: note || null });
 }
 
+/**
+ * La familia QUITA de su solicitud algo que ella misma añadió (cola 18.bis.8).
+ *
+ * Hasta hoy los botones de quitar solo borraban de la pantalla: al guardar se mandaba la
+ * lista superviviente y el KMS hacía upsert de lo que llegaba, sin tocar lo que dejaba de
+ * venir. Es decir, quitar NO se guardaba nunca.
+ *
+ * Lo que se quita viaja IDENTIFICADO — nunca «lo que no mando, bórralo»: un guardado a
+ * medias vaciaría la solicitud entera. El expediente lo deriva el servidor del enlace de
+ * la familia, jamás de lo que mande la pantalla.
+ *
+ * Clases admitidas: `PERSONA` · `CORREO` · `TELEFONO` · `VINCULO` · `DOCUMENTO`.
+ *
+ * La respuesta trae el veredicto de CADA elemento (`QUITADO`, `YA_ESTABA`, `RECHAZADO`,
+ * `NO_SE_PUEDE`, `NO_SE_PUDO`) y, si la solicitud ya está enviada, `bloqueado` + `mensaje`.
+ * Quien llame TIENE que mirarlo: decirle a una familia que quitó algo que sigue ahí es
+ * exactamente el fallo que esto cierra.
+ *
+ * @param {string} resumeToken
+ * @param {Array<{clase:string,id:string}>} elementos
+ */
+export function retirarDelExpediente(resumeToken, elementos) {
+  return gasCall('retirarDelExpediente', {
+    resume_token: resumeToken,
+    retirar: Array.isArray(elementos) ? elementos : [],
+  });
+}
+
 export function fetchLookups() {
   if (_lookupsCache)  return Promise.resolve(_lookupsCache);
   if (_lookupsFlight) return _lookupsFlight;
