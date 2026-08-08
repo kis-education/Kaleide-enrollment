@@ -500,9 +500,17 @@ Windows Schannel: añade `--ssl-no-revoke` a curl si la red corporativa bloquea 
 
 > **★ MIGRADO AL MOTOR DEL KMS (2026-06-25, wizard @185 + KMS @766). El wizard YA NO manda los emails transaccionales vía `GmailApp.sendEmail`.** El texto histórico de abajo (alias "Send mail as" del `GmailApp` local) está SUPERSEDIDO — se conserva solo como registro.
 
-Los **5 emails del wizard** (los 4 transaccionales: magic-link, magic-link-multi, confirmación-familia, notificación-interna de submit + el email de OTP) los **renderiza y envía el motor del KMS**, no el GAS del wizard:
+### Lo que el wizard manda HOY — la lista, y cómo se comprueba (medido 2026-08-08)
 
-- **Los 4 transaccionales** → `kmsProxy_('sys-public.sendNotification', …)` vía el helper `sendViaKmsNotify_` (`backend/Code.js:6499`, firma HMAC con `NOTIFY_HMAC_SECRET` compartido) → KMS `sysPublic_sendNotification` (`kis-app/kms-server/sys/notify-public.gs:105`, whitelist `:63`). Las funciones locales `sendMagicLinkEmail_`/`sendMagicLinkMultiEmail_`/`sendFamilyConfirmationEmail_` **fueron ELIMINADAS** (`Code.js:5738`). Realiza **P213** (endpoint KMS) + **P214** (refactor wizard).
+**Son cuatro avisos + el código de un solo uso, y ninguno es la confirmación a la familia:** `WIZARD_MAGIC_LINK` y `WIZARD_MAGIC_LINK_MULTI` (a la familia, el enlace para volver a su solicitud) · `WIZARD_SESSION_STARTED` y `WIZARD_UNSOLICITED_REPORTED` (a admisiones, internos) · `WIZARD_OTP` (el código de un solo uso, por `sendViaKmsAuthCode_`). **La confirmación de «solicitud recibida» y los avisos del expediente NO los manda el wizard: los gobierna el motor de avisos del KMS a partir de los hitos** (los dos correos del envío se retiraron del wizard el 2026-08-07 y hoy cuelgan de la entrada en RQ).
+
+**Un nombre de plantilla dentro de un comentario NO es un envío.** Antes de afirmar que el wizard manda algo, cuenta los llamadores contra `origin/main` — nunca contra el árbol de trabajo: `git show origin/main:backend/Code.js | grep -oE "sendViaKmsNotify_\('[A-Z_]+'" | sort -u`. Un `@param` obsoleto que nombraba `WIZARD_FAMILY_CONFIRMATION` (cero llamadores) hizo que **tres agentes distintos, en dos días**, le afirmaran a Diego que el wizard manda esa confirmación; tuvo que desmentirlo tres veces y estuvo a punto de frenar un despliegue.
+
+---
+
+Los emails del wizard los **renderiza y envía el motor del KMS**, no el GAS del wizard:
+
+- **Los transaccionales** (los cuatro de la lista de arriba) → `kmsProxy_('sys-public.sendNotification', …)` vía el helper `sendViaKmsNotify_` (`backend/Code.js:6499`, firma HMAC con `NOTIFY_HMAC_SECRET` compartido) → KMS `sysPublic_sendNotification` (`kis-app/kms-server/sys/notify-public.gs:105`, whitelist `:63`). Las funciones locales `sendMagicLinkEmail_`/`sendMagicLinkMultiEmail_`/`sendFamilyConfirmationEmail_` **fueron ELIMINADAS** (`Code.js:5738`). Realiza **P213** (endpoint KMS) + **P214** (refactor wizard).
 - **El OTP** → `kmsProxy_('sys-public.sendAuthCode', …)` vía `sendViaKmsAuthCode_` (`backend/Code.js:6534`) → KMS `sysPublic_sendAuthCode` (`notify-public.gs:146`), endpoint **síncrono**, el código **NO se persiste** en `sysNotificationLog`. La **generación y verificación del código siguen wizard-side** (lógica de auth); solo el render+envío salieron al KMS. Realiza **P253**.
 
 **Pre-requisito de Diego (una vez):** generar `NOTIFY_HMAC_SECRET` y copiarlo a las Script Properties de AMBOS GAS (wizard + KMS). El contenido/plantilla de cada email vive en el catálogo del KMS (`sysNotificationTemplates_T` + `locales/`), no en el wizard.

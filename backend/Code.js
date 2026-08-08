@@ -4276,8 +4276,14 @@ function saveStep_(p) {
  *
  * Materialises N enrEnrollments rows (one per applicant person captured in the
  * staging tables), stamps submitted_at on the group, writes per-enrollment
- * status_log + consent rows, generates the consent PDF and sends the family +
- * internal confirmation emails.
+ * status_log + consent rows y genera el PDF de consentimiento.
+ *
+ * NO MANDA NINGUN CORREO (retirados el 2026-08-07, re-verificado el 2026-08-08).
+ * Ni la confirmacion a la familia ni el aviso interno a admisiones salen de aqui:
+ * los dos los gobierna el motor de avisos del KMS a partir de la entrada en RQ
+ * (kis-rule-0014 y kis-rule-0015, ancladas a SUBMITTED_STATE_ENTERED_AT). Ver el
+ * comentario largo al final de esta funcion. Este JSDoc afirmo lo contrario hasta
+ * el 2026-08-08 y tres agentes distintos lo repitieron a Diego como si fuera cierto.
  *
  * The initial state on each enrollment is resolved from sysStates_T
  * with state_code = 'RQ' (Requested). Per DL-E15
@@ -4292,8 +4298,10 @@ function submitEnrollmentSession_(p) {
   const enrollmentGroupId = requireResumeToken_(p);
 
   // CLI 81 (S9 / SUBMIT-REPLAY): block re-submit of an already-submitted (or
-  // abandoned) group. Without this gate a re-POST re-stamps submitted_at,
-  // regenerates the PDF and re-sends the confirmation emails. The other three
+  // abandoned) group. Without this gate a re-POST re-stamps submitted_at y
+  // regenera el PDF. (La coletilla "and re-sends the confirmation emails" era
+  // cierta en CLI 81 y dejo de serlo el 2026-08-07: este handler ya no manda
+  // correo alguno. Corregida el 2026-08-08.) The other three
   // mutation handlers (saveStep_, saveResponses_, uploadDocument_) already call
   // this guard since CLI 26 — submit was the one that slipped through. Throws
   // Error{code:'NOT_EDITABLE'} → doPost maps it to HTTP 200 {ok:false,error}.
@@ -5855,11 +5863,18 @@ function saveNeae_(p) {
 // kis-tpl-wizard-session-started / kis-tpl-wizard-unsolicited-reported). El wizard ya NO
 // envía email localmente.
 
-// NOTA (WIZARD-TERMINAL P3, 2026-06-25): sendMagicLinkEmail_, sendMagicLinkMultiEmail_ y
-// sendFamilyConfirmationEmail_ FUERON ELIMINADAS. El contenido de esos 3 emails (+ la
-// notificacion interna de submit) lo gobierna ahora el motor del KMS via sendViaKmsNotify_
-// (plantillas sysNotificationTemplates_T). El bloque GDPR / la lista multi-link / la tabla
-// de solicitantes se pre-renderizan en helpers _kmsRender*_ (junto a sendViaKmsNotify_).
+// NOTA (WIZARD-TERMINAL P3, 2026-06-25; ACTUALIZADA 2026-08-08): sendMagicLinkEmail_,
+// sendMagicLinkMultiEmail_ y sendFamilyConfirmationEmail_ FUERON ELIMINADAS. El bloque GDPR /
+// la lista multi-link / la tabla de solicitantes se pre-renderizan en helpers _kmsRender*_
+// (junto a sendViaKmsNotify_).
+//
+// OJO — esta nota decia que el KMS gobierna "esos 3 emails + la notificacion interna de
+// submit" via sendViaKmsNotify_, y se leia como si el wizard siguiera pidiendo la
+// confirmacion a la familia. NO la pide. Desde el 2026-08-07 el wizard solo manda los
+// CUATRO avisos de sendViaKmsNotify_ (los dos magic-link a la familia + los dos internos a
+// admisiones) y el codigo de un solo uso; la lista exacta esta en el JSDoc de
+// sendViaKmsNotify_. La confirmacion a la familia y los avisos del expediente los decide la
+// configuracion del centro en el motor de avisos del KMS, a partir de los hitos.
 
 // ─── Email builders ───────────────────────────────────────────────────────────
 
@@ -6759,8 +6774,24 @@ function _kmsNotifyHex_(bytes) {
  * (el handler devuelve {ok:false}; NUNCA cae a Gmail local — single-source: el contenido
  * lo gobierna el KMS, P72). KAL-11: NO loguea el context (PII) en claro.
  *
+ * LO QUE ESTE FICHERO MANDA DE VERDAD (medido el 2026-08-08 contra origin/main con
+ * `grep -oE "sendViaKmsNotify_\('[A-Z_]+'" backend/Code.js | sort -u` — son CUATRO):
+ *   · WIZARD_MAGIC_LINK           -> a la familia: el enlace para volver a su solicitud
+ *   · WIZARD_MAGIC_LINK_MULTI     -> a la familia: varios enlaces cuando tiene N grupos
+ *   · WIZARD_SESSION_STARTED      -> a admisiones (interno): alguien empezo una solicitud
+ *   · WIZARD_UNSOLICITED_REPORTED -> a admisiones (interno): enlace reportado como no pedido
+ * Mas el codigo de un solo uso (WIZARD_OTP), que va por sendViaKmsAuthCode_, no por aqui.
+ *
+ * LA CONFIRMACION A LA FAMILIA Y LOS AVISOS DEL EXPEDIENTE NO LOS MANDA EL WIZARD:
+ * los gobierna el motor de avisos del KMS a partir de los hitos. `WIZARD_FAMILY_CONFIRMATION`
+ * y `WIZARD_INTERNAL_NOTIFICATION` figuraban aqui como valores admitidos hasta el 2026-08-08
+ * y NINGUNO tenia ni tiene llamador — el nombre de una plantilla dentro de un comentario NO
+ * es un envio. Ese renglon hizo que tres agentes distintos le afirmaran a Diego que el wizard
+ * manda la confirmacion de "solicitud recibida"; es falso, y estuvo a punto de frenar un
+ * despliegue. Si anades una plantilla, anadela aqui Y comprueba el grep de arriba.
+ *
  * @param {string} templateCode  uno de WIZARD_MAGIC_LINK | WIZARD_MAGIC_LINK_MULTI |
- *                               WIZARD_FAMILY_CONFIRMATION | WIZARD_INTERNAL_NOTIFICATION.
+ *                               WIZARD_SESSION_STARTED | WIZARD_UNSOLICITED_REPORTED.
  * @param {string} recipient     email destino.
  * @param {Object} context       valores de placeholder (resume_url, gdpr_block, etc.).
  * @returns {Object} respuesta del KMS ({ sent, correlation_id }).
