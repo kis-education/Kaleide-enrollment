@@ -127,6 +127,50 @@ function resolvePhoneValidation(rawInput, phoneCountry, countryISO) {
   return validatePhone(raw, countryISO || '');                      // sin país elegido: country de la dirección
 }
 
+// ─── Lo que se VE en pantalla y lo que se GUARDA no pueden diferir (cola 18.bis.21) ───
+// El número que la familia teclea vive en el estado del control (país del desplegable +
+// número nacional del input); a `phone.phone_number` solo llegaba al SALIR del campo Y si
+// la validación decía «válido». Por eso la puerta del paso 2 juzgaba lo PERSISTIDO, que es
+// justo lo que está vacío (o viejo) en el caso que falla: un alumno perdía su teléfono sin
+// una palabra, y a un tutor se le decía «falta un teléfono» con el número escrito delante.
+//
+// Estos dos ayudantes son EL ÚNICO sitio que contesta «¿qué teléfono hay aquí?». El control
+// eleva lo tecleado a `_escrito`/`_pais` (campos SOLO de pantalla — `transformPersonForSave`
+// los quita antes de guardar), y todo lo demás pregunta por aquí. NO se reparte la lógica.
+function evaluarTelefonoEscrito(escrito, pais, countryISO) {
+  const national = String(escrito || '').trim();
+  const selDial  = COUNTRIES.find(c => c.value === pais)?.dial || '';
+  const candidate = national
+    ? (selDial ? '+' + selDial + national.replace(/\D/g, '') : national)
+    : '';
+  return { national, candidate, res: resolvePhoneValidation(candidate, pais, countryISO) };
+}
+
+/**
+ * Qué teléfono hay de verdad en esta fila. Si la familia TOCÓ la fila (`_escrito` definido)
+ * manda lo que se ve; si no la tocó, se cae a lo ya guardado. Devuelve además el veredicto
+ * crudo de la validación para poder decir el MOTIVO exacto (falta el país / prefijo no
+ * admitido / número inválido) en vez de un «no es válido» a secas.
+ */
+function telefonoEfectivo_(ph, countryISO) {
+  const tocado = ph && ph._escrito !== undefined && ph._escrito !== null;
+  if (tocado) {
+    const { national, res } = evaluarTelefonoEscrito(ph._escrito, ph._pais, countryISO);
+    return { enPantalla: true, hayAlgo: !!national, valido: !!(res.valid && res.e164), e164: res.e164 || '', res };
+  }
+  const guardado = String((ph && (ph.phone_number || ph.value)) || '').trim();
+  if (!guardado) return { enPantalla: false, hayAlgo: false, valido: false, e164: '', res: null };
+  const r = validatePhone(guardado, countryISO);
+  return { enPantalla: false, hayAlgo: true, valido: !!r.valid, e164: r.e164 || guardado, res: r };
+}
+
+// El motivo REAL por el que no vale, para que el aviso diga qué hacer.
+function claveMotivoTelefono_(res) {
+  if (res && res.needCountry) return 'step2.phone.country_needed_for';
+  if (res && res.notInSet)    return 'step2.phone.unsupported_country_for';
+  return 'step2.phone.invalid_for';
+}
+
 function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
   const { t } = useTranslation();
   const [touched, setTouched] = useState(false);
@@ -159,16 +203,26 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
   // (número nacional del input) → +<dial><national>; sin dial cae al país de la dirección.
   // La normalización/validación E.164 + set cerrado DL-E40 las sigue haciendo validatePhone
   // (vía resolvePhoneValidation) — phone.js NO se toca. El input NUNCA contiene el dial.
-  const selDial = COUNTRIES.find(c => c.value === phoneCountry)?.dial || '';
-  const national = nationalNumber.trim();
-  const candidate = national
-    ? (selDial ? '+' + selDial + national.replace(/\D/g, '') : national)
-    : '';
-  const res = resolvePhoneValidation(candidate, phoneCountry, countryISO);
+  const { national, res } = evaluarTelefonoEscrito(nationalNumber, phoneCountry, countryISO);
   const showError = touched && national && !res.valid;
   const errKey = res.needCountry  ? 'step2.phone.country_needed'
                : res.notInSet     ? 'step2.phone.unsupported_country'
                :                     'step2.phone.invalid';
+
+  // Cada tecla y cada cambio de país ELEVAN lo que se ve (`_escrito`/`_pais`) al objeto del
+  // teléfono. No se persiste ahí el número: se persiste en `phone_number` cuando es válido
+  // (al salir del campo, o al elegir el país). Lo elevado es lo que permite que la puerta
+  // del paso juzgue la PANTALLA y no un hueco.
+  const cambiarNumero = (v) => { setNationalNumber(v); update({ _escrito: v, _pais: phoneCountry }); };
+  const cambiarPais = (v) => {
+    setPhoneCountry(v);
+    const ev = evaluarTelefonoEscrito(nationalNumber, v, countryISO);
+    const campos = { _pais: v, _escrito: nationalNumber };
+    // Elegir el país es justo lo que convierte en válido un número que ya estaba escrito:
+    // se guarda en el acto, sin obligar a volver a entrar y salir del campo.
+    if (ev.res.valid && ev.res.e164) campos.phone_number = ev.res.e164;
+    update(campos);
+  };
 
   const handleBlur = () => {
     setTouched(true);
@@ -198,7 +252,7 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
         <div className="col-auto" style={{ minWidth: 150 }}>
           <select className="form-select form-select-sm" value={phoneCountry}
             aria-label={t('field.phone_country')}
-            onChange={e => setPhoneCountry(e.target.value)}>
+            onChange={e => cambiarPais(e.target.value)}>
             <option value="">{t('field.phone_country')}</option>
             {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label} (+{c.dial})</option>)}
           </select>
@@ -209,7 +263,7 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
             aria-invalid={showError ? 'true' : undefined}
             placeholder="600 000 000"
             value={nationalNumber}
-            onChange={e => setNationalNumber(e.target.value)}
+            onChange={e => cambiarNumero(e.target.value)}
             onBlur={handleBlur} />
           {showError && <div className="field-error" style={{ fontSize: '0.78rem' }}>{t(errKey)}</div>}
         </div>
@@ -665,12 +719,18 @@ function transformPersonForSave(person, idx, arr) {
   // raw server shape while the transformed data has both old and new field names.
   if (Array.isArray(out.phones)) {
     out.phones = out.phones.map(ph => {
+      // `_escrito`/`_pais` son campos SOLO de pantalla (lo que la familia está tecleando):
+      // se quitan aquí para que NUNCA lleguen al servidor ni ensucien el dirty-check.
       // eslint-disable-next-line no-unused-vars
-      const { phone_number, phone_type_id, _uid, ...rest } = ph;
-      // Preserve phone_number / phone_type_id as canonical fields when no
-      // server-side alias exists (new phones added in the UI never have
-      // phone_nr_type_id / value set, only phone_number / phone_type_id).
-      if (!rest.value && phone_number)          rest.value            = phone_number;
+      const { phone_number, phone_type_id, _uid, _escrito, _pais, ...rest } = ph;
+      // ★ 18.bis.21 — MANDA LO DE LA PANTALLA. Aquí ponía `if (!rest.value && phone_number)`:
+      // en un teléfono que ya venía del servidor, `rest.value` trae el número VIEJO, así que
+      // corregirlo en la pantalla NUNCA llegaba al servidor — se guardaba el de antes y la
+      // familia veía el nuevo. `phone_number` es siempre la verdad de la pantalla
+      // (`preparePersonForUI` lo siembra desde `value`), así que cuando hay número, ese
+      // gana. Vacío NO se propaga: dejar un campo en blanco no es la forma de quitar un
+      // teléfono — para eso está «quitar de la solicitud», que sí avisa al servidor.
+      if (phone_number)                         rest.value            = phone_number;
       if (!rest.phone_nr_type_id && phone_type_id) rest.phone_nr_type_id = phone_type_id;
       return rest;
     });
@@ -687,6 +747,24 @@ function transformPersonForSave(person, idx, arr) {
   }
 
   return out;
+}
+
+/**
+ * Lleva a `phone_number` lo que se VE en pantalla, para que lo guardado y lo visible sean
+ * lo mismo: un número escrito y válido se guarda aunque la familia no saliera del campo, y
+ * un campo que se dejó vacío deja de guardar el número viejo. Lo que NO es válido no se
+ * guarda — la puerta de `handleNext` lo para antes, nombrando el motivo (no se afloja nada).
+ */
+function rescatarTelefonosDeLaPantalla(persons) {
+  return persons.map(p => ({
+    ...p,
+    phones: (p.phones || []).map(ph => {
+      const ef = telefonoEfectivo_(ph, p.address?.country_id || '');
+      if (ef.valido && ef.e164 && ef.e164 !== ph.phone_number) return { ...ph, phone_number: ef.e164 };
+      if (ef.enPantalla && !ef.hayAlgo && ph.phone_number)      return { ...ph, phone_number: '' };
+      return ph;
+    }),
+  }));
 }
 
 export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePending }) {
@@ -818,7 +896,9 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   };
 
   const handleBack = () => {
-    updateStep('persons', persons.map(transformPersonForSave));
+    // 18.bis.21 — volver atrás tampoco puede tirar un número escrito y válido: se rescata
+    // lo de la pantalla igual que al avanzar (lo inválido no se guarda, se queda como está).
+    updateStep('persons', rescatarTelefonosDeLaPantalla(persons).map(transformPersonForSave));
     onBack();
   };
 
@@ -838,14 +918,19 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       setErr(t('error.applicant_required'));
       return;
     }
+    // De QUIÉN se habla. Mismo patrón que `error.person_name_required` (abajo): con dos
+    // tutores, un aviso sin nombre obliga a la familia a adivinar cuál de los dos falla.
+    const etiquetaDe = (p) => {
+      const sameType = persons.filter(x => x.person_type_id === p.person_type_id);
+      const n = sameType.indexOf(p) + 1;
+      return p.person_type_id === 'applicant'
+        ? t('applicant.title', { n })
+        : t('guardian.title', { n });
+    };
     // Every person must have first_name + last_name
     for (const p of persons) {
       if (!p.first_name?.trim() || !p.last_name?.trim()) {
-        const sameType = persons.filter(x => x.person_type_id === p.person_type_id);
-        const idx = sameType.indexOf(p) + 1;
-        const label = p.person_type_id === 'applicant'
-          ? t('applicant.title', { n: idx })
-          : t('guardian.title', { n: idx });
+        const label = etiquetaDe(p);
         // UX-2: marca el/los campo(s) de nombre vacío(s) de ESA persona.
         const bad = [];
         if (!p.first_name?.trim()) bad.push(`${pkey(p)}:first_name`);
@@ -858,23 +943,29 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     // CLI PHONE-E164: gate de teléfono. (a) cualquier teléfono NO vacío debe ser
     // E.164 válido; (b) cada guardian (firmante — Click&Sign lo exige) necesita ≥1
     // teléfono válido. Applicants: teléfono opcional, pero si está, válido.
+    //
+    // ★ 18.bis.21 — se juzga lo que se VE (`telefonoEfectivo_`), no lo persistido. Antes se
+    // miraba `phone_number`, que está vacío justo cuando el número escrito no llegó a
+    // guardarse (sin país elegido, o sin salir del campo): al ALUMNO se le perdía el
+    // teléfono sin una palabra, y al TUTOR se le decía «falta un teléfono» teniéndolo
+    // escrito delante. Aplica IGUAL a alumnos y tutores. No se afloja ninguna validación:
+    // lo que cambia es CUÁNDO y CÓMO se avisa.
     for (const p of persons) {
       const countryISO = p.address?.country_id || '';
       const phones = p.phones || [];
       for (const ph of phones) {
-        const raw = (ph.phone_number || ph.value || '').trim();
-        if (raw && !validatePhone(raw, countryISO).valid) {
+        const ef = telefonoEfectivo_(ph, countryISO);
+        if (ef.hayAlgo && !ef.valido) {
           markInvalid([`${pkey(p)}:phone`]);  // UX-2 (el PhoneRow ya resalta inline; refuerza)
-          setErr(t('step2.phone.invalid'));
+          setErr(t(claveMotivoTelefono_(ef.res), { name: etiquetaDe(p) }));
           return;
         }
       }
       if (p.person_type_id === 'guardian') {
-        const hasValid = phones.some(ph =>
-          validatePhone((ph.phone_number || ph.value || '').trim(), countryISO).valid);
+        const hasValid = phones.some(ph => telefonoEfectivo_(ph, countryISO).valido);
         if (!hasValid) {
           markInvalid([`${pkey(p)}:phone`]);  // UX-2
-          setErr(t('step2.phone.guardian_required'));
+          setErr(t('step2.phone.guardian_required_for', { name: etiquetaDe(p) }));
           return;
         }
       }
@@ -934,17 +1025,11 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       }
       return p;
     });
-    // CLI PHONE-E164: normaliza los teléfonos válidos a E.164 antes de persistir
-    // (cubre el caso de pulsar Continuar sin haber hecho blur en algún campo).
-    const withE164 = withPrimaryEmail.map(p => ({
-      ...p,
-      phones: (p.phones || []).map(ph => {
-        const raw = (ph.phone_number || '').trim();
-        if (!raw) return ph;
-        const r = validatePhone(raw, p.address?.country_id || '');
-        return r.valid && r.e164 ? { ...ph, phone_number: r.e164 } : ph;
-      }),
-    }));
+    // CLI PHONE-E164 + 18.bis.21: lo que se ve en pantalla se guarda. Normaliza a E.164 y
+    // recoge el número escrito que aún no se había persistido (Continuar sin salir del
+    // campo, o el país elegido después). Lo inválido nunca llega aquí: la puerta de arriba
+    // ya paró el avance nombrando el motivo y la persona.
+    const withE164 = rescatarTelefonosDeLaPantalla(withPrimaryEmail);
     const transformed = withE164.map(transformPersonForSave);
     log.info('Step2: onNext persons (transformed)', transformed);
     updateStep('persons', transformed);

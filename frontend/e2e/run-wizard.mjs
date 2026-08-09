@@ -3054,6 +3054,184 @@ async function caminoSegundoTutorNoVeAlPrimero(page, base) {
   return c
 }
 
+/**
+ * CAMINO · «el teléfono que se ve es el que se guarda» (cola 18.bis.21).
+ *
+ * EL DEFECTO, medido el 2026-08-09: el número que la familia teclea vive en el estado del
+ * control (país del desplegable + número nacional del input) y solo llegaba a guardarse al
+ * SALIR del campo Y si la validación decía «válido». La puerta del paso 2 juzgaba lo
+ * PERSISTIDO — vacío justo en el caso que falla. Consecuencias:
+ *   · ALUMNO: el teléfono desaparecía SIN UNA PALABRA (la regla de «≥1 válido» solo mira a
+ *     los tutores, y el bucle `if (raw && !valid)` no entraba porque `raw` era '').
+ *   · TUTOR: se le decía «falta un teléfono» con el número escrito y visible en pantalla, y
+ *     sin decir de cuál de los dos tutores hablaba.
+ *
+ * Este camino mide las TRES cosas desde la pantalla: que no se pasa de largo, que el aviso
+ * nombra a la persona y el motivo REAL, y que al corregirlo el número SALE hacia el
+ * servidor. No mide el envío: eso lo cubre `caminoDeclaracionesTutorUnico`.
+ */
+async function caminoTelefonoQueSeVeSeGuarda(page, base) {
+  const c = new Camino('telefono-que-se-ve-se-guarda')
+  scenario.stage = 'hasta_preguntas'
+
+  // Se espía el guardado del paso: es donde se demuestra que lo escrito llegó a viajar.
+  let ultimoPersons = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'saveStep' && body.step === 'persons') ultimoPersons = body
+  }
+  page.on('request', espiar)
+  const limpiar = () => page.off('request', espiar)
+
+  // ── Utillaje de pantalla: se opera sobre la ÚLTIMA sección (un alumno) y sobre la
+  //    PRIMERA (el tutor que está mirando). Ambas por posición en el DOM, sin inventar
+  //    selectores nuevos: `.dynamic-section` es lo que pinta `PersonSection`.
+  const seccion = async (cual) => {
+    const ss = await page.$$('.dynamic-section')
+    if (!ss.length) return null
+    return cual === 'ultima' ? ss[ss.length - 1] : ss[0]
+  }
+  const añadirTelefonoEn = async (cual) => {
+    const s = await seccion(cual)
+    if (!s) return false
+    const botones = await s.$$('button.add-btn')
+    for (const b of botones) {
+      const txt = (await b.evaluate(n => n.textContent || '')).trim()
+      if (/tel[eé]fono|phone/i.test(txt)) { await b.click(); await page.waitForTimeout(150); return true }
+    }
+    return false
+  }
+  const escribirTelefonoEn = async (cual, valor) => {
+    const s = await seccion(cual)
+    if (!s) return false
+    const input = await s.$('input[type=tel]')
+    if (!input) return false
+    await input.fill(valor)            // teclea de verdad: dispara el onChange de React
+    await page.keyboard.press('Tab')   // y sale del campo, como haría la familia
+    await page.waitForTimeout(200)
+    return true
+  }
+  /** Pulsa Continuar y devuelve {avanzo, queja} SIN hacer fallar el camino. */
+  const intentarContinuar = async (desde) => {
+    const botones = await page.$$(BTN_SIGUIENTE)
+    if (!botones.length) return { avanzo: false, queja: '(no había botón Continuar)' }
+    await botones[0].click()
+    await page.waitForTimeout(600)
+    const donde = await dondeEstoy(page)
+    return { avanzo: donde !== desde, donde, queja: await quejaDelWizard(page) }
+  }
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    // Retroceder hasta Personas (índice 1), como la familia. Copiado de
+    // `caminoQuitarDeLaSolicitud` — mismo recorrido, mismo botón.
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(200)
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+
+    // ── (a) EL ALUMNO — un número escrito que no se puede guardar NO pasa de largo ──
+    if (!c.afirmar('el alumno ofrece añadir un teléfono', await añadirTelefonoEn('ultima'),
+      'no se encontró el botón de añadir teléfono en la última persona: sin él no se puede medir nada')) return c
+    if (!c.afirmar('se puede teclear el teléfono del alumno', await escribirTelefonoEn('ultima', '123'),
+      'no apareció el campo de teléfono tras añadirlo')) return c
+
+    const tras1 = await intentarContinuar(1)
+    c.afirmar('un teléfono escrito que NO se puede guardar frena el paso también en un ALUMNO',
+      !tras1.avanzo,
+      `el asistente avanzó al índice ${tras1.donde} con un número escrito en pantalla que no se guarda: la familia lo ve al teclearlo y ya no está cuando vuelve — el dato se pierde en silencio`)
+    c.afirmar('y el aviso dice DE QUIÉN habla',
+      /alumno|solicitante|applicant|student/i.test(tras1.queja || ''),
+      `el aviso fue «${tras1.queja}»: sin nombrar a la persona, una familia con dos hijos no sabe cuál revisar`)
+    c.afirmar('y dice que el problema es el número ESCRITO, no que falte',
+      /no es v[aá]lido|isn't valid|falta elegir el pa[ií]s|country is missing/i.test(tras1.queja || ''),
+      `el aviso fue «${tras1.queja}»: decir «falta un teléfono» con el número delante es lo que dejaba a la familia sin saber qué corregir`)
+
+    // ── (b) CORREGIDO — se avanza Y el número VIAJA hacia el servidor ───────────────
+    if (!c.afirmar('se puede corregir el teléfono del alumno', await escribirTelefonoEn('ultima', '600123456'),
+      'no se pudo reescribir el campo de teléfono')) return c
+    const tras2 = await intentarContinuar(1)
+    if (!c.afirmar('con el teléfono corregido el paso avanza', tras2.avanzo,
+      `siguió sin avanzar; el asistente dice: «${tras2.queja}»`)) return c
+    await page.waitForTimeout(LATENCY + 900)
+
+    if (!c.afirmar('el paso se guarda', !!ultimoPersons,
+      'no salió ningún saveStep de personas tras avanzar')) return c
+    c.evidencia.llamadas += 1
+    const personasEnviadas = Array.isArray(ultimoPersons.payload) ? ultimoPersons.payload : []
+    const telefonos = personasEnviadas.flatMap(p => (p.phones || []).map(ph => String(ph.value || ph.phone_number || '')))
+    c.afirmar('el número escrito en pantalla es el que VIAJA hacia el servidor',
+      telefonos.some(v => v.replace(/\D/g, '').endsWith('600123456')),
+      `los teléfonos enviados fueron ${JSON.stringify(telefonos)}: lo que se ve y lo que se guarda siguen siendo cosas distintas`)
+    c.afirmar('y viaja NORMALIZADO, con su prefijo internacional (DL-E40)',
+      telefonos.some(v => /^\+\d{7,15}$/.test(v) && v.replace(/\D/g, '').endsWith('600123456')),
+      `los teléfonos enviados fueron ${JSON.stringify(telefonos)}: sin el prefijo el KMS lo rechaza más tarde`)
+    c.afirmar('lo que es SOLO de pantalla no se manda al servidor',
+      personasEnviadas.every(p => (p.phones || []).every(ph => ph._escrito === undefined && ph._pais === undefined)),
+      'los campos de borrador de la pantalla (_escrito/_pais) llegaron al servidor: son estado de la interfaz, no datos de la familia')
+
+    // ── (c) EL TUTOR — el aviso deja de decir «falta» y nombra al tutor ─────────────
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se vuelve al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(200)
+    if (!c.afirmar('se puede reescribir el teléfono del tutor', await escribirTelefonoEn('primera', '123'),
+      'la primera persona no tiene campo de teléfono')) return c
+
+    const tras3 = await intentarContinuar(1)
+    c.afirmar('un teléfono de tutor escrito y no guardable frena el paso', !tras3.avanzo,
+      `avanzó al índice ${tras3.donde} con el teléfono del tutor sin guardar`)
+    c.afirmar('el aviso del tutor dice DE QUÉ TUTOR habla',
+      /tutor\s*\d|guardian\s*\d/i.test(tras3.queja || ''),
+      `el aviso fue «${tras3.queja}»: con dos tutores, no decir cuál obliga a revisarlos todos`)
+    c.afirmar('y no le dice «falta un teléfono» teniéndolo escrito delante',
+      /no es v[aá]lido|isn't valid|falta elegir el pa[ií]s|country is missing/i.test(tras3.queja || ''),
+      `el aviso fue «${tras3.queja}»: el número está escrito y visible — decir que falta es exactamente lo que desconcertaba a la familia`)
+
+    // ── (d) CORREGIR un teléfono QUE YA ESTABA GUARDADO también llega al servidor ───
+    // Caso distinto del (b): el del tutor VIENE del servidor, así que su fila ya trae el
+    // número viejo. El transformador se quedaba con ese viejo («solo si no hay valor»),
+    // de modo que corregir un teléfono existente no salía NUNCA — la pantalla enseñaba el
+    // nuevo y el expediente guardaba el de antes.
+    ultimoPersons = null
+    if (!c.afirmar('se puede corregir el teléfono del tutor', await escribirTelefonoEn('primera', '600999888'),
+      'no se pudo reescribir el campo de teléfono del tutor')) return c
+    const tras4 = await intentarContinuar(1)
+    if (!c.afirmar('con el teléfono del tutor corregido el paso avanza', tras4.avanzo,
+      `siguió sin avanzar; el asistente dice: «${tras4.queja}»`)) return c
+    await page.waitForTimeout(LATENCY + 900)
+    if (!c.afirmar('el paso se vuelve a guardar', !!ultimoPersons,
+      'no salió ningún saveStep de personas tras corregir el teléfono del tutor: lo que se iba a mandar era IDÉNTICO a lo ya guardado, o sea que la corrección no llegó siquiera a formar parte del envío')) return c
+    c.evidencia.llamadas += 1
+    const tras4Personas = Array.isArray(ultimoPersons.payload) ? ultimoPersons.payload : []
+    const tras4Telefonos = tras4Personas.flatMap(p => (p.phones || []).map(ph => String(ph.value || ph.phone_number || '')))
+    c.afirmar('corregir un teléfono YA GUARDADO llega al servidor (no se queda el viejo)',
+      tras4Telefonos.some(v => v.replace(/\D/g, '').endsWith('600999888')),
+      `los teléfonos enviados fueron ${JSON.stringify(tras4Telefonos)}: se mandó el número ANTERIOR — la familia corrige su teléfono, ve el nuevo en pantalla, y el colegio sigue llamando al viejo`)
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -3083,6 +3261,8 @@ const CAMINOS = [
   { nombre: 'segundo-tutor-no-ve-al-primero', fn: caminoSegundoTutorNoVeAlPrimero, minLlamadas: 2, minElementos: 2 },
   // DL-E49 §3 — las declaraciones de la familia de un solo tutor llegan al libro con su texto.
   { nombre: 'declaraciones-tutor-unico', fn: caminoDeclaracionesTutorUnico, minLlamadas: 1, minElementos: 2 },
+  // Cola 18.bis.21 — lo que se ve en pantalla y lo que se guarda dejan de diferir.
+  { nombre: 'telefono-que-se-ve-se-guarda', fn: caminoTelefonoQueSeVeSeGuarda, minLlamadas: 1, minElementos: 11 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

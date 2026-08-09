@@ -13,11 +13,23 @@ import { useWizard } from '../context/WizardContext';
  * para que un fallo NUNCA quede como "enviado" silencioso. El botón reintenta vía
  * `retryLastSave` (re-encola la MISMA factory completa); al resolver, la factory limpia
  * `submitError` y restaura isSubmitted=true.
+ *
+ * ★ 18.bis.21 — el aviso MIRA EL CÓDIGO del rechazo. «No se ha podido enviar, reinténtalo»
+ * es un callejón sin salida cuando el motivo es un dato que hay que corregir: reintentar
+ * vuelve a fallar exactamente igual. Los códigos que sabemos explicar dicen qué pasa y qué
+ * hacer; el RESTO sigue mostrando el texto genérico de siempre, byte-idéntico.
+ * ⚠️ El mensaje NUNCA lleva el número de teléfono (KAL-11): se nombra el paso, no el dato.
  */
+const MOTIVOS_QUE_SABEMOS_EXPLICAR = {
+  INVALID_PHONE: 'wizard.submit_failed.invalid_phone',
+};
+
 export default function SubmitErrorBanner() {
   const { t } = useTranslation();
   const { submitError, retryLastSave, saveState } = useWizard();
   if (!submitError) return null;
+  const codigo = typeof submitError === 'string' ? submitError : '';
+  const claveMensaje = MOTIVOS_QUE_SABEMOS_EXPLICAR[codigo] || 'wizard.submit_failed';
   const retrying = saveState === 'saving';
   return (
     <div role="alert" aria-live="assertive" style={{
@@ -27,7 +39,7 @@ export default function SubmitErrorBanner() {
       fontSize: '0.9rem', boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
     }}>
       <i className="bi bi-exclamation-triangle-fill" />
-      <span>{t('wizard.submit_failed')}</span>
+      <span data-testid="submit-error-text">{t(claveMensaje)}</span>
       <button
         type="button"
         onClick={retryLastSave}

@@ -325,7 +325,12 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
     // RQ + dispara emails + crea enrollments).
     const submitFactory = () => gasCall('submitEnrollmentSession', payload)
       .then(res => { setIsSubmitted(true); setSubmitError(false); return res; })
-      .catch(e => { setIsSubmitted(false); setSubmitError(true); throw e; });
+      // 18.bis.21 — el aviso de fallo guarda el CÓDIGO del rechazo, no un simple «sí».
+      // Sin él, un envío tumbado por la puerta de teléfono del servidor solo decía
+      // «reinténtalo»: reintentar volvía a fallar igual, para siempre, y la familia nunca
+      // sabía qué arreglar. Cualquier valor sigue siendo «verdadero» → el banner aparece
+      // exactamente igual que antes para los códigos que no sabe explicar.
+      .catch(e => { setIsSubmitted(false); setSubmitError(e?.code || true); throw e; });
 
     setSubmitError(false);
     setIsSubmitted(true);        // optimista: bloquea edición (Edit-lock post-submit, CLI 26)
