@@ -98,7 +98,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join, dirname, extname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { createDispatcher, buildHydrate, FIXTURE, RESPUESTA_GUARDADA } from './mock-backend.mjs'
+import { createDispatcher, buildHydrate, FIXTURE, RESPUESTA_GUARDADA, DOCUMENTOS_GUARDADOS, DOCUMENTOS_SIN_DESCRIPCION } from './mock-backend.mjs'
 import { sonda, aplicarSonda, porQueNoHaySondas, KMS_REPO } from './sondas-kms.mjs'
 
 const HERE     = dirname(fileURLToPath(import.meta.url))
@@ -180,6 +180,12 @@ const NO_CUBIERTAS_SOLO_REAL = {
     // CLICK_AND_SIGN_SUSPENDED_ no se toca. Todo lo anterior —sesión, firmantes, tokens y
     // paquete— lo prepara el motor del KMS al admitir y se lee de vuelta.
     'paso 11 · firma·conducido-por-navegador': 'el paso 11 se recorre hasta el BORDE del acto y ahí se corta a propósito: firmar sale a un tercero (Click & Sign) y es irreversible. Lo que el navegador sí conduce son los pasos 8, 9 y 10 que llevan hasta él; la preparación de la firma la produce el motor del KMS al admitir y se lee de vuelta en la base.',
+  },
+  'documentos-vuelven': {
+    'documentos-tras-el-codigo': 'la secuencia exige teclear el código de un solo uso que el servidor manda al buzón de la familia, y el arnés no lee buzones; en modo simulado sí se cubre',
+    'descripciones-vuelven': 'misma razón: sin pasar la verja no hay segunda hidratación que inspeccionar',
+    'archivos-reconocibles': 'misma razón: no se llega a la pantalla de Documentos con archivos ya subidos',
+    'anadir-no-borra-lo-que-habia': 'misma razón: no se llega a la pantalla de Documentos con archivos ya subidos',
   },
   'subir-documento': {
     // Medido, no supuesto: contra el sistema real la familia arranca en el paso 1 (no hay
@@ -344,7 +350,9 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // Escenario MUTABLE que los caminos reconfiguran antes de navegar.
 // `formatoFechasPrograma`: 'iso' (lo que manda el servidor de verdad) | 'appsheet' (el
 // formato crudo 'MM/DD/YYYY' de la API — escenario hostil de ①31).
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', partes: 'unica', formatoFechasPrograma: 'iso' }
+// `piiGated`/`otpSuperado`/`documentos`: la verja de datos personales (DL-E39) y los
+// archivos ya subidos — los usa `documentos-vuelven` y los deja como estaban al salir.
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -2995,6 +3003,193 @@ async function caminoRespuestasVuelven(page, base) {
 }
 
 /**
+ * LO QUE LA FAMILIA SUBIÓ SIGUE AHÍ CUANDO VUELVE A ENTRAR (síntoma de Diego, 2026-08-09:
+ * «figuran tres archivos supuestamente subidos por la familia en el paso 6, documentos,
+ * pero que no aparecen listados en el paso 6»).
+ *
+ * ── Por qué la secuencia es ÉSTA y no «entrar y mirar» ───────────────────────────────
+ * El dato NO se pierde por el camino: el servidor lo manda. Lo que fallaba es CUÁNDO
+ * llega. La pantalla de Documentos siembra su lista UNA sola vez, al montarse; y una
+ * familia cuyo enlace ya no tiene gracia recibe la PRIMERA hidratación SIN nada suyo
+ * (`pii_gated:true`, la verja de datos personales de DL-E39) y sus archivos solo llegan
+ * en la SEGUNDA, tras teclear el código de un solo uso. Todo lo que estuviera montado
+ * antes de ese segundo paquete se quedó con la foto vacía — para siempre.
+ *
+ * Por eso el recorrido reproduce las DOS hidrataciones, en su orden real:
+ *   1. entra por el enlace → el servidor contesta con la verja puesta y CERO documentos;
+ *   2. teclea el código → la segunda hidratación trae los TRES archivos;
+ *   3. va a Documentos y **tienen que estar los tres, con su descripción**.
+ *
+ * Y afirma una cuarta cosa que es la que hace segura la corrección: **añadir un archivo
+ * nuevo no borra los que ya estaban**. Re-sembrar una lista pisando lo que el usuario
+ * tiene a medias sería peor que el fallo que se arregla.
+ */
+async function caminoDocumentosVuelven(page, base) {
+  const c = new Camino('documentos-vuelven')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    // La verja no se puede FORZAR contra el sistema de verdad (dependeria de dejar
+    // caducar la gracia del enlace) y, sobre todo, el codigo de un solo uso llega a un
+    // buzon que este arnes no lee. No se afloja la verja para que la prueba pase.
+    c.noCubierta('documentos-tras-el-codigo',
+      'la secuencia exige teclear el codigo de un solo uso que el servidor manda al buzon de la familia, y el arnes no lee buzones; en modo simulado si se cubre')
+    c.noCubierta('descripciones-vuelven',
+      'misma razon: sin pasar la verja no hay segunda hidratacion que inspeccionar')
+    c.noCubierta('archivos-reconocibles',
+      'misma razon: no se llega a la pantalla de Documentos con archivos ya subidos')
+    c.noCubierta('anadir-no-borra-lo-que-habia',
+      'misma razon: no se llega a la pantalla de Documentos con archivos ya subidos')
+    return c
+  }
+
+  try {
+    // ══ PASE 1 · con la VERJA de datos personales por medio ═══════════════════
+    // Los archivos llegan en la SEGUNDA hidratacion, tras el codigo. Es la secuencia
+    // de una familia cuyo enlace ya no tiene gracia.
+    scenario.documentos = DOCUMENTOS_GUARDADOS
+    scenario.piiGated = true
+    scenario.otpSuperado = false
+
+    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const hayVerja = await page.waitForSelector('input[autocomplete="one-time-code"]', { timeout: LATENCY * 3 + 15000 })
+      .then(() => true).catch(() => false)
+    if (!c.afirmar('con la verja puesta, el asistente pide el codigo antes de ensenar nada', hayVerja,
+      'nunca aparecio la casilla del codigo de un solo uso: la secuencia que este recorrido mide no llego a darse')) return c
+
+    const hidratacionesAntes = llamadas('hydrateSession').length
+
+    // La casilla nace DESHABILITADA hasta que hay un codigo enviado. El asistente solo
+    // lo manda solo la PRIMERA vez que se recupera la solicitud; despues espera a que la
+    // familia lo pida (boton «Enviar codigo»). Se pulsa si hace falta -- que es lo que
+    // hace una familia -- en vez de dar por hecho que la casilla esta lista.
+    const casillaLista = async () => page.evaluate(() => {
+      const i = document.querySelector('input[autocomplete="one-time-code"]')
+      return !!(i && !i.disabled)
+    })
+    const esperarCasilla = (ms) => page.waitForFunction(() => {
+      const i = document.querySelector('input[autocomplete="one-time-code"]')
+      return !!(i && !i.disabled)
+    }, null, { timeout: ms }).then(() => true).catch(() => false)
+    // Primero se ESPERA al envío automático (el asistente lo dispara solo la primera vez
+    // que se recupera la solicitud). Solo si no llega se pulsa «Enviar código» a mano —
+    // pulsarlo mientras el automático está en vuelo no hace nada (el botón está inhabilitado)
+    // y dejaba el recorrido en rojo por prisa del arnés, no por un defecto del asistente.
+    if (!await casillaLista() && !await esperarCasilla(LATENCY * 4 + 8000)) {
+      const pedir = await page.$('button.btn-link.btn-sm:not([disabled])')
+      if (pedir) await pedir.click()
+      await esperarCasilla(LATENCY * 3 + 10000)
+    }
+    if (!c.afirmar('la familia puede teclear el codigo que le mandaron', await casillaLista(),
+      'la casilla del codigo sigue deshabilitada tras pedirlo: no se puede pasar la verja')) return c
+
+    await page.fill('input[autocomplete="one-time-code"]', '123456')
+    await page.click('button.btn-primary-kis:not([disabled])')
+    const abierto = await page.waitForFunction(() => {
+      const pasos = document.querySelectorAll('.wizard-step')
+      return !!(pasos.length && [...pasos].some(p => p.classList.contains('active')))
+    }, null, { timeout: LATENCY * 4 + 20000 }).then(() => true).catch(() => false)
+    if (!c.afirmar('tras el codigo, el asistente abre la solicitud', abierto,
+      'el asistente no llego a pintar los pasos despues de verificar el codigo')) return c
+    await page.waitForTimeout(LATENCY + 600)
+
+    c.afirmar('el codigo provoca una segunda hidratacion (la que trae los archivos)',
+      llamadas('hydrateSession').length > hidratacionesAntes,
+      'no salio ninguna hidratacion nueva tras el codigo: los archivos nunca llegaron a la pantalla')
+
+    if (!await irADocumentos(c, page, 'con la verja por medio')) return c
+    await page.waitForTimeout(400)
+    const conVerja = await radiografiaDocumentos(page)
+    console.log(`      con la verja por medio: ${JSON.stringify(conVerja)}`)
+    c.evidencia.elementos = conVerja.n_paneles
+    c.evidencia.llamadas  = llamadas('hydrateSession').length
+
+    c.afirmar('los archivos que la familia ya subio salen listados al volver a entrar',
+      conVerja.n_paneles >= DOCUMENTOS_GUARDADOS.length,
+      `el paso de Documentos pinto ${conVerja.n_paneles} de los ${DOCUMENTOS_GUARDADOS.length} archivos que el servidor mando en la segunda hidratacion`)
+
+    const esperadas = DOCUMENTOS_GUARDADOS.map(d => d.description)
+    c.afirmar('cada archivo conserva la descripcion que escribio la familia',
+      esperadas.every(d => conVerja.descripciones.includes(d)),
+      `faltan descripciones: se esperaban ${JSON.stringify(esperadas)} y en pantalla hay ${JSON.stringify(conVerja.descripciones)} -- el servidor no manda la descripcion en la hidratacion, asi que lo que la familia escribio vuelve en blanco`)
+
+    // Anadir uno nuevo NO borra los que habia.
+    const anadir = await page.$('.add-btn')
+    if (!anadir) { c.fallos.push('el paso de Documentos no ofrece el boton de anadir archivo (.add-btn)'); return c }
+    await anadir.click()
+    await page.waitForTimeout(300)
+    const trasAnadir = await page.evaluate(() => document.querySelectorAll('.doc-attachment').length)
+    c.afirmar('anadir un archivo nuevo no borra los que ya estaban',
+      trasAnadir === conVerja.n_paneles + 1,
+      `antes habia ${conVerja.n_paneles} paneles y tras pulsar «Anadir archivo» hay ${trasAnadir} (se esperaban ${conVerja.n_paneles + 1})`)
+
+    // ══ PASE 2 · ARCHIVOS SIN DESCRIPCION ════════════════════════════════════
+    // La descripcion es OPCIONAL: un expediente normal tiene archivos sin ella. Si la
+    // pantalla solo sabe ensenar la descripcion, esos archivos salen como cajas vacias:
+    // ESTAN, pero la familia no reconoce ninguno -- y eso, para quien mira, es lo mismo
+    // que si no estuvieran. Aqui se entra por el camino ordinario (con la gracia del
+    // enlace, sin verja), porque lo que se mide es OTRA cosa.
+    scenario.documentos = DOCUMENTOS_SIN_DESCRIPCION
+    scenario.piiGated = false
+    scenario.otpSuperado = false
+
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 400)
+    if (!await irADocumentos(c, page, 'sin descripcion')) return c
+    await page.waitForTimeout(400)
+    const sinDesc = await radiografiaDocumentos(page)
+    console.log(`      sin descripcion: ${JSON.stringify(sinDesc)}`)
+    c.evidencia.elementos = Math.max(c.evidencia.elementos, sinDesc.n_paneles)
+
+    c.afirmar('los archivos sin descripcion tambien salen listados',
+      sinDesc.n_paneles >= DOCUMENTOS_SIN_DESCRIPCION.length,
+      `el paso de Documentos pinto ${sinDesc.n_paneles} de los ${DOCUMENTOS_SIN_DESCRIPCION.length} archivos`)
+
+    const nombres = DOCUMENTOS_SIN_DESCRIPCION.map(d => d.file_name)
+    c.afirmar('la familia puede RECONOCER cada archivo que subio',
+      nombres.every(n => sinDesc.texto.includes(n)),
+      `ninguno de los ${sinDesc.n_paneles} paneles dice de que archivo se trata: se buscaban ${JSON.stringify(nombres)} y el paso solo muestra «${sinDesc.texto.replace(/\s+/g, ' ').trim().slice(0, 160)}». Sin descripcion escrita, el panel no ensena NADA que identifique el fichero: la familia ve cajas vacias y no puede saber que subio`)
+  } finally {
+    scenario.piiGated = false
+    scenario.otpSuperado = false
+    scenario.documentos = null
+  }
+  return c
+}
+
+/** Lo que se VE en el paso de Documentos: cuantos paneles, sus descripciones y su texto. */
+async function radiografiaDocumentos(page) {
+  return page.evaluate(() => {
+    const paneles = [...document.querySelectorAll('.doc-attachment')]
+    return {
+      n_paneles: paneles.length,
+      descripciones: paneles.map(p => {
+        const i = p.querySelector('input[type="text"]')
+        return String((i && i.value) || '').trim()
+      }).filter(Boolean),
+      n_confirmados: document.querySelectorAll('.doc-attachment .upload-status.success').length,
+      texto: paneles.map(p => p.innerText || '').join(' | '),
+    }
+  })
+}
+
+/** Retrocede hasta el paso de Documentos (índice 5) y lo desbloquea para poder tocarlo. */
+async function irADocumentos(c, page, etiqueta) {
+  for (let i = 0; i < 8 && (await dondeEstoy(page)) > 5; i++) {
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!atras) break
+    await atras.click()
+    await page.waitForTimeout(250)
+  }
+  const donde = await dondeEstoy(page)
+  if (!c.afirmar(`se llega al paso de Documentos${etiqueta ? ' — ' + etiqueta : ''}`, donde === 5,
+    `se quedó en el índice ${donde}`)) return false
+  await desbloquear(page)
+  return true
+}
+
+/**
  * DL-E49 §1 · EL SEGUNDO TUTOR ENVÍA Y LA SOLICITUD PASA A REVISIÓN.
  *
  * El defecto que este camino vigila NO es hipotético: hasta hoy, en cuanto UN tutor
@@ -3702,6 +3897,13 @@ const CAMINOS = [
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
   // Cola 18.bis.25 — lo que la familia escribió sigue ahí cuando vuelve.
   { nombre: 'respuestas-vuelven', fn: caminoRespuestasVuelven, minLlamadas: 1, minElementos: 11 },
+  // Lo que la familia SUBIÓ sigue ahí cuando vuelve (síntoma de Diego, 2026-08-09).
+  // Contra el sistema real el recorrido se declara NO CUBIERTO y sale sin tocar la
+  // pantalla (el código de un solo uso llega a un buzón que el arnés no lee), así que
+  // ahí no se le puede exigir evidencia pintada: se exigiría por algo que se declaró
+  // que no se hace, y el veredicto acusaría al producto de una carencia del arnés.
+  { nombre: 'documentos-vuelven', fn: caminoDocumentosVuelven,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 3 },
   // DL-E49 §1 — el envío es POR TUTOR: quien termina envía su parte, y la solicitud solo
   // pasa a revisión cuando han enviado todos.
   { nombre: 'segundo-tutor-envia', fn: caminoSegundoTutorEnvia, minLlamadas: 2, minElementos: 2 },

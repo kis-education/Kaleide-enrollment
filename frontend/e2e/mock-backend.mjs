@@ -175,6 +175,40 @@ const LOOKUPS = {
 /** Lo que la familia dejó escrito en la primera pregunta. La batería lo busca EN PANTALLA. */
 export const RESPUESTA_GUARDADA = 'lo que el robot dejo escrito'
 
+/**
+ * LOS TRES ARCHIVOS QUE LA FAMILIA YA SUBIÓ — los que el camino `documentos-vuelven`
+ * busca EN PANTALLA al volver a entrar.
+ *
+ * ⚠️ LA FORMA ES LA DEL SERVIDOR, no una inventada: es exactamente lo que emite el
+ * mapeo de `documents` del KMS (`kis-app kms-server/enr/wizard-datalayer.gs`, la
+ * proyección de `recFiles`) y que `hydrateSession_` reenvía tal cual al cliente
+ * (`backend/Code.js`, `return Object.assign({}, data, …)`). Incluye `description`
+ * PORQUE ese mapeo la manda: hasta el 2026-08-09 NO viajaba, y por eso la familia
+ * veía sus descripciones en blanco aunque las hubiera escrito. Si alguien vuelve a
+ * quitarla del servidor, la afirmación de descripciones de este camino cae — que es
+ * justo lo que tiene que pasar.
+ */
+export const DOCUMENTOS_GUARDADOS = [
+  { file_id: 'dddddddd-1111-4111-8111-dddddddddddd', file_name: 'notas-curso-anterior.pdf',
+    description: 'Notas del curso anterior', rec_type_code: 'ENR_DOC', created_at: '2026-08-01T09:00:00Z' },
+  { file_id: 'dddddddd-2222-4222-8222-dddddddddddd', file_name: 'libro-de-familia.pdf',
+    description: 'Libro de familia', rec_type_code: 'ENR_DOC', created_at: '2026-08-01T09:05:00Z' },
+  { file_id: 'dddddddd-3333-4333-8333-dddddddddddd', file_name: 'informe-del-colegio.pdf',
+    description: 'Informe del colegio anterior', rec_type_code: 'ENR_DOC', created_at: '2026-08-01T09:10:00Z' },
+]
+
+/**
+ * LOS MISMOS TRES ARCHIVOS, SIN DESCRIPCIÓN — y NO es un caso rebuscado.
+ *
+ * La casilla de descripción es OPCIONAL por diseño (el adjuntador es genérico: la familia
+ * sube lo que quiera y, si le apetece, dice qué es). Así que un expediente perfectamente
+ * normal tiene archivos sin una sola letra de descripción. Si la pantalla solo sabe
+ * enseñar la descripción, esos archivos salen como tres cajas vacías: están, pero la
+ * familia no puede reconocer NINGUNO. Este es el conjunto con el que se mide eso.
+ */
+export const DOCUMENTOS_SIN_DESCRIPCION = DOCUMENTOS_GUARDADOS.map(
+  ({ description, ...resto }) => resto)   // eslint-disable-line no-unused-vars
+
 const QUESTIONS = {
   context: { context_id: 'ctx-e2e', context_code: 'ENROLLMENT', designation: 'ENROLLMENT', is_active: true },
   sets: [{
@@ -253,8 +287,12 @@ function recortarPorTutorE2E_(data, viewerN) {
  * @param {'sin_fecha'|'hasta_preguntas'|'firma'} stage
  * @param {string} [viewerN] — el `n` (email_id) del enlace con el que se pidió esta
  *   hidratación; DL-E49 §2 recorta `persons`/`relations`/`responses` según quién pregunta.
+ * @param {boolean} [tutorUnico]
+ * @param {Array}  [documentos] — los archivos que la familia YA subió. Por defecto ninguno
+ *   (que es lo que hace aterrizar en Documentos); con lista, el paso queda por visitado y
+ *   el aterrizaje se va a Revisión, igual que en el sistema real.
  */
-export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico) {
+export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -330,6 +368,7 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
       ...base,
       persons,
       relations,
+      documents: documentos || [],
       // La respuesta apunta a una pregunta REAL del catálogo y al sujeto con el que la
       // pantalla la busca. Antes era `q1` con un tutor: una pregunta que no existe y un
       // sujeto que no se usa, así que solo servía para dar el paso por visitado y NUNCA
@@ -443,11 +482,40 @@ export function createDispatcher(scenario, record) {
     // `fetchLookups` (ver `lookupsSegunEscenario_`): el frontal siembra su caché con los
     // `lookups` de la hidratación. Por eso el escenario de formato se aplica también aquí.
     hydrateSession: (p) => {
-      const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico);
+      // ── LA VERJA DE DATOS PERSONALES (DL-E39) ────────────────────────────────
+      // Con `scenario.piiGated`, la PRIMERA hidratación llega SIN nada de la familia y
+      // marcada `pii_gated:true` — la secuencia REAL de una familia cuyo enlace ya no
+      // tiene gracia: el servidor no manda ni personas ni documentos hasta que se teclea
+      // el código de un solo uso, y todo llega en la SEGUNDA hidratación. La forma es la
+      // del contrato de verdad (`backend/Code.js`, la rama `if (!stepUpFresh)` de
+      // `hydrateSession_`), no una inventada. `verifyEmail` abre la verja.
+      if (scenario.piiGated && !scenario.otpSuperado) {
+        return {
+          ok: true,
+          group: {
+            enrollment_group_id: FIXTURE.groupId,
+            resume_token:        FIXTURE.resumeToken,
+            primary_email:       FIXTURE.emailKnown,
+            program_id:          FIXTURE.programId,
+            desired_start_date:  FIXTURE.startDateSep,
+            submitted_at:        null,
+          },
+          enrollments:    [],
+          admission:      null,
+          lookups:        lookupsSegunEscenario_(scenario),
+          questions:      null,
+          live_version:   0,
+          persons:        [], relations: [], documents: [], responses: [],
+          billing_splits: { payers: [], per_participant: [] },
+          step_up_fresh:  false,
+          pii_gated:      true,
+        };
+      }
+      const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos);
       return { ok: true, ...h, lookups: lookupsSegunEscenario_(scenario) };
     },
     getAdmissionState: (p) => {
-      const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico);
+      const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos);
       return { ok: true, ...(h.admission || { state_code: null }) };
     },
     getLiveStateVersion: () => ({ ok: true, version: 1 }),
@@ -534,7 +602,10 @@ export function createDispatcher(scenario, record) {
 
     // ── Verificación / step-up ───────────────────────────────────────────────
     sendVerificationCode: () => ({ ok: true, sent: true }),
-    verifyEmail:          () => ({ ok: true, verified: true }),
+    // El código correcto abre la verja de datos personales: a partir de aquí la
+    // hidratación SÍ trae lo de la familia (mismo efecto que `_markStepUpFresh_` en el
+    // servidor de verdad).
+    verifyEmail:          (p) => { if (p && p.stepup) scenario.otpSuperado = true; return { ok: true, verified: true }; },
 
     // ── Tramo de firma ───────────────────────────────────────────────────────
     getSubscriptionBudget:   () => ({ ok: true, subscriptions: [], modalities_available: false }),
