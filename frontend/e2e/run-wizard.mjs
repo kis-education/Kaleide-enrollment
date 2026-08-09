@@ -190,6 +190,16 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'subida-desde-la-pantalla': 'contra el sistema real el expediente recién creado aterriza en el paso 1, y el robot aún no conduce en navegador los pasos 2-5 necesarios para llegar a Documentos. La ESCRITURA del documento sí se cubre (por la pasarela) y la sonda del paso 6 la verifica en recFiles; lo que falta es teclearlo en la pantalla. Lo cierra el encargo 03.',
     'contenido-de-la-subida': 'no hubo subida DESDE LA PANTALLA que inspeccionar (ver arriba); el contenido de la fila lo afirma la sonda del paso 6 leyendo la base',
   },
+  // Cola 18.bis — el aviso rojo de guardado. Los dos caminos necesitan un guardado que
+  // FALLE a voluntad, y eso solo lo puede fabricar el backend simulado
+  // (`scenario.saveStepFails`). Contra el sistema real no hay forma honesta de tumbar un
+  // guardado sin desplegarle un cambio al servidor de verdad; en modo simulado sí se cubre.
+  'aviso-guardado-se-apaga': {
+    'aviso-de-guardado': 'el fallo del guardado se pide con `scenario.saveStepFails`, una palanca del backend simulado; contra el sistema real no hay forma honesta de hacer fallar un guardado a voluntad',
+  },
+  'aviso-guardado-se-cierra': {
+    'cierre-del-aviso': 'el fallo del guardado se pide con `scenario.saveStepFails`, una palanca del backend simulado; contra el sistema real no hay forma honesta de hacer fallar un guardado a voluntad',
+  },
 }
 if (REAL) {
   for (const [camino, entradas] of Object.entries(NO_CUBIERTAS_SOLO_REAL)) {
@@ -3424,6 +3434,250 @@ async function caminoTelefonoQueSeVeSeGuarda(page, base) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// COLA 18.bis — EL AVISO DE «NO SE PUDO GUARDAR» DEJA DE MENTIR.
+//
+// Diego, 2026-08-09, con la pantalla delante: «Si el wizard falla el guardado, aparece
+// una barra en el menú de color rojo, que invita a volver a guardar, pero es persistente.
+// Si al final guarda por otro lado (como me ha pasado) la barra se queda.»
+//
+// La causa MEDIDA contra `origin/main`: el aviso solo se apagaba desde el final feliz de
+// la cola de guardado (`WizardContext.enqueueSave`), y hay caminos que persisten de
+// verdad SIN pasar por ella — subir un documento, guardar las NEAE, quitar a alguien del
+// expediente. El dato quedaba a salvo y el cartel seguía diciendo lo contrario.
+//
+// Los dos caminos de abajo son mock-only a propósito: el fallo del guardado se PIDE con
+// `scenario.saveStepFails`, que es una palanca del backend simulado. Contra el sistema
+// real no hay forma honesta de hacer fallar un guardado a voluntad, así que allí se
+// declara NO CUBIERTO con su motivo en vez de fingir un verde.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Sube UN archivo más en el paso de Documentos y espera su confirmación visible.
+ *
+ * Es lo que deja el paso SUCIO de verdad: el paso solo cuenta las filas que YA tienen
+ * archivo subido (`Step6Documents.uploadedDocs`), así que una fila con solo descripción
+ * no ensucia nada y el «Continuar» no llegaría a guardar. Además, la subida es una de
+ * las tres escrituras que persisten SIN pasar por la cola de guardado —justo la que este
+ * camino necesita para comprobar el «guarda por otro lado» de Diego.
+ */
+async function subirUnDocumento(c, page, descripcion) {
+  const yaSubidos = await page.$$eval('.upload-status.success', els => els.length).catch(() => 0)
+  const añadir = await page.$('.add-btn')
+  if (!añadir) {
+    c.fallos.push('el paso de Documentos no ofrece el botón de añadir archivo (.add-btn)')
+    return false
+  }
+  await añadir.click()
+  await page.waitForSelector('.doc-attachment', { timeout: 10000 })
+  const cajas = await page.$$('.doc-attachment input[type="text"]')
+  if (cajas.length) await cajas[cajas.length - 1].fill(descripcion)
+  const ficheros = await page.$$('.doc-attachment input[type="file"]')
+  if (!ficheros.length) {
+    c.fallos.push('la fila de documento no ofrece campo de archivo')
+    return false
+  }
+  await ficheros[ficheros.length - 1].setInputFiles({
+    name: 'prueba-e2e.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.4\n% documento sintetico de la bateria E2E\n'),
+  })
+  try {
+    await page.waitForFunction((n) => document.querySelectorAll('.upload-status.success').length > n,
+      yaSubidos, { timeout: LATENCY + 12000 })
+    return true
+  } catch {
+    c.fallos.push('el archivo nunca llegó a subirse: sin una escritura que SÍ entre, este camino no mide nada')
+    return false
+  }
+}
+
+/** ¿Se está viendo el aviso rojo de guardado? */
+const hayAvisoRojo = (page) => page.$eval('[data-testid="save-indicator-error"]', () => true).catch(() => false)
+
+/**
+ * (a) UN GUARDADO POSTERIOR QUE SÍ ENTRA APAGA EL AVISO — venga por donde venga.
+ *
+ * Recorrido: el guardado del paso de Documentos falla ⇒ sale el aviso rojo. Acto seguido
+ * la familia SUBE un archivo, que persiste por un camino que NO pasa por la cola
+ * (`pages/steps/Step6Documents.jsx:66`). Ese es exactamente el «guarda por otro lado» de
+ * Diego: cuando el servidor acepta esa escritura, el aviso tiene que apagarse SOLO.
+ *
+ * Roto a propósito (2026-08-09): quitando la suscripción de `WizardContext` a
+ * `alConfirmarEscritura`, este camino sale ROJO nombrándolo — el aviso se queda encendido
+ * con el dato ya guardado.
+ */
+async function caminoAvisoGuardadoSeApaga(page, base) {
+  const c = new Camino('aviso-guardado-se-apaga')
+  scenario.stage = 'hasta_preguntas'   // aterriza directamente en Documentos (5)
+  scenario.saveStepFails = true
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    c.evidencia.llamadas = calls.length
+    if (REAL) {
+      c.noCubierta('aviso-de-guardado',
+        'el fallo del guardado se pide con `scenario.saveStepFails`, una palanca del backend simulado; contra el sistema real no hay forma honesta de hacer fallar un guardado a voluntad')
+      return c
+    }
+    // Se declara AQUÍ y no antes: en modo real el camino sale por la puerta de arriba y
+    // el error nunca ocurriría, con lo que la declaración caería por obsoleta.
+    c.esperarErrorConsola(/gasCall saveStep: server returned ok=false/,
+      'el guardado del paso se tumba a propósito para hacer aparecer el aviso rojo')
+    if (!c.afirmar('aterriza en el paso de Documentos', pantalla.pasoActivo === 5,
+      `aterrizó en el índice ${pantalla.pasoActivo}, no en 5`)) return c
+
+    // ── (1) el guardado falla ⇒ sale el aviso rojo ────────────────────────────────
+    if (!await subirUnDocumento(c, page, 'Documento sintético E2E')) return c
+    await page.click(BTN_SIGUIENTE)
+    let salio = false
+    try {
+      await page.waitForSelector('[data-testid="save-indicator-error"]', { timeout: LATENCY + 8000 })
+      salio = true
+    } catch { /* lo dice el afirmar */ }
+    if (!c.afirmar('(1) cuando el guardado falla, la pantalla lo dice', salio,
+      'no apareció ningún aviso de guardado fallido: la familia creería que quedó guardado')) return c
+
+    // El texto tiene que decir QUÉ pasó, no «Error» a secas.
+    const texto = await page.$eval('[data-testid="save-indicator-error"]',
+      el => (el.textContent || '').replace(/\s+/g, ' ').trim())
+    c.afirmar('(2) el aviso dice qué no se pudo guardar y que lo escrito sigue ahí',
+      /no se ha podido guardar/i.test(texto) && /sigue aquí/i.test(texto),
+      `el aviso dice «${texto}»: no nombra lo que falló ni qué pasa con lo que la familia escribió`)
+
+    // ── (2) un guardado que SÍ entra, por un camino que no es la cola, lo apaga ────
+    scenario.saveStepFails = false
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!c.afirmar('se puede volver a Documentos', !!atras,
+      'el paso siguiente no ofrece «Atrás»: no hay forma de volver a subir el archivo')) return c
+    await atras.click()
+    await page.waitForFunction(() => {
+      const p = [...document.querySelectorAll('.wizard-step')]
+      return p.findIndex(x => x.classList.contains('active')) === 5
+    }, null, { timeout: 15000 }).catch(() => {})
+    await desbloquear(page)
+
+    c.afirmar('el aviso sigue encendido mientras nada se ha guardado', await hayAvisoRojo(page),
+      'el aviso se apagó sin que ningún guardado hubiese entrado: eso es esconder el problema, no resolverlo')
+
+    // (3) la familia sube OTRO archivo: eso persiste de verdad y NO pasa por la cola.
+    if (!await subirUnDocumento(c, page, 'Segundo documento E2E')) return c
+    c.notas.push('✓ (3) la segunda subida entra por un camino que NO pasa por la cola de guardado')
+
+    let apagado = false
+    try {
+      await page.waitForFunction(() => !document.querySelector('[data-testid="save-indicator-error"]'),
+        null, { timeout: LATENCY + 10000 })
+      apagado = true
+    } catch { /* lo dice el afirmar */ }
+    c.afirmar('(4) con el dato ya guardado, el aviso se apaga SOLO',
+      apagado,
+      'el aviso rojo seguía encendido después de que el servidor aceptara una escritura: es el defecto que Diego describió — «si al final guarda por otro lado, la barra se queda»')
+
+    // Y no se apaga mintiendo: el guardado que había fallado se REINTENTA de verdad.
+    c.afirmar('(5) el guardado que falló se vuelve a intentar (no se descarta en silencio)',
+      llamadas('saveStep').length >= 2,
+      `salieron ${llamadas('saveStep').length} guardado(s) de paso: el que falló se dio por perdido en vez de reintentarse`)
+    c.evidencia.llamadas = calls.length
+    return c
+  } finally {
+    scenario.saveStepFails = false
+  }
+}
+
+/**
+ * (b) LA X CIERRA EL CARTEL, NO EL PROBLEMA.
+ *
+ * La familia oculta el aviso a mano. Tiene que desaparecer — y NO puede aparecer en su
+ * lugar el «Todos los cambios guardados», porque seguiría habiendo algo sin guardar. Y si
+ * vuelve a fallar un guardado, el aviso REAPARECE: cerrar cierra ESE episodio, no los
+ * futuros.
+ *
+ * Roto a propósito (2026-08-09): (i) quitando el botón de cerrar → rojo en (1);
+ * (ii) haciendo que la X ponga el estado en 'idle' → rojo en (3), porque la pantalla pasa
+ * a decir «Todos los cambios guardados» con el dato aún sin guardar.
+ */
+async function caminoAvisoGuardadoSeCierra(page, base) {
+  const c = new Camino('aviso-guardado-se-cierra')
+  scenario.stage = 'hasta_preguntas'
+  scenario.saveStepFails = true
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    c.evidencia.llamadas = calls.length
+    if (REAL) {
+      c.noCubierta('cierre-del-aviso',
+        'el fallo del guardado se pide con `scenario.saveStepFails`, una palanca del backend simulado; contra el sistema real no hay forma honesta de hacer fallar un guardado a voluntad')
+      return c
+    }
+    // Se declara AQUÍ y no antes: en modo real el camino sale por la puerta de arriba y
+    // el error nunca ocurriría, con lo que la declaración caería por obsoleta.
+    c.esperarErrorConsola(/gasCall saveStep: server returned ok=false/,
+      'el guardado del paso se tumba a propósito para hacer aparecer el aviso rojo')
+    if (!c.afirmar('aterriza en el paso de Documentos', pantalla.pasoActivo === 5,
+      `aterrizó en el índice ${pantalla.pasoActivo}, no en 5`)) return c
+
+    if (!await subirUnDocumento(c, page, 'Documento sintético E2E')) return c
+    await page.click(BTN_SIGUIENTE)
+    try {
+      await page.waitForSelector('[data-testid="save-indicator-error"]', { timeout: LATENCY + 8000 })
+    } catch {
+      c.fallos.push('no apareció el aviso de guardado fallido: sin él no hay nada que cerrar')
+      return c
+    }
+
+    // (1) la X existe y se puede nombrar (lector de pantalla incluido).
+    const cerrar = await page.$('[data-testid="save-error-dismiss"]')
+    if (!c.afirmar('(1) el aviso ofrece una X para cerrarlo', !!cerrar,
+      'no hay ningún botón de cerrar: el aviso es persistente, que es justo lo que Diego pidió arreglar')) return c
+    const etiqueta = await cerrar.getAttribute('aria-label')
+    c.afirmar('(2) la X se puede nombrar (tiene etiqueta accesible)', !!(etiqueta && etiqueta.trim()),
+      'el botón de cerrar no tiene aria-label: para quien navega con lector de pantalla es un botón sin nombre')
+
+    await cerrar.click()
+    await page.waitForTimeout(200)
+    c.afirmar('(3) al cerrar, el aviso desaparece', !(await hayAvisoRojo(page)),
+      'el aviso seguía en pantalla tras pulsar la X')
+
+    // La comprobación que impide el arreglo tramposo: cerrar NO puede dejar la pantalla
+    // diciendo que está todo guardado, porque NO lo está.
+    const dice = await page.$eval('[data-testid="save-indicator-idle"]', () => true).catch(() => false)
+    c.afirmar('(4) cerrar NO hace que la pantalla diga que está todo guardado', !dice,
+      'tras cerrar el aviso la pantalla anuncia «Todos los cambios guardados» con el dato aún sin guardar: la X estaría escondiendo el problema, no el cartel')
+
+    // (5) sigue habiendo algo sin guardar ⇒ un fallo NUEVO vuelve a avisar.
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!c.afirmar('se puede volver a Documentos', !!atras,
+      'el paso siguiente no ofrece «Atrás»')) return c
+    await atras.click()
+    await page.waitForFunction(() => {
+      const p = [...document.querySelectorAll('.wizard-step')]
+      return p.findIndex(x => x.classList.contains('active')) === 5
+    }, null, { timeout: 15000 }).catch(() => {})
+    await desbloquear(page)
+    // Otro archivo ⇒ el paso vuelve a estar sucio ⇒ «Continuar» vuelve a guardar, y el
+    // servidor sigue tumbando el guardado: es un fallo NUEVO, no el mismo de antes.
+    if (!await subirUnDocumento(c, page, 'Segundo documento E2E')) return c
+    await page.click(BTN_SIGUIENTE)
+    let volvio = false
+    try {
+      await page.waitForSelector('[data-testid="save-indicator-error"]', { timeout: LATENCY + 8000 })
+      volvio = true
+    } catch { /* lo dice el afirmar */ }
+    c.afirmar('(5) si vuelve a fallar un guardado, el aviso REAPARECE',
+      volvio,
+      'el aviso no volvió: haberlo cerrado una vez lo apagó para siempre, y el día que el fallo sea de verdad la familia no se entera')
+    c.evidencia.llamadas = calls.length
+    return c
+  } finally {
+    scenario.saveStepFails = false
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -3457,6 +3711,10 @@ const CAMINOS = [
   { nombre: 'declaraciones-tutor-unico', fn: caminoDeclaracionesTutorUnico, minLlamadas: 1, minElementos: 2 },
   // Cola 18.bis.21 — lo que se ve en pantalla y lo que se guarda dejan de diferir.
   { nombre: 'telefono-que-se-ve-se-guarda', fn: caminoTelefonoQueSeVeSeGuarda, minLlamadas: 1, minElementos: 11 },
+  // Cola 18.bis — el aviso rojo de guardado deja de mentir: se apaga cuando el dato ya
+  // está guardado, y la familia puede cerrarlo sin que eso finja que se guardó.
+  { nombre: 'aviso-guardado-se-apaga',  fn: caminoAvisoGuardadoSeApaga,  minLlamadas: 1, minElementos: 11 },
+  { nombre: 'aviso-guardado-se-cierra', fn: caminoAvisoGuardadoSeCierra, minLlamadas: 1, minElementos: 11 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

@@ -247,6 +247,10 @@ const handleNext = async (stepKey, data, extra = null) => {
       // Data-layer pieza 2: encolar una FACTORY (no una promesa ya iniciada) para que
       // la cola FIFO ejecute este save EN ORDEN tras el anterior (preserva la
       // dependencia persons→relations) sin bloquear la navegación.
+      // `que`: el nombre del paso TAL COMO SE LEE en la pantalla, para que el aviso de
+      // fallo diga QUÉ no se pudo guardar en vez de «Error al guardar» a secas. Sale del
+      // catálogo (labelKey del paso actual), no de un mapeo escrito a mano.
+      const queSeGuarda = t(STEP_CATALOG[currentStep]?.labelKey || '', '');
       enqueueSave(async () => {
         try {
           // Send both new and legacy keys so backend keeps working during the
@@ -299,7 +303,7 @@ const handleNext = async (stepKey, data, extra = null) => {
           showToast(t('wizard.save_failed'));
           throw err; // surface al drenaje de la cola — submit lo maneja con gracia
         }
-      });
+      }, { que: queSeGuarda });
     } else {
       log.warn('WizardPage: skipping saveStep', { enrollmentGroupId, stepKey, dirty: needsSave });
     }

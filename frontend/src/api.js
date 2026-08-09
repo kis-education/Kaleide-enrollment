@@ -430,6 +430,45 @@ import * as log from './logger';
 
 const GAS_ENDPOINT = import.meta.env.VITE_GAS_ENDPOINT;
 
+// ── UN SOLO SITIO AVISA DE QUE EL SERVIDOR ACEPTÓ UNA ESCRITURA ───────────────────────
+// El aviso rojo «no se pudo guardar» dependía de UNA sola puerta: el final feliz de la
+// cola de guardado (`WizardContext.enqueueSave`). Todo lo que persiste SIN pasar por esa
+// cola dejaba el rojo encendido para siempre aunque el dato ya estuviera a salvo. MEDIDO
+// contra `origin/main` el 2026-08-09 — tres caminos vivos que guardan de verdad y no la
+// tocan: subir un documento (`pages/steps/Step6Documents.jsx:66`), guardar las NEAE
+// (`pages/steps/Step4Health.jsx:397`) y quitar a alguien del expediente
+// (`lib/quitar.js:62`). Es exactamente lo que le pasó a Diego: «si al final guarda por
+// otro lado, la barra se queda».
+//
+// Aquí NO se decide nada: este módulo solo EMITE «el servidor aceptó una escritura».
+// Qué hacer con eso lo decide el ÚNICO sitio que ya gobierna el aviso — la cola de
+// guardado. Emitirlo desde el único punto por el que pasa TODO el tráfico evita repartir
+// `setSaveState('idle')` por las pantallas, que es como nacen los estados que se
+// contradicen.
+//
+// LÍMITE HONESTO: la lista es explícita. Una acción de escritura NUEVA que no se añada
+// aquí simplemente no apagará el aviso — falla hacia el lado seguro (rojo de más, nunca
+// verde de mentira). Las LECTURAS no entran nunca: que un hidratado funcione no dice
+// absolutamente nada sobre si una escritura entra.
+const ACCIONES_QUE_ESCRIBEN = new Set([
+  'saveStep', 'saveResponses', 'saveNeae', 'uploadDocument', 'retirarDelExpediente',
+  'saveBillingInfo', 'submitGdprConsents', 'confirmReview', 'applyPaymentModality',
+  'submitEnrollmentSession', 'requestCorrection',
+]);
+
+const _oyentesEscritura = new Set();
+
+/**
+ * Suscribe un oyente a «el servidor ACEPTÓ una escritura». Devuelve la función para
+ * darse de baja (pensada para usarse tal cual como limpieza de un `useEffect`).
+ * @param {(action: string) => void} fn
+ * @returns {() => void}
+ */
+export function alConfirmarEscritura(fn) {
+  _oyentesEscritura.add(fn);
+  return () => { _oyentesEscritura.delete(fn); };
+}
+
 /**
  * Calls the GAS backend with the given action and payload.
  * @param {string} action
@@ -541,5 +580,12 @@ export async function gasCall(action, payload = {}) {
 
   log.success(`✓ ${action} OK`, data);
   log.debug(`← GAS ${action} (full response)`, data);
+  // El servidor aceptó una ESCRITURA: se avisa, no se decide (ver el bloque de arriba).
+  // Un oyente que reviente no puede tumbar el guardado que acaba de ir bien.
+  if (ACCIONES_QUE_ESCRIBEN.has(action) && _oyentesEscritura.size) {
+    for (const fn of _oyentesEscritura) {
+      try { fn(action); } catch (eOyente) { log.warn('alConfirmarEscritura: oyente falló', { message: eOyente && eOyente.message }); }
+    }
+  }
   return data;
 }
