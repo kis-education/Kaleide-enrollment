@@ -956,7 +956,7 @@ function refrescarElEnlace(c, email) {
  * (`manual_robotEnlaceDeRecuperacion`, con su guardarraíl de marcador `+robot-`). Abrir el
  * buzón no es parte del producto; llevar encima un token caducado sí era un defecto del robot.
  */
-async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
+async function entrarPorElEnlace(c, page, base, { pidiendolo = false, nOverride = null } = {}) {
   if (REAL) {
     if (pidiendolo) await rellenarPortada(page, base, DATOS.emailKnown)
     const anterior = DATOS.resumeToken
@@ -975,7 +975,11 @@ async function entrarPorElEnlace(c, page, base, { pidiendolo = false } = {}) {
     }
   }
 
-  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+  // DL-E49 §2 (mock-only): `nOverride` deja entrar con el `n` de OTRO tutor sin cambiar
+  // el resume_token del grupo — el mismo enlace de grupo, distinto email_id, que es
+  // exactamente cómo el servidor real distingue quién pregunta (IDENTITY-FROM-LINK).
+  const nEfectivo = nOverride || DATOS.emailId
+  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${nEfectivo}`,
     { waitUntil: 'domcontentloaded', timeout: REAL ? 90000 : 30000 })
 
   // El aterrizaje tiene DOS finales observables, y se esperan LOS DOS: el stepper (sesión
@@ -2562,14 +2566,52 @@ async function caminoQuitarDeLaSolicitud(page, base) {
     const antes = await contarPersonas()
     const pantalla = await page.evaluate(sondaPantalla)
     c.evidencia.elementos = pantalla.pasos + pantalla.campos
-    if (!c.afirmar('hay más de una persona con la que probar', antes >= 2,
-      `solo se pintaron ${antes} personas: sin una segunda, quitar dejaría la solicitud inválida y no se mediría nada`)) return c
-
-    // ── (a) se quita, y SALE hacia el servidor ────────────────────────────────
-    const botones = await page.$$('.dynamic-section-header button.remove-btn')
-    if (!c.afirmar('la persona que la familia añadió tiene botón de quitar', botones.length >= 1,
+    // DL-E49 §2 — «hay más de una persona» dejó de ser el requisito real: el servidor
+    // ya no enseña al segundo tutor (por diseño), así que desde AQUÍ solo hay UN
+    // tutor visible + los menores. Lo que este camino necesita es UN botón de quitar,
+    // y los tres sub-casos (a/b/c) se ejercitan sobre EL MISMO, en el orden que no
+    // lo consume hasta el final: primero los dos que lo devuelven (no_se_puede,
+    // enviada), y solo al final el que de verdad lo quita (ok).
+    if (!c.afirmar('hay alguien con quien probar', antes >= 1,
+      `no se pintó ninguna persona: sin al menos una, quitar no se puede ni empezar a medir`)) return c
+    const botonesIniciales = await page.$$('.dynamic-section-header button.remove-btn')
+    if (!c.afirmar('la persona que la familia añadió tiene botón de quitar', botonesIniciales.length >= 1,
       'no hay ningún botón de quitar: la familia no puede deshacer lo que metió por error')) return c
-    await botones[botones.length - 1].click()
+    const objetivo = botonesIniciales.length - 1  // el último — el que la familia añadió
+
+    // ── (b) el servidor dice que NO se puede ⇒ VUELVE, y se dice por qué ──────
+    scenario.quitarMode = 'no_se_puede'
+    await (await page.$$('.dynamic-section-header button.remove-btn'))[objetivo].click()
+    await page.waitForTimeout(LATENCY + 900)
+    const trasRechazo = await contarPersonas()
+    const texto = (await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' '))).toLowerCase()
+    c.afirmar('si el servidor dice que NO se puede, la persona VUELVE A VERSE',
+      trasRechazo === antes,
+      `quedaron ${trasRechazo} de ${antes}: la pantalla dio por quitada a una persona que sigue en el expediente`)
+    c.afirmar('y se le dice por qué', texto.includes('al menos un tutor'),
+      'no se pintó el motivo: la familia ve reaparecer a alguien sin saber qué pasó')
+
+    // ── (c) ya enviada ⇒ tampoco se finge ─────────────────────────────────────
+    scenario.quitarMode = 'enviada'
+    const botones3 = await page.$$('.dynamic-section-header button.remove-btn')
+    if (!c.afirmar('sigue habiendo botón de quitar tras el rechazo', botones3.length >= 1,
+      '(c) no se pudo ejercitar: no quedó ningún botón de quitar')) return c
+    await botones3[objetivo].click()
+    await page.waitForTimeout(LATENCY + 900)
+    const texto3 = (await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' '))).toLowerCase()
+    c.afirmar('con la solicitud ya enviada, la persona sigue ahí',
+      (await contarPersonas()) === antes,
+      'se quitó de la pantalla algo que el servidor NO quitó')
+    c.afirmar('y se le dice que puede pedir que se la devuelvan para corregirla',
+      texto3.includes('corregir'),
+      'no se pintó ninguna salida: la familia se queda sin saber qué hacer')
+
+    // ── (a) se quita DE VERDAD, y SALE hacia el servidor ──────────────────────
+    scenario.quitarMode = 'ok'
+    const botones4 = await page.$$('.dynamic-section-header button.remove-btn')
+    if (!c.afirmar('sigue habiendo botón de quitar tras el «ya enviada»', botones4.length >= 1,
+      '(a) no se pudo ejercitar: no quedó ningún botón de quitar')) return c
+    await botones4[objetivo].click()
     await page.waitForTimeout(LATENCY + 600)
     c.evidencia.llamadas += llamadasQuitar
 
@@ -2581,39 +2623,6 @@ async function caminoQuitarDeLaSolicitud(page, base) {
       `lo enviado fue ${JSON.stringify(lote).slice(0, 120)} — un borrado por omisión vaciaría la solicitud entera con un envío a medias`)
     c.afirmar('la persona deja de verse', (await contarPersonas()) === antes - 1,
       `siguen pintándose ${await contarPersonas()} de ${antes}`)
-
-    // ── (b) el servidor dice que NO se puede ⇒ VUELVE, y se dice por qué ──────
-    scenario.quitarMode = 'no_se_puede'
-    const restantes = await contarPersonas()
-    const botones2 = await page.$$('.dynamic-section-header button.remove-btn')
-    if (!c.afirmar('queda alguien más con botón de quitar', botones2.length >= 1, 'no quedó ninguno')) return c
-    await botones2[botones2.length - 1].click()
-    await page.waitForTimeout(LATENCY + 900)
-    const trasRechazo = await contarPersonas()
-    const texto = (await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' '))).toLowerCase()
-    c.afirmar('si el servidor dice que NO se puede, la persona VUELVE A VERSE',
-      trasRechazo === restantes,
-      `quedaron ${trasRechazo} de ${restantes}: la pantalla dio por quitada a una persona que sigue en el expediente`)
-    c.afirmar('y se le dice por qué', texto.includes('al menos un tutor'),
-      'no se pintó el motivo: la familia ve reaparecer a alguien sin saber qué pasó')
-
-    // ── (c) ya enviada ⇒ tampoco se finge ─────────────────────────────────────
-    scenario.quitarMode = 'enviada'
-    const botones3 = await page.$$('.dynamic-section-header button.remove-btn')
-    if (botones3.length) {
-      const previas = await contarPersonas()
-      await botones3[botones3.length - 1].click()
-      await page.waitForTimeout(LATENCY + 900)
-      const texto3 = (await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' '))).toLowerCase()
-      c.afirmar('con la solicitud ya enviada, la persona sigue ahí',
-        (await contarPersonas()) === previas,
-        'se quitó de la pantalla algo que el servidor NO quitó')
-      c.afirmar('y se le dice que puede pedir que se la devuelvan para corregirla',
-        texto3.includes('corregir'),
-        'no se pintó ninguna salida: la familia se queda sin saber qué hacer')
-    } else {
-      c.fallos.push('(c) no se pudo ejercitar: no quedó ningún botón de quitar')
-    }
     return c
   } finally {
     limpiar()
@@ -2770,6 +2779,83 @@ async function caminoSegundoTutorEnvia(page, base) {
   return c
 }
 
+/**
+ * DL-E49 §2 — CADA TUTOR VE LO SUYO Y LO DE LOS MENORES, NUNCA LO DEL OTRO TUTOR.
+ *
+ * El caso que lo justifica (Diego): una madre que se ha ido de casa y cuyo domicilio o
+ * teléfono no puede acabar en un formulario que abre su expareja. La pantalla de
+ * Revisión (Paso 7, `stage: 'lista_para_enviar'`) es donde el hallazgo de mayor
+ * severidad vivía: pintaba nombre, DNI, dirección, email y teléfono de LOS DOS tutores,
+ * sin importar cuál de los dos abrió el enlace.
+ *
+ * El recorte real vive en el SERVIDOR (`enr_wizardPersonasVisiblesParaTutor_`,
+ * kis-app/kms-server/enr/wizard-datalayer.gs + su espejo `buildResumeSessionData_` del
+ * wizard) — este camino no puede ejercitar ESE código (la batería corre contra un mock),
+ * pero SÍ puede ejercitar el contrato: si el `hydrateSession` que recibe la pantalla ya
+ * viene recortado (como lo estaría en producción), ¿la pantalla respeta ese recorte o
+ * asume por su cuenta que hay dos tutores y rompe/inventa datos? El mock
+ * (`recortarPorTutorE2E_`) aplica el MISMO criterio que el servidor real, así que un
+ * cambio futuro que vuelva a mandar el grupo entero sin filtrar (regresión del lado
+ * servidor) NO lo cazaría este camino — pero uno que asuma en el cliente "siempre hay 2
+ * tarjetas de tutor" sí, y es justo la clase de regresión que dejaría el recorte del
+ * servidor sin efecto.
+ */
+async function caminoSegundoTutorNoVeAlPrimero(page, base) {
+  const c = new Camino('segundo-tutor-no-ve-al-primero')
+  scenario.stage = 'lista_para_enviar'   // aterriza en Revisión: ahí vivía la fuga mayor
+
+  const leerNombres = () => page.evaluate(() => {
+    const txt = document.body.innerText || ''
+    return {
+      len: txt.length,
+      veUno: /RobotUnoE2E/.test(txt),
+      veDos: /RobotDosE2E/.test(txt),
+      // El icono `bi-person-fill` es EXCLUSIVO de la tarjeta de tutor en Step7Review
+      // (el aplicante usa `bi-person-hearts`) — cuenta cuántas tarjetas de TUTOR se pintaron.
+      tarjetasTutor: document.querySelectorAll('.kis-card i.bi-person-fill').length,
+    }
+  })
+
+  // ── 1 · Entra el primer tutor (el enlace de siempre) ─────────────────────────
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  await page.waitForTimeout(LATENCY + 700)
+  const donde1 = await dondeEstoy(page)
+  if (!c.afirmar('el primer tutor aterriza en Revisión', donde1 === 6,
+    `aterrizó en el índice ${donde1} (se esperaba 6): sin llegar a Revisión no hay nada que comprobar`)) return c
+  await desbloquear(page)
+
+  const vista1 = await leerNombres()
+  c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, vista1.tarjetasTutor)
+  c.afirmar('el primer tutor ve SU PROPIO nombre',
+    vista1.veUno,
+    'la pantalla de Revisión no muestra el nombre del tutor que la está mirando — algo más grave que la fuga que este camino busca')
+  c.afirmar('el primer tutor NO ve el nombre del OTRO tutor',
+    !vista1.veDos,
+    'la pantalla de Revisión sigue mostrando el nombre del segundo tutor a quien no lo es — la fuga que DL-E49 §2 vino a cerrar sigue abierta')
+
+  // ── 2 · Entra el segundo tutor, mismo grupo, SU PROPIO email_id ──────────────
+  if (!await entrarPorElEnlace(c, page, base, { nOverride: FIXTURE.emailId2 })) return c
+  await page.waitForTimeout(LATENCY + 700)
+  const donde2 = await dondeEstoy(page)
+  if (!c.afirmar('el segundo tutor también aterriza en Revisión', donde2 === 6,
+    `aterrizó en el índice ${donde2} (se esperaba 6)`)) return c
+  await desbloquear(page)
+
+  const vista2 = await leerNombres()
+  c.evidencia.elementos += vista2.tarjetasTutor
+  c.afirmar('el segundo tutor ve SU PROPIO nombre',
+    vista2.veDos,
+    'la pantalla de Revisión no muestra el nombre del segundo tutor cuando es él quien mira')
+  c.afirmar('el segundo tutor NO ve el nombre del PRIMER tutor',
+    !vista2.veUno,
+    'la pantalla de Revisión muestra el nombre del primer tutor al segundo — el caso concreto de Diego: el domicilio de una madre acabaría en la pantalla que abre su expareja')
+  c.afirmar('cada tutor ve EXACTAMENTE una tarjeta de tutor, nunca dos',
+    vista1.tarjetasTutor === 1 && vista2.tarjetasTutor === 1,
+    `tarjetas vistas por el primero=${vista1.tarjetasTutor}, por el segundo=${vista2.tarjetasTutor} (se esperaba 1 y 1): si alguno ve dos, el recorte del servidor no llegó a esta pantalla`)
+
+  return c
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -2795,6 +2881,8 @@ const CAMINOS = [
   // DL-E49 §1 — el envío es POR TUTOR: quien termina envía su parte, y la solicitud solo
   // pasa a revisión cuando han enviado todos.
   { nombre: 'segundo-tutor-envia', fn: caminoSegundoTutorEnvia, minLlamadas: 2, minElementos: 2 },
+  // DL-E49 §2 — cada tutor ve LO SUYO y lo de los menores, nunca lo del otro tutor.
+  { nombre: 'segundo-tutor-no-ve-al-primero', fn: caminoSegundoTutorNoVeAlPrimero, minLlamadas: 2, minElementos: 2 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

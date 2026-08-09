@@ -25,6 +25,10 @@ export const FIXTURE = {
   groupId:        '11111111-1111-4111-8111-111111111111',
   resumeToken:    '22222222-2222-4222-8222-222222222222',
   emailId:        '33333333-3333-4333-8333-333333333333',
+  // DL-E49 §2 — identidad PROPIA del segundo tutor (`caminoSegundoTutorNoVeAlPrimero`):
+  // sin un email_id distinto del de guardian1, el mock no puede simular "entro como el
+  // OTRO tutor" — sería el mismo `n` para los dos.
+  emailId2:       '33333333-3333-4333-8333-333333333334',
   programId:      '44444444-4444-4444-8444-444444444444',
   guardian1Id:    'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa',
   guardian2Id:    'aaaaaaaa-2222-4222-8222-aaaaaaaaaaaa',
@@ -32,21 +36,23 @@ export const FIXTURE = {
   applicant2Id:   'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb',
   // El nombre que la batería localiza en el formulario y reescribe (marcador único).
   guardian1Name:  'RobotUnoE2E',
+  guardian2Name:  'RobotDosE2E',
   applicantName:  'RobotHijoE2E',
   emailKnown:     'familia.conocida.e2e@example.invalid',
+  emailKnown2:    'familia.conocida.e2e.t2@example.invalid',
   emailUnknown:   'nadie.desconocido.e2e@example.invalid',
   startDateSep:   '2026-09-01',
   fileId:         'cccccccc-1111-4111-8111-cccccccccccc',
 };
 
-const guardian = (id, first) => ({
+const guardian = (id, first, email) => ({
   person_id:       id,
   person_type_id:  'guardian',
   first_name:      first,
   last_name:       'PruebaE2E',
   date_of_birth:   '1985-05-05',
   phones:          [{ value: '+34600000001', is_default: 'TRUE' }],
-  emails:          [{ value: FIXTURE.emailKnown, is_default: 'TRUE' }],
+  emails:          [{ value: email || FIXTURE.emailKnown, is_default: 'TRUE' }],
   nationalities:   [],
   ids:             [],
   address:         { address_line_1: 'Calle Falsa 1', city: 'Las Palmas', country_id: 'ES', zip: '35001' },
@@ -155,13 +161,50 @@ const QUESTIONS = {
 };
 
 /**
+ * DL-E49 §2 — espejo del recorte del SERVIDOR real (`enr_wizardPersonasVisiblesParaTutor_`,
+ * kis-app/kms-server/enr/wizard-datalayer.gs, + su gemelo `buildResumeSessionData_` del
+ * wizard). Sin esto el mock devolvería SIEMPRE el grupo entero — que es justo el defecto
+ * que `caminoSegundoTutorNoVeAlPrimero` existe para cazar. `viewerN` es el `n` (email_id)
+ * con el que la página pidió `hydrateSession`; `null`/desconocido ⇒ NINGÚN tutor (misma
+ * regla que el servidor real: ante la duda, enseña de menos).
+ * @private
+ */
+function viewerIdE2E_(viewerN) {
+  return viewerN === FIXTURE.emailId2 ? FIXTURE.guardian2Id
+    : viewerN === FIXTURE.emailId ? FIXTURE.guardian1Id
+    : null;
+}
+function recortarPorTutorE2E_(data, viewerN) {
+  if (!data.persons || !data.persons.length) return data;
+  const viewerId = viewerIdE2E_(viewerN);
+  const tipoPorId = {};
+  let guardiansTotalCount = 0;
+  data.persons.forEach(p => {
+    if (!p || !p.person_id) return;
+    tipoPorId[p.person_id] = p.person_type_id;
+    if (p.person_type_id === 'guardian') guardiansTotalCount++;
+  });
+  return {
+    ...data,
+    persons: data.persons.filter(p => p.person_type_id !== 'guardian' || p.person_id === viewerId),
+    relations: (data.relations || []).filter(r =>
+      tipoPorId[r.from_person_id] !== 'guardian' || r.from_person_id === viewerId),
+    responses: (data.responses || []).filter(r =>
+      tipoPorId[r && r.respondent_id] !== 'guardian' || r.respondent_id === viewerId),
+    guardians_total_count: guardiansTotalCount,
+  };
+}
+
+/**
  * Construye la respuesta de `hydrateSession` para una ETAPA del expediente.
  * La etapa decide qué datos trae → y por tanto en qué paso aterriza el wizard
  * (WizardContext.hydrateFromResume infiere `completedSteps` de los datos).
  *
  * @param {'sin_fecha'|'hasta_preguntas'|'firma'} stage
+ * @param {string} [viewerN] — el `n` (email_id) del enlace con el que se pidió esta
+ *   hidratación; DL-E49 §2 recorta `persons`/`relations`/`responses` según quién pregunta.
  */
-export function buildHydrate(stage, preguntasMode, respuestasMode) {
+export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -195,8 +238,8 @@ export function buildHydrate(stage, preguntasMode, respuestasMode) {
   if (stage === 'sin_fecha') return base;
 
   const persons = [
-    guardian(FIXTURE.guardian1Id, FIXTURE.guardian1Name),
-    guardian(FIXTURE.guardian2Id, 'RobotDosE2E'),
+    guardian(FIXTURE.guardian1Id, FIXTURE.guardian1Name, FIXTURE.emailKnown),
+    guardian(FIXTURE.guardian2Id, FIXTURE.guardian2Name, FIXTURE.emailKnown2),
     applicant(FIXTURE.applicantId, FIXTURE.applicantName),
     // DOS aplicantes, no uno. Con uno solo la pantalla pintaba sus dos tarjetas YA
     // RELLENAS desde la hidratación ⇒ el paso salía LIMPIO, `isStepDirty` decía que no y
@@ -215,7 +258,7 @@ export function buildHydrate(stage, preguntasMode, respuestasMode) {
   if (stage === 'hasta_preguntas') {
     // fecha + personas + relaciones + salud visitada + respuestas ⇒ completos 0..4,
     // documentos vacíos ⇒ primer paso incompleto = Documentos (índice 5).
-    return {
+    return recortarPorTutorE2E_({
       ...base,
       persons,
       relations,
@@ -241,7 +284,7 @@ export function buildHydrate(stage, preguntasMode, respuestasMode) {
           response_text: RESPUESTA_GUARDADA,
         },
       ],
-    };
+    }, viewerN);
   }
 
   if (stage === 'lista_para_enviar') {
@@ -249,14 +292,14 @@ export function buildHydrate(stage, preguntasMode, respuestasMode) {
     // Revisión (índice 6), que es donde vive el botón de enviar. Hacía falta un escalón
     // así: `hasta_preguntas` aterriza en Documentos y `enviada` ya está enviada, con lo
     // que ningún recorrido llegaba a pulsar «Enviar» sobre un expediente todavía abierto.
-    return {
+    return recortarPorTutorE2E_({
       ...base,
       persons,
       relations,
       responses: [{ question_id: 'q-e2e-1', respondent_id: FIXTURE.groupId, response_text: RESPUESTA_GUARDADA }],
       documents: [{ file_id: FIXTURE.fileId, filename: 'doc-e2e.pdf', description: 'Documento de prueba' }],
-      recovered_guardian_person_id: FIXTURE.guardian1Id,
-    };
+      recovered_guardian_person_id: viewerIdE2E_(viewerN) || FIXTURE.guardian1Id,
+    }, viewerN);
   }
 
   if (stage === 'enviada') {
@@ -264,12 +307,12 @@ export function buildHydrate(stage, preguntasMode, respuestasMode) {
     // viendo «solicitud enviada». Es la pantalla donde vive «necesito corregir algo»
     // (cola 18.quater). No es lo mismo que `firma`: ahí ya está admitida y el wizard
     // la lleva al tramo de firma, donde ese botón no pinta nada.
-    return {
+    return recortarPorTutorE2E_({
       ...base,
       persons,
       relations,
       responses: [{ question_id: 'q1', respondent_id: FIXTURE.guardian1Id, response_text: 'sí' }],
-      recovered_guardian_person_id: FIXTURE.guardian1Id,
+      recovered_guardian_person_id: viewerIdE2E_(viewerN) || FIXTURE.guardian1Id,
       admission: {
         state_code:        'RQ',
         state_label:       'Solicitada',
@@ -278,17 +321,17 @@ export function buildHydrate(stage, preguntasMode, respuestasMode) {
         signing_ready:     false,
         signing_status:    null,
       },
-    };
+    }, viewerN);
   }
 
   // stage === 'firma': expediente ADMITIDO, firma abierta para este guardian y
   // ningún sub-paso completado ⇒ aterriza en el primer paso de firma (índice 7).
-  return {
+  return recortarPorTutorE2E_({
     ...base,
     persons,
     relations,
     responses: [{ question_id: 'q1', respondent_id: FIXTURE.guardian1Id, response_text: 'sí' }],
-    recovered_guardian_person_id: FIXTURE.guardian1Id,
+    recovered_guardian_person_id: viewerIdE2E_(viewerN) || FIXTURE.guardian1Id,
     admission: {
       state_code:        'AD',
       state_label:       'Admitida',
@@ -302,7 +345,7 @@ export function buildHydrate(stage, preguntasMode, respuestasMode) {
         steps: { billing_confirmed: false, gdpr_completed: false, review_completed: false, signed: false },
       },
     },
-  };
+  }, viewerN);
 }
 
 /**
@@ -328,9 +371,9 @@ export function createDispatcher(scenario, record) {
     initEnrollmentSession: (p) => ({ ok: true, enrollment_group_id: FIXTURE.groupId }),
 
     // ── Recuperación / sesión ────────────────────────────────────────────────
-    hydrateSession: () => ({ ok: true, ...buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode) }),
-    getAdmissionState: () => {
-      const h = buildHydrate(scenario.stage);
+    hydrateSession: (p) => ({ ok: true, ...buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n) }),
+    getAdmissionState: (p) => {
+      const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n);
       return { ok: true, ...(h.admission || { state_code: null }) };
     },
     getLiveStateVersion: () => ({ ok: true, version: 1 }),

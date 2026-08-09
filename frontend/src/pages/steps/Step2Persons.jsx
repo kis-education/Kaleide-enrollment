@@ -763,6 +763,16 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
   const firstPerson = persons[0] || null;
+
+  // DL-E49 §2/§3 — `guardians` solo trae AL PROPIO tutor (el servidor recorta al
+  // otro). `guardians.length` deja de servir para "¿es una familia monoparental?":
+  // sería 1 tanto si de verdad hay 1 tutor como si hay 2 y el servidor ocultó al
+  // otro. El conteo REAL (sin identidades) viaja aparte; antes de que exista
+  // (creación nueva, aún sin hidratar) se cae al conteo local, que en ese momento
+  // sí es fiable (todavía no hay recorte que aplicar).
+  const totalGuardians = stepData.guardians_total_count != null
+    ? stepData.guardians_total_count
+    : guardians.length;
   const firstPersonId = firstPerson ? (firstPerson.person_id || firstPerson._uid) : null;
 
   const updatePerson = (i, val) => {
@@ -885,7 +895,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     // CLI 8 (DL-E39 ENMIENDA 3 punto 4): atestación de tutor único. Si solo se declara
     // 1 tutor, exige confirmar la atestación (familia monoparental / único tutor legal)
     // antes de avanzar.
-    if (guardians.length === 1 && !soleGuardianAttested) {
+    if (totalGuardians === 1 && !soleGuardianAttested) {
       markInvalid(['attestation']);  // UX-2: resalta la atestación
       setErr(t('error.sole_guardian_attestation_required'));
       return;
@@ -930,7 +940,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     // save (sole_guardian_attestation). attestant = email del tutor único (su credencial
     // de identidad) o el email de sesión. El backend lo persiste best-effort (group-scoped).
     let extra = null;
-    if (guardians.length === 1 && soleGuardianAttested) {
+    if (totalGuardians === 1 && soleGuardianAttested) {
       const attestant = guardianEmail_(guardians[0]) || String(primaryEmail || '').trim().toLowerCase() || null;
       extra = {
         sole_guardian_attestation: {
@@ -1023,7 +1033,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         {/* CLI 8 (DL-E39 ENMIENDA 3 punto 4): atestación de tutor único. Aparece solo
             cuando se declara exactamente 1 tutor; sin marcarla no se avanza. El acto
             (attestant + timestamp + versión) se registra en el save. */}
-        {guardians.length === 1 && (
+        {totalGuardians === 1 && (
           <div className="alert alert-warning mt-2 mb-1 py-2 px-3" style={{ fontSize: '0.86rem', borderLeft: '4px solid var(--amber, #f0a500)' }}>
             <label className="d-flex align-items-start gap-2 mb-0" style={{ cursor: 'pointer' }}>
               <input

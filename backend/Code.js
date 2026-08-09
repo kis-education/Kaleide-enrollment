@@ -1166,10 +1166,35 @@ function _redactSigningTokenIfNotFresh_(signingContext, fresh) {
  * Frescura: live_version (v en la entrada) — los writes bumpan la versión del
  * grupo (_wzCacheInvalidate_) y cualquier entrada con v vieja es MISS. La
  * rotación del token deja de borrar nada: re-entrar 10 min después = HIT. */
-function _wzCacheKey_(kind, suffix) { return 'wz_' + kind + '_' + suffix; }
+// DL-E49 §2 — 'hyd'/'res'/'adm' llevan `v2` a propósito: el hydrate empezó a recortar
+// por identidad y las entradas cacheadas ANTES de este cambio (mismo grupo+n, formato
+// de clave idéntico) seguirían siendo HIT con el grupo entero sin recortar hasta
+// caducar solas (TTL hasta 1800s). 'mem'/'doc' no llevan PII de persons/relations/
+// responses — no necesitan el corte.
+var _WZ_CACHE_KIND_V2_ = { hyd: 1, res: 1, adm: 1 };
+function _wzCacheKey_(kind, suffix) {
+  return 'wz_' + kind + (_WZ_CACHE_KIND_V2_[kind] ? 'v2' : '') + '_' + suffix;
+}
 
-/** Discriminador per-guardian para claves hyd/res/adm ('-' si no hay n). @private */
-function _wzN_(n) { return String(n || '-').trim(); }
+/**
+ * Discriminador per-guardian para claves hyd/res/adm. DL-E49 §2 (cache hazard hallado
+ * al construir el recorte por tutor): con solo `n`, un tutor que recupera SIN enlace
+ * (escribiendo su email en la pantalla de recuperación, sin `?n=`) caía siempre en el
+ * mismo cubo `'-'` — antes era inocuo (la respuesta era la misma para cualquiera), pero
+ * en cuanto el hydrate empezó a filtrar por identidad (§2), dos tutores sin `n` habrían
+ * podido COMPARTIR la caché del otro: el segundo en llegar recibía los datos del
+ * primero. Con email disponible y sin `n`, se deriva un hash corto del email (nunca el
+ * email en claro dentro de una clave de ScriptCache); sin ninguno de los dos, '-'.
+ * @private
+ */
+function _wzN_(n, email) {
+  var nTrim = String(n || '').trim();
+  if (nTrim) return nTrim;
+  var e = String(email || '').trim().toLowerCase();
+  if (!e) return '-';
+  return 'e:' + Utilities.base64EncodeWebSafe(
+    Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, e, Utilities.Charset.UTF_8)).slice(0, 16);
+}
 
 // URL /exec PROPIA para las auto-invocaciones del warm. El deployment es FIJO
 // (CLAUDE.md: nunca se crea deployment nuevo — cambiaría la URL pública); fallback
@@ -1385,9 +1410,10 @@ function _warmResumePhase_(it) {
     }) || [];
     if (grpRows.length && !grpRows[0].abandoned_at) {
       var groupId = grpRows[0].enrollment_group_id;
-      var resKey = _wzCacheKey_('res', groupId + '_' + _wzN_(it.n));
+      var idSuffix = _wzN_(it.n, it.e);
+      var resKey = _wzCacheKey_('res', groupId + '_' + idSuffix);
       if (cache.get(resKey + '_meta')) { out.ok = true; out.resume = true; return out; }
-      try { cache.put('wzck_res_' + groupId + '_' + _wzN_(it.n), '1', 240); } catch (eMr) {}
+      try { cache.put('wzck_res_' + groupId + '_' + idSuffix, '1', 240); } catch (eMr) {}
       var resData = buildResumeSessionData_(grpRows[0],
         { resume_token: token, n: it.n || null, recovered_email: it.e || null },
         false, { skipPiiGate: true });
@@ -1395,7 +1421,7 @@ function _warmResumePhase_(it) {
         out.resume = _wzCachePutChunked_(cache, resKey,
           JSON.stringify({ v: _getLiveStateVersion_(groupId), data: resData }), 1800);
       }
-      try { cache.remove('wzck_res_' + groupId + '_' + _wzN_(it.n)); } catch (eMr2) {}
+      try { cache.remove('wzck_res_' + groupId + '_' + idSuffix); } catch (eMr2) {}
     }
     out.ok = true;
   } catch (e) {
@@ -1478,7 +1504,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
     var cache = CacheService.getScriptCache();
     // V2.4: claves estables — gid del caller (warmSession_ ya gateó) o memo.
     var gidW = groupIdParam || requireResumeTokenMemo_({ resume_token: token });
-    var nW = _wzN_(nParam);
+    var nW = _wzN_(nParam, recoveredEmail);
     // V2.2 single-flight: marca "cocinando" para que el camino vivo espere en vez
     // de competir. hyd cubre hydrate+admission; mem cubre members. Se retiran al
     // completar cada tramo (y caducan solos si esta ejecución muere).
@@ -3637,12 +3663,12 @@ function resumeSession_(p) {
   // precedente #69: el warm pre-computa completo, el servido gatea). La entrada
   // guarda live_version + identidad `n`: version subida o guardian distinto → vivo.
   try {
-    const wzResKey = _wzCacheKey_('res', id + '_' + _wzN_(p && p.n));
+    const wzResKey = _wzCacheKey_('res', id + '_' + _wzN_(p && p.n, p && p.recovered_email));
     let wzResRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzResKey);
     if (!wzResRaw) {
       // single-flight: si el warm está cocinando este payload, esperar su resultado.
       _dbgEv_('wait', 'single-flight res');
-      wzResRaw = _wzAwaitWarm_('wzck_res_' + id + '_' + _wzN_(p && p.n), wzResKey, 45000);
+      wzResRaw = _wzAwaitWarm_('wzck_res_' + id + '_' + _wzN_(p && p.n, p && p.recovered_email), wzResKey, 45000);
     }
     if (wzResRaw) {
       const entry = JSON.parse(wzResRaw);
@@ -3694,7 +3720,7 @@ function resumeSession_(p) {
   if (data && data.pii_gated !== true) {
     try {
       _wzCachePutChunked_(CacheService.getScriptCache(),
-        _wzCacheKey_('res', id + '_' + _wzN_(p && p.n)),
+        _wzCacheKey_('res', id + '_' + _wzN_(p && p.n, p && p.recovered_email)),
         JSON.stringify({ v: _getLiveStateVersion_(id), data: data }), 1800);
     } catch (eWzWt) { /* best-effort */ }
   }
@@ -3738,10 +3764,10 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
     { table: T.PROGRAMS,         action: 'Find', selector: { Filter: '"program_id" = "' + programIdEsc + '"' } },
   ]);
   const enrollments = topRead[0].ok ? (topRead[0].data || []) : [];
-  const persons     = topRead[1].ok ? wizardSoloVivas_(topRead[1].data) : [];
+  let   persons     = topRead[1].ok ? wizardSoloVivas_(topRead[1].data) : [];
   const allEmails   = topRead[5].ok ? wizardSoloVivas_(topRead[5].data) : [];
   const allPhones   = topRead[6].ok ? wizardSoloVivas_(topRead[6].data) : [];
-  const relations   = (topRead[2].ok ? wizardSoloVivas_(topRead[2].data) : [])
+  let   relations   = (topRead[2].ok ? wizardSoloVivas_(topRead[2].data) : [])
     .map(r => ({ ...r, guardian_person_id: r.from_person_id, applicant_person_id: r.to_person_id }));
 
   // ── DL-E38 / P215 (GAP-1 a1): per-guardian recovery ────────────────────────
@@ -3759,8 +3785,37 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
   const recoveredGuardianId = resolveGuardianForRecovery_(id, effRecoveredEmail, allEmails, persons, group);
 
   // P215: real admission state + (if AD) per-guardian signing context. Additive
-  // block — existing keys untouched so current consumers keep working.
+  // block — existing keys untouched so current consumers keep working. IMPORTANTE:
+  // se llama con `persons` SIN recortar (Path 2 más abajo necesita poder buscar un
+  // guardian del grupo cuando `recoveredGuardianId` no se resolvió — recorte cross-
+  // device, no cross-tutor) — el recorte DL-E49 §2 se aplica DESPUÉS, solo a lo que
+  // sale hacia el cliente.
   const admission = buildAdmissionContext_(id, enrollments, recoveredGuardianId, persons);
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // DL-E49 §2 — cada tutor ve LO SUYO y lo de los menores, nunca lo del otro tutor.
+  // Espejo del recorte del camino vivo (KMS `enr_wizardHydrate` →
+  // `enr_wizardPersonasVisiblesParaTutor_`, kis-app/kms-server/enr/wizard-datalayer.gs).
+  // Este endpoint (`resumeSession_`) ya no lo llama el frontend (hydrateSession_/KMS es
+  // el camino vivo) pero sigue registrado en el dispatcher público — defensa en
+  // profundidad: el mismo recorte aquí para que no quede un segundo camino sin cerrar.
+  // ═══════════════════════════════════════════════════════════════════════════════
+  const personTypeByIdOriginal = {};
+  let guardiansTotalCount = 0;
+  persons.forEach(pr => {
+    if (!pr || !pr.person_id) return;
+    personTypeByIdOriginal[pr.person_id] = pr.person_type_id;
+    if (pr.person_type_id === 'guardian') guardiansTotalCount++;
+  });
+  persons = persons.filter(pr => {
+    if (!pr) return false;
+    if (pr.person_type_id !== 'guardian') return true;
+    return !!recoveredGuardianId && pr.person_id === recoveredGuardianId;
+  });
+  relations = relations.filter(r => {
+    if (personTypeByIdOriginal[r.from_person_id] !== 'guardian') return true;
+    return r.from_person_id === recoveredGuardianId;
+  });
 
   // P-PII-GATE: sin step-up fresco NO se devuelve PII del expediente
   // (persons/relations/health/documents/responses/interviews). Un resume_token
@@ -3787,6 +3842,7 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
       persons: [], relations: [], documents: [], responses: [], interviews: [],
       admission: gatedAdmission,
       recovered_guardian_person_id: recoveredGuardianId,
+      guardians_total_count: guardiansTotalCount,
       step_up_fresh: false,
       pii_gated: true,
     };
@@ -3925,13 +3981,21 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
   }
 
   if (!persons.length) {
+    // DL-E49 §2 — mismo criterio que el return final: las respuestas de un tutor
+    // ajeno tampoco viajan aquí, aunque esta rama ya no tenga ningún guardian que
+    // enseñar (relations ya viene filtrada arriba, antes del PII-gate).
+    const responsesForClientEmpty = responses.filter(r => {
+      const t = personTypeByIdOriginal[r && r.respondent_id];
+      return t !== 'guardian' || r.respondent_id === recoveredGuardianId;
+    });
     return {
       group,
       application: group, // legacy alias — TODO: drop once frontend uses `group`
       enrollments,
-      persons: [], relations, documents, responses, interviews,
+      persons: [], relations, documents, responses: responsesForClientEmpty, interviews,
       admission,                                      // P215 (additive)
       recovered_guardian_person_id: recoveredGuardianId, // P215 (server-resolved, a1)
+      guardians_total_count: guardiansTotalCount,     // DL-E49 §3/§2
       step_up_fresh: stepUpFresh,                     // magic-link grace (no OTP si true)
     };
   }
@@ -4013,6 +4077,15 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
     };
   });
 
+  // DL-E49 §2 — las respuestas de un tutor son SUYAS; las de los menores y las del
+  // propio expediente (respondent_id = groupId) se comparten. Mismo criterio que el
+  // camino vivo (enr_wizardHydrateCompute_, kis-app).
+  const responsesForClient = responses.filter(r => {
+    const t = personTypeByIdOriginal[r && r.respondent_id];
+    if (t !== 'guardian') return true;
+    return r.respondent_id === recoveredGuardianId;
+  });
+
   return {
     group,
     application: group, // legacy alias — TODO: drop once frontend uses `group`
@@ -4020,10 +4093,11 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
     persons: enrichedPersons,
     relations,
     documents,
-    responses,
+    responses: responsesForClient,
     interviews,
     admission,                                      // P215 (additive)
     recovered_guardian_person_id: recoveredGuardianId, // P215 (server-resolved, a1)
+    guardians_total_count: guardiansTotalCount,     // DL-E49 §3/§2 — conteo, nunca identidad
     step_up_fresh: stepUpFresh,                     // magic-link grace (no OTP si true)
   };
 }
@@ -4077,7 +4151,7 @@ function getAdmissionState_(p) {
   // requireResumeToken_ (KAL-4) + gracia/step-up ya corrieron arriba; step_up_fresh
   // SIEMPRE se computa en vivo (estado per-llamada, nunca del cache).
   try {
-    const wzAdmKey = _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n));
+    const wzAdmKey = _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n, p && p.recovered_email));
     const wzAdmRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzAdmKey);
     if (wzAdmRaw) {
       const wzEntry = JSON.parse(wzAdmRaw);
@@ -4187,7 +4261,7 @@ function getAdmissionState_(p) {
   // de cache hasta que live_version suba (notify del KMS) o un write lo invalide.
   try {
     _wzCachePutChunked_(CacheService.getScriptCache(),
-      _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n)),
+      _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n, p && p.recovered_email)),
       JSON.stringify({ v: _getLiveStateVersion_(id), admission: {
         state_code:        admission.state_code,
         state_label:       admission.state_label,
@@ -4285,6 +4359,9 @@ function saveStep_(p) {
       extra = kmsProxy_('enr.wizardSavePersons', {
         resume_token: p.resume_token,
         persons:      Array.isArray(payload) ? payload : (payload.persons || []),
+        // DL-E49 §2 — defensa en profundidad: el KMS rechaza tocar la fila YA EXISTENTE
+        // de OTRO tutor. Resuelto del enlace (IDENTITY-FROM-LINK), NUNCA del payload.
+        writer_person_id: wizardTutorQueOpera_(p, enrollmentGroupId),
       });
       // CLI 8: atestación de tutor único — sigue siendo dato del payload (group-scoped).
       // P1-B: viaja el resume_token (el KMS deriva el grupo, KAL-4), no el group_id.
@@ -4294,6 +4371,7 @@ function saveStep_(p) {
       kmsProxy_('enr.wizardSaveRelations', {
         resume_token: p.resume_token,
         relations:    Array.isArray(payload) ? payload : (payload.relations || []),
+        writer_person_id: wizardTutorQueOpera_(p, enrollmentGroupId),
       });
       break;
     case 'health':
@@ -7682,7 +7760,7 @@ function hydrateSession_(p) {
   // en el camino vivo; los writes del grupo invalidan via _wzCacheInvalidate_.
   let data = null;
   const wzHydCache = CacheService.getScriptCache();
-  const wzHydKey = _wzCacheKey_('hyd', groupId + '_' + _wzN_(p && p.n));
+  const wzHydKey = _wzCacheKey_('hyd', groupId + '_' + _wzN_(p && p.n, p && p.recovered_email));
   try {
     const wzHydRaw = _wzCacheGetChunked_(wzHydCache, wzHydKey);
     if (wzHydRaw) {
@@ -7704,7 +7782,7 @@ function hydrateSession_(p) {
     // segundo pull KMS que compite con él. Marcador caído / timeout → pull vivo.
     try {
       _dbgEv_('wait', 'single-flight hyd (warm en curso)');
-      const awaited = _wzAwaitWarm_('wzck_hyd_' + groupId + '_' + _wzN_(p && p.n), wzHydKey, 60000);
+      const awaited = _wzAwaitWarm_('wzck_hyd_' + groupId + '_' + _wzN_(p && p.n, p && p.recovered_email), wzHydKey, 60000);
       if (awaited) {
         const envH2 = JSON.parse(awaited);
         data = (envH2 && envH2.v === _getLiveStateVersion_(groupId)) ? envH2.data : null;

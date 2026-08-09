@@ -860,6 +860,11 @@ export function WizardProvider({ children }) {
       })),
       questions: responsesDict,
       documents,
+      // DL-E49 §2/§3 — `persons` ya viene recortado por el servidor a "yo + los
+      // menores" (nunca el otro tutor). Este número es la ÚNICA señal que sale del
+      // recorte: cuántos tutores tiene REALMENTE el expediente — para que la
+      // pantalla de "tutor único" (§3) no confunda "solo veo 1" con "solo hay 1".
+      guardians_total_count: data.guardians_total_count,
     };
     log.info('hydrateFromResume: seeding stepData + savedBaseline', {
       enrollmentGroupId: group.enrollment_group_id || group.application_id,
