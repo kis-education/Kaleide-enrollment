@@ -65,15 +65,24 @@ const CONSENT_TEXTS = {
 // El catálogo Capa 2 vive en el KMS; esta lista es su espejo y la comprobación
 // `scripts/comprobar-codigos-de-consentimiento.mjs` exige que todo lo que este mapa emite
 // esté dentro de ella.
-var CATALOGO_CONSENT_TYPES = ['GDPR_SCHOOL', 'IMAGE_RIGHTS', 'COMMERCIAL_COMMS', 'PLATFORM_GROUPS'];
+var CATALOGO_CONSENT_TYPES = ['GDPR_SCHOOL', 'IMAGE_RIGHTS', 'COMMERCIAL_COMMS', 'PLATFORM_GROUPS',
+                              'SOLE_GUARDIAN_ATTESTATION', 'PARENTAL_AUTHORITY'];
 
 // Tipos que manda el cliente → código del catálogo. `gdpr_data_processing` es alias viejo.
+//
+// DL-E49 §3 (2026-08-09) — las DECLARACIONES del paso 2 (tutor único · patria potestad) se
+// registran en el libro de consentimientos como lo que son: el texto exacto aceptado, quién
+// y cuándo. No son consentimientos de tratamiento —nada se bloquea por su valor— pero SÍ son
+// registro legal, y por eso tienen código de catálogo propio en vez de quedarse en una
+// casilla suelta que no lee nadie (que es lo que había: `sole_guardian_*`, cero lectores).
 var CONSENT_TYPE_MAP = {
-  gdpr:                  'GDPR_SCHOOL',
-  gdpr_data_processing:  'GDPR_SCHOOL',
-  image_rights:          'IMAGE_RIGHTS',
-  commercial_comms:      'COMMERCIAL_COMMS',
-  platform_groups:       'PLATFORM_GROUPS',
+  gdpr:                       'GDPR_SCHOOL',
+  gdpr_data_processing:       'GDPR_SCHOOL',
+  image_rights:               'IMAGE_RIGHTS',
+  commercial_comms:           'COMMERCIAL_COMMS',
+  platform_groups:            'PLATFORM_GROUPS',
+  sole_guardian_attestation:  'SOLE_GUARDIAN_ATTESTATION',
+  parental_authority:         'PARENTAL_AUTHORITY',
 };
 
 // Declaraciones que NO son consentimientos: se exigen, pero no van al libro de

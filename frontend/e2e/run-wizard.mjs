@@ -2800,6 +2800,115 @@ async function caminoSegundoTutorEnvia(page, base) {
  * tarjetas de tutor" sí, y es justo la clase de regresión que dejaría el recorte del
  * servidor sin efecto.
  */
+/**
+ * DL-E49 §3 — LAS DECLARACIONES DE LA FAMILIA DE UN SOLO TUTOR LLEGAN AL LIBRO, CON SU TEXTO.
+ *
+ * Qué mide, y por qué importa: una familia monoparental declara dos cosas distintas —que es el
+ * único tutor y que ostenta la patria potestad— y esas declaraciones existen para PROTEGER
+ * LEGALMENTE A LA ESCUELA. Lo que las hace valer no es una casilla marcada: es que conste el
+ * TEXTO EXACTO que la familia leyó al aceptarlas. Antes de este cambio la marca se escribía en
+ * cuatro columnas que NO LEÍA NADIE (medido: cero lectores en los dos repositorios) y que puede
+ * que ni existan ⇒ la declaración no quedaba registrada en ninguna parte.
+ *
+ * Este camino entra como familia de UN tutor, marca las dos casillas, envía, y comprueba en el
+ * envío REAL que las dos declaraciones viajan con el texto que se pintó en pantalla.
+ */
+async function caminoDeclaracionesTutorUnico(page, base) {
+  const c = new Camino('declaraciones-tutor-unico')
+  // Expediente COMPLETO a propósito: así el recorrido de vuelta a Personas y de ida a
+  // Revisión no se queda atrapado rellenando pasos intermedios, y lo que se mide es lo que
+  // este camino existe para medir — que las declaraciones llegan al envío.
+  scenario.stage = 'lista_para_enviar'
+  scenario.tutorUnico = true
+
+  let envio = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'submitEnrollmentSession') envio = body
+  }
+  page.on('request', espiar)
+  const limpiar = () => { page.off('request', espiar); scenario.tutorUnico = false }
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    // Retroceder hasta Personas (índice 1), como haría la familia. Copiado de
+    // `caminoQuitarDeLaSolicitud` — mismo recorrido, mismo botón.
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(250)
+
+    // Las dos casillas SOLO se pintan con un tutor. Si no están, o el recorte de personas
+    // dejó más de un tutor o la pantalla dejó de pedir las declaraciones: las dos cosas son
+    // el fallo que este camino busca, y por eso se afirma antes de tocar nada.
+    const casillas = await page.$$('.alert-warning input[type=checkbox]')
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, casillas.length)
+    if (!c.afirmar('la familia de un solo tutor ve las DOS declaraciones (tutor único + patria potestad)',
+      casillas.length === 2,
+      `se pintaron ${casillas.length} casillas de declaración (se esperaban 2): sin ellas la familia envía sin declarar nada y la escuela se queda sin el registro que DL-E49 §3 exige`)) return c
+
+    // El TEXTO que se pinta es el que tiene que acabar en el libro: se lee de la pantalla,
+    // no se reconstruye aquí — si se reconstruyera, el camino aprobaría un texto que la
+    // familia nunca vio, que es justo lo que invalida un registro legal.
+    const textos = await page.$$eval('.alert-warning label span', (ss) => ss.map(s => (s.textContent || '').trim()))
+    await casillas[0].click()
+    await casillas[1].click()
+    await page.waitForTimeout(150)
+
+    // Avanzar hasta Revisión y enviar.
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) < 6; i++) {
+      if (!await continuar(c, page, (await dondeEstoy(page)) + 1, 'avanzar hacia Revisión')) break
+    }
+    if (!c.afirmar('se llega a Revisión', (await dondeEstoy(page)) === 6,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(200)
+
+    const marcarYEnviar = await page.evaluate(() => {
+      document.querySelectorAll('input[type=checkbox]').forEach(ch => { if (!ch.checked) ch.click() })
+      const firma = document.querySelector('input[type=text]')
+      if (firma) {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        setter.call(firma, 'RobotUnoE2E PruebaE2E')
+        firma.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      const btn = [...document.querySelectorAll('button')].find(b => /enviar|submit/i.test(b.textContent || ''))
+      if (btn && !btn.disabled) { btn.click(); return true }
+      return false
+    })
+    if (!c.afirmar('el botón de enviar está disponible y se pulsa', marcarYEnviar,
+      'no se encontró un botón de enviar habilitado en Revisión')) return c
+    await page.waitForTimeout(LATENCY + 1200)
+
+    if (!c.afirmar('el envío sale de verdad', !!envio,
+      'no se registró ninguna llamada a submitEnrollmentSession')) return c
+
+    const decl = (envio.consents || []).filter(x => x && /sole_guardian_attestation|parental_authority/.test(x.type || ''))
+    c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, 1)
+    c.afirmar('las DOS declaraciones viajan en el envío, hacia el libro de consentimientos',
+      decl.length === 2,
+      `el envío llevó ${decl.length} declaración(es) de las 2 esperadas: lo que no viaja aquí no se registra en ninguna parte — vuelve a ser la casilla suelta que nadie lee`)
+    c.afirmar('cada declaración lleva el TEXTO EXACTO que se mostró en pantalla',
+      decl.length === 2 && decl.every(d => d.consent_text_shown && textos.includes(d.consent_text_shown)),
+      `los textos enviados fueron ${JSON.stringify(decl.map(d => d.consent_text_shown))} y en pantalla se leyeron ${JSON.stringify(textos)}: un registro legal sin el texto que la familia leyó no prueba qué aceptó`)
+    c.afirmar('las dos declaraciones van como ACEPTADAS',
+      decl.length === 2 && decl.every(d => d.accepted === true),
+      `se enviaron con accepted=${JSON.stringify(decl.map(d => d.accepted))}`)
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
 async function caminoSegundoTutorNoVeAlPrimero(page, base) {
   const c = new Camino('segundo-tutor-no-ve-al-primero')
   scenario.stage = 'lista_para_enviar'   // aterriza en Revisión: ahí vivía la fuga mayor
@@ -2883,6 +2992,8 @@ const CAMINOS = [
   { nombre: 'segundo-tutor-envia', fn: caminoSegundoTutorEnvia, minLlamadas: 2, minElementos: 2 },
   // DL-E49 §2 — cada tutor ve LO SUYO y lo de los menores, nunca lo del otro tutor.
   { nombre: 'segundo-tutor-no-ve-al-primero', fn: caminoSegundoTutorNoVeAlPrimero, minLlamadas: 2, minElementos: 2 },
+  // DL-E49 §3 — las declaraciones de la familia de un solo tutor llegan al libro con su texto.
+  { nombre: 'declaraciones-tutor-unico', fn: caminoDeclaracionesTutorUnico, minLlamadas: 1, minElementos: 2 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

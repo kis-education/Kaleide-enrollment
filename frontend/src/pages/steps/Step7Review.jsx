@@ -269,6 +269,27 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
       return;
     }
 
+    // DL-E49 §3 — las declaraciones que la familia aceptó en el paso 2, tal y como las
+    // aceptó. Solo se registra lo que consta aceptado: si el paso 2 no las capturó (familia
+    // de dos tutores, o sesión vieja anterior a este cambio), la lista sale VACÍA y no se
+    // escribe nada — nunca se reconstruye un texto que quizá nadie vio.
+    const declaracion = stepData.sole_guardian_attestation;
+    const declaracionesDelPaso2 = [];
+    if (declaracion?.attested && declaracion?.texts?.sole_guardian) {
+      declaracionesDelPaso2.push({
+        type:               'sole_guardian_attestation',
+        accepted:           true,
+        consent_text_shown: declaracion.texts.sole_guardian,
+      });
+    }
+    if (declaracion?.parental_authority_attested && declaracion?.texts?.parental_authority) {
+      declaracionesDelPaso2.push({
+        type:               'parental_authority',
+        accepted:           true,
+        consent_text_shown: declaracion.texts.parental_authority,
+      });
+    }
+
     // ── UX-3: ENVÍO OPTIMISTA. Tras pasar validaciones + reCAPTCHA, asumimos el estado de
     //    inmediato y navegamos; el submit vuela en background por el carril de saveState
     //    (SaveIndicator), NO bloquea el botón. NO cambia el contrato del payload.
@@ -286,6 +307,11 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
       consents: [
         { type: 'gdpr',  accepted: consentGdpr,  consent_text_shown: CONSENT_TEXTS.gdpr[lang]  },
         { type: 'legal', accepted: consentLegal, consent_text_shown: CONSENT_TEXTS.legal[lang] },
+        // DL-E49 §3 — las DECLARACIONES del paso 2 (tutor único · patria potestad) viajan
+        // al libro de consentimientos con el TEXTO EXACTO que se mostró y el momento en que
+        // se aceptaron, que es lo que las hace valer como registro legal. Van aquí, en el
+        // envío, porque el libro se ancla al EXPEDIENTE y el expediente nace al enviar.
+        ...declaracionesDelPaso2,
       ],
     };
 

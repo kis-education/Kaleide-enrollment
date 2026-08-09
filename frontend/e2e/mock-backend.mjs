@@ -204,7 +204,7 @@ function recortarPorTutorE2E_(data, viewerN) {
  * @param {string} [viewerN] — el `n` (email_id) del enlace con el que se pidió esta
  *   hidratación; DL-E49 §2 recorta `persons`/`relations`/`responses` según quién pregunta.
  */
-export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN) {
+export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -237,9 +237,13 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN) {
 
   if (stage === 'sin_fecha') return base;
 
+  // DL-E49 §3: la familia de UN SOLO TUTOR es un caso distinto, no una variante estética —
+  // es el único en el que la pantalla pide las declaraciones (tutor único + patria potestad).
+  // Con la familia de dos tutores del banco esas casillas no se pintan y el camino que las
+  // mide no tendría nada que pulsar.
   const persons = [
     guardian(FIXTURE.guardian1Id, FIXTURE.guardian1Name, FIXTURE.emailKnown),
-    guardian(FIXTURE.guardian2Id, FIXTURE.guardian2Name, FIXTURE.emailKnown2),
+    ...(tutorUnico ? [] : [guardian(FIXTURE.guardian2Id, FIXTURE.guardian2Name, FIXTURE.emailKnown2)]),
     applicant(FIXTURE.applicantId, FIXTURE.applicantName),
     // DOS aplicantes, no uno. Con uno solo la pantalla pintaba sus dos tarjetas YA
     // RELLENAS desde la hidratación ⇒ el paso salía LIMPIO, `isStepDirty` decía que no y
@@ -248,7 +252,21 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN) {
     // también o mide otro caso.
     applicant(FIXTURE.applicant2Id, 'RobotHijoDosE2E'),
   ];
-  const relations = [
+  // Con UN SOLO tutor, el vínculo que falta es el suyo con el segundo hijo: si se dejaran
+  // los dos vínculos de la familia de dos tutores, uno apuntaría a un tutor que ya no está
+  // y el paso de vínculos se quedaría incompleto para siempre. Una familia monoparental
+  // tiene vínculo con TODOS sus hijos — que es justo lo que hay que simular.
+  const relations = tutorUnico ? [
+    { relation_id: 'r1', pair_id: 'p1', from_person_id: FIXTURE.guardian1Id, to_person_id: FIXTURE.applicantId,
+      relation_type_id: 'rt_mother', is_custodial: 'TRUE', is_pick_up_authorized: 'TRUE' },
+    { relation_id: 'r2', pair_id: 'p2', from_person_id: FIXTURE.guardian1Id, to_person_id: FIXTURE.applicant2Id,
+      relation_type_id: 'rt_mother', is_custodial: 'TRUE', is_pick_up_authorized: 'TRUE' },
+    // El par hermano↔hermano TAMBIÉN necesita su tipo declarado: `Step3Relations` no deja
+    // avanzar con un vínculo sin tipo (`missingRelationType`), y con dos hijos ese par
+    // existe siempre. Sin él, este camino se quedaría atrapado en el paso de vínculos.
+    { relation_id: 'r3', pair_id: 'p3', from_person_id: FIXTURE.applicantId, to_person_id: FIXTURE.applicant2Id,
+      relation_type_id: 'rt_child', is_custodial: 'FALSE', is_pick_up_authorized: 'FALSE' },
+  ] : [
     { relation_id: 'r1', pair_id: 'p1', from_person_id: FIXTURE.guardian1Id, to_person_id: FIXTURE.applicantId,
       relation_type_id: 'rt_mother', is_custodial: 'TRUE', is_pick_up_authorized: 'TRUE' },
     { relation_id: 'r2', pair_id: 'p2', from_person_id: FIXTURE.guardian2Id, to_person_id: FIXTURE.applicantId,
@@ -371,9 +389,9 @@ export function createDispatcher(scenario, record) {
     initEnrollmentSession: (p) => ({ ok: true, enrollment_group_id: FIXTURE.groupId }),
 
     // ── Recuperación / sesión ────────────────────────────────────────────────
-    hydrateSession: (p) => ({ ok: true, ...buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n) }),
+    hydrateSession: (p) => ({ ok: true, ...buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico) }),
     getAdmissionState: (p) => {
-      const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n);
+      const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico);
       return { ok: true, ...(h.admission || { state_code: null }) };
     },
     getLiveStateVersion: () => ({ ok: true, version: 1 }),

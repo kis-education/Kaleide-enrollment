@@ -732,6 +732,12 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const [soleGuardianAttested, setSoleGuardianAttested] = useState(
     !!stepData.sole_guardian_attestation?.attested
   );
+  // DL-E49 §3: además de declarar que es familia monoparental, se declara OSTENTAR LA
+  // PATRIA POTESTAD. Son dos declaraciones distintas y se registran por separado en el
+  // libro de consentimientos — juntarlas en una casilla haría imposible probar cuál aceptó.
+  const [parentalAuthorityAttested, setParentalAuthorityAttested] = useState(
+    !!stepData.sole_guardian_attestation?.parental_authority_attested
+  );
   // D-E18: dismissed flag survives only within this render of Step2; if the user
   // declines the banner, hide it for the rest of the session.
   const [recognitionDismissed, setRecognitionDismissed] = useState(false);
@@ -900,6 +906,12 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       setErr(t('error.sole_guardian_attestation_required'));
       return;
     }
+    // DL-E49 §3: la patria potestad se declara aparte y también se exige.
+    if (totalGuardians === 1 && !parentalAuthorityAttested) {
+      markInvalid(['parental_authority']);
+      setErr(t('error.parental_authority_required'));
+      return;
+    }
     setErr('');
     setInvalidFields({});  // UX-2: validación OK → limpia el resaltado
     // Inject primary email BEFORE transformPersonForSave so the injected entry
@@ -944,12 +956,28 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       const attestant = guardianEmail_(guardians[0]) || String(primaryEmail || '').trim().toLowerCase() || null;
       extra = {
         sole_guardian_attestation: {
+          // ⚠️ Lo que se declara aquí tiene que SOBREVIVIR hasta el envío (paso 7), que es
+          // donde entra en el libro de consentimientos. `extra` viaja SOLO en la llamada de
+          // guardado (`WizardPage.jsx:259`) y NO se queda en el estado del asistente — por eso
+          // más abajo se hace además `updateStep('sole_guardian_attestation', …)`. Sin esa
+          // línea la declaración se pierde entre el paso 2 y el 7 y no se registra en ninguna
+          // parte, que es exactamente el defecto que DL-E49 §3 viene a cerrar.
           attested:            true,
           attestant_guardian:  attestant,
           attested_at:         new Date().toISOString(),
           attestation_version: SOLE_GUARDIAN_ATTESTATION_VERSION,
+          // DL-E49 §3 — lo que convierte esto en un REGISTRO LEGAL es el TEXTO EXACTO que
+          // la familia leyó. Se captura AQUÍ, en el momento de aceptarlo y en el idioma en
+          // que se mostró; el paso 7 lo lleva al libro de consentimientos tal cual. Si se
+          // reconstruyera al enviar, se registraría un texto que quizá nadie vio.
+          parental_authority_attested: parentalAuthorityAttested,
+          texts: {
+            sole_guardian:     t('step2.sole_guardian.attestation_label'),
+            parental_authority: t('step2.parental_authority.attestation_label'),
+          },
         },
       };
+      updateStep('sole_guardian_attestation', extra.sole_guardian_attestation);
     }
     onNext('persons', transformed, extra);
   };
@@ -1044,6 +1072,18 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
                 onChange={e => { setSoleGuardianAttested(e.target.checked); clearInvalidField('attestation'); }}
               />
               <span>{t('step2.sole_guardian.attestation_label')}</span>
+            </label>
+            {/* DL-E49 §3: la patria potestad se declara APARTE. Dos casillas, dos registros
+                en el libro de consentimientos: así consta cuál de las dos aceptó la familia. */}
+            <label className="d-flex align-items-start gap-2 mb-0 mt-2" style={{ cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                className={'form-check-input mt-1' + (invalidFields['parental_authority'] ? ' is-invalid' : '')}
+                aria-invalid={invalidFields['parental_authority'] ? 'true' : undefined}
+                checked={parentalAuthorityAttested}
+                onChange={e => { setParentalAuthorityAttested(e.target.checked); clearInvalidField('parental_authority'); }}
+              />
+              <span>{t('step2.parental_authority.attestation_label')}</span>
             </label>
           </div>
         )}
