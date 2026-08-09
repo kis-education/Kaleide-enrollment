@@ -227,7 +227,7 @@ Test: `manual_testRecognizeFamilyAntiEnum` en `backend/Code.js`. Verifica shape 
 
 ### sendMagicLink — ack constante anti-enumeración (WIZ-ENUM, audit 2026-07-27)
 
-`sendMagicLink_` rama `primary_email` es el **servicio público de recuperación** (la landing lo llama sin autenticación y el manifest es `ANYONE_ANONYMOUS`; **desde el 2026-08-09 esa rama SÍ tiene verja reCAPTCHA fail-closed** — ver §"Las TRES entradas públicas pasan por UNA verja", que cerró el oráculo por TIEMPO que quedaba abierto). Antes devolvía `{sent:true}` con grupo y **lanzaba `'Enrollment group not found'`** sin él → dos respuestas distinguibles = **oráculo de existencia**: cualquiera podía preguntar email a email "¿esta familia está matriculando?".
+`sendMagicLink_` rama `primary_email` es el **servicio público de recuperación** (la landing lo llama sin autenticación y el manifest es `ANYONE_ANONYMOUS`; **desde el 2026-08-09 esa rama SÍ tiene verja reCAPTCHA fail-closed** — ver §"Las CUATRO entradas públicas pasan por UNA verja", que cerró el oráculo por TIEMPO que quedaba abierto). Antes devolvía `{sent:true}` con grupo y **lanzaba `'Enrollment group not found'`** sin él → dos respuestas distinguibles = **oráculo de existencia**: cualquiera podía preguntar email a email "¿esta familia está matriculando?".
 
 **Ahora la rama `primary_email` devuelve SIEMPRE la misma forma** — `_magicLinkConstantAck_()` → `{sent:true, warm_ticket:<uuid>}` — y todo el trabajo (buscar grupo, rotar token, enviar el enlace, crear la sesión nueva) es **best-effort silencioso**. Reglas derivadas, obligatorias para cualquier cambio futuro en este camino:
 
@@ -238,13 +238,36 @@ Test: `manual_testRecognizeFamilyAntiEnum` en `backend/Code.js`. Verifica shape 
 
 Residual conocido (NO cerrado): el action público `initEnrollmentSession` sigue distinguiendo en su respuesta (`already_submitted` / `resumed` / creada), pero está **detrás de la verja reCAPTCHA fail-closed**. Test: `manual_testSendMagicLinkConstantAck`. Cross-ref: `kis-app/docs/kms/security/audit-2026-07-27.md` §C fila WIZ-ENUM + §KAL-10 (mismo patrón en `recognizeFamily_`).
 
-### Las TRES entradas públicas pasan por UNA verja, y la de recuperar el enlace también (②2, 2026-08-09)
+### Las CUATRO entradas públicas pasan por UNA verja (②2 + ②12, 2026-08-09)
 
 Este backend es `ANYONE_ANONYMOUS`: **todo lo que esté en el `switch(action)` del `doPost` lo
-puede invocar cualquiera desde internet, sin identificarse.** Tres de esas acciones son la
-puerta de entrada de una familia: **crear una solicitud** (`initEnrollmentSession_`),
-**reconocer a la familia** (`recognizeFamily_`) y **recuperar el enlace**
-(`sendMagicLink_`, rama `primary_email`).
+puede invocar cualquiera desde internet, sin identificarse.** Cuatro de esas acciones son
+alcanzables sin ninguna credencial y **todas pasan por la misma verja**: **crear una
+solicitud** (`initEnrollmentSession_`), **reconocer a la familia** (`recognizeFamily_`),
+**recuperar el enlace** (`sendMagicLink_`, rama `primary_email`) y **pedir el código de un
+solo uso** (`sendVerificationCode_`, **rama de alta**).
+
+**La cuarta (②12).** La rama de alta de `sendVerificationCode_` toma **el grupo Y el correo de
+destino del propio cuerpo de la petición** y solo pasaba por el cupo por-correo
+(`_checkMagicLinkRateLimit_`) ⇒ cualquiera mandaba un código de seis dígitos al buzón que
+quisiera: **bombardeo de correo y coste de reputación** del remitente. No es oráculo de
+existencia (el llamante ya conoce un identificador de grupo) y no escala como el de arriba,
+pero era la única entrada anónima que quedaba sin verja. Ahora lleva `_asegurarVerjaPublica_`
+—la forma que **lanza**, porque este manejador sí propaga el error al cliente— **antes del
+cupo**: un sondeo que no pasa la verja tampoco puede agotarle a una familia real su cupo de
+enlaces.
+
+**La rama step-up NO lleva verja, y es deliberado**: deriva grupo y correo del bearer (KAL-4,
+nunca del cuerpo), y su cliente (`StepUpGate` / `StepUpReverify`) no manda token de reCAPTCHA
+— ponérsela «por simetría» rompería la comprobación de identidad de las familias. El control
+lo afirma explícitamente.
+
+**Coste para las familias: NINGUNO.** Medido contra `origin/main` el 2026-08-09: los **dos**
+llamadores vivos de esa acción en el frontal (`StepUpGate.jsx:66`, `StepUpReverify.jsx:61`)
+pasan `stepup: true` ⇒ **cero** llegan a la rama de alta. Es un camino sin consumidor en la
+aplicación, pero **vivo en el despachador público**, que es exactamente lo que lo hacía
+peligroso. No se retiró porque su orfandad **fuera de este repositorio** no es acreditable, y
+poner la verja es reversible; el hallazgo queda anotado en la cola (`②12`).
 
 **El defecto que se cerró, medido contra `origin/main` el 2026-08-09.** Desde WIZ-ENUM
 (2026-07-27) la recuperación devuelve **la misma respuesta** exista o no la familia. Pero
@@ -252,7 +275,8 @@ puerta de entrada de una familia: **crear una solicitud** (`initEnrollmentSessio
 enlace (`enr.wizardTouchSession`) y mandar el correo (`sys-public.sendNotification`)— más las
 lecturas de AppSheet, y tarda **~46 s**; sin expediente se queda en **~7 s**. Cronometrando,
 cualquiera volvía a preguntar *«¿esta familia está matriculando?»* email a email — justo lo
-que el ack constante vino a cerrar. Y era **la única de las tres sin verja**.
+que el ack constante vino a cerrar. Y era **la única de las tres puertas de admisiones sin
+verja**.
 
 **Cómo se cerró, y por qué NO igualando tiempos.** Igualar obliga a retener cada petición
 ~50 s, y Apps Script limita las **ejecuciones simultáneas**: unas pocas peticiones dejarían la
@@ -271,23 +295,27 @@ instante (fire-and-forget).
 
 1. **La decisión vive en UN solo sitio**, `_verjaPublicaVeredicto_` — fail-closed en sus cinco
    formas (sin `RECAPTCHA_SECRET`, secreto vacío, sin token, puntuación insuficiente, fallo de
-   red al verificar). Antes estaba **copiada** en dos manejadores y **ausente** en el tercero;
-   tres copias divergen, una sola no.
+   red al verificar). Antes estaba **copiada** en dos manejadores y **ausente** en otros dos;
+   dos copias divergen, una sola no. **Nunca se escribe una verja nueva**: se reutiliza ésta.
 2. **Se elige la forma según el contrato del manejador**: `_asegurarVerjaPublica_` **lanza**
    (para los que propagan el error al cliente) · `_verjaPublicaVeredicto_` devuelve veredicto
    (para los que **no pueden** propagarlo). En `sendMagicLink_` el rechazo **devuelve el mismo
    ack constante**: un rechazo visible reabriría el oráculo por otra puerta.
-3. **La verja va ANTES del trabajo caro**, no después: rechazar tarde deja el tiempo delatando.
+3. **La verja va ANTES del trabajo caro y del cupo**, no después: rechazar tarde deja el tiempo
+   delatando, y deja que un sondeo agote el cupo de una familia real.
 4. **Excepción declarada, con su motivo**: `case 'verifyRecaptcha'` del despachador **no es una
    verja** — es el verificador crudo expuesto como acción, con consumidor vivo en
    `frontend/src/pages/steps/Step7Review.jsx:259` (comprobación antes de enviar).
 
 **Control**: `node scripts/comprobar-verja-publica.mjs` — trabajo `verja-publica` de
 `.github/workflows/deploy.yml`; **`build` depende de él ⇒ en ROJO no se publica**. **Ejecuta**
-la verja real extraída del fuente (6 casos) y comprueba las tres entradas. **Rojo demostrado
-seis veces** antes de darlo por bueno: quitando la verja de la recuperación · poniéndola
-después del trabajo caro · haciendo que lance en vez de devolver el ack · ablandándola a
-fail-open · renombrándola (*«el control está CIEGO»*) · y quitándola de `initEnrollmentSession_`.
+la verja real extraída del fuente (6 casos) y comprueba las **cuatro** entradas. **Rojo
+demostrado once veces** antes de darlo por bueno — seis en ②2 (quitando la verja de la
+recuperación · poniéndola después del trabajo caro · haciendo que lance en vez de devolver el
+ack · ablandándola a fail-open · renombrándola, *«el control está CIEGO»* · y quitándola de
+`initEnrollmentSession_`) y cinco en ②12 (quitando la verja de la rama de alta · poniéndola
+después del cupo · ablandando la verja compartida a fail-open · poniéndosela **también** a la
+rama step-up · renombrando el manejador, *«control CIEGO»*).
 **Límite declarado** en la cabecera del módulo: es un detector por líneas, no un analizador
 sintáctico, y **no afirma que Google puntúe bien**.
 

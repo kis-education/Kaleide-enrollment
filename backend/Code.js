@@ -4865,8 +4865,28 @@ function sendVerificationCode_(p) {
       throw errNoEmail;
     }
   } else {
-    // ── Flujo NO-stepup (signup inicial): comportamiento intacto. El grupo y el
-    // email vienen del payload (la familia aún no tiene token de sesión).
+    // ── Flujo NO-stepup (signup inicial). El grupo y el email vienen del PAYLOAD
+    // (la familia aún no tiene token de sesión).
+    //
+    // ②12 (2026-08-09) — VERJA PÚBLICA fail-closed. Esta rama es alcanzable desde
+    // internet sin identificarse (`case 'sendVerificationCode'` del despachador,
+    // manifest ANYONE_ANONYMOUS) y toma el correo de destino del propio cuerpo de
+    // la petición ⇒ sin verja, cualquiera manda un código de un solo uso al buzón
+    // que quiera: bombardeo de correo y coste de reputación del remitente. Aquí NO
+    // hay oráculo de existencia que proteger (el llamante ya conoce un
+    // identificador de grupo) y este manejador SÍ propaga el error al cliente, así
+    // que se usa la forma que LANZA. La decisión sigue viviendo en UN solo sitio
+    // (`_verjaPublicaVeredicto_`); esto es su envoltorio, no una verja nueva.
+    //
+    // Va ANTES del cupo por-correo (`_checkMagicLinkRateLimit_`, más abajo) por el
+    // mismo motivo que en `sendMagicLink_`: un sondeo que no pasa la verja tampoco
+    // debe poder agotarle a una familia real su cupo de enlaces.
+    //
+    // La rama step-up NO la lleva y no debe llevarla: su cliente no manda token de
+    // reCAPTCHA, deriva grupo y correo del bearer (KAL-4) y ponerle verja rompería
+    // la comprobación de identidad de las familias.
+    _asegurarVerjaPublica_(p && p.recaptcha_token);
+
     enrollmentGroupId = p.enrollment_group_id || p.application_id;
     primary_email     = p.primary_email;
     if (!enrollmentGroupId || !primary_email) throw new Error('Missing enrollment_group_id or primary_email');

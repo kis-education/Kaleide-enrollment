@@ -1,6 +1,16 @@
 /**
- * ②2 — LA VERJA DE LAS ENTRADAS PÚBLICAS: existe, es UNA SOLA, falla hacia cerrado,
- * y las tres puertas anónimas pasan por ella.
+ * ②2 + ②12 — LA VERJA DE LAS ENTRADAS PÚBLICAS: existe, es UNA SOLA, falla hacia
+ * cerrado, y las CUATRO puertas anónimas pasan por ella.
+ *
+ * LA CUARTA (②12, 2026-08-09): la rama de alta de `sendVerificationCode_` manda un
+ * código de un solo uso al correo que venga en el propio cuerpo de la petición, y
+ * estaba sin verja — solo con cupo por-correo. Alcanzable desde internet sin
+ * identificarse (`case 'sendVerificationCode'`, manifest ANYONE_ANONYMOUS) ⇒
+ * bombardeo de correo a buzones ajenos y coste de reputación del remitente. No es
+ * oráculo de existencia: el llamante ya conoce un identificador de grupo. La rama
+ * step-up NO lleva verja a propósito (deriva grupo y correo del bearer, KAL-4, y su
+ * cliente no manda token de reCAPTCHA) — y este control lo AFIRMA, para que nadie
+ * se la ponga «por simetría» y rompa la comprobación de identidad de las familias.
  *
  * QUÉ DEFECTO VIGILA, y está MEDIDO (2026-08-09, contra `origin/main`):
  * `sendMagicLink_` —la puerta de recuperación, pública y anónima— devolvía desde el
@@ -19,8 +29,10 @@
  * QUÉ AFIRMA (dos cosas, y las dos sobre el CÓDIGO REAL):
  *   (a) EJECUTA el veredicto real extraído del fuente, con 6 casos, incluidas las tres
  *       formas de fallar hacia cerrado. No repite su lógica: la corre.
- *   (b) las tres entradas públicas lo invocan, y en la de recuperación se invoca ANTES
- *       del primer viaje a AppSheet y NO lanza (un rechazo visible sería otro oráculo).
+ *   (b) las cuatro entradas públicas lo invocan; en la de recuperación se invoca ANTES
+ *       del primer viaje a AppSheet y NO lanza (un rechazo visible sería otro oráculo);
+ *       y en la del código de un solo uso se invoca en la rama de alta, ANTES del cupo
+ *       y de cualquier viaje, y NO en la rama step-up.
  *
  * LÍMITE DECLARADO, igual que en `escrituras-directas.mjs`: es un detector por líneas,
  * no un analizador sintáctico. Un alias de la función o un `eval()` serían invisibles.
@@ -89,8 +101,53 @@ function ejecutarVeredictoReal(fuenteLimpia) {
   return fallos
 }
 
-/** (b) Las tres entradas públicas pasan por la verja. */
-function comprobarLasTresEntradas(fuenteLimpia) {
+/**
+ * 4 · el código de un solo uso (`sendVerificationCode_`): la rama de ALTA pasa por la
+ * verja, antes del cupo y de cualquier viaje; la rama step-up NO la lleva.
+ * @returns {string[]} fallos
+ */
+function comprobarCodigoDeUnSoloUso(fuenteLimpia) {
+  const fallos = []
+  const cuerpo = cuerpoDe(fuenteLimpia, 'sendVerificationCode_')
+  if (cuerpo === null) {
+    return ['no se encontró `sendVerificationCode_` — control CIEGO en la entrada del código de un solo uso']
+  }
+
+  // El manejador se parte en dos ramas: `if (p && p.stepup === true) { … } else { … }`.
+  const iIf = cuerpo.search(/if\s*\(p\s*&&\s*p\.stepup\s*===\s*true\)/)
+  const mElse = /\n\s*\}\s*else\s*\{/.exec(iIf >= 0 ? cuerpo.slice(iIf) : '')
+  if (iIf < 0 || !mElse) {
+    return ['no se distinguen las ramas step-up / alta de `sendVerificationCode_` — control CIEGO: verde aquí NO equivale a comprobado']
+  }
+  const ramaStepUp = cuerpo.slice(iIf, iIf + mElse.index)
+  const ramaAlta = cuerpo.slice(iIf + mElse.index + mElse[0].length)
+
+  // (i) La rama de alta pasa por la verja, y con la forma que BLOQUEA: pedir el
+  //     veredicto y no actuar sobre él sería un no-op silencioso. Este manejador
+  //     propaga el error al cliente y no hay oráculo de existencia que proteger.
+  const iVerja = ramaAlta.search(/_asegurarVerjaPublica_\s*\(/)
+  if (iVerja < 0) {
+    fallos.push('la rama de ALTA de `sendVerificationCode_` NO pasa por la verja (`_asegurarVerjaPublica_`) — es el hueco de ②12: un código de un solo uso a un correo arbitrario')
+  } else {
+    // (ii) ANTES del cupo y de cualquier viaje: rechazar tarde deja que un sondeo
+    //      agote el cupo de enlaces de una familia real, y gasta trabajo.
+    const iCaro = ramaAlta.search(/_checkMagicLinkRateLimit_|appsheetRequest_|appsheetRequestBatch_|kmsProxy_|sendViaKms/)
+    if (iCaro >= 0 && iCaro < iVerja) {
+      fallos.push('en `sendVerificationCode_` el cupo o el trabajo caro ocurren ANTES de la verja — un sondeo sin token puede agotarle el cupo a una familia real')
+    }
+  }
+
+  // (iii) La rama step-up NO lleva verja: su cliente (`StepUpGate`/`StepUpReverify`)
+  //       no manda token de reCAPTCHA y deriva grupo y correo del bearer (KAL-4).
+  //       Ponérsela «por simetría» rompería la comprobación de identidad.
+  if (/_asegurarVerjaPublica_\s*\(|_verjaPublicaVeredicto_\s*\(/.test(ramaStepUp)) {
+    fallos.push('la rama STEP-UP de `sendVerificationCode_` tiene verja — su cliente no manda token de reCAPTCHA: eso rompe la comprobación de identidad de las familias')
+  }
+  return fallos
+}
+
+/** (b) Las tres entradas de la puerta de admisiones pasan por la verja. */
+function comprobarLasEntradasDeAdmisiones(fuenteLimpia) {
   const fallos = []
 
   // La verja se declara UNA sola vez. Dos copias divergen — que es como nació el hueco.
@@ -163,5 +220,9 @@ function comprobarLasTresEntradas(fuenteLimpia) {
 
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
-  return [...ejecutarVeredictoReal(limpia), ...comprobarLasTresEntradas(limpia)]
+  return [
+    ...ejecutarVeredictoReal(limpia),
+    ...comprobarLasEntradasDeAdmisiones(limpia),
+    ...comprobarCodigoDeUnSoloUso(limpia),
+  ]
 }
