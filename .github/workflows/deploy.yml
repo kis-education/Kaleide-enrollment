@@ -70,6 +70,22 @@ jobs:
       - name: Los filtros a AppSheet usan AND()/OR() como funciones, no infijos
         run: node scripts/comprobar-selector-appsheet.mjs
 
+  personas-quitadas:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Sin tubería: el veredicto se lee de la última línea, pero es el código de salida el
+      # que hace fallar el trabajo, y una tubería devolvería el del último comando.
+      - name: El asistente no cuenta a quien la familia ya quitó de su solicitud
+        run: node scripts/comprobar-personas-quitadas.mjs
+
   receptor-firmado:
     runs-on: ubuntu-latest
     steps:
@@ -187,7 +203,7 @@ jobs:
         working-directory: frontend
 
   build:
-    needs: [e2e, escrituras-directas, selector-appsheet, receptor-firmado, pantalla-del-cliente, codigos-de-consentimiento, no-escribe-estado]
+    needs: [e2e, escrituras-directas, selector-appsheet, personas-quitadas, receptor-firmado, pantalla-del-cliente, codigos-de-consentimiento, no-escribe-estado]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

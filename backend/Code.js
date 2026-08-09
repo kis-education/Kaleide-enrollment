@@ -212,6 +212,52 @@ const T = {
   LOOKUP_RELATION_TYPES:  'relationTypes',
 };
 
+// ─── Quién sigue en la solicitud y quién la familia ya quitó ────────────────────
+//
+// UN SOLO SITIO lo decide. Antes no lo decidía NADIE en el asistente: cada lectura
+// de `enrPersons` se traía TODA persona que alguna vez estuvo en el expediente,
+// incluidas las que la familia había quitado con `enr.wizardRetirar`. Consecuencias
+// medidas el 2026-08-09 sobre datos reales (166 personas): 134 retiradas, 83 tutores
+// retirados sin teléfono vivo, y **57 de 67 expedientes bloqueados** — la puerta del
+// teléfono del envío le exigía un número a gente que ya no está, y tumbaba el envío
+// entero aunque los tutores que quedan lo tuvieran todo correcto.
+//
+// El criterio se COPIA del KMS, que ya lo aplica en todas partes y es el lector
+// probado: `!fila.deleted_at && fila.is_active !== false`
+// (kis-app kms-server/enr/retirada.gs:365-367, enr/wizard-gateway.gs:1523,:1819).
+// La única diferencia es la lectura del booleano: el KMS lo recibe ya normalizado y
+// el asistente lo recibe crudo de AppSheet, que devuelve 'FALSE' como TEXTO.
+//
+// Nota medida: `enrPersons` NO tiene columna `is_active` (38 columnas, sin ella) —
+// para personas manda `deleted_at`. La rama de `is_active` está porque otras tablas
+// del asistente SÍ se retiran así, mientras no tengan el bloque de borrado lógico
+// (retirada.gs:136-140), y el mismo ayudante las sirve a todas.
+
+/**
+ * ¿Esta fila sigue viva en el expediente?
+ * @param {Object} fila fila cruda de AppSheet.
+ * @return {boolean} false si la familia la quitó (o el KMS la desactivó).
+ */
+function wizardFilaViva_(fila) {
+  if (!fila) return false;
+  if (String(fila.deleted_at || '').trim()) return false;
+  var act = fila.is_active;
+  if (act === false) return false;
+  var s = String(act === undefined || act === null ? '' : act).trim().toUpperCase();
+  if (s === 'FALSE' || s === 'N' || s === 'NO' || s === '0') return false;
+  return true;
+}
+
+/**
+ * Quita de una lista de filas las que la familia ya quitó.
+ * TODA lectura de personas / teléfonos / correos / vínculos del asistente pasa por aquí.
+ * @param {Array<Object>} filas
+ * @return {Array<Object>} solo las vivas (nunca null).
+ */
+function wizardSoloVivas_(filas) {
+  return (filas || []).filter(wizardFilaViva_);
+}
+
 /**
  * Returns the authenticated staff email for the current GAS execution context.
  * Used to populate changed_by, reviewed_by, and interviewer_id fields.
@@ -2067,7 +2113,7 @@ function initEnrollmentSession_(p, opts) {
         const ids = existingOpen.map(g => g.enrollment_group_id);
         ids.forEach(id => assertValidUuid_(id, 'enrollment_group_id'));
         const filter = ids.map(id => '"enrollment_group_id" = "' + appsheetEscape_(id) + '"').join(' || ');
-        const personRows = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }) || [];
+        const personRows = wizardSoloVivas_(appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }));
         personRows.forEach(pr => {
           const k = pr.enrollment_group_id;
           personCountByGroup[k] = (personCountByGroup[k] || 0) + 1;
@@ -2379,12 +2425,12 @@ function resolveEmailFromLinkParam_(groupId, nParam, emailsHint, personsHint, gr
   // appsheetEscape_ (aquí). Preferir el hint del batch del caller; si no, Find dirigido.
   var row = null;
   if (Array.isArray(emailsHint)) {
-    row = emailsHint.find(function(e) { return e && e.email_id === emailId; }) || null;
+    row = wizardSoloVivas_(emailsHint).find(function(e) { return e && e.email_id === emailId; }) || null;
   }
   if (!row) {
-    var rows = appsheetRequest_(T.EMAILS, 'Find', [], {
+    var rows = wizardSoloVivas_(appsheetRequest_(T.EMAILS, 'Find', [], {
       Filter: '"email_id" = "' + appsheetEscape_(emailId) + '"'
-    }) || [];
+    }));
     row = rows[0] || null;
   }
   if (!row) {
@@ -2491,10 +2537,10 @@ function findEmailIdForGuardian_(groupId, email, emailsHint) {
   try {
     // PERF sendMagicLink (2026-06-12): emailsHint = filas enrEmails del MISMO grupo
     // ya bajadas por el caller (mismo filtro que abajo) — evita un Find serial.
-    var rows = Array.isArray(emailsHint) ? emailsHint
+    var rows = wizardSoloVivas_(Array.isArray(emailsHint) ? emailsHint
       : appsheetRequest_(T.EMAILS, 'Find', [], {
           Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
-        }) || [];
+        }));
     var match = rows.find(function(r) {
       return r && String(r.value || '').toLowerCase().trim() === emailLc && r.email_id;
     });
@@ -2555,8 +2601,8 @@ function sendMagicLink_(p) {
       { table: T.EMAILS,  action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + grpIdEsc + '"' } },
       { table: T.PERSONS, action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + grpIdEsc + '"' } },
     ]);
-    const emailsHint  = hintRead[0].ok ? (hintRead[0].data || []) : null;
-    const personsHint = hintRead[1].ok ? (hintRead[1].data || []) : null;
+    const emailsHint  = hintRead[0].ok ? wizardSoloVivas_(hintRead[0].data) : null;
+    const personsHint = hintRead[1].ok ? wizardSoloVivas_(hintRead[1].data) : null;
     if (p.recovered_email && resolveGuardianForRecovery_(grp.enrollment_group_id, p.recovered_email, emailsHint, personsHint, grp)) {
       destEmail = String(p.recovered_email).toLowerCase().trim();
       identityEmail = destEmail;
@@ -2712,7 +2758,7 @@ function sendMagicLink_(p) {
       const emailsHintByGroup = {};
       sorted.forEach((g, i) => {
         const r = batchRes[i];
-        emailsHintByGroup[g.enrollment_group_id] = (r && r.ok) ? (r.data || []) : null;
+        emailsHintByGroup[g.enrollment_group_id] = (r && r.ok) ? wizardSoloVivas_(r.data) : null;
       });
       const grps = sorted.map(g => {
         const gid = g.enrollment_group_id;
@@ -2962,10 +3008,10 @@ function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, person
   }
   var idEsc = appsheetEscape_(groupId);
 
-  var emails = Array.isArray(emailsHint) ? emailsHint
-    : (appsheetRequest_(T.EMAILS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || []);
-  var persons = Array.isArray(personsHint) ? personsHint
-    : (appsheetRequest_(T.PERSONS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || []);
+  var emails = wizardSoloVivas_(Array.isArray(emailsHint) ? emailsHint
+    : appsheetRequest_(T.EMAILS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }));
+  var persons = wizardSoloVivas_(Array.isArray(personsHint) ? personsHint
+    : appsheetRequest_(T.PERSONS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }));
 
   var guardianIds = {};
   persons.forEach(function(per) {
@@ -3056,8 +3102,8 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
   try { assertValidEmail_(rawEmail, 'primary_email'); email = String(rawEmail).toLowerCase().trim(); }
   catch (e) { return []; }
 
-  var emailRows = appsheetRequest_(T.EMAILS, 'Find', [],
-    { Filter: '"value" = "' + appsheetEscape_(rawEmail) + '"' }) || [];
+  var emailRows = wizardSoloVivas_(appsheetRequest_(T.EMAILS, 'Find', [],
+    { Filter: '"value" = "' + appsheetEscape_(rawEmail) + '"' }));
   var matched = emailRows.filter(function(e) {
     return String(e.value || '').toLowerCase().trim() === email && e.enrollment_group_id;
   });
@@ -3071,7 +3117,7 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
   var grpFilter = ids.map(function(id) { return '"enrollment_group_id" = "' + appsheetEscape_(id) + '"'; }).join(' || ');
 
   var groups  = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], { Filter: grpFilter }) || [];
-  var persons = appsheetRequest_(T.PERSONS,           'Find', [], { Filter: grpFilter }) || [];
+  var persons = wizardSoloVivas_(appsheetRequest_(T.PERSONS,           'Find', [], { Filter: grpFilter }));
 
   // Solo enviar si el email matcheado pertenece a un GUARDIAN del grupo (no a un
   // applicant) — evita mandar recuperación al email de un menor.
@@ -3691,10 +3737,10 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
     { table: T.PROGRAMS,         action: 'Find', selector: { Filter: '"program_id" = "' + programIdEsc + '"' } },
   ]);
   const enrollments = topRead[0].ok ? (topRead[0].data || []) : [];
-  const persons     = topRead[1].ok ? (topRead[1].data || []) : [];
-  const allEmails   = topRead[5].ok ? (topRead[5].data || []) : [];
-  const allPhones   = topRead[6].ok ? (topRead[6].data || []) : [];
-  const relations   = (topRead[2].ok ? (topRead[2].data || []) : [])
+  const persons     = topRead[1].ok ? wizardSoloVivas_(topRead[1].data) : [];
+  const allEmails   = topRead[5].ok ? wizardSoloVivas_(topRead[5].data) : [];
+  const allPhones   = topRead[6].ok ? wizardSoloVivas_(topRead[6].data) : [];
+  const relations   = (topRead[2].ok ? wizardSoloVivas_(topRead[2].data) : [])
     .map(r => ({ ...r, guardian_person_id: r.from_person_id, applicant_person_id: r.to_person_id }));
 
   // ── DL-E38 / P215 (GAP-1 a1): per-guardian recovery ────────────────────────
@@ -4088,7 +4134,7 @@ function getAdmissionState_(p) {
   ]);
   const perfBatchMs = Date.now() - perfB0;
   const enrollments = lightRead[0].ok ? (lightRead[0].data || []) : [];
-  const persons     = lightRead[1].ok ? (lightRead[1].data || []) : [];
+  const persons     = lightRead[1].ok ? wizardSoloVivas_(lightRead[1].data) : [];
   const groupRow    = (lightRead[2].ok && lightRead[2].data && lightRead[2].data[0]) || null;
   // PERF-KMS2: hints (null si su read del batch falló → los helpers caen a su live).
   const statesHint   = lightRead[3].ok ? (lightRead[3].data || []) : null;
@@ -4381,9 +4427,12 @@ function submitEnrollmentSession_(p) {
   if (!group) throw new Error('Enrollment group not found');
 
   // ── Fetch persons captured in this group ───────────────────────────────────
-  const allPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
+  // Solo las personas VIVAS: la familia pudo quitar tutores o alumnos con
+  // `enr.wizardRetirar` y quien está fuera no cuenta para nada de lo que sigue —
+  // ni para la puerta del teléfono, ni para elegir quién firma.
+  const allPersons = wizardSoloVivas_(appsheetRequest_(T.PERSONS, 'Find', [], {
     Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-  }) || [];
+  }));
   const guardians  = allPersons.filter(per => per.person_type_id === 'guardian');
   const applicants = allPersons.filter(per => per.person_type_id === 'applicant');
 
@@ -4416,9 +4465,9 @@ function submitEnrollmentSession_(p) {
   // NOT "any digits". Fresh input keeps the strict-with-'+' check elsewhere.
   const gPersonIdsForGate = guardians.map(g => g.person_id).filter(Boolean);
   if (gPersonIdsForGate.length) {
-    const allGuardianPhones = appsheetRequest_(T.PHONES, 'Find', [], {
+    const allGuardianPhones = wizardSoloVivas_(appsheetRequest_(T.PHONES, 'Find', [], {
       Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-    }) || [];
+    }));
     const phonesByPerson = {};
     allGuardianPhones.forEach(ph => {
       const pid = ph.person_id;
@@ -4531,15 +4580,15 @@ function submitEnrollmentSession_(p) {
   const gPhoneIds = gPhoneJoins.map(r => r.phone_id).filter(Boolean);
   const gEmailMap = {};
   if (gEmailIds.length) {
-    (appsheetRequest_(T.EMAILS, 'Find', [], {
+    wizardSoloVivas_(appsheetRequest_(T.EMAILS, 'Find', [], {
       Filter: gEmailIds.map(x => '"email_id" = "' + appsheetEscape_(x) + '"').join(' || ')
-    }) || []).forEach(r => { gEmailMap[r.email_id] = r; });
+    })).forEach(r => { gEmailMap[r.email_id] = r; });
   }
   const gPhoneMap = {};
   if (gPhoneIds.length) {
-    (appsheetRequest_(T.PHONES, 'Find', [], {
+    wizardSoloVivas_(appsheetRequest_(T.PHONES, 'Find', [], {
       Filter: gPhoneIds.map(x => '"phone_id" = "' + appsheetEscape_(x) + '"').join(' || ')
-    }) || []).forEach(r => { gPhoneMap[r.phone_id] = r; });
+    })).forEach(r => { gPhoneMap[r.phone_id] = r; });
   }
   const enrichedGuardians = guardians.map(g => ({
     ...g,
@@ -5186,9 +5235,9 @@ function saveResponses_(p) {
   var respList = Object.keys(distinctRespondents);
   if (respList.length) {
     respList.forEach(function(rid) { assertValidUuid_(rid, 'respondent_id'); });  // KAL-5 capa 1
-    var groupPersons = appsheetRequest_(T.PERSONS, 'Find', [], {
+    var groupPersons = wizardSoloVivas_(appsheetRequest_(T.PERSONS, 'Find', [], {
       Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'  // KAL-5 capa 2
-    }) || [];
+    }));
     var validPersonIds = {};
     groupPersons.forEach(function(pp) { if (pp && pp.person_id) validPersonIds[pp.person_id] = true; });
     respList.forEach(function(rid) {
@@ -8019,7 +8068,7 @@ function adminCleanupOrphanSessions() {
     const chunk = allCandidateIds.slice(i, i + 50);
     try {
       const filter = chunk.map(id => '"enrollment_group_id" = "' + appsheetEscape_(id) + '"').join(' || ');
-      const rows = appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }) || [];
+      const rows = wizardSoloVivas_(appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }));
       rows.forEach(r => {
         const k = r.enrollment_group_id;
         personCountByGroup[k] = (personCountByGroup[k] || 0) + 1;
@@ -10350,4 +10399,74 @@ function manual_testSignedWebhookReceiver() {
     Logger.log(veredicto);
     return lineas.join('\n') + '\n' + veredicto;
   }
+}
+
+/**
+ * Diagnostic (solo conteos, CERO datos de familia) — ¿a cuántos expedientes les
+ * está pidiendo el asistente el teléfono de un tutor que la familia YA QUITÓ?
+ *
+ * El gemelo de este instrumento vive en el KMS (`manual_diagPersonasRetiradasDelAsistente`),
+ * porque el proyecto del asistente no tiene `clasp run` enlazado y desde ahí sí se puede
+ * ejecutar; lee las MISMAS tablas. Éste queda aquí para poder repetir la medida desde el
+ * editor del asistente.
+ *
+ * Devuelve SOLO números y nombres de columna (§"PII solo en GAS, revisión humana en UI").
+ */
+function manual_diagPersonasRetiradas() {
+  var personas  = appsheetRequest_(T.PERSONS, 'Find', [], {}) || [];
+  var telefonos = appsheetRequest_(T.PHONES,  'Find', [], {}) || [];
+
+  var columnas = personas.length ? Object.keys(personas[0]) : [];
+  function telefonoValido_(ph) {
+    var s = String(ph.value || ph.phone_number || '').trim();
+    if (s && s[0] !== '+' && /^\d+$/.test(s)) s = '+' + s;
+    return /^\+[1-9]\d{6,14}$/.test(s);
+  }
+
+  var vivosPorPersona = {};
+  telefonos.forEach(function (ph) {
+    if (!wizardFilaViva_(ph) || !telefonoValido_(ph)) return;
+    if (ph.person_id) vivosPorPersona[ph.person_id] = (vivosPorPersona[ph.person_id] || 0) + 1;
+  });
+
+  var out = {
+    columnas_de_enrPersons: columnas.length,
+    tiene_deleted_at: columnas.indexOf('deleted_at') >= 0,
+    tiene_is_active: columnas.indexOf('is_active') >= 0,
+    personas_totales: personas.length,
+    personas_retiradas: 0,
+    tutores_totales: 0,
+    tutores_retirados: 0,
+    tutores_retirados_sin_telefono_vivo: 0,
+    solicitantes_retirados: 0,
+    expedientes_totales: 0,
+    expedientes_bloqueados_por_un_tutor_retirado_sin_telefono: 0,
+    telefonos_totales: telefonos.length,
+    telefonos_retirados: 0
+  };
+  telefonos.forEach(function (ph) { if (!wizardFilaViva_(ph)) out.telefonos_retirados++; });
+
+  var expedientes = {};
+  personas.forEach(function (p) {
+    var gid = p.enrollment_group_id || '(sin grupo)';
+    expedientes[gid] = expedientes[gid] || { bloquea: 0 };
+    var esTutor = p.person_type_id === 'guardian';
+    if (esTutor) out.tutores_totales++;
+    if (wizardFilaViva_(p)) return;
+    out.personas_retiradas++;
+    if (p.person_type_id === 'applicant') out.solicitantes_retirados++;
+    if (!esTutor) return;
+    out.tutores_retirados++;
+    if (!vivosPorPersona[p.person_id]) {
+      out.tutores_retirados_sin_telefono_vivo++;
+      expedientes[gid].bloquea++;
+    }
+  });
+  out.expedientes_totales = Object.keys(expedientes).length;
+  Object.keys(expedientes).forEach(function (gid) {
+    if (expedientes[gid].bloquea > 0) out.expedientes_bloqueados_por_un_tutor_retirado_sin_telefono++;
+  });
+
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
 }

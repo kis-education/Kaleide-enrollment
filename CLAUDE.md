@@ -412,6 +412,49 @@ nueva, **el caso se añade en el MISMO cambio** y se rompe a propósito antes de
 Cross-ref: `kis-app/docs/kms/loop-backlog.md` §"HALLAZGO GRAVE (2026-08-03)" (el mismo defecto en el
 KMS, arreglado y desplegado @1184) · §"No se toca lo que funciona…".
 
+### El asistente no cuenta a quien la familia ya quitó (2026-08-09)
+
+**`node scripts/comprobar-personas-quitadas.mjs`** — trabajo `personas-quitadas` en
+`.github/workflows/deploy.yml`; **`build` depende de él ⇒ en ROJO no se publica**. ~1 s, sin `npm
+ci`, sin red, sin navegador.
+
+**El defecto que vigila, MEDIDO sobre datos reales el 2026-08-09** (166 personas de `enrPersons`,
+contadas dentro de GAS, cero datos de familia fuera): **134 retiradas · 83 tutores retirados sin
+teléfono vivo · 57 de 67 expedientes BLOQUEADOS**. La familia puede quitar de su solicitud lo que
+ella misma añadió (`enr.wizardRetirar`, que estampa `deleted_at`); el KMS descarta a esas personas
+**en todas partes** y el asistente **no lo hacía en ninguna**. Resultado: la puerta del envío le
+exigía un teléfono E.164 a tutores que ya no estaban y **tumbaba el envío entero** aunque los que
+quedaban lo tuvieran todo correcto — `INVALID_PHONE` con todos los tutores vivos teniendo teléfono.
+Y no era solo la puerta: con la misma lista sin filtrar, el **firmante** de los consentimientos
+podía ser un tutor quitado, y la persona **reaparecía al recargar**.
+
+**El arreglo es UN SOLO SITIO que decide quién sigue en la solicitud** — `wizardFilaViva_` /
+`wizardSoloVivas_` (`backend/Code.js`, junto al catálogo de tablas), con el criterio **copiado**
+del lector probado del KMS (`kis-app kms-server/enr/retirada.gs:365-367`,
+`enr/wizard-gateway.gs:1523`): `!deleted_at && is_active !== false`. La única diferencia es que
+AppSheet le devuelve al asistente el booleano como **TEXTO** (`'FALSE'`), así que comparar con
+`false` a secas no casa nunca. **NO se reparte `!p.deleted_at` a mano por los sitios de lectura:
+así nació esta asimetría.**
+
+**Qué afirma el control, las dos cosas sobre el CÓDIGO REAL:** (a) **extrae del fuente** el ayudante
+y lo **ejecuta** con 12 casos (fecha, vacío, espacios, booleano, texto en ambas cajas, columna
+ausente, fila nula, y el colador entero) — no repite su lógica; (b) **ninguna** de las 33 lecturas
+de personas / teléfonos / correos / vínculos se salta el ayudante, ni directa ni en lote. Las
+exenciones (diagnósticos que SÍ deben ver a las retiradas) van declaradas **con su motivo escrito**
+en `scripts/personas-quitadas.mjs`.
+
+**Se exigió ROJA tres veces antes de darla por buena:** ablandando el criterio (3 casos rojos),
+quitando el colador de la puerta del envío (`Code.js:4433` señalada por línea y función), y
+renombrando el ayudante (rojo fatal: *«no puede medir lo que dice medir»*). **Límite honesto,
+declarado en la cabecera**: es un detector por líneas, no un analizador sintáctico — un `eval()` o
+un alias de `appsheetRequest_` seguirían siendo invisibles, igual que en `escrituras-directas.mjs`.
+
+**Por qué no basta la batería.** `npm run e2e:wizard` corre contra un backend **simulado**: el
+`backend/Code.js` real no se ejecuta ahí, así que **no puede salir roja por esto**. Su camino
+`quitar-de-la-solicitud` cubre la pantalla (quitar sale hacia el servidor, la persona desaparece,
+vuelve si el servidor dice que no) — que es otra cosa. Declarar la batería como red de este cambio
+habría sido decorar.
+
 ### MANDATORY — MURO DE DEPLOY: batería del wizard VERDE antes de CUALQUIER publicación (2026-07-28)
 
 **`npm run e2e:wizard` (desde `frontend/`) debe terminar VERDE antes de publicar nada** — ni el frontend a GitHub Pages, ni el backend con `clasp deploy`. **Cambio sin batería verde = NO deploy.** Es el equivalente al muro del KMS (`kis-app/CLAUDE.md` §"MANDATORY — MURO DE DEPLOY"), y nace de la regla de los dos repos (§"No se toca lo que funciona sin una forma de comprobar que sigue funcionando").
