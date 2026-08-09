@@ -10,6 +10,7 @@ import ConfirmationPage       from './pages/ConfirmationPage'
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
 import DevLogger        from './components/DevLogger'
 import SubmitErrorBanner from './components/SubmitErrorBanner'
+import ConfirmDialog     from './components/ConfirmDialog'
 import * as log         from './logger'
 
 class ErrorBoundary extends Component {
@@ -105,6 +106,11 @@ function App() {
       {/* UX-3: aviso global de fallo del envío optimista — visible en cualquier ruta
           (incl. /confirmation), por encima de los overlays. */}
       <SubmitErrorBanner />
+      {/* La pregunta de confirmación del asistente — UNA sola, montada aquí arriba para
+          que cualquier pantalla pueda usar `pedirConfirmacion(...)` sin montar la suya.
+          Fuera del ErrorBoundary y del Suspense a propósito: si un paso revienta o está
+          cargando, la pregunta en curso sigue teniendo quien la conteste. */}
+      <ConfirmDialog />
       {showDevLogger && <DevLogger />}
     </WizardProvider>
   )

@@ -2550,7 +2550,12 @@ async function caminoPedirCorreccion(page, base) {
  * tocar lo que dejaba de venir ⇒ **quitar no se guardaba nunca**, y al volver a entrar
  * seguía todo ahí. Diego lo intentó dos veces y las dos siguió midiendo 22 personas.
  *
- * Este camino recorre las tres afirmaciones, EN LA PANTALLA:
+ * Este camino recorre las afirmaciones, EN LA PANTALLA:
+ *   (0) la pregunta previa la pinta **el asistente**, no el navegador (18.bis.16), y si la
+ *       familia **CANCELA no pasa nada** — ni en la pantalla ni hacia el servidor. Esta es
+ *       la que vigila el riesgo caro de aquel cambio: `window.confirm` detenía la
+ *       ejecución y un cuadro de React no, así que una conversión descuidada quitaría a la
+ *       persona **sin preguntar**;
  *   (a) quitar a una persona **sale hacia el servidor** (no se queda en el navegador) y
  *       la persona deja de verse;
  *   (b) si el servidor dice que **NO se puede** (el último tutor, el solicitante), la
@@ -2566,10 +2571,26 @@ async function caminoQuitarDeLaSolicitud(page, base) {
   scenario.stage = 'hasta_preguntas'
   scenario.quitarMode = 'ok'
 
-  // La confirmación es un `window.confirm`: sin aceptarlo, el navegador lo descarta solo
-  // y el camino mediría un botón que nunca actuó.
-  const aceptarConfirmacion = async (dlg) => { try { await dlg.accept() } catch { /* ya cerrado */ } }
-  page.on('dialog', aceptarConfirmacion)
+  // ── La pregunta es DE LA APLICACIÓN, no del navegador (cola 18.bis.16) ──────────
+  // Hasta el 2026-08-09 la confirmación era un `window.confirm` y este camino la
+  // aceptaba con `page.on('dialog', …)`. Ahora la pregunta la pinta el asistente, así
+  // que el manejador de diálogos pasa a ser un VIGÍA: si vuelve a aparecer un aviso del
+  // navegador, se cuenta y se falla nombrándolo (y se descarta, que es lo que hace el
+  // navegador solo cuando nadie contesta — con lo que el resto del camino también cae).
+  let nativos = 0
+  const vigilarNativo = async (dlg) => { nativos++; try { await dlg.dismiss() } catch { /* ya cerrado */ } }
+  page.on('dialog', vigilarNativo)
+
+  /** Contesta a la pregunta del asistente. `true` = confirmar, `false` = cancelar. */
+  const responderEnPantalla = async (confirmar) => {
+    const cuadro = await page.waitForSelector('[data-testid="confirm-dialog"]', { timeout: 4000 }).catch(() => null)
+    if (!cuadro) return false
+    const boton = await page.$(`[data-testid="confirm-dialog-${confirmar ? 'accept' : 'cancel'}"]`)
+    if (!boton) return false
+    await boton.click()
+    await page.waitForTimeout(120)
+    return true
+  }
 
   // Se cuentan las llamadas que salen DE VERDAD: es la afirmación central (a).
   let llamadasQuitar = 0
@@ -2582,7 +2603,7 @@ async function caminoQuitarDeLaSolicitud(page, base) {
   }
   page.on('request', espiar)
 
-  const limpiar = () => { page.off('dialog', aceptarConfirmacion); page.off('request', espiar) }
+  const limpiar = () => { page.off('dialog', vigilarNativo); page.off('request', espiar) }
 
   try {
     if (!await entrarPorElEnlace(c, page, base)) return c
@@ -2617,9 +2638,35 @@ async function caminoQuitarDeLaSolicitud(page, base) {
       'no hay ningún botón de quitar: la familia no puede deshacer lo que metió por error')) return c
     const objetivo = botonesIniciales.length - 1  // el último — el que la familia añadió
 
+    // ── (0) la pregunta es DEL ASISTENTE, y CANCELAR no quita nada (18.bis.16) ─
+    // El riesgo caro de haber cambiado el aviso del navegador por uno de la aplicación:
+    // `window.confirm` DETENÍA la ejecución y devolvía sí/no en la misma línea; un cuadro
+    // de React no. Una conversión descuidada dispararía el quitar ANTES de la respuesta.
+    // Esto lo mide donde se ve: se pulsa quitar, se CANCELA, y no puede haber pasado nada
+    // — ni en la pantalla ni hacia el servidor.
+    await (await page.$$('.dynamic-section-header button.remove-btn'))[objetivo].click()
+    const salioElCuadro = await responderEnPantalla(false)
+    c.afirmar('la pregunta la pinta el asistente, no el navegador',
+      salioElCuadro && nativos === 0,
+      nativos > 0
+        ? 'saltó un aviso del NAVEGADOR («admissions.kaleide.org dice»): la familia ve un cuadro del sistema en mitad de su solicitud'
+        : 'no apareció el cuadro de confirmación del asistente al pulsar quitar')
+    await page.waitForTimeout(LATENCY + 400)
+    // Las dos son PUERTA: si la acción se disparó sin respuesta, los sub-casos de abajo
+    // operan sobre una lista ya mutilada y el camino se rompería con un ruido cualquiera
+    // («undefined.click») en vez de decir lo que pasó. Se para aquí y se nombra.
+    if (!c.afirmar('si la familia CANCELA, la persona sigue ahí',
+      (await contarPersonas()) === antes,
+      `quedaron ${await contarPersonas()} de ${antes}: se quitó a alguien que la familia NO confirmó quitar — la acción se disparó ANTES de la respuesta`)) return c
+    if (!c.afirmar('y CANCELAR no manda nada al servidor',
+      llamadasQuitar === 0,
+      `salieron ${llamadasQuitar} peticiones de retirada tras CANCELAR: la acción se disparó antes de la respuesta`)) return c
+
     // ── (b) el servidor dice que NO se puede ⇒ VUELVE, y se dice por qué ──────
     scenario.quitarMode = 'no_se_puede'
     await (await page.$$('.dynamic-section-header button.remove-btn'))[objetivo].click()
+    if (!c.afirmar('el cuadro vuelve a salir para el segundo intento', await responderEnPantalla(true),
+      'no se pudo confirmar: el cuadro del asistente no apareció')) return c
     await page.waitForTimeout(LATENCY + 900)
     const trasRechazo = await contarPersonas()
     const texto = (await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' '))).toLowerCase()
@@ -2635,6 +2682,8 @@ async function caminoQuitarDeLaSolicitud(page, base) {
     if (!c.afirmar('sigue habiendo botón de quitar tras el rechazo', botones3.length >= 1,
       '(c) no se pudo ejercitar: no quedó ningún botón de quitar')) return c
     await botones3[objetivo].click()
+    if (!c.afirmar('el cuadro sale también con la solicitud enviada', await responderEnPantalla(true),
+      'no se pudo confirmar: el cuadro del asistente no apareció')) return c
     await page.waitForTimeout(LATENCY + 900)
     const texto3 = (await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' '))).toLowerCase()
     c.afirmar('con la solicitud ya enviada, la persona sigue ahí',
@@ -2650,6 +2699,8 @@ async function caminoQuitarDeLaSolicitud(page, base) {
     if (!c.afirmar('sigue habiendo botón de quitar tras el «ya enviada»', botones4.length >= 1,
       '(a) no se pudo ejercitar: no quedó ningún botón de quitar')) return c
     await botones4[objetivo].click()
+    if (!c.afirmar('el cuadro sale en el intento que sí quita', await responderEnPantalla(true),
+      'no se pudo confirmar: el cuadro del asistente no apareció')) return c
     await page.waitForTimeout(LATENCY + 600)
     c.evidencia.llamadas += llamadasQuitar
 

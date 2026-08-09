@@ -346,6 +346,68 @@ body {
   background: var(--teal-lt);
 }
 
+/* Pregunta de confirmación (ConfirmDialog) — la del colegio, NUNCA la del navegador.
+   El orden en el documento es «confirmar, cancelar»; aquí se coloca: en pantalla ancha
+   se invierte la fila (confirmar a la derecha) y en móvil se apila dejando CANCELAR
+   abajo, que es lo que cae bajo el pulgar. */
+.kis-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;              /* por encima del toast (9999) y de los overlays de paso */
+  background: rgba(24, 34, 46, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+.kis-confirm-box {
+  background: var(--surface);
+  border-radius: 12px;
+  max-width: 460px;
+  width: 100%;
+  padding: 1.5rem 1.5rem 1.25rem;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
+  animation: slideIn 0.15s ease;
+}
+.kis-confirm-title {
+  margin: 0 0 0.6rem;
+  color: var(--teal-dk);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.kis-confirm-text {
+  margin: 0 0 1.4rem;
+  color: var(--text);
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+.kis-confirm-actions {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+  gap: 0.75rem;
+}
+.kis-confirm-danger {
+  background: #a02020;
+  color: #fff;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.kis-confirm-danger:hover { background: #861a1a; }
+.kis-confirm-box button:focus-visible {
+  outline: 3px solid var(--teal);
+  outline-offset: 2px;
+}
+@media (max-width: 480px) {
+  .kis-confirm-actions { flex-direction: column; }
+  .kis-confirm-actions > button { width: 100%; }
+}
+
 /* Toast */
 .toast-container {
   position: fixed;

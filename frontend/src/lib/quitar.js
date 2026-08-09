@@ -23,6 +23,8 @@
  */
 
 import { retirarDelExpediente } from '../api';
+import { pedirConfirmacion } from '../components/ConfirmDialog';
+import i18n from '../i18n';
 import * as log from '../logger';
 
 /**
@@ -96,8 +98,17 @@ export async function confirmarYQuitar(o) {
     quitarDeLaPantalla, volverAPonerlo, avisar,
   } = o;
 
-  // eslint-disable-next-line no-alert
-  if (pregunta && !window.confirm(pregunta)) return;
+  // La pregunta es la del asistente, no la del navegador. `pedirConfirmacion` devuelve una
+  // promesa que NO se resuelve hasta que la familia contesta ⇒ nada de lo de abajo puede
+  // ocurrir antes de la respuesta (con el `window.confirm` de antes lo garantizaba el
+  // navegador; ahora lo garantiza este `await`, y quitarlo rompe el camino de la batería).
+  if (pregunta) {
+    const confirmado = await pedirConfirmacion({
+      mensaje:        pregunta,
+      textoConfirmar: i18n.t('quitar.confirmar_boton'),
+    });
+    if (!confirmado) return;
+  }
 
   quitarDeLaPantalla();                     // la familia no espera al servidor
 

@@ -13,6 +13,7 @@ import WizardProgress from '../components/WizardProgress';
 import StepUpReverify from '../components/StepUpReverify';
 import StepUpGate from '../components/StepUpGate';
 import { Toast, useToast } from '../components/Toast';
+import { pedirConfirmacion } from '../components/ConfirmDialog';
 
 // STEP-FRAMEWORK (Diego 2026-06-11) — el wizard consume el CATÁLOGO DECLARATIVO de
 // pasos (steps/catalog.js). Los 11 pasos canónicos del programa ADMISIONES KIS son la
@@ -419,7 +420,14 @@ const handleNext = async (stepKey, data, extra = null) => {
 
   const handleStartOver = async () => {
     if (!resumeToken) return;
-    if (!window.confirm(t('wizard.abandon_confirm'))) return;
+    // Se pregunta con el cuadro del asistente (antes era el del navegador). La promesa no
+    // se resuelve hasta que la familia contesta: nada de lo de abajo — descartar la
+    // solicitud — puede ocurrir antes de esa respuesta.
+    const confirmado = await pedirConfirmacion({
+      mensaje:        t('wizard.abandon_confirm'),
+      textoConfirmar: t('wizard.abandon_confirm_boton'),
+    });
+    if (!confirmado) return;
     log.info('WizardPage: abandoning session', { enrollmentGroupId });
     setAbandoning(true);
     try {
