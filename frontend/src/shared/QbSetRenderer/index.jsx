@@ -49,6 +49,45 @@ export default function QbSetRenderer({
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
 
+  // ── ÚNICO SITIO DEL ASISTENTE QUE DECIDE DE QUIÉN ES UNA RESPUESTA AL PINTARLA ──────
+  // Una pregunta GENERAL la contesta el EXPEDIENTE: su clave es `question_id__<grupo>`,
+  // y así la compone este mismo componente más abajo y así la guarda hoy el KMS.
+  //
+  // Pero durante un tiempo el KMS guardó esas respuestas contra el PRIMER TUTOR del grupo
+  // (el iniciador de la sesión de respuestas, que no es el sujeto de la respuesta). Al
+  // volver, ninguna clave casaba y el cuestionario salía EN BLANCO con las respuestas
+  // guardadas y servidas correctamente: 31 contestadas, 0 pintadas (medido 2026-08-09).
+  // El escritor ya está arreglado y lo guardado se migró, pero una respuesta que la
+  // familia dejó escrita NO se vuelve a perder por venir atribuida a otro: si de una
+  // pregunta general llega UNA respuesta y no trae la clave del expediente, se pinta
+  // igual. Una pregunta general tiene UNA respuesta por expediente, así que no hay a
+  // quién confundir.
+  //
+  // Se normaliza AQUÍ, una sola vez y antes de nada, para que el valor que se pinta y las
+  // condiciones que deciden si la pregunta se ve miren EXACTAMENTE lo mismo. Repartir
+  // esta regla entre el pintado y las condiciones es cómo vuelven a divergir.
+  const respuestasEfectivas = (() => {
+    if (!groupId || !responses) return responses;
+    const generales = [];
+    sets.forEach(set => (set.items || []).forEach(item => {
+      const q = item.question;
+      const aud = q && q.audience_category_id;
+      if (q && q.question_id && aud !== 'participant' && aud !== 'client') generales.push(q.question_id);
+    }));
+    let out = responses;
+    generales.forEach(qid => {
+      const claveDelExpediente = `${qid}__${groupId}`;
+      if (out[claveDelExpediente] !== undefined && out[claveDelExpediente] !== '') return;
+      const suelta = Object.keys(responses).find(
+        k => k.startsWith(`${qid}__`) && responses[k] !== undefined && responses[k] !== ''
+      );
+      if (!suelta) return;
+      if (out === responses) out = { ...responses };
+      out[claveDelExpediente] = responses[suelta];
+    });
+    return out;
+  })();
+
   // Map question_code → question_id, derivado de las preguntas recibidas. Lo
   // necesita meetsConditions para resolver las conditions PARENT_ANSWER (que
   // sólo traen parent_question_code) a la clave de respuesta `${id}__${personKey}`.
@@ -79,16 +118,16 @@ export default function QbSetRenderer({
           if (!applicants.length) { decisions.push({ q8, aud, shown: false, reason: 'no_applicants' }); return; }
           applicants.forEach(a => {
             const pk = a.person_id || a._uid;
-            decisions.push({ q8, aud, person8: log.sid(pk), shown: meetsConditions(q, a, responses, pk, condCtx) });
+            decisions.push({ q8, aud, person8: log.sid(pk), shown: meetsConditions(q, a, respuestasEfectivas, pk, condCtx) });
           });
         } else if (aud === 'client') {
           if (!guardians.length) { decisions.push({ q8, aud, shown: false, reason: 'no_guardians' }); return; }
           guardians.forEach(g => {
             const pk = g.person_id || g._uid;
-            decisions.push({ q8, aud, person8: log.sid(pk), shown: meetsConditions(q, g, responses, pk, condCtx) });
+            decisions.push({ q8, aud, person8: log.sid(pk), shown: meetsConditions(q, g, respuestasEfectivas, pk, condCtx) });
           });
         } else {
-          decisions.push({ q8, aud: aud || 'general/null', shown: meetsConditions(q, null, responses, groupId, condCtx) });
+          decisions.push({ q8, aud: aud || 'general/null', shown: meetsConditions(q, null, respuestasEfectivas, groupId, condCtx) });
         }
       }));
       const shown = decisions.filter(d => d.shown).length;
@@ -123,7 +162,7 @@ export default function QbSetRenderer({
             if (isParticipantQ) {
               return applicants.map((a, ai) => {
                 const personKey = a.person_id || a._uid;
-                if (!meetsConditions(q, a, responses, personKey, condCtx)) return null;
+                if (!meetsConditions(q, a, respuestasEfectivas, personKey, condCtx)) return null;
                 const key = `${q.question_id}__${personKey}`;
                 const name = [a.first_name, a.last_name].filter(Boolean).join(' ')
                   || `${tr('applicant.title', { n: ai + 1 }) || 'Applicant'} ${ai + 1}`;
@@ -134,7 +173,7 @@ export default function QbSetRenderer({
                     </p>
                     <QuestionField
                       question={q}
-                      value={responses[key]}
+                      value={respuestasEfectivas[key]}
                       onChange={v => setResponse(key, v)}
                       readOnly={readOnly}
                     />
@@ -146,7 +185,7 @@ export default function QbSetRenderer({
             if (isClientQ) {
               return guardians.map((g, gi) => {
                 const personKey = g.person_id || g._uid;
-                if (!meetsConditions(q, g, responses, personKey, condCtx)) return null;
+                if (!meetsConditions(q, g, respuestasEfectivas, personKey, condCtx)) return null;
                 const key = `${q.question_id}__${personKey}`;
                 const name = [g.first_name, g.last_name].filter(Boolean).join(' ')
                   || `${tr('guardian.title', { n: gi + 1 }) || 'Guardian'} ${gi + 1}`;
@@ -157,7 +196,7 @@ export default function QbSetRenderer({
                     </p>
                     <QuestionField
                       question={q}
-                      value={responses[key]}
+                      value={respuestasEfectivas[key]}
                       onChange={v => setResponse(key, v)}
                       readOnly={readOnly}
                     />
@@ -168,13 +207,13 @@ export default function QbSetRenderer({
 
             // General question (no audience filter) — keyed to the group id.
             // Conditions (INITIATOR_EMAIL, etc.) se evalúan con la clave de grupo.
-            if (!meetsConditions(q, null, responses, groupId, condCtx)) return null;
+            if (!meetsConditions(q, null, respuestasEfectivas, groupId, condCtx)) return null;
             const key = `${q.question_id}__${groupId}`;
             return (
               <div key={key} className="mb-4">
                 <QuestionField
                   question={q}
-                  value={responses[key]}
+                  value={respuestasEfectivas[key]}
                   onChange={v => setResponse(key, v)}
                   readOnly={readOnly}
                 />
