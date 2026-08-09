@@ -77,6 +77,52 @@ const applicant = (id, first) => ({
   address:         { address_line_1: 'Calle Falsa 1', city: 'Las Palmas', country_id: 'ES', zip: '35001' },
 });
 
+/**
+ * `YYYY-MM-DD` → `MM/DD/YYYY` — el formato CRUDO en que la API de AppSheet devuelve las
+ * columnas de fecha (mes primero). Lo usa el escenario hostil de ①31.
+ */
+const aFormatoAppSheet_ = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : String(iso || '');
+};
+
+/**
+ * ①31 — el ESCENARIO HOSTIL de las fechas del programa.
+ *
+ * Por defecto los límites se sirven en ISO, que es lo que manda el servidor de verdad
+ * desde el 2026-08-09 (`kis-app kms-server/enr/wizard-gateway.gs` los normaliza con
+ * `utils_appsheetDateToIso_`). Con `scenario.formatoFechasPrograma = 'appsheet'` se
+ * sirven en el formato AMERICANO en crudo de AppSheet ('MM/DD/YYYY'), que es como
+ * viajaban ANTES del arreglo — el dato exacto que tumbaba a toda familia de «a mitad de
+ * curso».
+ *
+ * ⚠️ HAY QUE APLICARLO EN LOS **DOS** SITIOS QUE SIRVEN CATÁLOGOS, y esto se descubrió
+ * midiendo, no razonando: la pantalla casi nunca llama a `fetchLookups`, porque
+ * `hydrateSession` YA devuelve `lookups` y el frontal siembra con eso su caché
+ * (`frontend/src/api.js`, `primeLookups`). Un escenario aplicado solo a `fetchLookups`
+ * NO llega a la pantalla y deja la comprobación pasando en vacío — que es peor que no
+ * tenerla.
+ */
+function lookupsSegunEscenario_(scenario) {
+  const modo = scenario && scenario.formatoFechasPrograma;
+  if (modo !== 'appsheet' && modo !== 'ilegible') return LOOKUPS;
+  const convertir = modo === 'appsheet'
+    ? aFormatoAppSheet_
+    // 'ilegible' — un valor que NINGÚN lector de fechas puede interpretar. No es un caso
+    // rebuscado: es lo que hay que ver para afirmar la REGLA DURA de ①31 — ante un límite
+    // que no se entiende, la familia PASA. Con el formato de AppSheet no basta, porque hoy
+    // ese SÍ se sabe leer (y se aplica bien), así que esa vuelta mide otra cosa.
+    : () => 'sin fecha declarada';
+  return {
+    ...LOOKUPS,
+    programs: LOOKUPS.programs.map((p) => ({
+      ...p,
+      period_starts_on: convertir(p.period_starts_on),
+      period_ends_on:   convertir(p.period_ends_on),
+    })),
+  };
+}
+
 const LOOKUPS = {
   programs: [{
     program_id:       FIXTURE.programId,
@@ -393,7 +439,13 @@ export function createDispatcher(scenario, record) {
     initEnrollmentSession: (p) => ({ ok: true, enrollment_group_id: FIXTURE.groupId }),
 
     // ── Recuperación / sesión ────────────────────────────────────────────────
-    hydrateSession: (p) => ({ ok: true, ...buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico) }),
+    // ①31 — los catálogos que la pantalla acaba usando salen por AQUÍ, no por
+    // `fetchLookups` (ver `lookupsSegunEscenario_`): el frontal siembra su caché con los
+    // `lookups` de la hidratación. Por eso el escenario de formato se aplica también aquí.
+    hydrateSession: (p) => {
+      const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico);
+      return { ok: true, ...h, lookups: lookupsSegunEscenario_(scenario) };
+    },
     getAdmissionState: (p) => {
       const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico);
       return { ok: true, ...(h.admission || { state_code: null }) };
@@ -436,7 +488,7 @@ export function createDispatcher(scenario, record) {
     },
 
     // ── Catálogos ────────────────────────────────────────────────────────────
-    fetchLookups:   () => ({ ok: true, ...LOOKUPS }),
+    fetchLookups:   () => ({ ok: true, ...lookupsSegunEscenario_(scenario) }),
     fetchQuestions: () => (scenario.preguntasMode === 'caido'
       ? { ok: false, error: { code: 'E2E_QUESTIONS_DOWN', message: 'catálogo caído (simulado)' } }
       : { ok: true, ...QUESTIONS }),

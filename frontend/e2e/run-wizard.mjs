@@ -142,6 +142,9 @@ const NO_CUBIERTAS_PERMITIDAS = {
 // el sistema de verdad no. No son un perdón general — cada uno con su motivo, y la
 // comprobación de "declarada pero HOY sí se cubre" sigue viva en ambos modos.
 const NO_CUBIERTAS_SOLO_REAL = {
+  'fecha-a-mitad-de-curso': {
+    'limite-ilegible': 'el escenario hostil (el servidor devuelve los límites del programa en el formato crudo de AppSheet) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
+  },
   'ack-indistinguible': {
     'servidor-que-delata': 'el escenario hostil (servidor que devuelve el error legacy "Enrollment group not found") no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
   },
@@ -329,7 +332,9 @@ const record = (c) => { calls.push({ ...c, at: Date.now() }) }
 record.unmocked = (a) => { unmockedActions.add(String(a)) }
 
 // Escenario MUTABLE que los caminos reconfiguran antes de navegar.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', partes: 'unica' }
+// `formatoFechasPrograma`: 'iso' (lo que manda el servidor de verdad) | 'appsheet' (el
+// formato crudo 'MM/DD/YYYY' de la API — escenario hostil de ①31).
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', partes: 'unica', formatoFechasPrograma: 'iso' }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -1363,6 +1368,59 @@ async function caminoRecuperarAterrizar(page, base) {
   return c
 }
 
+/**
+ * Deja a la familia PLANTADA en el paso de la fecha (índice 0), editable.
+ *
+ * Para tocar la FECHA hay que estar en su paso. Si la familia aterrizó más adelante (el
+ * caso real: el paso 0 ya cuenta como completo porque AppSheet pre-rellena la fecha al
+ * crear el expediente), vuelve atrás como volvería ella — con «Atrás» — y desbloquea el
+ * paso con «Editar». Son actos de la familia, no atajos del robot.
+ *
+ * OJO con los selectores: «Atrás» (StepNav) y «Editar» (LockedBanner) comparten la MISMA
+ * clase `btn-secondary-kis` (`components/LockedBanner.jsx:16`). Lo que los distingue es el
+ * icono: el de editar lleva `i.bi-pencil`. Coger «el primer .btn-secondary-kis» pulsaría el
+ * que estuviera antes en el DOM —y el banner va arriba—, así que se nombran por separado.
+ *
+ * Vive aquí, en UN solo sitio, porque lo usan DOS caminos (`guardar-paso` y
+ * `fecha-a-mitad-de-curso`) y dos copias de la misma maniobra divergen.
+ *
+ * @returns {Promise<boolean>} false si no se pudo llegar (el camino ya lleva el fallo escrito).
+ */
+async function volverAlPasoDeLaFecha(c, page, pasoActivo) {
+  if (pasoActivo <= 0) return true
+
+  const ATRAS  = 'button.btn-secondary-kis:not(:has(i.bi-pencil))'
+  const EDITAR = 'button.btn-secondary-kis:has(i.bi-pencil)'
+
+  const volver = await page.$(ATRAS)
+  if (!volver) {
+    c.fallos.push(`aterrizó en el índice ${pasoActivo} y el paso no ofrece botón «Atrás»: no hay forma de volver al paso de la fecha`)
+    return false
+  }
+  await volver.click()
+  try {
+    await page.waitForFunction(() => {
+      const pasos = [...document.querySelectorAll('.wizard-step')]
+      return pasos.findIndex(p => p.classList.contains('active')) === 0
+    }, null, { timeout: 15000 })
+  } catch {
+    c.fallos.push('al pulsar «Atrás» el wizard no volvió al paso de la fecha (índice 0)')
+    return false
+  }
+  // Un paso ya completado se recupera BLOQUEADO tras su banner: para tocarlo hay que pulsar
+  // «Editar». Es el gesto de la familia que vuelve a cambiar la fecha, no un atajo.
+  const editar = await page.$(EDITAR)
+  if (editar) {
+    await editar.click()
+    c.notas.push('✓ el paso ya completado se recupera bloqueado y se desbloquea con «Editar»')
+  }
+  // Si el campo sigue sin poder tocarse, el camino cae AQUÍ y lo dice, en vez de fallar
+  // más abajo con un «no se pudo escribir la fecha» que no nombra la causa.
+  const editable = await page.$eval('input[type="date"], #mid', el => !el.disabled).catch(() => false)
+  return c.afirmar('tras «Editar», el paso de la fecha vuelve a ser editable', editable,
+    'el campo sigue deshabilitado: la familia no podría corregir su fecha al volver')
+}
+
 async function caminoGuardarPaso(page, base) {
   const c = new Camino('guardar-paso')
   scenario.stage = 'sin_fecha'   // sin fecha ⇒ aterriza en el paso 1 (índice 0)
@@ -1380,46 +1438,7 @@ async function caminoGuardarPaso(page, base) {
     `aterrizó en el índice ${pantalla.pasoActivo}, no en ${aterrizajeEsperado}`)) return c
   c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
 
-  // Para editar la FECHA hay que estar en el paso de la fecha. Si la familia aterrizó más
-  // adelante (el caso real: el paso 0 ya cuenta como completo), vuelve atrás como volvería
-  // ella — con el botón «Atrás». Es un acto de la familia, no un atajo del robot: retomar y
-  // corregir un paso ya dado es exactamente lo que este camino dice medir.
-  // OJO con los selectores: «Atrás» (StepNav) y «Editar» (LockedBanner) comparten la MISMA
-  // clase `btn-secondary-kis` (`components/LockedBanner.jsx:16`). Lo que los distingue es el
-  // icono: el de editar lleva `i.bi-pencil`. Coger «el primer .btn-secondary-kis» pulsaría el
-  // que estuviera antes en el DOM —y el banner va arriba—, así que se nombran por separado.
-  const ATRAS  = 'button.btn-secondary-kis:not(:has(i.bi-pencil))'
-  const EDITAR = 'button.btn-secondary-kis:has(i.bi-pencil)'
-
-  if (pantalla.pasoActivo > 0) {
-    const volver = await page.$(ATRAS)
-    if (!volver) {
-      c.fallos.push(`aterrizó en el índice ${pantalla.pasoActivo} y el paso no ofrece botón «Atrás»: no hay forma de volver al paso de la fecha`)
-      return c
-    }
-    await volver.click()
-    try {
-      await page.waitForFunction(() => {
-        const pasos = [...document.querySelectorAll('.wizard-step')]
-        return pasos.findIndex(p => p.classList.contains('active')) === 0
-      }, null, { timeout: 15000 })
-    } catch {
-      c.fallos.push('al pulsar «Atrás» el wizard no volvió al paso de la fecha (índice 0)')
-      return c
-    }
-    // Un paso ya completado se recupera BLOQUEADO tras su banner: para tocarlo hay que pulsar
-    // «Editar». Es el gesto de la familia que vuelve a cambiar la fecha, no un atajo.
-    const editar = await page.$(EDITAR)
-    if (editar) {
-      await editar.click()
-      c.notas.push('✓ el paso ya completado se recupera bloqueado y se desbloquea con «Editar»')
-    }
-    // Si el campo sigue sin poder tocarse, el camino cae AQUÍ y lo dice, en vez de fallar
-    // más abajo con un «no se pudo escribir la fecha» que no nombra la causa.
-    const editable = await page.$eval('input[type="date"], #mid', el => !el.disabled).catch(() => false)
-    if (!c.afirmar('tras «Editar», el paso de la fecha vuelve a ser editable', editable,
-      'el campo sigue deshabilitado: la familia no podría corregir su fecha al volver')) return c
-  }
+  if (!await volverAlPasoDeLaFecha(c, page, pantalla.pasoActivo)) return c
 
   // Editar: pasar a "fecha concreta" y escribir una fecha que la batería controla.
   const FECHA = '2027-01-11'
@@ -1534,6 +1553,179 @@ async function caminoGuardarPaso(page, base) {
     c.afirmar('al volver atrás, la fecha guardada sigue ahí', valor === FECHA,
       `el campo de fecha muestra "${valor}" (se escribió ${FECHA})`)
   }
+  return c
+}
+
+/**
+ * ①31 — LA FAMILIA QUE PIDE INCORPORACIÓN A MITAD DE CURSO PUEDE CONTINUAR.
+ *
+ * El defecto que este camino vigila (reportado por Diego con la pantalla delante, 2026-08-09):
+ * el paso 1, en modo «a mitad de curso», rechazaba **TODA** fecha —incluidas las que caen
+ * dentro del curso declarado— y dejaba «Continuar» bloqueado. Los límites del programa
+ * llegaban en el formato americano de AppSheet ('MM/DD/YYYY') y se comparaban COMO TEXTO
+ * contra el 'YYYY-MM-DD' del selector de fecha: `'2026-09-30' > '08/31/2027'` es cierto
+ * porque '2' > '0'. Ninguna familia de mitad de curso podía pasar del primer paso.
+ *
+ * Dos partes, y la segunda es la que de verdad muerde:
+ *   (a) con los límites bien (ISO, como los manda hoy el servidor), una fecha DENTRO del
+ *       curso deja continuar — y una fuera sigue sin dejar, que es lo que ①21 vino a poner.
+ *   (b) con los límites ILEGIBLES (el formato crudo de AppSheet, el escenario hostil), la
+ *       familia **sigue pudiendo continuar**: la regla dura del paso es que un límite que no
+ *       se sabe leer NO se exige. Aquí es donde salta el rojo si alguien devuelve `onlyDate`
+ *       a cortar diez caracteres, o lo "endurece" para bloquear ante lo desconocido.
+ */
+async function caminoFechaAMitadDeCurso(page, base) {
+  const c = new Camino('fecha-a-mitad-de-curso')
+  scenario.stage = 'sin_fecha'          // sin fecha ⇒ aterriza en el paso de la fecha
+  scenario.formatoFechasPrograma = 'iso'
+
+  if (!await entrarPorElEnlace(c, page, base)) return c
+
+  const pantalla = await page.evaluate(sondaPantalla)
+  c.evidencia.elementos = pantalla.pasos + pantalla.campos
+  c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
+  if (!await volverAlPasoDeLaFecha(c, page, pantalla.pasoActivo)) return c
+
+  // ── (a) Límites legibles: dentro del curso deja continuar, fuera no ──────────────
+  await page.waitForSelector('#mid', { timeout: 10000 })
+  await page.check('#mid')
+  await page.waitForSelector('input[type="date"]', { timeout: 10000 })
+
+  const limites = await page.$eval('input[type="date"]',
+    el => ({ min: el.getAttribute('min') || '', max: el.getAttribute('max') || '' }))
+  // El propio `min`/`max` en ISO es la señal de que la causa raíz está curada: el navegador
+  // IGNORA un límite que no sea ISO, así que antes del arreglo eran letra muerta.
+  const limitesIso = /^\d{4}-\d{2}-\d{2}$/.test(limites.min) && /^\d{4}-\d{2}-\d{2}$/.test(limites.max)
+  if (!c.afirmar('el selector lleva los límites del curso en la forma que el navegador entiende (ISO)',
+    limitesIso,
+    `min="${limites.min}" max="${limites.max}": el navegador ignora un límite que no es ISO, así que no acota nada`)) return c
+
+  // Una fecha DENTRO del curso, calculada del propio límite — no inventada. Un mes después
+  // del inicio declarado es justo el caso de Diego: «30/09» con el curso empezando el 1/9.
+  const dentro = new Date(new Date(limites.min + 'T00:00:00Z').getTime() + 29 * 86400000)
+    .toISOString().slice(0, 10)
+  await page.fill('input[type="date"]', dentro)
+  let dejaSeguir = false
+  try {
+    await page.waitForFunction(() => {
+      const b = document.querySelector('.btn-primary-kis')
+      return !!(b && !b.disabled)
+    }, null, { timeout: 5000 })
+    dejaSeguir = true
+  } catch { /* el afirmar de abajo lo nombra */ }
+  const queja = await page.$eval('.invalid-feedback', el => (el.textContent || '').trim()).catch(() => '')
+  c.afirmar(`una fecha DENTRO del curso declarado (${dentro}) deja continuar`, dejaSeguir,
+    `«Continuar» quedó bloqueado con una fecha que SÍ está dentro de ${limites.min}…${limites.max}` +
+    (queja ? ` — la pantalla decía: "${queja}"` : '') +
+    ' · ESTE ES ①31: la familia de mitad de curso no puede pasar del paso 1')
+
+  // Y el aviso, cuando toca, enseña las fechas COMO LAS LEE UNA PERSONA. `humanDate` solo
+  // sabe formatear si el dato le llega en ISO: si sale '09/01/2026' con cero delante, el
+  // límite llegó en crudo y la causa raíz está tapada, no curada.
+  const fuera = new Date(new Date(limites.max + 'T00:00:00Z').getTime() + 86400000)
+    .toISOString().slice(0, 10)
+  await page.fill('input[type="date"]', fuera)
+  let bloqueado = false
+  try {
+    await page.waitForFunction(() => {
+      const b = document.querySelector('.btn-primary-kis')
+      return !!(b && b.disabled)
+    }, null, { timeout: 5000 })
+    bloqueado = true
+  } catch { /* el afirmar de abajo lo nombra */ }
+  const aviso = await page.$eval('.invalid-feedback', el => (el.textContent || '').trim()).catch(() => '')
+  c.afirmar(`una fecha fuera del curso (${fuera}) sigue sin dejar continuar`, bloqueado,
+    '«Continuar» seguía activo: se habrían quitado los límites en vez de arreglarlos')
+  c.afirmar('el aviso enseña las fechas como las lee una persona, no en crudo',
+    !!aviso && !/\d{2}\/\d{2}\/\d{4}/.test(aviso),
+    `el aviso dice "${aviso}": o está vacío, o enseña el formato crudo de AppSheet (mes/día/año)`)
+
+  // ── (b) y (c): los DOS escenarios hostiles, que miden cosas DISTINTAS ─────────────
+  // Contra el sistema real no se pueden fabricar (el servidor es el de verdad y ya manda
+  // ISO): se declaran NO CUBIERTAS con su motivo, nunca se finge verde.
+  if (REAL) {
+    c.noCubierta('limite-ilegible',
+      'los escenarios hostiles (el servidor devuelve los límites del programa en el formato crudo de AppSheet, o directamente ilegibles) no se pueden FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubren')
+    return c
+  }
+
+  // (b) Límites en el FORMATO CRUDO DE AppSheet — el dato exacto que tumbaba a la familia
+  //     antes del arreglo. Hoy el paso SÍ sabe leerlo, así que lo correcto es que los
+  //     aplique bien (y por tanto deje pasar una fecha que está dentro).
+  scenario.formatoFechasPrograma = 'appsheet'
+  // ⚠️ HAY QUE FORZAR UNA CARGA DE DOCUMENTO NUEVA, y esto se descubrió midiendo.
+  // `entrarPorElEnlace` navega a `#/resume/…`; venimos de `#/apply` (el token se retira de
+  // la barra, KAL-7) ⇒ para el navegador es SOLO un cambio de `#` en el MISMO documento: no
+  // recarga nada. Y el frontal cachea los catálogos en memoria del módulo
+  // (`frontend/src/api.js`, `_lookupsCache`, sembrada desde la hidratación), así que la
+  // pantalla seguía usando los límites ISO de la primera vuelta y las dos afirmaciones de
+  // abajo pasaban EN VACÍO — verdes sin haber visto jamás un límite ilegible.
+  await page.goto('about:blank', { waitUntil: 'domcontentloaded' })
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  const pantalla2 = await page.evaluate(sondaPantalla)
+  if (!await volverAlPasoDeLaFecha(c, page, pantalla2.pasoActivo)) return c
+  await page.waitForSelector('#mid', { timeout: 10000 })
+  await page.check('#mid')
+  await page.waitForSelector('input[type="date"]', { timeout: 10000 })
+  await page.fill('input[type="date"]', dentro)
+
+  let dejaSeguirHostil = false
+  try {
+    await page.waitForFunction(() => {
+      const b = document.querySelector('.btn-primary-kis')
+      return !!(b && !b.disabled)
+    }, null, { timeout: 5000 })
+    dejaSeguirHostil = true
+  } catch { /* el afirmar de abajo lo nombra */ }
+  const quejaHostil = await page.$eval('.invalid-feedback', el => (el.textContent || '').trim()).catch(() => '')
+  c.afirmar('con los límites en el formato crudo de AppSheet, la familia sigue pudiendo continuar',
+    dejaSeguirHostil,
+    'una fecha que SÍ está dentro del curso dejó a la familia sin poder avanzar' +
+    (quejaHostil ? ` — la pantalla decía: "${quejaHostil}"` : '') +
+    ' · ESTE ES ①31 tal y como Diego lo vio')
+
+  const limitesHostiles = await page.$eval('input[type="date"]',
+    el => ({ min: el.getAttribute('min') || '', max: el.getAttribute('max') || '' }))
+  c.notas.push(`· con límites en crudo el selector queda min="${limitesHostiles.min}" max="${limitesHostiles.max}"`)
+  c.afirmar('y el selector NO acaba con un límite que el navegador no entiende',
+    !/\//.test(limitesHostiles.min + limitesHostiles.max),
+    `min="${limitesHostiles.min}" max="${limitesHostiles.max}": son límites en crudo, letra muerta para el navegador`)
+
+  // (c) Límites REALMENTE ILEGIBLES — la REGLA DURA. Un valor que ningún lector puede
+  //     interpretar NO puede convertirse en una familia encerrada: ese lado del rango
+  //     simplemente no se exige, igual que cuando el programa no lo declara.
+  scenario.formatoFechasPrograma = 'ilegible'
+  await page.goto('about:blank', { waitUntil: 'domcontentloaded' })   // ver el aviso de arriba
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  const pantalla3 = await page.evaluate(sondaPantalla)
+  if (!await volverAlPasoDeLaFecha(c, page, pantalla3.pasoActivo)) return c
+  await page.waitForSelector('#mid', { timeout: 10000 })
+  await page.check('#mid')
+  await page.waitForSelector('input[type="date"]', { timeout: 10000 })
+  await page.fill('input[type="date"]', dentro)
+
+  let dejaSeguirIlegible = false
+  try {
+    await page.waitForFunction(() => {
+      const b = document.querySelector('.btn-primary-kis')
+      return !!(b && !b.disabled)
+    }, null, { timeout: 5000 })
+    dejaSeguirIlegible = true
+  } catch { /* el afirmar de abajo lo nombra */ }
+  const quejaIlegible = await page.$eval('.invalid-feedback', el => (el.textContent || '').trim()).catch(() => '')
+  const limitesIlegibles = await page.$eval('input[type="date"]',
+    el => ({ min: el.getAttribute('min') || '', max: el.getAttribute('max') || '' }))
+  c.notas.push(`· con límites ilegibles el selector queda min="${limitesIlegibles.min}" max="${limitesIlegibles.max}" (vacíos = no se exige ese lado)`)
+  c.afirmar('con un límite que NADIE sabe leer, la familia NO se queda encerrada',
+    dejaSeguirIlegible,
+    'un límite ilegible dejó a la familia sin poder avanzar' +
+    (quejaIlegible ? ` — la pantalla decía: "${quejaIlegible}"` : '') +
+    ' · ante la duda se DEJA PASAR: jamás se convierte un dato que no se entiende en una familia encerrada')
+  c.afirmar('y tampoco se le cuelga al selector el valor ilegible',
+    !limitesIlegibles.min && !limitesIlegibles.max,
+    `min="${limitesIlegibles.min}" max="${limitesIlegibles.max}": se colgó un límite que el navegador no puede honrar`)
+
+  scenario.formatoFechasPrograma = 'iso'
   return c
 }
 
@@ -3237,6 +3429,8 @@ const CAMINOS = [
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
   { nombre: 'recuperar-aterrizar', fn: caminoRecuperarAterrizar, minLlamadas: 1, minElementos: 11 },
   { nombre: 'guardar-paso',        fn: caminoGuardarPaso,        minLlamadas: 1, minElementos: 11 },
+  // ①31 — la familia que se incorpora a mitad de curso no puede quedarse encerrada en el paso 1.
+  { nombre: 'fecha-a-mitad-de-curso', fn: caminoFechaAMitadDeCurso, minLlamadas: 1, minElementos: 11 },
   { nombre: 'subir-documento',     fn: caminoSubirDocumento,     minLlamadas: 1, minElementos: 1 },
   // Solo en real: rellena 2-7, admite el expediente y lee de vuelta los once pasos. Va
   // ANTES del tramo de firma porque es lo que lo destapa (sin `AD` no hay firma que pintar).

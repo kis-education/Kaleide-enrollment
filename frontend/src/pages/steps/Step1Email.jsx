@@ -7,14 +7,43 @@ import StepNav from '../../components/StepNav';
 import * as log from '../../logger';
 
 /**
- * Un valor de fecha reducido a `YYYY-MM-DD`, o '' si no hay nada utilizable.
+ * Un valor de fecha NORMALIZADO a `YYYY-MM-DD`, o '' si no hay nada que se pueda leer.
  *
  * Existe para que TODAS las comparaciones de fecha de este paso se hagan sobre la misma
  * forma: el programa puede traer la fecha con hora (según de dónde venga la fila) y el
  * `<input type="date">` siempre da `YYYY-MM-DD`. Comparar las dos formas en crudo haría
  * que una fecha idéntica pareciera distinta.
+ *
+ * ①31 — ANTES ESTO ERA UN `slice(0, 10)` Y ESO NO ES NORMALIZAR. Con un límite en el
+ * formato americano de AppSheet ('MM/DD/YYYY') el corte a 10 caracteres lo dejaba
+ * INTACTO, y la comparación de texto de más abajo daba `'2026-09-30' > '08/31/2027'`
+ * (cierto, porque '2' > '0') ⇒ toda fecha de «a mitad de curso» parecía fuera de rango y
+ * la familia no podía pasar del paso 1. Hoy el KMS ya manda ISO
+ * (`kms-server/enr/wizard-gateway.gs`, `enr_wizardFetchLookups`), y esto es la defensa:
+ * el paso NO se cree lo que le llega, lo normaliza.
+ *
+ * Es una COPIA del lector canónico del KMS `utils_appsheetDateToIso_`
+ * (`kis-app kms-server/_shared/utils.gs:65`), reducida a la parte de fecha — el mismo
+ * par de expresiones y el mismo criterio. NO es un lector nuevo: si aquel cambia, éste
+ * se re-copia.
+ *
+ * ⚠️ REGLA DURA — ANTE UN LÍMITE ILEGIBLE, SE DEJA PASAR. Devolver '' hace que ese lado
+ * del rango sencillamente no se exija, exactamente igual que cuando el programa no lo
+ * declara. **Jamás se convierte un dato que no se entiende en una familia que no puede
+ * continuar.** Si alguien "endurece" esto para bloquear ante lo desconocido, está
+ * reintroduciendo ①31.
  */
-const onlyDate = (v) => (v ? String(v).slice(0, 10) : '');
+const onlyDate = (v) => {
+  if (!v) return '';
+  const s = String(v).trim();
+  // Ya ISO (`YYYY-MM-DD`, con o sin hora detrás).
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  // Formato americano de AppSheet (`M/D/YYYY`, con o sin hora detrás).
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+  if (us) return `${us[3]}-${`0${us[1]}`.slice(-2)}-${`0${us[2]}`.slice(-2)}`;
+  return '';   // ilegible ⇒ no se exige ese límite (ver la regla dura de arriba)
+};
 
 export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
   const { t, i18n } = useTranslation();

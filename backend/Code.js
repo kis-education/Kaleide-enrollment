@@ -5338,8 +5338,15 @@ function fetchLookups_() {
   // Thin-client (DL-E41 / WPERF-3): los catálogos del wizard (sin PII) los sirve el
   // KMS — el wizard deja de leer AppSheet directo. kmsProxy_ añade service_token +
   // Bearer OAuth; el KMS (enr.wizardFetchLookups) los valida y devuelve el mismo shape
-  // { allergies, dietary, medical, relationTypes, programs } de { id, label }, con las
-  // fechas de programa ya normalizadas server-side.
+  // { allergies, dietary, medical, relationTypes, programs } de { id, label }.
+  //
+  // ①31 — las fechas de programa (`period_starts_on` / `period_ends_on`) llegan en ISO
+  // `YYYY-MM-DD`. Esta línea ya lo afirmaba desde antes y era FALSA: el KMS las mandaba
+  // EN CRUDO, en el formato americano de AppSheet, y quien construyó los límites del paso 1
+  // se creyó la afirmación ⇒ toda familia de «a mitad de curso» quedaba bloqueada. Desde el
+  // 2026-08-09 es cierta, y lo es EN UN SOLO SITIO: `enr_wizardFetchLookups` normaliza con
+  // `utils_appsheetDateToIso_` (`kis-app kms-server/enr/wizard-gateway.gs`). Si alguien
+  // quita esa normalización, esta frase vuelve a ser mentira — se comprueba allí, no aquí.
   return kmsProxy_('enr.wizardFetchLookups', { school_id: SCHOOL_ID });
 }
 
@@ -8139,11 +8146,24 @@ function hasAddressData_(addr) {
  * @returns {string}
  */
 
-// Change this constant when you change the Google Sheet regional settings.
-// 'ES' = Spain / European = D/M/YYYY
-// 'US' = United States    = M/D/YYYY
-// NOTE: AppSheet API format is independent of Google Sheets regional settings — observed as M/D/YYYY
-var APPSHEET_DATE_LOCALE = 'ES';
+// EL ORDEN EN QUE LLEGAN LAS FECHAS DE AppSheet — y NO depende de la configuración
+// regional de la hoja de cálculo.
+//
+// La API de AppSheet devuelve las columnas de fecha en formato AMERICANO, `M/D/YYYY`
+// (mes primero). Eso está medido, y lo dicen también los dos lectores del KMS que leen
+// exactamente lo mismo: `utils_appsheetDateToIso_` (`kis-app kms-server/_shared/utils.gs:65`,
+// «AppSheet API v2 returns Date/DateTime-typed columns in US locale format») y
+// `auth_parseWindowDateParts_` (`_shared/auth.gs`).
+//
+// ①31 (2026-08-09) — esto valía `'ES'`, y la nota de al lado ya decía que el formato es
+// M/D/YYYY: la constante contradecía a su propio comentario. Consecuencia real: la rama
+// ambigua de `normalizeDate_` (los dos primeros números ≤ 12) leía `'09/01/2026'` como
+// el 9 de ENERO en vez del 1 de SEPTIEMBRE — la fecha de incorporación de una familia
+// que empieza en septiembre se guardaba movida ocho meses, sin ningún aviso.
+//
+// Solo gobierna el caso AMBIGUO: `13/…` o `…/13` se resuelven por sí solos y no la miran.
+// Esta constante NO es un ajuste de la hoja de cálculo: es el formato de la API.
+var APPSHEET_DATE_LOCALE = 'US';
 
 /**
  * Normalises any date string to ISO YYYY-MM-DD.
