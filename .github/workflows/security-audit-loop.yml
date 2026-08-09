@@ -83,7 +83,7 @@ jobs:
       # El working dir del runner. Todo el trabajo real ocurre en clones
       # frescos en /tmp; este checkout solo da un repo git válido de contexto.
       - name: Checkout (wizard, contexto)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
