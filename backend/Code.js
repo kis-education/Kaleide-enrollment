@@ -619,7 +619,7 @@ function requireResumeToken_(payload) {
     const createdAt = group.created_at ? new Date(group.created_at).getTime() : 0;
     if (createdAt && (Date.now() - createdAt) > RESUME_TOKEN_TTL_MS) {
       Logger.log(redact_('[requireResumeToken_] reject: expired group=' + group.enrollment_group_id));
-      throw new Error('Unauthorized: resume_token expired (7 days)');
+      throw new Error('Unauthorized: resume_token expired (7 days); the family requests a new link from the start page by entering their email (that also resets the 7-day clock)');
     }
   }
 
@@ -3666,7 +3666,7 @@ function resumeSession_(p) {
     const RESUME_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
     const createdAt = group.created_at ? new Date(group.created_at).getTime() : 0;
     if (createdAt && (Date.now() - createdAt) > RESUME_TOKEN_TTL_MS) {
-      throw new Error('Resume link expired (7 days); contact admisiones@kaleide.org to reopen');
+      throw new Error('Resume link expired (7 days); the family requests a new link from the start page by entering their email (that also resets the 7-day clock) — no need to contact admissions');
     }
   }
 
