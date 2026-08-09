@@ -98,7 +98,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join, dirname, extname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { createDispatcher, buildHydrate, FIXTURE } from './mock-backend.mjs'
+import { createDispatcher, buildHydrate, FIXTURE, RESPUESTA_GUARDADA } from './mock-backend.mjs'
 import { sonda, aplicarSonda, porQueNoHaySondas, KMS_REPO } from './sondas-kms.mjs'
 
 const HERE     = dirname(fileURLToPath(import.meta.url))
@@ -2621,6 +2621,61 @@ async function caminoQuitarDeLaSolicitud(page, base) {
   }
 }
 
+
+/**
+ * LAS RESPUESTAS VUELVEN — cola 18.bis.25, reportado por Diego el 2026-08-09: recupera su
+ * solicitud y el cuestionario aparece EN BLANCO, aunque lo había contestado.
+ *
+ * Lo que se midió antes de escribir esto (contra los datos reales, no razonado): las
+ * respuestas SÍ están guardadas (31 vivas en su expediente) y el KMS SÍ las sirve — su
+ * hidratación devuelve las 31, con la forma que la pantalla espera y casando con personas
+ * que esa misma respuesta trae. O sea que se pierden DENTRO del asistente, entre la
+ * respuesta del servidor y lo que se pinta. Este camino es el que lo ve.
+ *
+ * Afirma UNA cosa, la que le importa a la familia: **lo que dejé escrito sigue ahí cuando
+ * vuelvo**. Y lo comprueba donde se ve, en el valor del campo — no en el payload, que ya
+ * sabemos que llega bien.
+ *
+ * ⚠️ La batería NO podía ver esto hasta hoy: el simulacro devolvía una respuesta a una
+ * pregunta INEXISTENTE (`q1`) y atribuida a un tutor, cuando las preguntas del catálogo del
+ * robot son generales y la pantalla las busca por el expediente. Servía para dar el paso por
+ * visitado y jamás llegaba a pintarse. Arreglado en `mock-backend.mjs` en este mismo cambio.
+ */
+async function caminoRespuestasVuelven(page, base) {
+  const c = new Camino('respuestas-vuelven')
+  scenario.stage = 'hasta_preguntas'
+
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  await page.waitForTimeout(LATENCY + 400)
+
+  const pantalla = await page.evaluate(sondaPantalla)
+  c.evidencia.elementos = pantalla.pasos + pantalla.campos
+  c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
+
+  if (!await irAPreguntas(c, page)) return c
+  await page.waitForTimeout(400)
+
+  // Lo que la familia ve: el texto que escribió, dentro de un campo del cuestionario.
+  const visto = await page.evaluate((esperado) => {
+    const campos = [...document.querySelectorAll('input, textarea')]
+    return {
+      n_campos: campos.length,
+      valores_no_vacios: campos.filter(e => String(e.value || '').trim()).length,
+      lo_encuentra: campos.some(e => String(e.value || '').trim() === esperado),
+    }
+  }, RESPUESTA_GUARDADA)
+
+  c.evidencia.elementos += visto.n_campos
+  console.log(`      respuestas: ${visto.n_campos} campos, ${visto.valores_no_vacios} con valor`)
+
+  c.afirmar('el cuestionario pinta sus campos', visto.n_campos > 0,
+    'el paso de Preguntas no pintó ni un campo: sin campos no hay nada que recuperar')
+  c.afirmar('lo que la familia escribió sigue ahí al volver a entrar', visto.lo_encuentra,
+    `ninguno de los ${visto.n_campos} campos trae «${RESPUESTA_GUARDADA}» ` +
+    `(${visto.valores_no_vacios} traen algún valor) — la respuesta llegó del servidor y se perdió en la pantalla`)
+  return c
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -2641,6 +2696,8 @@ const CAMINOS = [
   // Cola 18.quater — la familia pide corregir su solicitud ya enviada.
   { nombre: 'pedir-correccion',    fn: caminoPedirCorreccion,    minLlamadas: 2, minElementos: 11 },
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
+  // Cola 18.bis.25 — lo que la familia escribió sigue ahí cuando vuelve.
+  { nombre: 'respuestas-vuelven', fn: caminoRespuestasVuelven, minLlamadas: 1, minElementos: 11 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

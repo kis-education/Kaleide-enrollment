@@ -116,6 +116,9 @@ const LOOKUPS = {
  *
  * Forma: la que emite `fetchQuestions_adaptKmsResponse_` del backend real.
  */
+/** Lo que la familia dejó escrito en la primera pregunta. La batería lo busca EN PANTALLA. */
+export const RESPUESTA_GUARDADA = 'lo que el robot dejo escrito'
+
 const QUESTIONS = {
   context: { context_id: 'ctx-e2e', context_code: 'ENROLLMENT', designation: 'ENROLLMENT', is_active: true },
   sets: [{
@@ -216,7 +219,17 @@ export function buildHydrate(stage, preguntasMode) {
       ...base,
       persons,
       relations,
-      responses: [{ question_id: 'q1', respondent_id: FIXTURE.guardian1Id, response_text: 'sí' }],
+      // La respuesta apunta a una pregunta REAL del catálogo y al sujeto con el que la
+      // pantalla la busca. Antes era `q1` con un tutor: una pregunta que no existe y un
+      // sujeto que no se usa, así que solo servía para dar el paso por visitado y NUNCA
+      // llegaba a pintarse. Con eso, la batería no podía ver el defecto de la cola
+      // 18.bis.25 (las respuestas no vuelven) — y no lo vio.
+      // Las preguntas del catálogo del robot son GENERALES (`audience_category_id: null`),
+      // y para ésas la pantalla compone la clave con el EXPEDIENTE
+      // (`QbSetRenderer/index.jsx:172`), no con una persona.
+      responses: [
+        { question_id: 'q-e2e-1', respondent_id: FIXTURE.groupId, response_text: RESPUESTA_GUARDADA },
+      ],
     };
   }
 
