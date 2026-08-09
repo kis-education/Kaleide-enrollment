@@ -1428,6 +1428,44 @@ async function caminoGuardarPaso(page, base) {
   await page.waitForSelector('input[type="date"]', { timeout: 10000 })
   await page.fill('input[type="date"]', FECHA)
 
+  // ── La fecha se comprueba DONDE SE TECLEA, contra el curso que DECLARA el programa ──
+  // El campo no tenía límite ninguno: admitía 1990 o 2050, y el paso decidía además el modo
+  // de incorporación con el 1 de septiembre escrito a mano. Ahora los dos salen de lo que
+  // declara el programa (`period_starts_on` / `period_ends_on`). Se afirma lo OBSERVABLE:
+  // el campo lleva los límites declarados, y una fecha fuera de ellos no deja continuar y
+  // DICE por qué (falla cerrado y nombrando, nunca en silencio).
+  // NO se declara «no cubierta» si el programa no acota: eso NO es una carencia del arnés,
+  // es una configuración que deja el campo abierto a 1990 — y entonces la afirmación CAE,
+  // nombrándolo, que es justo lo que hay que ver.
+  const limites = await page.$eval('input[type="date"]',
+    el => ({ min: el.getAttribute('min') || '', max: el.getAttribute('max') || '' }))
+  const hayMin = /^\d{4}-\d{2}-\d{2}$/.test(limites.min)
+  if (c.afirmar('el campo de fecha lleva la fecha de inicio que declara el programa', hayMin,
+    `min="${limites.min}" max="${limites.max}": el campo no acota nada, así que admitiría 1990 o 2050`)) {
+    // El día ANTERIOR al inicio declarado — se calcula del propio límite, no se inventa.
+    const fuera = new Date(new Date(limites.min + 'T00:00:00Z').getTime() - 86400000)
+      .toISOString().slice(0, 10)
+    await page.fill('input[type="date"]', fuera)
+    let bloqueado = false
+    try {
+      await page.waitForFunction(() => {
+        const b = document.querySelector('.btn-primary-kis')
+        return !!(b && b.disabled)
+      }, null, { timeout: 5000 })
+      bloqueado = true
+    } catch { /* sigue activo → el afirmar de abajo lo dice */ }
+    const queja = await page.$eval('.invalid-feedback', el => (el.textContent || '').trim()).catch(() => '')
+    c.afirmar(`una fecha fuera del curso declarado (${fuera}) no deja continuar`, bloqueado,
+      '«Continuar» seguía activo: la familia podría mandar una fecha fuera del curso del programa')
+    c.afirmar('y la pantalla dice por qué no deja continuar', !!queja,
+      'no se pintó ningún mensaje junto al campo: el bloqueo sería mudo')
+    await page.fill('input[type="date"]', FECHA)   // se devuelve la fecha válida
+    await page.waitForFunction(() => {
+      const b = document.querySelector('.btn-primary-kis')
+      return !!(b && !b.disabled)
+    }, null, { timeout: 5000 })
+  }
+
   // Continuar: el avance debe ser INMEDIATO (optimista), no esperar al servidor.
   const antes = calls.length
   const ms = await medirEnPagina(page, { tipo: 'pasoActivo', valor: 1 },

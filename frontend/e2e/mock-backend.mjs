@@ -42,6 +42,9 @@ export const FIXTURE = {
   emailKnown2:    'familia.conocida.e2e.t2@example.invalid',
   emailUnknown:   'nadie.desconocido.e2e@example.invalid',
   startDateSep:   '2026-09-01',
+  // El programa DECLARA su curso (inicio y fin). El paso 1 saca de aquí los límites del
+  // campo de fecha: sin fin declarado, la mitad de arriba no se podría afirmar.
+  endDateCourse:  '2027-06-30',
   fileId:         'cccccccc-1111-4111-8111-cccccccccccc',
 };
 
@@ -79,6 +82,7 @@ const LOOKUPS = {
     program_id:       FIXTURE.programId,
     designation:      'Admisión Curso 2026/27 (E2E)',
     period_starts_on: FIXTURE.startDateSep,
+    period_ends_on:   FIXTURE.endDateCourse,
   }],
   // ── LA FORMA ES LA DEL SERVIDOR DE VERDAD, no una inventada ─────────────────────
   // Aquí ponía `{relation_type_id, designation}`. El KMS sirve `{id, label}` — lo arma el
