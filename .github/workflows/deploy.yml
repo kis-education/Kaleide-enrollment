@@ -166,6 +166,36 @@ jobs:
       - name: El wizard no escribe el estado ni manda el correo del envío
         run: node scripts/comprobar-que-el-wizard-no-escribe-estado.mjs
 
+  # CONTROL DE LA PUERTA PÚBLICA — este backend es ANYONE_ANONYMOUS y tiene TRES entradas
+  # que cualquiera puede invocar sin identificarse: crear una solicitud, reconocer a la
+  # familia y recuperar el enlace. Dos tenían verja reCAPTCHA; la de recuperar NO. Su
+  # respuesta ya era indistinguible desde el 2026-07-27, pero el TIEMPO no: ~46 s con
+  # expediente (dos viajes al KMS: renovar el enlace + mandar el correo) frente a ~7 s sin
+  # él ⇒ cronometrando se volvía a enumerar familias email a email.
+  #
+  # Este trabajo EJECUTA la verja real extraída del fuente (6 casos, las 5 formas de fallar
+  # cerrado) y comprueba que las tres entradas pasan por ella — en la de recuperar, ANTES
+  # del trabajo caro y devolviendo el mismo ack (un rechazo visible sería otro oráculo).
+  #
+  # La batería de navegador NO puede cazarlo: corre contra un backend simulado y nunca
+  # ejecuta `backend/Code.js`. `build` depende de este trabajo ⇒ en ROJO no se publica.
+  # No necesita `npm ci`, ni navegador, ni red (~1 s).
+  verja-publica:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      # Sin tubería: el veredicto se lee de la última línea, pero es el código de salida el
+      # que hace fallar el trabajo, y una tubería devolvería el del último comando.
+      - name: Las tres entradas públicas pasan por UNA verja que falla cerrado
+        run: node scripts/comprobar-verja-publica.mjs
+
   # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.
   # Regla de los dos repos (CLAUDE.md §"No se toca lo que funciona sin una forma de
   # comprobar que sigue funcionando"): el 2026-07-27 un cambio de seguridad estuvo a
@@ -203,7 +233,7 @@ jobs:
         working-directory: frontend
 
   build:
-    needs: [e2e, escrituras-directas, selector-appsheet, personas-quitadas, receptor-firmado, pantalla-del-cliente, codigos-de-consentimiento, no-escribe-estado]
+    needs: [e2e, escrituras-directas, selector-appsheet, personas-quitadas, receptor-firmado, pantalla-del-cliente, codigos-de-consentimiento, no-escribe-estado, verja-publica]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

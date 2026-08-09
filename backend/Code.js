@@ -2050,21 +2050,15 @@ function initEnrollmentSession_(p, opts) {
   //    si no coincide → rechazo (NO degradar silenciosamente a bypass).
   //  - WEB_PUBLIC es fail-closed: exige RECAPTCHA_SECRET configurado (antes, si la
   //    Script Property faltaba, la validación se saltaba — fail-open).
-  const secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
   if (sourceCode === 'KMS_INTERNAL') {
     const expectedInternal = PropertiesService.getScriptProperties().getProperty('KMS_INTERNAL_SHARED_SECRET');
     if (!expectedInternal || !constantTimeEquals_(p.kms_internal_secret, expectedInternal)) {
       throw new Error('Unauthorized source_code: KMS_INTERNAL');
     }
   } else if (sourceCode === 'WEB_PUBLIC') {
-    if (!secret) {
-      const err = new Error('reCAPTCHA not configured — contact admin');
-      err.code = 'RECAPTCHA_NOT_CONFIGURED';
-      throw err;
-    }
-    if (!p.recaptcha_token) throw new Error('Missing reCAPTCHA token');
-    const rcResult = verifyRecaptcha_({ token: p.recaptcha_token });
-    if (!rcResult.pass) throw new Error('reCAPTCHA verification failed');
+    // La comprobación vive en UN solo sitio (`_verjaPublicaVeredicto_`); aquí se
+    // usa la forma que LANZA, que es el contrato de este manejador desde siempre.
+    _asegurarVerjaPublica_(p.recaptcha_token);
   }
 
   // ── Single-session policy (Diego decision 2026-05-18) ─────────────────────
@@ -2340,15 +2334,8 @@ function recognizeFamily_(p, opts) {
   // saltaba. Ahora el caller público exige el secret configurado. El call interno
   // (opts.internal — la familia ya pasó reCAPTCHA en init) sigue exento.
   if (!internal) {
-    const secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
-    if (!secret) {
-      const err = new Error('reCAPTCHA not configured — contact admin');
-      err.code = 'RECAPTCHA_NOT_CONFIGURED';
-      throw err;
-    }
-    if (!p.recaptcha_token) throw new Error('Missing reCAPTCHA token');
-    const rc = verifyRecaptcha_({ token: p.recaptcha_token });
-    if (!rc.pass) throw new Error('reCAPTCHA verification failed');
+    // Misma verja que las otras dos entradas públicas, en UN solo sitio.
+    _asegurarVerjaPublica_(p.recaptcha_token);
   }
 
   // ── Rate limit: 5/min per email (applies to internal and external) ─────────
@@ -2708,6 +2695,33 @@ function sendMagicLink_(p) {
     // llamaba a initEnrollmentSession). Ver la rama "sin grupo" abajo.
     assertValidEmail_(p.primary_email, 'primary_email');
     const typedEmail = p.primary_email.toLowerCase().trim();
+
+    // ── LA VERJA, LO PRIMERO (②2, 2026-08-09) ────────────────────────────────
+    // El ACK ya era indistinguible (WIZ-ENUM), pero EL TIEMPO NO: con expediente
+    // esta rama hace dos viajes al KMS (renovar el enlace + mandar el correo) y
+    // tarda ~46 s; sin expediente se queda en ~7 s. Cronometrando, cualquiera con
+    // internet volvía a preguntar «¿esta familia está matriculando?» email a email,
+    // que es EXACTAMENTE lo que el ack constante vino a cerrar.
+    //
+    // Se cierra quitando el trabajo caro del camino de quien no pasa la verja —
+    // NO igualando tiempos con una espera. Igualar habría obligado a retener cada
+    // petición ~50 s, y Apps Script limita las ejecuciones simultáneas: unas pocas
+    // peticiones dejarían la ÚNICA puerta pública de admisiones sin atender. Se
+    // habría cambiado un oráculo por una caída.
+    //
+    // Coste para las familias: NINGUNO. La portada ya calcula y manda este token
+    // en esta misma llamada (`LandingPage.jsx`, `grecaptcha.execute`), y crear una
+    // solicitud YA exigía la misma verja — si no estuviera configurada, dar de alta
+    // estaría roto hoy. Además la portada NO espera la respuesta (fire-and-forget):
+    // pinta su pantalla genérica al instante.
+    //
+    // NUNCA lanza: un error aquí solo puede distinguirse de un éxito ⇒ mismo ack.
+    const verja = _verjaPublicaVeredicto_(p.recaptcha_token);
+    if (!verja.ok) {
+      Logger.log(redact_('sendMagicLink_: suppressed for ' + typedEmail +
+                 ' (' + verja.code + ') — constant ack (②2)'));
+      return _magicLinkConstantAck_();
+    }
 
     // Rate-limit ANTES del lookup: el cupo se consume igual exista o no el grupo
     // (comprobarlo DESPUÉS haría que "no consumir cupo" fuese otro oráculo). Un
@@ -5966,6 +5980,67 @@ function verifyRecaptcha_(p) {
     score:   result.score || 0,
     pass:    result.success === true && (result.score || 0) >= 0.5,
   };
+}
+
+/**
+ * LA VERJA PÚBLICA — el ÚNICO sitio donde se decide si una llamada ANÓNIMA puede
+ * hacer trabajo caro (leer expedientes, mandar correo, crear una solicitud).
+ *
+ * Por qué existe en un solo sitio: este backend es `ANYONE_ANONYMOUS`, así que
+ * TODA su superficie pública comparte el mismo problema, y hasta el 2026-08-09
+ * la comprobación estaba COPIADA en dos manejadores (`initEnrollmentSession_` y
+ * `recognizeFamily_`) y AUSENTE en el tercero (`sendMagicLink_`, rama pública) —
+ * que es justamente la puerta de recuperación. Tres copias divergen; una sola no.
+ *
+ * FAIL-CLOSED, igual que las dos copias que sustituye (KAL-NEW-4): sin
+ * `RECAPTCHA_SECRET` configurado NO se pasa (nunca se degrada a bypass), sin
+ * token NO se pasa, y un fallo de red al verificar tampoco pasa.
+ *
+ * Devuelve un VEREDICTO en vez de lanzar, porque los tres llamantes tienen
+ * contratos distintos: dos propagan el error (el cliente lo pinta) y el tercero
+ * NO puede propagarlo — cualquier diferencia visible en su respuesta reabre el
+ * oráculo de enumeración que `_magicLinkConstantAck_()` cierra (WIZ-ENUM).
+ *
+ * @param {?string} recaptchaToken token v3 que envió el cliente (puede faltar)
+ * @returns {{ok: boolean, code: ?string, message: ?string}}
+ * @private
+ */
+function _verjaPublicaVeredicto_(recaptchaToken) {
+  var secret = PropertiesService.getScriptProperties().getProperty('RECAPTCHA_SECRET');
+  if (!secret) {
+    return { ok: false, code: 'RECAPTCHA_NOT_CONFIGURED', message: 'reCAPTCHA not configured — contact admin' };
+  }
+  if (!recaptchaToken) {
+    return { ok: false, code: 'RECAPTCHA_MISSING', message: 'Missing reCAPTCHA token' };
+  }
+  var rc;
+  try {
+    rc = verifyRecaptcha_({ token: recaptchaToken });
+  } catch (e) {
+    // Fallo de red / respuesta ilegible de Google → NO se pasa (fail-closed).
+    return { ok: false, code: 'RECAPTCHA_FAILED', message: 'reCAPTCHA verification failed' };
+  }
+  if (!rc || !rc.pass) {
+    return { ok: false, code: 'RECAPTCHA_FAILED', message: 'reCAPTCHA verification failed' };
+  }
+  return { ok: true, code: null, message: null };
+}
+
+/**
+ * Envoltorio que LANZA — para los manejadores públicos cuyo contrato SÍ propaga
+ * el error al cliente (`initEnrollmentSession_`, `recognizeFamily_`). Conserva
+ * literalmente los mensajes y el `err.code` que esos dos ya devolvían, para no
+ * cambiar lo que ve el frontend.
+ *
+ * @param {?string} recaptchaToken
+ * @private
+ */
+function _asegurarVerjaPublica_(recaptchaToken) {
+  var v = _verjaPublicaVeredicto_(recaptchaToken);
+  if (v.ok) return;
+  var err = new Error(v.message);
+  if (v.code === 'RECAPTCHA_NOT_CONFIGURED') err.code = 'RECAPTCHA_NOT_CONFIGURED';
+  throw err;
 }
 
 // ─── Step save helpers ────────────────────────────────────────────────────────

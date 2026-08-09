@@ -227,16 +227,76 @@ Test: `manual_testRecognizeFamilyAntiEnum` en `backend/Code.js`. Verifica shape 
 
 ### sendMagicLink — ack constante anti-enumeración (WIZ-ENUM, audit 2026-07-27)
 
-`sendMagicLink_` rama `primary_email` es el **servicio público de recuperación** (la landing lo llama sin autenticación; el manifest es `ANYONE_ANONYMOUS` y ese `case` del dispatcher no tiene verja reCAPTCHA). Antes devolvía `{sent:true}` con grupo y **lanzaba `'Enrollment group not found'`** sin él → dos respuestas distinguibles = **oráculo de existencia**: cualquiera podía preguntar email a email "¿esta familia está matriculando?".
+`sendMagicLink_` rama `primary_email` es el **servicio público de recuperación** (la landing lo llama sin autenticación y el manifest es `ANYONE_ANONYMOUS`; **desde el 2026-08-09 esa rama SÍ tiene verja reCAPTCHA fail-closed** — ver §"Las TRES entradas públicas pasan por UNA verja", que cerró el oráculo por TIEMPO que quedaba abierto). Antes devolvía `{sent:true}` con grupo y **lanzaba `'Enrollment group not found'`** sin él → dos respuestas distinguibles = **oráculo de existencia**: cualquiera podía preguntar email a email "¿esta familia está matriculando?".
 
 **Ahora la rama `primary_email` devuelve SIEMPRE la misma forma** — `_magicLinkConstantAck_()` → `{sent:true, warm_ticket:<uuid>}` — y todo el trabajo (buscar grupo, rotar token, enviar el enlace, crear la sesión nueva) es **best-effort silencioso**. Reglas derivadas, obligatorias para cualquier cambio futuro en este camino:
 
 1. **Nada de la respuesta puede depender de que el email exista** — ni un `throw`, ni un campo extra (`already_submitted`, ids del grupo, `recognition`), ni la **presencia** del `warm_ticket` (por eso el camino "sin grupo" mintea un **ticket señuelo** con 0 items; `warmBundle_` responde `{ok:true}` sin conteo de fases para no reabrir el oráculo por esa puerta).
-2. **El rate-limit se comprueba ANTES del lookup** (el cupo se consume exista o no el grupo) y **sus bloqueos no se surfacean**: `BLOCKED_BY_REPORT` delataría que ese email recibió un enlace alguna vez. El cupo se sigue APLICANDO (no se envía nada), solo no se cuenta.
+2. **La verja va primero y el rate-limit ANTES del lookup** (2026-08-09: la verja se puso por delante del cupo a propósito — así un sondeo que no la pasa tampoco puede agotarle el cupo de recuperación a una familia real; los dos rechazos devuelven el mismo ack, así que el orden no es distinguible). El cupo se consume exista o no el grupo, y **sus bloqueos no se surfacean**: `BLOCKED_BY_REPORT` delataría que ese email recibió un enlace alguna vez. El cupo se sigue APLICANDO (no se envía nada), solo no se cuenta.
 3. **La decisión recuperar-vs-crear vive SERVER-SIDE.** El cliente ya no puede ramificar (no hay señal): si el email no tiene grupo, `sendMagicLink_` delega en `initEnrollmentSession_` (verja reCAPTCHA **fail-closed** — sin token válido no se crea ni se envía nada). Por eso la landing manda el `recaptcha_token` **en la propia llamada a `sendMagicLink`** y ya no llama a `initEnrollmentSession` por su cuenta.
 4. La rama `enrollment_group_id` (uso interno "Guardar y seguir luego") **NO cambia**: el caller ya conoce un UUID, no hay enumeración, y sus errores siguen propagándose para el toast del wizard.
 
 Residual conocido (NO cerrado): el action público `initEnrollmentSession` sigue distinguiendo en su respuesta (`already_submitted` / `resumed` / creada), pero está **detrás de la verja reCAPTCHA fail-closed**. Test: `manual_testSendMagicLinkConstantAck`. Cross-ref: `kis-app/docs/kms/security/audit-2026-07-27.md` §C fila WIZ-ENUM + §KAL-10 (mismo patrón en `recognizeFamily_`).
+
+### Las TRES entradas públicas pasan por UNA verja, y la de recuperar el enlace también (②2, 2026-08-09)
+
+Este backend es `ANYONE_ANONYMOUS`: **todo lo que esté en el `switch(action)` del `doPost` lo
+puede invocar cualquiera desde internet, sin identificarse.** Tres de esas acciones son la
+puerta de entrada de una familia: **crear una solicitud** (`initEnrollmentSession_`),
+**reconocer a la familia** (`recognizeFamily_`) y **recuperar el enlace**
+(`sendMagicLink_`, rama `primary_email`).
+
+**El defecto que se cerró, medido contra `origin/main` el 2026-08-09.** Desde WIZ-ENUM
+(2026-07-27) la recuperación devuelve **la misma respuesta** exista o no la familia. Pero
+**el tiempo no era el mismo**: con expediente esa rama hace **dos viajes al KMS** —renovar el
+enlace (`enr.wizardTouchSession`) y mandar el correo (`sys-public.sendNotification`)— más las
+lecturas de AppSheet, y tarda **~46 s**; sin expediente se queda en **~7 s**. Cronometrando,
+cualquiera volvía a preguntar *«¿esta familia está matriculando?»* email a email — justo lo
+que el ack constante vino a cerrar. Y era **la única de las tres sin verja**.
+
+**Cómo se cerró, y por qué NO igualando tiempos.** Igualar obliga a retener cada petición
+~50 s, y Apps Script limita las **ejecuciones simultáneas**: unas pocas peticiones dejarían la
+ÚNICA puerta pública de admisiones sin atender. Habría sido cambiar un oráculo por una caída.
+Lo que se hace es **quitar el trabajo caro del camino de quien no pasa la verja**: la
+comprobación va **antes del primer viaje a AppSheet**, así que para un llamante sin token
+válido las dos situaciones responden igual de rápido y **no queda diferencia que cronometrar**.
+
+**Coste para las familias: NINGUNO, y está medido** — la portada ya calculaba y mandaba el
+token en **esta misma llamada** (`frontend/src/pages/LandingPage.jsx`, `grecaptcha.execute`),
+**crear** una solicitud ya exigía la misma verja (si no estuviera configurada, dar de alta
+estaría roto hoy), y la portada **no espera la respuesta**: pinta su pantalla genérica al
+instante (fire-and-forget).
+
+**Reglas para cualquier entrada pública NUEVA:**
+
+1. **La decisión vive en UN solo sitio**, `_verjaPublicaVeredicto_` — fail-closed en sus cinco
+   formas (sin `RECAPTCHA_SECRET`, secreto vacío, sin token, puntuación insuficiente, fallo de
+   red al verificar). Antes estaba **copiada** en dos manejadores y **ausente** en el tercero;
+   tres copias divergen, una sola no.
+2. **Se elige la forma según el contrato del manejador**: `_asegurarVerjaPublica_` **lanza**
+   (para los que propagan el error al cliente) · `_verjaPublicaVeredicto_` devuelve veredicto
+   (para los que **no pueden** propagarlo). En `sendMagicLink_` el rechazo **devuelve el mismo
+   ack constante**: un rechazo visible reabriría el oráculo por otra puerta.
+3. **La verja va ANTES del trabajo caro**, no después: rechazar tarde deja el tiempo delatando.
+4. **Excepción declarada, con su motivo**: `case 'verifyRecaptcha'` del despachador **no es una
+   verja** — es el verificador crudo expuesto como acción, con consumidor vivo en
+   `frontend/src/pages/steps/Step7Review.jsx:259` (comprobación antes de enviar).
+
+**Control**: `node scripts/comprobar-verja-publica.mjs` — trabajo `verja-publica` de
+`.github/workflows/deploy.yml`; **`build` depende de él ⇒ en ROJO no se publica**. **Ejecuta**
+la verja real extraída del fuente (6 casos) y comprueba las tres entradas. **Rojo demostrado
+seis veces** antes de darlo por bueno: quitando la verja de la recuperación · poniéndola
+después del trabajo caro · haciendo que lance en vez de devolver el ack · ablandándola a
+fail-open · renombrándola (*«el control está CIEGO»*) · y quitándola de `initEnrollmentSession_`.
+**Límite declarado** en la cabecera del módulo: es un detector por líneas, no un analizador
+sintáctico, y **no afirma que Google puntúe bien**.
+
+**Lo que este cambio NO cierra, y hay que decirlo:** quien SÍ pueda resolver un reCAPTCHA
+(puntuación ≥ 0,5, o un servicio de resolución) **sigue viendo ~46 s frente a ~7 s**. La verja
+**encarece** el sondeo masivo, no lo elimina. Eliminarlo requiere **sacar el envío del camino
+de la respuesta** (apuntar el trabajo para que se haga y contestar al momento), que toca los
+dos proyectos y **retrasa el correo de la familia** — decisión de producto, no de código.
+Queda escrito en la cola (`kis-app/docs/kms/loop-backlog.md` ②2).
 
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
