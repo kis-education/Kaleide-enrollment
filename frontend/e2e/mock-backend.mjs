@@ -161,7 +161,7 @@ const QUESTIONS = {
  *
  * @param {'sin_fecha'|'hasta_preguntas'|'firma'} stage
  */
-export function buildHydrate(stage, preguntasMode) {
+export function buildHydrate(stage, preguntasMode, respuestasMode) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -227,8 +227,19 @@ export function buildHydrate(stage, preguntasMode) {
       // Las preguntas del catálogo del robot son GENERALES (`audience_category_id: null`),
       // y para ésas la pantalla compone la clave con el EXPEDIENTE
       // (`QbSetRenderer/index.jsx:172`), no con una persona.
+      // `respuestasMode` decide CONTRA QUIÉN vuelve la respuesta:
+      //   'ok'              → contra el EXPEDIENTE, que es como lo guarda el KMS arreglado.
+      //   'contra_un_tutor' → contra el PRIMER TUTOR, que es como lo guardó durante un
+      //                       tiempo y por lo que Diego vio su cuestionario EN BLANCO el
+      //                       2026-08-09 (31 respuestas guardadas, 0 pintadas). La familia
+      //                       debe seguir viendo lo que escribió: el dato viejo sigue en la
+      //                       base de datos y no se le puede pedir que lo vuelva a teclear.
       responses: [
-        { question_id: 'q-e2e-1', respondent_id: FIXTURE.groupId, response_text: RESPUESTA_GUARDADA },
+        {
+          question_id: 'q-e2e-1',
+          respondent_id: respuestasMode === 'contra_un_tutor' ? FIXTURE.guardian1Id : FIXTURE.groupId,
+          response_text: RESPUESTA_GUARDADA,
+        },
       ],
     };
   }
@@ -302,7 +313,7 @@ export function createDispatcher(scenario, record) {
     initEnrollmentSession: (p) => ({ ok: true, enrollment_group_id: FIXTURE.groupId }),
 
     // ── Recuperación / sesión ────────────────────────────────────────────────
-    hydrateSession: () => ({ ok: true, ...buildHydrate(scenario.stage, scenario.preguntasMode) }),
+    hydrateSession: () => ({ ok: true, ...buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode) }),
     getAdmissionState: () => {
       const h = buildHydrate(scenario.stage);
       return { ok: true, ...(h.admission || { state_code: null }) };

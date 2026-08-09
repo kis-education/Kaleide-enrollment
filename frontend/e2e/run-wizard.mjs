@@ -329,7 +329,7 @@ const record = (c) => { calls.push({ ...c, at: Date.now() }) }
 record.unmocked = (a) => { unmockedActions.add(String(a)) }
 
 // Escenario MUTABLE que los caminos reconfiguran antes de navegar.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok' }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok' }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -2645,34 +2645,52 @@ async function caminoRespuestasVuelven(page, base) {
   const c = new Camino('respuestas-vuelven')
   scenario.stage = 'hasta_preguntas'
 
-  if (!await entrarPorElEnlace(c, page, base)) return c
-  await page.waitForTimeout(LATENCY + 400)
+  // Los DOS sujetos con los que una respuesta general puede volver del servidor. El
+  // segundo NO es hipotético: es la forma exacta con la que Diego vio su cuestionario en
+  // blanco el 2026-08-09, y el dato viejo sigue en la base de datos aunque el escritor ya
+  // esté arreglado. La familia tiene que ver lo que escribió en los dos casos.
+  const SUJETOS = [
+    ['ok',               'contra el expediente'],
+    ['contra_un_tutor',  'contra un tutor (la forma del defecto del 2026-08-09)'],
+  ]
 
-  const pantalla = await page.evaluate(sondaPantalla)
-  c.evidencia.elementos = pantalla.pasos + pantalla.campos
-  c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
+  try {
+    for (const [modo, comoSeLlama] of SUJETOS) {
+      scenario.respuestasMode = modo
 
-  if (!await irAPreguntas(c, page)) return c
-  await page.waitForTimeout(400)
+      if (!await entrarPorElEnlace(c, page, base)) return c
+      await page.waitForTimeout(LATENCY + 400)
 
-  // Lo que la familia ve: el texto que escribió, dentro de un campo del cuestionario.
-  const visto = await page.evaluate((esperado) => {
-    const campos = [...document.querySelectorAll('input, textarea')]
-    return {
-      n_campos: campos.length,
-      valores_no_vacios: campos.filter(e => String(e.value || '').trim()).length,
-      lo_encuentra: campos.some(e => String(e.value || '').trim() === esperado),
+      const pantalla = await page.evaluate(sondaPantalla)
+      c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, pantalla.pasos + pantalla.campos)
+      c.afirmar(`sin pantalla de error — respuesta ${comoSeLlama}`, !pantalla.errorFatal,
+        'el ErrorBoundary pintó "Something went wrong."')
+
+      if (!await irAPreguntas(c, page)) return c
+      await page.waitForTimeout(400)
+
+      // Lo que la familia ve: el texto que escribió, dentro de un campo del cuestionario.
+      const visto = await page.evaluate((esperado) => {
+        const campos = [...document.querySelectorAll('input, textarea')]
+        return {
+          n_campos: campos.length,
+          valores_no_vacios: campos.filter(e => String(e.value || '').trim()).length,
+          lo_encuentra: campos.some(e => String(e.value || '').trim() === esperado),
+        }
+      }, RESPUESTA_GUARDADA)
+
+      c.evidencia.elementos += visto.n_campos
+      console.log(`      respuestas ${comoSeLlama}: ${visto.n_campos} campos, ${visto.valores_no_vacios} con valor`)
+
+      c.afirmar(`el cuestionario pinta sus campos — respuesta ${comoSeLlama}`, visto.n_campos > 0,
+        'el paso de Preguntas no pintó ni un campo: sin campos no hay nada que recuperar')
+      c.afirmar(`lo que la familia escribió sigue ahí al volver a entrar — respuesta ${comoSeLlama}`, visto.lo_encuentra,
+        `ninguno de los ${visto.n_campos} campos trae «${RESPUESTA_GUARDADA}» ` +
+        `(${visto.valores_no_vacios} traen algún valor) — la respuesta llegó del servidor y se perdió en la pantalla`)
     }
-  }, RESPUESTA_GUARDADA)
-
-  c.evidencia.elementos += visto.n_campos
-  console.log(`      respuestas: ${visto.n_campos} campos, ${visto.valores_no_vacios} con valor`)
-
-  c.afirmar('el cuestionario pinta sus campos', visto.n_campos > 0,
-    'el paso de Preguntas no pintó ni un campo: sin campos no hay nada que recuperar')
-  c.afirmar('lo que la familia escribió sigue ahí al volver a entrar', visto.lo_encuentra,
-    `ninguno de los ${visto.n_campos} campos trae «${RESPUESTA_GUARDADA}» ` +
-    `(${visto.valores_no_vacios} traen algún valor) — la respuesta llegó del servidor y se perdió en la pantalla`)
+  } finally {
+    scenario.respuestasMode = 'ok'
+  }
   return c
 }
 
