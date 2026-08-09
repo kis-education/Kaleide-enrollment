@@ -168,7 +168,16 @@ function GenericAttachment({ row, enrollmentGroupId, resumeToken, onUploaded, on
       {status === 'success' && (
         <div className="upload-status success">
           <i className="bi bi-check-circle me-1" />
-          {t('doc.uploaded')} &nbsp;
+          {t('doc.uploaded')}
+          {/* EL NOMBRE DEL ARCHIVO, porque la descripción es OPCIONAL (2026-08-09).
+              La casilla de arriba queda deshabilitada en cuanto el archivo está subido; si
+              la familia no escribió nada —que es lo normal, el adjuntador no lo exige— el
+              panel entero decía solo «Subido · Ver archivo». Tres archivos así son tres
+              cajas idénticas y vacías: ESTÁN, pero no hay forma de saber cuál es cuál, que
+              es lo mismo que no verlos. El nombre es dato de la propia subida, no una
+              etiqueta nueva, así que no hay texto que traducir ni que pueda quedar obsoleto. */}
+          {row.file_name && <> — <strong>{row.file_name}</strong></>}
+          &nbsp;
           {fileId && (
             <button
               type="button"
@@ -230,6 +239,38 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
       }));
 
   const [rows, setRows] = useState(seedRows);
+
+  // RE-SEMBRADO: si los archivos del servidor llegan DESPUÉS de montar esta pantalla, la
+  // lista los incorpora en vez de quedarse con la foto del primer instante.
+  //
+  // `useState(seedRows)` corre UNA sola vez, al montar. Hoy el asistente monta este paso
+  // SIEMPRE con la hidratación ya resuelta (mientras carga pinta un esqueleto, y el aterrizaje
+  // recalcula el paso), así que NO se ha conseguido reproducir desde la pantalla un caso en que
+  // la lista se quedara vacía teniendo archivos — se intentó con la verja de datos personales y
+  // con una recarga estando en el paso, y en las dos la lista salía completa. Esto es, por
+  // tanto, una GUARDA: barata, y la única forma de que un cambio futuro en el orden de montaje
+  // no vuelva a esconder lo que la familia subió. Es el mismo patrón que el paso de Salud ya
+  // tiene (`Step4Health.jsx`, «Re-sync if stepData.health arrives after mount»).
+  //
+  // SOLO AÑADE lo que falta, NUNCA reemplaza: una fila a medio subir (sin `file_id` todavía) y
+  // una ya listada se quedan intactas. Perder un adjunto en vuelo por «refrescar la lista»
+  // sería peor que el fallo que esto previene.
+  useEffect(() => {
+    const delServidor = (stepData.documents || []).filter(d => d && d.file_id);
+    if (!delServidor.length) return;
+    setRows(prev => {
+      const yaListados = new Set(prev.map(r => r.file_id).filter(Boolean));
+      const nuevas = delServidor
+        .filter(d => !yaListados.has(d.file_id))
+        .map(d => ({
+          id:          newRowId(),
+          description: d.description || '',
+          file_id:     d.file_id,
+          file_name:   d.file_name || '',
+        }));
+      return nuevas.length ? [...prev, ...nuevas] : prev;
+    });
+  }, [stepData.documents]); // eslint-disable-line
 
   useEffect(() => { log.info('[DBG docs] render', { locked, n_existing: (stepData.documents || []).length }); }, [locked]); // eslint-disable-line
 
