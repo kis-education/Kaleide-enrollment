@@ -842,6 +842,23 @@ const handleNext = async (stepKey, data, extra = null) => {
             un save antes de tener datos (el StepComponent interactivo no se monta hasta
             !rehydrating). El early-return neutro de sesión recuperada por magic-link
             (WIZARD-GATE-ORDER, arriba) queda intacto — su gate de seguridad no cambia. */}
+        {/* ⚠️ ESTE ESQUELETO NO ES SOLO COSMÉTICO: es lo que mantiene HONESTA la semilla de
+            los pasos (cola 18.bis.59, MEDIDO el 2026-08-09 sobre los 22 recorridos de la
+            batería). Los pasos 1, 2, 3 y 5 siembran su estado con `useState(<desde
+            stepData>)`, que corre UNA sola vez al montar y NO se vuelve a sembrar. Hoy eso
+            no muerde porque aquí la pantalla se DESMONTA mientras se cargan los datos y se
+            vuelve a MONTAR cuando ya están: la semilla se recalcula sola. Medido: cero
+            paquetes de datos llegan con una de esas pantallas montada; la secuencia es
+            siempre monta → desmonta → llegan los datos → monta.
+
+            Si alguien cambia esto por «pintar el paso mientras refresca», los cuatro pasos
+            se quedan CONGELADOS con la foto del primer instante — y el paso 4
+            (`Step4Health.jsx:314-324` y `:339-351`) es peor: su re-sembrado REEMPLAZA en
+            vez de fusionar, así que BORRARÍA lo que la familia esté escribiendo sobre
+            alergias, dietas o apoyo educativo. Antes de tocarlo, léete 18.bis.59: la cura,
+            si algún día hace falta, es el efecto de `Step6Documents.jsx:258`, que fusiona
+            sin pisar. (La batería ya caza esta clase para el paso 5: forzando que los datos
+            llegaran 6 s tarde, `respuestas-vuelven` salió ROJA nombrándolo.) */}
         {rehydrating ? (
           <>
             <LoadingSpinner variant="inline" messages={['resume.loading', 'loading.rotating.2', 'loading.rotating.3']} />
