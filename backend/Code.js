@@ -2110,6 +2110,7 @@ function initEnrollmentSession_(p, opts) {
         report_url:       REPORT_BASE_URL + grp.resume_token,
         gdpr_block:       _kmsRenderGdprBlock_(false),
         admissions_email: ADMISSIONS_EMAIL,
+        lang:             lang,
       });
       // SPEC-WIZ-WARMUP-V2: el usuario clicará el link en ~1 min — precalienta.
       warmTicketSubmitted = _mintWarmTicket_([{ t: grp.resume_token, n: null, e: normalizedEmail, l: lang }]);
@@ -2190,6 +2191,7 @@ function initEnrollmentSession_(p, opts) {
       report_url:       REPORT_BASE_URL + winner.resume_token,
       gdpr_block:       _kmsRenderGdprBlock_(false),
       admissions_email: ADMISSIONS_EMAIL,
+      lang:             lang,
     });
     return {
       resumed:             true,
@@ -2244,6 +2246,7 @@ function initEnrollmentSession_(p, opts) {
     report_url:       REPORT_BASE_URL + resumeToken,
     gdpr_block:       _kmsRenderGdprBlock_(true),
     admissions_email: ADMISSIONS_EMAIL,
+    lang:             lang,
   });
   // EMAIL-MIGRATION-2 (2026-06-25): el aviso interno "nueva sesión iniciada" migra al
   // motor único del KMS (plantilla kis-tpl-wizard-session-started). golden =
@@ -2673,6 +2676,7 @@ function sendMagicLink_(p) {
       report_url:       REPORT_BASE_URL + tokenToSend,
       gdpr_block:       _kmsRenderGdprBlock_(false),
       admissions_email: ADMISSIONS_EMAIL,
+      lang:             langP1,
     });
     // SPEC-WIZ-WARMUP-V2: ticket para que el frontend dispare warmBundle fire-and-forget
     // con el token NUEVO (que solo viaja por email). Identidad warm = la del click real.
@@ -2812,6 +2816,7 @@ function sendMagicLink_(p) {
           report_url:       REPORT_BASE_URL + grps[0].resume_token,
           gdpr_block:       _kmsRenderGdprBlock_(false),
           admissions_email: ADMISSIONS_EMAIL,
+          lang:             lang,
         });
         // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
         // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
@@ -2829,6 +2834,7 @@ function sendMagicLink_(p) {
           resume_links_block: _kmsRenderResumeLinksBlock_(grps.map(g => g.resume_token), nEmailIds, lang),
           report_url:         REPORT_BASE_URL + grps[0].resume_token,
           admissions_email:   ADMISSIONS_EMAIL,
+          lang:               lang,
         });
         // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
         // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
@@ -6976,6 +6982,10 @@ function _kmsNotifyHex_(bytes) {
  *                               WIZARD_SESSION_STARTED | WIZARD_UNSOLICITED_REPORTED.
  * @param {string} recipient     email destino.
  * @param {Object} context       valores de placeholder (resume_url, gdpr_block, etc.).
+ *                               Incluye `lang` — el IDIOMA de la familia. El KMS lo lee
+ *                               para elegir la version de la plantilla en ese idioma
+ *                               (18.bis.18). Antes no viajaba y por eso la plantilla
+ *                               llevaba los dos idiomas dentro del mismo cuerpo.
  * @returns {Object} respuesta del KMS ({ sent, correlation_id }).
  */
 function sendViaKmsNotify_(templateCode, recipient, context) {
