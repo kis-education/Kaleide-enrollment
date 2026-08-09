@@ -490,6 +490,8 @@
   "neae.diagnosis_placeholder": "Select (optional)…",
   "neae.condition_obs_placeholder": "Details that help planning (optional)",
   "neae.supports_label": "Has the child received any support, reinforcement or therapy?",
+  "neae.review_conditions": "Needs / learning profile",
+  "neae.review_supports": "Support received",
   "neae.support_type_placeholder": "Support type…",
   "neae.diag.NONE": "No diagnosis",
   "neae.diag.SUSPECTED": "Suspected",
