@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, useEffect, useRef } f
 import * as log from '../logger';
 import { preparePersonsForUI } from '../pages/steps/personShape';
 import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
-import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
+import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache, alConfirmarEscritura } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -134,6 +134,21 @@ export function WizardProvider({ children }) {
   const pendingCountRef = useRef(0);
   const [saveState, setSaveState] = useState('idle');
   const hasPendingSave = saveState === 'saving';
+  // ── El estado del aviso se cambia POR UN SOLO SITIO (cola 18.bis — la barra roja) ─────
+  // `saveErrorSeq` cuenta los EPISODIOS de fallo: sube en cada entrada en 'error'. Sirve
+  // para dos cosas que necesitan distinguir «sigue el mismo fallo» de «ha fallado otra
+  // vez»: la X del aviso (cerrar el episodio actual, no cerrar los futuros) y el espejo
+  // en pantalla. `saveErrorQue` es el NOMBRE de lo que no se pudo guardar, para que el
+  // texto diga QUÉ pasó en vez de «Error al guardar» a secas.
+  const saveStateRef = useRef('idle');
+  const [saveErrorSeq, setSaveErrorSeq] = useState(0);
+  const [saveErrorQue, setSaveErrorQue] = useState('');
+  const marcarEstadoDeGuardado_ = useCallback((siguiente, que) => {
+    saveStateRef.current = siguiente;
+    setSaveState(siguiente);
+    if (siguiente === 'error') { setSaveErrorQue(que || ''); setSaveErrorSeq(n => n + 1); }
+    else if (siguiente === 'idle') setSaveErrorQue('');
+  }, []);
   // UX-1 — aviso de validación GLOBAL: los steps lo setean (en vez de su banner local al
   // pie) y WizardPage lo pinta en la zona sticky superior. Se limpia al navegar/corregir.
   const [validationError, setValidationError] = useState('');
@@ -148,6 +163,8 @@ export function WizardProvider({ children }) {
   // ya iniciada re-resolvería la misma promesa settleada — los saves de paso usan
   // factories, que es el caso que cubre el botón.
   const lastFailedSaveRef = useRef(null);
+  // Nombre en llano de lo que falló, para reponerlo tal cual al reintentar.
+  const lastFailedQueRef = useRef('');
   // Guardados INDEPENDIENTES en vuelo (no van en el eslabón, pero el envío final SÍ tiene
   // que esperarlos). Se limpian al settle para que la lista no crezca durante la sesión.
   const sueltosRef = useRef([]);
@@ -188,8 +205,11 @@ export function WizardProvider({ children }) {
   // quita es tener que esperar a algo con lo que no tienen nada que ver.
   const enqueueSave = useCallback((saveFn, opts) => {
     const independiente = !!(opts && opts.independiente);
+    // Nombre EN LLANO de lo que se está guardando (p.ej. «Personas»). Opcional: quien no
+    // lo pase deja el aviso genérico, nunca uno inventado.
+    const que = (opts && opts.que) || '';
     pendingCountRef.current += 1;
-    setSaveState('saving');
+    marcarEstadoDeGuardado_('saving');
     const _t0 = Date.now();                          // DBG-SESSION timing
     log.info('[DBG savequeue] enqueue', { pending: pendingCountRef.current, independiente });
     const run = independiente
@@ -201,8 +221,8 @@ export function WizardProvider({ children }) {
     // independiente NO entra en el tail: si entrara, volvería a poder bloquear a los que
     // sí van en orden, que es justo lo que se está corrigiendo.
     const seguimiento = run.then(
-      () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; lastFailedSaveRef.current = null; setSaveState('idle'); } },
-      (e) => { pendingCountRef.current -= 1; lastFailedSaveRef.current = saveFn; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: e && e.code, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; setSaveState('error'); }
+      () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; lastFailedSaveRef.current = null; lastFailedQueRef.current = ''; marcarEstadoDeGuardado_('idle'); } },
+      (e) => { pendingCountRef.current -= 1; lastFailedSaveRef.current = saveFn; lastFailedQueRef.current = que; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: e && e.code, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; marcarEstadoDeGuardado_('error', que); }
     );
     if (!independiente) saveTailRef.current = seguimiento;
     else {
@@ -210,7 +230,7 @@ export function WizardProvider({ children }) {
       seguimiento.then(() => { sueltosRef.current = sueltosRef.current.filter(p => p !== seguimiento); });
     }
     return run;
-  }, []);
+  }, [marcarEstadoDeGuardado_]);
 
   /**
    * WPERF-1 criterio 3: re-encola la última save que falló (la guarda
@@ -221,10 +241,38 @@ export function WizardProvider({ children }) {
   const retryLastSave = useCallback(() => {
     const fn = lastFailedSaveRef.current;
     if (!fn) return;
+    const que = lastFailedQueRef.current;
     lastFailedSaveRef.current = null;
     log.info('[DBG savequeue] retry last failed save');
-    enqueueSave(fn);
+    enqueueSave(fn, { que });
   }, [enqueueSave]);
+
+  // ── EL AVISO ROJO SE APAGA CUANDO DEJA DE SER CIERTO, NO CUANDO MOLESTA ──────────────
+  // Diego, 2026-08-09: «si al final guarda por otro lado (como me ha pasado) la barra se
+  // queda». La causa medida: el aviso solo se apagaba desde el final feliz de ESTA cola,
+  // y hay guardados que persisten de verdad sin pasar por ella (subir un documento,
+  // guardar las NEAE, quitar a alguien del expediente). El dato quedaba a salvo y el
+  // aviso seguía diciendo lo contrario.
+  //
+  // Lo que se hace NO es apagarlo: es COMPROBARLO. Cuando el servidor acepta cualquier
+  // escritura, el canal demostrablemente funciona ⇒ se REINTENTA aquí el guardado que
+  // había fallado, y es la cola —el único sitio que gobierna el aviso— la que vuelve a
+  // decidir: verde si ahora sí entra, rojo si sigue sin entrar. Así el aviso nunca miente
+  // en ninguna de las dos direcciones, y NO hay ni un `setSaveState('idle')` repartido
+  // por las pantallas.
+  //
+  // Sin bucles: solo una escritura CON ÉXITO dispara esto, el reintento pone el estado en
+  // 'saving' (así que su propia confirmación no vuelve a entrar), y si el reintento falla
+  // no llega ninguna confirmación nueva que lo repita.
+  useEffect(() => alConfirmarEscritura(() => {
+    if (saveStateRef.current !== 'error') return;
+    const fn = lastFailedSaveRef.current;
+    if (!fn) return;
+    const que = lastFailedQueRef.current;
+    lastFailedSaveRef.current = null;
+    log.info('[DBG savequeue] el servidor aceptó otra escritura — se reintenta el guardado que había fallado');
+    enqueueSave(fn, { que });
+  }), [enqueueSave]);
 
   /**
    * Devuelve una promesa que resuelve cuando la cola de saves está DRENADA
@@ -1126,6 +1174,7 @@ export function WizardProvider({ children }) {
       isStepDirty, markStepSaved,
       setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
       retryLastSave,                                              // WPERF-1 criterio 3
+      saveErrorSeq, saveErrorQue,                                 // cola 18.bis — aviso de guardado (episodio + qué falló)
       validationError, setValidationError,                        // UX-1 aviso sticky
       submitError, setSubmitError,                                // UX-3 fallo envío optimista
       markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
