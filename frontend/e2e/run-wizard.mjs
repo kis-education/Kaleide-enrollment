@@ -329,7 +329,7 @@ const record = (c) => { calls.push({ ...c, at: Date.now() }) }
 record.unmocked = (a) => { unmockedActions.add(String(a)) }
 
 // Escenario MUTABLE que los caminos reconfiguran antes de navegar.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok' }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', partes: 'unica' }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -2694,6 +2694,82 @@ async function caminoRespuestasVuelven(page, base) {
   return c
 }
 
+/**
+ * DL-E49 §1 · EL SEGUNDO TUTOR ENVÍA Y LA SOLICITUD PASA A REVISIÓN.
+ *
+ * El defecto que este camino vigila NO es hipotético: hasta hoy, en cuanto UN tutor
+ * enviaba, el asistente se cerraba para TODOS y el equipo de admisiones recibía como
+ * completa una solicitud a la que le faltaban las respuestas del otro tutor.
+ *
+ * Lo que afirma, en el orden en que lo vive la familia:
+ *   1. la madre envía su parte → la pantalla de confirmación le ACUSA RECIBO diciéndole
+ *      que falta la parte del otro tutor, POR SU NOMBRE (§5). Sin ese acuse envía, no
+ *      pasa nada visible, y no entiende por qué;
+ *   2. el padre entra después y envía la suya → ya NO se le dice que falte nadie, porque
+ *      la solicitud ya está completa y pasa a revisión.
+ *
+ * `scenario.partes` es lo único simulado: 'falta_el_otro' hace que el PRIMER envío vuelva
+ * parcial y el SEGUNDO completo, que es exactamente la secuencia del contrato real.
+ */
+async function caminoSegundoTutorEnvia(page, base) {
+  const c = new Camino('segundo-tutor-envia')
+  scenario.stage = 'lista_para_enviar'   // aterriza en Revisión, con el botón de enviar
+  scenario.partes = 'falta_el_otro'
+
+  try {
+    // ── 1 · La madre envía su parte ──────────────────────────────────────────
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 600)
+    const donde1 = await dondeEstoy(page)
+    if (!c.afirmar('un expediente listo aterriza en Revisión', donde1 === 6,
+      `aterrizó en el índice ${donde1} (se esperaba 6): sin llegar a Revisión no hay envío que probar`)) return c
+    await desbloquear(page)
+    if (!await conducirEnvio(c, page)) return c
+
+    const envio1 = llamadas('submitEnrollmentSession').slice(-1)[0]
+    c.afirmar('el envío dice QUIÉN lo manda (el `n` del enlace viaja)',
+      !!(envio1 && envio1.payload && envio1.payload.n),
+      'el envío salió sin el `n` del enlace: el servidor no puede saber qué tutor envió, ' +
+      'y sin eso la parte no se registra a nombre de nadie')
+
+    // El acuse se pinta cuando vuelve `estadoDeLasPartes` (la confirmación lo pregunta).
+    const t0 = Date.now()
+    while (!llamadas('estadoDeLasPartes').length && Date.now() - t0 < 20000) await page.waitForTimeout(200)
+    await page.waitForTimeout(LATENCY + 500)
+
+    const acuse = await page.evaluate(() => {
+      const txt = document.body.innerText || ''
+      return { texto_len: txt.length, nombra_al_que_falta: /RobotDosE2E/.test(txt) }
+    })
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, 2)
+    c.afirmar('acuse al que envía primero — se le dice que falta el otro tutor, por su nombre',
+      acuse.nombra_al_que_falta,
+      'la pantalla de confirmación no nombra al tutor que falta: la familia envía, no pasa ' +
+      'nada visible, y no entiende por qué la solicitud no avanza')
+
+    // ── 2 · El padre entra después y envía la suya ───────────────────────────
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 600)
+    const donde2 = await dondeEstoy(page)
+    if (!c.afirmar('el segundo tutor también aterriza en Revisión', donde2 === 6,
+      `aterrizó en el índice ${donde2} (se esperaba 6): el que aún no ha enviado tiene que ` +
+      'poder llegar a enviar su parte, no encontrarse la solicitud cerrada')) return c
+    await desbloquear(page)
+    if (!await conducirEnvio(c, page)) return c
+    await page.waitForTimeout(LATENCY + 1200)
+
+    const cerrado = await page.evaluate(() => !/RobotDosE2E/.test(document.body.innerText || ''))
+    c.evidencia.elementos += 1
+    c.afirmar('con las dos partes enviadas ya no se dice que falte nadie',
+      cerrado,
+      'tras enviar el segundo tutor la confirmación sigue diciendo que falta alguien: la ' +
+      'solicitud nunca pasaría a revisión')
+  } finally {
+    scenario.partes = 'unica'
+  }
+  return c
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -2716,6 +2792,9 @@ const CAMINOS = [
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
   // Cola 18.bis.25 — lo que la familia escribió sigue ahí cuando vuelve.
   { nombre: 'respuestas-vuelven', fn: caminoRespuestasVuelven, minLlamadas: 1, minElementos: 11 },
+  // DL-E49 §1 — el envío es POR TUTOR: quien termina envía su parte, y la solicitud solo
+  // pasa a revisión cuando han enviado todos.
+  { nombre: 'segundo-tutor-envia', fn: caminoSegundoTutorEnvia, minLlamadas: 2, minElementos: 2 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

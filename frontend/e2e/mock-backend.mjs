@@ -244,6 +244,21 @@ export function buildHydrate(stage, preguntasMode, respuestasMode) {
     };
   }
 
+  if (stage === 'lista_para_enviar') {
+    // Todo relleno HASTA documentos incluidos y SIN enviar ⇒ el primer paso incompleto es
+    // Revisión (índice 6), que es donde vive el botón de enviar. Hacía falta un escalón
+    // así: `hasta_preguntas` aterriza en Documentos y `enviada` ya está enviada, con lo
+    // que ningún recorrido llegaba a pulsar «Enviar» sobre un expediente todavía abierto.
+    return {
+      ...base,
+      persons,
+      relations,
+      responses: [{ question_id: 'q-e2e-1', respondent_id: FIXTURE.groupId, response_text: RESPUESTA_GUARDADA }],
+      documents: [{ file_id: FIXTURE.fileId, filename: 'doc-e2e.pdf', description: 'Documento de prueba' }],
+      recovered_guardian_person_id: FIXTURE.guardian1Id,
+    };
+  }
+
   if (stage === 'enviada') {
     // Expediente YA ENVIADO y SIN admitir: la familia aterriza en Revisión (índice 6)
     // viendo «solicitud enviada». Es la pantalla donde vive «necesito corregir algo»
@@ -372,7 +387,26 @@ export function createDispatcher(scenario, record) {
     },
     saveResponses: () => ({ ok: true, saved: true }),
     saveNeae:      () => ({ ok: true, saved: true }),
-    submitEnrollmentSession: () => ({ ok: true, submitted: true, enrollment_ids: ['e1'] }),
+
+    // ── DL-E49 §1 · EL ENVÍO ES POR TUTOR ────────────────────────────────────
+    // La forma la copia del contrato real (`submitEnrollmentSession_` → los conteos que
+    // devuelve `enr_persistSubmit_` del KMS). `scenario.partes` dice en qué momento de la
+    // familia estamos: `'falta_el_otro'` = ha enviado uno de dos; `'todas'` = ya están.
+    submitEnrollmentSession: () => {
+      if (scenario.partes === 'falta_el_otro') {
+        scenario.partes = 'todas';   // el SIGUIENTE envío es el del segundo tutor
+        return { ok: true, submitted: true, enrollment_ids: ['e1'],
+                 parcial: true, tutores_total: 2, tutores_que_enviaron: 1, falta_por_enviar: 1 };
+      }
+      return { ok: true, submitted: true, enrollment_ids: ['e1'],
+               parcial: false, tutores_total: scenario.partes === 'todas' ? 2 : 1,
+               tutores_que_enviaron: scenario.partes === 'todas' ? 2 : 1, falta_por_enviar: 0 };
+    },
+    estadoDeLasPartes: () => (scenario.partes === 'todas'
+      ? { ok: true, tutores_total: 2, tutores_que_enviaron: 2, todas_enviadas: true,
+          puede_seguir: false, ya_envio: true, faltan_nombres: [] }
+      : { ok: true, tutores_total: 2, tutores_que_enviaron: 1, todas_enviadas: false,
+          puede_seguir: false, ya_envio: true, faltan_nombres: ['RobotDosE2E PruebaE2E'] }),
 
     // ── Documentos ───────────────────────────────────────────────────────────
     uploadDocument: (p) => {

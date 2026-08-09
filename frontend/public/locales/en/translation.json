@@ -157,6 +157,8 @@
   "confirmation.subtitle": "Thank you. We have received your enrollment application and will be in touch shortly.",
   "confirmation.app_id_label": "Application ID",
   "confirmation.next_steps_title": "What happens next?",
+  "confirmation.partes.title": "Your part has been submitted",
+  "confirmation.partes.body": "We have registered your answers. Before the school can review the application, {{nombres}} still has to complete their part. We will let you know when that happens.",
   "confirmation.next_1": "Our admissions team will review your application.",
   "confirmation.next_2": "We will contact you within 5 working days.",
   "confirmation.next_3": "You may be invited for an interview or tour.",

@@ -178,7 +178,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
   const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted, setIsSubmitted,
-          enqueueSave, setSubmitError, setValidationError } = useWizard(); // UX-3 + UX-1
+          enqueueSave, setSubmitError, setValidationError, recoveryNonce } = useWizard(); // UX-3 + UX-1
 
   // DL-E39 ENMIENDA (gate de ENTRADA, Diego 2026-06-06): el enmascarado per-campo
   // se ELIMINA. Toda la PII queda protegida por el GATE DE ENTRADA del wizard
@@ -274,6 +274,9 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
     //    (SaveIndicator), NO bloquea el botón. NO cambia el contrato del payload.
     const payload = {
       resume_token:        resumeToken, // KAL-4: required for IDOR defense
+      // DL-E49 §1 — el `n` del enlace identifica al tutor que ESTÁ ENVIANDO su parte. Lo
+      // resuelve el servidor a persona; el cliente no declara identidades.
+      n:                   recoveryNonce || undefined,
       enrollment_group_id: enrollmentGroupId,
       application_id:      enrollmentGroupId,
       desired_start_date:  email?.desired_start_date || null,

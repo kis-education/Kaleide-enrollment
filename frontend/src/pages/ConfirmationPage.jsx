@@ -1,13 +1,26 @@
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import LangToggle from '../components/LangToggle';
 import { useWizard } from '../context/WizardContext';
+import { gasCall } from '../api';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
 export default function ConfirmationPage() {
   const { t }                        = useTranslation();
-  const { enrollmentGroupId, resumeToken } = useWizard();
+  const { enrollmentGroupId, resumeToken, recoveryNonce } = useWizard();
+
+  // DL-E49 §5 — ACUSE al que envía antes que los demás. Se pregunta al servidor en vez de
+  // deducirlo del resultado del envío porque el envío vuela en segundo plano (la pantalla
+  // ya está aquí cuando termina). Si falla, no se dice nada: nunca se inventa un estado.
+  const [partes, setPartes] = useState(null);
+  useEffect(() => {
+    if (!resumeToken) return;
+    gasCall('estadoDeLasPartes', { resume_token: resumeToken, n: recoveryNonce || undefined })
+      .then(setPartes)
+      .catch(() => {});
+  }, [resumeToken, recoveryNonce]);
 
   return (
     <div className="wizard-layout">
@@ -41,6 +54,20 @@ export default function ConfirmationPage() {
             </p>
             <p style={{ margin: '4px 0 0', fontFamily: 'monospace', color: 'var(--teal-dk)', fontWeight: 700 }}>
               {enrollmentGroupId}
+            </p>
+          </div>
+        )}
+
+        {partes && partes.ya_envio && !partes.todas_enviadas && partes.faltan_nombres?.length > 0 && (
+          <div className="kis-card" style={{ textAlign: 'left', marginTop: 20, borderLeft: '4px solid var(--teal-dk)' }}>
+            <h3 style={{ color: 'var(--teal-dk)', marginTop: 0, fontSize: '1rem' }}>
+              {t('confirmation.partes.title', { defaultValue: 'Tu parte está enviada' })}
+            </h3>
+            <p style={{ margin: 0, color: 'var(--text)', lineHeight: 1.7 }}>
+              {t('confirmation.partes.body', {
+                nombres: partes.faltan_nombres.join(', '),
+                defaultValue: 'Hemos registrado tus respuestas. Para que el colegio pueda estudiar la solicitud falta que {{nombres}} complete su parte. Te avisaremos cuando esté.',
+              })}
             </p>
           </div>
         )}

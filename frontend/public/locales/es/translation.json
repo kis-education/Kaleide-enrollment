@@ -157,6 +157,8 @@
   "confirmation.subtitle": "Gracias. Hemos recibido tu solicitud de matrícula y nos pondremos en contacto contigo en breve.",
   "confirmation.app_id_label": "Número de solicitud",
   "confirmation.next_steps_title": "¿Qué ocurre ahora?",
+  "confirmation.partes.title": "Tu parte está enviada",
+  "confirmation.partes.body": "Hemos registrado tus respuestas. Para que el colegio pueda estudiar la solicitud falta que {{nombres}} complete su parte. Te avisaremos cuando esté.",
   "confirmation.next_1": "Nuestro equipo de admisiones revisará tu solicitud.",
   "confirmation.next_2": "Nos pondremos en contacto contigo en un plazo de 5 días hábiles.",
   "confirmation.next_3": "Es posible que te invitemos a una entrevista o visita al centro.",

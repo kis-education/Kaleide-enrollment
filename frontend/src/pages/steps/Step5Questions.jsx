@@ -10,7 +10,7 @@ import * as log from '../../logger';
 
 export default function Step5Questions({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t, i18n }  = useTranslation();
-  const { enrollmentGroupId, resumeToken, stepData, updateStep, enqueueSave } = useWizard();
+  const { enrollmentGroupId, resumeToken, stepData, updateStep, enqueueSave, recoveryNonce } = useWizard();
 
   // WIZARD-PERF-CACHE-SKELETON: paint instantáneo (stale-while-revalidate). Si hay
   // catálogo en sessionStorage (mismo idioma, no expirado) lo mostramos sin spinner
@@ -113,6 +113,9 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
     if (rows.length && enrollmentGroupId) {
       const saveFactory = () => gasCall('saveResponses', {
         resume_token:                resumeToken, // KAL-4: required for IDOR defense
+        // DL-E49 §1 — el `n` del enlace identifica al tutor que está contestando. El
+        // servidor lo resuelve a persona; el cliente NO decide quién es nadie.
+        n:                           recoveryNonce || undefined,
         enrollment_group_id:         enrollmentGroupId,
         application_id:              enrollmentGroupId, // legacy alias
         respondent_id:               enrollmentGroupId,

@@ -1759,6 +1759,7 @@ function doPost(e) {
       case 'verifyEmail':          result = verifyEmail_(payload);          break;
       case 'fetchQuestions':       result = fetchQuestions_(payload);       break;
       case 'saveResponses':        result = saveResponses_(payload);        break;
+      case 'estadoDeLasPartes':    result = estadoDeLasPartes_(payload);    break;
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
       // CLI 82 (KAL-NEW-5 / Anexo A Opción A): proxy de bytes. Sirve documentos
       // PRIVADOS de Drive bajo gate de token (resume_token O signing_token) +
@@ -4507,6 +4508,9 @@ function submitEnrollmentSession_(p) {
   const persistRes = kmsProxy_('enr.wizardPersistSubmitEnrollments', {
     resume_token:       p.resume_token,
     desired_start_date: desiredStartDate,
+    // DL-E49 §1 — el envío es POR TUTOR: quien envía se resuelve server-side desde su
+    // propio enlace, y el KMS lo re-valida contra los tutores declarados del grupo.
+    submitted_by_person_id: wizardTutorQueOpera_(p, enrollmentGroupId),
   });
   const enrollmentIds = (persistRes && persistRes.enrollment_ids) || [];
   Logger.log('submitEnrollmentSession_: KMS persisted enrollments=' + enrollmentIds.length);
@@ -4690,12 +4694,26 @@ function submitEnrollmentSession_(p) {
   // PROHIBIDO devolver estas llamadas: duplicarian el correo. Si algun dia la familia deja
   // de recibirlo, lo que falla es la regla del centro, y se arregla en su pantalla.
 
+  // -- DL-E49 §5 · ACUSE AL QUE ENVIA ANTES QUE LOS DEMAS -------------------------------
+  // Espejo exacto de DL-E43 §2: su envio esta REGISTRADO, y se le dice que aun falta que
+  // los demas tutores completen su parte. Sin esto envia, no pasa nada visible, y no
+  // entiende por que. Estos conteos los calcula el KMS (unico sitio que sabe que partes
+  // constan); aqui solo se reenvian a la pantalla de confirmacion.
+  //
+  // El CORREO de ese acuse NO se encadena aqui: cuelga del paso «la parte de un tutor esta
+  // enviada» y lo declara el centro en su pantalla de avisos (DL-E44 §4), igual que los dos
+  // correos del envio que se retiraron de este mismo fichero el 2026-08-07.
   return {
     submitted:           true,
     enrollment_group_id: enrollmentGroupId,
     enrollment_ids:      enrollmentIds,
     // legacy alias \u2014 frontend builds reading application_id keep working
     application_id:      enrollmentGroupId,
+    // Parcial = tu parte quedo registrada, pero la solicitud todavia NO pasa a revision.
+    parcial:              !!(persistRes && persistRes.partial),
+    tutores_total:        (persistRes && persistRes.tutores_total) || 0,
+    tutores_que_enviaron: (persistRes && persistRes.tutores_que_enviaron) || 0,
+    falta_por_enviar:     (persistRes && persistRes.falta_por_enviar) || 0,
   };
 }
 
@@ -5206,6 +5224,55 @@ function fetchLookups_() {
  *
  * @param {Object} p - { enrollment_group_id?|application_id?, respondent_id, respondent_type_category_id, responses: Array }
  */
+/**
+ * DL-E49 §1 · QUIÉN ESTÁ OPERANDO — el tutor que tiene el asistente delante.
+ *
+ * NO es un mecanismo nuevo: reusa la identidad que YA viaja en el propio enlace del tutor
+ * (IDENTITY-FROM-LINK, `n` = email_id de `enrEmails`) y su resolvedor probado
+ * (`effectiveRecoveredEmail_` → `resolveGuardianForRecovery_`, ambos con la validación
+ * KAL-4 de que la fila pertenece al grupo del token). DL-E49 §9 lo dice tal cual: «la
+ * identidad del tutor que entra ya se resuelve server-side desde el propio enlace».
+ *
+ * Devuelve el `person_id` del tutor, o `null` si no se puede identificar — y `null` NUNCA
+ * bloquea: el KMS, que es quien decide, trata la ausencia de identidad como «no consta» y
+ * se comporta como hasta hoy. Bloquear aquí convertiría un dato que falta en un asistente
+ * que no guarda.
+ *
+ * @param {Object} p payload del handler (lleva resume_token y, si el tutor entró por su
+ *                   enlace, `n`; `recovered_email` es el compat secundario).
+ * @param {string} groupId grupo YA autorizado (derivado del resume_token — KAL-4).
+ * @returns {string|null} person_id del tutor que opera.
+ */
+/**
+ * DL-E49 §5 · ¿QUÉ TUTORES HAN ENVIADO SU PARTE Y CUÁLES FALTAN?
+ *
+ * Lectura. La usa la pantalla de confirmación para acusar recibo al que envía antes que
+ * los demás: su envío consta, y falta que los otros completen su parte. Proxy fino al KMS
+ * —el asistente no calcula nada— y la identidad del que pregunta se resuelve server-side
+ * desde su propio enlace, no se acepta del cliente.
+ *
+ * @param {Object} p { resume_token, n? }
+ */
+function estadoDeLasPartes_(p) {
+  // KAL-4: el grupo SIEMPRE del resume_token, nunca del payload.
+  var groupId = requireResumeToken_(p);
+  return kmsProxy_('enr.wizardEstadoDeLasPartes', {
+    resume_token: p.resume_token,
+    person_id:    wizardTutorQueOpera_(p, groupId),
+  });
+}
+
+function wizardTutorQueOpera_(p, groupId) {
+  try {
+    var email = effectiveRecoveredEmail_((p && p.recovered_email) || null, groupId, (p && p.n) || null);
+    if (!email) return null;
+    return resolveGuardianForRecovery_(groupId, email) || null;
+  } catch (e) {
+    Logger.log(redact_('[wizardTutorQueOpera_] no se pudo identificar al tutor: ' + e.message));
+    return null;
+  }
+}
+
 function saveResponses_(p) {
   // KAL-4: derive authorised group_id from resume_token; never trust the
   // payload's enrollment_group_id directly. Cross-check inside the helper.
@@ -5264,7 +5331,13 @@ function saveResponses_(p) {
     language:                     r.language || 'es',
   }));
 
-  kmsProxy_('enr.wizardSaveResponses', { resume_token: p.resume_token, responses: outResponses });
+  // DL-E49 §1 — QUIÉN contesta viaja aparte de DE QUIÉN es cada respuesta. Se resuelve
+  // aquí, server-side, desde el enlace del tutor; el KMS lo re-valida contra el grupo.
+  kmsProxy_('enr.wizardSaveResponses', {
+    resume_token:           p.resume_token,
+    answered_by_person_id:  wizardTutorQueOpera_(p, enrollmentGroupId),
+    responses:              outResponses,
+  });
   return { saved: outResponses.length };
 }
 
