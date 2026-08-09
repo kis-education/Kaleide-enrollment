@@ -490,6 +490,8 @@
   "neae.diagnosis_placeholder": "Selecciona (opcional)…",
   "neae.condition_obs_placeholder": "Detalles que ayuden a la planificación (opcional)",
   "neae.supports_label": "¿Ha recibido algún apoyo, refuerzo o terapia?",
+  "neae.review_conditions": "Necesidades / perfil",
+  "neae.review_supports": "Apoyos recibidos",
   "neae.support_type_placeholder": "Tipo de apoyo…",
   "neae.diag.NONE": "Sin diagnóstico",
   "neae.diag.SUSPECTED": "Sospecha",

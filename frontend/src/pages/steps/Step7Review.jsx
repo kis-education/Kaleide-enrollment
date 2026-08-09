@@ -186,9 +186,38 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   // renderizar ningún paso hasta superar el OTP. Por tanto, una vez aquí, el
   // resumen agregado se muestra con normalidad — sin reveal-per-campo.
 
-  const { email, persons, documents, relations, health, questions } = stepData;
+  // `neae` es el apoyo educativo del paso 4 «Salud y apoyo»: una entrada por solicitante,
+  // { person_id, conditions:[], supports:[] } — MISMA forma que maneja el paso 4
+  // (Step4Health.jsx:328) y que el servidor devuelve al rehidratar (Code.js:4095-4103).
+  // Sin recogerlo aquí, la familia no podía repasar antes de enviar lo que había declarado.
+  const { email, persons, documents, relations, health, neae, questions } = stepData;
   const guardians  = (persons || []).filter(p => p.person_type_id === 'guardian');
   const applicants = (persons || []).filter(p => p.person_type_id === 'applicant');
+
+  // Salud y apoyo educativo se pintan en el MISMO recuadro porque son el mismo paso y el
+  // mismo grado de sensibilidad. Se unen por persona: una familia puede haber declarado
+  // solo apoyo (sin alergias) y ese caso también tiene que verse.
+  const saludYApoyo = (() => {
+    const porPersona = new Map();
+    const tomar = (pid) => {
+      if (!porPersona.has(pid)) {
+        porPersona.set(pid, { person_id: pid, allergies: [], dietary: [], medical: [], conditions: [], supports: [] });
+      }
+      return porPersona.get(pid);
+    };
+    (health || []).forEach(h => {
+      const e = tomar(h.person_id);
+      e.allergies = h.allergies || [];
+      e.dietary   = h.dietary   || [];
+      e.medical   = h.medical   || [];
+    });
+    (neae || []).forEach(n => {
+      const e = tomar(n.person_id);
+      e.conditions = n.conditions || [];
+      e.supports   = n.supports   || [];
+    });
+    return [...porPersona.values()];
+  })();
 
   // GA relations: have guardian_person_id + applicant_person_id (live or resumed)
   const gaRelations = (relations || []).filter(r =>
@@ -528,18 +557,18 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         </SectionCard>
       )}
 
-      {/* ── Health ── */}
-      {(health || []).some(h => h.allergies?.length || h.dietary?.length || h.medical?.length) && (
+      {/* ── Health + apoyo educativo (paso 4 «Salud y apoyo») ── */}
+      {saludYApoyo.some(h => h.allergies?.length || h.dietary?.length || h.medical?.length || h.conditions?.length || h.supports?.length) && (
         <SectionCard title={t('step.health')} icon="bi-heart-pulse-fill">
-          {(health || []).map((h, hi) => {
+          {saludYApoyo.map((h, hi) => {
             const applicant = (persons || []).find(p => (p.person_id || p._uid) === h.person_id);
             const name = applicant
               ? [applicant.first_name, applicant.last_name].filter(Boolean).join(' ')
               : null;
-            const hasAny = h.allergies?.length || h.dietary?.length || h.medical?.length;
+            const hasAny = h.allergies?.length || h.dietary?.length || h.medical?.length || h.conditions?.length || h.supports?.length;
             if (!hasAny) return null;
             return (
-              <div key={hi} style={{ marginBottom: hi < (health || []).length - 1 ? 14 : 0 }}>
+              <div key={hi} style={{ marginBottom: hi < saludYApoyo.length - 1 ? 14 : 0 }}>
                 {name && applicants.length > 1 && (
                   <p style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--teal-dk)', marginBottom: 6, marginTop: hi > 0 ? 4 : 0 }}>
                     {name}
@@ -584,6 +613,46 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
                         return (
                           <Chip key={mi}>
                             {label}{m.observations ? ` — ${m.observations}` : ''}
+                          </Chip>
+                        );
+                      })}
+                    </span>
+                  </div>
+                )}
+                {/* Apoyo educativo — mismas dos partes que en el paso 4 (necesidades / apoyos),
+                    con sus mismos rótulos: aquí no se inventa ninguna etiqueta nueva. */}
+                {(h.conditions || []).length > 0 && (
+                  <div style={{ display: 'flex', gap: 8, padding: '5px 0', fontSize: '0.88rem', borderBottom: '1px solid var(--bg)', alignItems: 'flex-start' }}>
+                    <span style={{ color: 'var(--muted)', minWidth: 170, flexShrink: 0 }}>{t('neae.review_conditions')}</span>
+                    <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {h.conditions.map((c, ci) => {
+                        // La situación del diagnóstico va pegada a la etiqueta: sin ella,
+                        // «TEA» no distingue una sospecha de un dictamen.
+                        const label = t('neae.cat.' + c.category_code, { defaultValue: c.category_code });
+                        const diag  = c.diagnosis_status
+                          ? t('neae.diag.' + c.diagnosis_status, { defaultValue: '' })
+                          : '';
+                        return (
+                          <Chip key={ci}>
+                            {diag ? `${label} · ${diag}` : label}{c.observations ? ` — ${c.observations}` : ''}
+                          </Chip>
+                        );
+                      })}
+                    </span>
+                  </div>
+                )}
+                {(h.supports || []).length > 0 && (
+                  <div style={{ display: 'flex', gap: 8, padding: '5px 0', fontSize: '0.88rem', borderBottom: '1px solid var(--bg)', alignItems: 'flex-start' }}>
+                    <span style={{ color: 'var(--muted)', minWidth: 170, flexShrink: 0 }}>{t('neae.review_supports')}</span>
+                    <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {h.supports.map((s, si) => {
+                        const label = t('neae.sup.' + s.support_type, { defaultValue: s.support_type });
+                        const scope = s.provider_scope
+                          ? t('neae.scope.' + s.provider_scope, { defaultValue: '' })
+                          : '';
+                        return (
+                          <Chip key={si}>
+                            {scope ? `${label} · ${scope}` : label}{s.observations ? ` — ${s.observations}` : ''}
                           </Chip>
                         );
                       })}
