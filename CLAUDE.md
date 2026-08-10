@@ -370,6 +370,46 @@ Para tokens donde un prefix estable es útil para cross-referencing trace, usar 
 
 Call-sites redactados 2026-05-30 (backend): `initEnrollmentSession_` auto-abandon, `sendMagicLink_` renew/failure, `reportUnsolicited_` abandon, `resumeSession_` unlock, `appsheetRequest_` HTTP trace (trimmed 600→200 chars), `[resolveSigningToken_]` NOT_FOUND/COMPLETED/valid, `adminUnblockEmail`, `adminCleanupOrphanSessions` summary + abandon, `fetchLookups_` row-level dumps colapsados a counts. Tests: `manual_testLogRedaction`.
 
+### Los permisos que declara el asistente — los tres que hay, y por qué
+
+Este backend es `ANYONE_ANONYMOUS`, así que **cada permiso del manifiesto lo consiente quien
+publica y pesa sobre TODO el proyecto**. La dirección correcta es siempre **retirar**: un permiso
+de más que la cuenta no pueda conceder deja la autorización **a medias** y tumba el proyecto
+entero — no solo la función que lo pedía (mismo mecanismo que las dos prohibiciones del KMS,
+`kis-app/CLAUDE.md` §"PROHIBIDO scope RESTRINGIDO `auth/drive`" y §"PROHIBIDO scopes
+`admin.directory.*`"). **Nunca se añade un permiso "por si acaso".**
+
+`backend/appsscript.json` declara **tres**, y ninguno más — `dependencies` está **vacío** (sin
+servicios avanzados):
+
+| Permiso | Para qué, y quién lo usa |
+|---|---|
+| `script.external_request` | `UrlFetchApp` — todo el tráfico saliente: AppSheet y el proxy al KMS (`kmsProxy_`), por donde salen también **todos los correos** |
+| `drive` (Drive **COMPLETO**) | los documentos que sube la familia: `getOrCreateDriveFolder_` (`Code.js:8243`) + `folder.createFile` (`:5636`) y la lectura de vuelta `DriveApp.getFileById` (`:5925`) |
+| `script.scriptapp` | `ScriptApp.getService().getUrl()` (`:1228`), `getOAuthToken()` (`:1343`, `:6996` — el bearer que abre la puerta del KMS) y los disparadores del proyecto (`:1729`) |
+
+**El asistente NO manda correo por su cuenta y no lleva permiso para hacerlo.** Los cinco avisos
+que salen del wizard (§"Lo que el wizard manda HOY") los **renderiza y envía el motor del KMS**,
+llamado por HTTP con `sendViaKmsNotify_` / `sendViaKmsAuthCode_` — eso es
+`script.external_request`, no correo local. Cero llamadores de `GmailApp`, `MailApp` o del
+servicio avanzado `Gmail` en todo el proyecto (`backend/Code.js` + `backend/SetupDrainSecret.gs`):
+solo quedan **dos comentarios** (`Code.js:4835`, `:4839`) que documentan la retirada de 2026-06-25.
+Compruébalo así antes de afirmar nada, contra `origin/main` y nunca contra el árbol de trabajo:
+
+```bash
+git show origin/main:backend/Code.js | grep -cE "GmailApp|MailApp|Gmail\.Users|sendEmail"
+```
+
+**El de Drive es el ANCHO a propósito, y bajarlo a `drive.file` NO se puede acreditar desde el
+repositorio.** `getOrCreateDriveFolder_` busca la carpeta **por nombre en todo el Drive**
+(`DriveApp.getFoldersByName`, `Code.js:8244`), y la lectura de vuelta abre ficheros **por
+identificador** (`DriveApp.getFileById`, `:5925`) que pueden haberse creado antes, bajo el permiso
+ancho. Con `drive.file` la aplicación solo ve **lo que ella misma creó o abrió**: leyendo código no
+hay forma de saber si seguiría encontrando esa carpeta y esos ficheros, y equivocarse **rompe TODA
+subida de documento de una familia**. Para bajarlo hace falta **medirlo en ejecución** con el
+proyecto delante — publicar el permiso acotado y comprobar que una subida y su lectura de vuelta
+siguen funcionando —; hasta entonces se queda como está.
+
 ## GAS conventions
 
 ### Funciones `manual_*` NUNCA con trailing underscore (2026-05-30)
