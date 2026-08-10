@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
 import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
-import { gasCall, fetchLookups, fetchQuestions, requestCorrection } from '../../api';
+import { gasCall, fetchLookups, fetchQuestions, requestCorrection, identidadDelEnlace } from '../../api';
 import StepNav from '../../components/StepNav';
 import { openDocument } from '../../utils/documentProxy';
 import { translateRelationLabel, translateGender, translateIdType } from '../../utils/enumLabels';
@@ -178,7 +178,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
   const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted, setIsSubmitted,
-          enqueueSave, setSubmitError, setValidationError, recoveryNonce } = useWizard(); // UX-3 + UX-1
+          enqueueSave, setSubmitError, setValidationError, recoveryNonce, recoveredEmail } = useWizard(); // UX-3 + UX-1 + ②24
 
   // DL-E39 ENMIENDA (gate de ENTRADA, Diego 2026-06-06): el enmascarado per-campo
   // se ELIMINA. Toda la PII queda protegida por el GATE DE ENTRADA del wizard
@@ -711,7 +711,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
                   {d.file_id && (
                     <button type="button" className="btn btn-link p-0"
                       style={{ fontSize: '0.8rem', color: 'var(--teal-dk)', verticalAlign: 'baseline' }}
-                      onClick={() => openDocument({ file_id: d.file_id, resume_token: resumeToken })
+                      onClick={() => openDocument({ file_id: d.file_id, resume_token: resumeToken, ...identidadDelEnlace({ n: recoveryNonce, recoveredEmail }) })
                         .catch(e => log.error('Step7: getDocument failed', { message: e.message }))}>
                       <i className="bi bi-box-arrow-up-right ms-1" />
                     </button>

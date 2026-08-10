@@ -964,17 +964,115 @@ function _resolveStepUpGroup_(p) {
  * NO usar para "deslizar" la ventana en cada actividad — eso es precisamente el
  * bug que SEC-STEPUP cerró. Para una ventana viva más larga, el usuario re-OTPa.
  *
+ * ②24 (2026-08-10) — LA MARCA ES DEL TUTOR QUE SE VERIFICÓ, NO DEL EXPEDIENTE. Hasta
+ * hoy la clave era `stepup_ok_<expediente>` a secas: un código pedido y acertado por UN
+ * tutor abría la puerta para CUALQUIER identidad del mismo expediente — y los actos de
+ * firma (consentimientos, confirmación de lectura, inicio de firma) SÍ llevan identidad,
+ * así que la marca de uno servía para actuar como el otro. Ahora el valor guardado lleva,
+ * además del instante de caducidad, A QUIÉN se le mandó el código; ver `_isStepUpFresh_`
+ * para la regla exacta de comparación.
+ *
  * @param {string} enrollmentGroupId - ya derivado del token (KAL-4)
  * @param {string} [reason]          - etiqueta del evento (OTP|GRACE) para el log
+ * @param {string|null} [personaEmail] - buzón del tutor que operó (`_identidadDelEnlace_`),
+ *                                     o null si no se pudo identificar.
  * @private
  */
-function _markStepUpFresh_(enrollmentGroupId, reason) {
+function _markStepUpFresh_(enrollmentGroupId, reason, personaEmail) {
+  var persona = _stepUpPersonaKey_(personaEmail);
   CacheService.getScriptCache().put(
     'stepup_ok_' + enrollmentGroupId,
-    String(Date.now() + STEPUP_INACTIVITY_MS),
+    String(Date.now() + STEPUP_INACTIVITY_MS) + '|' + persona,
     Math.ceil(STEPUP_INACTIVITY_MS / 1000)
   );
-  Logger.log(redact_('[DBG stepup] mint reason=' + (reason || '?') + ' group=' + enrollmentGroupId + ' ttl_s=' + Math.ceil(STEPUP_INACTIVITY_MS / 1000)));
+  Logger.log(redact_('[DBG stepup] mint reason=' + (reason || '?') + ' group=' + enrollmentGroupId +
+                     ' persona=' + (persona || '(sin identificar)') +
+                     ' ttl_s=' + Math.ceil(STEPUP_INACTIVITY_MS / 1000)));
+}
+
+/**
+ * ②24 — HUELLA OPACA del buzón que operó. Es lo que se guarda junto a la marca de
+ * step-up y lo que namespacea el código de un solo uso, su contador de intentos y su
+ * cupo. Se guarda una huella y no el correo porque estas claves viven en un almacén
+ * compartido de todo el proyecto y no tienen por qué llevar un dato personal (KAL-11).
+ *
+ * Devuelve cadena vacía cuando no hay identidad: eso es «no consta», y `_isStepUpFresh_`
+ * lo trata como comodín (ver allí el porqué y su límite declarado).
+ *
+ * @param {string|null} email buzón efectivo del tutor (`_identidadDelEnlace_`).
+ * @returns {string} 12 caracteres hexadecimales, o '' si no hay identidad.
+ * @private
+ */
+function _stepUpPersonaKey_(email) {
+  if (!email) return '';
+  var limpio = String(email).toLowerCase().trim();
+  if (!limpio) return '';
+  var dig = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, limpio, Utilities.Charset.UTF_8);
+  return dig.slice(0, 6).map(function (b) {
+    var v = (b + 256) % 256; return (v < 16 ? '0' : '') + v.toString(16);
+  }).join('');
+}
+
+/**
+ * ②24 — claves del código de un solo uso del step-up, namespaceadas por buzón. UN SOLO
+ * sitio las construye para que emisión (`sendVerificationCode_`) y canje (`verifyEmail_`)
+ * no puedan divergir: si divergieran, el código emitido no se podría canjear nunca.
+ * @private
+ */
+function _stepUpCodeKey_(groupId, personaEmail) {
+  return 'stepup_verify_' + groupId + '_' + (_stepUpPersonaKey_(personaEmail) || '-');
+}
+
+/** ②24 — contador de intentos fallidos, por expediente Y buzón (ver `_stepUpCodeKey_`). */
+function _stepUpAttemptsKey_(groupId, personaEmail) {
+  return 'stepup_verify_attempts_' + groupId + '_' + (_stepUpPersonaKey_(personaEmail) || '-');
+}
+
+/**
+ * ②24 · QUÉ BUZÓN ESTÁ OPERANDO — UN SOLO SITIO lo resuelve, y con memoria.
+ *
+ * No es un resolvedor nuevo: es `effectiveRecoveredEmail_` (identidad DEL ENLACE, `n` =
+ * email_id, con la validación KAL-4 de que la fila es de este expediente) envuelto en una
+ * memoria de 300 s, porque ahora lo pregunta CADA acto gateado y sin memoria costaría
+ * 2-3 lecturas de AppSheet (10-22 s medidos) en cada guardado — que es exactamente el
+ * coste que PERF-WIZ quitó de estos caminos.
+ *
+ * OJO a lo que devuelve cuando no hay `n` ni `recovered_email`: `effectiveRecoveredEmail_`
+ * cae, por diseño (su fallback 3), al `primary_email` del expediente — el correo personal
+ * del tutor 1. Es decir, **no devuelve «no se sabe», devuelve «el tutor 1»**. Eso es lo
+ * que hace que este cambio NO rompa nada: una sesión sin discriminador se comporta
+ * exactamente como hasta hoy (el código va al tutor 1 y la marca es del tutor 1).
+ *
+ * La clave de la memoria incluye el token de recuperación: cuando se rota (cada envío de
+ * enlace) la entrada vieja queda inalcanzable y caduca sola. La memoria NO autoriza nada
+ * — el expediente sigue derivándose del token en cada llamada (KAL-4).
+ *
+ * @param {Object} p payload del manejador (resume_token + `n` y/o recovered_email).
+ * @param {string} groupId expediente YA autorizado (derivado del token — KAL-4).
+ * @returns {string|null} buzón efectivo en minúsculas, o null si no hay forma de saberlo.
+ * @private
+ */
+function _identidadDelEnlace_(p, groupId) {
+  if (!p || !groupId) return null;
+  var memoKey = null;
+  try {
+    var crudo = [String(p.resume_token || '').trim(), p.n || '', p.recovered_email || '', groupId].join('|');
+    var dig = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, crudo, Utilities.Charset.UTF_8);
+    memoKey = 'idlink_' + dig.map(function (b) {
+      var v = (b + 256) % 256; return (v < 16 ? '0' : '') + v.toString(16);
+    }).join('');
+    var hit = CacheService.getScriptCache().get(memoKey);
+    if (hit) return hit === '-' ? null : hit;
+  } catch (e) { /* la memoria NUNCA rompe el camino vivo */ }
+  var email = null;
+  try {
+    email = effectiveRecoveredEmail_((p && p.recovered_email) || null, groupId, (p && p.n) || null);
+  } catch (e) {
+    Logger.log(redact_('[_identidadDelEnlace_] no se pudo identificar el buzón: ' + e.message));
+    email = null;
+  }
+  try { if (memoKey) CacheService.getScriptCache().put(memoKey, email || '-', 300); } catch (e) { /* best-effort */ }
+  return email;
 }
 
 // ─── DL-A.5 (Opción A §2) — versión liveState por grupo (cheap-poll) ──────────
@@ -1089,22 +1187,39 @@ function _consumeMagicLinkNonce_(resumeToken, expectedGroupId) {
  * @returns {boolean}
  * @private
  */
-function _isStepUpFresh_(enrollmentGroupId) {
+function _isStepUpFresh_(enrollmentGroupId, personaEmail) {
   const val = CacheService.getScriptCache().get('stepup_ok_' + enrollmentGroupId);
-  const fresh = !!val && Number(val) >= Date.now();
-  // SEC-STEPUP [DBG stepup]: edad/restante de la ventana DURA, redactado. Que el
-  // próximo log lo cuente solo — sin re-extender nada (esto es solo lectura).
-  if (val) {
-    const remainingS = Math.max(0, Math.round((Number(val) - Date.now()) / 1000));
-    Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=' + fresh + ' remaining_s=' + remainingS));
-  } else {
+  if (!val) {
     Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=false no_mark'));
+    return false;
   }
+  // ②24 — el valor guardado es «<caducidad>|<huella del buzón>». Una marca ANTERIOR a
+  // este cambio es solo el número: se lee igual y su huella queda vacía (comodín).
+  const partes = String(val).split('|');
+  const exp = Number(partes[0]);
+  const marcada = partes.length > 1 ? String(partes[1]) : '';
+  const persona = _stepUpPersonaKey_(personaEmail);
+  const enVentana = !!exp && exp >= Date.now();
+  // LA REGLA, y su límite declarado: la marca NO se transfiere entre DOS buzones
+  // conocidos y distintos. Cuando uno de los dos lados no consta, se deja pasar — así
+  // esto no rompe ningún camino que hoy no manda identidad, y no concede nada nuevo:
+  // para tener marca hay que haber recibido el código, que va al buzón del que opera.
+  // Lo que cierra es lo que estaba abierto: los actos que SÍ llevan identidad
+  // (consentimientos, confirmación de lectura, inicio de firma) ya no pueden hacerse
+  // en nombre de un tutor con la marca que se ganó otro.
+  const mismaPersona = !marcada || !persona || marcada === persona;
+  const fresh = enVentana && mismaPersona;
+  const remainingS = Math.max(0, Math.round((exp - Date.now()) / 1000));
+  Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=' + fresh +
+                     ' remaining_s=' + remainingS +
+                     ' persona=' + (persona || '(sin identificar)') +
+                     ' marcada=' + (marcada || '(sin identificar)') +
+                     (enVentana && !mismaPersona ? ' motivo=OTRO_TUTOR' : '')));
   return fresh;
 }
 
-function assertStepUpFresh_(enrollmentGroupId) {
-  if (!_isStepUpFresh_(enrollmentGroupId)) {
+function assertStepUpFresh_(enrollmentGroupId, personaEmail) {
+  if (!_isStepUpFresh_(enrollmentGroupId, personaEmail)) {
     var err = new Error('Step-up re-verification required');
     err.code = 'STEPUP_REQUIRED';
     Logger.log(redact_('[assertStepUpFresh_] reject group=' + enrollmentGroupId));
@@ -1924,16 +2039,20 @@ function _checkMagicLinkRateLimit_(email) {
  * frecuente; merece su propio cupo, más holgado, sin contaminar el bucket
  * anti-abuso de magic-link (que protege contra spam de enlaces a terceros).
  *
- * Bucket `stepup_count_<group>` cap 8/h, scoped al GRUPO (ya derivado del token,
- * KAL-4) — no al email — porque el destino siempre es el primary_email del grupo
- * y el group viene del bearer token, no es enumerable.
+ * Bucket cap 8/h, acotado al expediente (ya derivado del token, KAL-4) Y AL BUZÓN al que
+ * va el código (②24, 2026-08-10). Antes era solo por expediente porque «el destino
+ * siempre es el primary_email del grupo» — con el envío por tutor de DL-E49 eso dejó de
+ * ser cierto: el destino es el buzón del tutor que opera, y un cupo compartido dejaba sin
+ * códigos al segundo tutor en cuanto el primero gastaba los 8. El buzón NO es enumerable
+ * (se deriva del enlace, nunca del cuerpo de la petición), así que no abre nada.
  *
  * @param {string} groupId - enrollment_group_id ya derivado del token.
+ * @param {string|null} [personaEmail] - buzón destino (`_identidadDelEnlace_`).
  */
-function _checkStepUpCodeRateLimit_(groupId) {
+function _checkStepUpCodeRateLimit_(groupId, personaEmail) {
   if (!groupId) return;
   const cache = CacheService.getScriptCache();
-  const countKey = 'stepup_count_' + groupId;
+  const countKey = 'stepup_count_' + groupId + '_' + (_stepUpPersonaKey_(personaEmail) || '-');
   const count = parseInt(cache.get(countKey) || '0', 10);
   if (count >= 8) {
     const err = new Error('Too many verification-code requests; try again in 1 hour');
@@ -3686,7 +3805,11 @@ function resumeSession_(p) {
   // 10 min. KAL-4: el grupo (id) se deriva del resume_token server-side. KAL-7: un token
   // viejo/filtrado/reusado no tiene marcador → step_up_fresh=false → flujo OTP normal.
   const stepUpFresh = _consumeMagicLinkNonce_(p && p.resume_token, id);
-  if (stepUpFresh) _markStepUpFresh_(id, 'GRACE');
+  // ②24 — la marca y su lectura llevan A QUÉ BUZÓN pertenecen. Un solo sitio lo resuelve
+  // (`_identidadDelEnlace_`, con memoria) y aquí se calcula UNA vez para las tres veces
+  // que este manejador la usa (gracia, acierto de cache y puerta de datos personales).
+  const personaEmail = _identidadDelEnlace_(p, id);
+  if (stepUpFresh) _markStepUpFresh_(id, 'GRACE', personaEmail);
 
   // Refuse if the family explicitly abandoned this session via abandonSession_.
   // Submitted sessions stay resumable regardless (the family must always be
@@ -3730,7 +3853,7 @@ function resumeSession_(p) {
         // V2.4.1: normalizar el token embebido (cocinado quizá pre-rotación).
         if (entry.data.group) entry.data.group.resume_token = String(p.resume_token).trim();
         if (entry.data.application) entry.data.application.resume_token = String(p.resume_token).trim();
-        if (_isStepUpFresh_(id)) {
+        if (_isStepUpFresh_(id, personaEmail)) {
           return Object.assign({}, entry.data, { step_up_fresh: stepUpFresh });
         }
         // Sin step-up fresco: misma shape gateada del camino vivo (PII vaciada).
@@ -3877,7 +4000,7 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
   // muestra el StepUpGate y re-llama resumeSession tras el OTP (onVerified) → PII.
   // KAL-4: group (id) derivado del token, nunca del payload. (Bonus: corta antes
   // de los ~20 reads de detalle por persona.)
-  if (!(opts && opts.skipPiiGate) && !_isStepUpFresh_(id)) {
+  if (!(opts && opts.skipPiiGate) && !_isStepUpFresh_(id, personaEmail)) {
     Logger.log(redact_('[resumeSession_] PII-gated (sin step-up) group=' + id));
     // ★ SEC WIZ-SIGNTOKEN: `admission.signing_context` lleva el signing_token en
     // claro; en la rama pii-gated (sin step-up) NO debe cruzar al cliente. Redacta
@@ -4184,8 +4307,10 @@ function getAdmissionState_(p) {
   // (mlgrace_<resume_token>); single-use, 10 min → consume + marca fresco. Si no hay
   // marcador, REPORTAMOS la frescura vigente del grupo (no la cambiamos).
   let stepUpFresh = _consumeMagicLinkNonce_(p && p.resume_token, id);
+  // ②24 — de qué buzón es la marca (un solo resolvedor, con memoria).
+  const personaEmail = _identidadDelEnlace_(p, id);
   if (stepUpFresh) {
-    _markStepUpFresh_(id, 'GRACE');
+    _markStepUpFresh_(id, 'GRACE', personaEmail);
   } else {
     // ★ SEC-STEPUP (finding #55): el pulso es una LECTURA — REPORTA la frescura
     // vigente, NUNCA la re-extiende. Antes (P-STEPUP-SLIDING) este else re-escribía
@@ -4193,7 +4318,7 @@ function getAdmissionState_(p) {
     // mientras la pestaña estuviera abierta, y una recarga dentro de esa ventana viva
     // entraba SIN OTP (bypass del PII-gate). La ventana es DURA: 10 min desde la última
     // RE-VERIFICACIÓN (OTP o gracia), sin extensión por uso. Solo se reporta aquí.
-    stepUpFresh = _isStepUpFresh_(id);
+    stepUpFresh = _isStepUpFresh_(id, personaEmail);
   }
 
   // WIZARD-CACHE (2026-06-12) — cache-first: si el warm dejó wz_adm_<token> y la
@@ -4380,7 +4505,8 @@ function saveStep_(p) {
   // aquí (lo hacen saveResponses_/uploadDocument_, gateados por separado).
   // KAL-4: enrollmentGroupId ya viene de requireResumeToken_ (token), no payload.
   if (p.step === 'persons' || p.step === 'relations' || p.step === 'health') {
-    assertStepUpFresh_(enrollmentGroupId);
+    // ②24 — la puerta pregunta por el BUZÓN que opera: la marca de otro tutor no vale.
+    assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
   }
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana en un save (eso era
   // P-STEPUP-SLIDING — convertía 10 min en infinitos por uso → bypass del gate en
@@ -4899,6 +5025,9 @@ function submitEnrollmentSession_(p) {
 function sendVerificationCode_(p) {
   let enrollmentGroupId;
   let primary_email;
+  // ②24 — huella del buzón al que va el código. Namespacea el código, su contador de
+  // intentos y su cupo, y es lo que `verifyEmail_` estampa en la marca de step-up.
+  let personaEmail = null;
 
   if (p && p.stepup === true) {
     // ── DL-E39 step-up: re-verifica acceso-al-inbox antes de revelar/mutar PII.
@@ -4913,10 +5042,39 @@ function sendVerificationCode_(p) {
       errBad.code = 'UNAUTHORIZED';
       throw errBad;
     }
-    const grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-    });
-    primary_email = grpRows && grpRows[0] && grpRows[0].primary_email;
+    // ②24 (2026-08-10) — EL CÓDIGO VA AL BUZÓN DEL TUTOR QUE ESTÁ OPERANDO.
+    //
+    // Hasta hoy salía SIEMPRE a `primary_email`, que no es «el correo del expediente»:
+    // es el correo personal del TUTOR 1 (artefacto Stage-1, ver §"Modelo canónico de
+    // email de recuperación" del CLAUDE.md de este repositorio). Con el envío por tutor
+    // de DL-E49 §1, el tutor 2 que agotaba los 10 minutos de gracia de su enlace pedía
+    // el código y el código se iba al buzón del otro: no podía volver a entrar en su
+    // propia solicitud.
+    //
+    // El buzón lo resuelve el MISMO sitio que todo lo demás (`_identidadDelEnlace_` →
+    // `effectiveRecoveredEmail_`, identidad DEL ENLACE con la validación KAL-4 de que la
+    // fila es de este expediente). Nunca del cuerpo de la petición: un atacante no puede
+    // redirigirse el código a su propio buzón.
+    //
+    // Sin discriminador (`n` ni `recovered_email`) ese resolvedor cae, por su propio
+    // diseño, al `primary_email` del expediente ⇒ una sesión que no se identifica se
+    // comporta EXACTAMENTE como hasta hoy. La lectura de la fila de grupo de abajo se
+    // conserva como último respaldo (y para el error claro si el expediente no tiene
+    // ningún correo con el que hacer nada).
+    //
+    // Sin `else` a propósito: `scripts/verja-publica.mjs` parte este manejador en sus dos
+    // ramas por el PRIMER `} else {`, así que un if/else anidado aquí le movería el corte
+    // y le haría ver la lectura de abajo como si fuera de la rama de alta. Es el límite
+    // declarado de ese control (detector por líneas, no analizador sintáctico) y la
+    // respuesta correcta es no darle una forma ambigua, no aflojarlo.
+    personaEmail = _identidadDelEnlace_(p, enrollmentGroupId);
+    primary_email = personaEmail;
+    if (!primary_email) {
+      const grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+        Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
+      });
+      primary_email = grpRows && grpRows[0] && grpRows[0].primary_email;
+    }
     if (!primary_email) {
       const errNoEmail = new Error('No primary_email on file for this group');
       errNoEmail.code = 'BAD_REQUEST';
@@ -4956,7 +5114,9 @@ function sendVerificationCode_(p) {
   // recuperaciones + revelados y el OTP dejaba de llegar ("el código no llega"). El
   // signup inicial mantiene el bucket de magic-link por-email (anti-abuso de enlaces).
   if (p && p.stepup === true) {
-    _checkStepUpCodeRateLimit_(enrollmentGroupId);
+    // ②24 — el cupo es POR BUZÓN, no por expediente: con dos tutores operando a la vez,
+    // un cupo compartido hacía que el primero en gastar 8 dejara al otro sin códigos.
+    _checkStepUpCodeRateLimit_(enrollmentGroupId, personaEmail);
   } else {
     _checkMagicLinkRateLimit_(primary_email.toLowerCase().trim());
   }
@@ -4979,8 +5139,15 @@ function sendVerificationCode_(p) {
   // camino step-up (que deriva el grupo del token, KAL-4, y envía al primary_email
   // REAL del grupo — nunca a un email del payload). El signup no puede sembrar esa
   // clave. El camino signup conserva `verify_<G>` intacto (byte-neutro).
+  //
+  // ②24 (2026-08-10): la clave del step-up lleva además la HUELLA DEL BUZÓN al que se
+  // manda el código. Dos motivos, los dos medidos contra el envío por tutor de DL-E49:
+  // (1) con los dos tutores operando a la vez, la clave compartida hacía que el segundo
+  // código PISARA al primero y el primer tutor tecleara un código ya inválido; (2) un
+  // código emitido para un buzón no puede canjearse en nombre de otro (`verifyEmail_`
+  // deriva la misma huella del mismo sitio).
   const codeKey = (p && p.stepup === true)
-    ? 'stepup_verify_' + enrollmentGroupId
+    ? _stepUpCodeKey_(enrollmentGroupId, personaEmail)
     : 'verify_' + enrollmentGroupId;
   cache.put(codeKey, code, 600); // 10 min TTL
 
@@ -5031,14 +5198,22 @@ function verifyEmail_(p) {
   // haber sido emitido por el camino step-up (que envía al primary_email real del
   // grupo derivado del token). El camino signup conserva `verify_<G>` /
   // `verify_attempts_<G>` intactos (byte-neutro). Ver sendVerificationCode_.
+  //
+  // ②24 (2026-08-10): en el step-up la clave lleva la HUELLA DEL BUZÓN, derivada del
+  // MISMO sitio que la usó al emitir (`_identidadDelEnlace_` → `_stepUpCodeKey_`). Así un
+  // código que se mandó al buzón de un tutor no se puede canjear en nombre de otro, y dos
+  // tutores operando a la vez no se pisan el código.
   const isStepUp = (p && p.stepup === true);
-  const codeKey = isStepUp ? 'stepup_verify_' + enrollmentGroupId : 'verify_' + enrollmentGroupId;
+  const personaEmail = isStepUp ? _identidadDelEnlace_(p, enrollmentGroupId) : null;
+  const codeKey = isStepUp
+    ? _stepUpCodeKey_(enrollmentGroupId, personaEmail)
+    : 'verify_' + enrollmentGroupId;
 
   // KAL-NEW-2.b: lockout de intentos (anti fuerza-bruta 10^6). 5 intentos fallidos
   // por group → TOO_MANY_ATTEMPTS sin revelar si el código era correcto. TTL 10 min
   // (mismo que el código). Acierto → borra contador + código.
   const attemptsKey = isStepUp
-    ? 'stepup_verify_attempts_' + enrollmentGroupId
+    ? _stepUpAttemptsKey_(enrollmentGroupId, personaEmail)
     : 'verify_attempts_' + enrollmentGroupId;
   const attempts = parseInt(cache.get(attemptsKey) || '0', 10);
   if (attempts >= 5) {
@@ -5060,8 +5235,10 @@ function verifyEmail_(p) {
   // DL-E39 step-up: acierto en flujo step-up → marca el grupo como fresco
   // durante STEPUP_INACTIVITY_MS. Los handlers de PII (assertStepUpFresh_)
   // pasarán hasta que la ventana expire. (Flujo NO-stepup intacto.)
-  if (p && p.stepup === true) {
-    _markStepUpFresh_(enrollmentGroupId, 'OTP');
+  // ②24: la marca se estampa A NOMBRE DEL BUZÓN al que se mandó el código — es lo único
+  // que el acierto demuestra. Ver `_isStepUpFresh_` para la regla de comparación.
+  if (isStepUp) {
+    _markStepUpFresh_(enrollmentGroupId, 'OTP', personaEmail);
   }
 
   // No DB write — `email_confirmed` columns are removed in DL-E15. The
@@ -5456,7 +5633,10 @@ function estadoDeLasPartes_(p) {
 
 function wizardTutorQueOpera_(p, groupId) {
   try {
-    var email = effectiveRecoveredEmail_((p && p.recovered_email) || null, groupId, (p && p.n) || null);
+    // ②24 — el buzón lo resuelve UN SOLO SITIO (`_identidadDelEnlace_`, con memoria):
+    // el mismo que decide a quién se le manda el código de un solo uso y de quién es la
+    // marca de step-up. Aquí solo se traduce ese buzón a persona.
+    var email = _identidadDelEnlace_(p, groupId);
     if (!email) return null;
     return resolveGuardianForRecovery_(groupId, email) || null;
   } catch (e) {
@@ -5515,7 +5695,8 @@ function saveResponses_(p) {
   assertGroupEditable_(enrollmentGroupId);
   // DL-E39 step-up gate: las respuestas del cuestionario son PII del expediente.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
-  assertStepUpFresh_(enrollmentGroupId);
+  // ②24: y la marca tiene que ser DEL BUZÓN que opera, no de cualquiera del expediente.
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const { respondent_id, respondent_type_category_id, responses } = p;
@@ -5645,7 +5826,8 @@ function uploadDocument_(p) {
   assertGroupEditable_(enrollmentGroupId);
   // DL-E39 step-up gate: subir documentos del expediente es PII sensible.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
-  assertStepUpFresh_(enrollmentGroupId);
+  // ②24: la marca tiene que ser del buzón que opera.
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const enrollmentId      = p.enrollment_id || null;
@@ -5909,7 +6091,8 @@ function getDocument_(p) {
 
   // DL-E39 step-up gate: servir el documento en CLARO (bytes) revela PII.
   // groupId ya viene del token (resume_token o signing_token), nunca del payload.
-  assertStepUpFresh_(groupId);
+  // ②24: la marca tiene que ser del buzón que opera.
+  assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   const fileId = p.file_id;
@@ -6225,7 +6408,8 @@ function saveNeae_(p) {
   // de saveStep_ (que ya gatea persons/relations/health). Sin este gate un
   // resume_token filtrado podía escribir/enriquecer NEAE sin probar posesión del
   // buzón. KAL-4: enrollmentGroupId derivado del token, nunca del payload.
-  assertStepUpFresh_(enrollmentGroupId);
+  // ②24: la marca tiene que ser del buzón que opera.
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: no servir stale tras un write del grupo
 
   const neaeData = Array.isArray(p && p.neae) ? p.neae
@@ -7346,7 +7530,9 @@ function saveBillingInfo_(p) {
   // persistir datos de firma (paridad con initiateSigningSession_). Un resume_token
   // filtrado NO puede forjar consentimientos/billing sin probar posesión del buzón.
   // enrollment_group_id derivado del token (KAL-4), nunca del payload.
-  assertStepUpFresh_(sctx.enrollment_group_id);
+  // ②24: el buzón ya lo resolvió `requireSignerIdentity_` — se reusa, no se vuelve a
+  // resolver (dos lectores del mismo dato divergen; y aquí además costaría lecturas).
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
@@ -7574,7 +7760,8 @@ function submitGdprConsents_(p) {
   // ★ SEC WIZ-SIGNTOKEN (audit 2026-07-22): step-up fresco OBLIGATORIO antes de
   // persistir consentimientos GDPR (legalmente vinculantes). Paridad con
   // initiateSigningSession_. Grupo derivado del token (KAL-4), nunca del payload.
-  assertStepUpFresh_(sctx.enrollment_group_id);
+  // ②24: y a nombre del buzón que opera — la marca de un tutor no firma por el otro.
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
 
   if (!Array.isArray(p.consents) || !p.consents.length) {
     throw new Error('consents must be a non-empty array');
@@ -7610,7 +7797,8 @@ function confirmReview_(p) {
   // ★ SEC WIZ-SIGNTOKEN (audit 2026-07-22): step-up fresco OBLIGATORIO antes de
   // confirmar la revisión (evidencia del acto de firma). Paridad con
   // initiateSigningSession_. Grupo derivado del token (KAL-4), nunca del payload.
-  assertStepUpFresh_(sctx.enrollment_group_id);
+  // ②24: y a nombre del buzón que opera.
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
@@ -7677,7 +7865,9 @@ function initiateSigningSession_(p) {
 
   // DL-E39: step-up INCONDICIONAL antes de iniciar el ACTO de firma (Step 11).
   // enrollment_group_id derivado de la identidad (KAL-4), nunca del payload.
-  if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id);
+  // ②24: y a nombre del buzón que opera — nadie inicia la firma del otro con la marca
+  // que se ganó él. El buzón ya lo resolvió el gate de identidad: se reusa.
+  if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   // IP forense (best-effort): adjunta client_ip a la metadata del acto si el
@@ -7923,8 +8113,10 @@ function hydrateSession_(p) {
   //      (persons/relations/documents/responses + billing) NUNCA cruza al cliente antes
   //      del OTP. El wizard backend (trusted) sí recibe todo del KMS, pero lo filtra.
   const graceOk = _consumeMagicLinkNonce_(p && p.resume_token, groupId);
-  if (graceOk) _markStepUpFresh_(groupId, 'GRACE');
-  const stepUpFresh = _isStepUpFresh_(groupId);
+  // ②24 — la marca es del buzón que operó, no del expediente entero (un solo resolvedor).
+  const personaEmail = _identidadDelEnlace_(p, groupId);
+  if (graceOk) _markStepUpFresh_(groupId, 'GRACE', personaEmail);
+  const stepUpFresh = _isStepUpFresh_(groupId, personaEmail);
 
   // A (WIZARD-STEPUP) — gate ANTES de pagar el hydrate pesado. El gate PII (DL-E39)
   // estaba DESPUÉS del kmsProxy_ (~30s) → el OTP de entrada salía tras la espera. Ahora,

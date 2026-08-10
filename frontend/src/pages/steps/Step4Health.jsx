@@ -361,6 +361,7 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
   const {
     stepData, updateStep,
     touchActivity, resumeToken,
+    recoveryNonce, recoveredEmail,   // ②24 — quién está operando (identidad del enlace)
   } = useWizard();
   const applicants = (stepData.persons || []).filter(p => p.person_type_id === 'applicant');
 
@@ -475,7 +476,9 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
       supports:      n.supports   || [],
       source_locale: sourceLocale,
     }));
-    saveNeae(resumeToken, payload)
+    // ②24 — quién está operando: el servidor gatea esta escritura con el código de un
+    // solo uso y la marca es DEL BUZÓN que se verificó.
+    saveNeae(resumeToken, payload, { n: recoveryNonce, recoveredEmail })
       .then(() => log.success('Step4: saveNeae OK (background)'))
       .catch(err => log.warn('Step4: saveNeae failed (background)', { message: err?.message }));
   };

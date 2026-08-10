@@ -39,9 +39,39 @@ export function primeLookups(lookups) {
  *
  * @param {string} resumeToken  the family session bearer token
  * @param {Array}  neaeData     [{ person_id, conditions:[…], supports:[…], source_locale }]
+ * @param {{n?:string, recoveredEmail?:string}} [identidad] ②24 — quién está operando.
  */
-export function saveNeae(resumeToken, neaeData) {
-  return gasCall('saveNeae', { resume_token: resumeToken, neae: neaeData });
+export function saveNeae(resumeToken, neaeData, identidad) {
+  return gasCall('saveNeae', {
+    resume_token: resumeToken, neae: neaeData, ...identidadDelEnlace(identidad),
+  });
+}
+
+/**
+ * ②24 (2026-08-10) — QUIÉN ESTÁ OPERANDO, en el sub-objeto que el servidor espera.
+ *
+ * El servidor resuelve el tutor DEL PROPIO ENLACE (`n` = el identificador de la fila de
+ * correo, IDENTITY-FROM-LINK) y lo valida contra el expediente del token;
+ * `recovered_email` es el respaldo secundario. Nunca mandamos un tutor ni un expediente
+ * elegidos por el cliente.
+ *
+ * Va en TODA llamada que el servidor protege con el código de un solo uso, porque desde
+ * ②24 la marca de step-up es DEL BUZÓN que se verificó: si la petición no dice quién
+ * opera, el servidor la atiende como al tutor 1 — que es justo el fallo que ②24 cierra
+ * (el tutor 2 pedía su código y le llegaba al otro).
+ *
+ * Es el mismo contrato que `signingIdentity_` de los pasos de firma; aquí vive la forma
+ * general para el resto de pasos. Un solo sitio la construye.
+ *
+ * @param {{n?:string, recoveredEmail?:string}} [identidad]
+ * @returns {{n?:string, recovered_email?:string}}
+ */
+export function identidadDelEnlace(identidad) {
+  const id = identidad || {};
+  const out = {};
+  if (id.n) out.n = id.n;                                          // identidad del enlace
+  if (id.recoveredEmail) out.recovered_email = id.recoveredEmail;  // respaldo secundario
+  return out;
 }
 
 /**

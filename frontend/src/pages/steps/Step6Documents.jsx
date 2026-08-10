@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
-import { gasCall } from '../../api';
+import { gasCall, identidadDelEnlace } from '../../api';
 import { openDocument } from '../../utils/documentProxy';
 import LockedBanner from '../../components/LockedBanner';
 import StepNav from '../../components/StepNav';
@@ -48,7 +48,7 @@ const newRowId = () => `doc_row_${++_rowSeq}_${Date.now()}`;
  * Una fila del adjuntador genérico: descripción (texto libre) + archivo.
  * Sube vía gasCall('uploadDocument', { description, … }) al seleccionar el archivo.
  */
-function GenericAttachment({ row, enrollmentGroupId, resumeToken, onUploaded, onDescriptionChange, onRemove, onStepUpVerified, onActivity }) {
+function GenericAttachment({ row, enrollmentGroupId, resumeToken, identidad, onUploaded, onDescriptionChange, onRemove, onStepUpVerified, onActivity }) {
   const { t } = useTranslation();
   const [status, setStatus] = useState(row.file_id ? 'success' : '');
   const [fileId, setFileId] = useState(row.file_id || '');
@@ -72,6 +72,9 @@ function GenericAttachment({ row, enrollmentGroupId, resumeToken, onUploaded, on
         filename:    file.name,
         // WIZARD-DOCS: el usuario describe qué es el archivo (texto libre, opcional).
         description: (row.description || '').trim(),
+        // ②24 — quién está operando: el servidor exige el código de un solo uso y la
+        // marca es DEL BUZÓN que se verificó, no del expediente entero.
+        ...identidadDelEnlace(identidad),
       });
       setFileId(data.file_id);
       setStatus('success');
@@ -99,7 +102,7 @@ function GenericAttachment({ row, enrollmentGroupId, resumeToken, onUploaded, on
     if (!fileId || viewing) return;
     setViewing(true);
     try {
-      await openDocument({ file_id: fileId, resume_token: resumeToken });
+      await openDocument({ file_id: fileId, resume_token: resumeToken, ...identidadDelEnlace(identidad) }); // ②24
     } catch (e) {
       if (isStepUpError(e)) {
         log.warn('Step6: getDocument requires step-up');
@@ -203,7 +206,8 @@ function GenericAttachment({ row, enrollmentGroupId, resumeToken, onUploaded, on
           reintentar automáticamente la acción pendiente. */}
       {stepUpRetry && (
         <StepUpReverify
-          tokenPayload={{ resume_token: resumeToken }}
+          // ②24 — el código va al buzón del tutor que opera, no siempre al del tutor 1.
+          tokenPayload={{ resume_token: resumeToken, ...identidadDelEnlace(identidad) }}
           prompt={t('stepup.doc_reveal_prompt')}
           onVerified={() => {
             onStepUpVerified && onStepUpVerified();
@@ -222,7 +226,9 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   const {
     enrollmentGroupId, resumeToken, stepData, updateStep,
     markStepUpFresh, touchActivity,
+    recoveryNonce, recoveredEmail,   // ②24 — quién está operando (identidad del enlace)
   } = useWizard();
+  const identidad = { n: recoveryNonce, recoveredEmail };
 
   // Semilla desde la hidratación: cada documento subido (origin='WIZARD') se
   // convierte en una fila ya-completada del adjuntador genérico. Si no hay
@@ -360,6 +366,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
             row={row}
             enrollmentGroupId={enrollmentGroupId}
             resumeToken={resumeToken}
+            identidad={identidad}
             onUploaded={handleUploaded}
             onDescriptionChange={handleDescriptionChange}
             onRemove={handleRemoveRow}

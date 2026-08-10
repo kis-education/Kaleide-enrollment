@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
-import { gasCall, prefetchLookups, prefetchQuestions, prefetchDocuments } from '../api';
+import { gasCall, prefetchLookups, prefetchQuestions, prefetchDocuments, identidadDelEnlace } from '../api';
 import LangToggle from '../components/LangToggle';
 import SaveIndicator from '../components/SaveIndicator';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -261,6 +261,10 @@ const handleNext = async (stepKey, data, extra = null) => {
             application_id:      enrollmentGroupId, // legacy alias
             step:                stepKey,
             payload:             data,
+            // ②24 — quién está operando. Sin esto el servidor atiende el guardado como si
+            // fuera el tutor 1: el código de un solo uso le llegaría al otro y el KMS
+            // atribuiría la escritura a quien no la hizo (DL-E49 §2).
+            ...identidadDelEnlace({ n: recoveryNonce, recoveredEmail: effectiveRecoveredEmail }),
             ...(extra || {}),   // CLI 8: campos extra del paso (p.ej. sole_guardian_attestation)
           });
           log.success(`WizardPage: saveStep "${stepKey}" OK (background)`, saveResult?._debug || {});
@@ -333,6 +337,7 @@ const handleNext = async (stepKey, data, extra = null) => {
           application_id:      enrollmentGroupId,
           step:                stepKey,
           payload:             data,
+          ...identidadDelEnlace({ n: recoveryNonce, recoveredEmail: effectiveRecoveredEmail }), // ②24
           ...(extra || {}),   // CLI 8: preserva sole_guardian_attestation en el reintento
         });
         log.success(`WizardPage: saveStep "${stepKey}" OK (step-up retry)`, saveResult?._debug || {});
@@ -639,7 +644,9 @@ const handleNext = async (stepKey, data, extra = null) => {
         }}>
           <div style={{ maxWidth: 460, width: '100%' }}>
             <StepUpReverify
-              tokenPayload={{ resume_token: resumeToken }}
+              // ②24 — el código va al buzón del tutor que opera, no siempre al del tutor 1.
+              tokenPayload={{ resume_token: resumeToken,
+                              ...identidadDelEnlace({ n: recoveryNonce, recoveredEmail: effectiveRecoveredEmail }) }}
               prompt={t('stepup.save_prompt')}
               onVerified={() => { markStepUpFresh(); retryStepUpSave(); }}
             />
