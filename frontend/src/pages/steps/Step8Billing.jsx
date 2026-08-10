@@ -144,6 +144,10 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
         setModalityErr(
           code === 'NOT_EDITABLE'            ? t('signing.billing.modality.not_editable')
           : code === 'MODALITY_NOT_APPLICABLE' ? t('signing.billing.modality.not_applicable')
+          // ②27 — elegir cómo se paga es dinero y exige el código de un solo uso, igual que
+          // el reparto entre pagadores de esta misma pantalla. «Reintentar» no lo arregla:
+          // se dice qué hay que hacer, en vez del error genérico.
+          : isStepUpRequiredError(e)         ? t('signing.billing.modality.stepup_required')
           : t('signing.billing.modality.apply_error'));
       })
       .finally(() => setApplying(null));

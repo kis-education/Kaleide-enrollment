@@ -10,6 +10,8 @@ import { generateUuid } from '../../utils/uuid';
 import { validatePhone } from '../../utils/phone';
 import { parseBool, preparePersonForUI, preparePersonsForUI, deriveSameAddressFlags, addressIsEmpty_, ADDRESS_FIELDS } from './personShape';
 import { confirmarYQuitar } from '../../lib/quitar';
+import StepUpReverify from '../../components/StepUpReverify';
+import { identidadDelEnlace } from '../../api';
 
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
@@ -773,7 +775,10 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     stepData, updateStep, recognition,
     touchActivity, setValidationError,
     resumeToken,                       // para avisar al servidor de lo que la familia QUITA
+    recoveryNonce, recoveredEmail,     // ②24 — quién está operando (identidad del enlace)
+    markStepUpFresh,                   // ②27 — quitar exige el código de un solo uso
   } = useWizard();
+  const identidad = { n: recoveryNonce, recoveredEmail };
   const primaryEmail = stepData.email?.primary_email || '';
 
   // DL-E39 ENMIENDA (gate de entrada): el enmascarado per-campo (DOB/DNI/dirección)
@@ -793,6 +798,10 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     return [emptyPerson('guardian'), emptyPerson('applicant')];
   });
   const [err, setErr] = useState('');
+  // ②27 — cuando el servidor pide el código de un solo uso para QUITAR: guarda el gesto
+  // pendiente para repetirlo tras verificar (null | () => void). Copiado del `stepUpRetry`
+  // de Step6Documents, que es el patrón ya probado en esta aplicación.
+  const [quitarStepUp, setQuitarStepUp] = useState(null);
   // UX-1: eleva el aviso de validación a la zona sticky superior (WizardPage lo pinta en
   // lugar del banner local al pie). Se limpia al corregir (err→'') y al desmontar.
   useEffect(() => { setValidationError(err); }, [err, setValidationError]);
@@ -874,13 +883,18 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
    */
   const pedirQuitar = (o) => confirmarYQuitar({
     resumeToken,
+    identidad,                         // ②24 — el código va al buzón del tutor que opera
     clase:               o.clase,
     id:                  o.id,
     pregunta:            o.pregunta,
     motivoPorDefecto:    t('quitar.no_se_pudo'),
+    motivoCodigo:        t('quitar.necesita_codigo'),
     quitarDeLaPantalla:  o.quitarDeLaPantalla,
     volverAPonerlo:      o.volverAPonerlo,
     avisar:              (m) => setErr(m || t('quitar.no_se_pudo')),
+    // ②27 — el servidor pide el código: se enseña el cuadro de verificación y, al acertar,
+    // se repite el gesto entero. Mismo patrón que Step6Documents con las subidas.
+    pedirCodigo:         (reintentar) => setQuitarStepUp(() => reintentar),
   });
 
   const removePerson = (i) => {
@@ -1077,6 +1091,24 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       <StepNav position="top" onBack={handleBack} onNext={handleNext} savePending={savePending} />
 
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
+
+      {/* ②27 — quitar exige el código de un solo uso, igual que corregir. Si la ventana se
+          agotó, se pide aquí y al acertar se repite el gesto que la familia ya confirmó. */}
+      {quitarStepUp && (
+        <div className="mb-3">
+          <StepUpReverify
+            // ②24 — el código va al buzón del tutor que opera, no siempre al del tutor 1.
+            tokenPayload={{ resume_token: resumeToken, ...identidadDelEnlace(identidad) }}
+            prompt={t('stepup.quitar_prompt')}
+            onVerified={() => {
+              markStepUpFresh();
+              const reintentar = quitarStepUp;
+              setQuitarStepUp(null);
+              reintentar();
+            }}
+          />
+        </div>
+      )}
 
       {/* D-E18: legacy family recognised by email — offer to pre-fill */}
       {recognition?.matched && !recognitionAccepted && !recognitionDismissed && (

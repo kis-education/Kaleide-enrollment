@@ -301,6 +301,9 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
 
   // Aviso de que un documento se retira, cuando el servidor no explica por qué no pudo.
   const [avisoQuitar, setAvisoQuitar] = useState('');
+  // ②27 — quitar un documento exige el código de un solo uso, igual que subirlo. Guarda el
+  // gesto pendiente para repetirlo tras verificar (null | () => void).
+  const [quitarStepUp, setQuitarStepUp] = useState(null);
 
   const handleRemoveRow = (rowId) => {
     // WIZARD-DOCS2: quitar el último panel deja CERO paneles (sigue siendo opcional),
@@ -314,13 +317,17 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     const fila  = antes.find(r => r.id === rowId) || {};
     confirmarYQuitar({
       resumeToken,
+      identidad,                        // ②24 — el código va al buzón del tutor que opera
       clase: 'DOCUMENTO',
       id: fila.file_id,
       pregunta: t('quitar.confirmar_documento'),
       motivoPorDefecto: t('quitar.no_se_pudo'),
+      motivoCodigo: t('quitar.necesita_codigo'),
       quitarDeLaPantalla: () => { setAvisoQuitar(''); setRows(antes.filter(r => r.id !== rowId)); },
       volverAPonerlo: () => setRows(antes),
       avisar: (m) => setAvisoQuitar(m || t('quitar.no_se_pudo')),
+      // ②27 — el servidor pide el código: mismo trato que una subida gateada.
+      pedirCodigo: (reintentar) => setQuitarStepUp(() => reintentar),
     });
   };
 
@@ -344,6 +351,23 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
       <StepNav position="top" onBack={handleBack} onNext={handleNext} savePending={savePending} />
 
       {locked && <LockedBanner onUnlock={onUnlock} />}
+
+      {/* ②27 — quitar un documento exige el código de un solo uso, igual que subirlo. Si la
+          ventana se agotó, se pide aquí y al acertar se repite el gesto ya confirmado. */}
+      {quitarStepUp && (
+        <div className="mb-3">
+          <StepUpReverify
+            tokenPayload={{ resume_token: resumeToken, ...identidadDelEnlace(identidad) }}
+            prompt={t('stepup.quitar_prompt')}
+            onVerified={() => {
+              markStepUpFresh();
+              const reintentar = quitarStepUp;
+              setQuitarStepUp(null);
+              reintentar();
+            }}
+          />
+        </div>
+      )}
 
       <div className="kis-card" style={locked ? { pointerEvents: 'none', opacity: 0.7 } : {}}>
         {/* WIZARD-DOCS2: estado inicial sin paneles → solo aviso + botón "Añadir archivo"

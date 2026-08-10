@@ -107,12 +107,17 @@ export function requestCorrection(resumeToken, note) {
  * Quien llame TIENE que mirarlo: decirle a una familia que quitó algo que sigue ahí es
  * exactamente el fallo que esto cierra.
  *
+ * ②27 — el servidor protege esto con el código de un solo uso (quitar no puede pedir menos
+ * que corregir), así que la llamada dice QUIÉN OPERA, como toda llamada gateada (②24).
+ *
  * @param {string} resumeToken
  * @param {Array<{clase:string,id:string}>} elementos
+ * @param {{n?:string, recoveredEmail?:string}} [identidad]
  */
-export function retirarDelExpediente(resumeToken, elementos) {
+export function retirarDelExpediente(resumeToken, elementos, identidad) {
   return gasCall('retirarDelExpediente', {
     resume_token: resumeToken,
+    ...identidadDelEnlace(identidad),
     retirar: Array.isArray(elementos) ? elementos : [],
   });
 }

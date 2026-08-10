@@ -3,6 +3,9 @@
  * ②2 + ②12 + ②26 — las CINCO puertas del asistente alcanzables desde internet: cuatro
  * pasan por UNA sola verja que falla cerrado, y la quinta exige el token de recuperación.
  *
+ * ②27 — y, ya detrás del token, los manejadores de mutación exigen TODOS el código de un
+ * solo uso: destruir el expediente y enviarlo no pueden pedir menos que corregirlo.
+ *
  * El detalle de qué afirma, qué defecto vigila y qué NO afirma vive en
  * `scripts/verja-publica.mjs` (una sola implementación, dos invocadores: éste y la
  * integración continua). Se ejecuta donde vive el código que vigila.
@@ -29,6 +32,7 @@ try {
     console.log('  ✓ en recuperar enlace la verja va ANTES del trabajo caro y su rechazo devuelve el ack constante')
     console.log('  ✓ en el código de un solo uso la verja está en la rama de ALTA, antes del cupo, y NO en la de step-up')
     console.log('  ✓ «Guardar y seguir luego» exige el token de recuperación antes del cupo, y el expediente NO sale del cuerpo de la petición')
+    console.log('  ✓ los 11 manejadores de mutación exigen el código de un solo uso, tras derivar el expediente del token y antes del trabajo caro (②27)')
   }
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)

@@ -213,6 +213,95 @@ function comprobarGuardarYSeguirLuego(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②27 — PARIDAD DE PUERTAS: destruir y enviar no pueden exigir MENOS que corregir.
+ *
+ * EL DEFECTO QUE VIGILA, medido contra `origin/main` el 2026-08-10. Ocho manejadores de
+ * mutación pedían el código de un solo uso (`assertStepUpFresh_`) y TRES no:
+ *   · `retirarDelExpediente_` llevaba SOLO el token ⇒ con un token observado se podían
+ *     borrar personas, correos, teléfonos, vínculos y documentos —hasta 50 por llamada—
+ *     sin acreditar el buzón, mientras que cambiar una letra de un nombre sí lo pedía. Y
+ *     la familia no puede deshacerlo.
+ *   · `submitEnrollmentSession_` llevaba token + expediente editable, y no el código —
+ *     siendo el acto que estampa el envío, cambia la situación del expediente y escribe N
+ *     filas del libro de consentimientos ATRIBUIDAS A UN TUTOR REAL.
+ *   · `applyPaymentModality_` (dinero: re-deriva el plan de pagos entero) no lo pedía, a
+ *     diferencia de `saveBillingInfo_`, su hermano de la MISMA pantalla.
+ *
+ * QUÉ AFIRMA, sobre el código real:
+ *   (i)  cada manejador de la lista invoca `assertStepUpFresh_`;
+ *   (ii) lo invoca DESPUÉS de derivar el expediente del bearer (`requireResumeToken_` /
+ *        `requireSignerIdentity_`) — un gate por delante estaría midiendo un expediente
+ *        que no viene del token, que es justo lo que KAL-4 prohíbe;
+ *   (iii) lo invoca ANTES del trabajo caro (viaje al KMS o a AppSheet) — rechazar después
+ *        de haber escrito no es una puerta, es un parte de daños.
+ *
+ * QUÉ **NO** AFIRMA: que la ventana de 10 min sea correcta, ni que la marca sea del buzón
+ * que opera (eso es ②24 y vive en `_isStepUpFresh_`), ni que el KMS re-valide. Y arrastra
+ * el LÍMITE del módulo: detector por líneas, no analizador sintáctico.
+ *
+ * LAS EXENCIONES VAN DECLARADAS CON SU MOTIVO ESCRITO, porque una lista sin motivos se
+ * convierte en el sitio donde se esconde el siguiente hueco.
+ */
+function comprobarParidadDelCodigo(fuenteLimpia) {
+  const fallos = []
+
+  // Manejadores de mutación que DEBEN exigir el código de un solo uso, y de qué gate de
+  // identidad derivan el expediente (el código va DESPUÉS de él).
+  const OBLIGADOS = [
+    ['saveStep_',                'requireResumeToken_'],
+    ['saveNeae_',                'requireResumeToken_'],
+    ['saveResponses_',           'requireResumeToken_'],
+    ['uploadDocument_',          'requireResumeToken_'],
+    ['submitEnrollmentSession_', 'requireResumeToken_'],   // ②27
+    ['retirarDelExpediente_',    'requireResumeToken_'],   // ②27
+    ['saveBillingInfo_',         'requireSignerIdentity_'],
+    ['applyPaymentModality_',    'requireSignerIdentity_'], // ②27
+    ['submitGdprConsents_',      'requireSignerIdentity_'],
+    ['confirmReview_',           'requireSignerIdentity_'],
+    ['initiateSigningSession_',  'requireSignerIdentity_'],
+  ]
+
+  // EXENTOS, con el motivo escrito (medidos el 2026-08-10):
+  //   · `requestCorrection_`  — no toca ni un dato de la familia: completa UNA MARCA que
+  //     dice que la familia pidió corregir. Exigirle el código sería poner un candado a
+  //     una petición de ayuda, y su daño si se abusa es una marca de más.
+  //   · `abandonSession_`     — es «empezar de nuevo», un gesto de la propia familia sobre
+  //     una solicitud que aún NO ha enviado (el propio manejador rechaza las enviadas), y
+  //     es el camino por el que se sale de una sesión equivocada.
+  //   · `reportUnsolicited_`  — «esto no es mío», pulsado desde el correo por alguien que
+  //     por definición NO controla el buzón del expediente. Pedirle el código sería pedirle
+  //     justo lo que dice no tener.
+  //   · `sendVerificationCode_` / `verifyEmail_` — SON el código; gatearlos consigo mismos
+  //     dejaría a toda familia con la ventana caducada fuera para siempre.
+
+  for (const [nombre, gateDeIdentidad] of OBLIGADOS) {
+    const cuerpo = cuerpoDe(fuenteLimpia, nombre)
+    if (cuerpo === null) {
+      fallos.push(`no se encontró \`${nombre}\` — control CIEGO en la paridad de puertas (②27): verde aquí NO equivale a comprobado`)
+      continue
+    }
+    const iCodigo = cuerpo.search(/assertStepUpFresh_\s*\(/)
+    if (iCodigo < 0) {
+      fallos.push(`\`${nombre}\` NO exige el código de un solo uso (\`assertStepUpFresh_\`) — es el hueco de ②27: destruir o enviar pidiendo menos que corregir`)
+      continue
+    }
+    const iIdentidad = cuerpo.search(new RegExp(gateDeIdentidad + '\\s*\\('))
+    if (iIdentidad < 0) {
+      fallos.push(`\`${nombre}\` no deriva el expediente con \`${gateDeIdentidad}\` — sin eso el código de un solo uso mide un expediente que no viene del token (KAL-4)`)
+      continue
+    }
+    if (iCodigo < iIdentidad) {
+      fallos.push(`en \`${nombre}\` el código de un solo uso se exige ANTES de derivar el expediente del token — el expediente medido no vendría del bearer (KAL-4)`)
+    }
+    const iCaro = cuerpo.search(/kmsProxy_\s*\(|appsheetRequest_\s*\(|appsheetRequestBatch_\s*\(/)
+    if (iCaro >= 0 && iCaro < iCodigo) {
+      fallos.push(`en \`${nombre}\` el trabajo caro (KMS/AppSheet) ocurre ANTES de exigir el código de un solo uso — rechazar después de escribir no es una puerta`)
+    }
+  }
+  return fallos
+}
+
 /** (b) Las tres entradas de la puerta de admisiones pasan por la verja. */
 function comprobarLasEntradasDeAdmisiones(fuenteLimpia) {
   const fallos = []
@@ -292,5 +381,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarLasEntradasDeAdmisiones(limpia),
     ...comprobarCodigoDeUnSoloUso(limpia),
     ...comprobarGuardarYSeguirLuego(limpia),
+    ...comprobarParidadDelCodigo(limpia),
   ]
 }

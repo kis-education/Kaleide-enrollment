@@ -4610,6 +4610,19 @@ function submitEnrollmentSession_(p) {
   // this guard since CLI 26 — submit was the one that slipped through. Throws
   // Error{code:'NOT_EDITABLE'} → doPost maps it to HTTP 200 {ok:false,error}.
   assertGroupEditable_(enrollmentGroupId);
+
+  // ②27 — ENVIAR EXIGE LO MISMO QUE EDITAR. Este manejador llevaba token + expediente
+  // editable, pero NO el código de un solo uso, que sí piden los pasos de PII
+  // (`saveStep_` persons/relations/health, `saveResponses_`, `uploadDocument_`). Y el
+  // envío es el acto MÁS consecuente de todo el asistente: estampa `submitted_at`, cambia
+  // la situación del expediente a RQ y escribe N filas del libro de consentimientos
+  // ATRIBUIDAS A UN TUTOR REAL (RGPD + declaración de exactitud). El código de un solo uso
+  // es exactamente lo que acredita que ese tutor está delante. Puerta copiada literal de
+  // `saveStep_`: identidad del enlace (②24) + ventana DURA de 10 min (SEC-STEPUP #55).
+  // El cliente comprueba la frescura ANTES de navegar (Step7Review) para que la familia
+  // pueda re-verificar donde sí hay pantalla para hacerlo; esto es el suelo del servidor.
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
+
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
   // ── UN CONSENTIMIENTO QUE NADIE DIO NO SE REGISTRA (2026-08-04) ──────────────────────
@@ -7634,6 +7647,14 @@ function applyPaymentModality_(p) {
   assertValidUuid_(modalityId,     'modality_id');
 
   const sctx = requireSignerIdentity_(p);
+  // ②27 — LA MODALIDAD DE PAGO ES DINERO, Y SU HERMANO DE LA MISMA PANTALLA YA LO PEDÍA.
+  // `saveBillingInfo_` (el reparto entre pagadores, mismo paso 8) exige el código de un
+  // solo uso desde WIZ-SIGNTOKEN; elegir CÓMO se paga —que re-deriva el plan entero con el
+  // motor del KMS— no lo pedía. Un `resume_token` filtrado podía cambiarle el calendario de
+  // pagos a una familia sin acreditar el buzón. Puerta copiada literal de
+  // `saveBillingInfo_`: el buzón ya lo resolvió `requireSignerIdentity_` y se REUSA (dos
+  // lectores del mismo dato divergen, y aquí además costaría lecturas).
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: nunca stale tras un write
 
   return kmsProxy_('enr.wizardApplyModality', Object.assign({}, sctx.identity, {
@@ -7690,9 +7711,12 @@ function requestCorrection_(p) {
  * en ninguna tabla**, que es la regla de este repositorio desde P1-A/P1-B.
  *
  * KAL-4: el expediente lo deriva el KMS del `resume_token`; aquí se valida primero con
- * `requireResumeToken_` (dos capas, igual que el resto de mutaciones). Lo que se quita viaja
- * IDENTIFICADO en `retirar[]` — nunca «lo que no venga en el mensaje se borra», que con un
- * envío a medias vaciaría el expediente entero.
+ * `requireResumeToken_`. Lo que se quita viaja IDENTIFICADO en `retirar[]` — nunca «lo que
+ * no venga en el mensaje se borra», que con un envío a medias vaciaría el expediente entero.
+ *
+ * ②27 — y además EXIGE EL CÓDIGO DE UN SOLO USO, en paridad con los manejadores de edición:
+ * quitar es destructivo e irreversible para la familia, así que no puede pedir menos que
+ * corregir. Ver el cuerpo para por qué NO lleva `assertGroupEditable_`.
  *
  * ESCRITURA ⇒ se invalida la caché del grupo (nunca servir algo viejo tras escribir).
  *
@@ -7708,7 +7732,21 @@ function requestCorrection_(p) {
  */
 function retirarDelExpediente_(p) {
   p = p || {};
-  requireResumeToken_(p);                    // KAL-4 capa wizard (el KMS re-valida)
+  var grupoDeQuitar = requireResumeToken_(p);  // KAL-4 capa wizard (el KMS re-valida)
+  // ②27 — DESTRUIR EXIGE LO MISMO QUE CORREGIR. Hasta hoy este manejador llevaba SOLO el
+  // token, mientras que cambiar una letra de un nombre (`saveStep_` paso 'persons') sí
+  // pedía el código de un solo uso. O sea: con un token observado se podían borrar
+  // personas, correos, teléfonos, vínculos y documentos —hasta 50 por llamada— sin
+  // acreditar el buzón, y la familia no puede deshacerlo. La puerta es la MISMA que la de
+  // los OCHO manejadores que ya la llevaban, copiada literal de `saveStep_`: identidad del enlace
+  // (②24 — la marca es del buzón que operó, la de otro tutor no vale) y ventana DURA de
+  // 10 min sin extensión por uso (SEC-STEPUP finding #55).
+  assertStepUpFresh_(grupoDeQuitar, _identidadDelEnlace_(p, grupoDeQuitar));
+  // NO se añade `assertGroupEditable_` aquí, y es deliberado: el KMS ya exige el borrador
+  // y contesta con un `{bloqueado:'YA_ENVIADA', mensaje:…}` ESCRITO PARA LA FAMILIA
+  // (kis-app kms-server/enr/retirada.gs) que la pantalla enseña tal cual. Un `throw`
+  // NOT_EDITABLE por delante cambiaría ese mensaje por el genérico «no se pudo» — sería
+  // paridad de forma pagada con una peor respuesta a la familia.
   _wzCacheInvalidate_(p.resume_token);       // WIZARD-CACHE: nunca stale tras un write
   var lote = Array.isArray(p.retirar) ? p.retirar : [];
   // Tope defensivo: quitar es un acto de la familia sobre su propia pantalla, no un lote

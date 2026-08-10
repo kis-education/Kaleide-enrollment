@@ -22,6 +22,11 @@ import { useWizard } from '../context/WizardContext';
  */
 const MOTIVOS_QUE_SABEMOS_EXPLICAR = {
   INVALID_PHONE: 'wizard.submit_failed.invalid_phone',
+  // ②27 — el envío exige el código de un solo uso. El paso 7 lo pide ANTES de navegar,
+  // así que esto es el respaldo del hueco que queda: que la ventana de 10 min se agote
+  // entre esa comprobación y la llamada, que vuela en segundo plano. «Reintentar» no lo
+  // arregla, así que el aviso dice lo que sí: volver al resumen y reenviar desde allí.
+  STEPUP_REQUIRED: 'wizard.submit_failed.stepup_required',
 };
 
 export default function SubmitErrorBanner() {

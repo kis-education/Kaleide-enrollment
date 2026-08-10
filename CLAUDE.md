@@ -100,6 +100,64 @@ Patrón obligatorio para nuevos handlers de mutación:
 
 Handlers blindados 2026-05-30: saveStep_, submitEnrollmentSession_, saveResponses_, uploadDocument_. Los handlers de lectura (getTrackingData_, getInterviewForEnrollment_, etc.) ya usan este patrón desde CLI 12+33-36.
 
+#### El token es la PRIMERA capa, no la única: los manejadores de mutación exigen TAMBIÉN el código de un solo uso (②27, 2026-08-10)
+
+**Un `resume_token` vive 7 días y se reutiliza; el código de un solo uso prueba que quien opera
+AHORA controla el buzón.** Por eso todo manejador que MUTE datos de la familia lleva las dos
+cosas: KAL-4 (el expediente sale del bearer) **y** `assertStepUpFresh_` (ventana DURA de 10 min).
+
+**El defecto que cerró ②27, medido contra `origin/main` el 2026-08-10:** ocho manejadores lo
+pedían y **tres no** — y eran justamente los más consecuentes. **`retirarDelExpediente_`** llevaba
+SOLO el token ⇒ con un token observado se podían borrar personas, correos, teléfonos, vínculos y
+documentos (hasta 50 por llamada) **sin acreditar el buzón**, mientras que cambiar una letra de un
+nombre sí lo pedía — y la familia no puede deshacerlo. **`submitEnrollmentSession_`** llevaba token
++ expediente editable y no el código, siendo el acto que estampa el envío, cambia la situación del
+expediente y escribe N filas del libro de consentimientos **atribuidas a un tutor real**.
+**`applyPaymentModality_`** (dinero: re-deriva el plan de pagos entero) tampoco, a diferencia de
+`saveBillingInfo_`, **su hermano de la misma pantalla**.
+
+**Patrón obligatorio para todo manejador de mutación nuevo** — se copia, no se rediseña:
+
+```javascript
+const groupId = requireResumeToken_(p);                       // KAL-4 primero
+assertGroupEditable_(groupId);                                // si el acto exige borrador
+assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId)); // ②24: la marca es del buzón que opera
+```
+
+…o, en los pasos de firma, reusando el buzón que el gate de identidad ya resolvió (**no se vuelve
+a resolver**: dos lectores del mismo dato divergen, y aquí además costaría lecturas):
+
+```javascript
+const sctx = requireSignerIdentity_(p);
+assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
+```
+
+**Y el orden importa, las dos veces:** el código va **DESPUÉS** de derivar el expediente del bearer
+(por delante mediría un expediente que no viene del token, justo lo que KAL-4 prohíbe) y **ANTES**
+del trabajo caro (rechazar después de escribir no es una puerta, es un parte de daños).
+
+**Exentos, con su motivo — la lista vive en `scripts/verja-publica.mjs` y allí se amplía:**
+`requestCorrection_` (completa UNA MARCA que dice que la familia pidió corregir; poner candado a
+una petición de ayuda) · `abandonSession_` («empezar de nuevo» sobre una solicitud aún sin enviar) ·
+`reportUnsolicited_` («esto no es mío», pulsado por quien **por definición** no controla ese buzón) ·
+`sendVerificationCode_`/`verifyEmail_` (**son** el código; gatearlos consigo mismos dejaría fuera
+para siempre a toda familia con la ventana caducada).
+
+**El cliente pide el código DONDE la familia puede teclearlo**, y esto no es cosmética: el envío
+del paso 7 es «dispara y navega», así que un rechazo posterior deja a la familia en la pantalla de
+confirmación, **donde no hay dónde verificar**. Por eso `Step7Review` comprueba la frescura ANTES
+de navegar; `lib/quitar.js` distingue `STEPUP_REQUIRED` de «no se pudo» y ofrece re-verificar
+(`pedirCodigo`), y `Step8Billing` lo nombra en su aviso. El servidor es el suelo, no el mensaje.
+
+**Coste medido para las familias:** ninguno en el camino normal — quien está editando personas,
+vínculos o documentos ya tiene que pasar esa misma puerta para guardar. La frición real y única es
+**un código de más cuando pasan más de 10 minutos entre el último guardado y pulsar «Enviar»**, que
+es exactamente el caso en el que ya no consta que el tutor siga delante.
+
+**Control**: la comprobación de paridad vive en `scripts/verja-publica.mjs`
+(`comprobarParidadDelCodigo`) — ver §"Las CINCO puertas del asistente" para cómo se ejecuta y qué
+NO afirma.
+
 ### Dos bearer tokens canónicos del wizard — resume_token (/apply) + signing_token (/sign) (CLI 45, 2026-06-02)
 
 > **★ ESTADO REAL POST-W2 (verificado 2026-06-11, gobierna esta sección). El modelo de "dos rutas de entrada" (`/apply` + `/sign`) descrito abajo está SUPERSEDIDO por el modelo ★ CANÓNICA DEFINITIVA (`kis-app/docs/kms/decisions/enr.md`): el wizard es UN flujo único de 11 pasos, UNA sola ruta (`/apply`), entrada única por recuperación de magic-link per-guardian.** Lo que sigue VIGENTE de esta sección es **solo el modelo de AUTORIZACIÓN** (KAL-4 IDOR: `enrollment_group_id` + signer derivados SIEMPRE server-side del token, NUNCA del payload; `requireResumeToken_` como gate de los 11 pasos). Lo que cambió en el CÓDIGO ya desplegado:
@@ -336,7 +394,14 @@ instante (fire-and-forget).
 la verja real extraída del fuente (6 casos), comprueba las **cuatro** entradas anónimas y
 comprueba que la **quinta exige el token**, **antes del cupo**, y que `sendMagicLink_` **ya no
 lee el identificador del expediente del cuerpo** (si lo leyera, la puerta seguiría abierta).
-**Rojo demostrado dieciséis veces** antes de darlo por bueno — seis en ②2 (quitando la verja de
+**Y, ya detrás del token (②27), comprueba la PARIDAD**: que los **11 manejadores de mutación**
+exigen el código de un solo uso, **tras** derivar el expediente del bearer y **antes** del trabajo
+caro (§"El token es la PRIMERA capa…"). **NO afirma** que la ventana de 10 min sea correcta ni que
+la marca sea del buzón que opera — eso es ②24 y vive en `_isStepUpFresh_`.
+**Rojo demostrado veintiuna veces** antes de darlo por bueno — cinco en ②27 (quitando el código de
+`retirarDelExpediente_` · quitándolo de `submitEnrollmentSession_` · exigiéndolo ANTES de derivar
+el expediente en `applyPaymentModality_` · poniendo el viaje al KMS por delante del código ·
+renombrando `assertStepUpFresh_`, que deja el control CIEGO en los once) y seis en ②2 (quitando la verja de
 la recuperación · poniéndola después del trabajo caro · haciendo que lance en vez de devolver el
 ack · ablandándola a fail-open · renombrándola, *«el control está CIEGO»* · y quitándola de
 `initEnrollmentSession_`), cinco en ②12 (quitando la verja de la rama de alta · poniéndola
@@ -477,7 +542,7 @@ El roadmap §3 ola 4 ya describía el flujo; esta sección lo refleja (M5 readin
 - **Steps 1-7 (pre-AD) → ruta `/apply`** (continuación con `resume_token`, familia anónima): Email, Persons, Relations, Health, Questions, Documents, Review. Ya implementados.
 - **Steps 8-11 (firma, post-AD) → host `/sign?signing_token=…`** (`SigningWizardPage`, guardian firmante, autenticado con `signing_token` por-firmante, no `resume_token`). De cara al usuario es la **continuación del mismo flujo** (DL-E38), no una ruta inconexa; la ruta `/sign` es solo el **host técnico** de los Steps 8-11, no una experiencia separada — el avance hacia ella lo gobierna el estado, puenteado desde el Step 7 (P217):
   - 8 S-BILLING: datos fiscales pagador (endpoint `enr.saveBillingInfo`). *(Nota: P49/`enrGroupBilling` CANCELADO 2026-06-03 — billing canónico via `finBillingParties`, refactor del handler en CLI 84.)*
-    - **★ AMPLIADO 2026-07-26 (DL-080-A) — el Step 8 muestra el PRESUPUESTO real y captura la MODALIDAD de pago.** Además del reparto entre pagadores, el paso pinta el presupuesto REAL del borrador de suscripción (partidas, fechas, importes, descuento, total) y un selector con el preview de cada modalidad activa del catálogo del tenant. Dos endpoints nuevos, ambos **proxies finos al KMS** (`getSubscriptionBudget_` → `enr.wizardGetSubscriptionBudget`, lectura; `applyPaymentModality_` → `enr.wizardApplyModality`, escritura con `_wzCacheInvalidate_`): el wizard **NO calcula dinero** — solo formatea `amount_cents/100` (un solo lector; los importes salen SIEMPRE del motor del KMS). KAL-4 intacta (grupo y suscripción los deriva el KMS del `resume_token`, nunca del payload); la elección solo se admite en estado **borrador** (sobre una suscripción ya activa → `NOT_EDITABLE`, mensaje claro y selector deshabilitado). Degrada elegante si el tenant aún no tiene catálogo de modalidades (`modalities_available:false` → sin selector, sin bloquear el avance). Cross-ref: `kis-app/docs/kms/decisions/fin.md` DL-080 ★ CONSTRUIDO 2026-07-26 + DL-081 (la firma dispara `DRAFT→ACTIVA`) + DL-082.
+    - **★ AMPLIADO 2026-07-26 (DL-080-A) — el Step 8 muestra el PRESUPUESTO real y captura la MODALIDAD de pago.** Además del reparto entre pagadores, el paso pinta el presupuesto REAL del borrador de suscripción (partidas, fechas, importes, descuento, total) y un selector con el preview de cada modalidad activa del catálogo del tenant. Dos endpoints nuevos, ambos **proxies finos al KMS** (`getSubscriptionBudget_` → `enr.wizardGetSubscriptionBudget`, lectura; `applyPaymentModality_` → `enr.wizardApplyModality`, escritura con `_wzCacheInvalidate_`): el wizard **NO calcula dinero** — solo formatea `amount_cents/100` (un solo lector; los importes salen SIEMPRE del motor del KMS). KAL-4 intacta (grupo y suscripción los deriva el KMS del `resume_token`, nunca del payload) y **desde ②27 la escritura exige además el código de un solo uso, en paridad con `saveBillingInfo_` —su hermano de la misma pantalla— porque esto es dinero** (§"El token es la PRIMERA capa…"); la elección solo se admite en estado **borrador** (sobre una suscripción ya activa → `NOT_EDITABLE`, mensaje claro y selector deshabilitado). Degrada elegante si el tenant aún no tiene catálogo de modalidades (`modalities_available:false` → sin selector, sin bloquear el avance). Cross-ref: `kis-app/docs/kms/decisions/fin.md` DL-080 ★ CONSTRUIDO 2026-07-26 + DL-081 (la firma dispara `DRAFT→ACTIVA`) + DL-082.
   - 9 S-GDPR: 7 consentimientos GDPR por guardian + TSA (DL-E27, endpoint `enr.submitGdprConsents`).
   - 10 S-REVIEW: revisión Carta + Contrato + confirmación lectura (DL-E28 §6, endpoint `enr.confirmReview`).
   - 11 S-SIGN: firma Click & Sign (DL-E28 §7-§13, endpoint `enr.initiateSigningSession`).

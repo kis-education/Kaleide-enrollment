@@ -5,6 +5,7 @@ import { useWizard } from '../../context/WizardContext';
 import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import { gasCall, fetchLookups, fetchQuestions, requestCorrection, identidadDelEnlace } from '../../api';
 import StepNav from '../../components/StepNav';
+import StepUpReverify from '../../components/StepUpReverify';
 import { openDocument } from '../../utils/documentProxy';
 import { translateRelationLabel, translateGender, translateIdType } from '../../utils/enumLabels';
 import { CONSENT_TEXTS } from '../../consentTexts';
@@ -178,7 +179,8 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   const navigate     = useNavigate();
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
   const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted, setIsSubmitted,
-          enqueueSave, setSubmitError, setValidationError, recoveryNonce, recoveredEmail } = useWizard(); // UX-3 + UX-1 + ②24
+          enqueueSave, setSubmitError, setValidationError, recoveryNonce, recoveredEmail,
+          isStepUpFresh, markStepUpFresh } = useWizard(); // UX-3 + UX-1 + ②24 + ②27
 
   // DL-E39 ENMIENDA (gate de ENTRADA, Diego 2026-06-06): el enmascarado per-campo
   // se ELIMINA. Toda la PII queda protegida por el GATE DE ENTRADA del wizard
@@ -261,14 +263,42 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   const [consentLegal, setConsentLegal] = useState(false);
   const [submitting,   setSubmitting]   = useState(false);
   const [err,          setErr]          = useState('');
+  // ②27 — el envío exige el código de un solo uso (escribe el libro de consentimientos a
+  // nombre de un tutor real). Si la ventana se agotó, se pide AQUÍ y no después: el envío
+  // es «dispara y navega», así que un rechazo posterior deja a la familia en la pantalla de
+  // confirmación, donde no hay dónde verificar.
+  //
+  // Es un BOOLEANO, no la función de envío guardada. Guardar la función parece más directo y
+  // es una trampa: la guardada se queda con el `isStepUpFresh` del render en que se guardó
+  // —que por definición dijo «no fresco»—, así que al reintentar volvería a decir lo mismo y
+  // la familia se quedaría dando vueltas pidiendo códigos que sí acertó. Con el booleano, el
+  // reintento lo lanza el render VIVO y se salta la comprobación explícitamente
+  // (`yaVerificado`), que además es obligatorio: `markStepUpFresh` es asíncrono y su efecto
+  // todavía no se ve en la misma vuelta.
+  const [pidiendoCodigo, setPidiendoCodigo] = useState(false);
   // UX-1: eleva el aviso de validación (esig/consents/recaptcha) a la zona sticky superior.
   useEffect(() => { setValidationError(err); }, [err, setValidationError]);
   useEffect(() => () => setValidationError(''), [setValidationError]);
 
-  const handleSubmit = async () => {
+  // `opciones.yaVerificado` SOLO lo pasa el reintento tras acertar el código (ver abajo). El
+  // botón lo llama como `onClick={handleSubmit}`, así que aquí llega un evento del navegador:
+  // no tiene esa propiedad ⇒ la comprobación se hace, que es lo correcto.
+  const handleSubmit = async (opciones) => {
+    const yaVerificado = !!(opciones && opciones.yaVerificado === true);
     if (!esig.trim()) { setErr(t('error.esig_required')); return; }
     if (!consentGdpr)  { setErr(t('error.consent_required')); return; }
     if (!consentLegal) { setErr(t('error.consent_required')); return; }
+
+    // ②27 — ANTES de asumir el envío y navegar: si la ventana del código de un solo uso se
+    // agotó, el servidor va a rechazar el envío. Se pide el código aquí, donde la familia
+    // TIENE dónde teclearlo, en vez de dejarla en /confirmation con un aviso rojo que
+    // «Reintentar» no puede arreglar. Al verificar se repite este mismo envío entero.
+    if (!yaVerificado && !isStepUpFresh()) {
+      setErr('');
+      setPidiendoCodigo(true);
+      return;
+    }
+    setPidiendoCodigo(false);
 
     setErr('');
     setSubmitting(true);
@@ -508,6 +538,28 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         onNext={onAdvanceToSigning}
         hideNext={!canAdvanceToSigning}
       />
+
+      {/* ②27 — el envío escribe el libro de consentimientos a nombre de un tutor real, así
+          que el servidor exige el código de un solo uso igual que para editar. Si la ventana
+          se agotó se pide AQUÍ, antes de navegar: en /confirmation no habría dónde. */}
+      {pidiendoCodigo && (
+        <div className="mb-3" data-testid="submit-stepup">
+          <StepUpReverify
+            // ②24 — el código va al buzón del tutor que opera, no siempre al del tutor 1.
+            tokenPayload={{ resume_token: resumeToken,
+                            ...identidadDelEnlace({ n: recoveryNonce, recoveredEmail }) }}
+            prompt={t('stepup.submit_prompt')}
+            // El reintento lo lanza el `handleSubmit` de ESTE render (vivo), saltándose la
+            // comprobación: `markStepUpFresh` aún no se ve en esta vuelta, y el servidor ya
+            // tiene la marca puesta por `verifyEmail_`, que es la que manda.
+            onVerified={() => {
+              markStepUpFresh();
+              setPidiendoCodigo(false);
+              handleSubmit({ yaVerificado: true });
+            }}
+          />
+        </div>
+      )}
 
       {/* ── Email / Start Date ── */}
       <SectionCard title={t('review.email')} icon="bi-envelope-fill">
