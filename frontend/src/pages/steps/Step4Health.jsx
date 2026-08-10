@@ -14,6 +14,73 @@ const NEAE_DIAGNOSIS  = ['NONE', 'SUSPECTED', 'IN_EVALUATION', 'DIAGNOSED'];
 const NEAE_SUPPORTS   = ['PT', 'AL', 'LOGOPEDIA', 'OT', 'PSYCHOPEDAGOGICAL', 'TALENT', 'EXTERNAL_PSYCH', 'OTHER'];
 const NEAE_SCOPES     = ['PRIOR_SCHOOL', 'EXTERNAL_CURRENT'];
 
+// ── RE-SEMBRADO QUE FUSIONA, NUNCA PISA (2026-08-10) ──────────────────────────
+// Molde copiado de `Step6Documents.jsx:258-273` («SOLO AÑADE lo que falta, NUNCA
+// reemplaza»). Este paso lo tenía del tipo PROHIBIDO: el efecto de re-sembrado
+// hacía `setHealthData(<lo que venga del servidor>)` y REEMPLAZABA la lista
+// entera ⇒ si el paquete del servidor llegaba con la pantalla ya montada,
+// BORRABA lo que la familia estuviera escribiendo sobre alergias, dietas o
+// apoyo educativo. Hoy no muerde porque `WizardPage.jsx:845` pinta un esqueleto
+// mientras carga (la pantalla se desmonta y se vuelve a montar, así que la
+// semilla se recalcula sola), pero esa protección no está escrita en ninguna
+// parte: el día que caiga, congelarse sería malo y borrar datos de salud a
+// medio escribir sería PEOR.
+//
+// Criterio, en una línea: LO QUE LA FAMILIA TIENE DELANTE MANDA; el paquete del
+// servidor solo RELLENA HUECOS.
+//   · ficha que la familia ha tocado en esta pantalla → se queda intacta;
+//   · ficha con algo escrito → se queda intacta (red de seguridad por si la
+//     marca de «tocada» se perdiera, p.ej. si el identificador provisional de
+//     un solicitante se sella entretanto);
+//   · ficha vacía y sin tocar → se acepta la del servidor (es justo el caso que
+//     el re-sembrado existe para cubrir: datos que llegan tarde);
+//   · solicitante que ya no está en la lista de personas → deja de estar;
+//   · solicitante nuevo → entra vacío.
+//
+// EN QUÉ SE APARTA DEL MOLDE, y por qué: en el paso 6 la unidad es la FILA de un
+// adjunto y su identidad es el `file_id`, así que fusionar = añadir las filas
+// que no estaban. Aquí la unidad es la FICHA DE UN SOLICITANTE (dos por
+// solicitante: salud y apoyo educativo) y la lista va ALINEADA POSICIONALMENTE
+// con `applicants` (el render usa `healthData[i]`/`neaeData[i]`) ⇒ no se puede
+// «añadir al final»: hay que recorrer los solicitantes y decidir ficha a ficha.
+// El criterio de fondo es el mismo, y es UNO SOLO para las dos listas.
+
+/** Identificador con el que se casan las fichas: el definitivo, o el provisional del navegador. */
+const idSolicitante = (a) => (a && (a.person_id || a._uid)) || '';
+
+const saludVacia = (pid) => ({ person_id: pid, allergies: [], dietary: [], medical: [] });
+const neaeVacia  = (pid) => ({ person_id: pid, conditions: [], supports: [] });
+
+const listaConAlgo = (v) => Array.isArray(v) && v.length > 0;
+const saludConContenido = (h) => !!h && (listaConAlgo(h.allergies) || listaConAlgo(h.dietary) || listaConAlgo(h.medical));
+const neaeConContenido  = (n) => !!n && (listaConAlgo(n.conditions) || listaConAlgo(n.supports));
+
+/**
+ * Fusiona la lista que la familia tiene delante con la que llega del servidor.
+ * Función PURA a propósito: se puede ejecutar aislada para comprobarla.
+ *
+ * @param {Array}    solicitantes  personas de tipo `applicant`, en el orden en que se pintan
+ * @param {Array}    previas       lo que hay ahora mismo en la pantalla
+ * @param {Array}    delServidor   lo que acaba de llegar del servidor
+ * @param {Set}      tocadas       identificadores de las fichas que la familia ha editado
+ * @param {Function} conContenido  ¿esta ficha tiene algo escrito?
+ * @param {Function} normalizar    (pid, fichaDelServidor) → ficha para la pantalla
+ * @param {Function} vacia         (pid) → ficha vacía
+ */
+function fusionarPorSolicitante(solicitantes, previas, delServidor, tocadas, conContenido, normalizar, vacia) {
+  const anteriores = previas    || [];
+  const servidor   = delServidor || [];
+  return (solicitantes || []).map(a => {
+    const pid    = idSolicitante(a);
+    const previa = anteriores.find(x => x && x.person_id === pid);
+    // Lo que la familia tiene delante MANDA: tocada, o con algo escrito, no se pisa.
+    if (previa && (tocadas.has(pid) || conContenido(previa))) return previa;
+    const delSrv = servidor.find(x => x && x.person_id === pid);
+    if (delSrv) return normalizar(pid, delSrv);
+    return previa || vacia(pid);
+  });
+}
+
 function TagSelect({ options, selected, onChange, placeholder }) {
   const [input,   setInput]   = useState('');
   const [focused, setFocused] = useState(false);
@@ -305,52 +372,64 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
   const [highlightEdit, setHighlightEdit] = useState(false);
   const [healthData, setHealthData] = useState(() =>
     applicants.map(a => {
-      const existing = (stepData.health || []).find(h => h.person_id === (a.person_id || a._uid));
-      return existing || { person_id: a.person_id || a._uid, allergies: [], dietary: [], medical: [] };
+      const existing = (stepData.health || []).find(h => h.person_id === idSolicitante(a));
+      return existing || saludVacia(idSolicitante(a));
     })
   );
 
-  // Re-sync if stepData.health arrives after mount (e.g. after rehydration from server)
+  // Fichas que la familia ha editado en ESTA pantalla. Lo que está aquí no lo pisa
+  // el paquete del servidor (ver el bloque «RE-SEMBRADO QUE FUSIONA» de arriba).
+  const saludTocada = useRef(new Set());
+  const neaeTocada  = useRef(new Set());
+
+  // Re-sembrado: si los datos de salud del servidor llegan DESPUÉS de montar esta
+  // pantalla, se incorporan a las fichas vacías y sin tocar. FUSIONA, no reemplaza.
   useEffect(() => {
     if (!stepData.health?.length) return;
-    setHealthData(
-      (stepData.persons || [])
-        .filter(p => p.person_type_id === 'applicant')
-        .map(a => {
-          const existing = stepData.health.find(h => h.person_id === (a.person_id || a._uid));
-          return existing || { person_id: a.person_id || a._uid, allergies: [], dietary: [], medical: [] };
-        })
-    );
+    setHealthData(prev => fusionarPorSolicitante(
+      (stepData.persons || []).filter(p => p.person_type_id === 'applicant'),
+      prev,
+      stepData.health,
+      saludTocada.current,
+      saludConContenido,
+      (pid, h) => h,
+      saludVacia,
+    ));
   }, [stepData.health]); // eslint-disable-line
 
   // NEAE state — parallel to healthData, one entry per applicant.
-  const emptyNeae = (pid) => ({ person_id: pid, conditions: [], supports: [] });
+  const emptyNeae = neaeVacia;
+  const normalizarNeae = (pid, n) => ({ person_id: pid, conditions: n.conditions || [], supports: n.supports || [] });
   const [neaeData, setNeaeData] = useState(() =>
     applicants.map(a => {
-      const pid = a.person_id || a._uid;
+      const pid = idSolicitante(a);
       const existing = (stepData.neae || []).find(n => n.person_id === pid);
-      return existing ? { person_id: pid, conditions: existing.conditions || [], supports: existing.supports || [] } : emptyNeae(pid);
+      return existing ? normalizarNeae(pid, existing) : emptyNeae(pid);
     })
   );
   // Baseline snapshot of the last persisted NEAE — used to skip redundant saves.
+  // Sigue siendo lo que el SERVIDOR tiene guardado (no lo que se ve en pantalla):
+  // si la familia ha escrito algo que no está ahí, `persistNeae` lo detecta y lo guarda.
   const neaeBaselineRef = useRef(JSON.stringify(stepData.neae || []));
 
-  // Re-sync NEAE if stepData.neae arrives after mount (server rehydration).
+  // Re-sembrado del apoyo educativo. Mismo criterio que arriba: FUSIONA, no reemplaza.
   useEffect(() => {
     if (!stepData.neae?.length) return;
     neaeBaselineRef.current = JSON.stringify(stepData.neae);
-    setNeaeData(
-      (stepData.persons || [])
-        .filter(p => p.person_type_id === 'applicant')
-        .map(a => {
-          const pid = a.person_id || a._uid;
-          const existing = stepData.neae.find(n => n.person_id === pid);
-          return existing ? { person_id: pid, conditions: existing.conditions || [], supports: existing.supports || [] } : emptyNeae(pid);
-        })
-    );
+    setNeaeData(prev => fusionarPorSolicitante(
+      (stepData.persons || []).filter(p => p.person_type_id === 'applicant'),
+      prev,
+      stepData.neae,
+      neaeTocada.current,
+      neaeConContenido,
+      normalizarNeae,
+      emptyNeae,
+    ));
   }, [stepData.neae]); // eslint-disable-line
 
   const updateNeae = (i, val) => {
+    const pid = idSolicitante(applicants[i]) || (neaeData[i] && neaeData[i].person_id);
+    if (pid) neaeTocada.current.add(pid);
     const next = [...neaeData];
     next[i] = val;
     setNeaeData(next);
@@ -371,6 +450,8 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
   }, []);
 
   const updateHealth = (i, val) => {
+    const pid = idSolicitante(applicants[i]) || (healthData[i] && healthData[i].person_id);
+    if (pid) saludTocada.current.add(pid);
     const next = [...healthData];
     next[i] = val;
     setHealthData(next);
