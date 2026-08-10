@@ -5863,12 +5863,91 @@ function saveResponses_(p) {
 
   // DL-E49 §1 — QUIÉN contesta viaja aparte de DE QUIÉN es cada respuesta. Se resuelve
   // aquí, server-side, desde el enlace del tutor; el KMS lo re-valida contra el grupo.
-  kmsProxy_('enr.wizardSaveResponses', {
+  // Se resuelve UNA vez: lo usan la comprobación de abajo y el propio envío al KMS.
+  const tutorQueContesta = wizardTutorQueOpera_(p, enrollmentGroupId);
+
+  // ── ②24.sexies · SI ESTAS RESPUESTAS NO SE VAN A GUARDAR, SE DICE ────────────────────
+  //
+  // El KMS ya tiene la regla (DL-E49 §6): el tutor que YA envió su parte no sigue
+  // rellenando — `enr_persistResponses_` devuelve `{responses:0,
+  // skipped_already_submitted:true}` y NO escribe nada.
+  //
+  // El problema no era la regla: era que el asistente NO SE ENTERABA, y encima MENTÍA.
+  // Medido contra `origin/main` el 2026-08-10: (a) la llamada al KMS se hacía sin recoger
+  // su respuesta y se devolvía `{saved: N}` a pelo, así que el asistente afirmaba haber
+  // guardado N respuestas que el KMS había descartado; (b) `skipped_already_submitted` no
+  // aparecía NI UNA vez en todo este repositorio; y (c) —lo que decide el diseño de este
+  // arreglo— `enr.wizardSaveResponses` **ENCOLA** el trabajo y contesta
+  // `{ok:true, queued:true}` (`kis-app kms-server/enr/wizard-gateway.gs:236`), de modo que
+  // ese aviso lo produce el trabajador de la cola MUCHO DESPUÉS y **nunca puede llegar en
+  // la respuesta**. Recoger el retorno, por sí solo, no habría enterado a nadie.
+  //
+  // Por eso se PREGUNTA antes, y se pregunta con lo que YA existe: `enr.wizardEstadoDeLasPartes`
+  // es una lectura SÍNCRONA cuyo propósito declarado es exactamente éste — «¿puede este
+  // tutor seguir rellenando?» (`wizard-gateway.gs:736`) — y el asistente ya la consume en la
+  // pantalla de confirmación. No se construye mecanismo nuevo: se usa el que estaba puesto.
+  //
+  // KAL-4 intacta: el expediente sale del `resume_token` y la persona por la que se pregunta
+  // se resuelve SERVER-SIDE desde el enlace del tutor (nunca del cuerpo); el KMS la
+  // re-valida contra los tutores declarados de ese expediente.
+  if (_parteDeEsteTutorYaEnviada_(p, tutorQueContesta)) {
+    const err = new Error('Este tutor ya envió su parte: sus respuestas del cuestionario no se guardan');
+    err.code = 'PARTE_YA_ENVIADA';   // doPost → HTTP 200 {ok:false,error:{code,message}}
+    Logger.log(redact_('[saveResponses_] rechazo: la parte de este tutor ya está enviada (DL-E49 §6)'));
+    throw err;
+  }
+
+  const respuestaKms = kmsProxy_('enr.wizardSaveResponses', {
     resume_token:           p.resume_token,
-    answered_by_person_id:  wizardTutorQueOpera_(p, enrollmentGroupId),
+    answered_by_person_id:  tutorQueContesta,
     responses:              outResponses,
-  });
-  return { saved: outResponses.length };
+  }) || {};
+
+  // Defensa en profundidad: si algún día el endpoint deja de encolar y responde en el acto,
+  // su descarte llega por aquí y se propaga IGUAL. Hoy no puede pasar (encola), y por eso
+  // NO es la comprobación principal — es el respaldo, no la puerta.
+  if (respuestaKms.skipped_already_submitted) {
+    const err = new Error('Este tutor ya envió su parte: sus respuestas del cuestionario no se guardan');
+    err.code = 'PARTE_YA_ENVIADA';
+    throw err;
+  }
+
+  // NO se dice «guardadas»: el KMS las ENCOLA y las escribe después. `saved: N` era una
+  // afirmación que este código no está en condiciones de hacer — y era falsa entera cuando
+  // el KMS las descartaba. Se dice lo que de verdad consta: cuántas se aceptaron para
+  // guardar, y si el servidor confirmó haberlas puesto en cola.
+  return { encoladas: outResponses.length, queued: respuestaKms.queued === true };
+}
+
+/**
+ * ②24.sexies · ¿LA PARTE DE ESTE TUTOR YA ESTÁ ENVIADA?
+ *
+ * Proxy fino a la lectura que YA existe (`enr.wizardEstadoDeLasPartes`, la misma que usa
+ * `estadoDeLasPartes_` para la pantalla de confirmación). El asistente no calcula nada: la
+ * regla vive en el KMS, que es donde están los datos.
+ *
+ * DEGRADA HACIA GUARDAR, siempre. Sin tutor identificado devuelve `false` (el KMS tampoco
+ * cierra a nadie que no consta), y si la lectura falla devuelve `false`: un dato que no se
+ * puede consultar NO puede convertir esto en un asistente que se niega a guardar. El suelo
+ * sigue siendo la regla del KMS — esto solo sirve para poder DECÍRSELO a la familia.
+ *
+ * @param {Object} p payload del manejador (lleva `resume_token`).
+ * @param {string|null} personId tutor que opera, YA resuelto server-side (KAL-4).
+ * @returns {boolean} true solo si consta que ese tutor ya envió su parte.
+ * @private
+ */
+function _parteDeEsteTutorYaEnviada_(p, personId) {
+  if (!personId) return false;
+  try {
+    const estado = kmsProxy_('enr.wizardEstadoDeLasPartes', {
+      resume_token: p.resume_token,
+      person_id:    personId,
+    }) || {};
+    return estado.ya_envio === true;
+  } catch (e) {
+    Logger.log(redact_('[_parteDeEsteTutorYaEnviada_] no se pudo comprobar — se sigue guardando: ' + e.message));
+    return false;
+  }
 }
 
 /*

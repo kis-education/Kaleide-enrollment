@@ -140,14 +140,21 @@ export function WizardProvider({ children }) {
   // vez»: la X del aviso (cerrar el episodio actual, no cerrar los futuros) y el espejo
   // en pantalla. `saveErrorQue` es el NOMBRE de lo que no se pudo guardar, para que el
   // texto diga QUÉ pasó en vez de «Error al guardar» a secas.
+  //
+  // ②24.sexies — `saveErrorCodigo` viaja al lado del nombre por la MISMA razón por la que
+  // `SubmitErrorBanner` mira el código del rechazo: hay motivos que «Reintentar» no arregla
+  // (el servidor va a rechazar exactamente igual), y ofrecerlo es un callejón sin salida.
+  // El aviso lo usa para explicar los que sabemos explicar; el resto se comporta como
+  // siempre, byte-idéntico.
   const saveStateRef = useRef('idle');
   const [saveErrorSeq, setSaveErrorSeq] = useState(0);
   const [saveErrorQue, setSaveErrorQue] = useState('');
-  const marcarEstadoDeGuardado_ = useCallback((siguiente, que) => {
+  const [saveErrorCodigo, setSaveErrorCodigo] = useState('');
+  const marcarEstadoDeGuardado_ = useCallback((siguiente, que, codigo) => {
     saveStateRef.current = siguiente;
     setSaveState(siguiente);
-    if (siguiente === 'error') { setSaveErrorQue(que || ''); setSaveErrorSeq(n => n + 1); }
-    else if (siguiente === 'idle') setSaveErrorQue('');
+    if (siguiente === 'error') { setSaveErrorQue(que || ''); setSaveErrorCodigo(codigo || ''); setSaveErrorSeq(n => n + 1); }
+    else if (siguiente === 'idle') { setSaveErrorQue(''); setSaveErrorCodigo(''); }
   }, []);
   // UX-1 — aviso de validación GLOBAL: los steps lo setean (en vez de su banner local al
   // pie) y WizardPage lo pinta en la zona sticky superior. Se limpia al navegar/corregir.
@@ -222,7 +229,7 @@ export function WizardProvider({ children }) {
     // sí van en orden, que es justo lo que se está corrigiendo.
     const seguimiento = run.then(
       () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; lastFailedSaveRef.current = null; lastFailedQueRef.current = ''; marcarEstadoDeGuardado_('idle'); } },
-      (e) => { pendingCountRef.current -= 1; lastFailedSaveRef.current = saveFn; lastFailedQueRef.current = que; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: e && e.code, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; marcarEstadoDeGuardado_('error', que); }
+      (e) => { pendingCountRef.current -= 1; lastFailedSaveRef.current = saveFn; lastFailedQueRef.current = que; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: e && e.code, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; marcarEstadoDeGuardado_('error', que, e && e.code); }
     );
     if (!independiente) saveTailRef.current = seguimiento;
     else {
@@ -1174,7 +1181,7 @@ export function WizardProvider({ children }) {
       isStepDirty, markStepSaved,
       setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
       retryLastSave,                                              // WPERF-1 criterio 3
-      saveErrorSeq, saveErrorQue,                                 // cola 18.bis — aviso de guardado (episodio + qué falló)
+      saveErrorSeq, saveErrorQue, saveErrorCodigo,                // cola 18.bis — aviso de guardado (episodio + qué falló + por qué, ②24.sexies)
       validationError, setValidationError,                        // UX-1 aviso sticky
       submitError, setSubmitError,                                // UX-3 fallo envío optimista
       markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4

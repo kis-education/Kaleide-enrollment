@@ -145,6 +145,7 @@
   "wizard.saving_in_background": "Saving…",
   "wizard.save_error": "We couldn't save your last change. What you typed is still here.",
   "wizard.save_error_step": "We couldn't save “{{paso}}”. What you typed is still here.",
+  "wizard.save_error.parte_ya_enviada": "Your questionnaire answers were NOT saved: your part of the application has already been submitted and cannot be changed. If you need to change something, email admissions. If you are the other guardian, use your own link.",
   "wizard.dismiss_save_error": "Hide this notice",
   "wizard.retry_save": "Retry",
   "wizard.saving": "Saving…",

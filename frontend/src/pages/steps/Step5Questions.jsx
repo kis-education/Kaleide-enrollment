@@ -127,7 +127,10 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
       // cola detrás de personas/vínculos/salud. Medido en campo: con 48 respuestas ya en el
       // estado de la pantalla, NINGUNA llamada salió en 60 s porque la cadena estaba
       // ocupada. Sigue contando para el indicador y sigue siendo reintentable.
-      enqueueSave(saveFactory, { independiente: true });
+      // `que`: el nombre del paso TAL COMO SE LEE en la pantalla — sin él, el aviso de fallo
+      // decía «tu último cambio» y la familia no sabía QUÉ no se guardó (②24.sexies). Sale
+      // del mismo texto que titula el paso, no de un mapeo escrito a mano.
+      enqueueSave(saveFactory, { independiente: true, que: t('step.questions') });
     }
     log.info('Step5: onNext questions', responses);
     updateStep('questions', responses);

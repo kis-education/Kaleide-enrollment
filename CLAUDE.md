@@ -194,6 +194,42 @@ clave de memoria) y **los nueve controles del repositorio salieron VERDES las tr
 batería corre contra un backend simulado que nunca ejecuta `backend/Code.js`. No se escribió una red
 para tapar el hueco (§"La red es UNA"): lo que hay que hacer al tocar esto es **medirlo**.
 
+#### Si el KMS DESCARTA lo que la familia escribió, el asistente lo dice — y no dice «guardado» (②24.sexies, 2026-08-10)
+
+**El asistente no puede afirmar que algo se guardó: el KMS lo ENCOLA.** `enr.wizardSaveResponses`
+apunta el trabajo y contesta `{ok:true, queued:true}` (`kis-app kms-server/enr/wizard-gateway.gs:236`);
+quien escribe de verdad es el trabajador de la cola, después. Hasta el 2026-08-10 `saveResponses_`
+llamaba al KMS **sin recoger su respuesta** y devolvía `{saved: N}` a pelo — una afirmación que ese
+código no está en condiciones de hacer, y **falsa entera** en el caso que importa: el tutor que YA
+envió su parte no sigue rellenando (DL-E49 §6), así que `enr_persistResponses_` devuelve
+`{responses:0, skipped_already_submitted:true}` y **no escribe nada**. Medido: ese aviso **no
+aparecía ni una vez** en todo este repositorio, y **no podía aparecer** — lo produce la cola, mucho
+después, y nunca viaja en la respuesta.
+
+**Por eso se PREGUNTA antes, con lo que ya existe.** `enr.wizardEstadoDeLasPartes` es una lectura
+**síncrona** cuyo propósito declarado es exactamente ése —«¿puede este tutor seguir rellenando?»
+(`wizard-gateway.gs:736`)— y el asistente ya la consumía en la pantalla de confirmación. **No se
+construye mecanismo nuevo**: `_parteDeEsteTutorYaEnviada_` la reusa y, si consta que ese tutor ya
+envió, `saveResponses_` rechaza con `PARTE_YA_ENVIADA` **antes** de encolar nada. KAL-4 intacta (el
+expediente sale del `resume_token`; la persona la resuelve `wizardTutorQueOpera_` server-side y el
+KMS la re-valida). **Degrada hacia GUARDAR**: sin tutor identificado o con la lectura caída devuelve
+`false` — un dato que no se puede consultar no puede convertir esto en un asistente que se niega a
+guardar. El suelo sigue siendo la regla del KMS; esto solo sirve para poder **decírselo a la familia**.
+
+**En pantalla se reusa el carril global de guardado**, porque el paso avanza de forma optimista y un
+aviso local moriría con el paso desmontado: el código del rechazo viaja hasta `SaveIndicator`
+(`saveErrorCodigo`) y ahí un mapa `MOTIVOS_QUE_SABEMOS_EXPLICAR` —**copiado tal cual de
+`SubmitErrorBanner`**— dice qué pasó y **no ofrece «Reintentar»**, que aquí sería un callejón sin
+salida. El resto de fallos se comporta byte-idéntico.
+
+**La mitad del cliente SÍ tiene red; la del servidor NO, y está DEMOSTRADO.** El camino
+`respuestas-rechazadas-se-dicen` de la batería salió **ROJO** las dos veces que se rompió lo visible
+(quitando el mensaje explicado → rojo en (2) y (3); tragándose el rechazo en la factory de
+`Step5Questions` → rojo en (1)). Pero al devolver `saveResponses_` a la mentira original (`saved: N`,
+sin rechazo) **el camino siguió VERDE y los cuatro controles también**: la batería corre contra un
+backend simulado que **nunca ejecuta `backend/Code.js`**. No se escribió una red para tapar el hueco
+(§"La red es UNA") — lo que hay que hacer al tocar `saveResponses_` es **medirlo**.
+
 ### Dos bearer tokens canónicos del wizard — resume_token (/apply) + signing_token (/sign) (CLI 45, 2026-06-02)
 
 > **★ ESTADO REAL POST-W2 (verificado 2026-06-11, gobierna esta sección). El modelo de "dos rutas de entrada" (`/apply` + `/sign`) descrito abajo está SUPERSEDIDO por el modelo ★ CANÓNICA DEFINITIVA (`kis-app/docs/kms/decisions/enr.md`): el wizard es UN flujo único de 11 pasos, UNA sola ruta (`/apply`), entrada única por recuperación de magic-link per-guardian.** Lo que sigue VIGENTE de esta sección es **solo el modelo de AUTORIZACIÓN** (KAL-4 IDOR: `enrollment_group_id` + signer derivados SIEMPRE server-side del token, NUNCA del payload; `requireResumeToken_` como gate de los 11 pasos). Lo que cambió en el CÓDIGO ya desplegado:

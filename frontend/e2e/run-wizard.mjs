@@ -206,6 +206,10 @@ const NO_CUBIERTAS_SOLO_REAL = {
   'aviso-guardado-se-cierra': {
     'cierre-del-aviso': 'el fallo del guardado se pide con `scenario.saveStepFails`, una palanca del backend simulado; contra el sistema real no hay forma honesta de hacer fallar un guardado a voluntad',
   },
+  // ②24.sexies — el servidor descarta el cuestionario del tutor que ya envió su parte.
+  'respuestas-rechazadas-se-dicen': {
+    'respuestas-rechazadas': 'exige un expediente real con un tutor que YA envió su parte y otro que sigue rellenando; el arnés no puede montar ese estado sin dejar datos a medias. En modo simulado sí se cubre, con la palanca `scenario.respuestasRechazadas`.',
+  },
 }
 if (REAL) {
   for (const [camino, entradas] of Object.entries(NO_CUBIERTAS_SOLO_REAL)) {
@@ -352,7 +356,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // formato crudo 'MM/DD/YYYY' de la API — escenario hostil de ①31).
 // `piiGated`/`otpSuperado`/`documentos`: la verja de datos personales (DL-E39) y los
 // archivos ya subidos — los usa `documentos-vuelven` y los deja como estaban al salir.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -3003,6 +3007,81 @@ async function caminoRespuestasVuelven(page, base) {
 }
 
 /**
+ * ②24.sexies · CUANDO EL SERVIDOR DESCARTA LAS RESPUESTAS, LA FAMILIA SE ENTERA.
+ *
+ * El KMS descarta el cuestionario del tutor que YA envió su parte (DL-E49 §6) y hasta hoy
+ * el asistente no solo se lo callaba: **devolvía `saved: N`**, o sea afirmaba haber guardado
+ * lo que nadie guardó. El tutor escribía sus respuestas, avanzaba, y ni él ni nadie se
+ * enteraba jamás de que se habían tirado.
+ *
+ * Afirma TRES cosas, y las tres son de lo que la familia ve:
+ *   (1) el rechazo aparece en pantalla — el avance es optimista y el paso ya no está
+ *       montado, así que un aviso local no valdría: tiene que salir en el carril global;
+ *   (2) el texto dice QUÉ ha pasado (sus respuestas NO se han guardado) y POR QUÉ (su parte
+ *       ya está enviada) — «no se ha podido guardar» a secas invita a reintentar en balde;
+ *   (3) NO se ofrece «Reintentar» — el servidor rechazaría exactamente igual, y un botón
+ *       que no puede funcionar es un callejón sin salida (misma doctrina que
+ *       `SubmitErrorBanner`, que ya mira el código del rechazo).
+ *
+ * Roto a propósito antes de darlo por bueno — ver el reporte del cambio.
+ */
+async function caminoRespuestasRechazadasSeDicen(page, base) {
+  const c = new Camino('respuestas-rechazadas-se-dicen')
+  scenario.stage = 'hasta_preguntas'
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    c.evidencia.llamadas = calls.length
+    if (REAL) {
+      // Contra el sistema de verdad haría falta un expediente con DOS tutores en el que uno
+      // ya hubiera enviado su parte, y dejarlo así. No se afloja nada para que pase: se
+      // declara descubierto y se dice por qué.
+      c.noCubierta('respuestas-rechazadas',
+        'exige un expediente real con un tutor que YA envió su parte y otro que sigue rellenando; el arnés no puede montar ese estado sin dejar datos a medias')
+      return c
+    }
+    // El rechazo se PROVOCA: que quede registrado en consola es lo correcto.
+    c.esperarErrorConsola(/gasCall saveResponses: server returned ok=false/,
+      'el servidor rechaza las respuestas a propósito para comprobar que la familia se entera')
+
+    if (!await irAPreguntas(c, page)) return c
+    await page.waitForTimeout(LATENCY + 500)
+
+    // La familia contesta algo y pulsa Continuar, que es cuando se guarda el cuestionario.
+    const campo = await page.$('input[type="text"], input:not([type]), textarea')
+    if (campo) { await campo.click({ clickCount: 3 }); await campo.type('Respuesta del segundo tutor E2E') }
+
+    scenario.respuestasRechazadas = true
+    await page.click(BTN_SIGUIENTE)
+
+    let salio = false
+    try {
+      await page.waitForSelector('[data-testid="save-indicator-error"]', { timeout: LATENCY + 8000 })
+      salio = true
+    } catch { /* lo dice el afirmar */ }
+    if (!c.afirmar('(1) el servidor descarta las respuestas y la pantalla lo DICE', salio,
+      'no apareció ningún aviso: la familia creería que su cuestionario quedó guardado, que es exactamente el defecto ②24.sexies')) return c
+
+    const texto = await page.$eval('[data-testid="save-indicator-error"]',
+      el => (el.textContent || '').replace(/\s+/g, ' ').trim())
+    c.afirmar('(2) el aviso dice que NO se guardaron y por qué (la parte ya está enviada)',
+      /no se han guardado|were NOT saved/i.test(texto) && /ya está enviada|already been submitted/i.test(texto),
+      `el aviso dice «${texto}»: sin el motivo, la familia no sabe que reintentar no sirve ni a quién preguntar`)
+
+    const hayReintentar = await page.$('[data-testid="save-error-retry"]')
+    c.afirmar('(3) no se ofrece «Reintentar», que aquí no puede funcionar', !hayReintentar,
+      'el aviso ofrece reintentar un guardado que el servidor va a rechazar igual: un callejón sin salida')
+
+    c.evidencia.llamadas = calls.length
+    return c
+  } finally {
+    scenario.respuestasRechazadas = false
+  }
+}
+
+/**
  * LO QUE LA FAMILIA SUBIÓ SIGUE AHÍ CUANDO VUELVE A ENTRAR (síntoma de Diego, 2026-08-09:
  * «figuran tres archivos supuestamente subidos por la familia en el paso 6, documentos,
  * pero que no aparecen listados en el paso 6»).
@@ -3897,6 +3976,8 @@ const CAMINOS = [
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
   // Cola 18.bis.25 — lo que la familia escribió sigue ahí cuando vuelve.
   { nombre: 'respuestas-vuelven', fn: caminoRespuestasVuelven, minLlamadas: 1, minElementos: 11 },
+  // ②24.sexies — cuando el servidor descarta el cuestionario, la familia se entera.
+  { nombre: 'respuestas-rechazadas-se-dicen', fn: caminoRespuestasRechazadasSeDicen, minLlamadas: 1, minElementos: 11 },
   // Lo que la familia SUBIÓ sigue ahí cuando vuelve (síntoma de Diego, 2026-08-09).
   // Contra el sistema real el recorrido se declara NO CUBIERTO y sale sin tocar la
   // pantalla (el código de un solo uso llega a un buzón que el arnés no lee), así que

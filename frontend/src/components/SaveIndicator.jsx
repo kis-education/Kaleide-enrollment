@@ -24,10 +24,25 @@ import { useWizard } from '../context/WizardContext';
  *
  * Componente sin props: lee todo del contexto para poder colocarse en cualquier host
  * del wizard (es endpoint-agnóstico — sobrevive a la migración a KMS de Fase 2).
+ *
+ * ── ②24.sexies · EL AVISO MIRA EL CÓDIGO DEL RECHAZO ─────────────────────────────────
+ * Copiado tal cual de `SubmitErrorBanner` (`MOTIVOS_QUE_SABEMOS_EXPLICAR`), que ya resolvió
+ * este mismo problema para el envío: «No se ha podido guardar, reinténtalo» es un callejón
+ * sin salida cuando el motivo NO se arregla reintentando — el servidor va a rechazar
+ * exactamente igual. Los códigos que sabemos explicar dicen qué ha pasado y qué se puede
+ * hacer, y NO ofrecen «Reintentar»; el RESTO sigue mostrando el texto de siempre, con su
+ * botón, byte-idéntico.
  */
+const MOTIVOS_QUE_SABEMOS_EXPLICAR = {
+  // El tutor ya envió SU parte: el KMS descarta sus respuestas del cuestionario (DL-E49 §6)
+  // y reintentar las descartaría otra vez. Antes esto no se veía en ninguna parte: el
+  // asistente decía haber guardado N respuestas que nadie guardó.
+  PARTE_YA_ENVIADA: 'wizard.save_error.parte_ya_enviada',
+};
+
 export default function SaveIndicator() {
   const { t } = useTranslation();
-  const { saveState, completedSteps, retryLastSave, saveErrorSeq, saveErrorQue } = useWizard();
+  const { saveState, completedSteps, retryLastSave, saveErrorSeq, saveErrorQue, saveErrorCodigo } = useWizard();
   // Episodio de fallo que el usuario cerró a mano. `null` = no ha cerrado ninguno.
   const [episodioCerrado, setEpisodioCerrado] = useState(null);
 
@@ -45,13 +60,19 @@ export default function SaveIndicator() {
   if (saveState === 'error') {
     // Cerrado a mano: se calla, pero NO dice que esté guardado (el estado sigue en error).
     if (episodioCerrado === saveErrorSeq) return <span data-testid="save-indicator-mute" />;
-    const texto = saveErrorQue
-      ? t('wizard.save_error_step', 'No se ha podido guardar «{{paso}}». Lo que escribiste sigue aquí.', { paso: saveErrorQue })
-      : t('wizard.save_error', 'No se ha podido guardar tu último cambio. Lo que escribiste sigue aquí.');
+    const claveExplicada = MOTIVOS_QUE_SABEMOS_EXPLICAR[saveErrorCodigo];
+    const texto = claveExplicada
+      ? t(claveExplicada)
+      : saveErrorQue
+        ? t('wizard.save_error_step', 'No se ha podido guardar «{{paso}}». Lo que escribiste sigue aquí.', { paso: saveErrorQue })
+        : t('wizard.save_error', 'No se ha podido guardar tu último cambio. Lo que escribiste sigue aquí.');
     return (
       <span style={{ ...base, color: '#a02020' }} aria-live="assertive" data-testid="save-indicator-error">
         <i className="bi bi-exclamation-triangle" />
         {texto}
+        {/* Reintentar solo donde puede servir de algo: con un motivo que sabemos explicar,
+            el servidor rechazaría igual y el botón sería un callejón sin salida. */}
+        {!claveExplicada && (
         <button
           type="button"
           onClick={retryLastSave}
@@ -68,6 +89,7 @@ export default function SaveIndicator() {
         >
           {t('wizard.retry_save', 'Reintentar')}
         </button>
+        )}
         <button
           type="button"
           onClick={() => setEpisodioCerrado(saveErrorSeq)}

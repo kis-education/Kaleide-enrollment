@@ -570,7 +570,13 @@ export function createDispatcher(scenario, record) {
       }
       return { ok: true, saved: true, _debug };
     },
-    saveResponses: () => ({ ok: true, saved: true }),
+    // ②24.sexies — el servidor RECHAZA las respuestas del tutor que ya envió su parte
+    // (DL-E49 §6). La forma la copia del contrato real: `saveResponses_` lanza con
+    // `err.code='PARTE_YA_ENVIADA'` y `doPost` lo entrega como `{ok:false, error:{code,message}}`
+    // sobre HTTP 200 (patrón P72, nunca 403).
+    saveResponses: () => (scenario.respuestasRechazadas
+      ? { ok: false, error: { code: 'PARTE_YA_ENVIADA', message: 'este tutor ya envió su parte (simulado)' } }
+      : { ok: true, saved: true }),
     saveNeae:      () => ({ ok: true, saved: true }),
 
     // ── DL-E49 §1 · EL ENVÍO ES POR TUTOR ────────────────────────────────────
