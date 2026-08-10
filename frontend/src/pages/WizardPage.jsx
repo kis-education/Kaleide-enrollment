@@ -452,16 +452,19 @@ const handleNext = async (stepKey, data, extra = null) => {
   };
 
   const handleSaveLater = async () => {
-    if (!enrollmentGroupId) {
-      log.warn('WizardPage: Save Later clicked but no enrollmentGroupId in context');
+    // ②26: la llave de esta acción es el resume_token, igual que en `saveStep` /
+    // `abandonSession`. El servidor DERIVA de él el expediente (KAL-4) y ya no
+    // acepta que el identificador venga en la petición — mandarlo abría la puerta
+    // a que cualquiera pidiera el enlace de una familia ajena.
+    if (!resumeToken) {
+      log.warn('WizardPage: Save Later clicked but no resumeToken in context');
       return;
     }
     log.info('WizardPage: sending magic link for Save & Continue Later', { enrollmentGroupId });
     setSendingMagicLink(true);
     try {
       const sent = await gasCall('sendMagicLink', {
-        enrollment_group_id: enrollmentGroupId,
-        application_id:      enrollmentGroupId, // legacy alias
+        resume_token: resumeToken, // KAL-4: el grupo lo deriva el servidor del token
       });
       // SPEC-WIZ-WARMUP-V2: kick fire-and-forget del precalentado (ticket opaco;
       // el token rotado solo viaja por email — ver LandingPage para el racional).

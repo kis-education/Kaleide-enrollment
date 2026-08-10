@@ -166,16 +166,19 @@ jobs:
       - name: El wizard no escribe el estado ni manda el correo del envío
         run: node scripts/comprobar-que-el-wizard-no-escribe-estado.mjs
 
-  # CONTROL DE LA PUERTA PÚBLICA — este backend es ANYONE_ANONYMOUS y tiene TRES entradas
-  # que cualquiera puede invocar sin identificarse: crear una solicitud, reconocer a la
-  # familia y recuperar el enlace. Dos tenían verja reCAPTCHA; la de recuperar NO. Su
-  # respuesta ya era indistinguible desde el 2026-07-27, pero el TIEMPO no: ~46 s con
-  # expediente (dos viajes al KMS: renovar el enlace + mandar el correo) frente a ~7 s sin
-  # él ⇒ cronometrando se volvía a enumerar familias email a email.
+  # CONTROL DE LAS PUERTAS PÚBLICAS — este backend es ANYONE_ANONYMOUS y tiene CINCO
+  # entradas alcanzables desde internet. CUATRO son anónimas por diseño y pasan todas por
+  # UNA verja reCAPTCHA que falla cerrado: crear una solicitud, reconocer a la familia,
+  # recuperar el enlace y pedir el código de un solo uso (rama de alta). La QUINTA —
+  # «Guardar y seguir luego»— NO debe ser anónima: se llama desde dentro del asistente, así
+  # que exige el token de recuperación y deriva de él el expediente (KAL-4). Sin esa llave,
+  # cualquiera con un identificador que el propio sistema regala podía rotarle el enlace a
+  # una familia, bombardearle el buzón y agotarle el cupo (②26).
   #
   # Este trabajo EJECUTA la verja real extraída del fuente (6 casos, las 5 formas de fallar
-  # cerrado) y comprueba que las tres entradas pasan por ella — en la de recuperar, ANTES
-  # del trabajo caro y devolviendo el mismo ack (un rechazo visible sería otro oráculo).
+  # cerrado), comprueba que las cuatro entradas anónimas pasan por ella — en la de
+  # recuperar, ANTES del trabajo caro y devolviendo el mismo ack (un rechazo visible sería
+  # otro oráculo) — y que la quinta exige el token antes del cupo.
   #
   # La batería de navegador NO puede cazarlo: corre contra un backend simulado y nunca
   # ejecuta `backend/Code.js`. `build` depende de este trabajo ⇒ en ROJO no se publica.
@@ -193,7 +196,7 @@ jobs:
 
       # Sin tubería: el veredicto se lee de la última línea, pero es el código de salida el
       # que hace fallar el trabajo, y una tubería devolvería el del último comando.
-      - name: Las tres entradas públicas pasan por UNA verja que falla cerrado
+      - name: Cuatro entradas anónimas pasan por UNA verja; la quinta exige el token
         run: node scripts/comprobar-verja-publica.mjs
 
   # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.

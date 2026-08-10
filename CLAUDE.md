@@ -227,25 +227,45 @@ Test: `manual_testRecognizeFamilyAntiEnum` en `backend/Code.js`. Verifica shape 
 
 ### sendMagicLink — ack constante anti-enumeración (WIZ-ENUM, audit 2026-07-27)
 
-`sendMagicLink_` rama `primary_email` es el **servicio público de recuperación** (la landing lo llama sin autenticación y el manifest es `ANYONE_ANONYMOUS`; **desde el 2026-08-09 esa rama SÍ tiene verja reCAPTCHA fail-closed** — ver §"Las CUATRO entradas públicas pasan por UNA verja", que cerró el oráculo por TIEMPO que quedaba abierto). Antes devolvía `{sent:true}` con grupo y **lanzaba `'Enrollment group not found'`** sin él → dos respuestas distinguibles = **oráculo de existencia**: cualquiera podía preguntar email a email "¿esta familia está matriculando?".
+`sendMagicLink_` rama `primary_email` es el **servicio público de recuperación** (la landing lo llama sin autenticación y el manifest es `ANYONE_ANONYMOUS`; **desde el 2026-08-09 esa rama SÍ tiene verja reCAPTCHA fail-closed** — ver §"Las CINCO puertas del asistente", que cerró el oráculo por TIEMPO que quedaba abierto). Antes devolvía `{sent:true}` con grupo y **lanzaba `'Enrollment group not found'`** sin él → dos respuestas distinguibles = **oráculo de existencia**: cualquiera podía preguntar email a email "¿esta familia está matriculando?".
 
 **Ahora la rama `primary_email` devuelve SIEMPRE la misma forma** — `_magicLinkConstantAck_()` → `{sent:true, warm_ticket:<uuid>}` — y todo el trabajo (buscar grupo, rotar token, enviar el enlace, crear la sesión nueva) es **best-effort silencioso**. Reglas derivadas, obligatorias para cualquier cambio futuro en este camino:
 
 1. **Nada de la respuesta puede depender de que el email exista** — ni un `throw`, ni un campo extra (`already_submitted`, ids del grupo, `recognition`), ni la **presencia** del `warm_ticket` (por eso el camino "sin grupo" mintea un **ticket señuelo** con 0 items; `warmBundle_` responde `{ok:true}` sin conteo de fases para no reabrir el oráculo por esa puerta).
 2. **La verja va primero y el rate-limit ANTES del lookup** (2026-08-09: la verja se puso por delante del cupo a propósito — así un sondeo que no la pasa tampoco puede agotarle el cupo de recuperación a una familia real; los dos rechazos devuelven el mismo ack, así que el orden no es distinguible). El cupo se consume exista o no el grupo, y **sus bloqueos no se surfacean**: `BLOCKED_BY_REPORT` delataría que ese email recibió un enlace alguna vez. El cupo se sigue APLICANDO (no se envía nada), solo no se cuenta.
 3. **La decisión recuperar-vs-crear vive SERVER-SIDE.** El cliente ya no puede ramificar (no hay señal): si el email no tiene grupo, `sendMagicLink_` delega en `initEnrollmentSession_` (verja reCAPTCHA **fail-closed** — sin token válido no se crea ni se envía nada). Por eso la landing manda el `recaptcha_token` **en la propia llamada a `sendMagicLink`** y ya no llama a `initEnrollmentSession` por su cuenta.
-4. La rama `enrollment_group_id` (uso interno "Guardar y seguir luego") **NO cambia**: el caller ya conoce un UUID, no hay enumeración, y sus errores siguen propagándose para el toast del wizard.
+4. La otra rama (uso interno "Guardar y seguir luego") entra por **`resume_token`** y sus errores **sí** se propagan (el asistente los muestra como toast): ahí no hay enumeración que proteger, porque quien llama ya ha demostrado ser de la familia. Ver §"Las CINCO puertas del asistente".
 
 Residual conocido (NO cerrado): el action público `initEnrollmentSession` sigue distinguiendo en su respuesta (`already_submitted` / `resumed` / creada), pero está **detrás de la verja reCAPTCHA fail-closed**. Test: `manual_testSendMagicLinkConstantAck`. Cross-ref: `kis-app/docs/kms/security/audit-2026-07-27.md` §C fila WIZ-ENUM + §KAL-10 (mismo patrón en `recognizeFamily_`).
 
-### Las CUATRO entradas públicas pasan por UNA verja (②2 + ②12, 2026-08-09)
+### Las CINCO puertas del asistente: cuatro pasan por UNA verja, la quinta exige el token (②2 + ②12 + ②26)
 
 Este backend es `ANYONE_ANONYMOUS`: **todo lo que esté en el `switch(action)` del `doPost` lo
-puede invocar cualquiera desde internet, sin identificarse.** Cuatro de esas acciones son
-alcanzables sin ninguna credencial y **todas pasan por la misma verja**: **crear una
-solicitud** (`initEnrollmentSession_`), **reconocer a la familia** (`recognizeFamily_`),
-**recuperar el enlace** (`sendMagicLink_`, rama `primary_email`) y **pedir el código de un
-solo uso** (`sendVerificationCode_`, **rama de alta**).
+puede invocar cualquiera desde internet, sin identificarse.** Son **cinco** las puertas que se
+alcanzan así, y no todas quieren la misma llave:
+
+- **CUATRO son anónimas por diseño** —la familia todavía no tiene con qué identificarse— y
+  **todas pasan por la misma verja reCAPTCHA**: **crear una solicitud**
+  (`initEnrollmentSession_`), **reconocer a la familia** (`recognizeFamily_`), **recuperar el
+  enlace** (`sendMagicLink_`, rama `primary_email`) y **pedir el código de un solo uso**
+  (`sendVerificationCode_`, **rama de alta**).
+- **LA QUINTA NO es anónima: exige el token de recuperación.** Es «Guardar y seguir luego»
+  (`sendMagicLink_`, rama `resume_token`), que se llama **desde dentro del asistente**, donde el
+  token ya existe.
+
+**La quinta (②26).** Entraba por el **identificador del expediente que venía en el cuerpo de la
+petición** y no pedía nada más: solo que tuviera forma de UUID. Y ese identificador **lo reparte
+el propio sistema** —`initEnrollmentSession` lo devuelve a cambio de un reCAPTCHA—, así que
+cualquiera podía, **hasta 5 veces por hora**: bombardear el buzón de esa familia, **rotarle el
+enlace vivo** bajo los pies de quien estuviera rellenando la solicitud, y **agotarle el cupo** (⇒
+su recuperación legítima de esa hora se rechaza). El **token no se filtra** en la respuesta ⇒ no
+había toma de control; lo que había era hostigamiento. **Ahora la rama exige `resume_token` y
+deriva el expediente de él con el gate canónico `requireResumeToken_`** (KAL-4: nunca del cuerpo),
+**antes del cupo y de cualquier lectura**. **Coste para las familias: NINGUNO** — el llamante real
+es el propio asistente (`WizardPage.jsx`, `handleSaveLater`), que ya tiene el token y lo manda
+igual que `saveStep` o `abandonSession`. Se pierden el respaldo por `application_id` y la
+comprobación de abandono escrita a mano: la primera **era** el agujero, y la segunda ya la hace el
+gate.
 
 **La cuarta (②12).** La rama de alta de `sendVerificationCode_` toma **el grupo Y el correo de
 destino del propio cuerpo de la petición** y solo pasaba por el cupo por-correo
@@ -293,6 +313,10 @@ instante (fire-and-forget).
 
 **Reglas para cualquier entrada pública NUEVA:**
 
+0. **Primero: ¿esta puerta tiene que ser anónima?** Si la llama el asistente **desde dentro de
+   la sesión de la familia**, la llave correcta **no es la verja: es el `resume_token`**, con
+   `requireResumeToken_` y el expediente derivado de él (KAL-4). La verja solo protege lo que
+   una familia tiene que poder hacer **antes** de tener token.
 1. **La decisión vive en UN solo sitio**, `_verjaPublicaVeredicto_` — fail-closed en sus cinco
    formas (sin `RECAPTCHA_SECRET`, secreto vacío, sin token, puntuación insuficiente, fallo de
    red al verificar). Antes estaba **copiada** en dos manejadores y **ausente** en otros dos;
@@ -309,13 +333,18 @@ instante (fire-and-forget).
 
 **Control**: `node scripts/comprobar-verja-publica.mjs` — trabajo `verja-publica` de
 `.github/workflows/deploy.yml`; **`build` depende de él ⇒ en ROJO no se publica**. **Ejecuta**
-la verja real extraída del fuente (6 casos) y comprueba las **cuatro** entradas. **Rojo
-demostrado once veces** antes de darlo por bueno — seis en ②2 (quitando la verja de la
-recuperación · poniéndola después del trabajo caro · haciendo que lance en vez de devolver el
+la verja real extraída del fuente (6 casos), comprueba las **cuatro** entradas anónimas y
+comprueba que la **quinta exige el token**, **antes del cupo**, y que `sendMagicLink_` **ya no
+lee el identificador del expediente del cuerpo** (si lo leyera, la puerta seguiría abierta).
+**Rojo demostrado dieciséis veces** antes de darlo por bueno — seis en ②2 (quitando la verja de
+la recuperación · poniéndola después del trabajo caro · haciendo que lance en vez de devolver el
 ack · ablandándola a fail-open · renombrándola, *«el control está CIEGO»* · y quitándola de
-`initEnrollmentSession_`) y cinco en ②12 (quitando la verja de la rama de alta · poniéndola
+`initEnrollmentSession_`), cinco en ②12 (quitando la verja de la rama de alta · poniéndola
 después del cupo · ablandando la verja compartida a fail-open · poniéndosela **también** a la
-rama step-up · renombrando el manejador, *«control CIEGO»*).
+rama step-up · renombrando el manejador, *«control CIEGO»*) y cinco en ②26 (quitando la
+exigencia del token · poniendo el cupo por delante · volviendo a leer el identificador del
+cuerpo · usando el memo de LECTURA del gate en una rama que ROTA el token · renombrando
+`sendMagicLink_`, *«control CIEGO en la quinta puerta»*).
 **Límite declarado** en la cabecera del módulo: es un detector por líneas, no un analizador
 sintáctico, y **no afirma que Google puntúe bien**.
 
