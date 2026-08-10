@@ -4611,13 +4611,19 @@ function submitEnrollmentSession_(p) {
   // estado (D33 / DL-S115): la ficha nace en su estado de partida y la marca
   // APPLICATION_FORM_COMPLETED —completada KMS-side por enr.wizardPersistSubmitEnrollments—
   // dispara la transición por el motor, que deja el rastro en sysStateTransitionLog.
+
+  // QUIÉN OPERA se resuelve UNA SOLA VEZ, y ANTES de escribir nada: lo necesitan dos cosas
+  // —acreditar la parte del tutor (DL-E49 §1) y firmar el consentimiento (②29)— y con dos
+  // llamadas separadas podrían acabar diciendo cosas distintas del mismo envío.
+  const tutorQueOpera = wizardTutorQueOpera_(p, enrollmentGroupId);
+
   const desiredStartDate = p.desired_start_date || null;
   const persistRes = kmsProxy_('enr.wizardPersistSubmitEnrollments', {
     resume_token:       p.resume_token,
     desired_start_date: desiredStartDate,
     // DL-E49 §1 — el envío es POR TUTOR: quien envía se resuelve server-side desde su
     // propio enlace, y el KMS lo re-valida contra los tutores declarados del grupo.
-    submitted_by_person_id: wizardTutorQueOpera_(p, enrollmentGroupId),
+    submitted_by_person_id: tutorQueOpera,
   });
   const enrollmentIds = (persistRes && persistRes.enrollment_ids) || [];
   Logger.log('submitEnrollmentSession_: KMS persisted enrollments=' + enrollmentIds.length);
@@ -4631,17 +4637,40 @@ function submitEnrollmentSession_(p) {
 
   // ── Log GDPR + legal consents (per enrollment) ─────────────────────────────
   // sysConsentsLog (DL-S44): polymorphic on entity_type_code + entity_id.
-  // Signer: first guardian of the session (the family representative who submitted).
   // The GDPR consent that the family accepted on the consent page (deferred at
   // init time) is also recorded here, once per enrollment, alongside any
   // additional consents from the review step.
-  const signerPersonId = guardians[0] ? guardians[0].person_id : null;
+  //
+  // ② 29 (2026-08-10) — QUIÉN FIRMA. Aquí ponía `guardians[0].person_id`: el firmante del
+  // registro legal era **el primero que devolviera AppSheet**. Con el envío por partes
+  // (DL-E49 §5) eso le atribuye a un tutor lo que consintió el otro. Ahora lo decide
+  // `wizardFirmanteDelConsentimiento_` a partir del tutor que opera (resuelto arriba desde
+  // su propio enlace). Si no se puede atribuir a nadie, NO se escribe el consentimiento —
+  // ni con un firmante inventado ni con `signer_id` vacío.
+  const signerPersonId = wizardFirmanteDelConsentimiento_(tutorQueOpera, guardians);
   let consentRows = [];
   const consents = Array.isArray(p.consents) ? p.consents.slice() : [];
   // El mapa de tipos y su resolvedor viven en el ámbito del módulo
   // (`wizardCodigoDeConsentimiento_`): un solo sitio, y comprobable desde fuera.
 
-  enrollmentIds.forEach(eid => {
+  // ②29 — SIN FIRMANTE NO SE REGISTRA, Y SE DICE. Se llega aquí con el envío YA
+  // materializado (`enr.wizardPersistSubmitEnrollments`, arriba: expedientes creados y
+  // `submitted_at` estampado) ⇒ lanzar dejaría el expediente A MEDIAS y a la familia
+  // atascada en `NOT_EDITABLE` al reintentar — el mismo fallo que la regla W1 de esta
+  // función documenta y que por eso mueve TODAS las validaciones antes de la primera
+  // escritura. Y retener el envío por esto también sería peor: es la doctrina que el KMS
+  // ya tomó para el caso gemelo («sin saber QUIÉN envía no se puede acreditar a nadie… se
+  // comporta como antes y se DICE, con el motivo, en vez de dejar un atasco sin
+  // diagnóstico», `enr_persistSubmit_`). Así que no se atribuye, no se calla: queda en el
+  // registro (redactado, KAL-11) y VUELVE al llamante en la respuesta.
+  if (!signerPersonId) {
+    Logger.log(redact_('[submitEnrollmentSession_] ②29: no se puede atribuir el consentimiento ' +
+      'a ningún tutor (¿llegó el `n` del enlace?; tutores vivos=' + guardians.length + '). ' +
+      'NO se registra en el libro de consentimientos en nombre de nadie. grupo=' +
+      String(enrollmentGroupId)));
+  }
+
+  (signerPersonId ? enrollmentIds : []).forEach(eid => {
     consents.forEach(c => {
       // `null` ⇒ NO es un consentimiento (la atestación de exactitud del paso 7). Se exigió
       // arriba; no se registra en el libro de consentimientos con un código que no existe.
@@ -4821,6 +4850,12 @@ function submitEnrollmentSession_(p) {
     tutores_total:        (persistRes && persistRes.tutores_total) || 0,
     tutores_que_enviaron: (persistRes && persistRes.tutores_que_enviaron) || 0,
     falta_por_enviar:     (persistRes && persistRes.falta_por_enviar) || 0,
+    // ②29 — el libro de consentimientos es el REGISTRO LEGAL: si no se pudo atribuir a
+    // quien consintió, no se escribe a nombre de nadie, y el hecho SALE de aquí en vez de
+    // quedarse solo en el registro del servidor. Campos añadidos (nadie los leía antes):
+    // el que no los conoce sigue funcionando igual.
+    consentimientos_registrados: consentRows.length,
+    consentimiento_sin_firmante: !signerPersonId,
   };
 }
 
@@ -5405,6 +5440,48 @@ function wizardTutorQueOpera_(p, groupId) {
     Logger.log(redact_('[wizardTutorQueOpera_] no se pudo identificar al tutor: ' + e.message));
     return null;
   }
+}
+
+/**
+ * ②29 · EL CONSENTIMIENTO SE ATRIBUYE A QUIEN LO DIO — NUNCA «AL PRIMERO DE LA LISTA»
+ *
+ * El libro de consentimientos (`sysConsentsLog`) es el REGISTRO LEGAL: su `signer_id` dice
+ * QUIÉN consintió. Hasta el 2026-08-10 el envío lo rellenaba con `guardians[0].person_id`,
+ * es decir, con **el orden en que AppSheet devolviera las filas**. Desde que el envío es POR
+ * TUTOR (DL-E49 §1/§5 — cada tutor manda su parte con su propio enlace), eso le atribuía a
+ * un tutor un consentimiento que **no dio él**.
+ *
+ * Aquí NO se resuelve la identidad: la resuelve `wizardTutorQueOpera_` (un solo resolvedor,
+ * desde el propio enlace del tutor, IDENTITY-FROM-LINK). Esta función solo DECIDE si se
+ * puede atribuir el consentimiento a alguien, y es pura a propósito (sin lecturas, sin
+ * fechas) para poder comprobarse desde fuera con `scripts/`-style extraction.
+ *
+ * Las tres reglas, en orden:
+ *   1. Si el tutor que opera resolvió Y es un tutor VIVO de este grupo → firma ÉL.
+ *      (La pertenencia se re-comprueba aquí, KAL-4 en profundidad, igual que la re-comprueba
+ *      el KMS con `submitted_by_person_id` en `enr_persistSubmit_`.)
+ *   2. Si NO resolvió y el grupo tiene UN SOLO tutor vivo → firma ese. No es deducción por
+ *      resta (prohibida, DL-E48): el conjunto de posibles remitentes tiene un solo elemento.
+ *      Es la MISMA regla que ya aplica el KMS (`wizard-gateway.gs`, `partes.tutores.length === 1`).
+ *   3. En cualquier otro caso → `null` = **no se atribuye a nadie**. El llamante NO escribe
+ *      la fila: ni con un firmante inventado, ni con `null` en `signer_id`.
+ *
+ * @param {string|null} tutorQueOpera  person_id devuelto por `wizardTutorQueOpera_`, o null.
+ * @param {Array}       tutoresVivos   tutores VIVOS del grupo (ya pasados por `wizardSoloVivas_`).
+ * @returns {string|null} person_id del firmante, o null si no se puede atribuir.
+ */
+function wizardFirmanteDelConsentimiento_(tutorQueOpera, tutoresVivos) {
+  var vivos = (Array.isArray(tutoresVivos) ? tutoresVivos : []).filter(function (g) {
+    return g && g.person_id;
+  });
+  if (tutorQueOpera) {
+    var esDeEsteGrupo = vivos.some(function (g) { return g.person_id === tutorQueOpera; });
+    // Declarado pero ajeno al grupo ⇒ NO se cae al «primero»: eso es justo lo que había que
+    // cerrar, y además sería registrar una firma de otra familia en un libro de solo añadir.
+    return esDeEsteGrupo ? tutorQueOpera : null;
+  }
+  if (vivos.length === 1) return vivos[0].person_id;
+  return null;
 }
 
 function saveResponses_(p) {
