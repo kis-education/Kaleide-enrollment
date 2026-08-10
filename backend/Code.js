@@ -1038,10 +1038,25 @@ function _stepUpAttemptsKey_(groupId, personaEmail) {
  * coste que PERF-WIZ quitó de estos caminos.
  *
  * OJO a lo que devuelve cuando no hay `n` ni `recovered_email`: `effectiveRecoveredEmail_`
- * cae, por diseño (su fallback 3), al `primary_email` del expediente — el correo personal
- * del tutor 1. Es decir, **no devuelve «no se sabe», devuelve «el tutor 1»**. Eso es lo
- * que hace que este cambio NO rompa nada: una sesión sin discriminador se comporta
- * exactamente como hasta hoy (el código va al tutor 1 y la marca es del tutor 1).
+ * cae, por diseño (su respaldo, paso 3), al `primary_email` del expediente — el correo
+ * personal del tutor 1. Es decir, **no devuelve «no se sabe», devuelve «el tutor 1»**.
+ *
+ * ②24.bis (2026-08-10) — ESO VALE PARA ELEGIR BUZÓN Y NO VALE PARA ATRIBUIR. Con respaldo,
+ * una sesión sin discriminador se comporta exactamente como hasta hoy (el código va al
+ * tutor 1 y la marca es del tutor 1) — inofensivo, porque como mucho manda el código a
+ * quien ya lo recibía. Pero el mismo valor alimentaba **quién firma el consentimiento**, y
+ * ahí un «tutor 1» inventado le atribuye a una persona algo que quizá no dio: el libro de
+ * consentimientos es el REGISTRO LEGAL. Por eso quien atribuye pide `{sinRespaldo:true}`
+ * (ver `wizardTutorAtribuible_`) y se lleva `null` cuando no consta — **no se retira el
+ * respaldo, se separan los dos usos**, y sin un segundo resolvedor que pueda divergir.
+ *
+ * DOS MEMORIAS, Y NO SE CONTAMINAN. La parte compartida —la identidad DECLARADA (pasos 1 y
+ * 2 de `effectiveRecoveredEmail_`: el `n` del enlace y el `recovered_email` del cliente)— es
+ * la MISMA en los dos modos y se guarda una sola vez bajo `idlinkd_`. El respaldo vive
+ * aparte, bajo `idlinkr_`, y solo lo consulta el modo indulgente. Así el modo estricto no
+ * puede leer un valor que salió del respaldo (que es justo el fallo intermitente que habría
+ * si compartieran clave), y no cuesta ni una lectura de más: en el camino normal (con `n`)
+ * la identidad declarada resuelve y los dos modos la comparten.
  *
  * La clave de la memoria incluye el token de recuperación: cuando se rota (cada envío de
  * enlace) la entrada vieja queda inalcanzable y caduca sola. La memoria NO autoriza nada
@@ -1049,16 +1064,43 @@ function _stepUpAttemptsKey_(groupId, personaEmail) {
  *
  * @param {Object} p payload del manejador (resume_token + `n` y/o recovered_email).
  * @param {string} groupId expediente YA autorizado (derivado del token — KAL-4).
+ * @param {Object} [opts] { sinRespaldo:true } ⇒ solo la identidad DECLARADA; `null` si no consta.
  * @returns {string|null} buzón efectivo en minúsculas, o null si no hay forma de saberlo.
  * @private
  */
-function _identidadDelEnlace_(p, groupId) {
+function _identidadDelEnlace_(p, groupId, opts) {
   if (!p || !groupId) return null;
+  var sinRespaldo = !!(opts && opts.sinRespaldo);
+  // 1. La identidad DECLARADA (pasos 1 y 2) — idéntica en los dos modos ⇒ UNA sola memoria.
+  var declarada = _idLinkMemo_(p, groupId, 'idlinkd_', function () {
+    return effectiveRecoveredEmail_((p && p.recovered_email) || null, groupId, (p && p.n) || null,
+      null, null, null, { sinRespaldo: true });
+  });
+  if (declarada || sinRespaldo) return declarada;
+  // 2. Solo el modo indulgente añade el respaldo (`primary_email` = tutor 1), con SU memoria.
+  //    Llegados aquí los pasos 1 y 2 ya dieron null, así que esta llamada solo paga el paso 3.
+  return _idLinkMemo_(p, groupId, 'idlinkr_', function () {
+    return effectiveRecoveredEmail_((p && p.recovered_email) || null, groupId, (p && p.n) || null);
+  });
+}
+
+/**
+ * ②24.bis — memoria de 300 s de `_identidadDelEnlace_`, con la clave del MODO por delante.
+ * Si los dos modos compartieran clave se contaminarían entre sí y el fallo sería
+ * intermitente e imposible de diagnosticar; por eso el prefijo es parte de la clave.
+ * La memoria NUNCA rompe el camino vivo: cualquier fallo suyo se traga y se calcula.
+ *
+ * @param {Object} p payload · @param {string} groupId · @param {string} prefijo clave del modo
+ * @param {Function} calcular thunk que resuelve el buzón cuando no hay memoria.
+ * @returns {string|null}
+ * @private
+ */
+function _idLinkMemo_(p, groupId, prefijo, calcular) {
   var memoKey = null;
   try {
     var crudo = [String(p.resume_token || '').trim(), p.n || '', p.recovered_email || '', groupId].join('|');
     var dig = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, crudo, Utilities.Charset.UTF_8);
-    memoKey = 'idlink_' + dig.map(function (b) {
+    memoKey = prefijo + dig.map(function (b) {
       var v = (b + 256) % 256; return (v < 16 ? '0' : '') + v.toString(16);
     }).join('');
     var hit = CacheService.getScriptCache().get(memoKey);
@@ -1066,7 +1108,7 @@ function _identidadDelEnlace_(p, groupId) {
   } catch (e) { /* la memoria NUNCA rompe el camino vivo */ }
   var email = null;
   try {
-    email = effectiveRecoveredEmail_((p && p.recovered_email) || null, groupId, (p && p.n) || null);
+    email = calcular();
   } catch (e) {
     Logger.log(redact_('[_identidadDelEnlace_] no se pudo identificar el buzón: ' + e.message));
     email = null;
@@ -2611,15 +2653,25 @@ function resolveEmailFromLinkParam_(groupId, nParam, emailsHint, personsHint, gr
  *      pero ya NO es la red de seguridad principal).
  * Devuelve null si ninguno aplica (→ degrada al modelo group-scoped intacto).
  *
+ * ②24.bis (2026-08-10) — EL RESPALDO (paso 3) SE PUEDE DESACTIVAR, Y HAY QUE HACERLO PARA
+ * ATRIBUIR. El paso 3 no dice «no se sabe»: dice «el tutor 1». Eso es lo correcto para
+ * DECIDIR A QUÉ BUZÓN se manda el código de un solo uso y DE QUIÉN es la marca de step-up
+ * (como mucho se comporta como siempre), y es MENTIRA cuando lo que se decide es QUIÉN
+ * FIRMÓ un consentimiento (`sysConsentsLog` es el registro legal). Por eso el modo estricto
+ * se DECLARA en la llamada — `opts.sinRespaldo:true` — en vez de existir un segundo
+ * resolvedor que pudiera divergir de éste. Los pasos 1 y 2 son idénticos en los dos modos.
+ *
  * @param {string|null} clientRecoveredEmail  p.recovered_email (puede faltar)
  * @param {string} groupId                    enrollment_group_id (derivado del token, KAL-4)
  * @param {string|null} nParam                p.n del payload (email_id del enlace)
  * @param {Array}  [emailsHint]               filas enrEmails del grupo ya leídas
  * @param {Array}  [personsHint]              filas enrPersons del grupo ya leídas
  * @param {Object} [groupHint]                fila de grupo ya leída
+ * @param {Object} [opts]                     { sinRespaldo:true } ⇒ NO caer al `primary_email`
+ *                                            (paso 3). Sin él, comportamiento de siempre.
  * @returns {string|null}
  */
-function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsHint, personsHint, groupHint) {
+function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsHint, personsHint, groupHint, opts) {
   // 1. Prioridad: identidad DEL ENLACE (`n` = email_id) resuelta server-side.
   var fromLink = resolveEmailFromLinkParam_(groupId, nParam, emailsHint, personsHint, groupHint);
   if (fromLink) return fromLink;
@@ -2640,6 +2692,12 @@ function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsH
   //    KAL-4: el groupId viene SIEMPRE del token (server-side); primary_email se lee de
   //    la fila de ESE grupo, jamás del payload. El `n` sigue teniendo prioridad cuando
   //    existe (firma per-guardian intacta); esto solo cubre el hueco "sin discriminador".
+  //
+  //    ②24.bis — QUIEN QUIERE ATRIBUIR NO PASA DE AQUÍ. El respaldo devuelve «el tutor 1»,
+  //    nunca «no se sabe»: sirve para elegir buzón (el código de un solo uso, la marca de
+  //    step-up) y NO para decir quién firmó. El llamante que necesita la verdad lo declara
+  //    con `opts.sinRespaldo` y se lleva `null`, que es la respuesta honesta.
+  if (opts && opts.sinRespaldo) return null;
   try {
     var grow = groupHint;
     if (!grow && groupId) {
@@ -4774,10 +4832,21 @@ function submitEnrollmentSession_(p) {
   // APPLICATION_FORM_COMPLETED —completada KMS-side por enr.wizardPersistSubmitEnrollments—
   // dispara la transición por el motor, que deja el rastro en sysStateTransitionLog.
 
-  // QUIÉN OPERA se resuelve UNA SOLA VEZ, y ANTES de escribir nada: lo necesitan dos cosas
-  // —acreditar la parte del tutor (DL-E49 §1) y firmar el consentimiento (②29)— y con dos
-  // llamadas separadas podrían acabar diciendo cosas distintas del mismo envío.
-  const tutorQueOpera = wizardTutorQueOpera_(p, enrollmentGroupId);
+  // QUIÉN OPERA se resuelve ANTES de escribir nada, y en sus DOS lecturas del mismo
+  // resolvedor — que dan lo mismo salvo en un caso, y ese caso es justo el que ②24.bis vino
+  // a arreglar:
+  //   · `tutorQueOpera` (CON respaldo) acredita la parte del tutor (DL-E49 §1). Si la sesión
+  //     entra sin discriminador, sigue diciendo «el tutor 1», exactamente como hasta hoy —
+  //     y el KMS lo re-valida contra los tutores declarados del grupo.
+  //   · `tutorAtribuible` (SIN respaldo) es el único que puede alimentar la ATRIBUCIÓN del
+  //     consentimiento: ahí «el tutor 1» por defecto no es un dato, es una suposición
+  //     escrita en un registro legal. Cuando no consta devuelve null, y entonces las reglas
+  //     2 y 3 de `wizardFirmanteDelConsentimiento_` —que con el respaldo NO SE ALCANZABAN
+  //     NUNCA— deciden: un solo tutor vivo ⇒ firma ese; varios ⇒ no se registra.
+  // Que diverjan es DELIBERADO. No cuesta lecturas: los dos comparten la memoria de la
+  // identidad declarada (`_identidadDelEnlace_`), y solo el primero paga el respaldo.
+  const tutorQueOpera   = wizardTutorQueOpera_(p, enrollmentGroupId);
+  const tutorAtribuible = wizardTutorAtribuible_(p, enrollmentGroupId);
 
   const desiredStartDate = p.desired_start_date || null;
   const persistRes = kmsProxy_('enr.wizardPersistSubmitEnrollments', {
@@ -4809,7 +4878,9 @@ function submitEnrollmentSession_(p) {
   // `wizardFirmanteDelConsentimiento_` a partir del tutor que opera (resuelto arriba desde
   // su propio enlace). Si no se puede atribuir a nadie, NO se escribe el consentimiento —
   // ni con un firmante inventado ni con `signer_id` vacío.
-  const signerPersonId = wizardFirmanteDelConsentimiento_(tutorQueOpera, guardians);
+  // ②24.bis — y se le pasa `tutorAtribuible`, NO `tutorQueOpera`: con el respaldo, «no
+  // consta» llegaba aquí disfrazado de «el tutor 1» y las reglas 2 y 3 eran inalcanzables.
+  const signerPersonId = wizardFirmanteDelConsentimiento_(tutorAtribuible, guardians);
   let consentRows = [];
   const consents = Array.isArray(p.consents) ? p.consents.slice() : [];
   // El mapa de tipos y su resolvedor viven en el ámbito del módulo
@@ -4827,7 +4898,8 @@ function submitEnrollmentSession_(p) {
   // registro (redactado, KAL-11) y VUELVE al llamante en la respuesta.
   if (!signerPersonId) {
     Logger.log(redact_('[submitEnrollmentSession_] ②29: no se puede atribuir el consentimiento ' +
-      'a ningún tutor (¿llegó el `n` del enlace?; tutores vivos=' + guardians.length + '). ' +
+      'a ningún tutor (no consta quién opera —¿llegó el `n` del enlace?— y hay ' +
+      guardians.length + ' tutores vivos, así que tampoco hay uno solo posible). ' +
       'NO se registra en el libro de consentimientos en nombre de nadie. grupo=' +
       String(enrollmentGroupId)));
   }
@@ -5644,18 +5716,39 @@ function estadoDeLasPartes_(p) {
   });
 }
 
-function wizardTutorQueOpera_(p, groupId) {
+function wizardTutorQueOpera_(p, groupId, opts) {
   try {
     // ②24 — el buzón lo resuelve UN SOLO SITIO (`_identidadDelEnlace_`, con memoria):
     // el mismo que decide a quién se le manda el código de un solo uso y de quién es la
     // marca de step-up. Aquí solo se traduce ese buzón a persona.
-    var email = _identidadDelEnlace_(p, groupId);
+    // ②24.bis — `opts` viaja tal cual: el modo estricto se DECLARA, no se duplica el
+    // resolvedor (dos lectores del mismo dato divergen).
+    var email = _identidadDelEnlace_(p, groupId, opts);
     if (!email) return null;
     return resolveGuardianForRecovery_(groupId, email) || null;
   } catch (e) {
     Logger.log(redact_('[wizardTutorQueOpera_] no se pudo identificar al tutor: ' + e.message));
     return null;
   }
+}
+
+/**
+ * ②24.bis · EL TUTOR AL QUE SE PUEDE ATRIBUIR ALGO — sin respaldo, o nadie.
+ *
+ * NO es un resolvedor nuevo: es `wizardTutorQueOpera_` pidiéndole al ÚNICO resolvedor que
+ * NO caiga a «el tutor 1» (`effectiveRecoveredEmail_`, paso 3). Existe con nombre propio
+ * porque el uso es distinto y hay que poder buscarlo: quien ATRIBUYE un acto a una persona
+ * —hoy, quién firmó el consentimiento (②29)— necesita saber cuándo NO consta, y el respaldo
+ * nunca dice eso. Los otros dos usos del mismo buzón (a qué correo va el código de un solo
+ * uso, de quién es la marca de step-up) SIGUEN con respaldo y no se tocan: ahí devolver «el
+ * tutor 1» es, como mucho, el comportamiento de siempre.
+ *
+ * @param {Object} p payload del manejador (resume_token + `n` y/o recovered_email).
+ * @param {string} groupId expediente YA autorizado (derivado del token — KAL-4).
+ * @returns {string|null} person_id del tutor que consta, o null = «no consta».
+ */
+function wizardTutorAtribuible_(p, groupId) {
+  return wizardTutorQueOpera_(p, groupId, { sinRespaldo: true });
 }
 
 /**
@@ -5667,10 +5760,18 @@ function wizardTutorQueOpera_(p, groupId) {
  * TUTOR (DL-E49 §1/§5 — cada tutor manda su parte con su propio enlace), eso le atribuía a
  * un tutor un consentimiento que **no dio él**.
  *
- * Aquí NO se resuelve la identidad: la resuelve `wizardTutorQueOpera_` (un solo resolvedor,
- * desde el propio enlace del tutor, IDENTITY-FROM-LINK). Esta función solo DECIDE si se
- * puede atribuir el consentimiento a alguien, y es pura a propósito (sin lecturas, sin
- * fechas) para poder comprobarse desde fuera con `scripts/`-style extraction.
+ * Aquí NO se resuelve la identidad: la resuelve `wizardTutorAtribuible_` (el MISMO resolvedor
+ * de siempre, desde el propio enlace del tutor —IDENTITY-FROM-LINK—, pidiéndole el modo SIN
+ * respaldo). Esta función solo DECIDE si se puede atribuir el consentimiento a alguien, y es
+ * pura a propósito (sin lecturas, sin fechas) para poder comprobarse desde fuera con
+ * `scripts/`-style extraction.
+ *
+ * ②24.bis (2026-08-10) — LAS REGLAS 2 Y 3 NO SE ALCANZABAN NUNCA. El llamante le pasaba el
+ * tutor resuelto CON respaldo, y el respaldo nunca devuelve null: ante «no consta» entregaba
+ * el `primary_email` del expediente (el tutor 1). Así que este `if (tutorQueOpera)` se
+ * cumplía SIEMPRE y las dos ramas honestas de abajo eran código muerto. Ahora recibe null
+ * cuando de verdad no consta. Quien cambie el llamante tiene que seguir pasándole el
+ * ESTRICTO: con el indulgente, esta función vuelve a ser un `if` con una sola salida.
  *
  * Las tres reglas, en orden:
  *   1. Si el tutor que opera resolvió Y es un tutor VIVO de este grupo → firma ÉL.
@@ -5682,7 +5783,8 @@ function wizardTutorQueOpera_(p, groupId) {
  *   3. En cualquier otro caso → `null` = **no se atribuye a nadie**. El llamante NO escribe
  *      la fila: ni con un firmante inventado, ni con `null` en `signer_id`.
  *
- * @param {string|null} tutorQueOpera  person_id devuelto por `wizardTutorQueOpera_`, o null.
+ * @param {string|null} tutorQueOpera  person_id devuelto por `wizardTutorAtribuible_` (el modo
+ *                                     SIN respaldo), o null = «no consta quién opera».
  * @param {Array}       tutoresVivos   tutores VIVOS del grupo (ya pasados por `wizardSoloVivas_`).
  * @returns {string|null} person_id del firmante, o null si no se puede atribuir.
  */

@@ -158,6 +158,34 @@ es exactamente el caso en el que ya no consta que el tutor siga delante.
 (`comprobarParidadDelCodigo`) — ver §"Las CINCO puertas del asistente" para cómo se ejecuta y qué
 NO afirma.
 
+#### El respaldo «si no consta, el tutor 1» vale para DOS usos y NO para el tercero (②24.bis, 2026-08-10)
+
+**Un solo sitio resuelve qué buzón está operando** — `_identidadDelEnlace_` → `effectiveRecoveredEmail_`
+(la identidad del enlace, `n` = `email_id`, validada contra el expediente del token). Su **paso 3** es
+un respaldo: cuando no hay `n` ni `recovered_email`, **no devuelve «no se sabe», devuelve el
+`primary_email` del expediente — o sea, el tutor 1**.
+
+| Uso | ¿Respaldo? | Por qué |
+|---|---|---|
+| a qué buzón va el código de un solo uso | **SÍ** | como mucho lo manda a quien ya lo recibía |
+| de quién es la marca de «recién verificado» (`assertStepUpFresh_`) | **SÍ** | ídem: el comportamiento de siempre |
+| **quién FIRMÓ el consentimiento** (`sysConsentsLog`) | **NO** | es el REGISTRO LEGAL: atribuirle a alguien lo que quizá no dio es una mentira, no un valor por defecto |
+
+**Quien atribuye pide el modo estricto y lo DECLARA** — `wizardTutorAtribuible_`, que es el MISMO
+resolvedor con `{sinRespaldo:true}`. **PROHIBIDO escribir un segundo resolvedor** (dos lectores del
+mismo dato divergen) y **prohibido retirar el respaldo** (dejaría a familias sin poder verificarse).
+Con `null`, las reglas 2 y 3 de `wizardFirmanteDelConsentimiento_` (②29) por fin se alcanzan: un solo
+tutor vivo ⇒ firma ese; varios ⇒ **no se registra a nombre de nadie** y se dice (registro redactado +
+`consentimiento_sin_firmante` en la respuesta). Las **dos memorias de 300 s** llevan el modo en la
+clave (`idlinkd_` declarada · `idlinkr_` con respaldo): compartirla las contamina y el fallo sale
+intermitente.
+
+**Este arreglo NO tiene prueba automática, y está DEMOSTRADO, no supuesto**: se rompió a propósito
+tres veces (devolver la atribución al resolvedor con respaldo · ignorar `sinRespaldo` · compartir
+clave de memoria) y **los nueve controles del repositorio salieron VERDES las tres veces** — la
+batería corre contra un backend simulado que nunca ejecuta `backend/Code.js`. No se escribió una red
+para tapar el hueco (§"La red es UNA"): lo que hay que hacer al tocar esto es **medirlo**.
+
 ### Dos bearer tokens canónicos del wizard — resume_token (/apply) + signing_token (/sign) (CLI 45, 2026-06-02)
 
 > **★ ESTADO REAL POST-W2 (verificado 2026-06-11, gobierna esta sección). El modelo de "dos rutas de entrada" (`/apply` + `/sign`) descrito abajo está SUPERSEDIDO por el modelo ★ CANÓNICA DEFINITIVA (`kis-app/docs/kms/decisions/enr.md`): el wizard es UN flujo único de 11 pasos, UNA sola ruta (`/apply`), entrada única por recuperación de magic-link per-guardian.** Lo que sigue VIGENTE de esta sección es **solo el modelo de AUTORIZACIÓN** (KAL-4 IDOR: `enrollment_group_id` + signer derivados SIEMPRE server-side del token, NUNCA del payload; `requireResumeToken_` como gate de los 11 pasos). Lo que cambió en el CÓDIGO ya desplegado:
