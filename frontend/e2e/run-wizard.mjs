@@ -3014,14 +3014,20 @@ async function caminoRespuestasVuelven(page, base) {
  * lo que nadie guardó. El tutor escribía sus respuestas, avanzaba, y ni él ni nadie se
  * enteraba jamás de que se habían tirado.
  *
- * Afirma TRES cosas, y las tres son de lo que la familia ve:
+ * Afirma CUATRO cosas, y las cuatro son de lo que la familia ve:
  *   (1) el rechazo aparece en pantalla — el avance es optimista y el paso ya no está
  *       montado, así que un aviso local no valdría: tiene que salir en el carril global;
  *   (2) el texto dice QUÉ ha pasado (sus respuestas NO se han guardado) y POR QUÉ (su parte
  *       ya está enviada) — «no se ha podido guardar» a secas invita a reintentar en balde;
  *   (3) NO se ofrece «Reintentar» — el servidor rechazaría exactamente igual, y un botón
  *       que no puede funcionar es un callejón sin salida (misma doctrina que
- *       `SubmitErrorBanner`, que ya mira el código del rechazo).
+ *       `SubmitErrorBanner`, que ya mira el código del rechazo);
+ *   (4) 18.bis.85 — y TAMPOCO se reintenta SOLO. La cola re-manda el guardado que falló en
+ *       cuanto el servidor acepta cualquier otra escritura (`alConfirmarEscritura`), que es
+ *       lo correcto para un corte de red y es un viaje condenado a fallar con éste: el aviso
+ *       reaparece como episodio nuevo y la familia se lleva el susto DOS veces. Aquí la
+ *       familia sube un documento —una escritura que SÍ entra y NO pasa por la cola— y el
+ *       cuestionario rechazado no puede volver a salir hacia el servidor.
  *
  * Roto a propósito antes de darlo por bueno — ver el reporte del cambio.
  */
@@ -3073,6 +3079,42 @@ async function caminoRespuestasRechazadasSeDicen(page, base) {
     const hayReintentar = await page.$('[data-testid="save-error-retry"]')
     c.afirmar('(3) no se ofrece «Reintentar», que aquí no puede funcionar', !hayReintentar,
       'el aviso ofrece reintentar un guardado que el servidor va a rechazar igual: un callejón sin salida')
+
+    // ── (4) 18.bis.85 · tampoco se reintenta SOLO ─────────────────────────────────
+    // El avance optimista ya dejó a la familia en Documentos (índice 5). Subir un archivo
+    // es una escritura que SÍ entra y que NO pasa por la cola: es exactamente la que
+    // dispara el reintento automático. La palanca del rechazo se deja PUESTA a propósito —
+    // si el cuestionario volviera a salir, volvería a ser rechazado, que es el susto
+    // repetido que esto viene a quitar.
+    const respuestasAntes = llamadas('saveResponses').length
+    if (!c.afirmar('(4.a) la familia acaba en Documentos, donde puede seguir trabajando',
+      (await page.evaluate(sondaPantalla)).pasoActivo === 5,
+      'no aterrizó en Documentos: sin una pantalla donde escribir de verdad, el reintento automático no se puede provocar')) return c
+    // Cada paso aterriza en solo-lectura hasta que la familia pulsa «Editar» (medido: sin
+    // esto el botón de añadir archivo está sin respuesta al ratón, `pointer-events:none`,
+    // y el clic caduca a los 30 s sin decir por qué).
+    await desbloquear(page)
+    if (!await subirUnDocumento(c, page, 'Documento sintético E2E (18.bis.85)')) return c
+    // El reintento, de haberlo, saldría en cuanto la subida se confirma; se le da margen
+    // de sobra para que un verde no sea simple falta de tiempo.
+    await page.waitForTimeout(LATENCY + 2500)
+    const respuestasDespues = llamadas('saveResponses').length
+    c.afirmar('(4) una escritura posterior que SÍ entra no re-dispara el guardado rechazado',
+      respuestasDespues === respuestasAntes,
+      `salieron ${respuestasDespues - respuestasAntes} envío(s) más del cuestionario tras la subida: el servidor los rechaza igual y el aviso reaparece como episodio nuevo — la familia se lleva el susto dos veces (18.bis.85)`)
+
+    // (5) …y no se compra el silencio con una mentira. Quitar el reintento deja al
+    // siguiente guardado que SÍ entra drenando la cola, y ahí es donde asomaba el
+    // «Todos los cambios guardados» con el cuestionario tirado a la basura. El aviso
+    // tiene que seguir en pie y diciendo lo mismo.
+    const estado = await page.evaluate(() => ({
+      rojo: !!document.querySelector('[data-testid="save-indicator-error"]'),
+      guardado: !!document.querySelector('[data-testid="save-indicator-idle"]'),
+      texto: (document.querySelector('[data-testid="save-indicator-error"]')?.textContent || '').replace(/\s+/g, ' ').trim(),
+    }))
+    c.afirmar('(5) tras esa escritura, la pantalla NO dice «Todos los cambios guardados»',
+      !estado.guardado && estado.rojo && /ya está enviada|already been submitted/i.test(estado.texto),
+      `la pantalla quedó ${estado.guardado ? 'diciendo «Todos los cambios guardados»' : estado.rojo ? `con el aviso «${estado.texto}»` : 'muda'}: el cuestionario NO se guardó y nada va a guardarlo, así que decir lo contrario es la mentira que ②24.sexies vino a quitar`)
 
     c.evidencia.llamadas = calls.length
     return c

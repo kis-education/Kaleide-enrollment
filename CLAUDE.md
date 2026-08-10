@@ -218,9 +218,24 @@ guardar. El suelo sigue siendo la regla del KMS; esto solo sirve para poder **de
 
 **En pantalla se reusa el carril global de guardado**, porque el paso avanza de forma optimista y un
 aviso local moriría con el paso desmontado: el código del rechazo viaja hasta `SaveIndicator`
-(`saveErrorCodigo`) y ahí un mapa `MOTIVOS_QUE_SABEMOS_EXPLICAR` —**copiado tal cual de
-`SubmitErrorBanner`**— dice qué pasó y **no ofrece «Reintentar»**, que aquí sería un callejón sin
-salida. El resto de fallos se comporta byte-idéntico.
+(`saveErrorCodigo`), que **pregunta a `lib/rechazos.js`** qué pasó y **no ofrece «Reintentar»**, que
+aquí sería un callejón sin salida. El resto de fallos se comporta byte-idéntico.
+
+**Y UN SOLO SITIO decide si un rechazo se reintenta: `frontend/src/lib/rechazos.js` (18.bis.85).**
+La tabla `RECHAZOS_DEFINITIVOS` (código → texto) la leen los **dos** consumidores —el aviso, para
+explicarlo y esconder el botón; la cola, para **no recordar** la escritura fallida y no volver a
+mandarla sola cuando otra escritura tiene éxito (`alConfirmarEscritura`)—. **Falla hacia el lado
+seguro**: lo no declarado se sigue reintentando como siempre, así que un corte de red nunca se
+convierte en trabajo perdido. **Un código nuevo se declara con una línea AHÍ**, sin tocar ni el
+contexto ni el aviso, y **jamás se escribe una segunda lista** (el mapa de `SubmitErrorBanner`
+responde a otra pregunta: allí los códigos SÍ se reintentan con provecho, por eso conserva su botón).
+
+⚠️ **Y no basta con dejar de reintentar**: sin más, el SIGUIENTE guardado que entra drena la cola y
+la deja en «Todos los cambios guardados» **con el cuestionario de la familia tirado a la basura** —
+antes eso no se veía porque el reintento, al volver a fallar, mantenía el rojo encendido. Por eso,
+mientras un rechazo definitivo esté en pie, la cola **repone el aviso en vez de caer a 'idle'**, y
+**en el mismo episodio**: un cartel que la familia ya cerró **no se le vuelve a abrir**. Lo cazó la
+batería (`respuestas-rechazadas-se-dicen` salió ROJO en su afirmación (1) con la versión ingenua).
 
 **La mitad del cliente SÍ tiene red; la del servidor NO, y está DEMOSTRADO.** El camino
 `respuestas-rechazadas-se-dicen` de la batería salió **ROJO** las dos veces que se rompió lo visible

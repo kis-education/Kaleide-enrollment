@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../context/WizardContext';
+import { claveDelRechazoDefinitivo } from '../lib/rechazos';
 
 /**
  * WPERF-1 (criterios 2 + 3) — indicador de guardado global estilo Google Docs.
@@ -26,19 +27,17 @@ import { useWizard } from '../context/WizardContext';
  * del wizard (es endpoint-agnóstico — sobrevive a la migración a KMS de Fase 2).
  *
  * ── ②24.sexies · EL AVISO MIRA EL CÓDIGO DEL RECHAZO ─────────────────────────────────
- * Copiado tal cual de `SubmitErrorBanner` (`MOTIVOS_QUE_SABEMOS_EXPLICAR`), que ya resolvió
- * este mismo problema para el envío: «No se ha podido guardar, reinténtalo» es un callejón
- * sin salida cuando el motivo NO se arregla reintentando — el servidor va a rechazar
- * exactamente igual. Los códigos que sabemos explicar dicen qué ha pasado y qué se puede
- * hacer, y NO ofrecen «Reintentar»; el RESTO sigue mostrando el texto de siempre, con su
- * botón, byte-idéntico.
+ * Misma doctrina que `SubmitErrorBanner`, que ya resolvió este problema para el envío:
+ * «No se ha podido guardar, reinténtalo» es un callejón sin salida cuando el motivo NO se
+ * arregla reintentando — el servidor va a rechazar exactamente igual. Los códigos que
+ * sabemos explicar dicen qué ha pasado y qué se puede hacer, y NO ofrecen «Reintentar»;
+ * el RESTO sigue mostrando el texto de siempre, con su botón, byte-idéntico.
+ *
+ * ── 18.bis.85 · LA LISTA YA NO VIVE AQUÍ ─────────────────────────────────────────────
+ * Vive en `lib/rechazos.js`, porque la cola de guardado necesita el MISMO criterio para no
+ * reintentar sola un guardado condenado a fallar (y repetirle el susto a la familia). Dos
+ * copias del mismo criterio divergen; una sola, no. Aquí solo se PREGUNTA.
  */
-const MOTIVOS_QUE_SABEMOS_EXPLICAR = {
-  // El tutor ya envió SU parte: el KMS descarta sus respuestas del cuestionario (DL-E49 §6)
-  // y reintentar las descartaría otra vez. Antes esto no se veía en ninguna parte: el
-  // asistente decía haber guardado N respuestas que nadie guardó.
-  PARTE_YA_ENVIADA: 'wizard.save_error.parte_ya_enviada',
-};
 
 export default function SaveIndicator() {
   const { t } = useTranslation();
@@ -60,7 +59,7 @@ export default function SaveIndicator() {
   if (saveState === 'error') {
     // Cerrado a mano: se calla, pero NO dice que esté guardado (el estado sigue en error).
     if (episodioCerrado === saveErrorSeq) return <span data-testid="save-indicator-mute" />;
-    const claveExplicada = MOTIVOS_QUE_SABEMOS_EXPLICAR[saveErrorCodigo];
+    const claveExplicada = claveDelRechazoDefinitivo(saveErrorCodigo);
     const texto = claveExplicada
       ? t(claveExplicada)
       : saveErrorQue

@@ -3,6 +3,7 @@ import * as log from '../logger';
 import { preparePersonsForUI } from '../pages/steps/personShape';
 import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
 import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache, alConfirmarEscritura } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
+import { seReintentaTrasFallo } from '../lib/rechazos';       // 18.bis.85: el ÚNICO sitio que decide si un rechazo se vuelve a intentar (lo consulta también el aviso)
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -150,10 +151,15 @@ export function WizardProvider({ children }) {
   const [saveErrorSeq, setSaveErrorSeq] = useState(0);
   const [saveErrorQue, setSaveErrorQue] = useState('');
   const [saveErrorCodigo, setSaveErrorCodigo] = useState('');
-  const marcarEstadoDeGuardado_ = useCallback((siguiente, que, codigo) => {
+  //
+  // 18.bis.85 — `opts.mismoEpisodio` REPONE un aviso que sigue siendo cierto sin contarlo
+  // como noticia nueva. Lo necesita el rechazo definitivo (abajo): mientras esté en pie hay
+  // que volver a decirlo tras cada guardado que sí entra, y hacerlo subiendo el episodio
+  // resucitaría un cartel que la familia ya cerró — el susto repetido que esto viene a quitar.
+  const marcarEstadoDeGuardado_ = useCallback((siguiente, que, codigo, opts) => {
     saveStateRef.current = siguiente;
     setSaveState(siguiente);
-    if (siguiente === 'error') { setSaveErrorQue(que || ''); setSaveErrorCodigo(codigo || ''); setSaveErrorSeq(n => n + 1); }
+    if (siguiente === 'error') { setSaveErrorQue(que || ''); setSaveErrorCodigo(codigo || ''); if (!(opts && opts.mismoEpisodio)) setSaveErrorSeq(n => n + 1); }
     else if (siguiente === 'idle') { setSaveErrorQue(''); setSaveErrorCodigo(''); }
   }, []);
   // UX-1 — aviso de validación GLOBAL: los steps lo setean (en vez de su banner local al
@@ -172,6 +178,17 @@ export function WizardProvider({ children }) {
   const lastFailedSaveRef = useRef(null);
   // Nombre en llano de lo que falló, para reponerlo tal cual al reintentar.
   const lastFailedQueRef = useRef('');
+  // ── 18.bis.85 · UN RECHAZO DEFINITIVO SIGUE EN PIE AUNQUE OTRA COSA SÍ SE GUARDE ─────
+  // `{que, codigo}` del último rechazo que el servidor repetiría idéntico, o `null`.
+  // Los fallos NORMALES los tapa el propio reintento: mientras algo siga sin entrar, la
+  // cola lo vuelve a mandar y el aviso se mantiene solo. Un rechazo definitivo NO se
+  // reintenta —ése es el arreglo— y entonces el final feliz del SIGUIENTE guardado
+  // (`pendingCount<=0 ⇒ 'idle'`) borraba el aviso y dejaba en pantalla «Todos los cambios
+  // guardados» con el cuestionario de la familia tirado a la basura. MEDIDO: la batería lo
+  // cazó a la primera. Mientras esto tenga valor, la cola nunca cae a 'idle': repone el
+  // aviso tal cual (mismo episodio, así que un cartel cerrado sigue cerrado). Se va con la
+  // pestaña; nada dentro de la sesión puede volver cierto lo que el servidor ya descartó.
+  const rechazoDefinitivoRef = useRef(null);
   // Guardados INDEPENDIENTES en vuelo (no van en el eslabón, pero el envío final SÍ tiene
   // que esperarlos). Se limpian al settle para que la lista no crezca durante la sesión.
   const sueltosRef = useRef([]);
@@ -228,8 +245,17 @@ export function WizardProvider({ children }) {
     // independiente NO entra en el tail: si entrara, volvería a poder bloquear a los que
     // sí van en orden, que es justo lo que se está corrigiendo.
     const seguimiento = run.then(
-      () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; lastFailedSaveRef.current = null; lastFailedQueRef.current = ''; marcarEstadoDeGuardado_('idle'); } },
-      (e) => { pendingCountRef.current -= 1; lastFailedSaveRef.current = saveFn; lastFailedQueRef.current = que; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: e && e.code, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; marcarEstadoDeGuardado_('error', que, e && e.code); }
+      () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; lastFailedSaveRef.current = null; lastFailedQueRef.current = ''; const enPie = rechazoDefinitivoRef.current; if (enPie) marcarEstadoDeGuardado_('error', enPie.que, enPie.codigo, { mismoEpisodio: true }); else marcarEstadoDeGuardado_('idle'); } },
+      // ── 18.bis.85 · UN RECHAZO DEFINITIVO NO SE GUARDA PARA REINTENTARLO ──────────────
+      // Recordar la factory es lo que habilita los DOS reintentos: el botón «Reintentar» y
+      // —el que muerde— el automático de `alConfirmarEscritura`. Con un rechazo que el
+      // servidor repetiría idéntico (`PARTE_YA_ENVIADA`), reintentar es un viaje condenado
+      // a fallar y le repite el susto a la familia como episodio nuevo. Así que no se
+      // recuerda: los dos consumidores ya son no-op sin factory, sin repartir la decisión
+      // por el fichero. El criterio vive en UN solo sitio (`lib/rechazos.js`), el mismo que
+      // consulta el aviso — y todo lo que no esté declarado allí se sigue reintentando
+      // igual que hasta hoy (un corte de red no puede convertirse en trabajo perdido).
+      (e) => { pendingCountRef.current -= 1; const codigoFallo = e && e.code; const reintentable = seReintentaTrasFallo(codigoFallo); lastFailedSaveRef.current = reintentable ? saveFn : null; lastFailedQueRef.current = reintentable ? que : ''; if (!reintentable) rechazoDefinitivoRef.current = { que: que, codigo: codigoFallo }; log.warn('[DBG savequeue] done ERR', { ms: Date.now() - _t0, pending: pendingCountRef.current, code: codigoFallo, reintentable, message: e && e.message }); if (pendingCountRef.current < 0) pendingCountRef.current = 0; marcarEstadoDeGuardado_('error', que, codigoFallo); }
     );
     if (!independiente) saveTailRef.current = seguimiento;
     else {
@@ -271,6 +297,10 @@ export function WizardProvider({ children }) {
   // Sin bucles: solo una escritura CON ÉXITO dispara esto, el reintento pone el estado en
   // 'saving' (así que su propia confirmación no vuelve a entrar), y si el reintento falla
   // no llega ninguna confirmación nueva que lo repita.
+  //
+  // 18.bis.85 — y NO reintenta lo que el servidor va a rechazar igual: un rechazo definitivo
+  // ni siquiera se guardó (ver el manejador de error de `enqueueSave`), así que aquí no hay
+  // factory y esto es no-op. El aviso se queda como está, sin repetirle el susto a la familia.
   useEffect(() => alConfirmarEscritura(() => {
     if (saveStateRef.current !== 'error') return;
     const fn = lastFailedSaveRef.current;
