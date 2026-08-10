@@ -602,6 +602,14 @@ export function createDispatcher(scenario, record) {
     // ── Documentos ───────────────────────────────────────────────────────────
     uploadDocument: (p) => {
       if (!p.base64 || !p.filename) return { ok: false, error: { code: 'E2E_BAD_UPLOAD', message: 'sin bytes' } };
+      // 18.bis.95 · el KMS dice que la ficha del documento NO quedó escrita. La forma la copia
+      // del contrato real: `uploadDocument_` mira `file_persisted` y, si no consta, rechaza
+      // con este código (`_veredictoDeLaSubida_`, `backend/Code.js`) en vez de confirmar una
+      // subida que no existe para nadie. Se pide EXPLÍCITAMENTE con la palanca del escenario.
+      if (scenario.subidaNoRegistrada) {
+        return { ok: false, error: { code: 'DOCUMENTO_NO_REGISTRADO',
+                                     message: 'El archivo se subió pero no quedó registrado en la solicitud: vuelve a intentarlo.' } };
+      }
       return { ok: true, file_id: FIXTURE.fileId };
     },
     getDocument: () => ({ ok: true, base64: 'JVBERi0xLjQK', mimeType: 'application/pdf', filename: 'doc-e2e.pdf' }),

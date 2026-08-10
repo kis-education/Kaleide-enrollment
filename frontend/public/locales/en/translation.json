@@ -290,6 +290,8 @@
   "doc.remove": "Remove",
   "doc.generic_label": "Attached file",
   "doc.empty_hint": "Attaching files is optional. Tap “Add file” if you want to upload any.",
+  "doc.upload_failed.not_registered": "The file was not recorded in your application. Please upload it again.",
+  "doc.upload_failed.not_linked": "The file was saved, but it could not be attached to your application. Do not upload it again: please let the school know.",
   "review.email": "Email",
   "review.verified": "Verified",
   "consent.page_title": "Data Protection & Application",

@@ -32,6 +32,17 @@ import { confirmarYQuitar } from '../../lib/quitar';
 // opcional). Las subidas existentes (hidratación) se muestran como paneles ya
 // completados.
 
+// 18.bis.95 — LO QUE SE LE DICE A LA FAMILIA CUANDO LA FICHA DEL DOCUMENTO NO QUEDÓ ESCRITA.
+// Los códigos los emite `_veredictoDeLaSubida_` (`backend/Code.js`), que es también quien
+// decide que son DOS casos distintos y no uno. Esta tabla NO es la lista de
+// `lib/rechazos.js`: aquélla gobierna si la COLA DE GUARDADO reintenta sola, y la subida de
+// documentos no pasa por esa cola (`gasCall` directo, aquí abajo) ⇒ declarar estos códigos
+// allí sería declararlos donde nadie pregunta. Medido el 2026-08-10.
+const TEXTO_DE_SUBIDA_FALLIDA = {
+  DOCUMENTO_NO_REGISTRADO: 'doc.upload_failed.not_registered',
+  DOCUMENTO_SIN_VINCULAR:  'doc.upload_failed.not_linked',
+};
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -86,9 +97,14 @@ function GenericAttachment({ row, enrollmentGroupId, resumeToken, identidad, onU
         setStepUpRetry(() => () => doUpload(file));
         return;
       }
-      log.error('Step6: uploadDocument failed', { message: e.message });
+      log.error('Step6: uploadDocument failed', { message: e.message, code: e?.code });
       setStatus('error');
-      setErr(e.message);
+      // 18.bis.95 — cuando el servidor dice que la ficha del documento NO quedó escrita, se
+      // explica en el idioma de la familia y se dice qué hacer, que NO es lo mismo en los dos
+      // casos: si no consta en ninguna parte, volver a subirlo; si consta pero no quedó
+      // enganchado al alumno, reintentar duplicaría, así que se pide avisar al colegio. El
+      // resto de fallos se comporta byte-idéntico (mensaje del servidor tal cual).
+      setErr(TEXTO_DE_SUBIDA_FALLIDA[e?.code] ? t(TEXTO_DE_SUBIDA_FALLIDA[e.code]) : e.message);
     }
   };
 

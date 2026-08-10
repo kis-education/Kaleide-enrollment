@@ -356,7 +356,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // formato crudo 'MM/DD/YYYY' de la API — escenario hostil de ①31).
 // `piiGated`/`otpSuperado`/`documentos`: la verja de datos personales (DL-E39) y los
 // archivos ya subidos — los usa `documentos-vuelven` y los deja como estaban al salir.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -1818,6 +1818,61 @@ async function caminoSubirDocumento(page, base) {
   }
   c.afirmar('la pantalla confirma la subida', subidaOk,
     'nunca apareció la confirmación visible de archivo subido (.upload-status.success)')
+
+  // ── 18.bis.95 · SI LA FICHA DEL DOCUMENTO NO QUEDÓ ESCRITA, LA PANTALLA NO CONFIRMA ──
+  // El endpoint del KMS es SÍNCRONO y dice si escribió (`file_persisted`); el asistente
+  // tiraba esa respuesta y confirmaba igual ⇒ un documento que está en Drive pero no existe
+  // para nadie, dado por bueno en pantalla. Contra el sistema REAL esto exige provocar un
+  // rechazo de escritura en el KMS, que no se hace sobre datos de verdad: se declara.
+  if (REAL) {
+    c.noCubierta('subida-no-registrada',
+      'exige que el KMS rechace la escritura de la ficha del documento; no se provoca contra datos reales. En modo simulado sí se cubre, con la palanca `scenario.subidaNoRegistrada`.')
+    return c
+  }
+  // El rechazo se PROVOCA a propósito: que quede registrado en consola es lo correcto.
+  c.esperarErrorConsola(/gasCall uploadDocument: server returned ok=false/,
+    'el servidor rechaza la ficha del documento a propósito para comprobar que la familia se entera')
+  c.esperarErrorConsola(/Step6: uploadDocument failed/,
+    'la pantalla registra el rechazo provocado antes de explicárselo a la familia')
+  scenario.subidaNoRegistrada = true
+  try {
+    const antes = llamadas('uploadDocument').length
+    // Se sube inline (no con `subirUnDocumento`, que EXIGE ver la confirmación y aquí lo
+    // correcto es justo que NO aparezca).
+    const otroAñadir = await page.$('.add-btn')
+    if (!otroAñadir) { c.fallos.push('el paso de Documentos dejó de ofrecer el botón de añadir archivo'); return c }
+    await otroAñadir.click()
+    await page.waitForTimeout(300)
+    const cajas = await page.$$('.doc-attachment input[type="text"]')
+    if (cajas.length) await cajas[cajas.length - 1].fill('Documento sintético E2E (18.bis.95)')
+    const ficheros = await page.$$('.doc-attachment input[type="file"]')
+    if (!ficheros.length) { c.fallos.push('la fila de documento no ofrece campo de archivo'); return c }
+    await ficheros[ficheros.length - 1].setInputFiles({
+      name: 'prueba-e2e.pdf',
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4\n% documento sintetico de la bateria E2E\n'),
+    })
+    await page.waitForTimeout(LATENCY + 2500)
+    c.afirmar('(1) el rechazo de la ficha llega al servidor y vuelve',
+      llamadas('uploadDocument').length > antes,
+      'no salió una segunda subida que el servidor pudiera rechazar')
+
+    const filas = await page.evaluate(() => Array.from(document.querySelectorAll('.doc-attachment')).map(f => ({
+      exito: !!f.querySelector('.upload-status.success'),
+      error: (f.querySelector('.upload-status.error')?.textContent || '').replace(/\s+/g, ' ').trim(),
+    })))
+    const rechazada = filas.find(f => f.error)
+    c.afirmar('(2) la pantalla NO da por subido lo que no quedó registrado',
+      !!rechazada && !rechazada.exito,
+      `la fila de la subida rechazada quedó ${rechazada ? 'marcada como subida' : 'sin ningún aviso'}: la familia creería que su documento está en la solicitud, y no lo está (18.bis.95)`)
+    c.afirmar('(3) el aviso dice QUÉ pasó y qué hacer, en el idioma de la familia',
+      !!rechazada && /no ha quedado registrado|was not recorded/i.test(rechazada.error) &&
+                     /vuelve a subirlo|upload it again/i.test(rechazada.error),
+      `el aviso dice «${rechazada ? rechazada.error : '(ninguno)'}»: sin decir que no quedó registrado ni qué hacer, la familia no sabe que tiene que volver a subirlo`)
+  } finally {
+    scenario.subidaNoRegistrada = false
+  }
+  c.evidencia.llamadas = llamadas('uploadDocument').length
   return c
 }
 

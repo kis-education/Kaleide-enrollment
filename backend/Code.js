@@ -6008,6 +6008,55 @@ function _parteDeEsteTutorYaEnviada_(p, personId) {
  *   CLI 82 / KAL-NEW-5: drive_url removed — read-back is served on-demand via
  *   getDocument_ (proxy de bytes), never a public Drive link.
  */
+/**
+ * 18.bis.95 · ¿LA FICHA DEL DOCUMENTO QUEDÓ ESCRITA?
+ *
+ * A diferencia de los seis guardados que ENCOLAN (18.bis.84), `enr.wizardPersistUpload` es
+ * SÍNCRONO: escribe `recFiles` y `recScopes` en el acto y **dice cómo le fue** —
+ * `{ok:true, file_persisted, scope_persisted, file_id}` (`kis-app kms-server/enr/
+ * wizard-gateway.gs:567`, `:586`, `:590`). Hasta hoy el asistente tiraba esa respuesta y
+ * confirmaba igual. Los bytes SÍ están en Drive (los sube este mismo fichero, antes de
+ * llamar al KMS), pero **sin la ficha, el documento no existe para nadie**: no lo ve el
+ * colegio ni la familia al recargar. Confirmarlo era la mentira.
+ *
+ * DOS CASOS, y NO son el mismo — de ahí dos códigos:
+ *   · `file_persisted !== true` → la ficha NO se escribió (rechazo silencioso P72). El
+ *     documento no consta en ninguna parte ⇒ **volver a subirlo es lo correcto**.
+ *   · `scope_persisted === false` → la ficha SÍ está (el colegio la ve por el expediente),
+ *     pero **no quedó enganchada al alumno**. Volver a subir crearía un duplicado, así que
+ *     el texto NO invita a reintentar: pide avisar al colegio.
+ *
+ * `scope_persisted === null` (o ausente) NO es un fallo: es que no se intentó ningún
+ * enganche. Es el caso NORMAL de la familia — `recScopeRow` solo se construye cuando llega
+ * `enrollment_id`, que hoy no manda ningún cliente vivo (medido el 2026-08-10:
+ * `frontend/src/pages/steps/Step6Documents.jsx:66` no lo envía) porque los enganches los
+ * materializa `submitEnrollmentSession_` al enviar.
+ *
+ * FALLA HACIA CERRADO A PROPÓSITO: si la respuesta no trae `file_persisted`, tampoco consta
+ * que se escribiera, y confirmar sería exactamente el defecto que esto quita. El KMS lo
+ * devuelve SIEMPRE en su único camino de éxito (los demás lanzan, y `kmsProxy_` propaga).
+ *
+ * @param {Object} respuestaKms lo que devolvió `enr.wizardPersistUpload`.
+ * @returns {?{code: string, message: string}} null si la ficha consta escrita y enganchada.
+ * @private
+ */
+function _veredictoDeLaSubida_(respuestaKms) {
+  var r = respuestaKms || {};
+  if (r.file_persisted !== true) {
+    return {
+      code: 'DOCUMENTO_NO_REGISTRADO',
+      message: 'El archivo se subió pero no quedó registrado en la solicitud: vuelve a intentarlo.',
+    };
+  }
+  if (r.scope_persisted === false) {
+    return {
+      code: 'DOCUMENTO_SIN_VINCULAR',
+      message: 'El documento se guardó pero no se pudo asociar a la solicitud. No lo vuelvas a subir: avisa al colegio.',
+    };
+  }
+  return null;
+}
+
 function uploadDocument_(p) {
   // KAL-4: derive authorised group_id from resume_token; never trust the
   // payload's enrollment_group_id directly. Cross-check inside the helper.
@@ -6174,11 +6223,26 @@ function uploadDocument_(p) {
   // ── P1-A: recFiles + recScope → KMS (único escritor). El wizard anónimo ya NO
   // escribe recFiles/recScopes directo. KAL-4: grupo del resume_token; school_id +
   // origin_reference forzados server-side. Síncrono (mirror de enr_persistDocument_).
-  kmsProxy_('enr.wizardPersistUpload', {
+  const persistencia = kmsProxy_('enr.wizardPersistUpload', {
     resume_token: p.resume_token,
     rec_file:     recFileRow,
     rec_scope:    recScopeRow,
   });
+
+  // 18.bis.95 — LA RESPUESTA DEL KMS SE MIRA. Este endpoint es SÍNCRONO y dice si la ficha
+  // quedó escrita; tirar ese dato y devolver `{file_id}` era confirmarle a la familia una
+  // subida que podía no constar en ninguna parte. El veredicto vive en UN solo sitio
+  // (`_veredictoDeLaSubida_`), que es también el que distingue los dos casos.
+  const problemaDeLaSubida = _veredictoDeLaSubida_(persistencia);
+  if (problemaDeLaSubida) {
+    Logger.log(redact_('[uploadDocument_] ' + problemaDeLaSubida.code +
+      ' — la ficha del documento no consta escrita en el KMS (file_persisted=' +
+      String(persistencia && persistencia.file_persisted) + ', scope_persisted=' +
+      String(persistencia && persistencia.scope_persisted) + ')'));
+    const errSubida = new Error(problemaDeLaSubida.message);
+    errSubida.code = problemaDeLaSubida.code;   // doPost → HTTP 200 {ok:false,error:{code,message}}
+    throw errSubida;
+  }
 
   return {
     file_id:     fileId,
