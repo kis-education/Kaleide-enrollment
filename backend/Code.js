@@ -2582,13 +2582,11 @@ function findEmailIdForGuardian_(groupId, email, emailsHint) {
  * DL-E15: queries enrEnrollmentGroups (the session header) — primary_email,
  * preferred_language and resume_token now live there, not on enrEnrollments.
  *
- * Accepts the legacy `application_id` payload key as an alias for
- * `enrollment_group_id` so older frontend builds continue to work.
- *
  * DOS CAMINOS con contratos de respuesta DISTINTOS:
- *   - `enrollment_group_id` (uso interno del wizard, "Guardar y seguir luego"):
- *     el caller ya conoce un UUID de grupo → no hay enumeración posible; los
- *     errores SÍ se propagan (el wizard los muestra como toast).
+ *   - `resume_token` (uso interno del wizard, "Guardar y seguir luego"): el
+ *     grupo se DERIVA del token (KAL-4, `requireResumeToken_`) — NUNCA se lee
+ *     del cuerpo de la petición. Los errores SÍ se propagan (el wizard los
+ *     muestra como toast).
  *   - `primary_email` (servicio público de recuperación, la landing): respuesta
  *     CONSTANTE `{sent:true, warm_ticket:<uuid>}` exista o no una solicitud para
  *     ese email — WIZ-ENUM (audit 2026-07-27), mismo patrón anti-enumeración que
@@ -2597,21 +2595,46 @@ function findEmailIdForGuardian_(groupId, email, emailsHint) {
  *     tiene grupo, la creación de la solicitud nueva se delega server-side a
  *     `initEnrollmentSession_` (verja reCAPTCHA fail-closed).
  *
- * @param {Object} p - { enrollment_group_id? | application_id? } or
+ * @param {Object} p - { resume_token } or
  *                     { primary_email, preferred_language?, recaptcha_token? }
  */
 function sendMagicLink_(p) {
-  const groupId = p.enrollment_group_id || p.application_id;
+  if (p && p.resume_token) {
+    // ── LA QUINTA PUERTA, AHORA CON LLAVE (②26, 2026-08-10) ──────────────────
+    // Rama INTERNA: "Guardar y seguir luego", que el asistente llama DESDE DENTRO
+    // de la sesión de la familia — donde el resume_token ya existe.
+    //
+    // Hasta hoy esta rama entraba por el identificador del expediente que venía en
+    // el CUERPO de la petición y NO pedía nada más: ni verja ni credencial, solo
+    // que el identificador tuviera forma de UUID. Y el identificador lo reparte el
+    // propio sistema (`initEnrollmentSession` lo devuelve a cambio de un reCAPTCHA).
+    // Con él, cualquiera desde internet podía, hasta 5 veces por hora: bombardear el
+    // buzón de esa familia, ROTAR su enlace vivo bajo los pies de quien estuviera
+    // rellenando la solicitud, y agotarle el cupo (⇒ su recuperación legítima de esa
+    // hora se rechaza). El token NO se filtraba en la respuesta ⇒ no había toma de
+    // control; lo que había era hostigamiento.
+    //
+    // KAL-4: el grupo se DERIVA del token y NUNCA se lee del cuerpo. `requireResumeToken_`
+    // es el gate canónico de las mutaciones de /apply — se reutiliza tal cual (trae el
+    // rechazo de abandonado y el TTL de 7 días que esta rama comprobaba a mano), en su
+    // forma VIVA: nunca el memo de lectura, porque esta rama ROTA el token.
+    //
+    // VA LO PRIMERO, antes del cupo y del resto de lecturas: mismo motivo que la verja
+    // de la rama pública (②2) — quien no trae llave no debe poder gastar trabajo ni
+    // consumirle el cupo a una familia real.
+    const groupId = requireResumeToken_(p);
 
-  if (groupId) {
-    // Single-session link (e.g. from within the wizard)
-    assertValidUuid_(groupId, 'enrollment_group_id');
+    // Lector PRESERVADO tal cual (era `:2609-2613` en origin/main): la fila del grupo se
+    // lee por su identificador, ahora el que autoriza el token en vez del que llegaba en
+    // el cuerpo. El gate ya bajó esta misma fila para validar el token, pero no la
+    // devuelve; se paga una lectura de más antes que reescribir un gate del que cuelgan
+    // todos los pasos del asistente. El rechazo de expediente abandonado ya lo hace el
+    // gate (mismo mensaje para toda la familia de handlers), así que aquí desaparece.
     const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
       Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
     });
     const grp = rows && rows[0];
     if (!grp) throw new Error('Enrollment group not found');
-    if (grp.abandoned_at) throw new Error('This application was abandoned');
     // DL-E38 a1: per-guardian destination — if the family is recovering with a
     // specific guardian email (matched server-side against enrEmails of the
     // group), send the link to THAT guardian; else fallback to the group
@@ -2872,7 +2895,7 @@ function sendMagicLink_(p) {
       return _magicLinkConstantAck_();
     }
   } else {
-    throw new Error('Missing enrollment_group_id or primary_email');
+    throw new Error('Missing resume_token or primary_email');
   }
 }
 

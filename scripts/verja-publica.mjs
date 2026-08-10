@@ -1,6 +1,19 @@
 /**
- * ②2 + ②12 — LA VERJA DE LAS ENTRADAS PÚBLICAS: existe, es UNA SOLA, falla hacia
- * cerrado, y las CUATRO puertas anónimas pasan por ella.
+ * ②2 + ②12 + ②26 — LAS CINCO PUERTAS del asistente alcanzables desde internet.
+ *
+ * CUATRO son anónimas por diseño y pasan TODAS por UNA SOLA verja, que existe una vez y
+ * falla hacia cerrado. LA QUINTA no debe ser anónima: exige el token de recuperación.
+ *
+ * LA QUINTA (②26, 2026-08-10): la rama por identificador de expediente de `sendMagicLink_`
+ * —«Guardar y seguir luego»— no tenía ni verja ni credencial: solo comprobaba que el
+ * identificador tuviera forma de UUID, y el identificador lo reparte el propio sistema
+ * (`initEnrollmentSession` lo devuelve a cambio de un reCAPTCHA). Con él, cualquiera podía
+ * hasta 5 veces por hora bombardear el buzón de esa familia, ROTAR su enlace vivo bajo los
+ * pies de quien estuviera rellenando la solicitud, y agotarle el cupo (⇒ su recuperación
+ * legítima de esa hora se rechaza). El token NO se filtra en la respuesta ⇒ no había toma
+ * de control. La puerta correcta aquí NO es la verja sino el TOKEN: esta acción se llama
+ * desde DENTRO del asistente, donde el token ya existe, así que exigirlo no le quita nada a
+ * ninguna familia — y KAL-4 manda derivar el expediente del token, nunca del cuerpo.
  *
  * LA CUARTA (②12, 2026-08-09): la rama de alta de `sendVerificationCode_` manda un
  * código de un solo uso al correo que venga en el propio cuerpo de la petición, y
@@ -26,13 +39,16 @@
  * dejarían la única puerta pública de admisiones sin atender. Sería cambiar un oráculo
  * por una caída. Se quita el trabajo caro del camino de quien no pasa la verja.
  *
- * QUÉ AFIRMA (dos cosas, y las dos sobre el CÓDIGO REAL):
+ * QUÉ AFIRMA (tres cosas, y las tres sobre el CÓDIGO REAL):
  *   (a) EJECUTA el veredicto real extraído del fuente, con 6 casos, incluidas las tres
  *       formas de fallar hacia cerrado. No repite su lógica: la corre.
- *   (b) las cuatro entradas públicas lo invocan; en la de recuperación se invoca ANTES
+ *   (b) las cuatro entradas anónimas lo invocan; en la de recuperación se invoca ANTES
  *       del primer viaje a AppSheet y NO lanza (un rechazo visible sería otro oráculo);
  *       y en la del código de un solo uso se invoca en la rama de alta, ANTES del cupo
  *       y de cualquier viaje, y NO en la rama step-up.
+ *   (c) la quinta —«Guardar y seguir luego»— EXIGE el token de recuperación, lo exige
+ *       ANTES del cupo y del trabajo caro, y `sendMagicLink_` ya NO lee el identificador
+ *       del expediente del cuerpo de la petición (si lo leyera, la puerta seguiría abierta).
  *
  * LÍMITE DECLARADO, igual que en `escrituras-directas.mjs`: es un detector por líneas,
  * no un analizador sintáctico. Un alias de la función o un `eval()` serían invisibles.
@@ -146,6 +162,57 @@ function comprobarCodigoDeUnSoloUso(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * 5 · «Guardar y seguir luego» (`sendMagicLink_`, rama interna): NO es anónima — exige el
+ * token de recuperación, y el expediente se deriva de él (KAL-4), nunca del cuerpo.
+ * @returns {string[]} fallos
+ */
+function comprobarGuardarYSeguirLuego(fuenteLimpia) {
+  const fallos = []
+  const cuerpo = cuerpoDe(fuenteLimpia, 'sendMagicLink_')
+  if (cuerpo === null) {
+    return ['no se encontró `sendMagicLink_` — control CIEGO en la quinta puerta («Guardar y seguir luego»): verde aquí NO equivale a comprobado']
+  }
+
+  // (i) El expediente NO puede salir del cuerpo de la petición: es lo que hacía que esta
+  //     puerta fuese alcanzable por cualquiera con un identificador que el sistema regala.
+  if (/\bp\.(enrollment_group_id|application_id)\b/.test(cuerpo)) {
+    fallos.push('`sendMagicLink_` lee el identificador del expediente del cuerpo de la petición (`p.enrollment_group_id`/`p.application_id`) — la quinta puerta sigue abierta (②26, KAL-4)')
+  }
+
+  // (ii) La rama interna se distingue por el token. Si no se distingue, no se puede medir.
+  const iInterna = cuerpo.search(/if\s*\(p\s*&&\s*p\.resume_token\)/)
+  if (iInterna < 0) {
+    fallos.push('no se distingue la rama interna de `sendMagicLink_` por el `resume_token` — control CIEGO en la quinta puerta')
+    return fallos
+  }
+  const iPublica = cuerpo.search(/else if \(p\.primary_email\)/)
+  const ramaInterna = cuerpo.slice(iInterna, iPublica > iInterna ? iPublica : cuerpo.length)
+
+  // (iii) En su forma VIVA: el memo de lectura tolera hasta 5 min de desfase, y esta rama
+  //       ROTA el token — el propio memo lo prohíbe para mutaciones. Se mira ANTES que la
+  //       presencia del gate para que el motivo sea el de verdad y no «falta el gate».
+  if (/requireResumeTokenMemo_\s*\(/.test(ramaInterna)) {
+    fallos.push('la rama «Guardar y seguir luego» usa el memo de LECTURA del gate (`requireResumeTokenMemo_`) — esta rama ROTA el token, así que tiene que validar SIEMPRE en vivo')
+    return fallos
+  }
+
+  // (iv) Exige el token con el gate canónico KAL-4.
+  const iGate = ramaInterna.search(/requireResumeToken_\s*\(/)
+  if (iGate < 0) {
+    fallos.push('la rama «Guardar y seguir luego» de `sendMagicLink_` NO exige el token de recuperación (`requireResumeToken_`) — es el hueco de ②26: rotar el enlace y bombardear el buzón de una familia ajena')
+    return fallos
+  }
+
+  // (v) ANTES del cupo y del trabajo caro: quien no trae llave no debe poder gastar
+  //     trabajo ni consumirle el cupo de recuperación a una familia real.
+  const iCaro = ramaInterna.search(/_checkMagicLinkRateLimit_|appsheetRequest_|appsheetRequestBatch_|kmsProxy_|sendViaKms/)
+  if (iCaro >= 0 && iCaro < iGate) {
+    fallos.push('en «Guardar y seguir luego» el cupo o el trabajo caro ocurren ANTES de exigir el token — un sondeo sin llave puede gastarle el cupo a una familia real')
+  }
+  return fallos
+}
+
 /** (b) Las tres entradas de la puerta de admisiones pasan por la verja. */
 function comprobarLasEntradasDeAdmisiones(fuenteLimpia) {
   const fallos = []
@@ -224,5 +291,6 @@ export function comprobarVerjaPublica(fuente) {
     ...ejecutarVeredictoReal(limpia),
     ...comprobarLasEntradasDeAdmisiones(limpia),
     ...comprobarCodigoDeUnSoloUso(limpia),
+    ...comprobarGuardarYSeguirLuego(limpia),
   ]
 }
