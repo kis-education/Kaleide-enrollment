@@ -7,12 +7,15 @@
 #   docs/kms/security/audit-<fecha>.md y vuelca lo accionable a
 #   docs/kms/loop-backlog.md — y los PUBLICA en la rama del KMS de kis-app.
 #
-#   QUÉ RAMA DE kis-app: `master`. Desde la decisión D39 (2026-08-08) kis-app va
-#   a UNA SOLA rama, `master`, con el KMS. Mientras dure la transición la verja
-#   la resuelve EN EJECUCIÓN (ver el paso «Verja»): usa `develop` mientras esa
-#   rama exista —es donde está el KMS hasta que se haga la fusión— y pasa a
-#   `master` sola en cuanto se borre. Así no hace falta cronometrar este fichero
-#   con el plan, y NUNCA escribe en `master` antes de la fusión.
+#   QUÉ RAMA DE kis-app: `master`, fija. Desde la decisión D39 (2026-08-08)
+#   kis-app va a UNA SOLA rama, `master`, con el KMS — y la transición TERMINÓ:
+#   `develop` ya no existe (medido el 2026-08-10: `git ls-remote --heads` sobre
+#   kis-education/kis-app devuelve UNA sola referencia, `refs/heads/master`).
+#   Aquí hubo una resolución EN EJECUCIÓN que preguntaba por `develop` en cada
+#   corrida para no escribir en `master` antes de la fusión; el propio bloque
+#   decía que se redujera a `KIS_BRANCH=master` cuando esa rama desapareciera, y
+#   eso es lo que hay ahora (②31.ter). NO se vuelve a añadir la pregunta: era una
+#   llamada de red por corrida cuya respuesta ya no puede cambiar.
 #   SOLO DOCUMENTA. Nunca remedia código ni despliega (ni clasp, ni gas:build).
 #
 # POR QUÉ VIVE EN EL WIZARD (Kaleide-enrollment) Y NO EN kis-app:
@@ -135,17 +138,11 @@ jobs:
 
           rm -rf /tmp/kisapp /tmp/wiz
 
-          # ── Qué rama de kis-app lleva el KMS (transición D39, 2026-08-08) ──
-          # El destino es `master`. Mientras `develop` siga existiendo es esa la
-          # que lo lleva (la fusión es el paso 4 del plan), así que se prefiere
-          # y NUNCA se escribe en `master` antes de tiempo. En cuanto `develop`
-          # se borre (paso 5), esto pasa a `master` solo, sin tocar el fichero.
-          # Cuando ya no exista `develop`, este bloque se puede reducir a
-          # KIS_BRANCH=master.
+          # ── Qué rama de kis-app lleva el KMS ──
+          # `master`, fija: la transición D39 terminó y `develop` ya no existe
+          # (ver la cabecera §"QUÉ RAMA DE kis-app"). La variable se conserva
+          # porque la usan el clon, el encargo del agente y la publicación.
           KIS_BRANCH=master
-          if git ls-remote --exit-code --heads https://github.com/kis-education/kis-app.git develop >/dev/null 2>&1; then
-            KIS_BRANCH=develop
-          fi
           echo "Rama del KMS en kis-app: $KIS_BRANCH"
           echo "kis_branch=$KIS_BRANCH" >> "$GITHUB_OUTPUT"
 
@@ -171,10 +168,14 @@ jobs:
           echo "Última auditoría: $LATEST"
 
           LINE=$(grep -m1 'Commit auditado' "$LATEST" || true)
-          # Acepta las dos ramas: los informes viejos dicen `kis-app@develop` y
-          # los nuevos dirán `kis-app@master`. Si solo se aceptara una, la verja
-          # dejaría de parsear y auditaría de más en cada corrida.
-          KIS_SHA=$(printf '%s' "$LINE" | grep -oE 'kis-app@(develop|master) [0-9a-f]+' | awk '{print $2}' || true)
+          # Solo `kis-app@master`. Aquí se aceptaban DOS ramas «porque los
+          # informes viejos dicen kis-app@develop» — y eso era FALSO: medido el
+          # 2026-08-10, los 10 informes de docs/kms/security/ dicen
+          # `kis-app@master`, y NINGUNO dijo `develop` en toda la historia del
+          # repositorio (`git log --all -S 'kis-app@develop'` → 0 commits).
+          # Si algún día no casara, no se pierde código: KIS_SHA queda vacío y
+          # el fail-safe de más abajo audita por seguridad (②31.ter).
+          KIS_SHA=$(printf '%s' "$LINE" | grep -oE 'kis-app@master [0-9a-f]+' | awk '{print $2}' || true)
           WIZ_SHA=$(printf '%s' "$LINE" | grep -oE 'Kaleide-enrollment@main [0-9a-f]+'  | awk '{print $2}' || true)
           echo "SHA auditado kis-app:  ${KIS_SHA:-<ninguno>}"
           echo "SHA auditado wizard:   ${WIZ_SHA:-<ninguno>}"
