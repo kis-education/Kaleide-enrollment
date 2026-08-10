@@ -39,9 +39,26 @@
 #   • AUDIT_PUSH_TOKEN    — PAT fine-grained con:
 #       - Repository access: kis-education/kis-app  (Contents: Read and write)
 #       - Repository access: kis-education/Kaleide-enrollment (Contents: Read)
-#       Se usa para clonar ambos repos en la verja barata y para el push de los
-#       informes a la rama del KMS de kis-app. Solo se escribe DOCUMENTACIÓN, y
-#       solo en esa rama: en el wizard NUNCA se escribe nada.
+#       Se usa en DOS pasos de bash y en ninguno más: la verja (para clonar) y
+#       la publicación (para el push del informe). Solo se escribe
+#       DOCUMENTACIÓN, y solo en la rama del KMS de kis-app: en el wizard NUNCA
+#       se escribe nada.
+#
+# DÓNDE VIVE EL PAT, Y POR QUÉ NO EN LA CONFIGURACIÓN GLOBAL DE GIT (②31):
+#   El paso de Claude lanza un agente SIN SUPERVISIÓN que LEE ficheros de los
+#   repositorios auditados. Texto puesto adrede en cualquiera de esos ficheros
+#   puede intentar dirigir al agente («inyección de instrucciones»), y el
+#   enmascarado de secretos de GitHub tapa los REGISTROS, no el TRÁFICO DE
+#   SALIDA. Por eso el PAT —que tiene ESCRITURA sobre kis-app— NO se deja en la
+#   configuración git global del runner (`~/.gitconfig`, en claro y legible por
+#   el agente): se inyecta con las variables GIT_CONFIG_* DENTRO del `run:` que
+#   lo necesita, y esas variables mueren con el shell de ese paso.
+#   Consecuencia buscada: cuando corre el agente NO hay ninguna credencial de
+#   git a su alcance. No puede publicar, y por tanto tampoco puede escribir
+#   fuera de lo permitido: la regla «SOLO DOCUMENTAR» deja de depender de que
+#   el agente obedezca y pasa a ser mecánica. El informe lo publica el paso
+#   «Publicar…», que además COMPRUEBA que solo cambió documentación.
+#   NO devolver esto a `git config --global`: es cómodo y es justo el defecto.
 #
 # CÓMO SE LEE EL RESULTADO: la verja barata (bash, sin coste de Claude) decide
 #   si hay código nuevo comparando los tips actuales con los SHAs de la última
@@ -86,12 +103,18 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          # Sin credencial pegada en .git/config. Este checkout es SOLO contexto
+          # (nadie vuelve a hacer fetch/push desde él) y el agente lo tiene
+          # delante: `actions/checkout` deja si no el GITHUB_TOKEN nativo en
+          # `http.<url>.extraheader`, otra credencial a su alcance sin motivo.
+          persist-credentials: false
 
-      # VERJA BARATA — sin Claude, sin coste de tokens. Clona ambos repos con el
-      # PAT, lee el SHA de la última auditoría y lo compara con los tips. Además
-      # deja configurada la credencial git GLOBAL (con el PAT, vía insteadOf, sin
-      # exponer el token en URLs) y la identidad del bot, que el paso de Claude
-      # hereda en el mismo runner para poder clonar y hacer push.
+      # VERJA BARATA — sin Claude, sin coste de tokens. Clona ambos repos y
+      # compara el SHA de la última auditoría con los tips.
+      # El PAT vive SOLO dentro de este `run:` (variables GIT_CONFIG_*, que
+      # mueren con el shell del paso) — ver la cabecera §"DÓNDE VIVE EL PAT".
+      # La identidad del bot sí queda global: no es un secreto, y el paso de
+      # publicación la necesita para firmar el commit.
       - name: Verja — ¿hay código nuevo desde la última auditoría?
         id: gate
         env:
@@ -99,9 +122,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Credencial git global: cualquier https://github.com/... usa el PAT,
-          # sin que el token aparezca en las URLs de los remotos (insteadOf).
-          git config --global url."https://x-access-token:${AUDIT_PUSH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          # Credencial git ACOTADA A ESTE PASO: cualquier https://github.com/...
+          # usa el PAT (insteadOf, sin que el token aparezca en las URLs de los
+          # remotos) — pero por variables de entorno, NO en ~/.gitconfig, así el
+          # paso siguiente (el agente) no la hereda. NO cambiar a --global.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="url.https://x-access-token:${AUDIT_PUSH_TOKEN}@github.com/.insteadOf"
+          export GIT_CONFIG_VALUE_0="https://github.com/"
+
           git config --global user.name  "kaleide-audit-bot"
           git config --global user.email "audit-bot@users.noreply.github.com"
 
@@ -128,6 +156,10 @@ jobs:
           WIZ_TIP=$(git -C /tmp/wiz    rev-parse HEAD)
           echo "Tip actual kis-app@$KIS_BRANCH:        $KIS_TIP"
           echo "Tip actual Kaleide-enrollment@main:    $WIZ_TIP"
+          # El paso de publicación lo usa como BASE: lo que el agente añada por
+          # encima de este SHA es exactamente lo que se va a publicar, y es lo
+          # que se comprueba que sea solo documentación.
+          echo "kis_tip=$KIS_TIP" >> "$GITHUB_OUTPUT"
 
           # Última auditoría (los nombres audit-YYYY-MM-DD.md ordenan cronológico).
           LATEST=$(ls /tmp/kisapp/docs/kms/security/audit-*.md 2>/dev/null | sort | tail -1 || true)
@@ -175,31 +207,43 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # Se pasa el GITHUB_TOKEN nativo para NO depender de tener instalada la
-          # Claude GitHub App en este repo (el push real va a kis-app vía el PAT
-          # ya configurado como credencial git global en la verja).
+          # Claude GitHub App en este repo. Alcanza SOLO a este repositorio y
+          # SOLO en lectura (`permissions: contents: read`, arriba): no sirve
+          # para publicar el informe. El push a kis-app lo hace el paso
+          # siguiente, con el PAT, ya fuera del alcance del agente.
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Sin WebFetch en la lista: la auditoría es ESTÁTICA y no consulta nada
+          # de la red — ni AUDIT-LOOP.md ni el encargo de abajo piden una sola
+          # URL (②31). Ojo: dentro del bloque `claude_args` NO caben comentarios
+          # (cada línea se pasa como argumento al CLI), por eso van aquí.
           claude_args: |
             --model claude-opus-4-8
             --max-turns 200
-            --allowedTools "Bash,Read,Grep,Glob,Edit,Write,WebFetch,Task"
+            --allowedTools "Bash,Read,Grep,Glob,Edit,Write,Task"
           prompt: |
             Ejecuta el ciclo de auditoría de seguridad definido en
             docs/kms/security/AUDIT-LOOP.md contra
             kis-app@${{ steps.gate.outputs.kis_branch }} y
             Kaleide-enrollment@main.
 
-            Preparación: la credencial git ya está configurada globalmente en
-            este runner (cualquier `git clone`/`git push` de
-            https://github.com/kis-education/... se autentica solo) y la identidad
-            de commit ya es el bot de auditoría. Clona
-            kis-app@${{ steps.gate.outputs.kis_branch }} en un directorio de
-            trabajo, lee allí docs/kms/security/AUDIT-LOOP.md y sigue su
-            especificación al pie de la letra.
+            Preparación (LÉELA ENTERA, cambió): NO tienes credenciales de git y
+            NO vas a publicar nada. Los dos repositorios YA están clonados en
+            este runner, cada uno en su directorio aislado y solo para ti:
+              • /tmp/kisapp — kis-app@${{ steps.gate.outputs.kis_branch }}
+              • /tmp/wiz    — Kaleide-enrollment@main
+            Lee /tmp/kisapp/docs/kms/security/AUDIT-LOOP.md y sigue su
+            especificación al pie de la letra, con estas dos salvedades sobre su
+            mecánica: (a) esos dos clones YA SON tus checkouts aislados —no
+            clones ni sincronices nada, no hay red ni credencial para hacerlo—;
+            (b) el paso 6 de esa especificación («commit + push») aquí NO lo
+            haces tú: escribe los ficheros y haz commit LOCAL en /tmp/kisapp, y
+            PARA AHÍ. Un paso posterior de este mismo trabajo, sin agente,
+            rebasa y publica lo que hayas dejado commiteado. Si intentas un
+            `git push` fallará, y con razón.
 
             Reglas (no negociables):
-            - Trabaja en worktrees/checkouts AISLADOS (nunca un checkout
-              compartido). Auditoría ESTÁTICA: sin credenciales, sin explotación
-              en vivo, sin sacar PII (solo agregados redactados).
+            - Auditoría ESTÁTICA: sin credenciales, sin explotación en vivo, sin
+              salir a la red, sin sacar PII (solo agregados redactados).
             - Lanza agentes background ADVERSARIALES estáticos por superficie
               (auth/IDOR row-scope, KAL-4/KAL-5/KIS-4, webhooks/HMAC, PII/KIS-11,
               dinero/fin*, wizard anónimo). NO modifiques código de aplicación.
@@ -212,13 +256,82 @@ jobs:
               contra su contenido (no repitas hallazgos ya listados).
             - SOLO DOCUMENTAR: nunca remedies código ni despliegues (ni clasp, ni
               gas:build, ni cdn:push).
-            - Haz commit + push SOLO de documentación (docs/kms/security/*,
-              docs/kms/loop-backlog.md) a kis-app/${{ steps.gate.outputs.kis_branch }}
-              (rebase antes de pushear). Esa es la ÚNICA rama en la que escribes:
-              ninguna otra, y nada en el wizard.
+            - Commit LOCAL en /tmp/kisapp y SOLO de documentación: únicamente
+              docs/kms/security/* y docs/kms/loop-backlog.md. Nada más, ni un
+              fichero. El paso de publicación LO COMPRUEBA y aborta sin publicar
+              si aparece cualquier otra ruta, así que un desliz aquí tira la
+              corrida entera a la basura. No toques /tmp/wiz: en el wizard no se
+              escribe nada.
             - Trailers OBLIGATORIOS en el commit:
               Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
               Claude-Session: https://claude.ai/code/session_013BjEPNYz1oenbi9pKZhQ3b
 
-            Si no hubiera código nuevo tras sincronizar (no debería, la verja ya
-            lo comprobó), limpia y termina sin crear informe.
+            Si al mirar los clones no hubiera nada que auditar (no debería, la
+            verja ya lo comprobó), termina sin crear informe y sin commitear.
+
+      # PUBLICACIÓN — el ÚNICO sitio, junto a la verja, donde vuelve a aparecer
+      # el PAT. Es un paso de bash APARTE y POSTERIOR al agente a propósito:
+      # mientras la auditoría corre no hay credencial en el runner (ver la
+      # cabecera §"DÓNDE VIVE EL PAT"), y el trabajo mecánico de git —rebasar y
+      # publicar— no tiene por qué hacerlo algo que lee ficheros ajenos.
+      # Se salta si el agente falló (un paso fallido corta el trabajo).
+      - name: Publicar el informe en kis-app (bash, sin agente)
+        if: steps.gate.outputs.has_new_code == 'true'
+        env:
+          AUDIT_PUSH_TOKEN: ${{ secrets.AUDIT_PUSH_TOKEN }}
+          KIS_BRANCH: ${{ steps.gate.outputs.kis_branch }}
+          KIS_BASE: ${{ steps.gate.outputs.kis_tip }}
+        run: |
+          set -euo pipefail
+          cd /tmp/kisapp
+
+          # Red de recogida: si el agente escribió los ficheros pero no llegó a
+          # commitear, se commitean aquí. Solo las dos rutas permitidas — lo que
+          # haya dejado fuera de ellas NO se recoge, y el guardián de abajo lo
+          # caza igualmente si lo commiteó él.
+          git add -- docs/kms/security docs/kms/loop-backlog.md 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -q \
+              -m "Auditoría de seguridad automática (cron horario)" \
+              -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>" \
+              -m "Claude-Session: https://claude.ai/code/session_013BjEPNYz1oenbi9pKZhQ3b"
+          fi
+
+          # ¿Hay algo que publicar? Sin commits nuevos sobre la base, se termina
+          # VERDE: la auditoría pudo no encontrar nada que anotar.
+          if [ "$(git rev-parse HEAD)" = "$KIS_BASE" ]; then
+            echo "El agente no dejó ningún commit → nada que publicar."
+            exit 0
+          fi
+
+          # GUARDIÁN «SOLO DOCUMENTAR», mecánico. La regla estaba solo escrita en
+          # el encargo del agente, o sea que dependía de que obedeciera; aquí se
+          # comprueba. Cualquier ruta fuera de estas dos ABORTA sin publicar.
+          CHANGED=$(git diff --name-only "$KIS_BASE" HEAD)
+          if [ -z "$CHANGED" ]; then
+            echo "Commits sin cambios de fichero → nada que publicar."
+            exit 0
+          fi
+          echo "Ficheros que se publicarían:"; printf '  %s\n' $CHANGED
+          BAD=$(printf '%s\n' "$CHANGED" \
+                | grep -vE '^docs/kms/security/|^docs/kms/loop-backlog\.md$' || true)
+          if [ -n "$BAD" ]; then
+            echo "ABORTA: la auditoría tocó ficheros fuera de la documentación permitida:"
+            printf '  %s\n' $BAD
+            exit 1
+          fi
+
+          # Credencial ACOTADA A ESTE PASO (igual que en la verja): variables de
+          # entorno, nunca ~/.gitconfig. NO cambiar a --global.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="url.https://x-access-token:${AUDIT_PUSH_TOKEN}@github.com/.insteadOf"
+          export GIT_CONFIG_VALUE_0="https://github.com/"
+
+          # El clon de la verja es --depth 1: para rebasar hace falta historia
+          # suficiente para encontrar el antepasado común. Si otra mano publicó
+          # en esta hora, el rebase la respeta; si choca, el paso falla en ROJO
+          # (nunca se fuerza el empujón sobre trabajo ajeno).
+          git fetch --unshallow origin "$KIS_BRANCH" || git fetch origin "$KIS_BRANCH"
+          git rebase FETCH_HEAD
+          git push origin "HEAD:$KIS_BRANCH"
+          echo "Informe publicado en kis-app@$KIS_BRANCH."
