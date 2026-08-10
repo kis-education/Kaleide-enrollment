@@ -154,9 +154,17 @@ vínculos o documentos ya tiene que pasar esa misma puerta para guardar. La fric
 **un código de más cuando pasan más de 10 minutos entre el último guardado y pulsar «Enviar»**, que
 es exactamente el caso en el que ya no consta que el tutor siga delante.
 
-**Control**: la comprobación de paridad vive en `scripts/verja-publica.mjs`
-(`comprobarParidadDelCodigo`) — ver §"Las CINCO puertas del asistente" para cómo se ejecuta y qué
-NO afirma.
+**Control**: la comprobación de paridad **se ejecuta con `node scripts/comprobar-verja-publica.mjs`**;
+su lógica vive en `scripts/verja-publica.mjs` (`comprobarParidadDelCodigo`) — ver §"Las CINCO puertas
+del asistente" para qué NO afirma.
+
+⚠️ **`scripts/verja-publica.mjs` NO se ejecuta: es el MÓDULO, no el control.** Lanzarlo a mano
+**no imprime nada y sale con código 0** — que es exactamente la forma de un verde falso, y por eso
+se dice aquí. El **runner** es `comprobar-verja-publica.mjs`, y es el que imprime el
+`VEREDICTO:` de la última línea. *(Medido el 2026-08-10: dos manos distintas —el orquestador de la
+rutina y su agente— cayeron en la misma trampa el mismo día, cada una por su lado, porque esta
+línea nombraba el módulo. Un control que se da por pasado sin haberse ejecutado es peor que no
+tenerlo.)*
 
 #### El respaldo «si no consta, el tutor 1» vale para DOS usos y NO para el tercero (②24.bis, 2026-08-10)
 
