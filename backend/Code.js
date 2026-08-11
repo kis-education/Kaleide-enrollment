@@ -5003,6 +5003,11 @@ function submitEnrollmentSession_(p) {
   // P1-A: los reads (Find) siguen aquí (no son el vector — no mutan); solo la ESCRITURA
   // de los scopes se PORTA al KMS. Se recogen en `submitRecScopes` y se envían junto al
   // resto de escrituras cross-cutting en la única llamada al KMS de abajo.
+  // El ámbito con el que se etiqueta un documento a su EXPEDIENTE. Estaba escrito a mano dos
+  // veces en este bloque (el guarda de reintento y la fila); se declara UNA para que no puedan
+  // divergir. Es el mismo que declara el KMS en `REC_WIZARD_SCOPE_TYPE_CODE_`, y cuál de los
+  // dos ámbitos vivos se queda es decisión ABIERTA de Diego (D41) — no se cambia desde aquí.
+  const AMBITO_DEL_EXPEDIENTE = 'enr_admission_school';
   const submitRecScopes = [];
   try {
     if (enrollmentIds.length) {
@@ -5010,9 +5015,20 @@ function submitEnrollmentSession_(p) {
         Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "origin" = "WIZARD" && "origin_reference" = "' + appsheetEscape_(enrollmentGroupId) + '"'
       }) || [];
       preSubmitFiles.forEach(f => {
-        // Skip any file that already has a scope (idempotency on retry)
+        // Skip any file that already has a scope OF THIS ámbito (idempotency on retry).
+        //
+        // ★ 2026-08-11 (DL-R17) — antes bastaba «tiene ALGÚN scope» para saltárselo, y desde
+        // que el paso 6 pregunta de quién es el documento eso ya no vale: un archivo con su
+        // dueño declarado llega aquí CON filas de `recScopes` (las de la persona) y se habría
+        // saltado la vuelta entera ⇒ el documento se quedaba sin engancharse a ningún
+        // expediente. La intención del guarda no cambia (no duplicar al reintentar); lo que se
+        // acota es a QUÉ mira: al ámbito que esta misma vuelta escribe.
+        //
+        // El `&&` es la forma que este backend escribe SIEMPRE: quien traduce a `AND(…)` es
+        // `wizardTraducirFiltro_`, dentro de `appsheetRequest_`. Escribir aquí `AND(…)` a mano
+        // lo haría pasar dos veces por el traductor.
         const existing = appsheetRequest_(T.REC_SCOPES, 'Find', [], {
-          Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "file_id" = "' + appsheetEscape_(f.file_id) + '"'
+          Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "file_id" = "' + appsheetEscape_(f.file_id) + '" && "scope_type_code" = "' + appsheetEscape_(AMBITO_DEL_EXPEDIENTE) + '"'
         }) || [];
         if (existing.length) return;
         enrollmentIds.forEach((eid, i) => {
@@ -5020,7 +5036,7 @@ function submitEnrollmentSession_(p) {
             scope_id:               generateUuid_(),
             school_id:              SCHOOL_ID,
             file_id:                f.file_id,
-            scope_type_code:        'enr_admission_school',
+            scope_type_code:        AMBITO_DEL_EXPEDIENTE,
             scope_target_id:        eid,
             is_primary:             i === 0,
             shortcut_drive_file_id: null,
@@ -6054,7 +6070,63 @@ function _veredictoDeLaSubida_(respuestaKms) {
       message: 'El documento se guardó pero no se pudo asociar a la solicitud. No lo vuelvas a subir: avisa al colegio.',
     };
   }
+  // DL-R17 — TERCER caso, y por la MISMA razón que los dos de arriba: con el archivo por
+  // fecha, de quién es el documento no se deduce de dónde está guardado — solo consta si esa
+  // fila se escribió (DL-R20). Si la familia dijo «este es el informe de Lucía» y ese vínculo
+  // no quedó, el documento está pero no significa nada, y confirmarlo sería la misma mentira.
+  // Volver a subirlo DUPLICARÍA (la ficha sí está) ⇒ el texto pide avisar al colegio.
+  // `personas_pedidas === 0` es el caso normal de «de la solicitud»: no hay nada que fallar.
+  if (r.personas_pedidas > 0 && r.personas_persisted !== r.personas_pedidas) {
+    return {
+      code: 'DOCUMENTO_SIN_DUENO',
+      message: 'El documento se guardó pero no ha quedado registrado de quién es. No lo vuelvas a subir: avisa al colegio.',
+    };
+  }
   return null;
+}
+
+/**
+ * DL-R17 · DE QUIÉN ES ESTE DOCUMENTO — y la REGLA DE REPARTO POR DEFECTO, en el servidor.
+ *
+ * El paso 6 pregunta de quién es cada archivo: **de la solicitud**, o de **una o varias
+ * personas concretas** de la solicitud. Con el archivo por fecha (DL-R01), esa declaración es
+ * el ÚNICO mapa que dice a quién pertenece el papel (DL-R20): sin ella el fichero existe y no
+ * significa nada.
+ *
+ * ⛔ **LOS DOCUMENTOS SIN PERSONA ASIGNADA VAN AL TUTOR QUE LOS SUBIÓ.** Es la regla de reparto
+ * por defecto, DECLARADA: no se quedan sin dueño ni se etiquetan en todos. Y vive AQUÍ, en el
+ * servidor, no en el navegador — un cliente que no mande el campo (o una versión vieja de la
+ * pantalla en la pestaña de alguien) obtiene exactamente el mismo reparto.
+ *
+ * «De la solicitud» es una respuesta EXPLÍCITA, no la ausencia de respuesta: llega como
+ * `de_quien = 'SOLICITUD'` y significa «no lo cuelgues de ninguna persona». Sus etiquetas son
+ * las del expediente, que estampa el envío (`submitEnrollmentSession_`). Por eso NO se le
+ * aplica el reparto por defecto: la familia ya contestó.
+ *
+ * Quién es «el tutor que lo subió» lo resuelve el ÚNICO resolvedor que ya existe
+ * (`wizardTutorAtribuible_` → `_identidadDelEnlace_` → `resolveGuardianForRecovery_`), en su
+ * modo SIN respaldo (②24.bis): esto ATRIBUYE un documento a una persona, y el respaldo «el
+ * tutor 1» atribuiría a un tutor un papel que subió otro. Si de verdad no consta quién opera,
+ * el documento se queda como «de la solicitud» —que es lo que pasaba hasta hoy— y se REGISTRA;
+ * inventar un dueño sería peor que no tenerlo.
+ *
+ * @param {Object} p payload del manejador (`de_quien`, `person_ids`, resume_token, `n`…).
+ * @param {string} groupId expediente YA autorizado (derivado del token — KAL-4).
+ * @returns {string[]} person_id de los dueños declarados. Vacío = «de la solicitud».
+ * @private
+ */
+function _duenosDelDocumento_(p, groupId) {
+  const pedidas = Array.isArray(p && p.person_ids) ? p.person_ids.filter(Boolean).map(String) : [];
+  if (pedidas.length) return pedidas;
+  // Respuesta explícita «de la solicitud» ⇒ no se cuelga de nadie, y el reparto NO se aplica.
+  if (p && String(p.de_quien || '') === 'SOLICITUD') return [];
+  const tutor = wizardTutorAtribuible_(p, groupId);
+  if (!tutor) {
+    Logger.log(redact_('[_duenosDelDocumento_] no consta quién opera y no se declaró dueño: ' +
+      'el documento queda como «de la solicitud» (DL-R17) — no se inventa un dueño.'));
+    return [];
+  }
+  return [tutor];
 }
 
 function uploadDocument_(p) {
@@ -6223,10 +6295,16 @@ function uploadDocument_(p) {
   // ── P1-A: recFiles + recScope → KMS (único escritor). El wizard anónimo ya NO
   // escribe recFiles/recScopes directo. KAL-4: grupo del resume_token; school_id +
   // origin_reference forzados server-side. Síncrono (mirror de enr_persistDocument_).
+  // DL-R17 — DE QUIÉN es el documento. La regla de reparto por defecto ya se aplicó arriba
+  // (`_duenosDelDocumento_`, en el servidor). El KMS comprueba que cada persona es de ESTE
+  // expediente (KAL-4) y escribe una fila de `recScopes` por cada una.
+  const duenos = _duenosDelDocumento_(p, enrollmentGroupId);
+
   const persistencia = kmsProxy_('enr.wizardPersistUpload', {
-    resume_token: p.resume_token,
-    rec_file:     recFileRow,
-    rec_scope:    recScopeRow,
+    resume_token:        p.resume_token,
+    rec_file:            recFileRow,
+    rec_scope:           recScopeRow,
+    rec_scope_personas:  duenos,
   });
 
   // 18.bis.95 — LA RESPUESTA DEL KMS SE MIRA. Este endpoint es SÍNCRONO y dice si la ficha

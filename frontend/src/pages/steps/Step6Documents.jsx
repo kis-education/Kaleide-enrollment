@@ -41,6 +41,7 @@ import { confirmarYQuitar } from '../../lib/quitar';
 const TEXTO_DE_SUBIDA_FALLIDA = {
   DOCUMENTO_NO_REGISTRADO: 'doc.upload_failed.not_registered',
   DOCUMENTO_SIN_VINCULAR:  'doc.upload_failed.not_linked',
+  DOCUMENTO_SIN_DUENO:     'doc.upload_failed.no_owner',
 };
 
 function fileToBase64(file) {
@@ -59,7 +60,7 @@ const newRowId = () => `doc_row_${++_rowSeq}_${Date.now()}`;
  * Una fila del adjuntador genérico: descripción (texto libre) + archivo.
  * Sube vía gasCall('uploadDocument', { description, … }) al seleccionar el archivo.
  */
-function GenericAttachment({ row, enrollmentGroupId, resumeToken, identidad, onUploaded, onDescriptionChange, onRemove, onStepUpVerified, onActivity }) {
+function GenericAttachment({ row, personas, enrollmentGroupId, resumeToken, identidad, onUploaded, onDescriptionChange, onDuenoChange, onRemove, onStepUpVerified, onActivity }) {
   const { t } = useTranslation();
   const [status, setStatus] = useState(row.file_id ? 'success' : '');
   const [fileId, setFileId] = useState(row.file_id || '');
@@ -83,6 +84,14 @@ function GenericAttachment({ row, enrollmentGroupId, resumeToken, identidad, onU
         filename:    file.name,
         // WIZARD-DOCS: el usuario describe qué es el archivo (texto libre, opcional).
         description: (row.description || '').trim(),
+        // DL-R17 — DE QUIÉN es el documento. Se manda lo que la familia CONTESTÓ, tal cual:
+        // «de la solicitud» viaja como respuesta EXPLÍCITA (`SOLICITUD`), no como la ausencia
+        // de las dos. Si no contestó, no se manda nada y la regla de reparto por defecto —que
+        // vive en el SERVIDOR, `_duenosDelDocumento_`— se lo asigna al tutor que lo sube. Aquí
+        // no se decide nada: el navegador no reparte documentos.
+        ...(row.dueno === 'SOLICITUD' ? { de_quien: 'SOLICITUD' }
+           : row.dueno               ? { person_ids: [row.dueno] }
+           : {}),
         // ②24 — quién está operando: el servidor exige el código de un solo uso y la
         // marca es DEL BUZÓN que se verificó, no del expediente entero.
         ...identidadDelEnlace(identidad),
@@ -157,6 +166,39 @@ function GenericAttachment({ row, enrollmentGroupId, resumeToken, identidad, onU
         onChange={e => onDescriptionChange(row.id, e.target.value)}
         disabled={status === 'success'}
       />
+
+      {/* DL-R17 — DE QUIÉN ES ESTE ARCHIVO. Con el archivo por fecha, esta respuesta es el
+          único sitio donde consta a quién pertenece el papel: sin ella el fichero existe y
+          no significa nada. Las personas que se ofrecen son las que la familia YA declaró en
+          el paso 2 — no se teclean, se eligen.
+          NINGUNA opción viene preseleccionada: elegir por la familia sería inventar la
+          respuesta. Si no contesta, lo reparte el SERVIDOR (al tutor que lo sube), y el texto
+          de abajo lo dice para que no sea una sorpresa. */}
+      {/* Solo mientras se elige el archivo. Un archivo YA subido tiene su respuesta escrita en
+          el servidor y la hidratación no la devuelve: enseñar aquí un desplegable vacío diría
+          «no contestaste», que es falso. */}
+      {status !== 'success' && (
+        <>
+          <label className="form-label fw-semibold mb-1" htmlFor={`dueno_${row.id}`}>
+            {t('doc.owner_label')}
+          </label>
+          <select
+            id={`dueno_${row.id}`}
+            className="form-select mb-1 doc-owner"
+            value={row.dueno || ''}
+            onChange={e => onDuenoChange(row.id, e.target.value)}
+          >
+            <option value="">{t('doc.owner_unset')}</option>
+            <option value="SOLICITUD">{t('doc.owner_application')}</option>
+            {personas.map(p => (
+              <option key={p.person_id} value={p.person_id}>{p.etiqueta}</option>
+            ))}
+          </select>
+          <p className="mb-2" style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+            {t('doc.owner_hint')}
+          </p>
+        </>
+      )}
 
       {status !== 'success' && (
         <div
@@ -246,6 +288,27 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   } = useWizard();
   const identidad = { n: recoveryNonce, recoveredEmail };
 
+  // DL-R17 — LAS PERSONAS QUE SE OFRECEN SON LAS QUE LA FAMILIA YA DECLARÓ, y se leen del
+  // mismo sitio del que las lee el resto del asistente (`stepData.persons`). NO se teclean.
+  //
+  // El papel de cada una se LEE de su tipo declarado (`person_type_id`), NUNCA se deduce por
+  // resta ni por exclusión (DL-E48): «tutor = el que no es alumno» produce basura en cuanto un
+  // dominio no tiene tutores. Y las que la familia ya QUITÓ de la solicitud no se ofrecen —
+  // mismo criterio que el servidor, que las descarta en todas partes.
+  const personasDelDocumento = (() => {
+    const vivas = (stepData.persons || []).filter(p => p && p.person_id && !p.deleted_at);
+    const numerar = (tipo) => {
+      let n = 0;
+      return vivas.filter(p => p.person_type_id === tipo).map(p => {
+        n += 1;
+        const nombre = [p.first_name, p.last_name].filter(Boolean).join(' ').trim();
+        const titulo = tipo === 'guardian' ? t('guardian.title', { n }) : t('applicant.title', { n });
+        return { person_id: p.person_id, etiqueta: nombre ? `${titulo} — ${nombre}` : titulo };
+      });
+    };
+    return [...numerar('guardian'), ...numerar('applicant')];
+  })();
+
   // Semilla desde la hidratación: cada documento subido (origin='WIZARD') se
   // convierte en una fila ya-completada del adjuntador genérico. Si no hay
   // ninguno, arrancamos con CERO paneles (patrón "añadir ítem" de Step2Persons):
@@ -305,6 +368,12 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     setRows(prev => prev.map(r => r.id === rowId ? { ...r, description: value } : r));
   };
 
+  // DL-R17 — la respuesta a «de quién es» viaja con la subida (ver `doUpload`); aquí solo se
+  // recuerda mientras la familia elige el archivo.
+  const handleDuenoChange = (rowId, value) => {
+    setRows(prev => prev.map(r => r.id === rowId ? { ...r, dueno: value } : r));
+  };
+
   const handleUploaded = (rowId, doc) => {
     // WIZARD-DOCS2: NO se auto-añade una fila vacía tras subir. Para otro archivo,
     // el usuario vuelve a pulsar "Añadir archivo" (patrón Step2Persons).
@@ -312,7 +381,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   };
 
   const handleAddRow = () => {
-    setRows(prev => [...prev, { id: newRowId(), description: '', file_id: '', file_name: '' }]);
+    setRows(prev => [...prev, { id: newRowId(), description: '', dueno: '', file_id: '', file_name: '' }]);
   };
 
   // Aviso de que un documento se retira, cuando el servidor no explica por qué no pudo.
@@ -404,11 +473,13 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
           <GenericAttachment
             key={row.id}
             row={row}
+            personas={personasDelDocumento}
             enrollmentGroupId={enrollmentGroupId}
             resumeToken={resumeToken}
             identidad={identidad}
             onUploaded={handleUploaded}
             onDescriptionChange={handleDescriptionChange}
+            onDuenoChange={handleDuenoChange}
             onRemove={handleRemoveRow}
             onStepUpVerified={markStepUpFresh}
             onActivity={touchActivity}

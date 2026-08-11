@@ -1786,6 +1786,30 @@ async function caminoSubirDocumento(page, base) {
   await page.waitForSelector('.doc-attachment', { timeout: 10000 })
   await page.fill('.doc-attachment input[type="text"]', 'Documento sintético E2E')
 
+  // ── DL-R17 · DE QUIÉN ES EL DOCUMENTO ────────────────────────────────────────────────
+  // Con el archivo por fecha, esta respuesta es el ÚNICO sitio donde consta a quién pertenece
+  // el papel: si la pantalla deja de preguntarlo, o lo pregunta y no lo manda, el fichero
+  // existe y no significa nada. Se afirman las TRES cosas por separado, porque fallan por
+  // motivos distintos: que se pregunte, que las opciones salgan de las personas que la familia
+  // YA declaró (no de una lista escrita a mano), y que la respuesta VIAJE con la subida.
+  const opcionesDeDueño = await page.$$eval('.doc-attachment .doc-owner option',
+    os => os.map(o => ({ valor: o.value, texto: (o.textContent || '').trim() })))
+  c.afirmar('el paso 6 pregunta de quién es el documento', opcionesDeDueño.length > 0,
+    'la pantalla no ofrece el desplegable «de quién es» (.doc-owner)')
+  c.afirmar('no viene ninguna respuesta preseleccionada',
+    await page.$eval('.doc-attachment .doc-owner', s => s.value === '').catch(() => false),
+    'el desplegable «de quién es» arrancó con una opción ya elegida: elegir por la familia es inventar la respuesta')
+  c.afirmar('«de la solicitud» es una opción EXPLÍCITA, no la ausencia de respuesta',
+    opcionesDeDueño.some(o => o.valor === 'SOLICITUD'),
+    `las opciones ofrecidas fueron: ${opcionesDeDueño.map(o => o.valor).join(' · ') || '(ninguna)'}`)
+  // Las personas se ofrecen por su identificador real, no por su nombre ni por su posición.
+  const personasOfrecidas = opcionesDeDueño.filter(o => o.valor && o.valor !== 'SOLICITUD')
+  c.afirmar('ofrece a las personas que la familia ya declaró', personasOfrecidas.length >= 1,
+    'el desplegable no ofreció ninguna persona de la solicitud: sin ellas solo se puede decir «de la solicitud»')
+  if (personasOfrecidas.length) {
+    await page.selectOption('.doc-attachment .doc-owner', personasOfrecidas[0].valor)
+  }
+
   // Archivo sintético en memoria (no se lee nada del disco del usuario).
   await page.setInputFiles('.doc-attachment input[type="file"]', {
     name: 'prueba-e2e.pdf',
@@ -1813,6 +1837,13 @@ async function caminoSubirDocumento(page, base) {
       `filename recibido: ${p.filename}`)
     c.afirmar('la subida va autenticada con el token de la sesión (KAL-4)',
       p.resume_token === DATOS.resumeToken, 'el uploadDocument salió sin el resume_token de la sesión')
+    // DL-R17 — y lleva DE QUIÉN es. Que la pantalla lo pregunte no sirve de nada si la
+    // respuesta se queda en el navegador: lo que hace que el documento signifique algo es la
+    // fila que el KMS escribe con esto.
+    c.afirmar('la subida dice de quién es el documento',
+      Array.isArray(p.person_ids) && p.person_ids.length === 1 &&
+      p.person_ids[0] === (personasOfrecidas[0] || {}).valor,
+      `person_ids recibido: ${JSON.stringify(p.person_ids)} (se eligió ${(personasOfrecidas[0] || {}).valor})`)
   } else {
     c.noCubierta('contenido-de-la-subida', 'no hubo ninguna subida que inspeccionar')
   }
