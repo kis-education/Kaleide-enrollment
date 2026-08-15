@@ -35,6 +35,7 @@ try {
     console.log('  ✓ los 11 manejadores de mutación exigen el código de un solo uso, tras derivar el expediente del token y antes del trabajo caro (②27)')
     console.log('  ✓ subir y ver un documento ya no leen `enrEnrollments`/`recFiles` de AppSheet: las tres guardas las sirve el KMS (②17)')
     console.log('  ✓ la cabecera del expediente no se lee de AppSheet y la sirve UN SOLO lector contra el KMS (②17)')
+    console.log('  ✓ la entrada de una solicitud nueva no lee `enrEnrollmentGroups`/`enrPersons` de AppSheet, y sigue decidiendo la sesión única (②17)')
   }
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)

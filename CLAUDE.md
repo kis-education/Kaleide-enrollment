@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet") y **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"). **Medido el 2026-08-15: quedan 69 lecturas directas + 4 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 73, solo 34 están en el camino vivo**: las otras 39 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente") y **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva"). **Medido el 2026-08-15: quedan 66 lecturas directas + 4 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 70, solo 31 están en el camino vivo**: las otras 39 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -477,6 +477,63 @@ al que le hubieran quitado la validación. **Rojo demostrado seis veces**, cada 
 ciega** rompiéndolo cuatro veces (ensanchar la proyección · aflojar el criterio de fila viva ·
 degradar los teléfonos en vez de fallar cerrado · quitar el cinturón sobre el filtro).
 **Quien toque este manejador, que lo mida.**
+
+### ②17 (2026-08-15) — la ENTRADA de una solicitud nueva: los expedientes de un correo los sirve el KMS
+
+**`initEnrollmentSession_` es la puerta por la que entra TODA familia nueva**, y hacía **TRES**
+lecturas directas a AppSheet desde este proceso —público y anónimo—, las tres filtradas por el
+**correo que la familia teclea**: los expedientes de ese correo **ya enviados**, los **abiertos**, y
+las **personas** de los candidatos abiertos —que solo se usan para **CONTARLAS**, para decidir cuál
+de dos sesiones en marcha va más avanzada—.
+
+**Lo que cruzaba, y por eso este tramo vale lo que vale:** de cada expediente, la **fila entera**
+—con **`magic_link_token`**, un secreto de portador, más `school_id`, `program_id`, `source_id`,
+`requester_person_id`, `source_locale`, `submitted_at`, `abandoned_at`, `_RowNumber` y el bloque de
+auditoría y borrado lógico completo—; y de cada persona, la **ficha entera** (nombre, fecha de
+nacimiento, documento) **de menores incluidos**, para contarlas. Ahora lo sirve **una** entrada del
+KMS, `enr.wizardExpedientesDelCorreo`, y lo consume **UN SOLO ayudante**, `_expedientesDelCorreo_`.
+
+**Lo que hay que retener al tocar esto:**
+
+- **LA DECISIÓN NO SE MOVIÓ.** La política de sesión única —puntuar cada candidato por número de
+  personas, desempatar por fecha, abandonar a los perdedores— se queda **entera y verbatim** en este
+  fichero. Cambia **de dónde salen las filas**, no qué se hace con ellas. Por eso la entrada
+  devuelve las **dos listas** y un **recuento por expediente**, nunca un ganador ya elegido.
+- **La proyección, medida contra `origin/main`:** de los enviados salen **tres** campos
+  (`enrollment_group_id`, `resume_token`, `preferred_language`) y de los abiertos **cinco** (esos
+  tres más `updated_at` y `created_at`, que solo alimentan el desempate). **De las personas no sale
+  NADA: un número por expediente.**
+- **Los dos fallos NO pesan igual, y se conserva el criterio del oro.** Las dos lecturas de
+  expedientes **LANZAN** —`appsheetRequest_` lanzaba y aquí no había `try`—: decir «no hay ninguno»
+  cuando en realidad no se pudo preguntar le abriría un expediente **NUEVO** a una familia que ya
+  tiene el suyo, y le mandaría el enlace a un borrador vacío. El recuento de personas **degrada**
+  (viaja `recuento_fallido`) para que se siga ordenando solo por fecha, como hacía su `catch`.
+- **Con UN solo candidato abierto no se piden las personas**, igual que antes: son las mismas
+  lecturas que hacía el oro, ni una más.
+- **Auth: solo `service_token`, y se dice así.** Aquí no hay `resume_token` del que derivar nada
+  (KAL-4) porque el expediente **todavía no existe**. El alcance lo acota la FORMA de la entrada —un
+  correo, seis campos—, igual que en `enr.wizardReconocerFamilia`. Acotar por cliente es `②18`.
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición):
+**69 → 66** sueltas; las de lote se quedan en **4**. En este manejador: **3 → 0**.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarLaEntradaDeLaSolicitud` — el manejador no
+vuelve a leer `enrEnrollmentGroups` ni `enrPersons` · **sí** le pide los expedientes al KMS por el
+ayudante único · el ayudante existe y pregunta a la entrada declarada · y **dos anclas**: que el
+manejador siga existiendo y que **siga decidiendo la sesión única**, para que el control no pueda
+salir verde afirmando ausencias sobre un manejador vaciado. **Rojo demostrado SIETE veces**, cada
+una nombrando su caso (dos de ellas dejando el control **CIEGO** a propósito).
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
+**20 afirmaciones** sobre el manejador real extraído del fuente y ejecutado con dobles,
+**demostradas no ciegas** con seis roturas (ensanchar la proyección a la fila entera · el recuento
+caído dejando de degradar · disfrazar de «no hay ninguno» **cada una** de las dos lecturas · quitar
+el cinturón del recuento · renombrar el manejador → *«medición CIEGA»*). **Y la medición se corrigió
+a sí misma dos veces:** su doble del validador de correo era **más estricto que el real** —el real
+acepta comillas, que es justo por lo que existe el escape de capa 2— y su afirmación de fallo
+cerrado se satisfacía con que lanzara **una** de las dos lecturas, dejando pasar que la otra se
+disfrazara. **Quien toque este manejador, que lo mida.**
 
 ### ②17 (2026-08-15) — la CABECERA del expediente: tres copias de la misma lectura, y una cruzaba entera al navegador
 

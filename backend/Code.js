@@ -2195,13 +2195,18 @@ function initEnrollmentSession_(p, opts) {
   // KAL-5: validate before concatenating into AppSheet Filter (defense in depth)
   assertValidEmail_(normalizedEmail, 'primary_email');
 
+  // ②17 (séptimo tramo): las TRES lecturas de este manejador —los expedientes ya enviados
+  // de este correo, los abiertos, y las personas de los candidatos para CONTARLAS— las
+  // sirve el KMS en UNA pregunta (`enr.wizardExpedientesDelCorreo`), proyectadas a los
+  // campos que se usan aquí abajo. La DECISIÓN (puntuar, desempatar, abandonar perdedores)
+  // NO se movió: sigue entera en este fichero, verbatim.
+  const _expedientes = _expedientesDelCorreo_(normalizedEmail);
+
   // ── Guard: already-submitted sessions block re-submission ─────────────────
   // If the email already has a submitted (non-abandoned) session, return early
   // without creating a new session or sending another magic link.
   // The frontend renders a "ya enviada / already submitted" screen.
-  const existingSubmitted = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"primary_email" = "' + appsheetEscape_(normalizedEmail) + '" && NOT(ISBLANK([submitted_at])) && ISBLANK([abandoned_at])'
-  }) || [];
+  const existingSubmitted = _expedientes.enviados;
   if (existingSubmitted.length) {
     const grp = existingSubmitted[0];
     // Send a magic link so the family can view their submitted application in
@@ -2237,32 +2242,20 @@ function initEnrollmentSession_(p, opts) {
     };
   }
 
-  const existingOpen = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"primary_email" = "' + appsheetEscape_(normalizedEmail) + '" && ISBLANK([submitted_at]) && ISBLANK([abandoned_at])'
-  }) || [];
+  const existingOpen = _expedientes.abiertos;
   if (existingOpen.length) {
     if (!internal) {   // WIZ-ENUM: cupo ya consumido por `sendMagicLink_` para esta misma acción
       _checkMagicLinkRateLimit_(normalizedEmail);
       _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
     }
 
-    // Resolve person counts for all candidates in ONE query (filtered by OR).
-    let personCountByGroup = {};
-    if (existingOpen.length > 1) {
-      try {
-        const ids = existingOpen.map(g => g.enrollment_group_id);
-        ids.forEach(id => assertValidUuid_(id, 'enrollment_group_id'));
-        const filter = ids.map(id => '"enrollment_group_id" = "' + appsheetEscape_(id) + '"').join(' || ');
-        const personRows = wizardSoloVivas_(appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }));
-        personRows.forEach(pr => {
-          const k = pr.enrollment_group_id;
-          personCountByGroup[k] = (personCountByGroup[k] || 0) + 1;
-        });
-      } catch (e) {
-        // If the person-count query fails, fall back to updated_at-only sort.
-        // Logged so we know to investigate but doesn't block the re-send.
-        Logger.log('initEnrollmentSession_: person count query failed (falling back to updated_at): ' + e.message);
-      }
+    // ②17: el recuento por expediente lo hace el KMS con el MISMO filtro y el MISMO colador
+    // de personas retiradas — de las personas ya NO cruza ninguna ficha, solo un número.
+    // Su respaldo también se conserva: si el recuento no se pudo hacer, se ordena solo por
+    // fecha, exactamente como hacía el `catch` de aquí.
+    const personCountByGroup = _expedientes.personasPorExpediente;
+    if (_expedientes.recuentoFallido) {
+      Logger.log('initEnrollmentSession_: person count query failed (falling back to updated_at)');
     }
 
     const sorted = existingOpen.slice().sort((a, b) => {
@@ -3741,6 +3734,35 @@ function _expedienteDelToken_(resumeToken) {
       ((e2 && e2.message) || e2)));
     return { ok: false, fila: null };
   }
+}
+
+/**
+ * ②17 (séptimo tramo) — los expedientes de UN correo, servidos por el KMS.
+ *
+ * ÚNICO lector de lo que `initEnrollmentSession_` hacía con TRES lecturas directas a
+ * AppSheet desde este proceso, que es **público y anónimo**: los expedientes ya enviados
+ * de ese correo, los abiertos, y las personas de los candidatos —que solo se CUENTAN—.
+ * Las sirve `enr.wizardExpedientesDelCorreo` con los MISMOS filtros y proyectadas a los
+ * campos que este fichero demuestra usar.
+ *
+ * ⛔ **FALLA CERRADO — LANZA, no degrada, y es deliberado.** Las dos lecturas de
+ * expedientes que sustituye lanzaban (`appsheetRequest_` lanza siempre y aquí no había
+ * `try`). Devolver «no hay ninguno» cuando en realidad no se pudo preguntar le abriría un
+ * expediente NUEVO a una familia que ya tiene el suyo, y le mandaría un enlace a un
+ * borrador vacío. El único fallo que SÍ degrada es el recuento de personas, que viaja en
+ * `recuentoFallido` para que el llamante conserve su respaldo (ordenar solo por fecha).
+ *
+ * @param {string} email correo ya normalizado y validado por el llamante (KAL-5 capa 1).
+ * @returns {{enviados:Array, abiertos:Array, personasPorExpediente:Object, recuentoFallido:boolean}}
+ */
+function _expedientesDelCorreo_(email) {
+  var r = kmsProxy_('enr.wizardExpedientesDelCorreo', { email: email }) || {};
+  return {
+    enviados:              Array.isArray(r.enviados) ? r.enviados : [],
+    abiertos:              Array.isArray(r.abiertos) ? r.abiertos : [],
+    personasPorExpediente: r.personas_por_expediente || {},
+    recuentoFallido:       !!r.recuento_fallido,
+  };
 }
 
 /**

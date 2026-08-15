@@ -628,6 +628,71 @@ function comprobarLaEntradaDelExpediente(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 séptimo tramo — la ENTRADA de una solicitud nueva ya no lee AppSheet.
+ *
+ * `initEnrollmentSession_` hacía TRES lecturas directas desde este proceso público y
+ * anónimo, todas filtradas por el correo tecleado: los expedientes ya enviados de ese
+ * correo, los abiertos, y las personas de los candidatos **solo para contarlas**. Cruzaba
+ * la fila ENTERA de cada expediente —con `magic_link_token`, un secreto de portador— y la
+ * ficha ENTERA de cada persona, incluidos menores. Ahora las sirve el KMS
+ * (`enr.wizardExpedientesDelCorreo`) por **UN SOLO ayudante**, `_expedientesDelCorreo_`.
+ *
+ * Se afirman cuatro cosas y DOS son anclas. Las anclas existen porque un control que solo
+ * comprueba AUSENCIAS sale verde sobre un manejador vaciado o renombrado: si
+ * `initEnrollmentSession_` desaparece, o deja de decidir la sesión única, este control
+ * **no puede medir lo que dice medir** y lo dice con esas palabras en vez de callar.
+ *
+ * Lo que NO se afirma, y se dice: que el KMS conteste la proyección correcta, ni que el
+ * ayudante falle cerrado como debe (lanzar, nunca degradar a «no hay expediente»). Eso no
+ * se lee aquí — se midió aparte, ejecutando el manejador real con dobles.
+ */
+function comprobarLaEntradaDeLaSolicitud(fuenteLimpia) {
+  const fallos = []
+
+  const cuerpo = cuerpoDe(fuenteLimpia, 'initEnrollmentSession_')
+  if (cuerpo === null) {
+    // ANCLA 1: sin el manejador, este control es CIEGO.
+    fallos.push('no se encontró `initEnrollmentSession_` — control CIEGO en la entrada de una ' +
+      'solicitud nueva (②17)')
+  } else {
+    for (const [tabla, quePasaba] of [
+      ['(T\\.ENROLLMENT_GROUPS|\'enrEnrollmentGroups\')',
+        'la fila entera del expediente —con `magic_link_token` dentro— volvería a cruzar a este proceso público'],
+      ['(T\\.PERSONS|\'enrPersons\')',
+        'la ficha entera de cada persona, menores incluidos, volvería a cruzar solo para CONTARLAS'],
+    ]) {
+      if (new RegExp('appsheetRequest_\\s*\\(\\s*' + tabla).test(cuerpo)) {
+        fallos.push('`initEnrollmentSession_` vuelve a leer ' + tabla.replace(/[\\()']/g, '') +
+          ' directamente de AppSheet — ' + quePasaba)
+      }
+    }
+    if (!/_expedientesDelCorreo_\s*\(/.test(cuerpo)) {
+      fallos.push('`initEnrollmentSession_` ya no le pide los expedientes al KMS ' +
+        '(`_expedientesDelCorreo_`) — o se quitó, o volvió a resolverlos por su cuenta')
+    }
+    // ANCLA 2: el manejador sigue DECIDIENDO la sesión única. Sin esto, «no lee AppSheet»
+    // sería cierto y vacío a la vez — la política se habría escapado a otro sitio.
+    if (!/personCountByGroup/.test(cuerpo) || !/wizardAbandonSession/.test(cuerpo)) {
+      fallos.push('`initEnrollmentSession_` ya no decide la sesión única (puntuar por personas ' +
+        'y abandonar a los perdedores) — el control estaría afirmando que no lee AppSheet sobre ' +
+        'un manejador que ya no hace su trabajo')
+    }
+  }
+
+  // UN SOLO lector: el ayudante existe y pregunta al KMS por la entrada declarada.
+  const ayudante = cuerpoDe(fuenteLimpia, '_expedientesDelCorreo_')
+  if (ayudante === null) {
+    fallos.push('no se encontró `_expedientesDelCorreo_` — control CIEGO: es el lector ÚNICO de ' +
+      'los expedientes de un correo (②17)')
+  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardExpedientesDelCorreo'/.test(ayudante)) {
+    fallos.push('`_expedientesDelCorreo_` ya no le pregunta al KMS ' +
+      '(`enr.wizardExpedientesDelCorreo`) — si vuelve a leer AppSheet, el tramo está deshecho')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -640,5 +705,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarLaHidratacionDeEntrada(limpia),
     ...comprobarElEnvio(limpia),
     ...comprobarLaEntradaDelExpediente(limpia),
+    ...comprobarLaEntradaDeLaSolicitud(limpia),
   ]
 }
