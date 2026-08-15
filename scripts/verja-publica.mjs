@@ -495,6 +495,73 @@ function comprobarLaHidratacionDeEntrada(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 — el ENVÍO no lee AppSheet para validarse, y la isla muerta no vuelve.
+ *
+ * `submitEnrollmentSession_` hacía OCHO lecturas directas. Tres de ellas no las leía
+ * nadie: dos estaban tras una guarda que nunca se cumplía, y la tercera —las respuestas
+ * de profesión, empleador y adaptación— SÍ se ejecutaba en cada envío y su resultado se
+ * descartaba. Esa tercera, además, corría DESPUÉS de que el KMS ya hubiera materializado
+ * el expediente y fuera de todo `try`: un fallo suyo dejaba a la familia medio enviada y
+ * atascada contra `NOT_EDITABLE`. Las otras tres vivas —la cabecera del expediente, las
+ * personas y los teléfonos— las sirve ahora el KMS en UNA pregunta.
+ *
+ * Lo que se afirma es lo observable en el fuente: el manejador **no vuelve a leer** esas
+ * cuatro tablas de AppSheet, **sí** le pregunta al KMS, y la isla muerta **no reaparece**.
+ * Si el manejador no se encuentra, el control queda CIEGO y eso es ROJO, no verde.
+ *
+ * Lo que NO se afirma, y se dice: que el KMS conteste lo correcto, ni que la puerta E.164
+ * siga juzgando bien. Eso no se lee aquí. Y quedan a propósito FUERA las dos lecturas de
+ * `recFiles`/`recScopes` del mismo manejador: llevan dentro el literal del tipo de
+ * expediente que DL-E48 prohíbe escribir a mano, y son tramo aparte.
+ */
+function comprobarElEnvio(fuenteLimpia) {
+  const fallos = []
+
+  const cuerpo = cuerpoDe(fuenteLimpia, 'submitEnrollmentSession_')
+  if (cuerpo === null) {
+    return ['no se encontró `submitEnrollmentSession_` — control CIEGO en el envío (②17)']
+  }
+
+  const tablasMigradas = [
+    ['ENROLLMENT_GROUPS', 'enrEnrollmentGroups', 'la cabecera del expediente (el idioma)'],
+    ['PERSONS', 'enrPersons', 'las personas que siguen en la solicitud'],
+    ['PHONES', 'enrPhones', 'los teléfonos de la puerta E.164'],
+    ['QB_RESPONSES', 'qbResponses', 'las respuestas que nadie leía'],
+    ['EMAILS', 'enrEmails', 'los correos que nadie leía'],
+  ]
+  for (const [constante, tabla, queEs] of tablasMigradas) {
+    const re = new RegExp('appsheetRequest_\\s*\\(\\s*(T\\.' + constante + "|'" + tabla + "')")
+    if (re.test(cuerpo)) {
+      fallos.push('`submitEnrollmentSession_` vuelve a leer `' + tabla + '` directamente de ' +
+        'AppSheet — eso es lo que ②17 quitó (' + queEs + ')')
+    }
+  }
+
+  if (!/kmsProxy_\s*\(\s*'enr\.wizardDatosDelEnvio'/.test(cuerpo)) {
+    fallos.push('el envío ya no le pide al KMS lo que necesita para validarse ' +
+      '(`enr.wizardDatosDelEnvio`) — o se quitó la comprobación, o volvió a hacerse contra AppSheet')
+  }
+
+  // La isla muerta: si vuelve, vuelve con ella la lectura que dejaba familias encalladas.
+  for (const muerta of ['buildApplicationSubmittedBody_', '_kmsRenderApplicantsTable_']) {
+    if (new RegExp('function\\s+' + muerta + '\\s*\\(').test(fuenteLimpia)) {
+      fallos.push('`' + muerta + '` ha vuelto — es la isla sin llamantes que ②17 retiró, y era ' +
+        'el único consumidor de la lectura de respuestas que se ejecutaba en cada envío sin que ' +
+        'nadie mirara el resultado')
+    }
+  }
+
+  // El ANCLA de que la puerta del teléfono sigue existiendo: sin esto, el control podría
+  // salir verde sobre un manejador al que le hubieran quitado la validación entera.
+  if (!/INVALID_PHONE/.test(cuerpo)) {
+    fallos.push('la puerta del teléfono E.164 desapareció del envío — el control estaría ' +
+      'afirmando que no lee AppSheet sobre un manejador que ya no valida nada')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -505,5 +572,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarParidadDelCodigo(limpia),
     ...comprobarLosDocumentosDeLaFamilia(limpia),
     ...comprobarLaHidratacionDeEntrada(limpia),
+    ...comprobarElEnvio(limpia),
   ]
 }

@@ -108,11 +108,13 @@ function wizardCodigoDeConsentimiento_(raw) {
   throw e;
 }
 
-// Stable question UUIDs for enrollment question bank — never regenerate
-const QB_PROFESSION_ID       = 'a1b2c3d4-0020-0000-0000-000000000000';
-const QB_EMPLOYER_ID         = 'a1b2c3d4-0021-0000-0000-000000000000';
-const QB_HAS_ADAPTATION_ID   = 'a1b2c3d4-0022-0000-0000-000000000000';
-const QB_ADAPTATION_NOTES_ID = 'a1b2c3d4-0023-0000-0000-000000000000';
+// ②17 (2026-08-15) — aquí vivían los cuatro identificadores fijos de las preguntas de
+// profesión, empleador y adaptación. Se retiran con la isla que los usaba: su único
+// lector era la lectura del envío que nadie consumía, y el único constructor que los
+// pintaba (`buildApplicationSubmittedBody_`) se quedó sin llamantes al retirarse el PDF
+// del envío (P262) y los dos correos (2026-08-07). Las preguntas siguen existiendo en el
+// banco y el asistente las sigue pintando: lo que se retira es la copia de sus
+// identificadores en el código, que ya no la mira nadie.
 
 // ─── DL-E39 PII-primero — step-up re-auth (Fase A) ──────────────────────────
 // Step-up = prueba-de-acceso-al-inbox (código fresco 6-díg al buzón) que
@@ -4333,20 +4335,24 @@ function submitEnrollmentSession_(p) {
 
   const now = new Date().toISOString();
 
-  // Load the group header
-  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-  });
-  const group = groups && groups[0];
-  if (!group) throw new Error('Enrollment group not found');
+  // ── ②17 — lo que el envío necesita para validarse se lo PREGUNTA AL KMS ────────────
+  // Aquí había TRES lecturas directas a AppSheet —la cabecera del expediente, las personas
+  // y los teléfonos—, hechas desde este proceso, que es público y anónimo, con la
+  // credencial de AppSheet de la aplicación entera. Ahora son UNA sola pregunta
+  // (`enr.wizardDatosDelEnvio`), con los MISMOS filtros por expediente y el mismo criterio
+  // de fila viva, y el nombre de la tabla no viaja en la petición. KAL-4 intacta: el
+  // expediente lo re-deriva el KMS del `resume_token`, nunca del cuerpo.
+  //
+  // Y la ficha de cada persona ya NO cruza entera: el KMS proyecta el papel y el
+  // identificador, y de los teléfonos solo el número. Nombres, fechas de nacimiento y
+  // documentos se quedan dentro del KMS.
+  //
+  // FALLA CERRADO, igual que antes: `appsheetRequest_` lanzaba siempre, y `kmsProxy_`
+  // propaga. Degradar aquí sería peor que el fallo — «no hay nadie» dejaría pasar un envío
+  // sin alumno, y «no hay teléfonos» rechazaría a toda familia con un motivo falso.
+  const datosEnvio = kmsProxy_('enr.wizardDatosDelEnvio', { resume_token: p.resume_token });
 
-  // ── Fetch persons captured in this group ───────────────────────────────────
-  // Solo las personas VIVAS: la familia pudo quitar tutores o alumnos con
-  // `enr.wizardRetirar` y quien está fuera no cuenta para nada de lo que sigue —
-  // ni para la puerta del teléfono, ni para elegir quién firma.
-  const allPersons = wizardSoloVivas_(appsheetRequest_(T.PERSONS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-  }));
+  const allPersons = (datosEnvio && datosEnvio.personas) || [];
   const guardians  = allPersons.filter(per => per.person_type_id === 'guardian');
   const applicants = allPersons.filter(per => per.person_type_id === 'applicant');
 
@@ -4365,23 +4371,24 @@ function submitEnrollmentSession_(p) {
   // or abort clean writing nothing.
   //
   // Guardian phone gate: each guardian (the signer; Click & Sign requires it at
-  // Step 11) must have ≥1 valid E.164 phone. SOSPECHA-2 fix — the old gate read
-  // enrichedGuardians[].phones, but gPhoneJoins was hardcoded to [] (~line 2852),
-  // so the gate threw INVALID_PHONE ALWAYS, regardless of the real value. We load
-  // the guardians' real phones from enrPhones by enrollment_group_id (verbatim
-  // gold-standard read resumeSession_:2191,2197) and nest by person_id
-  // (resumeSession_:2409 pattern) so the some() iterates over real numbers.
+  // Step 11) must have ≥1 valid E.164 phone. SOSPECHA-2 fix — la puerta vieja leía una
+  // lista de teléfonos que SIEMPRE venía vacía, así que lanzaba INVALID_PHONE pasara lo
+  // que pasara, tuviera la familia teléfono o no. Se arregló leyendo los teléfonos reales
+  // del expediente y agrupándolos por persona, y desde ②17 (2026-08-15) esos teléfonos
+  // los sirve el KMS (`enr.wizardDatosDelEnvio`) con el mismo filtro por expediente.
   //
   // W2 (P259): AppSheet strips the leading '+' from enrPhones.value, so an E.164
   // value '+34609211201' is stored as '34609211201'. Normalise the STORED value
   // (re-prepend '+' when all-digits) before the strict regex; this only restores
   // the '+' AppSheet removed — it still requires a valid E.164 after normalising,
   // NOT "any digits". Fresh input keeps the strict-with-'+' check elsewhere.
+  //
+  // ②17: los teléfonos vienen de la MISMA pregunta al KMS de más arriba, ya acotados al
+  // expediente y ya filtrados de vivos. La normalización P259 y el E.164 estricto se
+  // conservan aquí VERBATIM: lo que se movió es de dónde sale el dato, no el criterio.
   const gPersonIdsForGate = guardians.map(g => g.person_id).filter(Boolean);
   if (gPersonIdsForGate.length) {
-    const allGuardianPhones = wizardSoloVivas_(appsheetRequest_(T.PHONES, 'Find', [], {
-      Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-    }));
+    const allGuardianPhones = (datosEnvio && datosEnvio.telefonos) || [];
     const phonesByPerson = {};
     allGuardianPhones.forEach(ph => {
       const pid = ph.person_id;
@@ -4450,7 +4457,11 @@ function submitEnrollmentSession_(p) {
   // es él quien deja el rastro en sysStateTransitionLog. El KMS ya descartaba estas filas
   // (enr_wizardPersistSubmitSideEffects → state_transitions_ignored); aquí se retiran de raíz.
 
-  const lang = p.language || group.preferred_language || 'es';
+  // ②17: el idioma del expediente lo devuelve la misma pregunta al KMS. Antes salía de la
+  // cabecera que este manejador releía por su cuenta —la TERCERA lectura de la misma fila
+  // en un solo envío, después de `requireResumeToken_` y `assertGroupEditable_`—; hoy la
+  // sirve la puerta del KMS, que ya la tenía leída. Mismo respaldo a 'es' que siempre.
+  const lang = p.language || (datosEnvio && datosEnvio.idioma) || 'es';
 
   // ── Log GDPR + legal consents (per enrollment) ─────────────────────────────
   // sysConsentsLog (DL-S44): polymorphic on entity_type_code + entity_id.
@@ -4526,51 +4537,34 @@ function submitEnrollmentSession_(p) {
   // P1-A: `consentRows` (registro LEGAL de consentimientos) se PORTA al KMS al final
   // del submit — el wizard anónimo ya no escribe sysConsentsLog directo.
 
-  // (Local var renamed to keep downstream PDF / email code unchanged below)
-  const app = group;  // alias to minimise the diff in email/PDF builders
-
-  // Enrich guardians with emails and phones for notifications
-  const gPersonIds = guardians.map(g => g.person_id);
-  // enrPersonEmails / enrPersonPhones deleted 2026-05-17 — notification enrichment unavailable.
-  // Guardian primary_email from enrEnrollmentGroups is still used for magic links / receipts.
-  const gEmailJoins = [];
-  const gPhoneJoins = [];
-
-  const gEmailIds = gEmailJoins.map(r => r.email_id).filter(Boolean);
-  const gPhoneIds = gPhoneJoins.map(r => r.phone_id).filter(Boolean);
-  const gEmailMap = {};
-  if (gEmailIds.length) {
-    wizardSoloVivas_(appsheetRequest_(T.EMAILS, 'Find', [], {
-      Filter: gEmailIds.map(x => '"email_id" = "' + appsheetEscape_(x) + '"').join(' || ')
-    })).forEach(r => { gEmailMap[r.email_id] = r; });
-  }
-  const gPhoneMap = {};
-  if (gPhoneIds.length) {
-    wizardSoloVivas_(appsheetRequest_(T.PHONES, 'Find', [], {
-      Filter: gPhoneIds.map(x => '"phone_id" = "' + appsheetEscape_(x) + '"').join(' || ')
-    })).forEach(r => { gPhoneMap[r.phone_id] = r; });
-  }
-  const enrichedGuardians = guardians.map(g => ({
-    ...g,
-    emails: gEmailJoins.filter(r => r.person_id === g.person_id).map(r => ({ ...r, ...(gEmailMap[r.email_id] || {}) })),
-    phones: gPhoneJoins.filter(r => r.person_id === g.person_id).map(r => ({ ...r, ...(gPhoneMap[r.phone_id] || {}) })),
-  }));
-
   // NOTE (IMPL-H): the guardian E.164 phone gate moved UP — it now runs as part
   // of the CLOSING VALIDATION block BEFORE any write (W1), reading real phones
   // from enrPhones (W2 / SOSPECHA-2 fix). It is intentionally gone from here so
   // no write precedes the validation. See the block right after the applicant
   // check above.
 
-  // Fetch QB responses for enrollment-specific questions (profession, employer, adaptation)
-  const enrQbIds = [QB_PROFESSION_ID, QB_EMPLOYER_ID, QB_HAS_ADAPTATION_ID, QB_ADAPTATION_NOTES_ID];
-  const qbResRows = appsheetRequest_(T.QB_RESPONSES, 'Find', [], {
-    Filter: '(' + [enrollmentGroupId].concat(enrollmentIds).map(rid => '"respondent_id" = "' + appsheetEscape_(rid) + '"').join(' || ') + ') && (' +
-      enrQbIds.map(id => '"question_id" = "' + appsheetEscape_(id) + '"').join(' || ') + ')'
-  }) || [];
-  // Map question_id → last response_text (aggregates multiple if more than one respondent)
-  const qbResponseMap = {};
-  qbResRows.forEach(r => { qbResponseMap[r.question_id] = r.response_text; });
+  // ②17 (2026-08-15) — AQUÍ VIVÍAN TRES LECTURAS A APPSHEET QUE NADIE LEÍA. Se retiran.
+  //
+  // Eran las de `enrEmails` por `email_id`, `enrPhones` por `phone_id` y `qbResponses`
+  // (profesión, empleador y adaptación). Las dos primeras estaban guardadas tras
+  // `if (gEmailIds.length)` / `if (gPhoneIds.length)`, y sus dos orígenes —`gEmailJoins`
+  // y `gPhoneJoins`— eran literales `[]` desde que `enrPersonEmails`/`enrPersonPhones`
+  // se borraron (2026-05-17): **no se ejecutaban nunca**. La tercera SÍ se ejecutaba en
+  // CADA envío, y su resultado (`qbResponseMap`) tampoco tenía un solo lector — su único
+  // consumidor histórico era `buildApplicationSubmittedBody_`, que se quedó sin llamantes
+  // al retirarse el PDF (P262) y los dos correos del envío (2026-08-07).
+  //
+  // ⚠️ Y no era solo trabajo tirado: esa lectura ocurría DESPUÉS de que el KMS ya hubiera
+  // materializado los expedientes y estampado `submitted_at` (`enr.wizardPersistSubmitEnrollments`,
+  // más arriba), y NO estaba dentro de ningún `try`. Si AppSheet fallaba —y
+  // `appsheetRequest_` lanza siempre, sin degradar—, la familia se quedaba con la
+  // solicitud MEDIO ENVIADA y su reintento chocaba contra `NOT_EDITABLE`: exactamente el
+  // atasco que describe el bloque W1 de más arriba, provocado por un dato que nadie mira.
+  //
+  // Con esto el envío deja de hacer una ida y vuelta a AppSheet y pierde un modo de fallo
+  // que dejaba familias encalladas. La isla entera —las cuatro constantes `QB_*`,
+  // `buildApplicationSubmittedBody_` y `_kmsRenderApplicantsTable_`— se retira también:
+  // medido contra `origin/main`, ninguna de las dos funciones tenía llamantes.
 
   // P262 (2026-06-25) — ELIMINADA la generación del "Signed Consent Record" PDF en el submit.
   // Por el principio de Diego (el wizard NO fabrica documentos; el motor del KMS genera) y tras
@@ -6531,85 +6525,6 @@ function buildApplicationInitiatedBody_(applicationId, primaryEmail, timestamp) 
     + '</tbody></table>';
 }
 
-/**
- * Builds the HTML body for "Application Submitted" internal notification.
- * Guardians are enriched persons (with .emails and .phones arrays).
- * desired_start_date is read from the application row.
- * profession/employer/adaptation are read from qbResponseMap keyed by stable question UUID.
- * @param {string} applicationId
- * @param {string} timestamp
- * @param {Array}  guardians
- * @param {Array}  applicants
- * @param {Object} app           - Application row (has desired_start_date, source)
- * @param {Object} qbResponseMap - { [question_id]: response_text }
- */
-function buildApplicationSubmittedBody_(applicationId, timestamp, guardians, applicants, app, qbResponseMap) {
-  const ts              = formatTimestamp_(timestamp);
-  const qbMap           = qbResponseMap || {};
-  const desiredStartDate = (app && app.desired_start_date) || '\u2014';
-
-  let guardianRows = '';
-  guardians.forEach((g, i) => {
-    const emails = (g.emails || []).map(e =>
-      (e.value || '') + (e.is_emergency ? ' <span style="background:#fff3ec;color:#c05800;padding:1px 5px;border-radius:3px;font-size:0.75em">Emergency</span>' : '')
-    ).filter(e => e.trim()).join(', ');
-    const phones = (g.phones || []).map(ph =>
-      (ph.value || '') + (ph.is_whatsapp ? ' \uD83D\uDCAC' : '') + (ph.is_telegram ? ' \u2708\uFE0F' : '')
-      + (ph.is_emergency ? ' <span style="background:#fff3ec;color:#c05800;padding:1px 5px;border-radius:3px;font-size:0.75em">Emergency</span>' : '')
-    ).filter(Boolean).join(', ');
-
-    guardianRows +=
-      '<tr><td><strong>' + (g.first_name || '') + ' ' + (g.last_name || '') + '</strong>'
-      + (i === 0 ? ' <span style="background:#e6f6f5;color:#007d77;padding:1px 6px;border-radius:4px;font-size:0.8em">Primary</span>' : '')
-      + '</td>'
-      + '<td>' + (emails || '\u2014') + '</td>'
-      + '<td>' + (phones || '\u2014') + '</td></tr>';
-  });
-
-  let applicantRows = '';
-  applicants.forEach(a => {
-    applicantRows +=
-      '<tr><td><strong>' + (a.first_name || '') + ' ' + (a.last_name || '') + '</strong></td>'
-      + '<td>' + (a.date_of_birth || '\u2014') + '</td></tr>';
-  });
-
-  return '<h2 style="color:#00a19a;margin-top:0">Application Submitted \u2014 Action Required</h2>'
-    + '<table style="margin-bottom:24px"><thead><tr><th colspan="2">Application Details</th></tr></thead><tbody>'
-    + '<tr><td><strong>Application ID</strong></td><td style="font-family:monospace">' + applicationId + '</td></tr>'
-    + '<tr><td><strong>Submitted At</strong></td><td>' + ts + '</td></tr>'
-    + '<tr><td><strong>Desired Start Date</strong></td><td>' + desiredStartDate + '</td></tr>'
-    + '<tr><td><strong>Source</strong></td><td>' + ((app && app.source) || '\u2014') + '</td></tr>'
-    + '<tr><td><strong>Status</strong></td><td><span style="background:#fff3ec;color:#c05800;padding:2px 8px;border-radius:4px;font-size:0.9em">SUBMITTED</span></td></tr>'
-    + '</tbody></table>'
-
-    + '<h3 style="color:#6b7c93;font-size:0.9em;text-transform:uppercase;letter-spacing:0.05em">Guardians</h3>'
-    + '<table style="margin-bottom:24px"><thead><tr><th>Name</th><th>Email</th><th>Phone</th></tr></thead><tbody>'
-    + guardianRows + '</tbody></table>'
-
-    + (qbMap[QB_PROFESSION_ID] || qbMap[QB_EMPLOYER_ID]
-      ? '<h3 style="color:#6b7c93;font-size:0.9em;text-transform:uppercase;letter-spacing:0.05em">Guardian Details (from questions)</h3>'
-        + '<table style="margin-bottom:24px"><thead><tr><th>Question</th><th>Response</th></tr></thead><tbody>'
-        + (qbMap[QB_PROFESSION_ID] ? '<tr><td>Profession</td><td>' + qbMap[QB_PROFESSION_ID] + '</td></tr>' : '')
-        + (qbMap[QB_EMPLOYER_ID]   ? '<tr><td>Employer</td><td>'   + qbMap[QB_EMPLOYER_ID]   + '</td></tr>' : '')
-        + '</tbody></table>'
-      : '')
-
-    + '<h3 style="color:#6b7c93;font-size:0.9em;text-transform:uppercase;letter-spacing:0.05em">Applicants</h3>'
-    + '<table style="margin-bottom:24px"><thead><tr><th>Name</th><th>Date of Birth</th></tr></thead><tbody>'
-    + applicantRows + '</tbody></table>'
-
-    + (qbMap[QB_HAS_ADAPTATION_ID] || qbMap[QB_ADAPTATION_NOTES_ID]
-      ? '<h3 style="color:#6b7c93;font-size:0.9em;text-transform:uppercase;letter-spacing:0.05em">Applicant Details (from questions)</h3>'
-        + '<table style="margin-bottom:24px"><thead><tr><th>Question</th><th>Response</th></tr></thead><tbody>'
-        + (qbMap[QB_HAS_ADAPTATION_ID]   ? '<tr><td>Adaptation needs</td><td>' + qbMap[QB_HAS_ADAPTATION_ID]   + '</td></tr>' : '')
-        + (qbMap[QB_ADAPTATION_NOTES_ID] ? '<tr><td>Adaptation notes</td><td>' + qbMap[QB_ADAPTATION_NOTES_ID] + '</td></tr>' : '')
-        + '</tbody></table>'
-      : '')
-
-    + '<p style="background:#fff3ec;border-left:4px solid #f37021;padding:12px 16px;border-radius:0 6px 6px 0;color:#18222e">'
-    + '<strong>Next step:</strong> Please review the application in the SMS and update the status accordingly.'
-    + '</p>';
-}
 
 // ─── AppSheet API helper ──────────────────────────────────────────────────────
 
@@ -7500,21 +7415,6 @@ function _kmsRenderResumeLinksBlock_(resumeTokens, nEmailIds, lang) {
   }).join('');
 }
 
-/**
- * @private — tabla HTML de solicitantes/tutores para el email interno de staff,
- * pre-renderizada para la plantilla internal-notification (placeholder {{APPLICANTS_TABLE}}).
- * Reusa el builder existente buildApplicationSubmittedBody_ (golden, ya arma la tabla).
- * @param {string} applicationId
- * @param {string} timestamp
- * @param {Array}  guardians
- * @param {Array}  applicants
- * @param {Object} app
- * @param {Object} qbResponseMap
- * @returns {string} HTML (cuerpo interno completo, que la plantilla envuelve).
- */
-function _kmsRenderApplicantsTable_(applicationId, timestamp, guardians, applicants, app, qbResponseMap) {
-  return buildApplicationSubmittedBody_(applicationId, timestamp, guardians, applicants, app, qbResponseMap);
-}
 
 /**
  * Step 8 S-BILLING — datos fiscales pagador (P49 — DL-E28 §4.3).

@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento") y **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"). **Medido el 2026-08-15: quedan 78 lecturas directas + 4 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores") y **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"). **Medido el 2026-08-15: quedan 72 lecturas directas + 4 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 76, solo 37 están en el camino vivo**: las otras 39 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -412,6 +412,71 @@ nombrando su caso.
 ⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
 `backend/Code.js`**. Lo que sí acredita es lo que importaba comprobar en el cliente: recorre el
 camino de recuperación entero (`recuperar-aterrizar`) **sin llamar a `resumeSession` ni una vez**.
+
+### ②17 (2026-08-15) — el ENVÍO ya no lee AppSheet para validarse, y de sus ocho lecturas TRES no las leía nadie
+
+**El manejador del envío hacía OCHO lecturas directas. Al medirlas una a una contra `origin/main`,
+tres resultaron no tener ni un consumidor** — y ése es el hallazgo, no la migración:
+
+| | qué leía | qué pasaba |
+|---|---|---|
+| dos | correos y teléfonos por identificador | **no se ejecutaban nunca**: sus dos listas de partida eran literales `[]` desde que se borraron `enrPersonEmails`/`enrPersonPhones` (2026-05-17) |
+| una | las respuestas de profesión, empleador y adaptación | **SÍ se ejecutaba en CADA envío** y su resultado se tiraba |
+
+**Y la tercera no era solo trabajo tirado: era un modo de fallo que dejaba familias encalladas.**
+Ocurría **DESPUÉS** de que el KMS ya hubiera materializado los expedientes y estampado el envío, y
+**fuera de todo `try`** — y `appsheetRequest_` lanza siempre, no degrada. Si AppSheet fallaba en ese
+punto, la familia se quedaba con la solicitud **medio enviada** y su reintento chocaba contra
+`NOT_EDITABLE`: exactamente el atasco que el bloque W1 de ese mismo manejador dice haber cerrado
+moviendo las validaciones delante de las escrituras. Lo provocaba un dato que **nadie mira**.
+
+**Lo retirado, entero, por ser una isla sin llamantes:** las tres lecturas · sus variables de apoyo ·
+las cuatro constantes de identificador de pregunta · y **`buildApplicationSubmittedBody_` +
+`_kmsRenderApplicantsTable_`**, cuyo último consumidor desapareció al retirarse el PDF del envío
+(P262) y los dos correos (2026-08-07). Medido: **cero llamantes** de las dos.
+
+**Las tres lecturas VIVAS —la cabecera del expediente, las personas y los teléfonos— las sirve ahora
+el KMS en UNA sola pregunta**, `enr.wizardDatosDelEnvio` (`kis-app kms-server/enr/wizard-gateway.gs`),
+con los **mismos filtros por expediente** y el mismo criterio de fila viva.
+
+**Lo que hay que retener al tocar esto:**
+
+- **El expediente sale del `resume_token`** (KAL-4) y el nombre de la tabla **no viaja** en la
+  petición. La puerta del KMS aplica el mismo plazo de 7 días y el mismo rechazo de sesión
+  abandonada que `requireResumeToken_` ⇒ **cero cambio de comportamiento**, comprobado línea a línea.
+- **La proyección es la mitad del valor**: de cada persona cruzan **el identificador y el papel**, y
+  de cada teléfono **solo el número**. Nombres, fechas de nacimiento y documentos se quedan dentro
+  del KMS. Antes cruzaba la ficha entera.
+- **La normalización del teléfono y el E.164 estricto se conservan VERBATIM en el asistente.** Lo
+  que se movió es de dónde sale el dato, no el criterio — mover la puerta entera al KMS habría sido
+  rediseñar algo probado.
+- **Falla CERRADO, y no es un detalle**: si el KMS no puede leer las personas o los teléfonos,
+  **lanza**. Degradar a lista vacía dejaría pasar un envío sin alumno, o rechazaría a **toda**
+  familia con un `INVALID_PHONE` falso que no puede corregir.
+- **Por qué NO se reutiliza la hidratación** (el único lector solapado): `enr_wizardHydrate` recorta
+  las personas a propósito y devuelve **un solo tutor** —el que mira— por privacidad entre tutores
+  (DL-E49 §2). El envío necesita el conjunto completo para exigirle teléfono a cada uno, así que
+  reutilizarla obligaría a abrir un rodeo dentro de la única función que decide esa privacidad.
+- **Lo que este tramo NO cierra, y se dice:** las **dos** lecturas de `recFiles`/`recScopes` del
+  mismo manejador **siguen en el asistente**. No es olvido: llevan dentro el literal
+  `enr_admission_school`, y DL-E48 prohíbe escribir a mano el tipo de expediente — moverlas exige
+  resolver el dominio por su cadena declarada, y eso es tramo propio.
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición):
+**78 → 72** sueltas; las de lote se quedan en 4. En el manejador del envío: **8 → 2**.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarElEnvio` — el manejador no vuelve a leer
+ninguna de las cinco tablas · **sí** le pregunta al KMS · la isla muerta no reaparece · y **el
+ancla**, que la puerta E.164 sigue ahí, para que el control no pueda salir verde sobre un manejador
+al que le hubieran quitado la validación. **Rojo demostrado seis veces**, cada una nombrando su caso
+(incluido el renombrado, que deja el control CIEGO).
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
+**13 afirmaciones sobre el manejador real**, ejecutado con dobles, y **la medición se demostró no
+ciega** rompiéndolo cuatro veces (ensanchar la proyección · aflojar el criterio de fila viva ·
+degradar los teléfonos en vez de fallar cerrado · quitar el cinturón sobre el filtro).
+**Quien toque este manejador, que lo mida.**
 
 ### resume_token URL clean + Referrer-Policy: no-referrer (KAL-7 cerrado 2026-05-30)
 
