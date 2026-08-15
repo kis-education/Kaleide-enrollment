@@ -861,6 +861,84 @@ function comprobarLaIdentidadDeQuienRecupera(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 (décimo tramo) — QUIÉN PUEDE CONTESTAR ya no se resuelve bajando las fichas.
+ *
+ * QUÉ DEFECTO VIGILA, medido contra `origin/main` el 2026-08-15. `saveResponses_` bajaba la
+ * ficha COMPLETA de cada persona del expediente —MENORES INCLUIDOS: nombre, fecha de
+ * nacimiento, documento— a este proceso, que es público y anónimo, **solo para quedarse con
+ * sus identificadores**. Y encima el conjunto que armaba **NO era el mismo** que el del
+ * escritor (`enr_persistResponses_`, `kis-app kms-server/enr/wizard-gateway.gs`): aquí solo
+ * contaban `enrPersons` y se descartaba además a quien la familia hubiera quitado con la
+ * bandera `is_active`; allí cuentan también el propio expediente y sus expedientes de alumno,
+ * y se filtra solo por `deleted_at`. ⇒ el asistente rechazaba con `UNAUTHORIZED` respuestas
+ * que el KMS sí habría guardado, y `UNAUTHORIZED` **no está en `RECHAZOS_DEFINITIVOS`**
+ * (`frontend/src/lib/rechazos.js`), así que la cola del asistente lo reintentaba para siempre.
+ *
+ * QUÉ AFIRMA, sobre el código real:
+ *   (a) `saveResponses_` **no lee `enrPersons`** de AppSheet;
+ *   (b) **sí** pregunta al KMS por el ayudante ÚNICO (`_respondentesAutorizados_`);
+ *   (c) el ayudante existe y pregunta a la entrada declarada (`enr.wizardRespondentesAutorizados`);
+ *   (d) ANCLAS anti-vacío — `saveResponses_` sigue derivando el expediente del token
+ *       (`requireResumeToken_`), sigue exigiendo el código de un solo uso (`assertStepUpFresh_`)
+ *       y sigue rechazando con `UNAUTHORIZED` al respondent ajeno. Sin ellas, «ya no lee
+ *       AppSheet» saldría VERDE sobre un manejador vaciado, y este control diría que mide algo
+ *       que no mide.
+ *
+ * QUÉ **NO** AFIRMA: que el KMS resuelva el conjunto bien, ni que su criterio de fila viva sea
+ * el correcto, ni que el ayudante falle cerrado. Eso no se lee aquí — se midió aparte,
+ * ejecutando el manejador real del KMS con dobles. Y arrastra el LÍMITE del módulo: detector
+ * por líneas, no analizador sintáctico.
+ */
+function comprobarLasRespuestas(fuenteLimpia) {
+  const fallos = []
+
+  const cuerpo = cuerpoDe(fuenteLimpia, 'saveResponses_')
+  if (cuerpo === null) {
+    return ['no se encontró `saveResponses_` — control CIEGO en quién puede contestar (②17)']
+  }
+
+  // (a) la lectura que se fue.
+  if (/appsheetRequest(Batch)?_\s*\(\s*(T\.PERSONS|'enrPersons')/.test(cuerpo)) {
+    fallos.push('`saveResponses_` vuelve a leer `enrPersons` de AppSheet — la ficha COMPLETA ' +
+      'de cada persona, MENORES INCLUIDOS, volvería a cruzar a este proceso público y anónimo ' +
+      'solo para armar un conjunto de identificadores (②17)')
+  }
+
+  // (b) y quien la sustituye. UN SOLO lector.
+  if (!/_respondentesAutorizados_\s*\(/.test(cuerpo)) {
+    fallos.push('`saveResponses_` ya no pasa por el lector único (`_respondentesAutorizados_`) — ' +
+      'o se quitó la comprobación de KAL-4, o volvió a armar el conjunto por su cuenta, y ' +
+      'entonces vuelven los DOS criterios que ya divergieron')
+  }
+
+  // (c) el ayudante existe y pregunta a la entrada declarada.
+  const ayudante = cuerpoDe(fuenteLimpia, '_respondentesAutorizados_')
+  if (ayudante === null) {
+    fallos.push('no se encontró `_respondentesAutorizados_` — control CIEGO: es el ayudante ' +
+      'ÚNICO por el que este proceso pregunta quién puede ser sujeto de una respuesta (②17)')
+  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardRespondentesAutorizados'/.test(ayudante)) {
+    fallos.push('`_respondentesAutorizados_` ya no le pregunta al KMS ' +
+      '(`enr.wizardRespondentesAutorizados`) — si vuelve a leer AppSheet, el tramo está deshecho')
+  }
+
+  // (d) ANCLAS: las dos puertas y el rechazo siguen en pie.
+  if (!/requireResumeToken_\s*\(/.test(cuerpo)) {
+    fallos.push('`saveResponses_` ya no deriva el expediente del `resume_token` (KAL-4) — el ' +
+      'control estaría afirmando ausencias sobre un manejador sin puerta')
+  }
+  if (!/assertStepUpFresh_\s*\(/.test(cuerpo)) {
+    fallos.push('`saveResponses_` ya no exige el código de un solo uso (②27) — el control ' +
+      'estaría afirmando ausencias sobre un manejador sin su segunda capa')
+  }
+  if (!/UNAUTHORIZED/.test(cuerpo)) {
+    fallos.push('`saveResponses_` ya no rechaza al respondent ajeno (`UNAUTHORIZED`) — mover de ' +
+      'dónde salen los ids NO puede llevarse por delante la comprobación que se hace con ellos')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -876,5 +954,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarLaEntradaDeLaSolicitud(limpia),
     ...comprobarLaRecuperacionDelEnlace(limpia),
     ...comprobarLaIdentidadDeQuienRecupera(limpia),
+    ...comprobarLasRespuestas(limpia),
   ]
 }

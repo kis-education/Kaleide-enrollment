@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA"). **Medido el 2026-08-15: quedan 58 lecturas directas + 1 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 59, solo 19 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR"). **Medido el 2026-08-15: quedan 57 lecturas directas + 1 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 58, solo 18 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -614,6 +614,76 @@ declaración pública de la ruta · renombrar el manejador → *«MEDICIÓN CIEG
 corrigió a sí misma:** la rotura del `n` ajeno salió **VERDE** al primer intento —era la ROTURA la
 que era débil, no la afirmación— y hubo que hacerla realista para que mordiera.
 **Quien toque esta cadena, que lo mida.**
+
+### ②17 (2026-08-15) — QUIÉN PUEDE CONTESTAR: la ficha de cada persona bajaba entera para quedarse con un id
+
+**`saveResponses_` bajaba la ficha COMPLETA de cada persona del expediente —MENORES INCLUIDOS:
+nombre, fecha de nacimiento, documento— a este proceso, que es público y anónimo, SOLO para armar un
+conjunto de identificadores** y comprobar que cada `respondent_id` es del expediente del token.
+
+**Ahora los sirve el KMS proyectados a ids**, `enr.wizardRespondentesAutorizados`
+(`kis-app kms-server/enr/wizard-gateway.gs`), y los consume **UN SOLO ayudante**,
+`_respondentesAutorizados_`. La respuesta es `{ok, ids}` y **nada más**: de las personas no sale ni un
+campo, y de qué tabla es cada sujeto **se queda dentro del KMS** (lo necesita el escritor, no esto).
+
+**⚠️ Y CERRÓ UNA DIVERGENCIA MEDIDA — es la mitad del valor del tramo.** El conjunto se armaba aquí
+con **OTRO criterio** que el del escritor (`enr_persistResponses_`, quien de verdad decide qué se
+guarda):
+
+| | el asistente autorizaba | el escritor autoriza |
+|---|---|---|
+| tablas | **solo `enrPersons`** | el propio expediente **+ `enrPersons` + `enrEnrollments`** |
+| fila viva | `!deleted_at` **y** `is_active !== false` | **solo** `!deleted_at` |
+
+⇒ el asistente rechazaba con `UNAUTHORIZED` respuestas que el KMS **sí habría guardado**. Y
+`UNAUTHORIZED` **no está declarado en `RECHAZOS_DEFINITIVOS`** (`frontend/src/lib/rechazos.js`), así
+que la cola **lo reintentaba para siempre**: el cuestionario de esa familia en un bucle que no podía
+pasar nunca. Hoy hay **UN solo recorrido**, `enr_respondentesAutorizados_`, y es el del escritor.
+
+**Lo que hay que retener al tocar esto:**
+
+- **LA COMPROBACIÓN NO SE MOVIÓ.** La validación de forma (`assertValidUuid_`, KAL-5 capa 1) y el
+  rechazo con `UNAUTHORIZED` siguen **enteros y verbatim aquí**. Cambia de dónde salen los
+  identificadores, **no qué se hace con ellos** — y el control lo vigila con un ancla.
+- **El expediente sale del `resume_token`** (KAL-4) y el nombre de la tabla **no viaja**. La puerta
+  del KMS aplica el mismo plazo de 7 días y el mismo rechazo de sesión abandonada que
+  `requireResumeToken_`, que además ya corrió antes aquí.
+- **El orden se conserva**: token → código de un solo uso (`assertStepUpFresh_`, ②27) → la pregunta al
+  KMS → apuntar el trabajo. **Y si no hay respondents distintos del expediente, NO se pregunta** —ni
+  una llamada de más, igual que antes no había ni una lectura.
+- **FALLA CERRADO: lanza.** La lectura que sustituye lanzaba (`appsheetRequest_` lanza siempre y ahí
+  no había `try`). Un conjunto vacío rechazaría a **TODA** familia con un `UNAUTHORIZED` falso.
+- **⚠️ El criterio del escritor sigue siendo `!deleted_at` a secas, y es deliberado.** Apretarlo a
+  `sys_rowIsActiveLiveOptionalFlag_` **cambiaría qué se escribe** (dejaría de guardarse la respuesta
+  de un sujeto retirado solo por la bandera) — otra decisión, con su propia medición. Lo que este
+  tramo cierra es que hubiera **DOS** criterios; ahora se aprieta **en una línea**.
+- **Lo que este tramo NO cierra, y se dice:** un `respondent_id` genuinamente ajeno **sigue** dando
+  `UNAUTHORIZED`, que **sigue sin estar** en `RECHAZOS_DEFINITIVOS` ⇒ ese caso se reintentaría igual.
+  No es alcanzable desde una pantalla legítima (la hidratación no enseña a nadie de otra familia), y
+  declararlo toca la lista que gobierna **todas** las escrituras: se decide aparte, midiendo.
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
+ídem `appsheetRequestBatch_`): **58 → 57** sueltas, **1** en lote sin cambio. Y el camino vivo:
+**19 → 18**; en este manejador, **1 → 0**.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarLasRespuestas` — el manejador no vuelve a leer
+`enrPersons` de AppSheet · **sí** pregunta al KMS por el ayudante único · el ayudante existe y
+pregunta a la ruta declarada · y **TRES anclas**: sigue derivando el expediente del token, sigue
+exigiendo el código de un solo uso y sigue rechazando con `UNAUTHORIZED`, para que el control no
+pueda salir verde sobre un manejador vaciado. **Rojo demostrado SIETE veces**, cada una nombrando su
+caso (la del renombrado deja el control **CIEGO**).
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
+**21 afirmaciones** sobre los dos trozos reales extraídos del fuente y ejecutados con dobles,
+**demostradas no ciegas** con **ocho roturas** (ensanchar la proyección a la ficha entera · aceptar el
+expediente del cuerpo · degradar la lectura caída a conjunto vacío · volver al criterio viejo del
+asistente · quitar el filtro por expediente · que el escritor vuelva a armar el conjunto por su cuenta
+· quitar la declaración pública de la ruta · renombrar el manejador → *«medición CIEGA»*). **Y la
+medición se corrigió a sí misma:** su afirmación de «el escritor no vuelve a leer por su cuenta» era
+demasiado tosca — el escritor tiene **otra** lectura legítima de `enrPersons`, la que resuelve el
+iniciador de la sesión — y hubo que acotarla al recorrido real. **Quien toque este manejador, que lo
+mida.**
 
 ### ②17 (2026-08-15) — la RECUPERACIÓN DEL ENLACE: la ficha de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor
 

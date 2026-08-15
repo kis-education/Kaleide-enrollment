@@ -3636,6 +3636,42 @@ function _recuperacionDelCorreo_(email) {
 }
 
 /**
+ * ②17 (décimo tramo) — QUIÉNES pueden ser sujeto de una respuesta en el expediente del
+ * `resume_token`, servido por el KMS. **Lector ÚNICO** de lo que `saveResponses_` armaba
+ * bajando la ficha COMPLETA de cada persona del expediente —MENORES INCLUIDOS: nombre,
+ * fecha de nacimiento, documento— a este proceso, que es **público y anónimo**, solo para
+ * quedarse con sus identificadores. De la entrada del KMS salen ids y nada más.
+ *
+ * ⛔ **Y CIERRA UNA DIVERGENCIA MEDIDA.** Este conjunto se armaba aquí con OTRO criterio que
+ * el del escritor: aquí solo contaban las personas (`enrPersons`) y se descartaba además a
+ * quien la familia hubiera quitado con la bandera `is_active`; el escritor
+ * (`enr_persistResponses_`) cuenta además el propio expediente y sus expedientes de alumno, y
+ * filtra solo por `deleted_at`. Resultado: el asistente rechazaba con `UNAUTHORIZED`
+ * respuestas que el KMS sí habría guardado — y `UNAUTHORIZED` **no está declarado como
+ * rechazo definitivo** (`frontend/src/lib/rechazos.js`), así que la cola del asistente lo
+ * reintentaba **para siempre**. Ahora hay UN solo recorrido, y es el del escritor.
+ *
+ * KAL-4: aquí NO se manda ningún identificador de grupo — el KMS lo deriva del token con su
+ * puerta (mismo plazo de 7 días y mismo rechazo de sesión abandonada que
+ * `requireResumeToken_`, que además ya corrió antes). El nombre de la tabla tampoco viaja.
+ *
+ * ⛔ **FALLA CERRADO — LANZA, no degrada.** La lectura que sustituye lanzaba
+ * (`appsheetRequest_` lanza siempre y ahí no había `try`). Devolver un conjunto vacío
+ * rechazaría a TODA familia con un `UNAUTHORIZED` falso; devolver «todo vale» abriría la
+ * comprobación de acceso.
+ *
+ * @param {string} resumeToken el token del que el KMS deriva el expediente (KAL-4)
+ * @returns {Object} conjunto `{ id: true }` de sujetos autorizados
+ * @private
+ */
+function _respondentesAutorizados_(resumeToken) {
+  var r = kmsProxy_('enr.wizardRespondentesAutorizados', { resume_token: resumeToken }) || {};
+  var conjunto = {};
+  (Array.isArray(r.ids) ? r.ids : []).forEach(function(id) { if (id) conjunto[String(id)] = true; });
+  return conjunto;
+}
+
+/**
  * WIZARD-STEP7-COMPLETED (2026-06-07): coarse signing lifecycle of the group,
  * INCLUDING the terminal COMPLETED case (which the entry-bridge resolvers
  * deliberately ignore — they only unlock pending signers). Returns one of:
@@ -5397,8 +5433,13 @@ function saveResponses_(p) {
   // fila lleva su propio `r.respondent_id` (el applicant). Validamos que CADA
   // respondent distinto del group_id (top-level + por fila) pertenezca al grupo del
   // token. El grupo SIEMPRE se deriva del resume_token (enrollmentGroupId), NUNCA del
-  // payload. Un solo Find del grupo (KAL-5: appsheetEscape_ en el group_id) + check de
-  // pertenencia contra el set de person_ids — evita N Finds y cubre todas las filas.
+  // payload.
+  //
+  // ②17 (décimo tramo, 2026-08-15): el conjunto autorizado ya NO se arma aquí bajando la
+  // ficha COMPLETA de cada persona del expediente —MENORES INCLUIDOS: nombre, fecha de
+  // nacimiento, documento— a este proceso público y anónimo solo para quedarse con sus
+  // identificadores. Lo sirve el KMS proyectado a ids, con el MISMO recorrido que aplica el
+  // escritor. La validación de forma (KAL-5 capa 1) y el rechazo se quedan aquí, verbatim.
   var distinctRespondents = {};
   if (respondent_id && respondent_id !== enrollmentGroupId) distinctRespondents[respondent_id] = true;
   responses.forEach(function(r) {
@@ -5408,11 +5449,7 @@ function saveResponses_(p) {
   var respList = Object.keys(distinctRespondents);
   if (respList.length) {
     respList.forEach(function(rid) { assertValidUuid_(rid, 'respondent_id'); });  // KAL-5 capa 1
-    var groupPersons = wizardSoloVivas_(appsheetRequest_(T.PERSONS, 'Find', [], {
-      Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'  // KAL-5 capa 2
-    }));
-    var validPersonIds = {};
-    groupPersons.forEach(function(pp) { if (pp && pp.person_id) validPersonIds[pp.person_id] = true; });
+    var validPersonIds = _respondentesAutorizados_(p && p.resume_token);
     respList.forEach(function(rid) {
       if (!validPersonIds[rid]) {
         var err = new Error('Unauthorized: respondent_id does not belong to token group');
