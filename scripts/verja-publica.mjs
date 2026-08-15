@@ -562,6 +562,72 @@ function comprobarElEnvio(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 (sexto tramo) — la CABECERA del expediente no se lee de AppSheet, y la lee UN SOLO sitio.
+ *
+ * Eran TRES lecturas y eran LA MISMA copiada tres veces
+ * (`appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', …, {Filter:'"resume_token" = …'})`):
+ * la rama de `hydrateSession_` con el candado puesto —cuya fila cruza ENTERA al navegador,
+ * `magic_link_token` incluido—, el hint de identidad del mismo manejador, y `warmSession_`,
+ * cuyo propio comentario decía «VERBATIM de hydrateSession_». Las tres las hacía este
+ * proceso, que es público y anónimo, con la credencial de AppSheet de la aplicación entera.
+ *
+ * Lo que se afirma, y es lo observable en el fuente: los dos manejadores **no vuelven a
+ * leer** `enrEnrollmentGroups` de AppSheet, los tres puntos **sí** preguntan al KMS por el
+ * ayudante ÚNICO, y **no aparece un segundo lector** (dos lectores del mismo dato divergen —
+ * la regresión que documenta §"Regla — refactors preservan el código probado"). El ANCLA es
+ * que los dos manejadores sigan existiendo y sigan resolviendo la identidad del enlace: sin
+ * él, el control afirmaría ausencias sobre un fichero que ya no es el que cree medir.
+ *
+ * Lo que NO se afirma, y se dice: que el KMS conteste la proyección correcta, ni que el
+ * comportamiento ante fallo sea el debido (lanzar en la rama del candado, degradar en las
+ * otras dos). Eso no se lee aquí — se midió aparte.
+ */
+function comprobarLaEntradaDelExpediente(fuenteLimpia) {
+  const fallos = []
+
+  const manejadores = [
+    ['hydrateSession_', 'la hidratación de entrada (rama con el candado puesto + hint de identidad)'],
+    ['warmSession_',    'el precalentado de la pantalla del código'],
+  ]
+
+  for (const [nombre, queEs] of manejadores) {
+    const cuerpo = cuerpoDe(fuenteLimpia, nombre)
+    if (cuerpo === null) {
+      // ANCLA: sin el manejador, este control no puede medir lo que dice medir.
+      fallos.push('no se encontró `' + nombre + '` — control CIEGO en la cabecera del expediente (②17)')
+      continue
+    }
+    if (/appsheetRequest_\s*\(\s*(T\.ENROLLMENT_GROUPS|'enrEnrollmentGroups')/.test(cuerpo)) {
+      fallos.push('`' + nombre + '` vuelve a leer `enrEnrollmentGroups` directamente de AppSheet — ' +
+        'eso es lo que ②17 quitó de: ' + queEs + '. La fila entera (con `magic_link_token`) volvería a ' +
+        'cruzar a este proceso público')
+    }
+    if (!/_expedienteDelToken_\s*\(/.test(cuerpo)) {
+      fallos.push('`' + nombre + '` ya no le pide la cabecera al KMS (`_expedienteDelToken_`) — ' +
+        'o se quitó, o volvió a resolverse por su cuenta')
+    }
+    // ANCLA 2: el punto de este tramo es alimentar la identidad del enlace. Si eso desaparece,
+    // el «no lee AppSheet» sería cierto y vacío a la vez.
+    if (!/effectiveRecoveredEmail_\s*\(/.test(cuerpo)) {
+      fallos.push('`' + nombre + '` ya no resuelve la identidad del enlace (`effectiveRecoveredEmail_`) — ' +
+        'el control estaría afirmando que no lee AppSheet sobre un manejador que ya no hace su trabajo')
+    }
+  }
+
+  // UN SOLO lector: el ayudante existe, pregunta al KMS por la entrada declarada, y no hay
+  // un segundo resolvedor de lo mismo.
+  const ayudante = cuerpoDe(fuenteLimpia, '_expedienteDelToken_')
+  if (ayudante === null) {
+    fallos.push('no se encontró `_expedienteDelToken_` — control CIEGO: es el lector ÚNICO de la cabecera (②17)')
+  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardExpedienteDelToken'/.test(ayudante)) {
+    fallos.push('`_expedienteDelToken_` ya no le pregunta al KMS (`enr.wizardExpedienteDelToken`) — ' +
+      'si vuelve a leer AppSheet, el tramo está deshecho')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -573,5 +639,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarLosDocumentosDeLaFamilia(limpia),
     ...comprobarLaHidratacionDeEntrada(limpia),
     ...comprobarElEnvio(limpia),
+    ...comprobarLaEntradaDelExpediente(limpia),
   ]
 }

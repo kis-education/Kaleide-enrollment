@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores") y **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"). **Medido el 2026-08-15: quedan 72 lecturas directas + 4 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 76, solo 37 están en el camino vivo**: las otras 39 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet") y **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"). **Medido el 2026-08-15: quedan 69 lecturas directas + 4 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 73, solo 34 están en el camino vivo**: las otras 39 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -476,6 +476,70 @@ al que le hubieran quitado la validación. **Rojo demostrado seis veces**, cada 
 **13 afirmaciones sobre el manejador real**, ejecutado con dobles, y **la medición se demostró no
 ciega** rompiéndolo cuatro veces (ensanchar la proyección · aflojar el criterio de fila viva ·
 degradar los teléfonos en vez de fallar cerrado · quitar el cinturón sobre el filtro).
+**Quien toque este manejador, que lo mida.**
+
+### ②17 (2026-08-15) — la CABECERA del expediente: tres copias de la misma lectura, y una cruzaba entera al navegador
+
+**Eran TRES lecturas y eran LA MISMA copiada tres veces** —
+`appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], { Filter: '"resume_token" = …' })`— en el camino
+de ENTRADA: la rama de `hydrateSession_` con el **candado puesto** (`pii_gated`), el **hint de
+identidad** del mismo manejador, y `warmSession_`, **cuyo propio comentario decía «VERBATIM de
+`hydrateSession_`»**. Las tres las hacía este proceso, que es público y anónimo, con la credencial
+de AppSheet de la aplicación entera.
+
+**Y la primera no se quedaba aquí: devolvía la fila ENTERA al navegador** como `group`, dentro del
+payload cuyo propósito declarado es *no cruzar datos personales antes del código de un solo uso*.
+Iba dentro **`magic_link_token`** —un secreto de portador— además de `program_id`, `source_id`,
+`school_id`, `preferred_language`, `created_at` y el bloque de auditoría entero.
+
+**Lo que se midió antes de tocar nada** (contra `origin/main`, 2026-08-15) y decidió la proyección:
+
+| Consumidor | Qué lee de verdad |
+|---|---|
+| cliente, rama con el candado | `enrollment_group_id` (`WizardContext.jsx:913`) · `resume_token` (`:914`) · `submitted_at` (`ResumePage.jsx:120`, solo registro). **`hydrateFromResume` RETORNA en `:946`** antes de tocar nada más |
+| `effectiveRecoveredEmail_` (respaldo paso 3) | `primary_email` |
+| `resolveGuardianForRecovery_` | `primary_email` · `requester_person_id` · y **`enrollment_group_id`, que es la guarda** con la que decide si el hint sirve o vuelve a leer |
+
+⇒ **CINCO campos.** La entrada del KMS es `enr.wizardExpedienteDelToken`
+(`kis-app kms-server/enr/wizard-gateway.gs`), y el asistente la consume por **UN SOLO ayudante**,
+`_expedienteDelToken_`.
+
+**Lo que hay que retener al tocar esto:**
+
+- **CERO lecturas de más**: la fila la devuelve **la propia puerta** del KMS (`s.group`), que ya la
+  lee por `resume_token` con el mismo filtro y el mismo criterio de fila viva. No se consulta nada
+  aparte — medido: **una sola consulta** por llamada.
+- **UN SOLO lector, y es la mitad del punto.** Antes había tres copias que podían divergir; ahora
+  hay uno. **PROHIBIDO escribir un segundo**: es la regresión que documenta §"Regla — refactors
+  preservan el código probado".
+- **El comportamiento ante fallo NO era el mismo en los tres, y se conserva tal cual**: la rama del
+  candado **LANZA** si no se pudo preguntar (`appsheetRequest_` lanzaba y ahí no había `try`), y el
+  hint de identidad y el precalentado **degradan a `null`** (su `try/catch` de siempre) ⇒ identidad
+  group-scoped, comportamiento previo exacto. Por eso el ayudante devuelve **`{ok, fila}`** y no un
+  simple `null`.
+- **`desired_start_date` dejó de normalizarse aquí, y no es un olvido**: en esa rama **no cruza**
+  (el cliente retorna antes), y su sede canónica es `enrEnrollments`, no la cabecera. La
+  normalización sigue viva en los otros cinco sitios que la usan.
+- **La puerta del KMS aplica el mismo plazo de 7 días y el mismo rechazo de sesión abandonada** que
+  `requireResumeToken_`, que además ya corrió antes en el asistente ⇒ cero cambio de comportamiento.
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición):
+**72 → 69** sueltas; las de lote se quedan en **4**.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarLaEntradaDelExpediente` — los dos
+manejadores no vuelven a leer `enrEnrollmentGroups` de AppSheet · los tres puntos **sí** preguntan
+al KMS por el ayudante único · el ayudante existe y pregunta a la entrada declarada · y **dos
+anclas**: que los dos manejadores sigan existiendo y sigan resolviendo la identidad del enlace, para
+que el control no pueda salir verde afirmando ausencias sobre un fichero que ya no mide. **Rojo
+demostrado seis veces**, cada una nombrando su caso (incluidos los dos renombrados, que dejan el
+control CIEGO).
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
+**14 afirmaciones sobre el manejador real**, extraído del fuente y ejecutado con dobles, y **la
+medición se demostró no ciega** rompiéndola cinco veces (ensanchar la proyección a la fila entera ·
+aceptar el expediente del cuerpo · disfrazar la lectura caída de «no hay expediente» · quitar la
+declaración pública de la ruta · renombrar el manejador → *«medición CIEGA»*, no verde).
 **Quien toque este manejador, que lo mida.**
 
 ### resume_token URL clean + Referrer-Policy: no-referrer (KAL-7 cerrado 2026-05-30)

@@ -3703,6 +3703,47 @@ function _ficheroDelExpediente_(resumeToken, fileId) {
 }
 
 /**
+ * ②17 (sexto tramo) — LA CABECERA del expediente que deriva el `resume_token`, pedida al
+ * KMS. **UN SOLO lector**: lo llaman los TRES puntos del camino de entrada que antes
+ * repetían la MISMA lectura directa de `enrEnrollmentGroups` (`hydrateSession_` dos veces
+ * —la rama con el candado puesto y el hint de identidad— y `warmSession_`, cuyo propio
+ * comentario decía «VERBATIM de hydrateSession_»).
+ *
+ * PROHIBIDO escribir un segundo lector de esto: dos lectores del mismo dato divergen, y esa
+ * es la regresión que documenta §"Regla — refactors preservan el código probado".
+ *
+ * KAL-4: aquí NO se manda ningún identificador de grupo — el KMS lo deriva del token con su
+ * puerta (mismo TTL de 7 días, mismo rechazo de sesión abandonada que `requireResumeToken_`).
+ * El nombre de la tabla tampoco viaja. KAL-11: log redactado.
+ *
+ * ⚠️ **Devuelve DOS cosas, y hay que respetarlo** (mismo motivo que `_ficheroDelExpediente_`):
+ * `ok:false` es «no se pudo preguntar», y ese caso NO es «no hay expediente». Quien llama
+ * decide qué hacer con cada uno — y hoy no hacen lo mismo:
+ *   · la rama del candado LANZA si no se pudo preguntar (la lectura de AppSheet que vivía
+ *     ahí no estaba envuelta en `try`, y `appsheetRequest_` lanza siempre);
+ *   · el hint de identidad y el precalentado DEGRADAN a `null` (su `try/catch` de siempre)
+ *     ⇒ identidad group-scoped, que es el comportamiento previo exacto.
+ *
+ * @param {string} resumeToken
+ * @returns {{ok:boolean, fila:Object|null}} `ok:false` ⇒ no se pudo preguntar.
+ * @private
+ */
+function _expedienteDelToken_(resumeToken) {
+  var token = resumeToken ? String(resumeToken).trim() : '';
+  if (!token) return { ok: true, fila: null };
+  try { assertValidUuid_(token, 'resume_token'); } catch (e) { return { ok: true, fila: null }; }
+
+  try {
+    var r = kmsProxy_('enr.wizardExpedienteDelToken', { resume_token: token }) || {};
+    return { ok: true, fila: r.expediente || null };
+  } catch (e2) {
+    Logger.log(redact_('[_expedienteDelToken_] lectura KMS fallida — ' +
+      ((e2 && e2.message) || e2)));
+    return { ok: false, fila: null };
+  }
+}
+
+/**
  * WIZARD-STEP7-COMPLETED (2026-06-07): coarse signing lifecycle of the group,
  * INCLUDING the terminal COMPLETED case (which the entry-bridge resolvers
  * deliberately ignore — they only unlock pending signers). Returns one of:
@@ -7933,13 +7974,10 @@ function warmSession_(p) {
   // Identidad efectiva — VERBATIM de hydrateSession_ (IDENTITY-FROM-LINK): la clave de
   // la cache warm KMS incluye recovered_email + locale; debe coincidir con la que usará
   // el hydrate real post-OTP o el warm no haría hit.
-  let bindGroupRow = null;
-  try {
-    const bgRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
-    });
-    bindGroupRow = (bgRows && bgRows.length) ? bgRows[0] : null;
-  } catch (e) { bindGroupRow = null; }
+  // ②17 (sexto tramo): la cabecera la sirve el KMS (`_expedienteDelToken_`, lector ÚNICO).
+  //   Degrada a null exactamente como el `try/catch` que había aquí — sin fila, la identidad
+  //   vuelve a ser group-scoped, que es el comportamiento previo.
+  const bindGroupRow = _expedienteDelToken_(p.resume_token).fila;
   const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n, null, null, bindGroupRow);
 
   // WIZARD-CACHE (decisión Diego 2026-06-12): el warm de la pantalla OTP cocina el
@@ -8092,20 +8130,29 @@ function hydrateSession_(p) {
 
   // A (WIZARD-STEPUP) — gate ANTES de pagar el hydrate pesado. El gate PII (DL-E39)
   // estaba DESPUÉS del kmsProxy_ (~30s) → el OTP de entrada salía tras la espera. Ahora,
-  // si el step-up NO está fresco, NO llamamos al KMS: el StepUpGate del frontend solo
-  // necesita `group` (enrollment_group_id + resume_token), así que basta un read BARATO
-  // de la fila de grupo — verbatim resumeSession_:2130-2135 (mismo selector + escape
-  // KAL-5). requireResumeToken_ ya validó UUID + TTL + abandoned_at; si aun así groups
-  // viene vacío, group:null es aceptable (el gate ya tiene el resume_token en su closure).
+  // si el step-up NO está fresco, NO montamos el expediente: el StepUpGate del frontend
+  // solo necesita `group` (enrollment_group_id + resume_token), así que basta la CABECERA.
+  //
+  // ②17 (sexto tramo): esa cabecera la sirve el KMS (`_expedienteDelToken_`, lector ÚNICO)
+  //   PROYECTADA a cinco campos — antes se leía `enrEnrollmentGroups` directamente y la
+  //   fila ENTERA cruzaba a este proceso público y de ahí al navegador, `magic_link_token`
+  //   incluido. Medido el 2026-08-15: en esta rama el cliente solo usa
+  //   `enrollment_group_id` (`WizardContext.jsx:913`), `resume_token` (`:914`) y
+  //   `submitted_at` (`ResumePage.jsx:120`, registro) — `hydrateFromResume` RETORNA en
+  //   `:946` antes de tocar nada más. Por eso ya no se normaliza `desired_start_date`:
+  //   no cruza (y su sede canónica es `enrEnrollments`, no la cabecera).
+  //
+  // Comportamiento ante fallo IDÉNTICO al de la lectura que vivía aquí: `appsheetRequest_`
+  //   LANZA y este punto no la envolvía en `try` ⇒ «no se pudo preguntar» LANZA. «No hay
+  //   fila» sigue siendo `group:null`, que el gate acepta (ya tiene el token en su closure).
   if (!stepUpFresh) {
-    const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
-    });
-    const group = (groups && groups.length) ? groups[0] : null;
-    // IMPL-F: consistencia ISO también en el path gateado. Este read barato NO llama al
-    //   KMS → sin programas no hay fallback a period_starts_on; pero si la fila trae la
-    //   fecha la normalizamos igual para no cruzar slash al cliente.
-    if (group) group.desired_start_date = normalizeDate_(group.desired_start_date);
+    const consultaCab = _expedienteDelToken_(p.resume_token);
+    if (!consultaCab.ok) {
+      const eCab = new Error('No se pudo leer la cabecera del expediente.');
+      eCab.code = 'INTERNAL_ERROR';
+      throw eCab;
+    }
+    const group = consultaCab.fila;
     return {
       group,
       enrollments:    [],
@@ -8123,15 +8170,14 @@ function hydrateSession_(p) {
   // IDENTITY-FROM-LINK (2026-06-11): deriva el recovered_email EFECTIVO server-side DEL
   // PROPIO ENLACE. `p.n` (email_id del enlace) → email del guardian, validado contra el
   // grupo del token (KAL-4) → el KMS recibe SIEMPRE la identidad del guardian que recuperó,
-  // sin depender del cliente. Prioridad `n` > recovered_email (compat). Read barato de la
-  // fila de grupo como groupHint (fallback requester del email de creación).
-  let bindGroupRow = null;
-  try {
-    const bgRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
-    });
-    bindGroupRow = (bgRows && bgRows.length) ? bgRows[0] : null;
-  } catch (e) { bindGroupRow = null; }
+  // sin depender del cliente. Prioridad `n` > recovered_email (compat). La cabecera del
+  // expediente va como groupHint (respaldo requester del email de creación).
+  // ②17 (sexto tramo): la sirve el KMS (`_expedienteDelToken_`, lector ÚNICO). Los dos
+  //   campos que el resolvedor lee del hint —`primary_email` y `requester_person_id`— están
+  //   en la proyección, igual que `enrollment_group_id`, que es la guarda con la que
+  //   `resolveGuardianForRecovery_` decide si el hint sirve. Degrada a null exactamente como
+  //   el `try/catch` que había aquí ⇒ identidad group-scoped, comportamiento previo.
+  const bindGroupRow = _expedienteDelToken_(p.resume_token).fila;
   const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n, null, null, bindGroupRow);
 
   // DL-A §1 — UNA llamada al KMS devuelve TODO (lookups + datos 11 pasos + qbResponses
