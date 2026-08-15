@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (resumeSession_, fetchLookups_, hydrate, recognizeFamily_, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C** (pendiente).
+- **Las LECTURAS AppSheet directas permanecen** (resumeSession_, fetchLookups_, hydrate, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos** (2026-08-15) y las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### resume_token URL clean + Referrer-Policy: no-referrer (KAL-7 cerrado 2026-05-30)
 
@@ -365,6 +365,36 @@ EDITABLE_STATES en frontend (`WizardContext.jsx`) está hardcoded como `['DRAFT'
 Sin contramedidas, el caller público recibe `{matched: boolean, persons: [{personal_id, first_name, last_name}...]}` — enumera direcciones de familias existentes y devuelve sus nombres. Vector clásico de enumeration.
 
 **Defensa**: `recognizeFamily_` ahora distingue por `opts.internal`. El caller público (sin `internal: true`) recibe SIEMPRE `{matched: false, persons: []}` — shape constante, indistinguible entre "match" y "no match". El internal call sigue recibiendo el payload completo (con nombres) porque ese flujo ya validó que el caller es la familia (acaba de teclear su email + resolvió reCAPTCHA en el init).
+
+#### ②17 (2026-08-15) — este manejador ya NO lee las tablas maestras, y su ack ya no delata por TIEMPO
+
+**Aquí vivían las DOS ÚNICAS lecturas del asistente a las tablas MAESTRAS de personas del colegio**
+—`contactEmails` (todos los correos de contacto de todo el mundo) y `personalData_S` (el registro de
+personas del colegio ENTERO)—. Todo lo demás que este fichero lee directamente son tablas de
+admisión, de firma o de catálogo. **Se las pide al KMS**: `enr.wizardReconocerFamilia`
+(`kis-app kms-server/enr/wizard-gateway.gs`), que hace los **mismos dos filtros** —correo →
+`personal_id`s → personas— y **proyecta solo los tres campos** que la pantalla enseña
+(`Step2Persons.jsx:1123-1128`). La ficha entera de cada persona **ya no cruza** a este proceso, que
+es público y anónimo. **Sin respaldo a AppSheet**: dos lectores del mismo dato divergen; si el KMS
+no contesta, el reconocimiento queda vacío, que es lo que ya pasaba cuando la lectura fallaba.
+
+**Lo que este tramo NO cierra, y se dice:** la credencial de AppSheet **sigue en el asistente** (`②17`
+sigue abierta), y quien tenga el `service_token` puede preguntar correo a correo **sin el cupo de
+aquí** — acotar por cliente es `②18`.
+
+**Y el ack constante ya no delata por el RELOJ.** La respuesta pública era constante desde KAL-10,
+pero **se consultaba igual antes de devolverla**: encontrar costaba dos lecturas y no encontrar una,
+así que el tiempo decía lo que la respuesta callaba — el mismo defecto que se cerró en la
+recuperación del enlace (②2). Ahora **corta antes de preguntar**: misma verja, mismo cupo, misma
+respuesta y **el mismo tiempo**. **Ninguna familia lo nota**: esa acción pública **no tiene ni un
+llamante en la aplicación** (medido contra `origin/main` — el frontal solo lee `recognition` de la
+respuesta de `initEnrollmentSession`, `ConsentPage.jsx:68`).
+
+**Control**: `scripts/verja-publica.mjs` lo vigila con **tres** afirmaciones nuevas — el ack va antes
+de cualquier consulta · el ack constante sigue existiendo · el manejador no vuelve a leer
+`contactEmails`/`personalData_S` de AppSheet. **Rojo demostrado las tres**, cada una nombrando su
+caso. ⚠️ **La batería NO cubre esto**: corre contra un backend simulado que nunca ejecuta
+`backend/Code.js` — lo que hay que hacer al tocar este manejador es **medirlo**.
 
 El frontend nunca expone el payload de recognition fuera del banner de Step 2 (`Step2Persons.jsx`), que sólo se renderiza tras `initEnrollmentSession` con éxito (la familia ya dio su email). El leak de nombres queda confinado a esa única vía.
 

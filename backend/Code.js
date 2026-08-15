@@ -2521,51 +2521,61 @@ function recognizeFamily_(p, opts) {
   }
   cache.put(cacheKey, String(count + 1), 60);
 
-  // ── email → contactEmails.personal_ids ─────────────────────────────────────
-  // KAL-5: strict email-shape validation + AppSheet escape (defense in depth).
-  // Previous implementation only stripped quotes — defective because it
-  // silently accepted broken inputs and bypassed any later validation.
-  assertValidEmail_(email, 'email');
-  const emailRows = appsheetRequest_('contactEmails', 'Find', [], {
-    Filter: '"email" = "' + appsheetEscape_(email) + '"'
-  }) || [];
-
-  const personalIds = emailRows
-    .map(r => r.personal_id)
-    .filter((id, i, arr) => id && arr.indexOf(id) === i);
-
-  // KAL-10 (anti-enumeration): public callers receive a constant shape that
-  // does NOT distinguish "matched" from "not matched". The dispatched public
-  // endpoint sees only `{ matched: false, persons: [] }` regardless of the
-  // actual lookup result. An attacker brute-forcing emails through the
-  // public `recognizeFamily` action cannot tell which addresses belong to
-  // an existing Kaleide family.
+  // ── el reconocimiento lo resuelve el KMS — ②17 ────────────────────────────
   //
-  // The internal call from initEnrollmentSession_ (opts.internal === true)
-  // still receives the real `{matched, persons[]}` payload because the
-  // caller is already an authenticated session-creation flow: the family
-  // explicitly typed that email into the wizard and we want to offer the
-  // "we recognised you — prefill?" banner on Step 2. The recognition data
-  // never leaves the backend except in the initEnrollmentSession response,
-  // which only the family that just provided the email can see (and they
-  // already know it).
-  if (!personalIds.length) {
-    return { matched: false, persons: [] };
-  }
+  // Aquí vivían las DOS ÚNICAS lecturas de este asistente a las tablas MAESTRAS de
+  // personas del colegio: `contactEmails` (todos los correos de contacto de todo el
+  // mundo) y `personalData_S` (el registro de personas del colegio ENTERO). El resto de
+  // lo que este fichero lee directamente son tablas de admisión, de firma o de catálogo.
+  //
+  // Se las pide al KMS (`enr.wizardReconocerFamilia`), que hace los MISMOS dos filtros
+  // —correo → `personal_id`s → personas— y devuelve **solo los tres campos** que la
+  // pantalla enseña. La ficha entera de cada persona ya no cruza a este proceso, que es
+  // público y anónimo.
+  //
+  // KAL-5 capa 1 se queda AQUÍ además de en el KMS: rechazar un correo mal formado antes
+  // de salir a la red es más barato, y las dos capas juntas sobreviven la una a la otra.
+  assertValidEmail_(email, 'email');
 
-  // ── personal_ids → personalData_S display fields ───────────────────────────
-  personalIds.forEach(id => assertValidUuid_(id, 'personal_id'));
-  const filter = personalIds.map(id => '"personal_id" = "' + appsheetEscape_(id) + '"').join(' || ');
-  const persons = appsheetRequest_('personalData_S', 'Find', [], { Filter: filter }) || [];
-
-  // Public callers: silent ack, identical shape to "no match" — anti-enum.
+  // ── KAL-10, y ahora SIN oráculo por TIEMPO ────────────────────────────────
+  // El llamante público recibe SIEMPRE la misma respuesta —`{matched:false, persons:[]}`—
+  // así que consultar antes de devolverla era trabajo tirado. Hasta ahora se consultaba
+  // igual, y eso dejaba un rastro medible: una consulta que encuentra tarda más que una
+  // que no (con expediente eran DOS lecturas; sin él, una). Es exactamente el defecto que
+  // se cerró en la recuperación del enlace (②2): la respuesta era constante y el RELOJ no.
+  // Se corta ANTES de preguntar: mismo cupo, misma verja, misma respuesta y **el mismo
+  // tiempo** existan o no personas con ese correo.
+  //
+  // Ninguna familia lo nota: esta acción pública **no tiene ni un llamante en la
+  // aplicación** (medido contra `origin/main`: el frontal solo lee `recognition` de la
+  // respuesta de `initEnrollmentSession`, `ConsentPage.jsx:68`). Vive en el despachador
+  // público, que es lo que la hacía interesante para un sondeo.
   if (!internal) {
     return { matched: false, persons: [] };
   }
 
+  // SIN RESPALDO a AppSheet, y es deliberado: dos lectores del mismo dato divergen. Si el
+  // KMS no contesta, el reconocimiento queda vacío — exactamente lo que ya pasaba cuando
+  // la lectura fallaba (`initEnrollmentSession_` lo envuelve en su propio catch y sigue).
+  let personasKms = [];
+  try {
+    const resp = kmsProxy_('enr.wizardReconocerFamilia', { email: email });
+    personasKms = (resp && resp.persons) || [];
+  } catch (e) {
+    Logger.log('recognizeFamily_: reconocimiento KMS fallido (no fatal): ' + redact_(e.message));
+    personasKms = [];
+  }
+
+  // El camino INTERNO (`opts.internal`, desde `initEnrollmentSession_`) sí recibe el
+  // resultado de verdad: la familia acaba de teclear ese correo y de pasar la verja, y es
+  // lo que alimenta el aviso «reconocimos tu familia» del paso 2. Ese resultado no sale
+  // del servidor salvo dentro de la respuesta de `initEnrollmentSession`, que solo ve
+  // quien acaba de dar el correo (y por tanto ya sabe lo que le contamos).
   return {
-    matched: persons.length > 0,
-    persons: persons.map(row => ({
+    matched: personasKms.length > 0,
+    // Mapeo VERBATIM de los tres campos que la pantalla consume (`Step2Persons.jsx`):
+    // el KMS ya los proyecta, y se normalizan igual por si alguno viniera vacío.
+    persons: personasKms.map(row => ({
       personal_id: row.personal_id,
       first_name:  row.first_name || '',
       last_name:   row.last_name  || '',
@@ -9589,9 +9599,11 @@ function manual_testLogRedaction() {
  */
 function manual_testRecognizeFamilyAntiEnum() {
   // Shape assertion — public response is ALWAYS {matched: false, persons: []}.
-  // We can't easily test the matched case without a real email, but we can
-  // verify the shape on a confirmed-non-existing email (no DB row required —
-  // the contactEmails Find returns []).
+  // Desde ②17 el camino público **no consulta nada**: corta con la respuesta constante
+  // antes de preguntar al KMS (así el reloj tampoco delata si el correo existe). Por eso
+  // esta comprobación no necesita ni base de datos ni correo real: si algún día vuelve a
+  // consultar antes de responder, aquí no se notará — lo que lo vigila es
+  // `scripts/comprobar-verja-publica.mjs`.
   try {
     var out = recognizeFamily_({
       primary_email:   'no-such-email-' + Date.now() + '@example.invalid',

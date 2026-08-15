@@ -339,8 +339,27 @@ function comprobarLasEntradasDeAdmisiones(fuenteLimpia) {
   // 2 · reconocer a la familia (llamada pública, no la interna).
   const rec = cuerpoDe(fuenteLimpia, 'recognizeFamily_')
   if (rec === null) fallos.push('no se encontró `recognizeFamily_` — control CIEGO en esa entrada')
-  else if (!/_asegurarVerjaPublica_|_verjaPublicaVeredicto_/.test(rec)) {
-    fallos.push('`recognizeFamily_` no pasa por la verja')
+  else {
+    if (!/_asegurarVerjaPublica_|_verjaPublicaVeredicto_/.test(rec)) {
+      fallos.push('`recognizeFamily_` no pasa por la verja')
+    }
+    // Y el camino PÚBLICO corta ANTES de consultar nada (②17). La respuesta a un llamante
+    // público es constante desde KAL-10; lo que faltaba era que el RELOJ también lo fuera:
+    // una consulta que ENCUENTRA cuesta más que una que no (con personas eran DOS lecturas,
+    // sin ellas una), así que consultar y luego devolver el ack dejaba medible lo que el ack
+    // esconde. Es el mismo oráculo por tiempo que se cerró en `sendMagicLink_` (②2).
+    const iAck = rec.search(/return\s*\{\s*matched:\s*false\s*,\s*persons:\s*\[\s*\]\s*\}/)
+    const iCaro = rec.search(/appsheetRequest_\s*\(|appsheetRequestBatch_\s*\(|kmsProxy_\s*\(/)
+    if (iAck < 0) {
+      fallos.push('`recognizeFamily_` ya no devuelve el ack constante `{matched:false, persons:[]}` — KAL-10 roto')
+    } else if (iCaro >= 0 && iCaro < iAck) {
+      fallos.push('en `recognizeFamily_` la consulta (AppSheet/KMS) ocurre ANTES del ack constante del camino público — el reloj vuelve a delatar si el correo existe')
+    }
+    // Y no vuelve a leer las tablas MAESTRAS de personas del colegio con la credencial de
+    // AppSheet: ese reconocimiento se lo sirve el KMS (②17, tramo «reconocer a la familia»).
+    if (/appsheetRequest_\s*\(\s*'contactEmails'|appsheetRequest_\s*\(\s*'personalData_S'/.test(rec)) {
+      fallos.push('`recognizeFamily_` vuelve a leer `contactEmails`/`personalData_S` directamente de AppSheet — eso es lo que ②17 quitó')
+    }
   }
 
   // 3 · recuperar el enlace — la que faltaba, y la que además NO puede lanzar.
