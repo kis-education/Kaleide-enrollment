@@ -453,6 +453,48 @@ function comprobarLosDocumentosDeLaFamilia(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 — la hidratación de entrada tiene UN SOLO lector, y está en el KMS.
+ *
+ * `resumeSession` era una SEGUNDA hidratación completa: leía ~24 tablas de AppSheet
+ * directamente —salud, alergias, dieta y NEAE de menores incluidas— desde este proceso
+ * público y anónimo. El frontal dejó de llamarla cuando el camino vivo pasó a ser
+ * `hydrateSession` → KMS, pero el manejador siguió registrado en el despachador y su
+ * precalentado ejecutaba esas lecturas en CADA envío de enlace. Se retiró entera.
+ *
+ * Lo que se afirma aquí es que NO VUELVE: ni la acción en el despachador, ni un segundo
+ * lector de la hidratación en este repositorio. Y se ancla en lo que SÍ debe existir
+ * —`hydrateSession_` pidiéndoselo al KMS— para que el control no pueda quedarse ciego.
+ */
+function comprobarLaHidratacionDeEntrada(fuenteLimpia) {
+  const fallos = []
+
+  if (/case\s+'resumeSession'\s*:/.test(fuenteLimpia)) {
+    fallos.push('`resumeSession` vuelve a estar en el despachador público — era una segunda ' +
+      'hidratación que leía ~24 tablas de AppSheet (salud, alergias, dieta y NEAE de menores) ' +
+      'desde el proceso anónimo; el camino vivo es `hydrateSession` → KMS')
+  }
+
+  for (const muerta of ['buildResumeSessionData_', '_warmResumePhase_']) {
+    if (new RegExp('function\\s+' + muerta + '\\s*\\(').test(fuenteLimpia)) {
+      fallos.push('`' + muerta + '` ha vuelto — es el segundo lector de la hidratación que ②17 ' +
+        'retiró; dos lectores del mismo dato divergen, y este leía AppSheet directamente')
+    }
+  }
+
+  // El ancla: si el camino vivo desaparece o deja de preguntarle al KMS, este control estaría
+  // afirmando la ausencia de algo en un fichero que ya no es el que cree estar midiendo.
+  const vivo = cuerpoDe(fuenteLimpia, 'hydrateSession_')
+  if (vivo === null) {
+    fallos.push('no se encontró `hydrateSession_` — control CIEGO en la hidratación de entrada')
+  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardHydrate'/.test(fuenteLimpia)) {
+    fallos.push('la hidratación de entrada ya no le pide los datos al KMS (`enr.wizardHydrate`) — ' +
+      'o volvió a leer AppSheet por su cuenta, o el camino vivo cambió de nombre')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -462,5 +504,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarGuardarYSeguirLuego(limpia),
     ...comprobarParidadDelCodigo(limpia),
     ...comprobarLosDocumentosDeLaFamilia(limpia),
+    ...comprobarLaHidratacionDeEntrada(limpia),
   ]
 }

@@ -272,7 +272,7 @@ Test: `manual_testSigningTokenAuth` (casos a-d: UUID malformado → BAD_REQUEST,
 >
 > **Lo que se RETIRA (#45-columna, vetada por Diego — multiuso)**: la columna dedicada `enrEnrollmentGroups.recovery_guardian_email` + `persistRecoveryBinding_`/`readRecoveryBinding_` quedan ELIMINADOS (sin código dormido). AT-IDBIND-01 ANULADO. El **diagnóstico** de #45 (la identidad no puede vivir en el cliente; debe sobrevivir a F5/incógnito) SIGUE vigente — cambia el mecanismo.
 >
-> **Ahora**: el `n` del magic link (que YA viajaba — antes era un grace nonce aleatorio) pasa a llevar el **`email_id`** (PK de la fila `enrEmails` del guardian al que se emitió el link) — opaco, sin PII, ya existe. **Emisión** (`sendMagicLink_`): `findEmailIdForGuardian_(grupo, email)` → `?n=<email_id>`. **Resolución** (`resolveEmailFromLinkParam_` dentro de `effectiveRecoveredEmail_`, usada por `resumeSession_`/`getAdmissionState_`/`hydrateSession_`/`requireSignerContext_`): lee `enrEmails[email_id=n]`, VALIDA server-side que pertenece al grupo del `resume_token` (KAL-4) y resuelve a guardian → devuelve el email → alimenta `recovered_email` (contrato KMS INTACTO). Prioridad `n` > `recovered_email` (compat secundario). La identidad sobrevive a F5/incógnito/pestañas: el frontend persiste el `n` (`recoveryNonce`) en sessionStorage y lo reenvía en hydrate + pulse + actos de firma.
+> **Ahora**: el `n` del magic link (que YA viajaba — antes era un grace nonce aleatorio) pasa a llevar el **`email_id`** (PK de la fila `enrEmails` del guardian al que se emitió el link) — opaco, sin PII, ya existe. **Emisión** (`sendMagicLink_`): `findEmailIdForGuardian_(grupo, email)` → `?n=<email_id>`. **Resolución** (`resolveEmailFromLinkParam_` dentro de `effectiveRecoveredEmail_`, usada por `getAdmissionState_`/`hydrateSession_`/`requireSignerContext_` — `resumeSession_` también la usaba, y se retiró en ②17): lee `enrEmails[email_id=n]`, VALIDA server-side que pertenece al grupo del `resume_token` (KAL-4) y resuelve a guardian → devuelve el email → alimenta `recovered_email` (contrato KMS INTACTO). Prioridad `n` > `recovered_email` (compat secundario). La identidad sobrevive a F5/incógnito/pestañas: el frontend persiste el `n` (`recoveryNonce`) en sessionStorage y lo reenvía en hydrate + pulse + actos de firma.
 >
 > **Reglas canónicas inmiscibles**:
 > - `n` (email_id) JAMÁS se cree a ciegas: SIEMPRE se valida contra BD que la fila pertenece al grupo del token (KAL-4) y resuelve a guardian. `assertValidUuid_` + `appsheetEscape_` (KAL-5); logs redactados (KAL-11).
@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (resumeSession_, fetchLookups_, hydrate, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos** (2026-08-15), las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")— y las **tres guardas de los documentos** (§"subir y ver un documento"). **Medido el 2026-08-15 contra `origin/main`: quedan 83 lecturas directas + 7 en lote. La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento") y **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"). **Medido el 2026-08-15: quedan 78 lecturas directas + 4 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -362,6 +362,57 @@ sigue distinguiendo los dos fallos—. **Rojo demostrado las cinco.**
 (12 afirmaciones sobre los manejadores reales, ejecutados con dobles, y la medición demostrada no
 ciega). **Quien toque estos dos manejadores, que lo mida.**
 
+### ②17 (2026-08-15) — la hidratación de entrada tenía DOS lectores: el muerto se RETIRÓ entero
+
+**No era una migración: era código muerto que seguía ejecutándose.** `resumeSession` era una
+**segunda hidratación completa** del expediente de la familia, y leía **~24 tablas de AppSheet
+directamente** desde este proceso —público y anónimo— con la credencial de la aplicación entera:
+personas, vínculos, documentos, respuestas, entrevistas, nacionalidades, documentos de identidad,
+idiomas, direcciones, colegios previos y **salud, alergias, dieta y NEAE de menores**.
+
+**Medido contra `origin/main` antes de tocar nada, y esto es lo que lo hizo accionable:**
+
+| Qué se midió | Resultado |
+|---|---|
+| Llamadas del frontal a `resumeSession` | **CERO.** Sus 14 apariciones en `frontend/` son **comentarios**; el camino vivo es `hydrateSession` → KMS (`ResumePage.jsx:113`, `WizardPage.jsx:221,596`) |
+| Quién llamaba a `buildResumeSessionData_` | **dos sitios, los dos retirados**: `resumeSession_` y la fase `'res'` del precalentado |
+| Quién leía la memoria `wz_res_` que ese precalentado llenaba | **solo `resumeSession_`** |
+
+⇒ **la fase `'res'` ejecutaba esas ~24 lecturas en CADA envío de enlace para llenar una memoria que
+solo leía un manejador que nadie llamaba.** Trabajo real, coste real, valor cero.
+
+**Lo retirado, y por qué se retira en vez de migrarse:** `resumeSession_` · `buildResumeSessionData_` ·
+`_warmResumePhase_` · su `case` del despachador público · el reparto y el encolado de la fase `'res'` ·
+y `manual_testResumeCacheHitRedactsToken`, que solo ejercitaba ese camino. **707 líneas.** Migrarlo al
+KMS habría conservado un **segundo lector** de lo que el KMS ya sirve entero por `enr.wizardHydrate`
+— justamente el anti-patrón que §"Regla — refactors preservan el código probado" prohíbe.
+
+**Lo que NO se pierde, comprobado uno a uno:**
+
+- **La reapertura** (`submitted_at → null` cuando el colegio devuelve el expediente a la familia) ya
+  vivía **también** en `hydrateSession_` (busca `REOPEN-FIX`). Hoy vive **solo** ahí — ése es el
+  arreglo, no un efecto colateral.
+- **El precalentado del camino vivo NO se toca**: la fase `'kms'` calienta `wz_hyd_`, que es la que
+  `hydrateSession_` lee; y la fase `'mem'` sigue igual. Lo retirado es la tercera.
+- **Ningún ayudante queda huérfano** — se comprobaron los once que usaba (`_wzAwaitWarm_`,
+  `_redactSigningTokenIfNotFresh_`, `_wzCacheKey_`, `_getLiveStateVersion_`…): todos conservan
+  llamantes vivos.
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
+ídem `appsheetRequestBatch_`): **83 → 78** lecturas directas y **7 → 4** en lote. **Las llamadas al
+KMS NO suben**: este tramo no añade ninguna entrada nueva, que es la diferencia con los tres
+anteriores.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarLaHidratacionDeEntrada` — `resumeSession` no
+vuelve al despachador · `buildResumeSessionData_` y `_warmResumePhase_` no vuelven · y **el ancla**:
+`hydrateSession_` existe y sigue pidiéndole los datos al KMS, para que el control no pueda quedarse
+ciego afirmando ausencias en un fichero que ya no mide. **Rojo demostrado las cinco**, cada una
+nombrando su caso.
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. Lo que sí acredita es lo que importaba comprobar en el cliente: recorre el
+camino de recuperación entero (`recuperar-aterrizar`) **sin llamar a `resumeSession` ni una vez**.
+
 ### resume_token URL clean + Referrer-Policy: no-referrer (KAL-7 cerrado 2026-05-30)
 
 Los magic-links emails llevan el `resume_token` (UUID v4, bearer secret de 7 días) en el path: `https://admissions.kaleide.org/#/resume/<token>`. Sin contramedidas, ese token se filtra por tres vías:
@@ -390,11 +441,14 @@ Regla obligatoria para nuevos componentes que reciban un secret por path:
 - **Frontend**: `Step7Review.handleSubmit` ahora llama `setIsSubmitted(true)` tras éxito de `submitEnrollmentSession`. `setIsSubmitted` exportado desde el provider. `WizardPage` ya tenía la lógica de bloqueo correcta condicionada a `isSubmitted`.
 - **Backend (defensa en profundidad)**: helper `assertGroupEditable_(enrollment_group_id)` en `backend/Code.js`, llamado al inicio de `saveStep_`, `saveResponses_`, `uploadDocument_`. Si `submitted_at IS NOT NULL` o `abandoned_at IS NOT NULL`, throw con `err.code='NOT_EDITABLE'`. `doPost` mapea ese código a HTTP 200 + `{ok:false, error:{code:'NOT_EDITABLE', message}}` — patrón P72 silent reject estructurado, NUNCA HTTP 403.
 
-**Estados editables canónicos (regla derivada)**: solamente cuando `submitted_at IS NULL` (≡ DRAFT) y `abandoned_at IS NULL`. La rama "reopen" (KMS transiciona enrollments a IN para pedir más info) ya está cubierta server-side: `resumeSession_` (línea ~1095) sobrescribe `submitted_at = null` en la respuesta cuando todas las enrollments están en IN. Por tanto el modelo conceptual del wizard es:
+**Estados editables canónicos (regla derivada)**: solamente cuando `submitted_at IS NULL` (≡ DRAFT) y `abandoned_at IS NULL`. La rama "reopen" (KMS transiciona enrollments a IN para pedir más info) ya está cubierta server-side: **`hydrateSession_`** —el camino VIVO— sobrescribe `submitted_at = null` en la respuesta cuando la fase del expediente es editable (busca `REOPEN-FIX` en `backend/Code.js`). Por tanto el modelo conceptual del wizard es:
 
   - `submitted_at IS NULL`              → DRAFT (editable)
   - `submitted_at IS NOT NULL`          → RQ/IN/etc (no editable, KMS-territory)
-  - reopen by KMS (all enrollments → IN) → resumeSession_ override → editable de nuevo
+  - reopen by KMS (fase editable)       → override de `hydrateSession_` → editable de nuevo
+
+*(②17, 2026-08-15: esto lo hacía ADEMÁS `resumeSession_`, que se retiró. Era un segundo lector de la
+misma hidratación y el frontal no lo llamaba; hoy la reapertura vive en **un solo sitio**.)*
 
 EDITABLE_STATES en frontend (`WizardContext.jsx`) está hardcoded como `['DRAFT', 'NEEDS_MORE_INFO']` para documentar la intención conceptual. TODO operativo: cuando `sysStateTransitions_T` exponga un flag `is_editable_by_family`, derivar la lista dinámicamente y dejar de mapear vía `submitted_at` booleano.
 

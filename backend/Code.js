@@ -846,11 +846,13 @@ function requireSignerIdentity_(payload) {
 //                                           (KMS owns transitions
 //                                            from here onwards)
 //
-// The "reopen" branch is server-side already (resumeSession_ overrides
-// submitted_at to null when all enrollments are back in state IN — see
-// the comment around line 1095). So checking submitted_at alone is
-// sufficient: when the KMS reopens an application, the next resume sees
+// The "reopen" branch is server-side already: `hydrateSession_` (el camino VIVO)
+// anula `submitted_at` en la respuesta cuando la fase del expediente es editable
+// — busca REOPEN-FIX en este mismo fichero. So checking submitted_at alone is
+// sufficient: when the KMS reopens an application, the next hydrate sees
 // submitted_at as null and the wizard becomes editable again.
+// (②17, 2026-08-15: esto lo hacía ADEMÁS `resumeSession_`, retirado — era un
+//  segundo lector de la hidratación y el frontal no lo llamaba.)
 //
 // Editable state codes (canonical, hardcoded today; TODO mover a catálogo
 // dinámico vía sysStateTransitions_T flags `is_editable_by_family`):
@@ -1319,7 +1321,7 @@ function _redactSigningTokenIfNotFresh_(signingContext, fresh) {
 // cache DESPUÉS de sus gates (requireResumeToken_ + step-up/PII) — solo cambia el
 // ORIGEN de los datos. KAL-11: logs solo con token.slice(0,8).
 
-/** Clave base del cache wizard (kind: 'hyd' | 'adm' | 'res' | 'mem' | 'doc').
+/** Clave base del cache wizard (kind: 'hyd' | 'adm' | 'mem' | 'doc').
  *
  * RE-LLAVEO V2.4 (pregunta de Diego 2026-06-12 17:08: "una vez cargada en el
  * servidor, ¿por qué no se queda ahí hasta que caduque la caché?"): las claves
@@ -1328,11 +1330,11 @@ function _redactSigningTokenIfNotFresh_(signingContext, fresh) {
  *   doc → file_id (bytes inmutables; la entrada guarda g=group_id y el servido
  *         verifica pertenencia post-gate — KAL-4; TTL 6h)
  *   mem → enrollment_group_id (members del paquete, de grupo)
- *   hyd/res/adm → enrollment_group_id + n (contexto per-guardian)
+ *   hyd/adm → enrollment_group_id + n (contexto per-guardian)
  * Frescura: live_version (v en la entrada) — los writes bumpan la versión del
  * grupo (_wzCacheInvalidate_) y cualquier entrada con v vieja es MISS. La
  * rotación del token deja de borrar nada: re-entrar 10 min después = HIT. */
-// DL-E49 §2 — 'hyd'/'res'/'adm' llevan `v2` a propósito: el hydrate empezó a recortar
+// DL-E49 §2 — 'hyd'/'adm' llevan `v2` a propósito: el hydrate empezó a recortar
 // por identidad y las entradas cacheadas ANTES de este cambio (mismo grupo+n, formato
 // de clave idéntico) seguirían siendo HIT con el grupo entero sin recortar hasta
 // caducar solas (TTL hasta 1800s). 'mem'/'doc' no llevan PII de persons/relations/
@@ -1528,74 +1530,6 @@ function _wzKmsFetchAll_(calls) {
     Logger.log(redact_('[_wzKmsFetchAll_] non-fatal — ' + (e && e.message)));
     return (calls || []).map(function() { return null; });
   }
-}
-
-/**
- * WIZARD-CACHE — el corazón: con el resume_token NUEVO (post-rotación) trae del KMS y
- * cachea wizard-side, troceado, keyed por token:
- *   (a) hydrate completo (enr.wizardHydrate) → wz_hyd_<token>
- *   (b) admission (con versión liveState wizard-side) → wz_adm_<token>
- *   (c) bytes de cada member del paquete de firma (enr.serveSigningDocument, el KMS
- *       sirve de SU cache troceado en ~0,6s) → wz_doc_<token>_<file_id>
- *
- * Identidad warm = la de _enqueueWarmHydrate_ (recovered_email = email destino del
- * link; language) → misma clave de warm KMS que el click real (WARM-KEY-PARITY).
- * Members: lector probado del paso 10 — enr.initiateSigningSession con
- * create_only:true (initiateSigningSession_, identidad {signing_token} = rama (b) de
- * requireSignerIdentity_) devuelve members[{file_id,…}] SIN despachar envelope; N
- * dinámico (lo que el hito declare). signing_token: del signing_context._signer_row
- * del hydrate; fallback el lector probado del wizard resolveGuardianSigningContext_
- * (mismo camino que el lazy resolver de getDocument_).
- *
- * Best-effort TOTAL: cualquier fallo → log redactado y seguir (nunca peor que hoy).
- * NUNCA lanza. KAL-4: todo keyed por el token; el SERVIDO re-valida el token.
- *
- * @param {string} resumeToken    token NUEVO del magic-link recién enviado
- * @param {string} recoveredEmail email destino del link (identidad warm)
- * @param {string} lang
- * @returns {{ok:boolean, hydrate:boolean, admission:boolean, members:number, docs:number, ms:number}}
- * @private
- */
-/**
- * V2.1 — fase HIJA 'res': pre-computa el payload de resumeSession (la hidratacion
- * de entrada del magic link, ~25-30s de lecturas wizard-side) con el MISMO lector
- * del camino vivo (buildResumeSessionData_, cero divergencia) y lo cachea
- * wz_res_<token>. skipPiiGate=true: el warm corre ANTES del click (sin step-up);
- * la ENTREGA al cliente sigue gateada en resumeSession_ (precedente #69).
- * @private
- */
-function _warmResumePhase_(it) {
-  var out = { ok: false, resume: false, ms: 0 };
-  var t0 = Date.now();
-  try {
-    var token = String(it.t).trim();
-    try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
-    var cache = CacheService.getScriptCache();
-    var grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
-    }) || [];
-    if (grpRows.length && !grpRows[0].abandoned_at) {
-      var groupId = grpRows[0].enrollment_group_id;
-      var idSuffix = _wzN_(it.n, it.e);
-      var resKey = _wzCacheKey_('res', groupId + '_' + idSuffix);
-      if (cache.get(resKey + '_meta')) { out.ok = true; out.resume = true; return out; }
-      try { cache.put('wzck_res_' + groupId + '_' + idSuffix, '1', 240); } catch (eMr) {}
-      var resData = buildResumeSessionData_(grpRows[0],
-        { resume_token: token, n: it.n || null, recovered_email: it.e || null },
-        false, { skipPiiGate: true });
-      if (resData && resData.pii_gated !== true) {
-        out.resume = _wzCachePutChunked_(cache, resKey,
-          JSON.stringify({ v: _getLiveStateVersion_(groupId), data: resData }), 1800);
-      }
-      try { cache.remove('wzck_res_' + groupId + '_' + idSuffix); } catch (eMr2) {}
-    }
-    out.ok = true;
-  } catch (e) {
-    Logger.log(redact_('[_warmResumePhase_] non-fatal — ' + (e && e.message)));
-  }
-  out.ms = Date.now() - t0;
-  Logger.log('[WZCACHE] warm res done ' + JSON.stringify(out));
-  return out;
 }
 
 /**
@@ -1941,7 +1875,6 @@ function doPost(e) {
       case 'initEnrollmentSession':   result = initEnrollmentSession_(payload);   break;
 
       case 'resumeApplication':       // legacy alias
-      case 'resumeSession':           result = resumeSession_(payload);           break;
 
       // PERF: estado de admisión LIGERO para el pulse de firma (no relee el expediente).
       case 'getAdmissionState':       result = getAdmissionState_(payload);       break;
@@ -3544,7 +3477,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
   if (!enrollments || !enrollments.length) return out;
 
   // Catálogo de estados ENR_ADMISSION_SCHOOL del tenant (mismo patrón que el
-  // reopen-check de resumeSession_).
+  // reopen-check de `hydrateSession_` — busca REOPEN-FIX en este fichero).
   var perfS0 = Date.now(); // PERF-KMS2 (no-op si PERF2_.adm inactivo)
   var allStates = Array.isArray(admHints.states)
     ? admHints.states
@@ -3995,519 +3928,6 @@ function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint,
 }
 
 /**
- * Accepts a resume_token and returns the full session state — DL-E15.
- *
- * Queries enrEnrollmentGroups (the session header) by resume_token, then loads:
- *   - the N enrEnrollments rows (only present after submit)
- *   - staging tables (persons, relations, documents, responses, interviews) by
- *     enrollment_group_id
- *
- * Compatibility shim: legacy frontends expect `{ application, ... }`. We expose
- * the group as `application` AND `group` (and the same payload also has a
- * top-level `enrollments` array). This dual-key shape is transitional debt —
- * delete the `application` alias once all frontend builds read `group`.
- *
- * @param {Object} p - { resume_token }
- * @returns {Object} { group, application(alias), enrollments[], persons[], ... }
- */
-function resumeSession_(p) {
-  assertValidUuid_(p && p.resume_token, 'resume_token');
-  const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + appsheetEscape_(p.resume_token) + '"'
-  });
-  if (!groups || !groups.length) throw new Error('Invalid or expired resume token');
-
-  const group = groups[0];
-  const id    = group.enrollment_group_id;
-  // Defense in depth (KAL-5): id is sourced from the DB and bound to the
-  // resume_token we just validated above. Re-assert UUID shape before using
-  // in concatenations below, in case the column ever contains arbitrary data.
-  assertValidUuid_(id, 'enrollment_group_id');
-
-  // ── Magic-link grace (UX, sin urgencia) ────────────────────────────────────
-  // IDENTITY-FROM-LINK (2026-06-11): la gracia OTP-skip se ancla al resume_token recién
-  // rotado (`mlgrace_<resume_token>`), NO al `?n=` (que ahora lleva el email_id, identidad).
-  // Si el resume_token tiene un marcador de gracia válido, no usado y de ESTE grupo, lo
-  // consumimos (single-use) y marcamos step-up fresco → el recovery NO exige OTP durante
-  // 10 min. KAL-4: el grupo (id) se deriva del resume_token server-side. KAL-7: un token
-  // viejo/filtrado/reusado no tiene marcador → step_up_fresh=false → flujo OTP normal.
-  const stepUpFresh = _consumeMagicLinkNonce_(p && p.resume_token, id);
-  // ②24 — la marca y su lectura llevan A QUÉ BUZÓN pertenecen. Un solo sitio lo resuelve
-  // (`_identidadDelEnlace_`, con memoria) y aquí se calcula UNA vez para las tres veces
-  // que este manejador la usa (gracia, acierto de cache y puerta de datos personales).
-  const personaEmail = _identidadDelEnlace_(p, id);
-  if (stepUpFresh) _markStepUpFresh_(id, 'GRACE', personaEmail);
-
-  // Refuse if the family explicitly abandoned this session via abandonSession_.
-  // Submitted sessions stay resumable regardless (the family must always be
-  // able to view what they sent), but an abandon-before-submit is final.
-  if (group.abandoned_at) {
-    throw new Error('This application was abandoned; start a new one from admissions.kaleide.org');
-  }
-
-  // Soft expiry: 7 days from created_at. The row stays in the database
-  // (submitted_at / promoted_at semantics unaffected), but resume access
-  // is denied past the window. Submitted sessions are always resumable —
-  // the family must always be able to view what they sent.
-  if (!group.submitted_at) {
-    const RESUME_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-    const createdAt = group.created_at ? new Date(group.created_at).getTime() : 0;
-    if (createdAt && (Date.now() - createdAt) > RESUME_TOKEN_TTL_MS) {
-      throw new Error('Resume link expired (7 days); the family requests a new link from the start page by entering their email (that also resets the 7-day clock) — no need to contact admissions');
-    }
-  }
-
-
-  // ── SPEC-WIZ-WARMUP-V2 (2026-06-12) — cache-first POST-GATES del payload de
-  // resume (la hidratacion de entrada del magic link, la pieza mas visible de la
-  // primera carga: ~25-30s de lecturas). El warm (warmBundle) lo cocina COMPLETO
-  // keyed por token; la ENTREGA sigue gateada igual (PII solo con step-up fresco —
-  // precedente #69: el warm pre-computa completo, el servido gatea). La entrada
-  // guarda live_version + identidad `n`: version subida o guardian distinto → vivo.
-  try {
-    const wzResKey = _wzCacheKey_('res', id + '_' + _wzN_(p && p.n, p && p.recovered_email));
-    let wzResRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzResKey);
-    if (!wzResRaw) {
-      // single-flight: si el warm está cocinando este payload, esperar su resultado.
-      _dbgEv_('wait', 'single-flight res');
-      wzResRaw = _wzAwaitWarm_('wzck_res_' + id + '_' + _wzN_(p && p.n, p && p.recovered_email), wzResKey, 45000);
-    }
-    if (wzResRaw) {
-      const entry = JSON.parse(wzResRaw);
-      if (entry && entry.data && entry.v === _getLiveStateVersion_(id)) {
-        Logger.log('[WZCACHE] HIT res token=' + String(p.resume_token).slice(0, 8) + '...');
-        _dbgEv_('cache', 'HIT res');
-        // V2.4.1: normalizar el token embebido (cocinado quizá pre-rotación).
-        if (entry.data.group) entry.data.group.resume_token = String(p.resume_token).trim();
-        if (entry.data.application) entry.data.application.resume_token = String(p.resume_token).trim();
-        if (_isStepUpFresh_(id, personaEmail)) {
-          return Object.assign({}, entry.data, { step_up_fresh: stepUpFresh });
-        }
-        // Sin step-up fresco: misma shape gateada del camino vivo (PII vaciada).
-        // ★ SEC WIZ-SIGNTOKEN residual (audit 2026-07-26): la entrada de cache la
-        // cocina el warm con {skipPiiGate:true} → `admission.signing_context` lleva
-        // el signing_token EN CLARO. Este retorno es el gemelo del cache-hit de
-        // getAdmissionState_ (`:3784`) y del constructor live pii-gated
-        // (buildResumeSessionData_ `:3465-3469`): sin step-up fresco el bearer del
-        // ACTO de firma NO cruza al cliente. `fresh=false` por construcción (esta
-        // rama es el `else` de `_isStepUpFresh_(id)`). Copia — NO se muta el objeto
-        // cacheado (Object.assign nuevo + el helper devuelve copia superficial).
-        var cachedAdmission = entry.data.admission || null;
-        var gatedCachedAdmission = cachedAdmission
-          ? Object.assign({}, cachedAdmission, {
-              signing_context: _redactSigningTokenIfNotFresh_(cachedAdmission.signing_context, false),
-            })
-          : cachedAdmission;
-        return {
-          group: entry.data.group,
-          application: entry.data.group,
-          enrollments: entry.data.enrollments || [],
-          persons: [], relations: [], documents: [], responses: [], interviews: [],
-          admission: gatedCachedAdmission,
-          recovered_guardian_person_id: entry.data.recovered_guardian_person_id || null,
-          step_up_fresh: false,
-          pii_gated: true,
-        };
-      }
-      if (entry && entry.data) {
-        // live_version subio o identidad distinta → NUNCA servir stale/ajeno.
-        CacheService.getScriptCache().remove(wzResKey + '_meta');
-        Logger.log('[WZCACHE] STALE res token=' + String(p.resume_token).slice(0, 8) + '... — invalidado');
-      }
-    }
-  } catch (eWzRes) { /* best-effort → camino vivo */ }
-
-  const data = buildResumeSessionData_(group, p, stepUpFresh);
-  // Write-through SOLO del payload COMPLETO (el gateado es barato y parcial).
-  if (data && data.pii_gated !== true) {
-    try {
-      _wzCachePutChunked_(CacheService.getScriptCache(),
-        _wzCacheKey_('res', id + '_' + _wzN_(p && p.n, p && p.recovered_email)),
-        JSON.stringify({ v: _getLiveStateVersion_(id), data: data }), 1800);
-    } catch (eWzWt) { /* best-effort */ }
-  }
-  return data;
-}
-
-/**
- * SPEC-WIZ-WARMUP-V2 — camino de DATOS de resumeSession_, movido VERBATIM (regla
- * codigo-de-oro: mismas tablas, mismos filtros, mismo mapeo; cero redisenno) para
- * que el warm lo pre-compute y el live lo comparta (UN solo lector, sin divergencia).
- * Los GATES (token→grupo, gracia, abandoned, TTL) viven en resumeSession_ y corren
- * SIEMPRE en vivo. opts.skipPiiGate=true SOLO para el warm server-side (pre-computa
- * el payload completo; la entrega al cliente sigue gateada en el servido).
- * @private
- */
-function buildResumeSessionData_(group, p, stepUpFresh, opts) {
-  const id = group.enrollment_group_id;
-  assertValidUuid_(id, 'enrollment_group_id');
-
-  // ── Top-level reads in parallel ────────────────────────────────────────────
-  // Pre-parallelization: 4 sequential ~600ms-1s Finds (~3-4s total).
-  // Now: one fetchAll batch (~1s bounded by slowest).
-  // Note: enrollments[] is needed for the interviews filter, but interviews
-  // and qbResponses both share enrollment_group_id as a primary filter so we
-  // can issue them with the group_id directly; interviews still need to be
-  // post-filtered to enrollment_id once enrollments come back, but since
-  // pre-submit there are zero enrollments anyway this is a non-issue in the
-  // common case. For the post-submit case (rare in resume), we re-filter
-  // client-side from the broader set already fetched.
-  const idEsc = appsheetEscape_(id);
-  const programIdEsc = appsheetEscape_(group.program_id);
-  const schoolIdEsc = appsheetEscape_(SCHOOL_ID);
-  const topRead = appsheetRequestBatch_([
-    { table: T.ENROLLMENTS,      action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    { table: T.PERSONS,          action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    { table: T.PERSON_RELATIONS, action: 'Find', selector: { Filter: '"context_entity_id" = "' + idEsc + '" && "context_entity_type_code" = "ENR_ADMISSION_SCHOOL"' } },
-    { table: T.REC_FILES,        action: 'Find', selector: { Filter: '"school_id" = "' + schoolIdEsc + '" && "origin_reference" = "' + idEsc + '"' } },
-    { table: T.QB_RESPONSES,     action: 'Find', selector: { Filter: '"respondent_id" = "' + idEsc + '"' } },
-    { table: T.EMAILS,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    { table: T.PHONES,           action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    { table: T.PROGRAMS,         action: 'Find', selector: { Filter: '"program_id" = "' + programIdEsc + '"' } },
-  ]);
-  const enrollments = topRead[0].ok ? (topRead[0].data || []) : [];
-  let   persons     = topRead[1].ok ? wizardSoloVivas_(topRead[1].data) : [];
-  const allEmails   = topRead[5].ok ? wizardSoloVivas_(topRead[5].data) : [];
-  const allPhones   = topRead[6].ok ? wizardSoloVivas_(topRead[6].data) : [];
-  let   relations   = (topRead[2].ok ? wizardSoloVivas_(topRead[2].data) : [])
-    .map(r => ({ ...r, guardian_person_id: r.from_person_id, applicant_person_id: r.to_person_id }));
-
-  // ── DL-E38 / P215 (GAP-1 a1): per-guardian recovery ────────────────────────
-  // The guardian that recovered is resolved SERVER-SIDE from the email the
-  // family typed (p.recovered_email), matched against enrEmails of the group
-  // filtered to guardians — NEVER from a raw payload field (KAL-4). The
-  // resume_token gate above already authorised the group; the guardian is an
-  // ADDITIONAL discriminator re-resolved against real data on every call.
-  // IDENTITY-FROM-LINK (2026-06-11): la identidad viaja en el ENLACE — `p.n` lleva el
-  // email_id del guardian; resolveEmailFromLinkParam_ lo valida contra el grupo del token
-  // (KAL-4) y devuelve su email. Prioridad `n` > recovered_email (compat). Reusa los hints
-  // del batch (allEmails/persons/group) → sin re-Find. Sobrevive a F5/incógnito/pestañas
-  // porque el enlace (no el cliente) porta la identidad.
-  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, id, p && p.n, allEmails, persons, group);
-  const recoveredGuardianId = resolveGuardianForRecovery_(id, effRecoveredEmail, allEmails, persons, group);
-
-  // P215: real admission state + (if AD) per-guardian signing context. Additive
-  // block — existing keys untouched so current consumers keep working. IMPORTANTE:
-  // se llama con `persons` SIN recortar (Path 2 más abajo necesita poder buscar un
-  // guardian del grupo cuando `recoveredGuardianId` no se resolvió — recorte cross-
-  // device, no cross-tutor) — el recorte DL-E49 §2 se aplica DESPUÉS, solo a lo que
-  // sale hacia el cliente.
-  // ②17: el `resume_token` viaja para que, si el expediente ya está admitido, las filas de
-  // firma se pidan al KMS en vez de leerlas de AppSheet con la credencial de la aplicación.
-  const admission = buildAdmissionContext_(id, enrollments, recoveredGuardianId, persons,
-    { resumeToken: (p && p.resume_token) || null });
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // DL-E49 §2 — cada tutor ve LO SUYO y lo de los menores, nunca lo del otro tutor.
-  // Espejo del recorte del camino vivo (KMS `enr_wizardHydrate` →
-  // `enr_wizardPersonasVisiblesParaTutor_`, kis-app/kms-server/enr/wizard-datalayer.gs).
-  // Este endpoint (`resumeSession_`) ya no lo llama el frontend (hydrateSession_/KMS es
-  // el camino vivo) pero sigue registrado en el dispatcher público — defensa en
-  // profundidad: el mismo recorte aquí para que no quede un segundo camino sin cerrar.
-  // ═══════════════════════════════════════════════════════════════════════════════
-  const personTypeByIdOriginal = {};
-  let guardiansTotalCount = 0;
-  persons.forEach(pr => {
-    if (!pr || !pr.person_id) return;
-    personTypeByIdOriginal[pr.person_id] = pr.person_type_id;
-    if (pr.person_type_id === 'guardian') guardiansTotalCount++;
-  });
-  persons = persons.filter(pr => {
-    if (!pr) return false;
-    if (pr.person_type_id !== 'guardian') return true;
-    return !!recoveredGuardianId && pr.person_id === recoveredGuardianId;
-  });
-  relations = relations.filter(r => {
-    if (personTypeByIdOriginal[r.from_person_id] !== 'guardian') return true;
-    return r.from_person_id === recoveredGuardianId;
-  });
-
-  // P-PII-GATE: sin step-up fresco NO se devuelve PII del expediente
-  // (persons/relations/health/documents/responses/interviews). Un resume_token
-  // filtrado solo obtiene estado/metadata; la PII completa requiere step-up. La
-  // frescura es real: nonce de magic-link recién consumido (arriba) u OTP previo
-  // marcaron stepup_ok_<group> server-side (verifyEmail stepup:true). El frontend
-  // muestra el StepUpGate y re-llama resumeSession tras el OTP (onVerified) → PII.
-  // KAL-4: group (id) derivado del token, nunca del payload. (Bonus: corta antes
-  // de los ~20 reads de detalle por persona.)
-  if (!(opts && opts.skipPiiGate) && !_isStepUpFresh_(id, personaEmail)) {
-    Logger.log(redact_('[resumeSession_] PII-gated (sin step-up) group=' + id));
-    // ★ SEC WIZ-SIGNTOKEN: `admission.signing_context` lleva el signing_token en
-    // claro; en la rama pii-gated (sin step-up) NO debe cruzar al cliente. Redacta
-    // solo el token, conservando el resto del bloque admission (estado/flags).
-    var gatedAdmission = admission
-      ? Object.assign({}, admission, {
-          signing_context: _redactSigningTokenIfNotFresh_(admission.signing_context, false),
-        })
-      : admission;
-    return {
-      group,
-      application: group,
-      enrollments,
-      persons: [], relations: [], documents: [], responses: [], interviews: [],
-      admission: gatedAdmission,
-      recovered_guardian_person_id: recoveredGuardianId,
-      guardians_total_count: guardiansTotalCount,
-      step_up_fresh: false,
-      pii_gated: true,
-    };
-  }
-
-  // Documents: dedup by file_id + shape for frontend.
-  // CLI 82 / KAL-NEW-5: NO drive_url. Sólo metadatos + file_id; los bytes se
-  // resuelven on-demand vía getDocument (proxy gateado por token). El enlace
-  // público de Drive desaparece del shape — nunca llega al cliente.
-  let documents = [];
-  if (topRead[3].ok) {
-    const fileById = {};
-    // WIZARD-DOCS (2026-06-13) — bug "listado fantasma" del Step 7: el read filtra
-    // recFiles por origin_reference=group_id, lo que captura TODO fichero del grupo,
-    // incluido el PDF de consentimiento firmado (origin='WIZARD_SUBMIT', escrito por
-    // submitEnrollmentSession_, Code.js:4275) y cualquier fichero generado por el
-    // sistema / paquete de firma. El resumen de "documentos subidos" debe mostrar
-    // SOLO las subidas REALES de la familia (las que pasan por uploadDocument_, que
-    // escribe origin='WIZARD', Code.js:5161). Filtramos por ese conjunto exacto.
-    (topRead[3].data || [])
-      .filter(f => f && f.origin === 'WIZARD' && !f.deleted_at)
-      .forEach(f => { fileById[f.file_id] = f; });
-    documents = Object.values(fileById).map(f => ({
-      document_id:   f.file_id,
-      file_id:       f.file_id,
-      // `document_type` YA NO viaja (2026-08-04): era la lectura inversa de un mapa de
-      // tipos tasados escrito a mano, retirado con el respaldo `'OTHER'` que rompía la
-      // subida. El resumen del paso 7 ya prefería la descripción libre y cae solo al
-      // nombre del archivo cuando no la hay (`Step7Review.jsx:497-502`), que es lo
-      // correcto para un adjuntador genérico. El tipo real, si alguien lo necesita,
-      // sigue yendo abajo tal cual lo escribió el catálogo: `rec_type_code`.
-      // WIZARD-DOCS: texto libre del adjuntador genérico (qué es el archivo). El
-      // frontend lo muestra preferentemente sobre el label de tipo tasado.
-      description:   f.description || '',
-      file_name:     f.file_name,
-      mimeType:      f.mime_type,
-      uploaded_at:   f.created_at,
-      rec_type_code: f.rec_type_code,
-      status:        f.status,
-    }));
-  } else {
-    Logger.log('resumeSession_: recFiles read failed (non-fatal): ' + topRead[3].error);
-  }
-
-  // qbResponses (RESP-FIX 2026-06-07): el read del batch (topRead[4]) trae SOLO las
-  // guardadas bajo el group_id, pero saveResponses_ distribuye respondent_id de forma
-  // polimórfica (Code.js:3399 `respondent_id || enrollmentGroupId`): preguntas
-  // por-aplicante → bajo person_id; por-enrollment → bajo enrollment_id; por-grupo →
-  // bajo group_id. El backfill anterior solo añadía enrollment_id y solo post-submit,
-  // perdiendo las respuestas por-aplicante (la mayoría) al recuperar. Ampliamos a la
-  // UNIÓN { group_id (ya traído) ∪ person_id ∪ enrollment_id } y corre SIEMPRE (las
-  // respuestas por-person existen pre-submit). KAL-4: todos los ids salen de datos del
-  // grupo derivados del token (persons/enrollments del topRead), nunca del payload.
-  let responses = topRead[4].ok ? (topRead[4].data || []) : [];
-  (function () {
-    var seen = {};
-    responses.forEach(function (r) { if (r && r.response_id) seen[r.response_id] = true; });
-    // KAL-5 capa 1: assertValidUuid_ por id; defensivo (salta inválidos, no rompe).
-    var extraIds = [];
-    persons.forEach(function (pr) {
-      if (pr && pr.person_id) {
-        try { assertValidUuid_(pr.person_id, 'person_id'); extraIds.push(pr.person_id); } catch (e) { /* skip id no-UUID */ }
-      }
-    });
-    enrollments.forEach(function (e) {
-      if (e && e.enrollment_id) {
-        try { assertValidUuid_(e.enrollment_id, 'enrollment_id'); extraIds.push(e.enrollment_id); } catch (e2) { /* skip */ }
-      }
-    });
-    if (!extraIds.length) return;
-    try {
-      // KAL-5 capa 2: appsheetEscape_ en cada id (patrón del reader correcto :2443).
-      var orFilter = '(' + extraIds.map(function (rid) {
-        return '"respondent_id" = "' + appsheetEscape_(rid) + '"';
-      }).join(' || ') + ')';
-      var extra = appsheetRequest_(T.QB_RESPONSES, 'Find', [], { Filter: orFilter }) || [];
-      extra.forEach(function (r) {
-        if (r && r.response_id && !seen[r.response_id]) { seen[r.response_id] = true; responses.push(r); }
-      });
-    } catch (e) {
-      // P72 / defensivo: no romper la recuperación por esto (KAL-11: log redactado).
-      Logger.log(redact_('resumeSession_: qbResponses union read failed (non-fatal): ' + e.message));
-    }
-    // WPERF-4 (bug 2): instrumentación de la recuperación de respuestas para diagnosticar
-    // el responses_n:0 pese a Step 5 completado. Si responses_n=0 aquí pero la familia
-    // respondió, la causa más probable es que Step 5 persiste ahora en el KMS (WPERF-3,
-    // qbAnswerSessions/qbAnswers u otro respondent model) y NO en la tabla qbResponses que
-    // lee esta unión {group ∪ person ∪ enrollment}. KAL-11: solo contamos, no volcamos PII.
-    try {
-      const respondentSet = {};
-      responses.forEach(function (r) { if (r && r.respondent_id) respondentSet[r.respondent_id] = true; });
-      Logger.log('resumeSession_: qbResponses recovered responses_n=' + responses.length +
-                 ' distinct_respondents=' + Object.keys(respondentSet).length +
-                 ' extra_ids_probed=' + extraIds.length);
-    } catch (eLog) { /* logging best-effort */ }
-  })();
-
-  let interviews = [];
-  if (enrollments.length) {
-    const eidFilter = enrollments.map(e => '"enrollment_id" = "' + appsheetEscape_(e.enrollment_id) + '"').join(' || ');
-    interviews = appsheetRequest_(T.INTERVIEWS, 'Find', [], { Filter: eidFilter }) || [];
-  }
-
-  // Normalise date fields to ISO format before sending to the frontend
-  group.desired_start_date = normalizeDate_(group.desired_start_date);
-
-  // enrEnrollmentGroups does not have a desired_start_date column (it lives on
-  // enrEnrollments), so saveStep('application') cannot persist it to the group row.
-  // Fall back to the program's period_starts_on so the frontend baseline matches
-  // what Step1Email computes — preventing a spurious save on every resume.
-  if (!group.desired_start_date && group.program_id) {
-    var progRows = topRead[7].ok ? (topRead[7].data || []) : [];
-    var progRow  = progRows[0] || null;
-    if (progRow && progRow.period_starts_on) {
-      group.desired_start_date = normalizeDate_(progRow.period_starts_on);
-    }
-  }
-
-  // Reopen check: if submitted_at is set but KMS moved all enrollments back to
-  // IN state, the session should be editable again. AppSheet's Edit API cannot
-  // reliably clear a DateTime field (null and '' are both silently ignored), so
-  // we resolve editability here from the actual state — overriding submitted_at
-  // in the response without touching AppSheet.
-  if (group.submitted_at && enrollments.length > 0) {
-    const allStates = appsheetRequest_(T.STATES_T, 'Find', [], {}) || [];
-    const inState = allStates.find(function(r) {
-      return r.school_id === SCHOOL_ID &&
-             r.entity_type_code === 'ENR_ADMISSION_SCHOOL' &&
-             r.state_code === 'IN' && !r.deleted_at;
-    });
-    if (inState && enrollments.every(function(e) { return e.current_state_id === inState.state_id; })) {
-      group.submitted_at = null;
-      // KAL-11: redact group_id UUID.
-      Logger.log(redact_('resumeSession_: all enrollments in IN — wizard unlocked (submitted_at overridden in response for group ' + group.enrollment_group_id + ')'));
-    }
-  }
-
-  if (!persons.length) {
-    // DL-E49 §2 — mismo criterio que el return final: las respuestas de un tutor
-    // ajeno tampoco viajan aquí, aunque esta rama ya no tenga ningún guardian que
-    // enseñar (relations ya viene filtrada arriba, antes del PII-gate).
-    const responsesForClientEmpty = responses.filter(r => {
-      const t = personTypeByIdOriginal[r && r.respondent_id];
-      return t !== 'guardian' || r.respondent_id === recoveredGuardianId;
-    });
-    return {
-      group,
-      application: group, // legacy alias — TODO: drop once frontend uses `group`
-      enrollments,
-      persons: [], relations, documents, responses: responsesForClientEmpty, interviews,
-      admission,                                      // P215 (additive)
-      recovered_guardian_person_id: recoveredGuardianId, // P215 (server-resolved, a1)
-      guardians_total_count: guardiansTotalCount,     // DL-E49 §3/§2
-      step_up_fresh: stepUpFresh,                     // magic-link grace (no OTP si true)
-    };
-  }
-
-  const personIds = persons.map(per => per.person_id);
-  personIds.forEach(pid => assertValidUuid_(pid, 'person_id'));
-  const pidFilter = personIds.map(pid => '"person_id" = "' + appsheetEscape_(pid) + '"').join(' || ');
-
-  // 8 person-detail Finds in parallel (was sequential ~5-8s, now ~1s).
-  const personDetailRead = appsheetRequestBatch_([
-    { table: T.PERSON_NATIONALITIES, action: 'Find', selector: { Filter: pidFilter } },
-    { table: T.PERSON_IDS,           action: 'Find', selector: { Filter: pidFilter } },
-    { table: T.PERSON_LANGUAGES,     action: 'Find', selector: { Filter: pidFilter } },
-    { table: T.PERSON_ADDRESSES,     action: 'Find', selector: { Filter: pidFilter } },
-    { table: T.PREV_SCHOOLS,         action: 'Find', selector: { Filter: pidFilter } },
-    { table: T.PERSON_MEDICAL,       action: 'Find', selector: { Filter: pidFilter } },
-    { table: T.PERSON_ALLERGIES,     action: 'Find', selector: { Filter: pidFilter } },
-    { table: T.PERSON_DIETARY,       action: 'Find', selector: { Filter: pidFilter } },
-    // NEAE staging (Paso 4 "Salud y apoyo"). Defensive: si las tablas aún no
-    // existen en AppSheet, el spec devuelve ok=false → pickRows() da [] (P72).
-    { table: T.PERSON_NEAE,          action: 'Find', selector: { Filter: pidFilter } },
-    { table: T.PERSON_NEAE_SUPPORT,  action: 'Find', selector: { Filter: pidFilter } },
-  ]);
-  const pickRows = (i) => personDetailRead[i].ok ? (personDetailRead[i].data || []) : [];
-  const nationalities    = pickRows(0);
-  const personIds_       = pickRows(1);
-  const languages        = pickRows(2);
-  const personAddrJoins  = pickRows(3);
-  const prevSchools      = pickRows(4);
-  const medical          = pickRows(5);
-  const allergies        = pickRows(6);
-  const dietary          = pickRows(7);
-  // Only ACTIVE NEAE rows hydrate the wizard (append-only DL-E16: superseded
-  // rows carry is_active=false). AppSheet returns booleans as "TRUE"/"FALSE".
-  const neaeActive_      = (r) => r && r.is_active !== false && r.is_active !== 'FALSE' && r.is_active !== 'false';
-  const neae             = pickRows(8).filter(neaeActive_);
-  const neaeSupport      = pickRows(9).filter(neaeActive_);
-
-  // Batch-fetch address value rows (emails/phones already fetched by enrollment_group_id in topRead).
-  const addrIds = personAddrJoins.map(r => r.address_id).filter(Boolean);
-  const valueRead = appsheetRequestBatch_([
-    addrIds.length ? { table: T.ADDRESSES, action: 'Find', selector: { Filter: addrIds.map(x => '"address_id" = "' + appsheetEscape_(x) + '"').join(' || ') } }
-                   : { table: T.ADDRESSES, action: 'Find', rows: [] },
-  ]);
-  const addressMap = {};
-  if (valueRead[0].ok) (valueRead[0].data || []).forEach(r => { addressMap[r.address_id] = r; });
-
-  const enrichedPersons = persons.map(person => {
-    const pid      = person.person_id;
-    const addrJoin = personAddrJoins.find(r => r.person_id === pid && r.is_default)
-                  || personAddrJoins.find(r => r.person_id === pid)
-                  || null;
-    return {
-      ...person,
-      date_of_birth:     normalizeDate_(person.date_of_birth),
-      nationalities:     nationalities.filter(n => n.person_id === pid),
-      ids:               personIds_.filter(x => x.person_id === pid),
-      languages:         languages.filter(x => x.person_id === pid),
-      address:           addrJoin ? (addressMap[addrJoin.address_id] || null) : null,
-      emails:            allEmails.filter(e => e.person_id === pid),
-      phones:            allPhones.filter(ph => ph.person_id === pid),
-      previous_schools:  prevSchools.filter(s => s.person_id === pid),
-      medical:           medical.filter(x => x.person_id === pid),
-      allergies:         allergies.filter(x => x.person_id === pid),
-      dietary:           dietary.filter(x => x.person_id === pid),
-      // NEAE staging (Paso 4 "Salud y apoyo") — mapeo a la forma que consume el
-      // frontend (conditions / supports). Solo columnas reales del staging.
-      neae:              neae.filter(x => x.person_id === pid).map(r => ({
-        category_code:            r.category_code || null,
-        diagnosis_status:         r.diagnosis_status || null,
-        observations:             r.observations || null,
-      })),
-      neae_support:      neaeSupport.filter(x => x.person_id === pid).map(r => ({
-        support_type:   r.support_type || null,
-        provider_scope: r.provider_scope || null,
-        is_current:     r.is_current === false || r.is_current === 'FALSE' || r.is_current === 'false' ? false : true,
-        observations:   r.observations || null,
-      })),
-    };
-  });
-
-  // DL-E49 §2 — las respuestas de un tutor son SUYAS; las de los menores y las del
-  // propio expediente (respondent_id = groupId) se comparten. Mismo criterio que el
-  // camino vivo (enr_wizardHydrateCompute_, kis-app).
-  const responsesForClient = responses.filter(r => {
-    const t = personTypeByIdOriginal[r && r.respondent_id];
-    if (t !== 'guardian') return true;
-    return r.respondent_id === recoveredGuardianId;
-  });
-
-  return {
-    group,
-    application: group, // legacy alias — TODO: drop once frontend uses `group`
-    enrollments,
-    persons: enrichedPersons,
-    relations,
-    documents,
-    responses: responsesForClient,
-    interviews,
-    admission,                                      // P215 (additive)
-    recovered_guardian_person_id: recoveredGuardianId, // P215 (server-resolved, a1)
-    guardians_total_count: guardiansTotalCount,     // DL-E49 §3/§2 — conteo, nunca identidad
-    step_up_fresh: stepUpFresh,                     // magic-link grace (no OTP si true)
-  };
-}
-
-/**
  * PERF (2026-06-08): endpoint LIGERO de estado de admisión para el pulse de la
  * página de firma. `resumeSession_` relee TODO el expediente (persons + sub-reads
  * por persona + relations + documents + responses + interviews → ~20+ reads, 30-40s)
@@ -4567,7 +3987,7 @@ function getAdmissionState_(p) {
       // IDENTIDAD (multi-tutor, 2026-06-12): en grupos submitted el token NO rota ->
       // dos tutores comparten clave. La entrada guarda el `n` con el que se cocino;
       // si el caller trae otro `n` (otro guardian) -> MISS al camino vivo (que
-      // re-resuelve la identidad real). Mismo patron en wz_res/wz_mem.
+      // re-resuelve la identidad real). Mismo patron en wz_mem.
       if (wzEntry && wzEntry.admission && wzEntry.v === _getLiveStateVersion_(id)) {
         const admC = wzEntry.admission;
         Logger.log('[WZCACHE] HIT adm token=' + String(p.resume_token).slice(0, 8) +
@@ -4706,7 +4126,7 @@ function saveStep_(p) {
 
   // CLI 26 (2026-06-01) — state-gate defense in depth. A submitted group is
   // locked for the family; only KMS staff can reopen it back to NEEDS_MORE_INFO
-  // (which clears submitted_at via the reopen branch of resumeSession_).
+  // (which clears submitted_at via the reopen branch of hydrateSession_).
   // The 'review' step in this handler used to be a staff-side state-transition
   // helper from a legacy flow; no current frontend caller invokes it, and the
   // canonical state-machine API lives in KMS — so gating it too is correct.
@@ -8675,7 +8095,6 @@ function warmBundle_(p) {
     var it0;
     try { it0 = JSON.parse(pRaw) || {}; } catch (ePp) { return { ok: false }; }
     if (!it0.t) return { ok: false };
-    if (it0.phase === 'res') return _warmResumePhase_(it0);
     if (it0.phase === 'mem') return _warmMembersDocsPhase_(it0);
     // fase 'kms' — bundle KMS-side (hydrate+admission+members+docs), mismo gate
     // KAL-4 y rate-limit que el warm de la pantalla OTP (warmSession_).
@@ -8721,18 +8140,22 @@ function warmBundle_(p) {
       return { ok: true };
     }
     // V2.1: por cada item, DOS fases hijas CONCURRENTES (fetchAll al propio /exec):
-    //  - 'res': payload de resume wizard-side (~25-30s) — lo primero que pide el click.
     //  - 'kms': hydrate+admission+members+bytes PDF (30-90s, dominado por el pull KMS).
+    //  - 'mem': members + bytes del paquete de firma, independiente del hydrate.
     // Antes secuencial: el warm no ganaba la carrera del minuto muerto (round 5).
+    // ②17 (2026-08-15): había una TERCERA fase, 'res', que precocinaba el payload de
+    // `resumeSession` con ~24 lecturas directas a AppSheet —salud, alergias, dieta y
+    // NEAE de menores incluidas— en CADA envío de enlace. Se retiró con el manejador:
+    // su memoria solo la leía `resumeSession`, y el frontal no lo llamaba desde que el
+    // camino vivo pasó a ser `hydrateSession` → KMS. Lo que calienta el camino vivo es
+    // la fase 'kms', que sigue intacta.
     var passes = [];
     items.forEach(function(it) {
       if (!it || !it.t) return;
-      var pr = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'res' });
       var pk = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'kms' });
       // V2.3: fase 'mem' CONCURRENTE e independiente del hydrate — el paso 10
       // (members+docs) queda caliente aunque el usuario llegue en <60s.
       var pm = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'mem' });
-      if (pr) passes.push({ pass: pr });
       if (pk) passes.push({ pass: pk });
       if (pm) passes.push({ pass: pm });
     });
@@ -8938,7 +8361,9 @@ function hydrateSession_(p) {
 
   // REOPEN-FIX (regresión DL-C) — honra la reapertura: si el grupo trae `submitted_at` pero
   //   el expediente está en una fase editable (reapertura del KMS), anulamos `submitted_at` en
-  //   la respuesta — restaura el efecto probado de resumeSession_:2344. El frontend
+  //   la respuesta. ②17 (2026-08-15): éste es ya el ÚNICO sitio donde vive la reapertura — el
+  //   lector del que se copió (`resumeSession_`) se retiró con el resto de esa segunda
+  //   hidratación, así que aquí no hay nada que «restaurar»: hay que conservarlo. El frontend
   //   (WizardContext) deriva el bloqueo de `group.submitted_at`, así que esto desbloquea la UI.
   //
   //   2026-08-03: antes esto lo CONDUCÍA el `editable` que mandaba el KMS. Ya no: esa bandera
@@ -11016,132 +10441,6 @@ function manual_testStepUpGrace() {
   cache.remove(gKey); cache.remove(sKey);
   Logger.log('=== manual_testStepUpGrace: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
   return { pass: pass };
-}
-
-/**
- * ★ SEC WIZ-SIGNTOKEN residual (audit 2026-07-26) — test del cache-hit GATEADO de
- * resumeSession_. Ejecutar desde el editor GAS. Cierra el prong (a): el bearer del
- * ACTO de firma NO cruza al cliente sin step-up fresco POR NINGÚN camino de lectura,
- * incluido el retorno de la entrada de cache (que el warm cocina con
- * {skipPiiGate:true} → lleva el signing_token EN CLARO).
- *
- * Fase 1 — PURA (siempre corre, sin BD, sin cache):
- *   (a) fresh=false → `signing_token` vaciado, hermanos del signing_context intactos.
- *   (b) fresh=false → el objeto de ENTRADA no se muta (el cacheado sobrevive intacto
- *       → el camino fresco posterior sigue sirviendo el token real).
- *   (c) fresh=true  → passthrough: el token SÍ se sirve (flujo legítimo intacto).
- *
- * Fase 2 — INTEGRACIÓN (opcional): rellenar RESUME_TOKEN_REAL + GROUP_ID con valores
- * reales de un grupo de pruebas. Siembra una entrada wz_res sintética (admission con
- * token bien visible), y afirma:
- *   (d) SIN step-up fresco → cache-hit → admission.signing_context.signing_token vacío
- *       + pii_gated:true + los flags no-token (state_code/signing_ready/…) presentes.
- *   (e) CON step-up fresco → cache-hit → el MISMO token sintético se sirve tal cual.
- * Limpia siempre las claves que siembra.
- */
-function manual_testResumeCacheHitRedactsToken() {
-  var RESUME_TOKEN_REAL = '';   // ← rellenar para la Fase 2 (opcional)
-  var GROUP_ID          = '';   // ← rellenar para la Fase 2 (opcional)
-
-  var pass = true;
-  Logger.log('=== manual_testResumeCacheHitRedactsToken ===');
-
-  // ── Fase 1 — pura ──────────────────────────────────────────────────────────
-  var SENTINEL = '11111111-2222-4333-8444-555555555555';
-  var ctx = {
-    signing_token:      SENTINEL,
-    signer_id:          'signer-1',
-    session_id:         'session-1',
-    guardian_person_id: 'guardian-1',
-  };
-
-  var gated = _redactSigningTokenIfNotFresh_(ctx, false);
-  if (!gated.signing_token && gated.signer_id === 'signer-1' &&
-      gated.session_id === 'session-1' && gated.guardian_person_id === 'guardian-1') {
-    Logger.log('  a) fresh=false → token vaciado, hermanos intactos → ✓ PASS');
-  } else {
-    Logger.log('  a) fresh=false → ✗ FAIL (token=' + gated.signing_token +
-               ' signer=' + gated.signer_id + ')'); pass = false;
-  }
-
-  if (ctx.signing_token === SENTINEL) {
-    Logger.log('  b) el objeto de entrada NO se muta (copia) → ✓ PASS');
-  } else {
-    Logger.log('  b) MUTÓ el objeto cacheado → ✗ FAIL'); pass = false;
-  }
-
-  var fresh = _redactSigningTokenIfNotFresh_(ctx, true);
-  if (fresh && fresh.signing_token === SENTINEL) {
-    Logger.log('  c) fresh=true → token servido (flujo legítimo) → ✓ PASS');
-  } else {
-    Logger.log('  c) fresh=true → ✗ FAIL (token=' + (fresh && fresh.signing_token) + ')'); pass = false;
-  }
-
-  // ── Fase 2 — integración (opcional) ────────────────────────────────────────
-  if (!RESUME_TOKEN_REAL || !GROUP_ID) {
-    Logger.log('  d/e) SALTADOS — rellena RESUME_TOKEN_REAL + GROUP_ID para el test ' +
-               'de integración del cache-hit real.');
-    Logger.log('=== manual_testResumeCacheHitRedactsToken: ' + (pass ? 'PASS' : 'FAIL') + ' (fase 1) ===');
-    return { pass: pass, phase2: false };
-  }
-
-  var cache  = CacheService.getScriptCache();
-  var wzKey  = _wzCacheKey_('res', GROUP_ID + '_' + _wzN_(null));
-  var sKey   = 'stepup_ok_' + GROUP_ID;
-  var gKey   = 'mlgrace_' + String(RESUME_TOKEN_REAL).trim();
-  try {
-    var entry = {
-      v: _getLiveStateVersion_(GROUP_ID),
-      data: {
-        group:       { enrollment_group_id: GROUP_ID, resume_token: RESUME_TOKEN_REAL },
-        enrollments: [],
-        admission: {
-          state_code: 'AD', state_label: 'Aprobada',
-          signing_ready: true, signing_status: 'PENDING', signing_available: true,
-          editable: false,
-          signing_context: {
-            signing_token: SENTINEL, signer_id: 'signer-1',
-            session_id: 'session-1', guardian_person_id: 'guardian-1',
-          },
-        },
-        recovered_guardian_person_id: null,
-      },
-    };
-    _wzCachePutChunked_(cache, wzKey, JSON.stringify(entry), 300);
-
-    // (d) sin step-up fresco (ni gracia) → cache-hit gateado.
-    cache.remove(sKey); cache.remove(gKey);
-    var resGated = resumeSession_({ resume_token: RESUME_TOKEN_REAL });
-    var admG = resGated && resGated.admission;
-    var tokenG = admG && admG.signing_context && admG.signing_context.signing_token;
-    if (resGated.pii_gated === true && !tokenG &&
-        admG && admG.state_code === 'AD' && admG.signing_ready === true) {
-      Logger.log('  d) cache-hit sin step-up → token vaciado + flags presentes → ✓ PASS');
-    } else {
-      Logger.log('  d) cache-hit sin step-up → ✗ FAIL (pii_gated=' + resGated.pii_gated +
-                 ' token=' + tokenG + ' state=' + (admG && admG.state_code) + ')'); pass = false;
-    }
-
-    // (e) con step-up fresco → el token SÍ se sirve (flujo legítimo intacto).
-    _wzCachePutChunked_(cache, wzKey, JSON.stringify(entry), 300);
-    _markStepUpFresh_(GROUP_ID, 'TEST');
-    var resFresh = resumeSession_({ resume_token: RESUME_TOKEN_REAL });
-    var admF = resFresh && resFresh.admission;
-    var tokenF = admF && admF.signing_context && admF.signing_context.signing_token;
-    if (tokenF === SENTINEL) {
-      Logger.log('  e) cache-hit con step-up fresco → token servido → ✓ PASS');
-    } else {
-      Logger.log('  e) cache-hit con step-up fresco → ✗ FAIL (token=' + tokenF + ')'); pass = false;
-    }
-  } catch (eInt) {
-    Logger.log('  d/e) EXCEPCIÓN en la fase 2: ' + redact_(String(eInt && eInt.message)));
-    pass = false;
-  } finally {
-    try { cache.remove(wzKey + '_meta'); cache.remove(sKey); cache.remove(gKey); } catch (eCl) {}
-  }
-
-  Logger.log('=== manual_testResumeCacheHitRedactsToken: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
-  return { pass: pass, phase2: true };
 }
 
 /**
