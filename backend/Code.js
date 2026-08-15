@@ -2889,44 +2889,31 @@ function sendMagicLink_(p) {
     }
 
     try {
-      // ── LAS DOS LECTURAS DE ENTRADA, A LA VEZ (2026-08-15) ──────────────────
-      // MEDIDO: el correo del enlace tarda ~2 min y la mitad de esa espera es el
-      // trabajo que va POR DELANTE del envío — cada ida y vuelta a AppSheet que se
-      // encadena aquí retrasa el momento en que el correo se pone en cola.
+      // ── ②17 OCTAVO TRAMO (2026-08-15): LAS LECTURAS LAS HACE EL KMS ─────────
+      // Este proceso es PÚBLICO Y ANÓNIMO y hasta hoy preguntaba a AppSheet, con la
+      // credencial de la aplicación ENTERA, filtrando por un correo que teclea
+      // cualquiera: los expedientes de ese correo, TODAS las filas de `enrEmails` de
+      // ese buzón, y la ficha COMPLETA de cada persona —MENORES INCLUIDOS— de los
+      // expedientes que casaran, solo para comprobar que el correo es de un tutor.
+      // Ahora lo sirve `enr.wizardRecuperacionDelCorreo` con los MISMOS filtros,
+      // proyectado a cinco campos por expediente y un identificador opaco por
+      // expediente. Lector ÚNICO: `_recuperacionDelCorreo_`.
       //
-      // Estas dos lecturas NO dependen una de otra: las dos filtran por el MISMO
-      // email tecleado, que se conoce desde la primera línea. Iban en serie (la de
-      // grupos aquí, la de correos DESPUÉS de rotar el token) sin ningún motivo.
-      // Filtros COPIADOS VERBATIM de los dos lectores probados:
-      //   · grupos  → el `appsheetRequest_(T.ENROLLMENT_GROUPS,…)` que vivía aquí.
-      //   · correos → `findOpenGroupsByGuardianEmail_` (mismo `"value" = "<email>"`).
-      // Transporte: `appsheetRequestBatch_`, el que esta misma función ya usaba para
-      // los correos por grupo. No hay lógica de acceso a datos nueva.
+      // ⛔ LA DECISIÓN NO SE MUEVE: preferir la lista del correo principal y caer a la
+      // del tutor sigue AQUÍ, verbatim — por eso llegan las dos listas por separado.
       //
-      // Find all non-abandoned sessions for this email — INCLUDING submitted/AD.
-      // DL-E38: recovery MUST work for submitted/AD families so the magic link can
-      // resume them into signing. We only exclude abandoned sessions; submitted
-      // sessions get their EXISTING token sent (token renewal is skipped below for
-      // them, mirroring Path 1's behaviour).
-      const emailEsc = appsheetEscape_(p.primary_email);
-      const lecturaEntrada = appsheetRequestBatch_([
-        { table: T.ENROLLMENT_GROUPS, action: 'Find', selector: {
-            Filter: '"primary_email" = "' + emailEsc + '" && ISBLANK([abandoned_at])' } },
-        { table: T.EMAILS,            action: 'Find', selector: {
-            Filter: '"value" = "' + emailEsc + '"' } },
-      ]);
-      let rows = lecturaEntrada[0].ok ? lecturaEntrada[0].data : null;
-      // Filas de enrEmails del buzón tecleado (TODOS sus grupos). Sirven a los DOS
-      // consumidores de abajo; cada uno se queda SOLO con las de su grupo, que es el
-      // contrato de `findEmailIdForGuardian_` ("filas del MISMO grupo"). Lectura
-      // caída → null ⇒ cada consumidor cae a su propio Find (degradación, no error).
-      const correosDelBuzon = lecturaEntrada[1].ok ? wizardSoloVivas_(lecturaEntrada[1].data) : null;
-      // DL-E38 a1: a non-primary guardian recovers with their OWN email — locate
-      // open group(s) via enrEmails (guardians) when primary_email doesn't match.
-      // The link is sent to the typed email (p.primary_email) below, i.e. to the
-      // guardian's own inbox.
+      // DL-E38: la recuperación DEBE funcionar para expedientes ya enviados / admitidos,
+      // para que el enlace los devuelva a la firma. Solo se excluyen los abandonados; a
+      // los enviados se les manda su token EXISTENTE (abajo se salta su renovación,
+      // igual que en el camino 1).
+      const recuperacion = _recuperacionDelCorreo_(p.primary_email);
+      // DL-E38 a1: un tutor NO principal recupera con SU propio correo — el KMS localiza
+      // esos expedientes por `enrEmails` (y comprueba ahí dentro que la fila es de un
+      // tutor, no de un menor). El enlace se manda al correo tecleado, o sea al buzón de
+      // ese tutor.
+      let rows = recuperacion.porCorreoPrincipal;
       if (!rows || !rows.length) {
-        rows = findOpenGroupsByGuardianEmail_(p.primary_email, correosDelBuzon);
+        rows = recuperacion.porTutor;
       }
       if (!rows || !rows.length) {
         // WIZ-ENUM: sin grupo NO se lanza — ack constante. Y como la landing ya no
@@ -2981,18 +2968,13 @@ function sendMagicLink_(p) {
           Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message));
         }
       });
-      // Los correos ya se bajaron ARRIBA, en la misma tanda que los grupos: aquí ya no
-      // se vuelve a AppSheet (era la ida y vuelta que se comía la espera justo antes
-      // del envío). Cada grupo recibe SOLO sus filas — el contrato de
-      // `findEmailIdForGuardian_` es "filas enrEmails del MISMO grupo", y pasarle las
-      // de otro grupo devolvería un `email_id` ajeno en el enlace.
-      const emailsHintByGroup = {};
-      sorted.forEach(g => {
-        const gid = g.enrollment_group_id;
-        emailsHintByGroup[gid] = correosDelBuzon
-          ? correosDelBuzon.filter(r => r && r.enrollment_group_id === gid)   // ya coladas en la lectura
-          : null;   // lectura caída → null ⇒ findEmailIdForGuardian_ hace su propio Find
-      });
+      // ②17 (octavo tramo): el `email_id` de ESTE buzón en CADA expediente ya viene
+      // resuelto por el KMS —que es quien lee `enrEmails`—, de modo que aquí no se
+      // vuelve a AppSheet ni cruzan filas de correos. Sigue siendo "el identificador
+      // del MISMO expediente": el mapa está indexado por expediente, así que no puede
+      // colarse un `email_id` ajeno en el enlace. Sin él → `n` ausente → enlace
+      // group-scoped, exactamente el respaldo de antes.
+      const identificadorDeCorreo = recuperacion.identificadorDeCorreo;
       const grps = sorted.map(g => {
         const gid = g.enrollment_group_id;
         return (gid in newTokens) ? { ...g, resume_token: newTokens[gid] } : g;
@@ -3008,7 +2990,7 @@ function sendMagicLink_(p) {
         // Use the single-link template (with full security footer + GDPR block)
         // instead of the abridged multi template when there's actually only one
         // open session — which is the common case under the new single-session policy.
-        const nEmailId = findEmailIdForGuardian_(grps[0].enrollment_group_id, identityEmail, emailsHintByGroup[grps[0].enrollment_group_id]);
+        const nEmailId = identificadorDeCorreo[grps[0].enrollment_group_id] || null;
         _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
         // WIZARD-TERMINAL P3: contenido gobernado por el KMS. isFirstApp false (recuperación).
         const resumeUrlR = RESUME_BASE_URL + grps[0].resume_token + (nEmailId ? '?n=' + nEmailId : '');
@@ -3026,7 +3008,7 @@ function sendMagicLink_(p) {
       } else {
         // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
         // del guardian en SU grupo. La gracia OTP-skip se ancla al resume_token de cada grupo.
-        const nEmailIds = grps.map(g => findEmailIdForGuardian_(g.enrollment_group_id, identityEmail, emailsHintByGroup[g.enrollment_group_id]));
+        const nEmailIds = grps.map(g => identificadorDeCorreo[g.enrollment_group_id] || null);
         grps.forEach(g => _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id));
         // WIZARD-TERMINAL P3: la lista de enlaces la pre-renderiza el wizard en UN placeholder;
         // el resto del contenido (saludo, footer) lo gobierna el KMS. El report link usa el
@@ -3321,77 +3303,14 @@ function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, person
   return null;
 }
 
-/**
- * DL-E38 a1: localiza grupos recuperables (no abandonados — INCLUYE submitted/AD)
- * cuyo email de GUARDIAN coincide con el tecleado — para que un guardian no-primario pueda
- * recuperar con SU propio email (no solo el `primary_email` del grupo). El
- * magic link se envía al email tecleado (que es el del guardian dueño del buzón),
- * nunca al atacante. KAL-5: assertValidEmail_ + appsheetEscape_. Devuelve filas
- * de grupo completas (con resume_token/primary_email/preferred_language).
- *
- * @param {string} rawEmail
- * @param {Array=} correosHint filas de enrEmails de ESE buzón ya bajadas por el caller
- *                 con el mismo filtro (`"value" = "<email>"`); ausente → Find propio.
- * @returns {Array} filas enrEnrollmentGroups abiertas con guardian match
- */
-function findOpenGroupsByGuardianEmail_(rawEmail, correosHint) {
-  var email;
-  try { assertValidEmail_(rawEmail, 'primary_email'); email = String(rawEmail).toLowerCase().trim(); }
-  catch (e) { return []; }
-
-  // `correosHint` = filas de enrEmails de ESE buzón ya bajadas por el caller con el
-  // MISMO filtro de abajo (`sendMagicLink_` las pide a la vez que los grupos, para no
-  // encadenar idas y vueltas antes de mandar el correo). Sin hint, el Find de siempre.
-  // Mismo idioma que el `emailsHint` de `findEmailIdForGuardian_`.
-  var emailRows = wizardSoloVivas_(Array.isArray(correosHint) ? correosHint
-    : appsheetRequest_(T.EMAILS, 'Find', [],
-        { Filter: '"value" = "' + appsheetEscape_(rawEmail) + '"' }));
-  var matched = emailRows.filter(function(e) {
-    return String(e.value || '').toLowerCase().trim() === email && e.enrollment_group_id;
-  });
-  if (!matched.length) return [];
-
-  var groupIds = {};
-  matched.forEach(function(e) { groupIds[e.enrollment_group_id] = true; });
-  var ids = Object.keys(groupIds);
-  try { ids.forEach(function(id) { assertValidUuid_(id, 'enrollment_group_id'); }); }
-  catch (e) { return []; }
-  var grpFilter = ids.map(function(id) { return '"enrollment_group_id" = "' + appsheetEscape_(id) + '"'; }).join(' || ');
-
-  // Las dos lecturas llevan el MISMO filtro y no dependen una de otra: van a la vez.
-  // FALLA CERRADO — si alguna no se pudo leer se LANZA (como lanzaba `appsheetRequest_`):
-  // devolver [] diría "esta familia no tiene expediente" y el caller le abriría uno NUEVO.
-  var lote = appsheetRequestBatch_([
-    { table: T.ENROLLMENT_GROUPS, action: 'Find', selector: { Filter: grpFilter } },
-    { table: T.PERSONS,           action: 'Find', selector: { Filter: grpFilter } },
-  ]);
-  if (!lote[0].ok) throw new Error('findOpenGroupsByGuardianEmail_: ' + lote[0].error);
-  if (!lote[1].ok) throw new Error('findOpenGroupsByGuardianEmail_: ' + lote[1].error);
-  var groups  = lote[0].data || [];
-  var persons = wizardSoloVivas_(lote[1].data);
-
-  // Solo enviar si el email matcheado pertenece a un GUARDIAN del grupo (no a un
-  // applicant) — evita mandar recuperación al email de un menor.
-  var guardianEmailGroups = {};
-  var guardianIdsByGroup = {};
-  persons.forEach(function(per) {
-    if (per.person_type_id === 'guardian') {
-      (guardianIdsByGroup[per.enrollment_group_id] = guardianIdsByGroup[per.enrollment_group_id] || {})[per.person_id] = true;
-    }
-  });
-  matched.forEach(function(e) {
-    var g = guardianIdsByGroup[e.enrollment_group_id];
-    if (g && g[e.person_id]) guardianEmailGroups[e.enrollment_group_id] = true;
-  });
-
-  // DL-E38: include submitted/AD sessions (only exclude abandoned) so a
-  // non-primary guardian can recover with their own email post-submit and
-  // resume into signing. Token renewal for submitted rows is skipped by the
-  // caller (sendMagicLink_ Path 2), which sends their existing resume_token.
-  return groups.filter(function(g) {
-    return !g.abandoned_at && guardianEmailGroups[g.enrollment_group_id];
-  });
-}
+// ②17 (octavo tramo, 2026-08-15) — aquí vivía `findOpenGroupsByGuardianEmail_`, que
+// localizaba los expedientes en los que el correo tecleado es de un TUTOR. Leía
+// `enrEmails` por un correo ARBITRARIO y luego `enrEnrollmentGroups` + `enrPersons`
+// —fichas COMPLETAS de menores incluidas— desde este proceso público y anónimo, solo
+// para comprobar el papel de tutor. Esa comprobación es inseparable de la lectura, así
+// que viajó CON ella al KMS (`enr.wizardRecuperacionDelCorreo` → `por_tutor`), y aquí
+// no queda un segundo lector del mismo dato. Su ÚNICO llamante era la rama pública de
+// `sendMagicLink_`, que hoy pide las dos listas por `_recuperacionDelCorreo_`.
 
 /**
  * GAP-3 / P215: resuelve el estado real del expediente + (si Aprobado) el
@@ -3762,6 +3681,48 @@ function _expedientesDelCorreo_(email) {
     abiertos:              Array.isArray(r.abiertos) ? r.abiertos : [],
     personasPorExpediente: r.personas_por_expediente || {},
     recuentoFallido:       !!r.recuento_fallido,
+  };
+}
+
+/**
+ * ②17 (octavo tramo) — los expedientes RECUPERABLES de un correo tecleado, servidos por
+ * el KMS. **Lector ÚNICO** de lo que la rama pública de `sendMagicLink_` hacía con lecturas
+ * directas a AppSheet desde este proceso, que es **público y anónimo**:
+ *
+ *   · los expedientes cuyo **correo principal** casa con el tecleado,
+ *   · los que le tocan **como tutor** (vía `enrEmails` → `enrPersons`, la comprobación que
+ *     evita mandarle la recuperación al buzón de un menor),
+ *   · y el `email_id` de ese buzón en cada uno — el `n` del enlace.
+ *
+ * Los sirve `enr.wizardRecuperacionDelCorreo` con los MISMOS filtros y proyectados a los
+ * cinco campos que este fichero demuestra usar. **Deja de cruzar**: las filas enteras de
+ * `enrEmails` de ese buzón, la **ficha COMPLETA de cada persona —MENORES INCLUIDOS— de los
+ * expedientes que casen** (que solo servía para comprobar el papel de tutor), y la fila
+ * entera del expediente con `magic_link_token` dentro.
+ *
+ * ⛔ **LO QUE SE DECIDE NO SE MUEVE:** preferir la lista del correo principal y caer a la
+ * del tutor solo si aquélla está vacía, ordenar por antigüedad, renovar o no el enlace,
+ * mandar uno o la lista de varios — todo eso se queda AQUÍ, verbatim. Por eso este ayudante
+ * devuelve **las dos listas por separado**, nunca una ya elegida.
+ *
+ * ⛔ **FALLA CERRADO — LANZA, no degrada, y es deliberado.** El llamante envuelve todo su
+ * camino en un `try` que devuelve el acuse constante, así que una lectura caída acaba en el
+ * MISMO acuse **y sin crear nada**. Devolver «no hay ninguno» en su lugar haría que
+ * `initEnrollmentSession_` le abriera un expediente NUEVO a una familia que ya tiene el
+ * suyo, y le mandara el enlace a un borrador vacío. *(Eso era un agujero REAL del código
+ * anterior: su lectura de expedientes degradaba a `null` y no se distinguía de «ninguno».)*
+ *
+ * @param {string} email correo ya normalizado y validado por el llamante (KAL-5 capa 1).
+ * @returns {{porCorreoPrincipal:Array, porTutor:Array, identificadorDeCorreo:Object,
+ *            identificadorFallido:boolean}}
+ */
+function _recuperacionDelCorreo_(email) {
+  var r = kmsProxy_('enr.wizardRecuperacionDelCorreo', { email: email }) || {};
+  return {
+    porCorreoPrincipal:    Array.isArray(r.por_correo_principal) ? r.por_correo_principal : [],
+    porTutor:              Array.isArray(r.por_tutor) ? r.por_tutor : [],
+    identificadorDeCorreo: r.identificador_de_correo || {},
+    identificadorFallido:  !!r.identificador_fallido,
   };
 }
 

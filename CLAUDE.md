@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente") y **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva"). **Medido el 2026-08-15: quedan 66 lecturas directas + 4 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 70, solo 31 están en el camino vivo**: las otras 39 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE"). **Medido el 2026-08-15: quedan 64 lecturas directas + 2 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 66, solo 27 están en el camino vivo**: las otras 39 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -534,6 +534,76 @@ a sí misma dos veces:** su doble del validador de correo era **más estricto qu
 acepta comillas, que es justo por lo que existe el escape de capa 2— y su afirmación de fallo
 cerrado se satisfacía con que lanzara **una** de las dos lecturas, dejando pasar que la otra se
 disfrazara. **Quien toque este manejador, que lo mida.**
+
+### ②17 (2026-08-15) — la RECUPERACIÓN DEL ENLACE: la ficha de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor
+
+**La rama pública de `sendMagicLink_` es la puerta por la que una familia vuelve a su solicitud**, y
+la alcanza **cualquiera desde internet con el correo que quiera** (`ANYONE_ANONYMOUS`). Hacía tres
+grupos de lecturas directas a AppSheet, **con la credencial de la aplicación entera**, todas
+filtradas por ese correo tecleado:
+
+| Qué leía | Qué cruzaba a este proceso |
+|---|---|
+| los expedientes cuyo **correo principal** casa | la fila **ENTERA**, con **`magic_link_token`** —un secreto de portador— más `school_id`, `program_id`, `source_id`, `requester_person_id`, `source_locale`, `updated_at`, `_RowNumber` y el bloque de auditoría |
+| **todas** las filas de `enrEmails` de ese buzón | las filas enteras, en **todos** sus expedientes |
+| las **personas** de los expedientes que casaran | la **ficha COMPLETA de cada una —MENORES INCLUIDOS**: nombre, fecha de nacimiento, documento— **solo para comprobar que el correo es de un tutor** |
+
+**Ahora lo sirve una entrada del KMS**, `enr.wizardRecuperacionDelCorreo`
+(`kis-app kms-server/enr/wizard-gateway.gs`), con los **mismos filtros**, y lo consume **UN SOLO
+ayudante**, `_recuperacionDelCorreo_`. De cada expediente salen **CINCO campos**
+(`enrollment_group_id`, `resume_token`, `preferred_language`, `submitted_at`, `created_at` — los que
+este fichero demuestra usar) y de los correos **un identificador opaco por expediente**, el `n` del
+enlace. **De las personas no sale ni un campo.**
+
+**Lo que hay que retener al tocar esto:**
+
+- **LA DECISIÓN NO SE MOVIÓ.** Preferir la lista del correo principal y caer a la del tutor solo si
+  aquélla está vacía · ordenar por antigüedad · renovar o no el enlace · mandar uno o la lista de
+  varios: todo eso sigue **aquí, verbatim**. Por eso la entrada devuelve **las dos listas por
+  separado**, nunca una ya elegida.
+- **La GUARDA del tutor SÍ viajó, porque es inseparable de su lectura.** «Solo mandar si el correo
+  casado es de un **tutor**, no de un menor» era la única razón por la que se leían las personas ⇒
+  se hace dentro del KMS, y así las fichas no cruzan. Mismo criterio que `enr.wizardComprobarSubida`:
+  **las guardas viajan con su lectura; las decisiones, no.**
+- **`findOpenGroupsByGuardianEmail_` se RETIRÓ entero** (72 líneas): su lógica es la que viajó, y
+  dejarlo sería un **segundo lector del mismo dato**. Tenía **un solo llamante**, medido.
+- **Los fallos NO pesan igual, y se conserva el criterio del oro.** Las lecturas de expedientes
+  **LANZAN** —el oro lo decía con todas las letras: *«devolver [] diría "esta familia no tiene
+  expediente" y el caller le abriría uno NUEVO»*—; la de correos **degrada** para el identificador
+  del enlace (sin `n` el enlace se manda igual) y **falla cerrado** si es la única vía que queda.
+- **Auth: solo `service_token`, y se dice así.** Aquí no hay `resume_token` del que derivar nada
+  (KAL-4): quien pide la recuperación es, por definición, quien **no tiene** el enlace. El alcance lo
+  acota la FORMA de la entrada —un correo, cinco campos y un identificador opaco—. Acotar por
+  cliente es `②18`.
+- **La anti-enumeración (WIZ-ENUM) no se toca:** la respuesta pública sigue siendo constante, y que
+  la entrada del KMS lance no crea oráculo — el `catch` de siempre lo convierte en el mismo acuse.
+
+⚠️ **Y ESTO CERRÓ UN AGUJERO REAL, medido el 2026-08-15.** La lectura de expedientes del lote de
+entrada degradaba a `null` (`lecturaEntrada[0].ok ? … : null`) y **no se distinguía de «no hay
+ninguno»**: si se caía y el buzón no casaba además por la vía del tutor —el caso normal del tutor 1,
+cuya fila de correo puede no existir todavía—, el asistente **abría un expediente NUEVO y le mandaba
+el enlace a un borrador vacío**. Ahora falla cerrado: mismo acuse, y **sin crear nada**.
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
+ídem `appsheetRequestBatch_`): **66 → 64** sueltas y **4 → 2** en lote. *(De las dos bajas de las
+sueltas, **una es una MENCIÓN en un comentario**, no una lectura: los puntos de lectura retirados
+son **una suelta y dos en lote**, que cubrían **cinco consultas** reales a AppSheet.)*
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarLaRecuperacionDelEnlace` — el manejador no
+vuelve a buscar expedientes por `primary_email` ni a leer `enrEmails` por un correo arbitrario · sí
+le pide las dos listas al KMS por el ayudante único · el ayudante pregunta a la entrada declarada ·
+**el lector viejo no reaparece** · y **dos anclas**: que el manejador siga existiendo y siga
+devolviendo el acuse constante, para que el control no salga verde afirmando ausencias sobre un
+manejador vaciado. **Rojo demostrado SIETE veces**, cada una nombrando su caso (dos dejando el
+control **CIEGO**).
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
+**21 afirmaciones** sobre el manejador real extraído del fuente y ejecutado con dobles,
+**demostradas no ciegas** con seis roturas (ensanchar la proyección a la fila entera · quitar la
+guarda del tutor · disfrazar de «no hay ninguno» la lectura por correo principal · quitarle el fallo
+cerrado a los correos · quitar el cinturón sobre el selector · renombrar el manejador → *«medición
+CIEGA»*, no verde). **Quien toque este manejador, que lo mida.**
 
 ### ②17 (2026-08-15) — la CABECERA del expediente: tres copias de la misma lectura, y una cruzaba entera al navegador
 

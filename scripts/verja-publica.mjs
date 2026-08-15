@@ -693,6 +693,81 @@ function comprobarLaEntradaDeLaSolicitud(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 octavo tramo — la RECUPERACIÓN DEL ENLACE por un correo tecleado.
+ *
+ * La rama pública de `sendMagicLink_` —la que cualquiera alcanza desde internet con el
+ * correo que quiera— leía de AppSheet, con la credencial de la aplicación entera: los
+ * expedientes de ese correo, TODAS las filas de `enrEmails` de ese buzón, y la ficha
+ * COMPLETA de cada persona —MENORES INCLUIDOS— de los expedientes que casaran, solo para
+ * comprobar que el correo es de un tutor. Ahora lo sirve el KMS
+ * (`enr.wizardRecuperacionDelCorreo`) por **UN SOLO ayudante**, `_recuperacionDelCorreo_`.
+ *
+ * Se afirman SEIS cosas y DOS son anclas. Las anclas existen porque un control que solo
+ * comprueba AUSENCIAS sale verde sobre un manejador vaciado o renombrado: si
+ * `sendMagicLink_` desaparece, o su rama pública deja de devolver el acuse constante, este
+ * control **no puede medir lo que dice medir** y lo dice con esas palabras en vez de callar.
+ *
+ * Lo que NO se afirma, y se dice: que el KMS conteste la proyección correcta, ni que la
+ * guarda del tutor siga aplicándose allí, ni que el ayudante falle cerrado. Eso no se lee
+ * aquí — se midió aparte, ejecutando el manejador real con dobles.
+ */
+function comprobarLaRecuperacionDelEnlace(fuenteLimpia) {
+  const fallos = []
+
+  const cuerpo = cuerpoDe(fuenteLimpia, 'sendMagicLink_')
+  if (cuerpo === null) {
+    // ANCLA 1: sin el manejador, este control es CIEGO.
+    fallos.push('no se encontró `sendMagicLink_` — control CIEGO en la recuperación del ' +
+      'enlace por un correo tecleado (②17)')
+  } else {
+    // La rama del token (camino 1) SIGUE leyendo la cabecera por su identificador y sus
+    // hints: eso es OTRO tramo. Aquí solo se afirma lo de la rama PÚBLICA, y por eso se
+    // mira lo que era exclusivo suyo: la lectura por `primary_email` y la de correos por
+    // `"value"`, que no existen en ninguna otra parte de este manejador.
+    if (/appsheetRequest(Batch)?_[\s\S]{0,400}?primary_email"\s*=/.test(cuerpo)) {
+      fallos.push('`sendMagicLink_` vuelve a buscar expedientes por `primary_email` en AppSheet — ' +
+        'la fila entera del expediente, con `magic_link_token` dentro, volvería a cruzar a este ' +
+        'proceso público y anónimo')
+    }
+    if (/appsheetRequest(Batch)?_[\s\S]{0,400}?"value"\s*=/.test(cuerpo)) {
+      fallos.push('`sendMagicLink_` vuelve a leer `enrEmails` por un correo ARBITRARIO — ' +
+        'las filas de ese buzón volverían a cruzar a este proceso público y anónimo')
+    }
+    if (!/_recuperacionDelCorreo_\s*\(/.test(cuerpo)) {
+      fallos.push('`sendMagicLink_` ya no le pide al KMS los expedientes recuperables ' +
+        '(`_recuperacionDelCorreo_`) — o se quitó, o volvió a resolverlos por su cuenta')
+    }
+    // ANCLA 2: la rama pública sigue devolviendo el acuse constante (WIZ-ENUM). Sin esto,
+    // «ya no lee AppSheet» sería cierto y vacío a la vez.
+    if (!/_magicLinkConstantAck_\s*\(/.test(cuerpo)) {
+      fallos.push('`sendMagicLink_` ya no devuelve el acuse constante de su rama pública ' +
+        '(`_magicLinkConstantAck_`) — el control estaría afirmando que no lee AppSheet sobre un ' +
+        'manejador que ya no hace su trabajo, y el oráculo de existencia estaría reabierto')
+    }
+  }
+
+  // El lector viejo NO vuelve: era el que leía las fichas de las personas para comprobar el
+  // papel de tutor. Su comprobación viajó al KMS junto con su lectura.
+  if (/function\s+findOpenGroupsByGuardianEmail_\s*\(/.test(fuenteLimpia)) {
+    fallos.push('`findOpenGroupsByGuardianEmail_` ha vuelto — sería un SEGUNDO lector del mismo ' +
+      'dato, y volvería a bajar la ficha completa de cada persona (menores incluidos) a este ' +
+      'proceso público solo para comprobar quién es tutor')
+  }
+
+  // UN SOLO lector: el ayudante existe y pregunta al KMS por la entrada declarada.
+  const ayudante = cuerpoDe(fuenteLimpia, '_recuperacionDelCorreo_')
+  if (ayudante === null) {
+    fallos.push('no se encontró `_recuperacionDelCorreo_` — control CIEGO: es el lector ÚNICO de ' +
+      'los expedientes recuperables de un correo (②17)')
+  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardRecuperacionDelCorreo'/.test(ayudante)) {
+    fallos.push('`_recuperacionDelCorreo_` ya no le pregunta al KMS ' +
+      '(`enr.wizardRecuperacionDelCorreo`) — si vuelve a leer AppSheet, el tramo está deshecho')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -706,5 +781,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarElEnvio(limpia),
     ...comprobarLaEntradaDelExpediente(limpia),
     ...comprobarLaEntradaDeLaSolicitud(limpia),
+    ...comprobarLaRecuperacionDelEnlace(limpia),
   ]
 }
