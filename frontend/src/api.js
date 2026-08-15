@@ -90,6 +90,32 @@ export function requestCorrection(resumeToken, note) {
 }
 
 /**
+ * 18.bis.84 · ¿CÓMO ACABARON LOS GUARDADOS QUE EL KMS DEJÓ APUNTADOS?
+ *
+ * El servidor NO guarda los pasos en el acto: los apunta y los hace después. Que una
+ * llamada de guardado vuelva bien solo significa «apuntado», nunca «escrito» — así que sin
+ * esta pregunta la familia leía «Todos los cambios guardados» aunque el trabajo acabara
+ * fallando o descartando lo que había escrito.
+ *
+ * LECTURA — por eso NO entra en `ACCIONES_QUE_ESCRIBEN`: que se pueda preguntar no dice
+ * absolutamente nada sobre si una escritura entra, y meterla ahí apagaría el aviso rojo
+ * por el motivo equivocado.
+ *
+ * El expediente lo deriva el servidor del `resume_token` (KAL-4); los identificadores no
+ * autorizan nada — uno ajeno vuelve como `'desconocido'`, sin delatar que exista.
+ *
+ * @param {string} resumeToken
+ * @param {string[]} jobIds hasta 10 (el tope lo recorta también el servidor).
+ * @returns {Promise<{trabajos: Array<{job_id:string, estado:string, motivo:?string, descartes:?Object}>}>}
+ */
+export function estadoDelGuardado(resumeToken, jobIds) {
+  return gasCall('estadoDelGuardado', {
+    resume_token: resumeToken,
+    job_ids: (Array.isArray(jobIds) ? jobIds : []).slice(0, 10),
+  });
+}
+
+/**
  * La familia QUITA de su solicitud algo que ella misma añadió (cola 18.bis.8).
  *
  * Hasta hoy los botones de quitar solo borraban de la pantalla: al guardar se mandaba la

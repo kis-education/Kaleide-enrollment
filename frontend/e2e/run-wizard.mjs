@@ -196,6 +196,12 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'subida-desde-la-pantalla': 'contra el sistema real el expediente recién creado aterriza en el paso 1, y el robot aún no conduce en navegador los pasos 2-5 necesarios para llegar a Documentos. La ESCRITURA del documento sí se cubre (por la pasarela) y la sonda del paso 6 la verifica en recFiles; lo que falta es teclearlo en la pantalla. Lo cierra el encargo 03.',
     'contenido-de-la-subida': 'no hubo subida DESDE LA PANTALLA que inspeccionar (ver arriba); el contenido de la fila lo afirma la sonda del paso 6 leyendo la base',
   },
+  // Cola 18.bis.84 — el trabajo APUNTADO. Hace falta que el trabajador de la cola del KMS
+  // falle o descarte contenido a propósito, y eso no se puede pedir desde fuera sin dejar
+  // datos a medias en un expediente real; en modo simulado sí se cubre.
+  'guardado-apuntado-se-vigila': {
+    'guardado-apuntado': 'exige que el trabajo encolado del KMS falle o descarte contenido a propósito; el arnés no puede provocarlo sobre el sistema real sin ensuciar el expediente',
+  },
   // Cola 18.bis — el aviso rojo de guardado. Los dos caminos necesitan un guardado que
   // FALLE a voluntad, y eso solo lo puede fabricar el backend simulado
   // (`scenario.saveStepFails`). Contra el sistema real no hay forma honesta de tumbar un
@@ -366,7 +372,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // archivos ya subidos — los usa `documentos-vuelven` y los deja como estaban al salir.
 // `warmFalla`: el precalentado falla DE VERDAD (no "no había nada que calentar") — la
 // otra mitad de `precalentado-sin-ruido`: un fallo real sigue registrándose.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -3305,6 +3311,122 @@ async function caminoRespuestasRechazadasSeDicen(page, base) {
 }
 
 /**
+ * «APUNTADO» NO ES «GUARDADO»: EL ASISTENTE VUELVE A PREGUNTAR (cola 18.bis.84).
+ *
+ * ── El defecto ──────────────────────────────────────────────────────────────────────
+ * El KMS no escribe los pasos del asistente en el acto: los APUNTA y los hace después.
+ * Que la llamada volviera bien solo acredita que el servidor la aceptó — y la familia leía
+ * «Todos los cambios guardados». Si el trabajo acababa fallando, o descartaba a propósito
+ * lo que había escrito (el KMS no deja que un tutor toque la ficha de otro, DL-E49 §2, ni
+ * guarda las respuestas de quien ya envió su parte, §6), **nadie se enteraba nunca**.
+ *
+ * ── Por qué se provoca el latido en vez de esperarlo ────────────────────────────────
+ * La pregunta viaja en el latido que YA existe (30 s + al recuperar el foco de la
+ * ventana, `WizardPage.jsx`). Aquí se dispara el evento `focus` — que es exactamente lo
+ * que hace una familia que vuelve a su pestaña — en vez de dejar la batería parada medio
+ * minuto por recorrido. Se recorre el mecanismo REAL, no un atajo.
+ *
+ * ── Las dos mitades, y las dos hacen falta ──────────────────────────────────────────
+ *   (A) un guardado que acaba BIEN no deja ni ruido: preguntar y callar es lo correcto,
+ *       y un aviso aquí sería asustar a la familia por nada.
+ *   (B) un guardado DESCARTADO se dice, con su motivo, y SIN ofrecer «Reintentar» —
+ *       reintentar lo descartaría igual, que es el callejón sin salida de 18.bis.85.
+ */
+async function caminoGuardadoApuntadoSeVigila(page, base) {
+  const c = new Camino('guardado-apuntado-se-vigila')
+  scenario.stage = 'hasta_preguntas'
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    c.evidencia.llamadas = calls.length
+    if (REAL) {
+      // Contra el sistema de verdad haría falta que el trabajador de la cola del KMS
+      // fallara o descartara a propósito, y eso no se puede pedir desde fuera sin dejar
+      // datos a medias. No se afloja nada para que pase: se declara descubierto.
+      c.noCubierta('guardado-apuntado',
+        'exige que el trabajo encolado del KMS falle o descarte contenido a propósito; el arnés no puede provocarlo sin ensuciar el expediente real')
+      return c
+    }
+
+    // ── (A) UN GUARDADO QUE ACABA BIEN NO DEJA NI RUIDO ───────────────────────────────
+    scenario.trabajoResultado = 'hecho'
+    if (!await irAPreguntas(c, page)) return c
+    await page.waitForTimeout(LATENCY + 500)
+    const campoA = await page.$('input[type="text"], input:not([type]), textarea')
+    if (campoA) { await campoA.click({ clickCount: 3 }); await campoA.type('Respuesta E2E (trabajo que entra)') }
+    const antesDeGuardarA = llamadas('saveResponses').length
+    await page.click(BTN_SIGUIENTE)
+    await page.waitForTimeout(LATENCY + 2500)
+    if (!c.afirmar('(0) el guardado sale hacia el servidor',
+      llamadas('saveResponses').length > antesDeGuardarA,
+      'no salió ningún guardado: sin él no hay trabajo apuntado y este camino no mediría nada')) return c
+
+    const preguntasAntes = llamadas('estadoDelGuardado').length
+    await latirLaVentana(page)
+    await page.waitForTimeout(LATENCY + 1500)
+    if (!c.afirmar('(1) el asistente VUELVE A PREGUNTAR cómo acabó el guardado apuntado',
+      llamadas('estadoDelGuardado').length > preguntasAntes,
+      'no preguntó ni una vez: el servidor solo dijo «apuntado», así que sin preguntar el asistente no puede saber —ni decir— si aquello llegó a guardarse')) return c
+
+    const trasA = await page.evaluate(sondaCarrilDeGuardado)
+    c.afirmar('(2) un guardado que acaba BIEN no deja ni un aviso',
+      !trasA.rojo,
+      `apareció el aviso «${trasA.texto}» para un guardado que el servidor dice que entró entero: asustar a la familia por nada es tan malo como callarse`)
+
+    // ── (B) UN GUARDADO DESCARTADO SE DICE, Y NO SE OFRECE REINTENTARLO ───────────────
+    scenario.trabajoResultado = 'descartado'
+    if (!await irAPreguntas(c, page)) return c
+    await page.waitForTimeout(LATENCY + 500)
+    const campoB = await page.$('input[type="text"], input:not([type]), textarea')
+    if (campoB) { await campoB.click({ clickCount: 3 }); await campoB.type('Respuesta E2E (trabajo descartado)') }
+    await page.click(BTN_SIGUIENTE)
+    await page.waitForTimeout(LATENCY + 2500)
+    await latirLaVentana(page)
+
+    let salio = false
+    try {
+      await page.waitForSelector('[data-testid="save-indicator-error"]', { timeout: LATENCY + 8000 })
+      salio = true
+    } catch { /* lo dice el afirmar */ }
+    if (!c.afirmar('(3) el trabajo descarta lo que la familia escribió y la pantalla lo DICE', salio,
+      'la pantalla siguió muda (o diciendo «Todos los cambios guardados»): el servidor aceptó el encargo y luego lo tiró, y la familia se iría creyendo que quedó guardado — que es el defecto 18.bis.84 entero')) return c
+
+    const trasB = await page.evaluate(sondaCarrilDeGuardado)
+    c.afirmar('(4) el aviso dice que NO se guardaron y por qué',
+      /no se han guardado|were NOT saved/i.test(trasB.texto) && /ya está enviada|already been submitted/i.test(trasB.texto),
+      `el aviso dice «${trasB.texto}»: sin el motivo, la familia no sabe que reintentar no sirve ni a quién preguntar`)
+    c.afirmar('(5) NO se ofrece «Reintentar», que aquí no puede funcionar',
+      !trasB.reintentar,
+      'el aviso ofrece reintentar un guardado que el servidor va a descartar exactamente igual: un callejón sin salida')
+    c.afirmar('(6) la pantalla NO dice «Todos los cambios guardados»',
+      !trasB.guardado,
+      'la pantalla se quedó diciendo que todo está guardado con lo de la familia tirado a la basura: la mentira que esto viene a quitar')
+
+    c.evidencia.llamadas = calls.length
+    return c
+  } finally {
+    scenario.trabajoResultado = null
+  }
+}
+
+/**
+ * Provoca el latido que YA existe (`WizardPage.jsx`: `setInterval` de 30 s + `onFocus`)
+ * sin quedarse medio minuto parado por recorrido. `focus` es el mismo evento que dispara
+ * una familia al volver a su pestaña — se recorre el mecanismo real, no un atajo.
+ */
+const latirLaVentana = (page) => page.evaluate(() => window.dispatchEvent(new Event('focus')))
+
+/** Radiografía del carril global de guardado (el aviso que gobierna `SaveIndicator`). */
+const sondaCarrilDeGuardado = () => ({
+  rojo:       !!document.querySelector('[data-testid="save-indicator-error"]'),
+  guardado:   !!document.querySelector('[data-testid="save-indicator-idle"]'),
+  reintentar: !!document.querySelector('[data-testid="save-error-retry"]'),
+  texto:      (document.querySelector('[data-testid="save-indicator-error"]')?.textContent || '').replace(/\s+/g, ' ').trim(),
+})
+
+/**
  * LO QUE LA FAMILIA SUBIÓ SIGUE AHÍ CUANDO VUELVE A ENTRAR (síntoma de Diego, 2026-08-09:
  * «figuran tres archivos supuestamente subidos por la familia en el paso 6, documentos,
  * pero que no aparecen listados en el paso 6»).
@@ -4208,6 +4330,9 @@ const CAMINOS = [
   { nombre: 'respuestas-vuelven', fn: caminoRespuestasVuelven, minLlamadas: 1, minElementos: 11 },
   // ②24.sexies — cuando el servidor descarta el cuestionario, la familia se entera.
   { nombre: 'respuestas-rechazadas-se-dicen', fn: caminoRespuestasRechazadasSeDicen, minLlamadas: 1, minElementos: 11 },
+  // 18.bis.84 — «apuntado» no es «guardado»: el asistente vuelve a preguntar cómo acabó el
+  // trabajo que el KMS dejó apuntado, y lo dice cuando acaba mal o descarta lo escrito.
+  { nombre: 'guardado-apuntado-se-vigila', fn: caminoGuardadoApuntadoSeVigila, minLlamadas: 1, minElementos: 11 },
   // Lo que la familia SUBIÓ sigue ahí cuando vuelve (síntoma de Diego, 2026-08-09).
   // Contra el sistema real el recorrido se declara NO CUBIERTO y sale sin tocar la
   // pantalla (el código de un solo uso llega a un buzón que el arnés no lee), así que

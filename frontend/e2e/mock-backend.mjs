@@ -465,6 +465,13 @@ export function createDispatcher(scenario, record) {
   // aceptaba el mismo ticket infinitas veces y el caso que de verdad ve la familia
   // —recarga, petición repetida, ticket caducado— no aparecía nunca.
   const ticketsGastados = new Set();
+  // ── 18.bis.84 · EL SERVIDOR APUNTA EL TRABAJO Y LO HACE DESPUÉS ─────────────────────
+  // Los seis guardados devuelven un identificador de trabajo (`job_id`) con el que se
+  // puede preguntar más tarde cómo acabó. Aquí se emite SOLO cuando el camino lo pide
+  // (`scenario.trabajoResultado`): así los demás recorridos siguen byte-idénticos —
+  // sin identificador, el asistente no apunta nada y no pregunta nada.
+  let contadorDeTrabajos = 0;
+  const trabajoApuntado = () => (scenario.trabajoResultado ? `job-e2e-${++contadorDeTrabajos}` : null);
   const H = {
     // ── Portada ───────────────────────────────────────────────────────────────
     sendMagicLink: (p) => {
@@ -588,7 +595,7 @@ export function createDispatcher(scenario, record) {
       if (p.step === 'persons' && Array.isArray(p.payload)) {
         _debug.personIdMap = p.payload.map((x, i) => ({ _uid: x._uid, person_id: x.person_id || `srv_person_${i}` }));
       }
-      return { ok: true, saved: true, _debug };
+      return { ok: true, saved: true, _debug, job_id: trabajoApuntado() };
     },
     // ②24.sexies — el servidor RECHAZA las respuestas del tutor que ya envió su parte
     // (DL-E49 §6). La forma la copia del contrato real: `saveResponses_` lanza con
@@ -596,8 +603,32 @@ export function createDispatcher(scenario, record) {
     // sobre HTTP 200 (patrón P72, nunca 403).
     saveResponses: () => (scenario.respuestasRechazadas
       ? { ok: false, error: { code: 'PARTE_YA_ENVIADA', message: 'este tutor ya envió su parte (simulado)' } }
-      : { ok: true, saved: true }),
-    saveNeae:      () => ({ ok: true, saved: true }),
+      : { ok: true, saved: true, job_id: trabajoApuntado() }),
+    saveNeae:      () => ({ ok: true, saved: true, job_id: trabajoApuntado() }),
+
+    // ── 18.bis.84 · ¿CÓMO ACABÓ EL TRABAJO QUE SE APUNTÓ? ────────────────────────────
+    // Forma copiada del contrato: `{trabajos:[{job_id, estado, motivo, descartes}]}`, en el
+    // MISMO orden en que se preguntaron. `scenario.trabajoResultado` dice qué contesta:
+    //   · 'hecho'       → entró entero (nada que decirle a la familia).
+    //   · 'descartado'  → entró, pero el KMS descartó a propósito lo que el tutor escribió
+    //                     (DL-E49 §6): reintentar lo descartaría igual.
+    //   · 'fallido'     → el trabajo reventó: SÍ tiene sentido reintentarlo.
+    //   · 'pendiente'   → sigue en marcha; el asistente no debe decir nada todavía.
+    // Se responde SIEMPRE (aunque ningún camino lo pida) para que un latido de 30 s en un
+    // recorrido largo no tope con una acción no simulada y ensucie la consola de la familia.
+    estadoDelGuardado: (p) => {
+      const ids = Array.isArray(p && p.job_ids) ? p.job_ids : [];
+      const modo = scenario.trabajoResultado || 'hecho';
+      return {
+        ok: true,
+        trabajos: ids.map(id => ({
+          job_id:    id,
+          estado:    modo === 'descartado' ? 'hecho' : modo,
+          motivo:    modo === 'fallido' ? 'el trabajo no pudo completarse (simulado)' : null,
+          descartes: modo === 'descartado' ? { skipped_already_submitted: true } : null,
+        })),
+      };
+    },
 
     // ── DL-E49 §1 · EL ENVÍO ES POR TUTOR ────────────────────────────────────
     // La forma la copia del contrato real (`submitEnrollmentSession_` → los conteos que

@@ -2,8 +2,8 @@ import { createContext, useContext, useState, useCallback, useEffect, useRef } f
 import * as log from '../logger';
 import { preparePersonsForUI } from '../pages/steps/personShape';
 import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
-import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache, alConfirmarEscritura } from '../api';  // WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
-import { seReintentaTrasFallo } from '../lib/rechazos';       // 18.bis.85: el ÚNICO sitio que decide si un rechazo se vuelve a intentar (lo consulta también el aviso)
+import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache, alConfirmarEscritura, estadoDelGuardado } from '../api';  // 18.bis.84: preguntar cómo acabaron los guardados que el KMS dejó apuntados; WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
+import { seReintentaTrasFallo, codigoDelDescarte } from '../lib/rechazos';       // 18.bis.85: el ÚNICO sitio que decide si un rechazo se vuelve a intentar (lo consulta también el aviso) · 18.bis.84: y el que traduce lo que el trabajo apuntado descartó
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -189,6 +189,21 @@ export function WizardProvider({ children }) {
   // aviso tal cual (mismo episodio, así que un cartel cerrado sigue cerrado). Se va con la
   // pestaña; nada dentro de la sesión puede volver cierto lo que el servidor ya descartó.
   const rechazoDefinitivoRef = useRef(null);
+  // ── 18.bis.84 · «APUNTADO» NO ES «GUARDADO»: HAY QUE VOLVER A PREGUNTAR ──────────────
+  // El KMS no escribe los pasos en el acto: los APUNTA y los hace después. Por eso una
+  // llamada de guardado que vuelve bien solo acredita que el servidor la aceptó, y la
+  // familia leía «Todos los cambios guardados» aunque el trabajo acabara fallando — o
+  // descartando a propósito lo que había escrito (el KMS no deja que un tutor toque la
+  // ficha de otro, DL-E49 §2, ni guarda las respuestas de quien ya envió su parte, §6).
+  //
+  // Aquí se recuerdan los trabajos apuntados con la MISMA etiqueta en llano que ya usa el
+  // aviso (`que`), y —cuando lo hay— la factory para poder reintentarlos: sin ella el
+  // botón «Reintentar» sería un botón que no hace nada, que es peor que no tenerlo.
+  //
+  // Tope de 10: es lo que acepta el KMS de una vez, y sin tope una sesión larga acabaría
+  // arrastrando una lista que crece sola. Se pierde con la pestaña, como todo lo demás.
+  const trabajosApuntadosRef = useRef([]);   // [{ job_id, que, reintento }]
+  const preguntandoPorTrabajosRef = useRef(false);
   // Guardados INDEPENDIENTES en vuelo (no van en el eslabón, pero el envío final SÍ tiene
   // que esperarlos). Se limpian al settle para que la lista no crezca durante la sesión.
   const sueltosRef = useRef([]);
@@ -199,6 +214,30 @@ export function WizardProvider({ children }) {
   const userTookControlRef = useRef(false);
   const markUserTookControl  = useCallback(() => { userTookControlRef.current = true;  }, []);
   const resetUserTookControl = useCallback(() => { userTookControlRef.current = false; }, []);
+
+  /**
+   * 18.bis.84 — RECUERDA un trabajo que el servidor dejó APUNTADO, para poder preguntar
+   * después cómo acabó. Sin identificador no hay nada que apuntar (el paso no encoló nada)
+   * y esto es no-op: ni ruido ni llamadas de más.
+   *
+   * Lo llama SOLO la cola (abajo) para todo lo que pasa por ella, y a mano el paso de salud
+   * —que guarda las NEAE fuera de la cola a propósito— porque si no, ese guardado sería el
+   * único que puede descartarse en silencio.
+   *
+   * @param {string} jobId identificador opaco que devuelve el servidor (sin datos personales).
+   * @param {string} que   nombre en llano de lo que se guardaba, el MISMO que usa el aviso.
+   * @param {() => Promise<any>} [reintento] factory para volver a mandarlo, si la hay.
+   */
+  const apuntarTrabajo = useCallback((jobId, que, reintento) => {
+    if (!jobId || typeof jobId !== 'string') return;
+    const ya = trabajosApuntadosRef.current;
+    if (ya.some(t => t.job_id === jobId)) return;      // idempotente: nunca dos veces el mismo
+    ya.push({ job_id: jobId, que: que || '', reintento: reintento || null });
+    // Tope de 10 (lo que acepta el KMS de una vez). Se descarta lo MÁS VIEJO: un trabajo de
+    // hace rato que sigue sin resolverse ya no se puede atribuir a nada que la familia
+    // recuerde, y lo recién guardado es lo que de verdad importa contarle.
+    if (ya.length > 10) ya.splice(0, ya.length - 10);
+  }, []);
 
   /**
    * Encola una factory de save (función que devuelve la promesa del save). Se
@@ -245,7 +284,12 @@ export function WizardProvider({ children }) {
     // independiente NO entra en el tail: si entrara, volvería a poder bloquear a los que
     // sí van en orden, que es justo lo que se está corrigiendo.
     const seguimiento = run.then(
-      () => { pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; lastFailedSaveRef.current = null; lastFailedQueRef.current = ''; const enPie = rechazoDefinitivoRef.current; if (enPie) marcarEstadoDeGuardado_('error', enPie.que, enPie.codigo, { mismoEpisodio: true }); else marcarEstadoDeGuardado_('idle'); } },
+      // 18.bis.84 — el servidor dijo «apuntado», no «guardado». Se anota el identificador del
+      // trabajo (si el paso encoló alguno) para poder preguntar después cómo acabó, con la
+      // MISMA etiqueta en llano que usaría el aviso y con esta misma factory por si hay que
+      // reintentarlo. Va DENTRO del final feliz a propósito: un guardado que ni siquiera
+      // llegó a aceptarse ya se cuenta por el carril de error de aquí abajo.
+      (res) => { apuntarTrabajo(res && res.job_id, que, saveFn); pendingCountRef.current -= 1; log.info('[DBG savequeue] done OK', { ms: Date.now() - _t0, pending: pendingCountRef.current }); if (pendingCountRef.current <= 0) { pendingCountRef.current = 0; lastFailedSaveRef.current = null; lastFailedQueRef.current = ''; const enPie = rechazoDefinitivoRef.current; if (enPie) marcarEstadoDeGuardado_('error', enPie.que, enPie.codigo, { mismoEpisodio: true }); else marcarEstadoDeGuardado_('idle'); } },
       // ── 18.bis.85 · UN RECHAZO DEFINITIVO NO SE GUARDA PARA REINTENTARLO ──────────────
       // Recordar la factory es lo que habilita los DOS reintentos: el botón «Reintentar» y
       // —el que muerde— el automático de `alConfirmarEscritura`. Con un rechazo que el
@@ -263,7 +307,7 @@ export function WizardProvider({ children }) {
       seguimiento.then(() => { sueltosRef.current = sueltosRef.current.filter(p => p !== seguimiento); });
     }
     return run;
-  }, [marcarEstadoDeGuardado_]);
+  }, [marcarEstadoDeGuardado_, apuntarTrabajo]);
 
   /**
    * WPERF-1 criterio 3: re-encola la última save que falló (la guarda
@@ -279,6 +323,76 @@ export function WizardProvider({ children }) {
     log.info('[DBG savequeue] retry last failed save');
     enqueueSave(fn, { que });
   }, [enqueueSave]);
+
+  /**
+   * 18.bis.84 · PREGUNTA CÓMO ACABARON LOS GUARDADOS QUE EL SERVIDOR DEJÓ APUNTADOS.
+   *
+   * ── Por qué hace falta preguntar ─────────────────────────────────────────────────────
+   * El KMS no escribe los pasos en el acto: los apunta y los hace después. Que la llamada
+   * volviera bien solo acredita que la aceptó. Lo que pase luego —que el trabajo falle, o
+   * que descarte a propósito lo que la familia escribió— **no llega por ningún sitio** si
+   * nadie vuelve a preguntar. Hasta hoy no preguntaba nadie, y la pantalla se quedaba
+   * diciendo «Todos los cambios guardados».
+   *
+   * ── Qué se hace con cada respuesta ───────────────────────────────────────────────────
+   *   · `hecho` sin descartes → se olvida, en silencio. Era verdad y no hay nada que decir.
+   *   · `hecho` CON descartes → rechazo DEFINITIVO: el servidor lo volvería a descartar,
+   *     así que se dice con su motivo y NO se ofrece «Reintentar» (`lib/rechazos.js`).
+   *   · `fallido` → se dice, y SÍ es reintentable: se repone la factory para que el botón
+   *     «Reintentar» haga algo de verdad en vez de ser un botón muerto.
+   *   · `pendiente` / `desconocido` → **no se toca nada**. «Desconocido» es «no se sabe»
+   *     (también es lo que contesta el KMS para un trabajo que no es de este expediente,
+   *     para no delatar que exista): tratarlo como fallo sería asustar a la familia con un
+   *     problema inventado.
+   *
+   * ── No puede romper nada ─────────────────────────────────────────────────────────────
+   * Nadie la espera y su fallo se registra y se sigue: si la consulta no se puede hacer, el
+   * asistente se comporta exactamente como antes de existir esto.
+   */
+  const preguntarPorLosGuardados = useCallback(() => {
+    const lote = trabajosApuntadosRef.current.slice(0, 10);
+    if (!lote.length) return;
+    if (preguntandoPorTrabajosRef.current) return;   // no solapar: una pregunta cada vez
+    if (!resumeToken) return;                        // sin bearer no hay nada que preguntar
+    preguntandoPorTrabajosRef.current = true;
+    estadoDelGuardado(resumeToken, lote.map(x => x.job_id))
+      .then((res) => {
+        const trabajos = (res && Array.isArray(res.trabajos)) ? res.trabajos : [];
+        const resueltos = new Set();
+        trabajos.forEach((t, i) => {
+          // El servidor contesta EN EL MISMO ORDEN en que se preguntó; aun así se casa por
+          // identificador cuando viene, que es más barato que confiar y equivocarse de paso.
+          const apuntado = (t && t.job_id && lote.find(x => x.job_id === t.job_id)) || lote[i];
+          if (!apuntado) return;
+          const codigo = codigoDelDescarte(t && t.descartes);
+          if (codigo) {
+            // Definitivo: queda EN PIE aunque otros guardados entren después (si no, el
+            // siguiente final feliz drena la cola y repone «Todos los cambios guardados»
+            // con lo de la familia tirado a la basura — 18.bis.85).
+            log.warn('[DBG savequeue] el trabajo apuntado DESCARTÓ contenido', { que: apuntado.que, codigo });
+            rechazoDefinitivoRef.current = { que: apuntado.que, codigo };
+            lastFailedSaveRef.current = null;        // reintentar lo descartaría igual
+            lastFailedQueRef.current = '';
+            marcarEstadoDeGuardado_('error', apuntado.que, codigo);
+            resueltos.add(apuntado.job_id);
+          } else if (t && t.estado === 'fallido') {
+            log.warn('[DBG savequeue] el trabajo apuntado FALLÓ', { que: apuntado.que, motivo: t.motivo || '' });
+            lastFailedSaveRef.current = apuntado.reintento || null;
+            lastFailedQueRef.current = apuntado.que || '';
+            marcarEstadoDeGuardado_('error', apuntado.que);
+            resueltos.add(apuntado.job_id);
+          } else if (t && t.estado === 'hecho') {
+            resueltos.add(apuntado.job_id);          // entró entero: nada que decir
+          }
+          // 'pendiente' / 'desconocido' → se queda apuntado y se vuelve a preguntar.
+        });
+        if (resueltos.size) {
+          trabajosApuntadosRef.current = trabajosApuntadosRef.current.filter(x => !resueltos.has(x.job_id));
+        }
+      })
+      .catch(err => log.warn('WizardContext: no se pudo preguntar por los guardados apuntados', { message: err && err.message }))
+      .finally(() => { preguntandoPorTrabajosRef.current = false; });
+  }, [resumeToken, marcarEstadoDeGuardado_]);
 
   // ── EL AVISO ROJO SE APAGA CUANDO DEJA DE SER CIERTO, NO CUANDO MOLESTA ──────────────
   // Diego, 2026-08-09: «si al final guarda por otro lado (como me ha pasado) la barra se
@@ -1211,6 +1325,7 @@ export function WizardProvider({ children }) {
       isStepDirty, markStepSaved,
       setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
       retryLastSave,                                              // WPERF-1 criterio 3
+      apuntarTrabajo, preguntarPorLosGuardados,                   // 18.bis.84 — «apuntado» no es «guardado»: hay que volver a preguntar
       saveErrorSeq, saveErrorQue, saveErrorCodigo,                // cola 18.bis — aviso de guardado (episodio + qué falló + por qué, ②24.sexies)
       validationError, setValidationError,                        // UX-1 aviso sticky
       submitError, setSubmitError,                                // UX-3 fallo envío optimista

@@ -362,6 +362,7 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
     stepData, updateStep,
     touchActivity, resumeToken,
     recoveryNonce, recoveredEmail,   // ②24 — quién está operando (identidad del enlace)
+    apuntarTrabajo,                  // 18.bis.84 — este guardado NO pasa por la cola: se apunta a mano
   } = useWizard();
   const applicants = (stepData.persons || []).filter(p => p.person_type_id === 'applicant');
 
@@ -478,8 +479,16 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
     }));
     // ②24 — quién está operando: el servidor gatea esta escritura con el código de un
     // solo uso y la marca es DEL BUZÓN que se verificó.
-    saveNeae(resumeToken, payload, { n: recoveryNonce, recoveredEmail })
-      .then(() => log.success('Step4: saveNeae OK (background)'))
+    //
+    // 18.bis.84 — este guardado va POR SU CUENTA, fuera de la cola global (decisión previa:
+    // las NEAE no dependen de ningún otro paso y no deben esperar a nadie). Justo por eso
+    // sería el ÚNICO que podría descartarse en silencio si no se apuntara aquí a mano: el
+    // servidor lo APUNTA y lo escribe después, así que este `.then()` no acredita que se
+    // guardara. Se le pasa la MISMA llamada como reintento, para que «Reintentar» sirva
+    // de algo si el trabajo acaba fallando.
+    const reenviarNeae = () => saveNeae(resumeToken, payload, { n: recoveryNonce, recoveredEmail });
+    reenviarNeae()
+      .then((res) => { log.success('Step4: saveNeae OK (background)'); apuntarTrabajo(res && res.job_id, t('step.health'), reenviarNeae); })
       .catch(err => log.warn('Step4: saveNeae failed (background)', { message: err?.message }));
   };
 

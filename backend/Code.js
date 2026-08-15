@@ -1952,6 +1952,10 @@ function doPost(e) {
       case 'fetchQuestions':       result = fetchQuestions_(payload);       break;
       case 'saveResponses':        result = saveResponses_(payload);        break;
       case 'estadoDeLasPartes':    result = estadoDeLasPartes_(payload);    break;
+      // 18.bis.84 — LECTURA: ¿cómo acabaron los guardados que el KMS dejó apuntados?
+      // Exenta del código de un solo uso, con el motivo escrito en su JSDoc (no muta
+      // nada y no devuelve ni un dato personal).
+      case 'estadoDelGuardado':    result = estadoDelGuardado_(payload);    break;
       case 'uploadDocument':       result = uploadDocument_(payload);       break;
       // CLI 82 (KAL-NEW-5 / Anexo A Opción A): proxy de bytes. Sirve documentos
       // PRIVADOS de Drive bajo gate de token (resume_token O signing_token) +
@@ -4620,10 +4624,14 @@ function saveStep_(p) {
   // 'persons' el KMS pre-asigna los person_id y devuelve personIdMap (el frontend
   // estampa los IDs reales). NOTA WPERF-INT: smoke de las shapes persons/relations/
   // health (frontend payload ↔ enr_persist*_) tras integrar wperf-2 + deploy.
+  // 18.bis.84 — `extra` guarda la respuesta del KMS de ESTE paso, sea cual sea el paso.
+  // Antes solo se recogía la de 'persons' (por el `personIdMap`) y las otras tres se
+  // tiraban a la basura: con ellas se iba el `job_id` del trabajo que el KMS deja
+  // APUNTADO, y sin ese identificador nadie puede preguntar después cómo acabó.
   let extra = null;
   switch (step) {
     case 'application':
-      kmsProxy_('enr.wizardSaveStep', {
+      extra = kmsProxy_('enr.wizardSaveStep', {
         resume_token:       p.resume_token,
         step:               'application',
         program_id:         payload.program_id || null,
@@ -4648,14 +4656,14 @@ function saveStep_(p) {
       persistSoleGuardianAttestation_(p.resume_token, p.sole_guardian_attestation);
       break;
     case 'relations':
-      kmsProxy_('enr.wizardSaveRelations', {
+      extra = kmsProxy_('enr.wizardSaveRelations', {
         resume_token: p.resume_token,
         relations:    Array.isArray(payload) ? payload : (payload.relations || []),
         writer_person_id: wizardTutorQueOpera_(p, enrollmentGroupId),
       });
       break;
     case 'health':
-      kmsProxy_('enr.wizardSaveHealth', {
+      extra = kmsProxy_('enr.wizardSaveHealth', {
         resume_token: p.resume_token,
         health:       Array.isArray(payload) ? payload : (payload.health || []),
       });
@@ -4674,7 +4682,11 @@ function saveStep_(p) {
   // person_id reales. El KMS lo devuelve en `extra.personIdMap` (sin PII — solo
   // pares _uid ↔ person_id).
   const safeDebug = (extra && extra.personIdMap) ? { personIdMap: extra.personIdMap } : null;
-  return { saved: true, step, _debug: safeDebug };
+  // 18.bis.84 — el identificador del trabajo APUNTADO viaja de vuelta para que el
+  // asistente pueda preguntar después cómo acabó. Es opaco (no lleva ni un dato de la
+  // familia) y `null` cuando el paso no encola nada ('questions'/'documents', que guardan
+  // por su propio camino). Nadie AUTORIZA nada con él: la puerta sigue siendo el token.
+  return { saved: true, step, _debug: safeDebug, job_id: (extra && extra.job_id) || null };
 }
 
 /**
@@ -5776,6 +5788,52 @@ function estadoDeLasPartes_(p) {
   });
 }
 
+/**
+ * 18.bis.84 · ¿CÓMO ACABÓ UN GUARDADO QUE EL KMS DEJÓ APUNTADO?
+ *
+ * ── El defecto que esto cierra ──────────────────────────────────────────────────────
+ * El KMS NO guarda los pasos del asistente en el acto: los APUNTA para hacerlos después y
+ * contesta «apuntado». Si el trabajador que los ejecuta falla, o descarta contenido a
+ * propósito (el KMS rechaza que un tutor toque la ficha de otro, DL-E49 §2; y descarta las
+ * respuestas del tutor que ya envió su parte, §6), **la familia ya leyó «Todos los cambios
+ * guardados» y nadie se entera nunca**. Los seis guardados devuelven ahora el identificador
+ * del trabajo; esto es lo que permite volver a preguntar por él.
+ *
+ * ── Por qué es un PROXY FINO y no un cálculo ────────────────────────────────────────
+ * La verdad de cómo acabó un trabajo vive en el KMS, que es donde está la cola. El
+ * asistente no deduce nada: pregunta y devuelve lo que le contesten.
+ *
+ * ── Autorización ────────────────────────────────────────────────────────────────────
+ * KAL-4 LO PRIMERO: el expediente sale del bearer, jamás del cuerpo de la petición. Los
+ * identificadores de trabajo NO autorizan nada — el KMS contesta `'desconocido'` para el
+ * que no sea de ese expediente, sin delatar que exista.
+ *
+ * ── EXENTO del código de un solo uso (`assertStepUpFresh_`), con su motivo escrito ──
+ * Es una LECTURA que **no muta ni un dato de la familia** y **no devuelve ni un dato
+ * personal**: solo dice si un trabajo del PROPIO expediente —del que ya se tiene el token—
+ * acabó bien, mal o sigue en marcha. Gatearla con el código sería peor que inútil: quien
+ * más necesita enterarse de que su guardado se descartó es justamente quien lleva un rato
+ * sin verificarse, y entonces el asistente se quedaría mudo en el único momento que
+ * importa. Tampoco lleva verja reCAPTCHA: no es una puerta anónima, se llama desde dentro
+ * de la sesión de la familia (§"Las CINCO puertas del asistente", regla 0).
+ *
+ * @param {Object} p { resume_token, job_ids: string[] }
+ * @returns {Object} { trabajos: [{ job_id, estado, motivo, descartes }] } en el mismo orden.
+ */
+function estadoDelGuardado_(p) {
+  requireResumeToken_(p);   // KAL-4, LO PRIMERO: sin bearer válido no se pregunta nada.
+  // Tope de 10 — el mismo que acepta el KMS. Recortar aquí evita un rechazo por tamaño que
+  // el asistente no sabría explicarle a nadie.
+  var ids = (p && Array.isArray(p.job_ids) ? p.job_ids : [])
+    .filter(function (x) { return typeof x === 'string' && x; })
+    .slice(0, 10);
+  if (!ids.length) return { trabajos: [] };
+  return kmsProxy_('enr.wizardEstadoDelTrabajo', {
+    resume_token: p.resume_token,
+    job_ids:      ids,
+  });
+}
+
 function wizardTutorQueOpera_(p, groupId, opts) {
   try {
     // ②24 — el buzón lo resuelve UN SOLO SITIO (`_identidadDelEnlace_`, con memoria):
@@ -5976,7 +6034,16 @@ function saveResponses_(p) {
   // afirmación que este código no está en condiciones de hacer — y era falsa entera cuando
   // el KMS las descartaba. Se dice lo que de verdad consta: cuántas se aceptaron para
   // guardar, y si el servidor confirmó haberlas puesto en cola.
-  return { encoladas: outResponses.length, queued: respuestaKms.queued === true };
+  //
+  // 18.bis.84 — y se devuelve el identificador del trabajo apuntado, que es lo único que
+  // permite preguntar DESPUÉS cómo acabó. La comprobación de arriba solo caza lo que ya
+  // consta ANTES de encolar; lo que el trabajador descarte al ejecutarse solo se sabe
+  // preguntando por este identificador.
+  return {
+    encoladas: outResponses.length,
+    queued:    respuestaKms.queued === true,
+    job_id:    respuestaKms.job_id || null,
+  };
 }
 
 /**
@@ -6795,7 +6862,8 @@ function saveNeae_(p) {
   const neaeData = Array.isArray(p && p.neae) ? p.neae
                  : (p && p.neae && Array.isArray(p.neae.neae) ? p.neae.neae : []);
   if (!Array.isArray(neaeData) || !neaeData.length) {
-    return { saved: true, step: 'neae' };
+    // Nada que encolar ⇒ no hay trabajo por el que preguntar (18.bis.84).
+    return { saved: true, step: 'neae', job_id: null };
   }
 
   // THIN-CLIENT (2026-07-12): la escritura del staging NEAE vive en el KMS (único
@@ -6803,12 +6871,15 @@ function saveNeae_(p) {
   // 'health' de saveStep_. El wizard YA NO escribe enrPersonNeae/Support directo:
   // proxea al endpoint del KMS, que re-deriva el grupo del resume_token (KAL-4),
   // valida person∈grupo, y persiste append-only (DL-E16). Cero writes locales.
-  kmsProxy_('enr.wizardSaveNeae', {
+  const respuestaKms = kmsProxy_('enr.wizardSaveNeae', {
     resume_token: p.resume_token,
     neae:         neaeData,
-  });
+  }) || {};
 
-  return { saved: true, step: 'neae' };
+  // 18.bis.84 — igual que los demás guardados: el KMS APUNTA el trabajo y lo hace después,
+  // así que este `saved: true` solo dice «aceptado», nunca «escrito». El identificador es
+  // lo único que permite preguntar más tarde cómo acabó.
+  return { saved: true, step: 'neae', job_id: respuestaKms.job_id || null };
 }
 
 // ENR-E6 (2026-06-06): saveInterviews_ + case 'interviews' eliminados del

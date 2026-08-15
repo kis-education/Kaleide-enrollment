@@ -48,6 +48,7 @@ export default function WizardPage() {
     recoveredEmail, setRecoveredEmail,
     recoveryNonce, // IDENTITY-FROM-LINK: `n` = email_id del enlace (identidad canónica)
     reviewConfirmed, // input del mapeo central (catalog.stepEditMode)
+    preguntarPorLosGuardados, // 18.bis.84 — «apuntado» no es «guardado»: se vuelve a preguntar
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -156,15 +157,24 @@ export default function WizardPage() {
   // actualiza SOLO el slice de admisión/firma; NUNCA stepData/currentStep/landing). Antes:
   // getAdmissionState directo cada 30s (lectura AppSheet en cada tick). Ahora: lectura
   // pesada solo cuando algo cambió de verdad.
-  const pulseRef = useRef({ resumeToken: null, enrollmentGroupId: null, effectiveRecoveredEmail: undefined, recoveryNonce: undefined, hasPendingSave: false, liveVersion: 0 });
-  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, recoveryNonce, hasPendingSave, liveVersion };
+  // 18.bis.84 — `preguntar` viaja en la MISMA referencia porque el efecto de abajo se monta
+  // una sola vez (deps `[]`) y, sin esto, se quedaría con la primera versión de la función.
+  const pulseRef = useRef({ resumeToken: null, enrollmentGroupId: null, effectiveRecoveredEmail: undefined, recoveryNonce: undefined, hasPendingSave: false, liveVersion: 0, preguntar: null });
+  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, recoveryNonce, hasPendingSave, liveVersion, preguntar: preguntarPorLosGuardados };
   const pulseInFlightRef = useRef(false);
   useEffect(() => {
     const tick = () => {
-      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer } = pulseRef.current;
+      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer, preguntar } = pulseRef.current;
       if (!rt || !gid) return;                            // sin sesión → nada que sincronizar
       if (pending) return;                                // save en vuelo → saltar este tick
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return; // pestaña oculta → saltar
+      // ── 18.bis.84 · ¿CÓMO ACABARON LOS GUARDADOS QUE EL SERVIDOR DEJÓ APUNTADOS? ────────
+      // Va AQUÍ, en el latido que ya existe, para que no le cueste espera a ninguna familia:
+      // no se encadena con nada, no bloquea al pulso (que sigue debajo con su propio
+      // guardarraíl) y no se le espera. Un fallo suyo se registra dentro y no puede romper la
+      // pantalla — por eso además queda envuelto: ni una excepción síncrona puede impedir que
+      // el pulso de admisión corra después.
+      try { if (preguntar) preguntar(); } catch (e) { log.warn('WizardPage: la pregunta por los guardados apuntados reventó', { message: e && e.message }); }
       if (pulseInFlightRef.current) return;               // ya hay un pulse en vuelo → no solapar
       pulseInFlightRef.current = true;
       // ── Etapa 1 — detección de cambio ULTRA-LIGERA (solo la versión, sin AppSheet/KMS).

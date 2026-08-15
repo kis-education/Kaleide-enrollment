@@ -43,7 +43,44 @@ export const RECHAZOS_DEFINITIVOS = {
   // (DL-E49 §6) y reintentar las descartaría otra vez. Antes esto no se veía en ninguna
   // parte: el asistente decía haber guardado N respuestas que nadie guardó (②24.sexies).
   PARTE_YA_ENVIADA: 'wizard.save_error.parte_ya_enviada',
+  // 18.bis.84 — el KMS rechaza que un tutor toque la FICHA YA EXISTENTE de otro tutor
+  // (DL-E49 §2). Reintentar la rechazaría igual: el criterio es de quién es la ficha, y
+  // eso no cambia por volver a mandarla. Nace con código propio y NO reusando el de
+  // arriba porque su texto habla del cuestionario, y aquí sería una explicación falsa:
+  // la familia buscaría en el paso equivocado.
+  FICHAS_DE_OTRO_TUTOR_RECHAZADAS: 'wizard.save_error.fichas_de_otro_tutor',
 };
+
+/**
+ * 18.bis.84 · ¿EL TRABAJO QUE EL KMS DEJÓ APUNTADO DESCARTÓ ALGO QUE NO VOLVERÁ A ENTRAR?
+ *
+ * El KMS no guarda los pasos en el acto: los apunta y los hace después. Cuando el trabajo
+ * termina puede haber descartado contenido A PROPÓSITO, y eso llega en un objeto de
+ * recuentos y banderas (`descartes`) — no en un código de error, porque desde el punto de
+ * vista del servidor el trabajo NO falló: hizo justo lo que su regla manda.
+ *
+ * Aquí se traduce ese objeto al código de rechazo que ya entiende el resto del asistente,
+ * y por eso vive EN ESTE FICHERO: el código, su texto y lo que lo produce se declaran en
+ * el mismo sitio, así que ampliar esto mañana es añadir una línea aquí y nada más. Repartir
+ * la traducción por el contexto habría creado la segunda lista que esta herramienta existe
+ * para evitar.
+ *
+ * FALLA HACIA EL LADO SEGURO: sin descartes —o con descartes que no reconocemos— devuelve
+ * `undefined` y el guardado se trata como lo que el servidor dijo que fue. Nunca se
+ * inventa un rechazo.
+ *
+ * @param {Object} [descartes] lo que el trabajo descartó, tal cual lo manda el KMS.
+ * @returns {string|undefined} código de rechazo definitivo, o `undefined` si no descartó nada.
+ */
+export function codigoDelDescarte(descartes) {
+  if (!descartes || typeof descartes !== 'object') return undefined;
+  // El tutor ya había enviado su parte ⇒ el KMS no escribió sus respuestas (DL-E49 §6).
+  if (descartes.skipped_already_submitted === true) return 'PARTE_YA_ENVIADA';
+  // Se descartaron fichas de otro tutor (DL-E49 §2). `> 0` y no «existe la clave»: un cero
+  // significa que no se descartó ninguna, y avisar de eso sería asustar por nada.
+  if (Number(descartes.fichas_de_otro_tutor_rechazadas_n) > 0) return 'FICHAS_DE_OTRO_TUTOR_RECHAZADAS';
+  return undefined;
+}
 
 /**
  * Clave del texto con el que se explica un rechazo definitivo, o `undefined` si ese código
