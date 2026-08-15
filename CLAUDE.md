@@ -316,7 +316,51 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (resumeSession_, fetchLookups_, hydrate, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos** (2026-08-15) y las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (resumeSession_, fetchLookups_, hydrate, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos** (2026-08-15), las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")— y las **tres guardas de los documentos** (§"subir y ver un documento"). **Medido el 2026-08-15 contra `origin/main`: quedan 83 lecturas directas + 7 en lote. La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+
+### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
+
+**Eran TRES lecturas directas, y las tres eran GUARDAS** —comprobaciones de acceso, no
+composición—: en `uploadDocument_`, *¿el expediente de alumno al que se cuelga el documento es de
+esta familia?* (`enrEnrollments`) y *¿este mismo envío ya se guardó?* (`recFiles`, idempotencia); en
+`getDocument_`, *¿este documento está en el expediente del token?* (`recFiles`, la guarda de IDOR).
+Las tres las hacía **este** proceso, que es público y anónimo, **con la credencial de AppSheet de la
+aplicación entera** — la que alcanza cualquier tabla porque la URL lleva la tabla como parámetro.
+
+**Ahora las sirven dos entradas del KMS** (`kis-app kms-server/enr/wizard-gateway.gs`), con los
+**mismos filtros**:
+
+| Entrada | Qué contesta | Ayudante de este lado |
+|---|---|---|
+| `enr.wizardComprobarSubida` | las dos comprobaciones previas a subir, en **una sola pregunta** (antes eran dos idas y vueltas) | llamada directa en `uploadDocument_` |
+| `enr.wizardFicheroDelExpediente` | la fila del documento, **proyectada a cuatro campos** (`file_id`, `drive_file_id`, `file_name`, `mime_type`) | `_ficheroDelExpediente_` |
+
+**Lo que hay que retener al tocar esto:**
+
+- **El expediente sale del `resume_token`, nunca del cuerpo** (KAL-4), y el nombre de la tabla **no
+  viaja en la petición**. Un documento de otra familia responde **exactamente igual** que uno que no
+  existe; un expediente de alumno ajeno **se rechaza nombrándolo**.
+- **La proyección es la mitad del valor**: antes cruzaba aquí la ficha entera del documento (quién
+  lo subió, cuándo, su descripción). Ahora, cuatro campos.
+- **Los dos fallos NO pesan igual, y el criterio viejo se conserva**: no poder comprobar el
+  **acceso** ⇒ no se sube (fallo cerrado — la lectura de AppSheet también lanzaba si se caía); no
+  poder mirar si el envío **ya estaba** ⇒ se sube igual (el `catch (_)` de siempre; como mucho se
+  repite un documento).
+- **`_ficheroDelExpediente_` devuelve TRES cosas, no dos**: «no está» (→ se prueba el camino del
+  paquete de firma, como antes) y «no se pudo preguntar» (→ lanza). **Colapsarlas le diría «no es
+  tuyo» a la familia dueña del documento**, y por eso el control lo vigila.
+- **El KMS copia la regla de qué identificador es legible** (`^[A-Za-z0-9._-]{1,128}$`, no un UUID):
+  hay ficheros con identificador semántico heredado (F-17·#10) y un validador más estricto allí
+  dejaría a una familia sin ver un documento suyo.
+
+**Control**: `scripts/verja-publica.mjs` gana cinco afirmaciones —ninguno de los dos manejadores
+vuelve a leer `enrEnrollments`/`recFiles` de AppSheet · los dos SÍ preguntan al KMS · el ayudante
+sigue distinguiendo los dos fallos—. **Rojo demostrado las cinco.**
+
+⚠️ **La batería NO cubre esto**: corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**
+(12 afirmaciones sobre los manejadores reales, ejecutados con dobles, y la medición demostrada no
+ciega). **Quien toque estos dos manejadores, que lo mida.**
 
 ### resume_token URL clean + Referrer-Policy: no-referrer (KAL-7 cerrado 2026-05-30)
 

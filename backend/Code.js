@@ -3727,6 +3727,47 @@ function _datosDeFirmaDelExpediente_(resumeToken) {
 }
 
 /**
+ * La fila de UN documento del expediente del `resume_token`, pedida al KMS (②17).
+ *
+ * Sustituye a la lectura directa de `recFiles` que hacía la guarda de IDOR de
+ * `getDocument_`. Mismo filtro (el documento **y** el expediente del token), y del otro
+ * lado solo salen los cuatro campos que hacen falta para servir los bytes: el resto de la
+ * ficha del documento ya no cruza a este proceso público.
+ *
+ * KAL-4: el expediente lo deriva el KMS del token; aquí NO se manda ningún id de grupo.
+ * KAL-11: log redactado.
+ *
+ * ⚠️ **Devuelve TRES cosas, no dos, y por eso no basta con `null`:** quien llama tiene que
+ * poder distinguir «este documento no está en tu expediente» (→ se prueba el camino del
+ * paquete de firma, como siempre) de «no se pudo preguntar» (→ se lanza, como lanzaba la
+ * lectura de AppSheet). Colapsarlas haría que un fallo pasajero le dijera «no es tuyo» a
+ * la familia dueña del documento.
+ *
+ * @param {string} resumeToken
+ * @param {string} fileId
+ * @returns {{ok:boolean, fila:Object|null}} `ok:false` ⇒ no se pudo preguntar ·
+ *          `ok:true, fila:null` ⇒ no está en este expediente.
+ * @private
+ */
+function _ficheroDelExpediente_(resumeToken, fileId) {
+  var token = resumeToken ? String(resumeToken).trim() : '';
+  if (!token) return { ok: true, fila: null };
+  try { assertValidUuid_(token, 'resume_token'); } catch (e) { return { ok: true, fila: null }; }
+
+  try {
+    var r = kmsProxy_('enr.wizardFicheroDelExpediente', {
+      resume_token: token,
+      file_id:      fileId,
+    }) || {};
+    return { ok: true, fila: r.fichero || null };
+  } catch (e2) {
+    Logger.log(redact_('[_ficheroDelExpediente_] lectura KMS fallida — ' +
+      ((e2 && e2.message) || e2)));
+    return { ok: false, fila: null };
+  }
+}
+
+/**
  * WIZARD-STEP7-COMPLETED (2026-06-07): coarse signing lifecycle of the group,
  * INCLUDING the terminal COMPLETED case (which the entry-bridge resolvers
  * deliberately ignore — they only unlock pending signers). Returns one of:
@@ -6336,36 +6377,45 @@ function uploadDocument_(p) {
   // un Add como valor de columna; AppSheet API v2 parametriza el body JSON).
   let uploadDescription = (typeof p.description === 'string') ? p.description : '';
   uploadDescription = uploadDescription.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 200);
-  if (enrollmentId) {
-    assertValidUuid_(enrollmentId, 'enrollment_id');
-    // KAL-4: post-submit uploads target a specific enrollment; verify it
-    // belongs to the token's group.
-    const enrollment = appsheetRequest_(T.ENROLLMENTS, 'Find', [], {
-      Filter: '"enrollment_id" = "' + appsheetEscape_(enrollmentId) + '" && "enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-    });
-    if (!enrollment || !enrollment.length) {
-      throw new Error('Unauthorized: enrollment_id does not belong to token group');
-    }
-  }
+  if (enrollmentId) assertValidUuid_(enrollmentId, 'enrollment_id');
 
   const idempotencyToken = p.upload_idempotency_token || generateUuid_();
   // KAL-5: idempotency token is server-generated UUID by default; if the
   // frontend supplied one, it must match UUID shape.
   assertValidUuid_(idempotencyToken, 'upload_idempotency_token');
 
-  // Idempotency check — if a recFiles row already exists for this token, return it
+  // ②17 — LAS DOS COMPROBACIONES PREVIAS LAS HACE EL KMS, en una sola pregunta.
+  //
+  // Antes eran dos lecturas de AppSheet desde aquí: (1) ¿el expediente de alumno es de esta
+  // familia? (KAL-4, sobre `enrEnrollments`) y (2) ¿este mismo envío ya se había guardado?
+  // (idempotencia, sobre `recFiles`). Las dos las sirve ahora `enr.wizardComprobarSubida`,
+  // con los MISMOS filtros, para que este proceso —público y anónimo— deje de necesitar la
+  // credencial de AppSheet de la aplicación entera.
+  //
+  // Los dos fallos NO pesan igual, y se tratan igual que antes:
+  //   · con `enrollment_id`, no poder comprobarlo ⇒ NO se sube (es una comprobación de
+  //     acceso; antes la lectura de AppSheet también lanzaba si se caía).
+  //   · sin `enrollment_id`, lo único en juego es la idempotencia ⇒ se sigue subiendo, que
+  //     es lo que hacía el `catch (_)` de siempre. Como mucho se repite un documento.
+  let yaSubido = null;
   try {
-    const existing = appsheetRequest_(T.REC_FILES, 'Find', [], {
-      Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "upload_idempotency_token" = "' + appsheetEscape_(idempotencyToken) + '"'
-    }) || [];
-    if (existing.length) {
-      const row = existing[0];
-      return {
-        file_id:     row.file_id,
-        document_id: row.file_id, // legacy alias
-      };
-    }
-  } catch (_) { /* non-fatal: lookup might fail on first run if cache cold */ }
+    const previo = kmsProxy_('enr.wizardComprobarSubida', {
+      resume_token:             p.resume_token,
+      enrollment_id:            enrollmentId || null,
+      upload_idempotency_token: idempotencyToken,
+    }) || {};
+    yaSubido = previo.ya_subido || null;
+  } catch (eComprobar) {
+    if (enrollmentId) throw eComprobar;   // fail-closed: la comprobación de acceso manda
+    Logger.log(redact_('[uploadDocument_] no se pudo comprobar el envío previo — se sube igual: ' +
+      ((eComprobar && eComprobar.message) || eComprobar)));
+  }
+  if (yaSubido && yaSubido.file_id) {
+    return {
+      file_id:     yaSubido.file_id,
+      document_id: yaSubido.file_id, // legacy alias
+    };
+  }
 
   // === CLI 82 / KAL-NEW-5 segunda parte: validación server-side =================
   // Allowlist MIME + magic-bytes + tope de tamaño. Cierra la segunda mitad de
@@ -6675,11 +6725,22 @@ function getDocument_(p) {
   }
 
   // ── Guard IDOR de lectura: el recFiles debe pertenecer al grupo del token ───
-  const rows = appsheetRequest_(T.REC_FILES, 'Find', [], {
-    Filter: '"file_id" = "' + appsheetEscape_(fileId) +
-            '" && "origin_reference" = "' + appsheetEscape_(groupId) + '"',
-  }) || [];
-  const row = rows.find(r => r && !r['deleted_at']);
+  // ②17: la fila la sirve el KMS (`enr.wizardFicheroDelExpediente`), con el MISMO filtro
+  // —`file_id` + `origin_reference` = el expediente del token— y proyectando solo los
+  // cuatro campos que hacen falta para servir los bytes. Así este proceso —público y
+  // anónimo— deja de leer `recFiles` con la credencial de AppSheet de la aplicación entera.
+  //
+  // Se distinguen las DOS respuestas, y la diferencia importa: «no está» sigue cayendo al
+  // camino del paquete de firma (que es lo que hacía antes), mientras que «no se pudo
+  // preguntar» LANZA — como lanzaba la lectura de AppSheet si se caía. Degradar un fallo a
+  // «no está» le contestaría «no es tuyo» a una familia que sí es la dueña del documento.
+  const consulta = _ficheroDelExpediente_(p && p.resume_token, fileId);
+  if (!consulta.ok) {
+    const errLect = new Error('No se pudo leer el documento del expediente.');
+    errLect.code = 'INTERNAL_ERROR';
+    throw errLect;
+  }
+  const row = consulta.fila;
   if (!row) {
     // IDENTITY-COMPLETION (#30): no es un documento subido por la familia (origin_reference
     // != grupo). Si bajo resume_token resolvemos (LAZY) un signing_token server-side, es un

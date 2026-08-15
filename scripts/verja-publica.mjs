@@ -393,6 +393,66 @@ function comprobarLasEntradasDeAdmisiones(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17, tramo «los documentos de la familia» — subir y ver un documento ya no lee AppSheet.
+ *
+ * Las tres lecturas que se movieron al KMS eran GUARDAS: (a) ¿el expediente de alumno al
+ * que se cuelga el documento es de esta familia?, (b) ¿este mismo envío ya se guardó?, y
+ * (c) ¿este documento está en el expediente del token? Las tres vivían aquí y necesitaban
+ * la credencial de AppSheet de la aplicación entera, que alcanza CUALQUIER tabla.
+ *
+ * Lo que se afirma es lo observable en el fuente: los dos manejadores **no vuelven a leer**
+ * `enrEnrollments` ni `recFiles` de AppSheet, y **sí** preguntan al KMS. Un manejador que
+ * no se encuentre deja el control CIEGO y eso es ROJO, no verde.
+ *
+ * Lo que NO se afirma, y se dice: que el KMS conteste lo correcto. Eso no se lee aquí — se
+ * mide contra el manejador del KMS, como se hizo con los tramos anteriores.
+ */
+function comprobarLosDocumentosDeLaFamilia(fuenteLimpia) {
+  const fallos = []
+
+  const casos = [
+    {
+      fn: 'uploadDocument_',
+      tablas: /appsheetRequest_\s*\(\s*T\.ENROLLMENTS|appsheetRequest_\s*\(\s*T\.REC_FILES|appsheetRequest_\s*\(\s*'enrEnrollments'|appsheetRequest_\s*\(\s*'recFiles'/,
+      pregunta: /kmsProxy_\s*\(\s*'enr\.wizardComprobarSubida'/,
+      queEs: 'las dos comprobaciones previas a subir (el expediente de destino y el envío ya guardado)',
+    },
+    {
+      fn: 'getDocument_',
+      tablas: /appsheetRequest_\s*\(\s*T\.REC_FILES|appsheetRequest_\s*\(\s*'recFiles'/,
+      pregunta: /_ficheroDelExpediente_\s*\(/,
+      queEs: 'la guarda de IDOR que decide si el documento es de este expediente',
+    },
+  ]
+
+  for (const c of casos) {
+    const cuerpo = cuerpoDe(fuenteLimpia, c.fn)
+    if (cuerpo === null) {
+      fallos.push(`no se encontró \`${c.fn}\` — control CIEGO en ${c.queEs}`)
+      continue
+    }
+    if (c.tablas.test(cuerpo)) {
+      fallos.push(`\`${c.fn}\` vuelve a leer \`enrEnrollments\`/\`recFiles\` directamente de AppSheet — eso es lo que ②17 quitó (${c.queEs})`)
+    }
+    if (!c.pregunta.test(cuerpo)) {
+      fallos.push(`\`${c.fn}\` ya no le pide al KMS ${c.queEs} — o se quitó la comprobación, o volvió a hacerse contra AppSheet`)
+    }
+  }
+
+  // Y el ayudante que sirve la guarda de `getDocument_` tiene que seguir distinguiendo «no
+  // está» de «no se pudo preguntar»: colapsarlas haría que un fallo pasajero le contestara
+  // «no es tuyo» a la familia dueña del documento.
+  const ayudante = cuerpoDe(fuenteLimpia, '_ficheroDelExpediente_')
+  if (ayudante === null) {
+    fallos.push('no se encontró `_ficheroDelExpediente_` — control CIEGO en la guarda de IDOR de los documentos')
+  } else if (!/ok:\s*false/.test(ayudante)) {
+    fallos.push('`_ficheroDelExpediente_` ya no distingue «no se pudo preguntar» de «no está» — un fallo pasajero le diría «no es tuyo» a la familia dueña del documento')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -401,5 +461,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarCodigoDeUnSoloUso(limpia),
     ...comprobarGuardarYSeguirLuego(limpia),
     ...comprobarParidadDelCodigo(limpia),
+    ...comprobarLosDocumentosDeLaFamilia(limpia),
   ]
 }
