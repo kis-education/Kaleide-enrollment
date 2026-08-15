@@ -768,6 +768,99 @@ function comprobarLaRecuperacionDelEnlace(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 (noveno tramo) — LA IDENTIDAD DE QUIEN RECUPERA ya no se resuelve leyendo AppSheet.
+ *
+ * QUÉ DEFECTO VIGILA, medido contra `origin/main` el 2026-08-15. La cadena que decide DE
+ * QUIÉN es un correo (o el identificador opaco `n` de un enlace) hacía hasta CINCO consultas
+ * a AppSheet desde este proceso —público y anónimo— con la credencial de la aplicación
+ * entera: las PERSONAS del expediente (la ficha COMPLETA de cada una, MENORES INCLUIDOS:
+ * nombre, fecha de nacimiento, documento) **solo para saber quién es tutor**, sus correos, la
+ * fila del `n` leída **por su clave y sin acotar al expediente**, y hasta dos veces la
+ * cabecera. Y había DOS resolvedores del mismo dato —éste y `enr_resolveGuardianFromEmail_`
+ * del KMS— que sus dos JSDoc declaraban obligados a permanecer IDÉNTICOS «hasta consolidación
+ * P245»: ya habían divergido (éste descartaba a quien la familia había quitado con la bandera
+ * `is_active` en falso; el del KMS no).
+ *
+ * QUÉ AFIRMA, sobre el código real:
+ *   (i)   los tres eslabones (`resolveGuardianForRecovery_`, `resolveEmailFromLinkParam_`,
+ *         `effectiveRecoveredEmail_`) NO vuelven a leer `enrPersons` / `enrEmails` /
+ *         `enrEnrollmentGroups` de AppSheet;
+ *   (ii)  los tres pasan por el ayudante ÚNICO (`_tutorQueRecupera_`) o por el lector único
+ *         de la cabecera (`_expedienteDelToken_`, sexto tramo);
+ *   (iii) el ayudante existe y pregunta a la entrada declarada del KMS;
+ *   (iv)  el lector viejo NO reaparece: ni el gemelo con hints, ni `findEmailIdForGuardian_`;
+ *   (v)   ANCLAS anti-vacío — los tres eslabones siguen existiendo, y `effectiveRecoveredEmail_`
+ *         sigue decidiendo la PRECEDENCIA aquí (`sinRespaldo`, ②24.bis). Sin ellas, «ya no lee
+ *         AppSheet» saldría verde sobre una cadena vaciada o renombrada, y este control diría
+ *         que mide algo que no mide.
+ *
+ * QUÉ **NO** AFIRMA: que el KMS resuelva bien, ni que su criterio de fila viva sea el correcto,
+ * ni que el ayudante falle cerrado. Eso no se lee aquí — se midió aparte, ejecutando el
+ * manejador real del KMS con dobles. Y arrastra el LÍMITE del módulo: detector por líneas.
+ */
+function comprobarLaIdentidadDeQuienRecupera(fuenteLimpia) {
+  const fallos = []
+  const TABLAS = /T\.(PERSONS|EMAILS|ENROLLMENT_GROUPS)\b/
+
+  const eslabones = [
+    ['resolveGuardianForRecovery_', '_tutorQueRecupera_',
+     'de quién es un correo dentro del expediente'],
+    ['resolveEmailFromLinkParam_', '_tutorQueRecupera_',
+     'a qué correo apunta el `n` del enlace'],
+    ['effectiveRecoveredEmail_', '_tutorQueRecupera_|_expedienteDelToken_',
+     'la precedencia de la identidad (`n` > correo del cliente > respaldo tutor 1)'],
+  ]
+  for (const [nombre, esperado, papel] of eslabones) {
+    const cuerpo = cuerpoDe(fuenteLimpia, nombre)
+    if (cuerpo === null) {
+      // ANCLA: sin el eslabón, este control es CIEGO sobre él.
+      fallos.push('no se encontró `' + nombre + '` — control CIEGO en ' + papel + ' (②17)')
+      continue
+    }
+    if (/appsheetRequest(Batch)?_\s*\(/.test(cuerpo) && TABLAS.test(cuerpo)) {
+      fallos.push('`' + nombre + '` vuelve a leer AppSheet (personas / correos / cabecera del ' +
+        'expediente) — la ficha COMPLETA de cada persona, MENORES INCLUIDOS, volvería a cruzar a ' +
+        'este proceso público y anónimo solo para saber quién es tutor')
+    }
+    if (!new RegExp('(' + esperado + ')\\s*\\(').test(cuerpo)) {
+      fallos.push('`' + nombre + '` ya no pasa por el lector único del KMS (' +
+        esperado.replace('|', ' / ') + ') — o se quitó, o volvió a resolver ' + papel + ' por su cuenta')
+    }
+  }
+
+  // ANCLA: la PRECEDENCIA se decide AQUÍ, no en el KMS. Si `sinRespaldo` desaparece, el modo
+  // estricto de ②24.bis (quién FIRMÓ un consentimiento) se habría perdido por el camino.
+  const cadena = cuerpoDe(fuenteLimpia, 'effectiveRecoveredEmail_')
+  if (cadena !== null && !/sinRespaldo/.test(cadena)) {
+    fallos.push('`effectiveRecoveredEmail_` ya no distingue el modo declarado (`sinRespaldo`, ' +
+      '②24.bis) — el respaldo «el tutor 1» volvería a poder atribuir una firma a quien quizá no la dio')
+  }
+
+  // UN SOLO lector: el ayudante existe y pregunta a la entrada declarada.
+  const ayudante = cuerpoDe(fuenteLimpia, '_tutorQueRecupera_')
+  if (ayudante === null) {
+    fallos.push('no se encontró `_tutorQueRecupera_` — control CIEGO: es el ayudante ÚNICO por el ' +
+      'que este proceso pregunta de quién es un correo (②17)')
+  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardTutorQueRecupera'/.test(ayudante)) {
+    fallos.push('`_tutorQueRecupera_` ya no le pregunta al KMS (`enr.wizardTutorQueRecupera`) — ' +
+      'si vuelve a leer AppSheet, el tramo está deshecho y vuelven los DOS resolvedores')
+  }
+
+  // Los lectores viejos NO vuelven. El gemelo se reconoce por su firma con hints; el espejo
+  // del `email_id` por su nombre. Cualquiera de los dos sería un SEGUNDO lector del mismo dato.
+  if (/function\s+resolveGuardianForRecovery_\s*\([^)]*Hint/.test(fuenteLimpia)) {
+    fallos.push('`resolveGuardianForRecovery_` ha vuelto a su firma con hints de filas de AppSheet — ' +
+      'sería otra vez el GEMELO del resolvedor del KMS, y los dos ya divergieron una vez (P245)')
+  }
+  if (/function\s+findEmailIdForGuardian_\s*\(/.test(fuenteLimpia)) {
+    fallos.push('`findEmailIdForGuardian_` ha vuelto — sería una tercera pasada por `enrEmails` ' +
+      'desde este proceso público, y su respuesta ya viene con la misma pregunta al KMS')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -782,5 +875,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarLaEntradaDelExpediente(limpia),
     ...comprobarLaEntradaDeLaSolicitud(limpia),
     ...comprobarLaRecuperacionDelEnlace(limpia),
+    ...comprobarLaIdentidadDeQuienRecupera(limpia),
   ]
 }

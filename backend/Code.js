@@ -719,8 +719,8 @@ function requireSignerContext_(payload) {
   if (payload.resume_token && !payload.signing_token) {
     const groupId = requireResumeToken_(payload);   // KAL-4 + TTL 7d + abandoned gate
     // IDENTITY-FROM-LINK: prioridad `n` (email_id del enlace) > recovered_email (compat).
-    // resolveGuardianForRecovery_ lee enrEmails/persons lazy dentro del resolver.
-    const effEmail = effectiveRecoveredEmail_(payload.recovered_email, groupId, payload.n);
+    // ②17 (noveno tramo): la resolución la hace el KMS; aquí solo se decide la precedencia.
+    const effEmail = effectiveRecoveredEmail_(payload.resume_token, payload.recovered_email, payload.n);
     if (!effEmail) {
       // Sin `n` del enlace NI recovered_email del cliente → no se puede identificar al
       // guardian. Caer a (b) si hay signing_token; si no, error explícito.
@@ -728,7 +728,7 @@ function requireSignerContext_(payload) {
       err.code = 'UNAUTHORIZED';
       throw err;
     }
-    const guardianId = resolveGuardianForRecovery_(groupId, effEmail);
+    const guardianId = resolveGuardianForRecovery_(payload.resume_token, effEmail);
     if (!guardianId) {
       const err = new Error('Unauthorized: recovered_email no resuelve a un guardian del grupo');
       err.code = 'UNAUTHORIZED';
@@ -807,7 +807,7 @@ function requireSignerIdentity_(payload) {
     } catch (eMemo) { /* el memo nunca rompe el camino live */ }
 
     const groupId = requireResumeToken_(payload);   // KAL-4 + TTL 7d + abandoned gate
-    const effEmail = effectiveRecoveredEmail_(payload.recovered_email, groupId, payload.n);
+    const effEmail = effectiveRecoveredEmail_(payload.resume_token, payload.recovered_email, payload.n);
     if (!effEmail) {
       const err = new Error('Unauthorized: no se pudo identificar al firmante (falta `n` del enlace o recovered_email)');
       err.code = 'UNAUTHORIZED';
@@ -1077,14 +1077,15 @@ function _identidadDelEnlace_(p, groupId, opts) {
   var sinRespaldo = !!(opts && opts.sinRespaldo);
   // 1. La identidad DECLARADA (pasos 1 y 2) — idéntica en los dos modos ⇒ UNA sola memoria.
   var declarada = _idLinkMemo_(p, groupId, 'idlinkd_', function () {
-    return effectiveRecoveredEmail_((p && p.recovered_email) || null, groupId, (p && p.n) || null,
-      null, null, null, { sinRespaldo: true });
+    return effectiveRecoveredEmail_((p && p.resume_token) || null, (p && p.recovered_email) || null,
+      (p && p.n) || null, null, { sinRespaldo: true });
   });
   if (declarada || sinRespaldo) return declarada;
   // 2. Solo el modo indulgente añade el respaldo (`primary_email` = tutor 1), con SU memoria.
   //    Llegados aquí los pasos 1 y 2 ya dieron null, así que esta llamada solo paga el paso 3.
   return _idLinkMemo_(p, groupId, 'idlinkr_', function () {
-    return effectiveRecoveredEmail_((p && p.recovered_email) || null, groupId, (p && p.n) || null);
+    return effectiveRecoveredEmail_((p && p.resume_token) || null, (p && p.recovered_email) || null,
+      (p && p.n) || null);
   });
 }
 
@@ -1553,8 +1554,8 @@ function _warmMembersDocsPhase_(it) {
     var groupId = requireResumeTokenMemo_({ resume_token: token });
     if (cache.get(_wzCacheKey_('mem', groupId) + '_meta')) { out.ok = true; return out; }
     try { cache.put('wzck_mem_' + groupId, '1', 240); } catch (eM) {}
-    var effEmail = effectiveRecoveredEmail_(it.e || null, groupId, it.n || null);
-    var guardianId = effEmail ? resolveGuardianForRecovery_(groupId, effEmail) : null;
+    var effEmail = effectiveRecoveredEmail_(token, it.e || null, it.n || null);
+    var guardianId = effEmail ? resolveGuardianForRecovery_(token, effEmail) : null;
     // ②17: las filas de firma las sirve el KMS (acotadas al expediente del token), no
     // AppSheet. Sin ellas el resolvedor devuelve null — mismo comportamiento de antes
     // ante una lectura fallida: pre-AD o sin sesión, nada que calentar.
@@ -2512,87 +2513,104 @@ function recognizeFamily_(p, opts) {
 }
 
 /**
+ * ②17 (noveno tramo, 2026-08-15) — EL ÚNICO SITIO por el que este proceso pregunta DE QUIÉN
+ * es un correo (o el identificador opaco de un enlace) dentro de un expediente.
+ *
+ * Hasta hoy la cadena de identidad hacía hasta CINCO consultas a AppSheet **desde este
+ * proceso, que es público y anónimo, con la credencial de la aplicación entera**: las
+ * personas del expediente (la ficha COMPLETA de cada una —MENORES INCLUIDOS: nombre, fecha
+ * de nacimiento, documento— solo para saber quién es tutor), sus correos, la fila del `n`
+ * del enlace **leída por su clave y sin acotar al expediente**, y hasta dos veces la
+ * cabecera. Ahora lo contesta el KMS en UNA pregunta: `enr.wizardTutorQueRecupera`.
+ *
+ * ⛔ **NO SE ESCRIBE UN SEGUNDO LECTOR.** Éste es el ayudante único; `resolveGuardianForRecovery_`
+ * y `resolveEmailFromLinkParam_` son clientes suyos. El resolvedor de verdad vive en el KMS
+ * (`enr_resolveGuardianFromEmail_`) y es ÚNICO desde este tramo (consolidación P245): antes
+ * había un gemelo aquí que DEBÍA permanecer idéntico, y ya había divergido —el de aquí
+ * descartaba a quien la familia había quitado con `is_active` en falso y el del KMS no—.
+ *
+ * ⚠️ **LANZA si no se puede preguntar, y es el criterio del oro, no una elección nueva:**
+ * las lecturas que sustituye NO estaban envueltas en `try` (`appsheetRequest_` lanzaba).
+ * Decir «no es tutor» cuando en realidad no se pudo consultar dejaría a una familia sin
+ * firmar, sin ver su documento o sin recibir su enlace, y sin saber por qué. Los llamantes
+ * que ya degradaban lo siguen haciendo en SU `try/catch` de siempre.
+ *
+ * MEMORIA DE EJECUCIÓN (no ScriptCache): la cadena resuelve dos veces lo mismo dentro de la
+ * MISMA petición (`effectiveRecoveredEmail_` pregunta por el `n`, y después
+ * `resolveGuardianForRecovery_` por el correo que salió de ahí). Se recuerda solo mientras
+ * dura la ejecución ⇒ cero riesgo de servir una identidad vieja, a diferencia de un TTL.
+ * La respuesta del `n` siembra además la entrada del correo que resolvió: es el MISMO dato,
+ * contestado por el MISMO sitio, para el MISMO expediente.
+ *
+ * @param {string} resumeToken  el token de la sesión (KAL-4: el expediente sale de ÉL).
+ * @param {Object} opciones     { correo } o { n } — UNO de los dos, nunca los dos.
+ * @returns {{correo:(string|null), tutor:(string|null), email_id:(string|null)}}
+ */
+var _TUTOR_MEMO_ = {};   // vive lo que dura la ejecución de GAS, ni un ms más
+function _tutorQueRecupera_(resumeToken, opciones) {
+  var vacio = { correo: null, tutor: null, email_id: null };
+  var token = resumeToken ? String(resumeToken).trim() : '';
+  if (!token) return vacio;
+  try { assertValidUuid_(token, 'resume_token'); } catch (e) { return vacio; }
+
+  var o = opciones || {};
+  var n      = o.n      ? String(o.n).trim() : '';
+  var correo = o.correo ? String(o.correo).toLowerCase().trim() : '';
+  if ((n && correo) || (!n && !correo)) return vacio;
+
+  // Validación local ANTES del viaje: un discriminador basura se ignoraba limpio en el oro
+  // (`resolveGuardianForRecovery_` / `resolveEmailFromLinkParam_` devolvían null sin leer).
+  if (n) { try { assertValidUuid_(n, 'n_email_id'); } catch (e1) { return vacio; } }
+  else   { try { assertValidEmail_(correo, 'recovered_email'); } catch (e2) { return vacio; } }
+
+  var clave = token + '|' + (n ? 'n:' + n : 'c:' + correo);
+  if (Object.prototype.hasOwnProperty.call(_TUTOR_MEMO_, clave)) return _TUTOR_MEMO_[clave];
+
+  var r = kmsProxy_('enr.wizardTutorQueRecupera',
+    n ? { resume_token: token, n: n } : { resume_token: token, correo: correo }) || {};
+  var out = {
+    correo:   r.correo   || null,
+    tutor:    r.tutor    || null,
+    email_id: r.email_id || null,
+  };
+  _TUTOR_MEMO_[clave] = out;
+  // El camino del `n` ya contestó por SU correo: se siembra para que la segunda pregunta
+  // de la misma petición no pague otro viaje. Mismo dato, mismo sitio, mismo expediente.
+  if (n && out.correo) _TUTOR_MEMO_[token + '|c:' + out.correo] = out;
+  return out;
+}
+
+/**
  * IDENTITY-FROM-LINK (2026-06-11) — resuelve el email del guardian que recupera A PARTIR
  * DEL PROPIO ENLACE, usando SOLO datos existentes: el parámetro `n` del magic link, que
- * desde ahora lleva el `email_id` (PK de la fila `enrEmails` del guardian al que se emitió
- * el link). El `email_id` es OPACO, sin PII, y YA EXISTE en la BD — cero columna nueva,
- * cero tabla nueva, cero almacenamiento nuevo.
+ * lleva el `email_id` (PK de la fila `enrEmails` del guardian al que se emitió el link).
+ * El `email_id` es OPACO, sin PII, y YA EXISTE en la BD — cero columna nueva.
  *
  * Modelo canónico de Diego (LA regla, cita literal — corrección de rumbo 2026-06-11):
  *   "Tienes herramientas y datos suficientes para resolver la identidad sabiendo el
  *    email con el que se solicita el link. No pienso crear un campo que solo sirve a
  *    uno de los tipos de programa."
  *
- * Esto SUPERSEDE el enfoque IDENTITY-BINDING (columna dedicada `recovery_guardian_email`,
- * vetado por Diego: específico de un tipo de programa). El `email_id` sirve a TODO tipo
- * de programa porque es un dato transversal del modelo de personas/emails.
+ * ②17 (noveno tramo, 2026-08-15): la lectura ya NO la hace este proceso. Se la pide al KMS
+ * por el ayudante único `_tutorQueRecupera_`. Las DOS guardas viajaron CON su lectura,
+ * porque son inseparables de ella y ése es el criterio de los tramos anteriores:
+ *   · la fila del `n` **pertenece al expediente del token** (KAL-4) — allí ni se busca fuera
+ *     del expediente, así que una fila ajena no llega a existir para este proceso;
+ *   · ese correo **resuelve a un tutor**; si no, no se concede identidad (null limpio →
+ *     degrada al modelo group-scoped intacto, exactamente como antes).
  *
- * SEGURIDAD (KAL-4 / KAL-5):
- *  - `n` (email_id) JAMÁS se cree a ciegas: se lee la fila real `enrEmails[email_id=n]` y
- *    se VALIDA server-side que (a) pertenece al `enrollment_group_id` del resume_token
- *    (KAL-4 — el grupo SIEMPRE del token, nunca del payload) y (b) su persona es un
- *    guardian del grupo (o el fallback requester del email de creación, ya existente).
- *  - assertValidUuid_ + appsheetEscape_ (KAL-5 doble capa) antes de concatenar en el Filter.
- *  - Devuelve el VALUE (email) de la fila → alimenta `recovered_email` exactamente como el
- *    contrato del KMS espera (matchea por email). CERO cambio KMS.
- *  - Si `n` está ausente, malformado, no pertenece al grupo, o no resuelve a guardian →
- *    null limpio → el flujo degrada al modelo group-scoped intacto (sin gracia de identidad).
- *
- * @param {string} groupId   enrollment_group_id (DERIVADO del resume_token, KAL-4)
- * @param {string} nParam    p.n del payload (email_id candidato, de la URL del link)
- * @param {Array}  [emailsHint]  filas enrEmails del grupo ya leídas (evita re-Find)
- * @param {Array}  [personsHint] filas enrPersons del grupo ya leídas (evita re-Find)
- * @param {Object} [groupHint]   fila de grupo ya leída (para el fallback requester)
+ * @param {string} resumeToken  token de la sesión (KAL-4 — el expediente sale de ÉL)
+ * @param {string} nParam       p.n del payload (email_id candidato, de la URL del link)
  * @returns {string|null} email (lowercased) del guardian, o null (degrada group-scoped)
  */
-function resolveEmailFromLinkParam_(groupId, nParam, emailsHint, personsHint, groupHint) {
+function resolveEmailFromLinkParam_(resumeToken, nParam) {
   if (!nParam) return null;
-  var emailId;
-  try {
-    assertValidUuid_(nParam, 'n_email_id');
-    emailId = String(nParam).trim();
-  } catch (e) {
-    return null; // `n` no es un email_id → ignorar limpio (degrada group-scoped)
-  }
-  try {
-    assertValidUuid_(groupId, 'enrollment_group_id');
-  } catch (e) {
+  var r = _tutorQueRecupera_(resumeToken, { n: nParam });
+  if (!r.correo || !r.tutor) {
+    Logger.log(redact_('[resolveEmailFromLinkParam_] `n` no resuelve a tutor de este expediente (rechazado)'));
     return null;
   }
-  // Leer la fila enrEmails por su PK (email_id). KAL-5: assertValidUuid_ (arriba) +
-  // appsheetEscape_ (aquí). Preferir el hint del batch del caller; si no, Find dirigido.
-  var row = null;
-  if (Array.isArray(emailsHint)) {
-    row = wizardSoloVivas_(emailsHint).find(function(e) { return e && e.email_id === emailId; }) || null;
-  }
-  if (!row) {
-    var rows = wizardSoloVivas_(appsheetRequest_(T.EMAILS, 'Find', [], {
-      Filter: '"email_id" = "' + appsheetEscape_(emailId) + '"'
-    }));
-    row = rows[0] || null;
-  }
-  if (!row) {
-    Logger.log(redact_('[resolveEmailFromLinkParam_] email_id no existe n=' + emailId.slice(0, 8) + '… group=' + groupId));
-    return null;
-  }
-  // KAL-4: la fila DEBE pertenecer al grupo del token. Sin esto, un email_id de OTRO
-  // grupo (enumeración) resolvería identidad ajena.
-  if (String(row.enrollment_group_id || '') !== String(groupId)) {
-    Logger.log(redact_('[resolveEmailFromLinkParam_] email_id de OTRO grupo (rechazado) n=' + emailId.slice(0, 8) + '… group=' + groupId));
-    return null;
-  }
-  var email = String(row.value || '').toLowerCase().trim();
-  if (!email) return null;
-  // VALIDAR que el email resuelve a un guardian del grupo (o el fallback requester del
-  // email de creación) — reutiliza el resolver probado. Si no resuelve, no concedemos
-  // identidad (group-scoped intacto).
-  var guardianId = resolveGuardianForRecovery_(groupId, email, emailsHint, personsHint, groupHint);
-  if (!guardianId) {
-    Logger.log(redact_('[resolveEmailFromLinkParam_] email no resuelve a guardian (rechazado) n=' + emailId.slice(0, 8) + '… group=' + groupId));
-    return null;
-  }
-  Logger.log(redact_('[resolveEmailFromLinkParam_] n→email→guardian OK n=' + emailId.slice(0, 8) + '… group=' + groupId));
-  return email;
+  return r.correo;
 }
 
 /**
@@ -2612,19 +2630,25 @@ function resolveEmailFromLinkParam_(groupId, nParam, emailsHint, personsHint, gr
  * se DECLARA en la llamada — `opts.sinRespaldo:true` — en vez de existir un segundo
  * resolvedor que pudiera divergir de éste. Los pasos 1 y 2 son idénticos en los dos modos.
  *
+ * ②17 (noveno tramo, 2026-08-15) — ESTA FUNCIÓN YA NO LEE APPSHEET, y su firma lo dice:
+ * toma el `resume_token` en vez del identificador del expediente. Los pasos 1 y 3 eran las
+ * dos lecturas que quedaban; hoy el paso 1 lo sirve `_tutorQueRecupera_` y el paso 3 la
+ * cabecera del sexto tramo (`_expedienteDelToken_`, lector ÚNICO). Los `emailsHint` /
+ * `personsHint` de la firma vieja **desaparecen**: no queda nada aquí a lo que alimentar.
+ * ⛔ **LA PRECEDENCIA NO SE MOVIÓ**: sigue decidiéndose aquí, en el asistente. Lo único que
+ * cambió es de dónde salen los datos con los que se decide.
+ *
+ * @param {string} resumeToken                token de la sesión (KAL-4)
  * @param {string|null} clientRecoveredEmail  p.recovered_email (puede faltar)
- * @param {string} groupId                    enrollment_group_id (derivado del token, KAL-4)
  * @param {string|null} nParam                p.n del payload (email_id del enlace)
- * @param {Array}  [emailsHint]               filas enrEmails del grupo ya leídas
- * @param {Array}  [personsHint]              filas enrPersons del grupo ya leídas
- * @param {Object} [groupHint]                fila de grupo ya leída
+ * @param {Object} [groupHint]                cabecera ya leída (evita re-preguntarla)
  * @param {Object} [opts]                     { sinRespaldo:true } ⇒ NO caer al `primary_email`
  *                                            (paso 3). Sin él, comportamiento de siempre.
  * @returns {string|null}
  */
-function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsHint, personsHint, groupHint, opts) {
+function effectiveRecoveredEmail_(resumeToken, clientRecoveredEmail, nParam, groupHint, opts) {
   // 1. Prioridad: identidad DEL ENLACE (`n` = email_id) resuelta server-side.
-  var fromLink = resolveEmailFromLinkParam_(groupId, nParam, emailsHint, personsHint, groupHint);
+  var fromLink = resolveEmailFromLinkParam_(resumeToken, nParam);
   if (fromLink) return fromLink;
   // 2. Compat secundario: recovered_email del cliente (sessionStorage), si viene.
   if (clientRecoveredEmail) {
@@ -2635,14 +2659,12 @@ function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsH
   }
   // 3. FALLBACK CANÓNICO "identidad = solicitud + email" (Diego: la identidad NO PUEDE
   //    FALTAR POR CONSTRUCCIÓN). Si la sesión entra solo con el resume_token —recarga de
-  //    una pestaña con token viejo, sin `n` ni recovered_email del cliente (log real de
-  //    Diego 20:40: UNAUTHORIZED "falta n del enlace o recovered_email" pese a hidratar
-  //    los datos)— la SOLICITUD conoce el email de su solicitante: `primary_email` es el
-  //    ARTEFACTO Stage-1 = email personal del tutor 1 (el que creó la solicitud). Es el
-  //    guardian por defecto canónico de una recuperación group-scoped sin discriminador.
-  //    KAL-4: el groupId viene SIEMPRE del token (server-side); primary_email se lee de
-  //    la fila de ESE grupo, jamás del payload. El `n` sigue teniendo prioridad cuando
-  //    existe (firma per-guardian intacta); esto solo cubre el hueco "sin discriminador".
+  //    una pestaña con token viejo, sin `n` ni recovered_email del cliente— la SOLICITUD
+  //    conoce el email de su solicitante: `primary_email` es el ARTEFACTO Stage-1 = email
+  //    personal del tutor 1 (el que creó la solicitud). Es el guardian por defecto canónico
+  //    de una recuperación group-scoped sin discriminador.
+  //    KAL-4: el expediente sale SIEMPRE del token (server-side); `primary_email` se lee de
+  //    la cabecera de ESE expediente, jamás del payload.
   //
   //    ②24.bis — QUIEN QUIERE ATRIBUIR NO PASA DE AQUÍ. El respaldo devuelve «el tutor 1»,
   //    nunca «no se sabe»: sirve para elegir buzón (el código de un solo uso, la marca de
@@ -2650,13 +2672,9 @@ function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsH
   //    con `opts.sinRespaldo` y se lleva `null`, que es la respuesta honesta.
   if (opts && opts.sinRespaldo) return null;
   try {
-    var grow = groupHint;
-    if (!grow && groupId) {
-      var grows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-        Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
-      }) || [];
-      grow = grows.length ? grows[0] : null;
-    }
+    // ②17 (sexto tramo): la cabecera la sirve el KMS, por su lector ÚNICO. Degrada a null
+    // exactamente como el `try/catch` que envolvía aquí la lectura de AppSheet.
+    var grow = groupHint || _expedienteDelToken_(resumeToken).fila;
     var pe = grow && grow.primary_email ? String(grow.primary_email).toLowerCase().trim() : '';
     if (pe) {
       try { assertValidEmail_(pe, 'primary_email'); return pe; }
@@ -2667,42 +2685,42 @@ function effectiveRecoveredEmail_(clientRecoveredEmail, groupId, nParam, emailsH
 }
 
 /**
- * IDENTITY-FROM-LINK (2026-06-11) — localiza el `email_id` (PK de enrEmails) de la fila
- * del email DENTRO del grupo, para meterlo en el `n` del magic link. Es el dato opaco,
- * sin PII y ya existente que resuelve la identidad del guardian al recuperar (espejo
- * inverso de resolveEmailFromLinkParam_). KAL-5: assertValidUuid_ + assertValidEmail_ +
- * appsheetEscape_. Devuelve null si no hay match (→ `n` ausente → group-scoped intacto).
+ * Resuelve el guardian de un email dentro del expediente del token (DL-E38 REFINADO a1).
  *
- * @param {string} groupId enrollment_group_id (server-side)
- * @param {string} email   email del guardian destino (lowercased)
- * @returns {string|null} email_id (UUID) o null
- * @private
+ * ②17 (noveno tramo, 2026-08-15) — YA NO RESUELVE NADA AQUÍ: se lo pregunta al KMS por el
+ * ayudante único `_tutorQueRecupera_`. El resolvedor canónico —el matching per-guardian con
+ * sus dos sub-casos legados (fila de correo huérfana sin persona vinculada · el correo que
+ * casa con el `primary_email` de la cabecera, ambos resueltos al solicitante)— vive en
+ * `enr_resolveGuardianFromEmail_` (`kis-app kms-server/enr/wizard-datalayer.gs`) y es el
+ * ÚNICO del sistema desde este tramo (consolidación P245).
+ *
+ * Por qué se consolidó, medido: el gemelo que vivía aquí y el del KMS **DEBÍAN permanecer
+ * idénticos** (los dos lo decían en su JSDoc) y **ya no lo eran** — éste descartaba a quien
+ * la familia había quitado con la bandera `is_active` en falso (arreglo del 2026-08-09) y el
+ * del KMS solo miraba `deleted_at`, que siete de las tablas de admisión todavía no tienen.
+ *
+ * Lo que este proceso —público y anónimo— deja de bajar: la ficha COMPLETA de cada persona
+ * del expediente, MENORES INCLUIDOS, solo para saber quién es tutor.
+ *
+ * KAL-4: el expediente lo deriva el KMS del `resume_token`, NUNCA del cuerpo de la petición.
+ *
+ * @param {string} resumeToken     token de la sesión (KAL-4)
+ * @param {string} recoveredEmail  email que tecleó la familia (discriminador)
+ * @returns {string|null} guardian person_id, o null si ningún tutor de ese expediente lo tiene
  */
-function findEmailIdForGuardian_(groupId, email, emailsHint) {
-  if (!groupId || !email) return null;
-  var emailLc;
-  try {
-    assertValidUuid_(groupId, 'enrollment_group_id');
-    assertValidEmail_(email, 'guardian_email');
-    emailLc = String(email).toLowerCase().trim();
-  } catch (e) {
-    return null;
-  }
-  try {
-    // PERF sendMagicLink (2026-06-12): emailsHint = filas enrEmails del MISMO grupo
-    // ya bajadas por el caller (mismo filtro que abajo) — evita un Find serial.
-    var rows = wizardSoloVivas_(Array.isArray(emailsHint) ? emailsHint
-      : appsheetRequest_(T.EMAILS, 'Find', [], {
-          Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
-        }));
-    var match = rows.find(function(r) {
-      return r && String(r.value || '').toLowerCase().trim() === emailLc && r.email_id;
-    });
-    return match ? String(match.email_id) : null;
-  } catch (e) {
-    return null;
-  }
+function resolveGuardianForRecovery_(resumeToken, recoveredEmail) {
+  if (!recoveredEmail) return null;
+  return _tutorQueRecupera_(resumeToken, { correo: recoveredEmail }).tutor;
 }
+
+// ②17 (noveno tramo, 2026-08-15) — aquí vivía `findEmailIdForGuardian_`, el espejo inverso
+// de la resolución del enlace: localizaba el `email_id` de un correo DENTRO del expediente
+// para meterlo en el `n` del magic link. Leía `enrEmails` otra vez desde este proceso. Su
+// respuesta la da ahora la MISMA pregunta al KMS (`email_id` de `_tutorQueRecupera_`), que
+// la calcula sobre las filas que ya tiene en la mano — cero consultas de más, y sin un
+// segundo lector del mismo dato. Criterio copiado VERBATIM: casa por el VALOR del correo y
+// nada más (cualquier fila viva del expediente, con o sin persona vinculada), así que sigue
+// habiendo `n` para correos que no resuelven a tutor, igual que antes.
 
 /**
  * Resends magic link for an existing enrollment session.
@@ -2769,24 +2787,27 @@ function sendMagicLink_(p) {
     // primary_email (GAP-2 / pre-Step-2). KAL-4: groupId derived from token-path
     // caller, recovered_email only ever a discriminator validated against real rows.
     let destEmail = grp.primary_email;
-    let identityEmail = null; // IDENTITY-FROM-LINK: email del guardian destino (si resuelve)
-    // PERF sendMagicLink (2026-06-12): UN batch paralelo de emails+persons del grupo
-    // como hints de los 2 resolveGuardianForRecovery_ + findEmailIdForGuardian_
-    // (antes: hasta 3 Finds SERIALES de las mismas tablas, ~3-5s cada uno).
-    const grpIdEsc = appsheetEscape_(grp.enrollment_group_id);
-    const hintRead = appsheetRequestBatch_([
-      { table: T.EMAILS,  action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + grpIdEsc + '"' } },
-      { table: T.PERSONS, action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + grpIdEsc + '"' } },
-    ]);
-    const emailsHint  = hintRead[0].ok ? wizardSoloVivas_(hintRead[0].data) : null;
-    const personsHint = hintRead[1].ok ? wizardSoloVivas_(hintRead[1].data) : null;
-    if (p.recovered_email && resolveGuardianForRecovery_(grp.enrollment_group_id, p.recovered_email, emailsHint, personsHint, grp)) {
+    // ②17 (noveno tramo, 2026-08-15): el lote paralelo de `enrEmails` + `enrPersons` que
+    // alimentaba a los dos resolvedores y a `findEmailIdForGuardian_` DESAPARECE — bajaba a
+    // este proceso público y anónimo la ficha COMPLETA de cada persona del expediente,
+    // MENORES INCLUIDOS, solo para saber quién es tutor. Lo contesta el KMS, y la MISMA
+    // pregunta devuelve además el `email_id` del enlace (antes, una tercera pasada).
+    // ⛔ La DECISIÓN sigue aquí, verbatim: preferir el correo que la familia tecleó y caer al
+    //    `primary_email` (tutor 1 / artefacto Stage-1) solo si aquél no resuelve a un tutor.
+    // ⚠️ Va ANTES de renovar el token: la renovación lo ROTA, y el token viejo deja de
+    //    resolver ⇒ preguntar después devolvería `n` vacío para toda familia con borrador.
+    let nEmailId = null;
+    const tutorTecleado = p.recovered_email
+      ? _tutorQueRecupera_(p.resume_token, { correo: p.recovered_email })
+      : null;
+    if (tutorTecleado && tutorTecleado.tutor) {
       destEmail = String(p.recovered_email).toLowerCase().trim();
-      identityEmail = destEmail;
-    } else if (resolveGuardianForRecovery_(grp.enrollment_group_id, grp.primary_email, emailsHint, personsHint, grp)) {
-      // Sin recovered_email explícito: si el primary_email resuelve a un guardian
-      // (caso tutor-1 / artefacto Stage-1), ese es el guardian del enlace.
-      identityEmail = String(grp.primary_email || '').toLowerCase().trim();
+      nEmailId = tutorTecleado.email_id;
+    } else {
+      const tutorPrimario = _tutorQueRecupera_(p.resume_token, { correo: grp.primary_email });
+      // Sin correo tecleado que resuelva: si el `primary_email` es de un tutor (caso
+      // tutor-1 / artefacto Stage-1), ése es el tutor del enlace y de él sale el `n`.
+      if (tutorPrimario.tutor) nEmailId = tutorPrimario.email_id;
     }
     _checkMagicLinkRateLimit_((destEmail || '').toLowerCase().trim());
     _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
@@ -2809,8 +2830,8 @@ function sendMagicLink_(p) {
 
     // IDENTITY-FROM-LINK (2026-06-11): `n` := email_id de la fila enrEmails del guardian
     // destino (opaco, sin PII, ya existe). La identidad viaja EN EL ENLACE; cero columna.
-    // Si el email no resuelve a un email_id de guardian (group-scoped legacy) → n null.
-    const nEmailId = findEmailIdForGuardian_(grp.enrollment_group_id, identityEmail, emailsHint);
+    // ②17: ya resuelto arriba, en la MISMA pregunta que dijo de quién es el correo. Sin
+    // tutor que case → `nEmailId` queda null y el enlace sale sin `n`, igual que antes.
     // Gracia OTP-skip anclada al resume_token recién rotado (single-use, 10 min).
     _mintMagicLinkNonce_(tokenToSend, grp.enrollment_group_id);
     const langP1 = grp.preferred_language || 'es';
@@ -3175,133 +3196,16 @@ function reportUnsolicited_(p) {
 // en un `guardian_person_id` crudo del payload. Los emails por-guardian ya
 // viven en `enrEmails` (fuente canónica) — no se añade columna ad-hoc.
 
-/**
- * Resuelve el guardian que recuperó el magic link a partir del email tecleado
- * (GAP-1 a1). Matchea `recoveredEmail` contra `enrEmails` del grupo, filtrado a
- * personas `person_type_id === 'guardian'`. KAL-5: assertValidEmail_ + lower/trim
- * antes; appsheetEscape_ en cualquier Filter. KAL-4: el groupId ya viene derivado
- * del token, nunca del payload.
- *
- * FALLBACK LEGADO (2026-06-11 — fix bug "email-de-creación huérfano"):
- * El email con el que la familia inició sesión (`primary_email` del grupo) se
- * registra en `enrEnrollmentGroups` pero NO genera una fila en `enrEmails` en el
- * momento de la creación — se crea la fila de email solo cuando el guardián es
- * persistido por el KMS (Step 2). En sesiones creadas por el PRIMER tutor que aún
- * no ha completado el Step 2 (o cuyo email-de-creación no fue vinculado al person_id
- * en la fila de enrEmails), el matcher principal no encuentra match. Fallback:
- *   1. Si hay filas enrEmails SIN person_id cuyo value coincide → resolver el
- *      guardian como `requester_person_id` del grupo (el primer guardian guardado).
- *   2. Si el email coincide con `primary_email` del grupo Y hay un `requester_person_id`
- *      que es un guardian → devolver ese requester_person_id.
- * KAL-4: en ambos casos el groupId viene del token; el person_id se resuelve desde
- * datos del servidor (nunca del payload).
- *
- * Matching canónico per-guardian — DEBE permanecer idéntico a
- * enr_resolveGuardianFromEmail_ (kms-server/enr/wizard-datalayer.gs) hasta
- * consolidación P245 (un solo resolver, probablemente KMS-side). Si diverge,
- * uno de los dos es incorrecto. Cross-ref: P245 + HYDRATE-FIX 2026-06-11.
- *
- * @param {string} groupId         enrollment_group_id (ya derivado del token)
- * @param {string} recoveredEmail  email que tecleó la familia (discriminador)
- * @param {Array}  [emailsHint]    filas enrEmails del grupo ya leídas (evita re-query)
- * @param {Array}  [personsHint]   filas enrPersons del grupo ya leídas (evita re-query)
- * @param {Object} [groupHint]     fila enrEnrollmentGroups ya leída (evita re-query)
- * @returns {string|null} guardian person_id, o null si ningún email de guardian matchea
- *                        (GAP-2: pre-Step-2 no hay filas → fallback group-scoped).
- */
-function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, personsHint, groupHint) {
-  if (!recoveredEmail) return null;
-  var email;
-  try {
-    assertValidEmail_(recoveredEmail, 'recovered_email');
-    email = String(recoveredEmail).toLowerCase().trim();
-  } catch (e) {
-    return null; // discriminador malformado → no-match (fallback group-scoped)
-  }
-  try {
-    assertValidUuid_(groupId, 'enrollment_group_id');
-  } catch (e) {
-    return null;
-  }
-  var idEsc = appsheetEscape_(groupId);
-
-  var emails = wizardSoloVivas_(Array.isArray(emailsHint) ? emailsHint
-    : appsheetRequest_(T.EMAILS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }));
-  var persons = wizardSoloVivas_(Array.isArray(personsHint) ? personsHint
-    : appsheetRequest_(T.PERSONS, 'Find', [], { Filter: '"enrollment_group_id" = "' + idEsc + '"' }));
-
-  var guardianIds = {};
-  persons.forEach(function(per) {
-    if (per && per.person_type_id === 'guardian' && per.person_id) guardianIds[per.person_id] = true;
-  });
-
-  // ── Vía principal: enrEmails con person_id de guardian ────────────────────
-  var match = emails.find(function(e) {
-    return e && guardianIds[e.person_id] &&
-           String(e.value || '').toLowerCase().trim() === email;
-  });
-  if (match) return match.person_id;
-
-  // ── FALLBACK LEGADO: email-de-creación sin person_id en enrEmails ─────────
-  // El email introductorio del tutor 1 puede estar en enrEmails SIN person_id
-  // (la fila de email se crea pero no se vincula al person_id hasta que el KMS
-  // persiste el guardian en el Step 2). Dos sub-casos:
-  //   A. Fila enrEmails sin person_id cuyo value coincide.
-  //   B. Email coincide con primary_email del grupo (artefacto Stage-1).
-  // En ambos casos resolvemos guardian = requester_person_id del grupo (primer
-  // guardian, backfilled por el KMS en wizard-gateway.gs:762-767), siempre que
-  // ese person_id sea un guardian conocido. KAL-4 intacto: todo server-side.
-
-  // Sub-caso A: fila enrEmails sin person_id que coincida con el email tecleado.
-  var orphanMatch = emails.find(function(e) {
-    return e && !e.person_id &&
-           String(e.value || '').toLowerCase().trim() === email;
-  });
-
-  // Sub-caso B: email coincide con primary_email del grupo (necesita group row).
-  var primaryEmailMatch = false;
-  if (!orphanMatch) {
-    var grpRows = null;
-    if (groupHint && groupHint.enrollment_group_id) {
-      grpRows = [groupHint];
-    } else {
-      try {
-        grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [],
-          { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
-      } catch (e) {
-        grpRows = [];
-      }
-    }
-    var grp = grpRows && grpRows[0];
-    if (grp && String(grp.primary_email || '').toLowerCase().trim() === email) {
-      primaryEmailMatch = true;
-    }
-  }
-
-  if (orphanMatch || primaryEmailMatch) {
-    // Necesitamos el requester_person_id del grupo.
-    var grpForRequester = null;
-    if (groupHint && groupHint.enrollment_group_id) {
-      grpForRequester = groupHint;
-    } else {
-      try {
-        var grpRows2 = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [],
-          { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
-        grpForRequester = grpRows2[0] || null;
-      } catch (e) {
-        grpForRequester = null;
-      }
-    }
-    var requesterId = grpForRequester && grpForRequester.requester_person_id;
-    if (requesterId && guardianIds[requesterId]) {
-      Logger.log(redact_('[resolveGuardianForRecovery_] fallback legacy-email match → requester_person_id=' +
-                 requesterId + ' (group=' + groupId.substring(0, 8) + '...)'));
-      return requesterId;
-    }
-  }
-
-  return null;
-}
+// ②17 (noveno tramo, 2026-08-15) — aquí vivía el GEMELO de `resolveGuardianForRecovery_`,
+// el que resolvía de verdad: leía `enrPersons` y `enrEmails` del expediente —la ficha
+// COMPLETA de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor— y hasta DOS
+// veces la cabecera, todo desde este proceso público y anónimo con la credencial de la
+// aplicación entera. Su JSDoc y el del KMS decían, los dos, que DEBÍAN permanecer idénticos
+// «hasta consolidación P245»; ya habían divergido (éste descartaba a quien la familia había
+// quitado con `is_active` en falso, el del KMS no). Ésta ES esa consolidación: el resolvedor
+// ÚNICO es `enr_resolveGuardianFromEmail_` del KMS, servido por `enr.wizardTutorQueRecupera`,
+// y aquí queda un cliente fino del mismo nombre — vive con el resto de la cadena de identidad,
+// junto a `_tutorQueRecupera_`. PROHIBIDO escribir un segundo lector.
 
 // ②17 (octavo tramo, 2026-08-15) — aquí vivía `findOpenGroupsByGuardianEmail_`, que
 // localizaba los expedientes en los que el correo tecleado es de un TUTOR. Leía
@@ -3331,8 +3235,13 @@ function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, person
  * `enr_resolveSigningStatus_`, port verbatim de `resolveSigningStatus_` de abajo).
  * Si divergen, el frontend recibe dos semánticas para el mismo grupo y el gate 7→8 se
  * rompe. Regla canónica de Diego: firma lista ⟺ existe signer con token (sesión DRAFT
- * cuenta; el envelope Click&Sign NO es la vara). P245 (un solo resolver) es PRIORIDAD-1
- * del backlog — tres divergencias en un día (editable / guardian-matching / signing).
+ * cuenta; el envelope Click&Sign NO es la vara).
+ *
+ * ⚠️ ESTA divergencia SIGUE ABIERTA — la de P245 no. El 2026-08-15 (②17, noveno tramo) se
+ * consolidó el resolvedor de la IDENTIDAD del tutor: hoy hay uno solo, y vive en el KMS.
+ * Lo que aquí se describe es OTRA cosa —la tripleta de campos de FIRMA que emiten dos
+ * sitios distintos— y ese emparejamiento sigue sostenido por disciplina, sin control que
+ * lo vigile. No confundir el cierre de una con el de la otra.
  *
  * @param {string} groupId
  * @param {Array}  enrollments         filas enrEnrollments del grupo
@@ -4046,39 +3955,38 @@ function getAdmissionState_(p) {
   const lightRead = appsheetRequestBatch_([
     { table: T.ENROLLMENTS,      action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
     { table: T.PERSONS,          action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    // IDENTITY-FROM-LINK: la fila de grupo se usa como groupHint para el fallback
-    // requester de resolveGuardianForRecovery_ (email de creación sin person_id). En
-    // paralelo, sin coste de latencia adicional respecto al batch existente.
-    { table: T.ENROLLMENT_GROUPS, action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    // PERF-KMS2 (2026-06-11): 2 tablas más en el MISMO batch paralelo (cero latencia
-    // extra) que antes se leían en SERIE aguas abajo (medido: states 10-13s + emails
-    // ~3-5s). Filtros VERBATIM de los lectores probados: buildAdmissionContext_
-    // (STATES_T sin filtro) y resolveEmailFromLinkParam_/findEmailIdForGuardian_
-    // (EMAILS por grupo). Las filas viajan como hints — cada helper re-aplica su filtro
-    // fino en memoria.
+    // ②17 (sexto tramo): la CABECERA la sirve el KMS por su lector único; aquí ya no se
+    // lee `enrEnrollmentGroups` — se pide abajo con `_expedienteDelToken_` y viaja como
+    // hint del respaldo «tutor 1» de la cadena de identidad.
+    // PERF-KMS2 (2026-06-11): `sysStates_T` en el MISMO lote paralelo (cero latencia extra)
+    // que antes se leía en SERIE aguas abajo (medido: 10-13 s). Filtro VERBATIM del lector
+    // probado `buildAdmissionContext_` (sin filtro). Las filas viajan como hint — el
+    // consumidor re-aplica su filtro fino en memoria.
     //
     // ②17: `sysSigningSessions` (y el segundo lote de `sysSigningSessionSigners` que
     // colgaba de él) YA NO se leen aquí. Esas filas las sirve el KMS
     // (`enr.wizardDatosDeFirma`), acotadas al expediente del `resume_token`, y se piden
     // SOLO si el expediente está admitido — que es cuando hay firma que mirar.
+    //
+    // ②17 (noveno tramo): `enrEmails` TAMPOCO — era el hint de la cadena de identidad, que
+    // hoy la resuelve el KMS entera (`enr.wizardTutorQueRecupera`).
     { table: T.STATES_T,          action: 'Find', selector: {} },
-    { table: T.EMAILS,            action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
   ]);
   const perfBatchMs = Date.now() - perfB0;
   const enrollments = lightRead[0].ok ? (lightRead[0].data || []) : [];
   const persons     = lightRead[1].ok ? wizardSoloVivas_(lightRead[1].data) : [];
-  const groupRow    = (lightRead[2].ok && lightRead[2].data && lightRead[2].data[0]) || null;
-  // PERF-KMS2: hints (null si su read del batch falló → los helpers caen a su live).
-  const statesHint   = lightRead[3].ok ? (lightRead[3].data || []) : null;
-  const emailsHint   = lightRead[4].ok ? (lightRead[4].data || []) : null;
+  // PERF-KMS2: hint (null si su read del batch falló → el consumidor cae a su live).
+  const statesHint   = lightRead[2].ok ? (lightRead[2].data || []) : null;
 
   // IDENTITY-FROM-LINK (2026-06-11): la identidad viaja en el ENLACE — `p.n` (email_id) →
-  // email del guardian, validado contra el grupo del token (KAL-4). Prioridad `n` >
-  // recovered_email (compat). emails se leen lazy dentro del resolver (email_id Find
-  // dirigido); persons/groupRow como hints para guardian + fallback requester.
+  // email del guardian, resuelto contra el expediente del token (KAL-4). Prioridad `n` >
+  // recovered_email (compat).
+  // ②17 (noveno tramo): la resolución la hace el KMS; la cabecera va como hint del respaldo
+  // «tutor 1» para no volver a pedirla (lector ÚNICO del sexto tramo). Degrada a null igual.
   const perfG0 = Date.now(); // PERF-KMS2
-  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, id, p && p.n, emailsHint, persons, groupRow);
-  const guardianId = resolveGuardianForRecovery_(id, effRecoveredEmail, emailsHint, persons, groupRow);
+  const groupRow = _expedienteDelToken_(p && p.resume_token).fila;
+  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.resume_token, p && p.recovered_email, p && p.n, groupRow);
+  const guardianId = resolveGuardianForRecovery_(p && p.resume_token, effRecoveredEmail);
   const perfGuardianMs = Date.now() - perfG0;
 
   const perfA0 = Date.now();
@@ -5391,7 +5299,9 @@ function wizardTutorQueOpera_(p, groupId, opts) {
     // resolvedor (dos lectores del mismo dato divergen).
     var email = _identidadDelEnlace_(p, groupId, opts);
     if (!email) return null;
-    return resolveGuardianForRecovery_(groupId, email) || null;
+    // ②17 (noveno tramo): la traducción buzón→persona la hace el KMS. El expediente sale
+    // del token (KAL-4), igual que antes lo sacaba `groupId`, que ya venía derivado de él.
+    return resolveGuardianForRecovery_(p && p.resume_token, email) || null;
   } catch (e) {
     Logger.log(redact_('[wizardTutorQueOpera_] no se pudo identificar al tutor: ' + e.message));
     return null;
@@ -6058,8 +5968,8 @@ function getDocument_(p) {
         // IDENTITY-FROM-LINK: la identidad sale del `n` (email_id) del enlace, resuelto
         // server-side contra el grupo del token (effectiveRecoveredEmail_ nueva firma:
         // (clientEmail, groupId, nParam)). recovered_email es compat secundario.
-        const effEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n);
-        const guardianId = effEmail ? resolveGuardianForRecovery_(groupId, effEmail) : null;
+        const effEmail = effectiveRecoveredEmail_(p && p.resume_token, p && p.recovered_email, p && p.n);
+        const guardianId = effEmail ? resolveGuardianForRecovery_(p && p.resume_token, effEmail) : null;
         if (!guardianId) return null;
         // PERF (log real Diego 20:32 — getDocument 37-40s e2e): esta resolución del
         // signing_token quedó fuera del memo @166 y pagaba la cadena completa por
@@ -7961,7 +7871,7 @@ function warmSession_(p) {
   //   Degrada a null exactamente como el `try/catch` que había aquí — sin fila, la identidad
   //   vuelve a ser group-scoped, que es el comportamiento previo.
   const bindGroupRow = _expedienteDelToken_(p.resume_token).fila;
-  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n, null, null, bindGroupRow);
+  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.resume_token, p && p.recovered_email, p && p.n, bindGroupRow);
 
   // WIZARD-CACHE (decisión Diego 2026-06-12): el warm de la pantalla OTP cocina el
   // bundle ENTERO wizard-side (hydrate troceado + admission + PDFs del paquete), no
@@ -8161,7 +8071,7 @@ function hydrateSession_(p) {
   //   `resolveGuardianForRecovery_` decide si el hint sirve. Degrada a null exactamente como
   //   el `try/catch` que había aquí ⇒ identidad group-scoped, comportamiento previo.
   const bindGroupRow = _expedienteDelToken_(p.resume_token).fila;
-  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.recovered_email, groupId, p && p.n, null, null, bindGroupRow);
+  const effRecoveredEmail = effectiveRecoveredEmail_(p && p.resume_token, p && p.recovered_email, p && p.n, bindGroupRow);
 
   // DL-A §1 — UNA llamada al KMS devuelve TODO (lookups + datos 11 pasos + qbResponses
   // + admission + signing_context + billing_splits + live_version).
@@ -9952,75 +9862,15 @@ function manual_verifyP211Token(token) {
   return out;
 }
 
-/**
- * DL-E38 / P215 — verifica la recuperación per-guardian (GAP-1 a1).
- *
- * Rellenar abajo con datos reales de una sesión de prueba:
- *   - RESUME_TOKEN_REAL: resume_token de un grupo con ≥1 guardian guardado (Step 2+).
- *   - GUARDIAN_EMAIL_REAL: email de uno de los guardians del grupo (debe existir en enrEmails).
- *
- * Verifica:
- *   (a) resolveGuardianForRecovery_ matchea el email → guardian_person_id.
- *   (b) resumeSession_({resume_token, recovered_email}) devuelve `admission`
- *       con state_code + state_label resueltos desde sysStates_T.
- *   (c) si el expediente está en AD, `admission.signing_available` + signing_context
- *       (con signing_token) resueltos para ESE guardian.
- *   (d) un email que NO es de guardian del grupo → guardian null (fallback).
- *
- * Lee PASS/FAIL en los Logs.
- */
-function manual_testRecoveryPerGuardian() {
-  Logger.log('=== manual_testRecoveryPerGuardian (DL-E38 / P215) ===');
-  var RESUME_TOKEN_REAL   = 'REPLACE-WITH-REAL-RESUME-TOKEN';
-  var GUARDIAN_EMAIL_REAL = 'REPLACE-WITH-REAL-GUARDIAN-EMAIL';
-
-  if (RESUME_TOKEN_REAL.indexOf('REPLACE-') === 0 || GUARDIAN_EMAIL_REAL.indexOf('REPLACE-') === 0) {
-    Logger.log('  (skip) — rellenar RESUME_TOKEN_REAL + GUARDIAN_EMAIL_REAL con datos reales.');
-    Logger.log('=== fin manual_testRecoveryPerGuardian ===');
-    return { skipped: true };
-  }
-
-  var out = {};
-  // Resolver el grupo desde el token (como hace resumeSession_).
-  var groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + appsheetEscape_(RESUME_TOKEN_REAL) + '"'
-  }) || [];
-  if (!groups.length) {
-    Logger.log('  ✗ FAIL — resume_token no resuelve a ningún grupo.');
-    return { error: 'TOKEN_NOT_FOUND' };
-  }
-  var groupId = groups[0].enrollment_group_id;
-
-  // (a) matching email → guardian
-  var gId = resolveGuardianForRecovery_(groupId, GUARDIAN_EMAIL_REAL);
-  out.a_guardian_matched = gId;
-  Logger.log('  a) guardian_person_id=' + gId + ' → ' + (gId ? '✓ PASS' : '✗ FAIL (¿es guardian + email en enrEmails?)'));
-
-  // (b)+(c) resumeSession_ con recovered_email
-  var res = resumeSession_({ resume_token: RESUME_TOKEN_REAL, recovered_email: GUARDIAN_EMAIL_REAL });
-  out.b_admission = res.admission || null;
-  out.b_recovered_guardian = res.recovered_guardian_person_id || null;
-  var bOk = !!(res.admission && (res.admission.state_code || res.enrollments.length === 0));
-  Logger.log('  b) admission=' + JSON.stringify(res.admission) + ' recovered_guardian=' + out.b_recovered_guardian +
-             ' → ' + (bOk ? '✓ PASS' : '✗ FAIL'));
-  if (res.admission && res.admission.state_code === 'AD') {
-    var cOk = !!(res.admission.signing_available && res.admission.signing_context && res.admission.signing_context.signing_token);
-    Logger.log('  c) AD → signing_available=' + res.admission.signing_available +
-               ' signing_context=' + JSON.stringify(res.admission.signing_context ? { signer_id: res.admission.signing_context.signer_id, has_token: !!res.admission.signing_context.signing_token } : null) +
-               ' → ' + (cOk ? '✓ PASS' : '✗ FAIL (¿signer para este guardian en sesión no-terminal?)'));
-  } else {
-    Logger.log('  c) (n/a) — expediente no está en AD (state_code=' + (res.admission && res.admission.state_code) + '); signing_available debe ser false: ' + (res.admission && res.admission.signing_available));
-  }
-
-  // (d) email no-guardian → null
-  var dId = resolveGuardianForRecovery_(groupId, 'definitely-not-a-guardian-' + Date.now() + '@example.com');
-  out.d_nonguardian = dId;
-  Logger.log('  d) email no-guardian → ' + dId + ' → ' + (dId === null ? '✓ PASS' : '✗ FAIL'));
-
-  Logger.log('[manual_testRecoveryPerGuardian] ' + JSON.stringify(out, null, 2));
-  Logger.log('=== fin manual_testRecoveryPerGuardian ===');
-  return out;
-}
+// ②17 (noveno tramo, 2026-08-15) — aquí vivía `manual_testRecoveryPerGuardian`, y estaba
+// ROTA desde el quinto tramo: su comprobación (b)/(c) llamaba a `resumeSession_`, que se
+// RETIRÓ entero (0 definiciones en el proyecto) ⇒ ejecutarla lanzaba antes de decir nada.
+// Sus otras dos comprobaciones —un correo de tutor resuelve, uno que no lo es devuelve
+// nada— las cubren hoy `manual_testIdentityFromLink` y `manual_testIdentityReentry`, que
+// además ejercitan el camino VIVO: el resolvedor ÚNICO del KMS por
+// `enr.wizardTutorQueRecupera`. Se retira en vez de reescribirse porque una prueba que
+// nunca puede pasar es peor que ninguna (§"CITAR una prueba `manual_*` obliga a COMPROBAR
+// QUE EXISTE").
 
 /**
  * IDENTITY-FROM-LINK (2026-06-11) — verifica la identidad derivada DEL ENLACE (`n` =
@@ -10035,12 +9885,17 @@ function manual_testRecoveryPerGuardian() {
  * ground.contact@gmail.com, email_id 81cfafbf-…. Ajustar abajo si difiere.
  *
  * Verifica:
- *   (a) emisión: findEmailIdForGuardian_(grupo, ground.contact) → email_id (81cfafbf…).
+ *   (a) emisión: el `email_id` del tutor es localizable (lo que va al `n` de la URL).
  *   (b) resolución: effectiveRecoveredEmail_ con token+n (sin recovered_email) → email →
  *       guardian 842951e3… (la identidad sale del enlace, no del cliente).
- *   (c) `n` (email_id) de OTRO grupo → rechazado (KAL-4 cross-group).
+ *   (c) `n` (email_id) de OTRO expediente → rechazado (KAL-4 cross-group).
  *   (d) `n` basura (no-UUID / UUID inexistente) → ignorado limpio (KAL-5) → null.
- *   (e) sin `n` y sin recovered_email → null (group-scoped intacto).
+ *   (e) sin `n` y sin recovered_email, en modo DECLARADO → null (②24.bis: el respaldo
+ *       «tutor 1» existe y NO es un fallo; lo que se afirma es que se puede desactivar).
+ *
+ * ②17 (noveno tramo, 2026-08-15): la cadena entra por el `resume_token`, no por el
+ * identificador del expediente — se lee de la cabecera al arrancar. Y quien resuelve es el
+ * KMS (`enr.wizardTutorQueRecupera`), así que esto ejercita el camino VIVO de punta a punta.
  *
  * Ejecutar desde el editor GAS / clasp run; lee PASS/FAIL en Logs. NO envía email
  * (no llama sendMagicLink_); solo lee BD + ejercita los resolvers.
@@ -10054,18 +9909,25 @@ function manual_testIdentityFromLink() {
   var out = {};
   var pass = true;
 
-  // (a) Emisión: localizar el email_id del guardian en su grupo.
-  var nEmailId = findEmailIdForGuardian_(GROUP_ID_REAL, GUARDIAN_EMAIL_REAL);
+  // La cadena entra por el TOKEN (②17 noveno tramo): se lee de la cabecera del expediente.
+  var grpFL = (appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
+    Filter: '"enrollment_group_id" = "' + appsheetEscape_(GROUP_ID_REAL) + '"'
+  }) || [])[0] || null;
+  var TOKEN = grpFL && grpFL.resume_token;
+  if (!TOKEN) { Logger.log('  ✗ FAIL — el expediente no existe o no tiene resume_token.'); return { error: 'TOKEN_NOT_FOUND' }; }
+
+  // (a) Emisión: localizar el email_id del tutor en su expediente (lo pregunta el KMS).
+  var nEmailId = _tutorQueRecupera_(TOKEN, { correo: GUARDIAN_EMAIL_REAL }).email_id;
   out.a_email_id = nEmailId;
   var aOk = !!nEmailId;
   if (!aOk) pass = false;
-  Logger.log('  (a) findEmailIdForGuardian_ → n(email_id)=' + redact_(String(nEmailId)) + ' → ' +
-             (aOk ? '✓ PASS' : '✗ FAIL (¿existe fila enrEmails para ese email en el grupo?)'));
+  Logger.log('  (a) email_id del tutor → n=' + redact_(String(nEmailId)) + ' → ' +
+             (aOk ? '✓ PASS' : '✗ FAIL (¿existe fila enrEmails para ese email en el expediente?)'));
 
   // (b) Resolución: token+n SIN recovered_email → email → guardian.
-  var effFromLink = effectiveRecoveredEmail_(null, GROUP_ID_REAL, nEmailId);
+  var effFromLink = effectiveRecoveredEmail_(TOKEN, null, nEmailId);
   out.b_effective_email = effFromLink;
-  var gFromLink = effFromLink ? resolveGuardianForRecovery_(GROUP_ID_REAL, effFromLink) : null;
+  var gFromLink = effFromLink ? resolveGuardianForRecovery_(TOKEN, effFromLink) : null;
   out.b_guardian_from_link = gFromLink;
   var bOk = !!(gFromLink && String(gFromLink).indexOf(GUARDIAN_ID_REAL) === 0);
   if (!bOk) pass = false;
@@ -10083,7 +9945,7 @@ function manual_testIdentityFromLink() {
     otherEmailId = foreign ? foreign.email_id : null;
   } catch (e) { otherEmailId = null; }
   if (otherEmailId) {
-    var effCross = effectiveRecoveredEmail_(null, GROUP_ID_REAL, otherEmailId);
+    var effCross = effectiveRecoveredEmail_(TOKEN, null, otherEmailId);
     out.c_cross_group = effCross;
     var cOk = effCross === null;
     if (!cOk) pass = false;
@@ -10094,8 +9956,8 @@ function manual_testIdentityFromLink() {
   }
 
   // (d) `n` basura → ignorado limpio (KAL-5). Dos sub-casos: no-UUID y UUID inexistente.
-  var effGarbage1 = effectiveRecoveredEmail_(null, GROUP_ID_REAL, 'not-a-uuid" || "1"="1');
-  var effGarbage2 = effectiveRecoveredEmail_(null, GROUP_ID_REAL, Utilities.getUuid());
+  var effGarbage1 = effectiveRecoveredEmail_(TOKEN, null, 'not-a-uuid" || "1"="1');
+  var effGarbage2 = effectiveRecoveredEmail_(TOKEN, null, Utilities.getUuid());
   out.d_garbage_noUuid = effGarbage1;
   out.d_garbage_unknownUuid = effGarbage2;
   var dOk = effGarbage1 === null && effGarbage2 === null;
@@ -10103,13 +9965,15 @@ function manual_testIdentityFromLink() {
   Logger.log('  (d) `n` basura (no-UUID + UUID inexistente) → ' + String(effGarbage1) + ' / ' + String(effGarbage2) +
              ' → ' + (dOk ? '✓ PASS (ignorado limpio, KAL-5)' : '✗ FAIL'));
 
-  // (e) sin `n` y sin recovered_email → null (group-scoped intacto).
-  var effNone = effectiveRecoveredEmail_(null, GROUP_ID_REAL, null);
-  out.e_none = effNone;
+  // (e) sin `n` y sin recovered_email, en modo DECLARADO (②24.bis) → null. En modo
+  //     indulgente el respaldo devuelve el `primary_email` (tutor 1) A PROPÓSITO: eso NO
+  //     es un fallo, y afirmar lo contrario era lo que esta comprobación hacía mal.
+  var effNone = effectiveRecoveredEmail_(TOKEN, null, null, null, { sinRespaldo: true });
+  out.e_none_declarada = effNone;
   var eOk = effNone === null;
   if (!eOk) pass = false;
-  Logger.log('  (e) sin `n` ni recovered_email → ' + String(effNone) + ' → ' +
-             (eOk ? '✓ PASS (group-scoped intacto)' : '✗ FAIL'));
+  Logger.log('  (e) sin `n` ni recovered_email, modo declarado → ' + String(effNone) + ' → ' +
+             (eOk ? '✓ PASS (no se atribuye a nadie)' : '✗ FAIL'));
 
   Logger.log('[manual_testIdentityFromLink] ' + JSON.stringify(out, null, 2));
   Logger.log('=== manual_testIdentityFromLink: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
@@ -10135,13 +9999,16 @@ function manual_testIdentityFromLink() {
  * de la identidad: el enlace ES el portador, y el cliente lo conserva entre reentradas.
  *
  * Gates (mapeo al prompt — model n=email_id):
- *   (a) emisión tutor-1 → `n` (email_id) localizable (findEmailIdForGuardian_).
+ *   (a) emisión tutor-1 → `n` (email_id) localizable (lo da el KMS con el mismo resolvedor).
  *   (b) reentrada del firmante con token + `n` (la firma lo reenvía) → requireSignerContext_
  *       resuelve el guardian SIN signing_token del cliente (path a) — fila 29/30.
  *   (c) getDocument_ bajo resume_token + `n` resuelve el signing_token SERVER-SIDE para el
  *       PDF de firma (resolveGuardianSigningContext_) — fila 30.
  *   (d) fallback requester → tutor-1 resuelve sin `n` (resolveGuardianForRecovery_).
- *   (e) sin `n` ni recovered_email → group-scoped limpio (degradación honesta).
+ *   (e) sin `n` ni recovered_email, en modo DECLARADO (②24.bis) → no se atribuye a nadie.
+ *
+ * ②17 (noveno tramo, 2026-08-15): la cadena entra por el `resume_token` de la cabecera, y
+ * quien resuelve es el KMS (`enr.wizardTutorQueRecupera`) — camino VIVO de punta a punta.
  *
  * Read-only salvo (a) — NO ejecuta sendMagicLink_ (solo localiza el email_id, sin enviar
  * email ni rotar token). Ejecutar vía clasp run / editor GAS; lee PASS/FAIL en Logs.
@@ -10159,11 +10026,12 @@ function manual_testIdentityReentry() {
   if (!grp) { Logger.log('  ✗ FAIL — GROUP_ID_REAL no existe.'); return { error: 'GROUP_NOT_FOUND' }; }
 
   // (a) Emisión: el `n` (email_id) del guardian es localizable (lo que va a la URL).
-  var nEmailId = findEmailIdForGuardian_(GROUP_ID_REAL, GUARDIAN_EMAIL_REAL);
+  var nEmailId = grp.resume_token
+    ? _tutorQueRecupera_(grp.resume_token, { correo: GUARDIAN_EMAIL_REAL }).email_id : null;
   out.a_email_id = nEmailId;
   var aOk = !!nEmailId;
   if (!aOk) pass = false;
-  Logger.log('  (a) findEmailIdForGuardian_ → n(email_id)=' + redact_(String(nEmailId)) + ' → ' +
+  Logger.log('  (a) email_id del tutor → n=' + redact_(String(nEmailId)) + ' → ' +
              (aOk ? '✓ PASS' : '✗ FAIL (¿existe fila enrEmails?)'));
 
   // (b) Reentrada del FIRMANTE con token + `n` (SIN signing_token del cliente — la firma
@@ -10186,8 +10054,8 @@ function manual_testIdentityReentry() {
 
   // (c) getDocument_ bajo resume_token + `n` resuelve el signing_token SERVER-SIDE (mismo
   //     camino que mi lazy resolver): n→email→guardian→resolveGuardianSigningContext_. Fila 30.
-  var effForDoc = effectiveRecoveredEmail_(null, GROUP_ID_REAL, nEmailId);
-  var gForDoc = effForDoc ? resolveGuardianForRecovery_(GROUP_ID_REAL, effForDoc) : null;
+  var effForDoc = effectiveRecoveredEmail_(grp.resume_token, null, nEmailId);
+  var gForDoc = effForDoc ? resolveGuardianForRecovery_(grp.resume_token, effForDoc) : null;
   // ②17: las filas de firma las sirve el KMS (mismo camino que el lazy resolver real).
   var firmaDiag = grp.resume_token ? _datosDeFirmaDelExpediente_(grp.resume_token) : null;
   var sigCtx = (gForDoc && firmaDiag)
@@ -10204,20 +10072,21 @@ function manual_testIdentityReentry() {
              ' → ' + (cOk ? '✓ PASS' : '✗ FAIL'));
 
   // (d) Fallback requester: el solicitante (tutor-1) resuelve sin `n`.
-  var dGuardian = resolveGuardianForRecovery_(GROUP_ID_REAL, GUARDIAN_EMAIL_REAL);
+  var dGuardian = resolveGuardianForRecovery_(grp.resume_token, GUARDIAN_EMAIL_REAL);
   out.d_requester_guardian = dGuardian;
   var dOk = !!(dGuardian && String(dGuardian).indexOf(GUARDIAN_ID_REAL) === 0);
   if (!dOk) pass = false;
   Logger.log('  (d) fallback requester → tutor-1 guardian=' + String(dGuardian) + ' → ' +
              (dOk ? '✓ PASS' : '✗ FAIL'));
 
-  // (e) Sin `n` ni recovered_email → group-scoped limpio (degradación honesta).
-  var effNone = effectiveRecoveredEmail_(null, GROUP_ID_REAL, null);
-  out.e_effective_none = effNone;
+  // (e) Sin `n` ni recovered_email, en modo DECLARADO (②24.bis) → no se atribuye a nadie.
+  //     En modo indulgente el respaldo devuelve el tutor 1 A PROPÓSITO: no es un fallo.
+  var effNone = effectiveRecoveredEmail_(grp.resume_token, null, null, null, { sinRespaldo: true });
+  out.e_effective_none_declarada = effNone;
   var eOk = effNone === null;
   if (!eOk) pass = false;
-  Logger.log('  (e) sin n ni recovered_email → effectiveRecoveredEmail_=null (group-scoped limpio) → ' +
-             (eOk ? '✓ PASS' : '✗ FAIL'));
+  Logger.log('  (e) sin n ni recovered_email, modo declarado → ' + String(effNone) + ' → ' +
+             (eOk ? '✓ PASS (no se atribuye a nadie)' : '✗ FAIL'));
 
   Logger.log('[manual_testIdentityReentry] ' + JSON.stringify(out, null, 2));
   Logger.log('=== manual_testIdentityReentry: ' + (pass ? 'PASS' : 'FAIL') + ' ===');
@@ -10493,7 +10362,8 @@ function manual_diagGroupEmails() {
   });
 
   // Verificar si el resolver ya funciona (post-fix):
-  var resolvedId = resolveGuardianForRecovery_(GROUP_ID_REAL, grp.primary_email, emailRows, persons, grp);
+  // ②17 (noveno tramo): el resolvedor vive en el KMS y entra por el token, no por el id.
+  var resolvedId = resolveGuardianForRecovery_(grp.resume_token, grp.primary_email);
   Logger.log(redact_('  resolveGuardianForRecovery_(primary_email) → ' + (resolvedId || 'null') +
              ' ' + (resolvedId ? '✓ PASS (fallback funciona)' : '✗ FAIL')));
 
@@ -10599,7 +10469,8 @@ function manual_repairRequesterEmailLink() {
   });
 
   // Verificar que ahora el resolver funciona.
-  var resolvedId = resolveGuardianForRecovery_(GROUP_ID_REAL, primaryEmail, null, null, grp);
+  // ②17 (noveno tramo): el resolvedor vive en el KMS y entra por el token, no por el id.
+  var resolvedId = resolveGuardianForRecovery_(grp.resume_token, primaryEmail);
   Logger.log(redact_('  post-repair: resolveGuardianForRecovery_(primary_email) → ' + (resolvedId || 'null') +
              ' ' + (resolvedId === requesterId ? '✓ PASS' : '✗ FAIL')));
 
@@ -10633,6 +10504,11 @@ function manual_diagWizardSigningGate() {
 
   var idEsc = appsheetEscape_(GROUP_ID);
 
+  // ②17 (noveno tramo): la cadena de identidad entra por el TOKEN, así que se lee la
+  // cabecera del expediente para tenerlo (este diagnóstico es de editor, no del dispatcher).
+  var grp = (appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [],
+    { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [])[0] || null;
+
   // Enrollments + persons + emails del grupo.
   var enrollments = appsheetRequest_(T.ENROLLMENTS, 'Find', [],
     { Filter: '"enrollment_group_id" = "' + idEsc + '"' }) || [];
@@ -10647,7 +10523,8 @@ function manual_diagWizardSigningGate() {
              ' guardians=' + guardianCount);
 
   // Vía 1: ¿RECOVERED_EMAIL resuelve guardian?
-  var recoveredGuardianId = resolveGuardianForRecovery_(GROUP_ID, RECOVERED_EMAIL || null, emails, persons);
+  // ②17 (noveno tramo): el resolvedor vive en el KMS y entra por el token, no por el id.
+  var recoveredGuardianId = resolveGuardianForRecovery_(grp && grp.resume_token, RECOVERED_EMAIL || null);
   Logger.log(redact_('  recovered_email=' + (RECOVERED_EMAIL || '(vacío)') +
              ' → guardian=' + (recoveredGuardianId || 'null')));
 

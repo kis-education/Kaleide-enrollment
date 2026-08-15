@@ -47,7 +47,7 @@ Aplica a todas las sesiones cloud y a todos los CLIs locales. Las únicas excepc
 
 `enrEnrollmentGroups.primary_email` es un **ARTEFACTO Stage-1**: almacena el email personal del solicitante para encontrar el grupo durante el `initEnrollmentSession_`. NO es un "email de grupo" ni un concepto independiente — es el email personal del tutor 1.
 
-**Consecuencia de diseño**: `resolveGuardianForRecovery_` incluye un fallback (2026-06-11) para el caso en que la fila de `enrEmails` correspondiente al email de creación esté sin `person_id` (bug de origen: `enr_persistPersons_` no vincula la fila huérfana al `person_id` del tutor 1). El fallback resuelve via `requester_person_id` del grupo. Ver `kis-app/docs/kms/reports/2026-06-11-recovery-email-fix.md` + finding #39.
+**Consecuencia de diseño**: el resolvedor de la identidad incluye un fallback (2026-06-11) para el caso en que la fila de `enrEmails` correspondiente al email de creación esté sin `person_id` (bug de origen: `enr_persistPersons_` no vincula la fila huérfana al `person_id` del tutor 1). El fallback resuelve via `requester_person_id` del grupo. **Vive en el KMS** (`enr_resolveGuardianFromEmail_`, sub-casos A y B) desde ②17 noveno tramo — aquí solo queda el cliente fino `resolveGuardianForRecovery_`. Ver `kis-app/docs/kms/reports/2026-06-11-recovery-email-fix.md` + finding #39.
 
 ## Security
 
@@ -249,7 +249,7 @@ backend simulado que **nunca ejecuta `backend/Code.js`**. No se escribió una re
 
 > **★ ESTADO REAL POST-W2 (verificado 2026-06-11, gobierna esta sección). El modelo de "dos rutas de entrada" (`/apply` + `/sign`) descrito abajo está SUPERSEDIDO por el modelo ★ CANÓNICA DEFINITIVA (`kis-app/docs/kms/decisions/enr.md`): el wizard es UN flujo único de 11 pasos, UNA sola ruta (`/apply`), entrada única por recuperación de magic-link per-guardian.** Lo que sigue VIGENTE de esta sección es **solo el modelo de AUTORIZACIÓN** (KAL-4 IDOR: `enrollment_group_id` + signer derivados SIEMPRE server-side del token, NUNCA del payload; `requireResumeToken_` como gate de los 11 pasos). Lo que cambió en el CÓDIGO ya desplegado:
 > - **`/sign` eliminada como ruta** (`frontend/src/App.jsx:100` → `<Navigate to="/apply" replace />`). Los Steps 8-11 (firma) viven INLINE en `WizardPage` (`steps/Step8..Step11`), no en un host separado. El puente Step 7→8 es `enterSigning` INLINE (`WizardPage.jsx:379`), gobernado por estado (`canAdvanceToSigning` `:793`: `state_code==='AD' && signing_ready && signing_status!=='COMPLETED'`).
-> - **Recuperación guardian-scoped (a1, P215):** `resolveGuardianForRecovery_` (`Code.js:1685`) resuelve el guardian del `recovered_email` server-side contra `enrEmails` del grupo; `buildAdmissionContext_` (`:1791`) devuelve el estado real (`sysStates_T`) + el `signing_context` per-guardian (Path1 del email / Path2 determinista de la sesión). El `resume_token` sigue siendo de GRUPO; el guardian es un discriminador re-resuelto contra datos reales por llamada (KAL-4 aprobado por Diego para a1). NO hay esquema nuevo.
+> - **Recuperación guardian-scoped (a1, P215):** `resolveGuardianForRecovery_` resuelve el guardian del `recovered_email` server-side *(desde ②17 noveno tramo lo resuelve el KMS —`enr.wizardTutorQueRecupera`— y esto es un cliente fino; el matching no cambió)*; `buildAdmissionContext_` (`:1791`) devuelve el estado real (`sysStates_T`) + el `signing_context` per-guardian (Path1 del email / Path2 determinista de la sesión). El `resume_token` sigue siendo de GRUPO; el guardian es un discriminador re-resuelto contra datos reales por llamada (KAL-4 aprobado por Diego para a1). NO hay esquema nuevo.
 > - **El `signing_token` NO es un bearer de entrada** (no se llega a la firma por un email-solo con `signing_token` en la URL). Vive como contexto que el frontend lleva inline a los pasos de firma (`signingContext` en React state, KAL-7); lo irreducible del acto de firma (single-use/TTL/binding, P222) es ESTADO server-side en `sysSigningSessionSigners`. La ruta `/sign` y `requireSigningToken_`/`resolveSigningToken_` permanecen en el backend como mecánica interna, no como entrada.
 > - **Regla inmiscible (★ CANÓNICA):** NUNCA reintroducir `/sign` como ruta de entrada, NUNCA reintroducir un split `/apply`-vs-`/sign`, NUNCA tratar el `signing_token` como bearer de entrada. El avance entre pasos lo gobierna SOLO el estado/hitos.
 >
@@ -272,13 +272,13 @@ Test: `manual_testSigningTokenAuth` (casos a-d: UUID malformado → BAD_REQUEST,
 >
 > **Lo que se RETIRA (#45-columna, vetada por Diego — multiuso)**: la columna dedicada `enrEnrollmentGroups.recovery_guardian_email` + `persistRecoveryBinding_`/`readRecoveryBinding_` quedan ELIMINADOS (sin código dormido). AT-IDBIND-01 ANULADO. El **diagnóstico** de #45 (la identidad no puede vivir en el cliente; debe sobrevivir a F5/incógnito) SIGUE vigente — cambia el mecanismo.
 >
-> **Ahora**: el `n` del magic link (que YA viajaba — antes era un grace nonce aleatorio) pasa a llevar el **`email_id`** (PK de la fila `enrEmails` del guardian al que se emitió el link) — opaco, sin PII, ya existe. **Emisión** (`sendMagicLink_`): `findEmailIdForGuardian_(grupo, email)` → `?n=<email_id>`. **Resolución** (`resolveEmailFromLinkParam_` dentro de `effectiveRecoveredEmail_`, usada por `getAdmissionState_`/`hydrateSession_`/`requireSignerContext_` — `resumeSession_` también la usaba, y se retiró en ②17): lee `enrEmails[email_id=n]`, VALIDA server-side que pertenece al grupo del `resume_token` (KAL-4) y resuelve a guardian → devuelve el email → alimenta `recovered_email` (contrato KMS INTACTO). Prioridad `n` > `recovered_email` (compat secundario). La identidad sobrevive a F5/incógnito/pestañas: el frontend persiste el `n` (`recoveryNonce`) en sessionStorage y lo reenvía en hydrate + pulse + actos de firma.
+> **Ahora**: el `n` del magic link (que YA viajaba — antes era un grace nonce aleatorio) pasa a llevar el **`email_id`** (PK de la fila `enrEmails` del guardian al que se emitió el link) — opaco, sin PII, ya existe. **Emisión** (`sendMagicLink_`): el `email_id` del tutor destino → `?n=<email_id>`. **Resolución** (`resolveEmailFromLinkParam_` dentro de `effectiveRecoveredEmail_`, usada por `getAdmissionState_`/`hydrateSession_`/`requireSignerContext_` — `resumeSession_` también la usaba, y se retiró en ②17): la fila del `n` se busca **solo dentro del expediente del `resume_token`** (KAL-4 por construcción) y ha de resolver a tutor → devuelve el email. **②17 noveno tramo: las dos cosas —emisión y resolución— las contesta la MISMA pregunta al KMS**, y `findEmailIdForGuardian_` se retiró → alimenta `recovered_email` (contrato KMS INTACTO). Prioridad `n` > `recovered_email` (compat secundario). La identidad sobrevive a F5/incógnito/pestañas: el frontend persiste el `n` (`recoveryNonce`) en sessionStorage y lo reenvía en hydrate + pulse + actos de firma.
 >
 > **Reglas canónicas inmiscibles**:
 > - `n` (email_id) JAMÁS se cree a ciegas: SIEMPRE se valida contra BD que la fila pertenece al grupo del token (KAL-4) y resuelve a guardian. `assertValidUuid_` + `appsheetEscape_` (KAL-5); logs redactados (KAL-11).
 > - `n` NO es un bearer (no autoriza por sí solo). El `enrollment_group_id` se deriva SIEMPRE del `resume_token`, nunca del payload.
 > - La **gracia OTP-skip** se ancla al `resume_token` recién rotado (`mlgrace_<resume_token>`), NO a `n` (que ahora es identidad). Single-use + 10 min; un token viejo no tiene marcador → OTP normal (KAL-7 intacta).
-> - Devuelve el EMAIL (no el `person_id`) porque ambos resolvers (wizard `resolveGuardianForRecovery_` + KMS `enr_resolveGuardianFromEmail_`) matchean por email → CERO cambio KMS.
+> - Devuelve el EMAIL (no el `person_id`) porque el resolvedor matchea por email. **②17 noveno tramo (P245): ya NO hay dos resolvedores** — queda `enr_resolveGuardianFromEmail_` en el KMS, y el del asistente es un cliente fino suyo.
 > - NUNCA reintroducir una columna dedicada para la identidad de recuperación (Diego lo vetó). El dato canónico es el `email_id`, transversal a todo tipo de programa.
 >
 > Test: `manual_testIdentityFromLink` (a: emisión → email_id; b: token+n sin recovered_email → guardian; c: n de otro grupo → rechazado KAL-4; d: n basura → ignorado KAL-5; e: sin n → group-scoped intacto). Deploy @158. Cross-ref: `kis-app/docs/kms/reports/2026-06-11-identity-from-link.md` + findings #47 + data-navigation-chart fila 20 + `reports/2026-06-11-identity-binding.md` (#45, diagnóstico vigente, columna retirada).
@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE"). **Medido el 2026-08-15: quedan 64 lecturas directas + 2 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 66, solo 27 están en el camino vivo**: las otras 39 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA"). **Medido el 2026-08-15: quedan 58 lecturas directas + 1 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 59, solo 19 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -535,6 +535,86 @@ acepta comillas, que es justo por lo que existe el escape de capa 2— y su afir
 cerrado se satisfacía con que lanzara **una** de las dos lecturas, dejando pasar que la otra se
 disfrazara. **Quien toque este manejador, que lo mida.**
 
+### ②17 (2026-08-15) — la IDENTIDAD DE QUIEN RECUPERA: había DOS resolvedores del mismo dato, y ya habían divergido
+
+**La cadena que decide de quién es un correo —o el identificador opaco `n` de un enlace— hacía
+hasta CINCO consultas a AppSheet** desde este proceso, que es público y anónimo, con la credencial
+de la aplicación entera:
+
+| Quién | Qué leía |
+|---|---|
+| `resolveGuardianForRecovery_` | las **personas** del expediente (la **ficha COMPLETA de cada una —MENORES INCLUIDOS**: nombre, fecha de nacimiento, documento— **solo para saber quién es tutor**), sus **correos**, y hasta **DOS veces** la cabecera (sub-casos A y B, cada uno con su propio `Find`) |
+| `resolveEmailFromLinkParam_` | la fila del `n`, **leída por su clave y SIN acotar al expediente**, para rechazarla después |
+| `findEmailIdForGuardian_` | otra pasada por los correos, para el `n` que se mete en el enlace |
+
+**Ahora lo contesta el KMS en UNA pregunta** —`enr.wizardTutorQueRecupera`
+(`kis-app kms-server/enr/wizard-gateway.gs`)— y la consume **UN SOLO ayudante**,
+`_tutorQueRecupera_`. La respuesta son **tres campos**: identificador de persona, correo
+normalizado e identificador opaco de correo. **De las personas no sale ni un campo.**
+
+**Lo que hay que retener al tocar esto:**
+
+- **LA PRECEDENCIA NO SE MOVIÓ.** `n` del enlace > correo que manda el cliente > respaldo «el
+  tutor 1», y su **modo estricto** para atribuir una firma (`sinRespaldo`, ②24.bis): todo sigue
+  **aquí, verbatim**, en `effectiveRecoveredEmail_` / `_identidadDelEnlace_`. Por eso la entrada
+  acepta **uno y solo uno** de los dos discriminadores y nunca elige por el llamante.
+- **Las GUARDAS sí viajaron, porque son inseparables de su lectura** (mismo criterio que
+  `enr.wizardComprobarSubida` y que la guarda del tutor del octavo tramo): que la fila del `n`
+  **pertenezca al expediente** ya no se comprueba *después* de bajarla — **se busca solo dentro del
+  expediente**, así que una fila de otra familia no llega a existir para este proceso. Es **más
+  estricto que el oro** y da el mismo resultado observable.
+- **⚠️ Y CERRÓ UNA DIVERGENCIA REAL — la que los dos JSDoc anunciaban.** Ambos resolvedores decían
+  que **DEBÍAN permanecer idénticos «hasta consolidación P245»**, y **ya no lo eran**: el de aquí
+  descartaba a quien la familia había quitado con la bandera `is_active` en falso (arreglo del
+  2026-08-09) y **el del KMS solo miraba `deleted_at`** — y siete de las tablas de admisión aún no
+  lo tienen, así que su única vía de retirada hoy **es esa bandera**. Resultado: el KMS podía
+  devolver como tutor a **alguien que la familia ya había quitado**. El resolvedor único usa ahora
+  `sys_rowIsActiveLiveOptionalFlag_`, el gemelo declarado de `wizardFilaViva_`.
+- **LANZA si no se puede preguntar, y es el criterio del oro**: las lecturas que sustituye **no
+  estaban envueltas en `try`**. Decir «no es tutor» cuando en realidad no se pudo consultar dejaría
+  a una familia sin firmar, sin ver su documento o sin recibir su enlace. Los llamantes que ya
+  degradaban lo siguen haciendo en SU `try/catch` de siempre.
+- **En `sendMagicLink_` la pregunta va ANTES de renovar el token**, y no es un detalle de orden: la
+  renovación **rota** el token, y el viejo deja de resolver ⇒ preguntar después dejaría sin `n` el
+  enlace de **toda** familia con borrador.
+- **`email_id` NO depende del tutor, a propósito**: `findEmailIdForGuardian_` casaba **por el valor
+  del correo y nada más**. Se copió verbatim, así que sigue habiendo `n` para correos que no
+  resuelven a tutor — cambiarlo dejaría sin `n` a enlaces que hoy lo llevan.
+- **Memoria de EJECUCIÓN, no de 300 s**: la cadena resuelve dos veces lo mismo en la misma petición
+  (el `n` primero, su correo después). Se recuerda **solo mientras dura la ejecución** ⇒ cero riesgo
+  de servir una identidad vieja. **No se toca la distinción de las dos memorias de ②24.bis**
+  (`idlinkd_` / `idlinkr_`): esa clave lleva el MODO, y compartirla las contamina.
+
+**Retirados enteros**, por ser segundos lectores del mismo dato: el **gemelo** de
+`resolveGuardianForRecovery_` (127 líneas) · **`findEmailIdForGuardian_`** (su respuesta viene ya
+con la misma pregunta) · y **`manual_testRecoveryPerGuardian`**, que estaba **ROTA desde el quinto
+tramo** (llamaba a `resumeSession_`, **0 definiciones** en el proyecto ⇒ lanzaba antes de decir
+nada). Los otros cinco diagnósticos de editor se reconectaron al camino vivo: entran por el
+`resume_token`, que leen de la cabecera.
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
+ídem `appsheetRequestBatch_`): **64 → 58** sueltas y **2 → 1** en lote. Y lo que de verdad importa:
+**el camino vivo baja de 27 a 19** —las otras 40 son de editor, no alcanzables desde internet—.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarLaIdentidadDeQuienRecupera` — los tres
+eslabones no vuelven a leer personas / correos / cabecera de AppSheet · los tres pasan por el lector
+único · el ayudante pregunta a la entrada declarada · **ni el gemelo con hints ni
+`findEmailIdForGuardian_` reaparecen** · y **dos anclas**: los eslabones siguen existiendo y
+`effectiveRecoveredEmail_` sigue distinguiendo el modo declarado, para que el control no salga verde
+sobre una cadena vaciada o renombrada. **Rojo demostrado SIETE veces**, cada una nombrando su caso
+(dos dejando el control **CIEGO**).
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
+**23 afirmaciones** sobre los manejadores reales extraídos del fuente y ejecutados con dobles,
+**demostradas no ciegas** con **siete roturas** (ensanchar la proyección a la ficha entera · aceptar
+el expediente del cuerpo · degradar la lectura caída a «no es tutor» · volver al criterio viejo
+`!deleted_at` —que es la divergencia medida— · creerse un `n` que no es del expediente · quitar la
+declaración pública de la ruta · renombrar el manejador → *«MEDICIÓN CIEGA»*). **Y la medición se
+corrigió a sí misma:** la rotura del `n` ajeno salió **VERDE** al primer intento —era la ROTURA la
+que era débil, no la afirmación— y hubo que hacerla realista para que mordiera.
+**Quien toque esta cadena, que lo mida.**
+
 ### ②17 (2026-08-15) — la RECUPERACIÓN DEL ENLACE: la ficha de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor
 
 **La rama pública de `sendMagicLink_` es la puerta por la que una familia vuelve a su solicitud**, y
@@ -625,7 +705,7 @@ Iba dentro **`magic_link_token`** —un secreto de portador— además de `progr
 |---|---|
 | cliente, rama con el candado | `enrollment_group_id` (`WizardContext.jsx:913`) · `resume_token` (`:914`) · `submitted_at` (`ResumePage.jsx:120`, solo registro). **`hydrateFromResume` RETORNA en `:946`** antes de tocar nada más |
 | `effectiveRecoveredEmail_` (respaldo paso 3) | `primary_email` |
-| `resolveGuardianForRecovery_` | `primary_email` · `requester_person_id` · y **`enrollment_group_id`, que es la guarda** con la que decide si el hint sirve o vuelve a leer |
+| `resolveGuardianForRecovery_` *(medición del sexto tramo; en el noveno dejó de leer nada — la cabecera solo alimenta ya el respaldo «tutor 1»)* | `primary_email` · `requester_person_id` · y `enrollment_group_id` |
 
 ⇒ **CINCO campos.** La entrada del KMS es `enr.wizardExpedienteDelToken`
 (`kis-app kms-server/enr/wizard-gateway.gs`), y el asistente la consume por **UN SOLO ayudante**,

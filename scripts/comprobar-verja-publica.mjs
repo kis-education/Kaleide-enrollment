@@ -37,6 +37,7 @@ try {
     console.log('  ✓ la cabecera del expediente no se lee de AppSheet y la sirve UN SOLO lector contra el KMS (②17)')
     console.log('  ✓ la entrada de una solicitud nueva no lee `enrEnrollmentGroups`/`enrPersons` de AppSheet, y sigue decidiendo la sesión única (②17)')
     console.log('  ✓ la recuperación del enlace no lee `enrEnrollmentGroups`/`enrEmails`/`enrPersons` de AppSheet, la sirve UN SOLO lector contra el KMS, y sigue devolviendo el acuse constante (②17)')
+    console.log('  ✓ la identidad de quien recupera no lee AppSheet: los tres eslabones pasan por el lector ÚNICO del KMS, y ni el resolvedor gemelo ni `findEmailIdForGuardian_` han vuelto (②17 · P245)')
   }
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)
