@@ -1619,7 +1619,13 @@ function _warmMembersDocsPhase_(it) {
     try { cache.put('wzck_mem_' + groupId, '1', 240); } catch (eM) {}
     var effEmail = effectiveRecoveredEmail_(it.e || null, groupId, it.n || null);
     var guardianId = effEmail ? resolveGuardianForRecovery_(groupId, effEmail) : null;
-    var sctx = guardianId ? resolveGuardianSigningContext_(groupId, guardianId) : null;
+    // ②17: las filas de firma las sirve el KMS (acotadas al expediente del token), no
+    // AppSheet. Sin ellas el resolvedor devuelve null — mismo comportamiento de antes
+    // ante una lectura fallida: pre-AD o sin sesión, nada que calentar.
+    var firmaKms = _datosDeFirmaDelExpediente_(token);
+    var sctx = (guardianId && firmaKms)
+      ? resolveGuardianSigningContext_(groupId, guardianId, firmaKms.sessions, firmaKms.signersBySession)
+      : null;
     var signingToken = (sctx && sctx.signing_token) || null;
     if (signingToken) {
       // V2.4.1 (gap de 24,5s en getDocument, _dbg Diego 17:33): cebar el memo del
@@ -1702,16 +1708,19 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
     var guardianPid = (data && data.recovered_guardian_person_id) || null;
 
     // (b) signing_token del guardian — del signing_context del hydrate (fila
-    //     _signer_row, KMS wizard-datalayer.gs); fallback: lector probado del wizard
-    //     resolveGuardianSigningContext_(groupId, guardianPid) (mismo camino que el
-    //     lazy resolver de getDocument_). Pre-AD/sin sesión → null → sin docs (OK).
+    //     _signer_row, KMS wizard-datalayer.gs); segunda vía: el resolvedor de este
+    //     backend, que desde ②17 lee las MISMAS filas del KMS (mismo camino que el lazy
+    //     resolver de getDocument_). Pre-AD/sin sesión → null → sin docs (OK).
     var sctxH = (data && data.signing_context) || null;
     var signingToken = (sctxH && sctxH._signer_row && sctxH._signer_row.signing_token) || null;
     var sessionId    = (sctxH && sctxH.session_id) || null;
     var signerId     = (sctxH && sctxH.signer_id) || null;
     if (!signingToken && groupId && guardianPid) {
       try {
-        var sctxW = resolveGuardianSigningContext_(groupId, guardianPid);
+        var firmaW = _datosDeFirmaDelExpediente_(token);
+        var sctxW = firmaW
+          ? resolveGuardianSigningContext_(groupId, guardianPid, firmaW.sessions, firmaW.signersBySession)
+          : null;
         if (sctxW && sctxW.signing_token) {
           signingToken = sctxW.signing_token;
           sessionId    = sctxW.session_id;
@@ -3511,10 +3520,12 @@ function derivarPantallaAdmision_(stateCode, signingStatus, signingContext) {
 }
 
 function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons, admHints) {
-  // PERF-KMS2 (2026-06-11): admHints (OPCIONAL) = filas live ya bajadas por el caller en
-  // su batch paralelo — {states, sessions, signersBySession}. Cada consumidor re-aplica
-  // su filtro de siempre en memoria; sin hints, TODOS los reads quedan live (callers
-  // existentes intactos). Medido: states_ms 10-13s + 2×(sessions+signers) ~9-12s seriales.
+  // admHints (OPCIONAL) = {states, sessions, signersBySession, resumeToken}.
+  //  · `states` — filas de `sysStates_T` ya bajadas por el caller (AppSheet, sigue igual).
+  //  · `sessions` / `signersBySession` — ②17: filas de firma **servidas por el KMS**. Si el
+  //    caller no las trae, se piden aquí con `resumeToken` (ver el bloque del estado 'AD').
+  //    YA NO hay lectura directa de AppSheet para estas dos: sin filas se degrada como
+  //    siempre hizo el `catch` (NOT_INITIATED / null).
   admHints = admHints || {};
   // URGENT-PASS3 BUG A (2026-06-11): `editable` deriva del ESTADO REAL (no de submitted_at).
   // Sin enrollments → pre-submit puro → editable (borrador). Con estado real, lo gobierna el
@@ -3554,6 +3565,22 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
   out.editable = derivarPantallaAdmision_(out.state_code, out.signing_status, null).editable;
 
   if (out.state_code === 'AD') {
+    // ②17 — las filas de firma las sirve el KMS, NO AppSheet. Si quien llama ya las
+    // bajó (el pulso las pide una sola vez), se reusan; si no, se piden aquí con el
+    // `resume_token` que ese mismo llamante trae (KAL-4: el KMS deriva el expediente del
+    // token, aquí no viaja ningún id). Se pide DENTRO del `if` a propósito: un expediente
+    // que aún no está admitido no tiene sesión de firma que mirar, y era el caso común.
+    if (!Array.isArray(admHints.sessions) && admHints.resumeToken) {
+      var firmaKms = _datosDeFirmaDelExpediente_(admHints.resumeToken);
+      if (firmaKms) {
+        admHints = {
+          states:           admHints.states,
+          resumeToken:      admHints.resumeToken,
+          sessions:         firmaKms.sessions,
+          signersBySession: firmaKms.signersBySession,
+        };
+      }
+    }
     // Path 1 — guardian resolved from the email the family typed (a1, KAL-4).
     if (guardianPersonId) {
       var perfP1 = Date.now(); // PERF-KMS2
@@ -3625,6 +3652,70 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
   return out;
 }
 
+// ─── ②17 · LAS FILAS DE FIRMA LAS SIRVE EL KMS, NO AppSheet ────────────────────
+//
+// **Éste es el MODELO, no un respaldo** (cola `②17`, `kis-app/docs/kms/loop-backlog.md`).
+// Este backend es público y anónimo (`ANYONE_ANONYMOUS`) y guarda la credencial de
+// AppSheet de la aplicación ENTERA: la URL lleva la tabla como parámetro, así que esa
+// llave alcanza CUALQUIER tabla. Las tres resoluciones de firma de aquí abajo leían con
+// ella `sysSigningSessions` y `sysSigningSessionSigners` — detrás hay identidades de
+// firmantes y sus `signing_token`. Ahora las filas vienen del KMS
+// (`enr.wizardDatosDeFirma`), que las acota **al expediente del `resume_token`** y no
+// acepta ningún identificador del cuerpo de la petición.
+//
+// ⚠️ NO queda respaldo que vuelva a leer AppSheet a pelo, y es deliberado: dos lectores
+// del mismo dato divergen (precedente §"refactors preservan el código probado"). Sin
+// filas, cada resolución degrada EXACTAMENTE como su `catch` de siempre
+// ('NOT_INITIATED' la de estado, `null` las dos de contexto).
+//
+// Lo que este cambio NO cierra, y hay que decirlo: la credencial de AppSheet **sigue
+// haciendo falta** para el resto de lecturas directas de este fichero. Esto ESTRECHA el
+// agujero; no lo cierra.
+
+/**
+ * Memoria de ESTA ejecución (no ScriptCache): varias resoluciones del mismo expediente
+ * en la misma petición comparten una sola llamada al KMS. Una ejecución de GAS es un
+ * hilo, así que es seguro; y al vivir solo lo que vive la petición, no puede servir
+ * filas rancias.
+ * @private
+ */
+var _FIRMA_MEMO_ = {};
+
+/**
+ * Las filas de firma del expediente del `resume_token`, pedidas al KMS (②17).
+ *
+ * KAL-4: el expediente lo deriva el KMS del token; aquí NO se manda ningún id de grupo,
+ * sesión ni firmante. KAL-11: log redactado, nunca el token entero.
+ *
+ * @param {string} resumeToken
+ * @returns {{sessions:Object[], signersBySession:Object<string,Object[]>}|null}
+ *          `null` si no hay token, si el KMS falla o si la respuesta no trae sesiones —
+ *          quien llama degrada como si la lectura hubiera fallado (que es lo que pasó).
+ * @private
+ */
+function _datosDeFirmaDelExpediente_(resumeToken) {
+  var token = resumeToken ? String(resumeToken).trim() : '';
+  if (!token) return null;
+  try { assertValidUuid_(token, 'resume_token'); } catch (e) { return null; }
+  if (Object.prototype.hasOwnProperty.call(_FIRMA_MEMO_, token)) return _FIRMA_MEMO_[token];
+
+  var out = null;
+  try {
+    var r = kmsProxy_('enr.wizardDatosDeFirma', { resume_token: token }) || {};
+    if (Array.isArray(r.sessions)) {
+      var porSesion = (r.signers_by_session && typeof r.signers_by_session === 'object')
+        ? r.signers_by_session : {};
+      out = { sessions: r.sessions, signersBySession: porSesion };
+    } else {
+      Logger.log('[_datosDeFirmaDelExpediente_] respuesta sin sesiones — se degrada');
+    }
+  } catch (e) {
+    Logger.log(redact_('[_datosDeFirmaDelExpediente_] lectura KMS fallida — ' + (e && e.message)));
+  }
+  _FIRMA_MEMO_[token] = out;
+  return out;
+}
+
 /**
  * WIZARD-STEP7-COMPLETED (2026-06-07): coarse signing lifecycle of the group,
  * INCLUDING the terminal COMPLETED case (which the entry-bridge resolvers
@@ -3651,19 +3742,15 @@ function resolveSigningStatus_(groupId, sessionsHint, signersBySessionHint) {
     assertValidUuid_(groupId, 'enrollment_group_id');
   } catch (e) { return 'NOT_INITIATED'; }
 
-  // PERF-KMS2: sessionsHint = filas de sysSigningSessions del grupo ya bajadas (mismo
-  // Filter entity_id) por el batch del caller; signersBySessionHint[session_id] = filas
-  // de signers ya bajadas (mismo Filter session_id). Sin hints → reads live de siempre.
-  var sessions;
-  try {
-    sessions = Array.isArray(sessionsHint)
-      ? sessionsHint
-      : (appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-          { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || []);
-  } catch (e) {
-    Logger.log('[resolveSigningStatus_] sessions lookup failed: ' + e.message);
+  // ②17: `sessionsHint` = filas de `sysSigningSessions` del expediente, servidas por el
+  // KMS (`enr.wizardDatosDeFirma`, mismo filtro `entity_id` de siempre);
+  // `signersBySessionHint[session_id]` = sus firmantes (mismo filtro `session_id`).
+  // SIN filas se degrada EXACTAMENTE como la rama `catch` de antes: 'NOT_INITIATED'.
+  if (!Array.isArray(sessionsHint)) {
+    Logger.log('[resolveSigningStatus_] sin filas de firma (②17) → NOT_INITIATED');
     return 'NOT_INITIATED';
   }
+  var sessions = sessionsHint;
   var live = sessions.filter(function(s) { return s && !s.deleted_at; });
   if (!live.length) return 'NOT_INITIATED';
 
@@ -3680,16 +3767,13 @@ function resolveSigningStatus_(groupId, sessionsHint, signersBySessionHint) {
   // the robust signed_at check below before trusting it for COMPLETED.
   var stateSaysCompleted = (session.current_state_code || '') === 'COMPLETED';
 
-  var signers;
-  try {
-    signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
-      ? signersBySessionHint[session.session_id]
-      : (appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-          { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || []);
-  } catch (e) {
-    Logger.log('[resolveSigningStatus_] signers lookup failed: ' + e.message);
-    // Session exists but signers unreadable: trust the state code if it says so,
-    // else assume in progress (a session is anchored).
+  var signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
+    ? signersBySessionHint[session.session_id]
+    : null;
+  if (!signers) {
+    // ②17: sin firmantes legibles — MISMA salida que la rama `catch` de antes. Hay sesión
+    // anclada: si el estado dice COMPLETED se le cree, si no, en curso.
+    Logger.log('[resolveSigningStatus_] sin firmantes de la sesión (②17)');
     return stateSaysCompleted ? 'COMPLETED' : 'IN_PROGRESS';
   }
 
@@ -3736,17 +3820,13 @@ function resolveSigningContextFromSession_(groupId, persons, sessionsHint, signe
     assertValidUuid_(groupId, 'enrollment_group_id');
   } catch (e) { return null; }
 
-  // PERF-KMS2: hints opcionales del batch del caller (mismos Filters); sin ellos, live.
-  var sessions;
-  try {
-    sessions = Array.isArray(sessionsHint)
-      ? sessionsHint
-      : (appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-          { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || []);
-  } catch (e) {
-    Logger.log('[resolveSigningContextFromSession_] sessions lookup failed: ' + e.message);
+  // ②17: las filas las sirve el KMS y llegan como hints (mismos filtros de siempre).
+  // Sin ellas se degrada EXACTAMENTE como la rama `catch` de antes: null.
+  if (!Array.isArray(sessionsHint)) {
+    Logger.log('[resolveSigningContextFromSession_] sin filas de firma (②17) → null');
     return null;
   }
+  var sessions = sessionsHint;
   var TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
   var session = sessions.find(function(s) {
     return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
@@ -3756,14 +3836,11 @@ function resolveSigningContextFromSession_(groupId, persons, sessionsHint, signe
     assertValidUuid_(session.session_id, 'session_id');
   } catch (e) { return null; }
 
-  var signers;
-  try {
-    signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
-      ? signersBySessionHint[session.session_id]
-      : (appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-          { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || []);
-  } catch (e) {
-    Logger.log('[resolveSigningContextFromSession_] signers lookup failed: ' + e.message);
+  var signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
+    ? signersBySessionHint[session.session_id]
+    : null;
+  if (!signers) {
+    Logger.log('[resolveSigningContextFromSession_] sin firmantes de la sesión (②17) → null');
     return null;
   }
   // Eligible = not soft-deleted, has a token, not already signed.
@@ -3826,17 +3903,13 @@ function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint,
     assertValidUuid_(guardianPersonId, 'guardian_person_id');
   } catch (e) { return null; }
 
-  // PERF-KMS2: hints opcionales del batch del caller (mismos Filters); sin ellos, live.
-  var sessions;
-  try {
-    sessions = Array.isArray(sessionsHint)
-      ? sessionsHint
-      : (appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-          { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || []);
-  } catch (e) {
-    Logger.log('[resolveGuardianSigningContext_] sessions lookup failed: ' + e.message);
+  // ②17: las filas las sirve el KMS y llegan como hints (mismos filtros de siempre).
+  // Sin ellas se degrada EXACTAMENTE como la rama `catch` de antes: null.
+  if (!Array.isArray(sessionsHint)) {
+    Logger.log('[resolveGuardianSigningContext_] sin filas de firma (②17) → null');
     return null;
   }
+  var sessions = sessionsHint;
   var TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
   var session = sessions.find(function(s) {
     return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
@@ -3846,14 +3919,11 @@ function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint,
     assertValidUuid_(session.session_id, 'session_id');
   } catch (e) { return null; }
 
-  var signers;
-  try {
-    signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
-      ? signersBySessionHint[session.session_id]
-      : (appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-          { Filter: '"session_id" = "' + appsheetEscape_(session.session_id) + '"' }) || []);
-  } catch (e) {
-    Logger.log('[resolveGuardianSigningContext_] signers lookup failed: ' + e.message);
+  var signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
+    ? signersBySessionHint[session.session_id]
+    : null;
+  if (!signers) {
+    Logger.log('[resolveGuardianSigningContext_] sin firmantes de la sesión (②17) → null');
     return null;
   }
   var signer = signers.find(function(r) {
@@ -4071,7 +4141,10 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
   // guardian del grupo cuando `recoveredGuardianId` no se resolvió — recorte cross-
   // device, no cross-tutor) — el recorte DL-E49 §2 se aplica DESPUÉS, solo a lo que
   // sale hacia el cliente.
-  const admission = buildAdmissionContext_(id, enrollments, recoveredGuardianId, persons);
+  // ②17: el `resume_token` viaja para que, si el expediente ya está admitido, las filas de
+  // firma se pidan al KMS en vez de leerlas de AppSheet con la credencial de la aplicación.
+  const admission = buildAdmissionContext_(id, enrollments, recoveredGuardianId, persons,
+    { resumeToken: (p && p.resume_token) || null });
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // DL-E49 §2 — cada tutor ve LO SUYO y lo de los menores, nunca lo del otro tutor.
@@ -4391,9 +4464,11 @@ function buildResumeSessionData_(group, p, stepUpFresh, opts) {
  * el estado de admisión + el contexto de firma, NO el expediente completo.
  *
  * Lee solo: grupo (vía token), enrollments del grupo, persons del grupo (para Path 2
- * de buildAdmissionContext_), y emails (lazy, solo si hay recovered_email) — más los
- * pocos reads internos de buildAdmissionContext_ (sysStates_T + signing session). NO
- * lee relations/documents/responses/interviews ni los sub-reads por persona.
+ * de buildAdmissionContext_), y emails (lazy, solo si hay recovered_email) — más el
+ * read interno de `sysStates_T` de buildAdmissionContext_. NO lee
+ * relations/documents/responses/interviews ni los sub-reads por persona. ②17: las filas
+ * de firma NO se leen de AppSheet — las sirve el KMS, y solo si el expediente está
+ * admitido.
  *
  * KAL-4: el grupo se deriva del resume_token server-side (requireResumeToken_), nunca
  * del payload. El guardian (Path 1) se re-resuelve del recovered_email contra datos
@@ -4478,17 +4553,19 @@ function getAdmissionState_(p) {
     // requester de resolveGuardianForRecovery_ (email de creación sin person_id). En
     // paralelo, sin coste de latencia adicional respecto al batch existente.
     { table: T.ENROLLMENT_GROUPS, action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    // PERF-KMS2 (2026-06-11): 3 tablas más en el MISMO batch paralelo (cero latencia
+    // PERF-KMS2 (2026-06-11): 2 tablas más en el MISMO batch paralelo (cero latencia
     // extra) que antes se leían en SERIE aguas abajo (medido: states 10-13s + emails
-    // ~3-5s + sessions 2×3-4s). Filtros VERBATIM de los lectores probados:
-    // buildAdmissionContext_ (STATES_T sin filtro), resolveEmailFromLinkParam_/
-    // findEmailIdForGuardian_ (EMAILS por grupo), resolveSigningStatus_/
-    // resolveGuardianSigningContext_/resolveSigningContextFromSession_ (SESSIONS por
-    // entity_id). Las filas viajan como hints opcionales — cada helper re-aplica su
-    // filtro fino en memoria; sin hints, su camino live queda intacto.
+    // ~3-5s). Filtros VERBATIM de los lectores probados: buildAdmissionContext_
+    // (STATES_T sin filtro) y resolveEmailFromLinkParam_/findEmailIdForGuardian_
+    // (EMAILS por grupo). Las filas viajan como hints — cada helper re-aplica su filtro
+    // fino en memoria.
+    //
+    // ②17: `sysSigningSessions` (y el segundo lote de `sysSigningSessionSigners` que
+    // colgaba de él) YA NO se leen aquí. Esas filas las sirve el KMS
+    // (`enr.wizardDatosDeFirma`), acotadas al expediente del `resume_token`, y se piden
+    // SOLO si el expediente está admitido — que es cuando hay firma que mirar.
     { table: T.STATES_T,          action: 'Find', selector: {} },
     { table: T.EMAILS,            action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    { table: T.SIGNING_SESSIONS,  action: 'Find', selector: { Filter: '"entity_id" = "' + idEsc + '"' } },
   ]);
   const perfBatchMs = Date.now() - perfB0;
   const enrollments = lightRead[0].ok ? (lightRead[0].data || []) : [];
@@ -4497,26 +4574,6 @@ function getAdmissionState_(p) {
   // PERF-KMS2: hints (null si su read del batch falló → los helpers caen a su live).
   const statesHint   = lightRead[3].ok ? (lightRead[3].data || []) : null;
   const emailsHint   = lightRead[4].ok ? (lightRead[4].data || []) : null;
-  const sessionsHint = lightRead[5].ok ? (lightRead[5].data || []) : null;
-
-  // PERF-KMS2: prefetch paralelo de signers de las sesiones VIVAS del grupo (≤2 típicas)
-  // — mismo Filter session_id que los helpers; si falla, el helper lee live como siempre.
-  let signersBySession = null;
-  if (sessionsHint && sessionsHint.length) {
-    try {
-      const liveSessions = sessionsHint.filter(function(s) { return s && !s.deleted_at && s.session_id; });
-      if (liveSessions.length) {
-        const sigReads = appsheetRequestBatch_(liveSessions.map(function(s) {
-          return { table: T.SIGNING_SESSION_SIGNERS, action: 'Find',
-                   selector: { Filter: '"session_id" = "' + appsheetEscape_(s.session_id) + '"' } };
-        }));
-        signersBySession = {};
-        liveSessions.forEach(function(s, i) {
-          if (sigReads[i] && sigReads[i].ok) signersBySession[s.session_id] = sigReads[i].data || [];
-        });
-      }
-    } catch (eSig) { signersBySession = null; /* helpers caen a live */ }
-  }
 
   // IDENTITY-FROM-LINK (2026-06-11): la identidad viaja en el ENLACE — `p.n` (email_id) →
   // email del guardian, validado contra el grupo del token (KAL-4). Prioridad `n` >
@@ -4529,8 +4586,10 @@ function getAdmissionState_(p) {
 
   const perfA0 = Date.now();
   PERF2_.adm = {}; // recoge segmentos internos de buildAdmissionContext_
+  // ②17: las filas de firma ya no viajan desde el batch de AppSheet — se piden al KMS
+  // con este token, y solo si el expediente está admitido.
   const admission = buildAdmissionContext_(id, enrollments, guardianId, persons,
-    { states: statesHint, sessions: sessionsHint, signersBySession: signersBySession });
+    { states: statesHint, resumeToken: (p && p.resume_token) || null });
   const perfAdmMs = Date.now() - perfA0;
   Logger.log('[PERF] getAdmissionState t_gate=' + perfGateMs + ' t_batch=' + perfBatchMs +
              ' t_guardian=' + perfGuardianMs + ' t_admission=' + perfAdmMs +
@@ -6514,7 +6573,13 @@ function getDocument_(p) {
           Utilities.newBlob(groupId + '|' + guardianId).getBytes()).slice(0, 40);
         const hit = cache.get(memoKey);
         if (hit) return hit;
-        const sctxSign = resolveGuardianSigningContext_(groupId, guardianId);
+        // ②17: las filas de firma las sirve el KMS, acotadas al expediente del token.
+        // Sin ellas → null, y el llamante degrada igual que antes (no hay PDF de firma
+        // que servir por esta vía).
+        const firmaDoc = _datosDeFirmaDelExpediente_(p && p.resume_token);
+        const sctxSign = firmaDoc
+          ? resolveGuardianSigningContext_(groupId, guardianId, firmaDoc.sessions, firmaDoc.signersBySession)
+          : null;
         const tok = (sctxSign && sctxSign.signing_token) || null;
         if (tok) cache.put(memoKey, tok, 300);
         return tok;
@@ -7459,6 +7524,17 @@ function isMilestoneCompleted_(entityTypeCode, entityId, milestoneTypeCode) {
  *
  * Queries AppSheet directly (same credentials as the rest of the wizard —
  * no KMS internal API call needed). Idempotent — read-only.
+ *
+ * ⚠️ ②17 — POR QUÉ ESTE CAMINO SIGUE LEYENDO AppSheet, y no es un olvido.
+ * Las tres resoluciones de firma de `buildAdmissionContext_` pasaron a pedirle las filas
+ * al KMS (`enr.wizardDatosDeFirma`), que las acota al expediente del `resume_token`
+ * (KAL-4). **Ésta no puede**: autentica POR EL PROPIO `signing_token` y no conoce ningún
+ * expediente hasta DESPUÉS de encontrar la fila del firmante, así que no hay token de
+ * recuperación del que derivar nada. Moverla exigiría una entrada pública del KMS que
+ * acepte un bearer del cuerpo de la petición — otra decisión, y toca el camino de
+ * compatibilidad de la firma. **Consecuencia:** esta función y las dos de hitos que
+ * cuelga (`isMilestoneCompleted_`, `isDurableSigningMilestoneCompleted_` — sus ÚNICOS
+ * llamantes vivos) siguen siendo las 6 lecturas directas de firma/hitos que quedan.
  *
  * Per roadmap §4.2 (wizard-admissions-roadmap.md) + DL-E24 §6.
  *
@@ -10685,7 +10761,11 @@ function manual_testIdentityReentry() {
   //     camino que mi lazy resolver): n→email→guardian→resolveGuardianSigningContext_. Fila 30.
   var effForDoc = effectiveRecoveredEmail_(null, GROUP_ID_REAL, nEmailId);
   var gForDoc = effForDoc ? resolveGuardianForRecovery_(GROUP_ID_REAL, effForDoc) : null;
-  var sigCtx = gForDoc ? resolveGuardianSigningContext_(GROUP_ID_REAL, gForDoc) : null;
+  // ②17: las filas de firma las sirve el KMS (mismo camino que el lazy resolver real).
+  var firmaDiag = grp.resume_token ? _datosDeFirmaDelExpediente_(grp.resume_token) : null;
+  var sigCtx = (gForDoc && firmaDiag)
+    ? resolveGuardianSigningContext_(GROUP_ID_REAL, gForDoc, firmaDiag.sessions, firmaDiag.signersBySession)
+    : null;
   out.c_signing_token_resolved = !!(sigCtx && sigCtx.signing_token);
   // Honesto: si NO hay sesión de firma activa para este grupo (pre-AD), sigCtx==null —
   // entonces NO hay PDF de firma que servir (correcto). PASS si: o bien se resolvió el
@@ -11270,9 +11350,12 @@ function manual_diagWizardSigningGate() {
   Logger.log(redact_('  recovered_email=' + (RECOVERED_EMAIL || '(vacío)') +
              ' → guardian=' + (recoveredGuardianId || 'null')));
 
-  // Sesiones de firma del grupo.
+  // Sesiones de firma del grupo. ②17: este diagnóstico es de EDITOR (no lo alcanza nadie
+  // desde internet), así que sigue leyendo AppSheet directo — pero las MISMAS filas se
+  // pasan luego a los resolvedores como hints, que es lo que hace en producción el KMS.
   var sessions = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
     { Filter: '"entity_id" = "' + idEsc + '"' }) || [];
+  var signersBySessionDiag = {};
   Logger.log('  sesiones de firma ancladas al grupo: ' + sessions.length);
   sessions.forEach(function(s, i) {
     Logger.log('    [sesión ' + i + '] session_id=' + String(s.session_id || '').substring(0, 8) +
@@ -11281,6 +11364,7 @@ function manual_diagWizardSigningGate() {
     if (s.session_id) {
       var signers = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
         { Filter: '"session_id" = "' + appsheetEscape_(s.session_id) + '"' }) || [];
+      signersBySessionDiag[s.session_id] = signers;
       signers.forEach(function(r) {
         Logger.log(redact_('       signer person=' + (r.signer_person_id || '(null)') +
                    ' hasToken=' + (!!r.signing_token) +
@@ -11292,8 +11376,12 @@ function manual_diagWizardSigningGate() {
   });
 
   // Vías de resolución (opción a: SOLO server-side; opción b in-app eliminada).
-  var via1 = recoveredGuardianId ? resolveGuardianSigningContext_(GROUP_ID, recoveredGuardianId) : null;
-  var via2 = resolveSigningContextFromSession_(GROUP_ID, persons);
+  // ②17: los resolvedores YA NO leen AppSheet — reciben las filas. Aquí se les pasan las
+  // que este diagnóstico acaba de leer, en el mismo orden que el KMS las sirve.
+  var via1 = recoveredGuardianId
+    ? resolveGuardianSigningContext_(GROUP_ID, recoveredGuardianId, sessions, signersBySessionDiag)
+    : null;
+  var via2 = resolveSigningContextFromSession_(GROUP_ID, persons, sessions, signersBySessionDiag);
 
   Logger.log('  Vía 1 (per-guardian a1): ' + (via1 ? 'RESUELTA (token=' +
              String(via1.signing_token).substring(0, 8) + '...)' : 'null'));
@@ -11301,11 +11389,12 @@ function manual_diagWizardSigningGate() {
              String(via2.signing_token).substring(0, 8) + '...)' : 'null'));
 
   // WIZARD-STEP7-COMPLETED: estado de firma incl. terminal COMPLETED.
-  var signingStatus = resolveSigningStatus_(GROUP_ID);
+  var signingStatus = resolveSigningStatus_(GROUP_ID, sessions, signersBySessionDiag);
   Logger.log('  signing_status (lifecycle): ' + signingStatus);
 
   // Resultado final del gate tal como lo ve el frontend.
-  var admission = buildAdmissionContext_(GROUP_ID, enrollments, recoveredGuardianId, persons);
+  var admission = buildAdmissionContext_(GROUP_ID, enrollments, recoveredGuardianId, persons,
+    { sessions: sessions, signersBySession: signersBySessionDiag });
   Logger.log('  >>> buildAdmissionContext_: state_code=' + admission.state_code +
              ' signing_available=' + admission.signing_available +
              ' signing_context=' + (admission.signing_context ? 'sí' : 'no') +
