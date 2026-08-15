@@ -207,6 +207,14 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'cierre-del-aviso': 'el fallo del guardado se pide con `scenario.saveStepFails`, una palanca del backend simulado; contra el sistema real no hay forma honesta de hacer fallar un guardado a voluntad',
   },
   // ②24.sexies — el servidor descarta el cuestionario del tutor que ya envió su parte.
+  // El precalentado sin ruido — ver el camino: contra el sistema real pedir el enlace dos
+  // veces manda dos correos y rota el token de los caminos que vienen detrás.
+  'precalentado-sin-ruido': {
+    'precalentado-sin-ruido': 'pedir el enlace dos veces contra el sistema real manda DOS correos y ROTA el resume_token, dejando sin token a los caminos que vienen detrás; en modo simulado sí se cubre',
+  },
+  'precalentado-fallo-se-registra': {
+    'fallo-del-precalentado': 'el fallo del precalentado se pide con `scenario.warmFalla`, una palanca del backend simulado; contra el sistema real no hay forma honesta de tumbarlo a voluntad',
+  },
   'respuestas-rechazadas-se-dicen': {
     'respuestas-rechazadas': 'exige un expediente real con un tutor que YA envió su parte y otro que sigue rellenando; el arnés no puede montar ese estado sin dejar datos a medias. En modo simulado sí se cubre, con la palanca `scenario.respuestasRechazadas`.',
   },
@@ -356,7 +364,9 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // formato crudo 'MM/DD/YYYY' de la API — escenario hostil de ①31).
 // `piiGated`/`otpSuperado`/`documentos`: la verja de datos personales (DL-E39) y los
 // archivos ya subidos — los usa `documentos-vuelven` y los deja como estaban al salir.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false }
+// `warmFalla`: el precalentado falla DE VERDAD (no "no había nada que calentar") — la
+// otra mitad de `precalentado-sin-ruido`: un fallo real sigue registrándose.
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -1335,6 +1345,91 @@ async function caminoAckIndistinguible(page, base) {
     'el ErrorBoundary pintó "Something went wrong." al fallar la petición de fondo')
 
   scenario.magicLinkMode = 'constant'
+  return c
+}
+
+/**
+ * El PRECALENTADO no pinta un error cuando no había nada que calentar (2026-08-15).
+ *
+ * Tras pedir el enlace, la portada dispara el precalentado del bundle de entrada con un
+ * ticket opaco que el servidor consume al PRIMER uso (single-use, 300 s). Que un segundo
+ * intento —una recarga, una petición repetida, el ticket ya caducado— no encuentre nada
+ * es lo NORMAL. El servidor lo contestaba con `{ok:false}` y el cliente lo trataba como
+ * error del servidor: un ERROR ROJO en la consola de la familia («Unknown server error»,
+ * porque tampoco había mensaje) para algo que fue bien. Quien lo mire concluye que el
+ * asistente está roto cuando no lo está.
+ *
+ * Se afirma lo observable: pedir el enlace dos veces NO deja ni un error en la consola
+ * (la red de errores del arnés lo exige: cualquier error no declarado tumba el camino) y
+ * la pantalla sigue siendo la genérica. Y la otra mitad: cuando el precalentado falla DE
+ * VERDAD, el fallo se sigue registrando — si dejara de hacerlo, el camino cae.
+ *
+ * ⚠️ LÍMITE, dicho: esto corre contra el backend SIMULADO, cuya rama de ticket está
+ * copiada del contrato de `warmBundle_`; el `backend/Code.js` real NO se ejecuta aquí.
+ * Lo que esta batería puede afirmar es que, con esa respuesta, la familia no ve ruido.
+ *
+ * ⚠️ Y VAN EN DOS CAMINOS SEPARADOS A PROPÓSITO — medido el 2026-08-15, no razonado. La
+ * otra mitad («un fallo de verdad SÍ se registra») declara esperar el error de consola
+ * `gasCall warmBundle: server returned ok=false`, y esa declaración vale para TODO el
+ * camino, no para el tramo donde se escribe: metidas en el mismo camino, la declaración
+ * de la segunda mitad SE TRAGA el error de la primera. Se comprobó rompiendo el simulado
+ * a propósito (ticket gastado → `{ok:false}`, el contrato viejo): con las dos mitades
+ * juntas el camino salió **VERDE** — o sea, la red no medía nada. Separadas, sale ROJO.
+ */
+async function caminoPrecalentadoSinRuido(page, base) {
+  const c = new Camino('precalentado-sin-ruido')
+  scenario.magicLinkMode = 'constant'
+
+  // Contra el sistema REAL no se hace: pedir el enlace dos veces manda DOS correos de
+  // verdad y ROTA el resume_token, dejando sin token a los caminos siguientes.
+  if (REAL) {
+    c.noCubierta('precalentado-sin-ruido',
+      'pedir el enlace dos veces contra el sistema real manda DOS correos y ROTA el resume_token, dejando sin token a los caminos que vienen detrás; en modo simulado sí se cubre')
+    return c
+  }
+
+  // DOS peticiones de enlace: el ticket del segundo precalentado ya está gastado.
+  calls = []
+  await rellenarPortada(page, base, DATOS.emailKnown)
+  const pantalla = await rellenarPortada(page, base, DATOS.emailKnown)
+  const precalentados = llamadas('warmBundle')
+
+  c.evidencia.elementos = pantalla.tarjetas + (pantalla.sobreEnviado ? 1 : 0)
+  c.afirmar('la portada dispara el precalentado las dos veces', precalentados.length >= 2,
+    `se registraron ${precalentados.length} llamadas a warmBundle (se esperan 2)`)
+  c.afirmar('la pantalla sigue siendo la genérica de "enlace enviado"', pantalla.sobreEnviado,
+    'no apareció la confirmación genérica')
+  c.afirmar('sin pantalla de error', !pantalla.errorFatal, 'el ErrorBoundary pintó "Something went wrong."')
+  // La afirmación que de verdad muerde —CERO errores de consola— la exige el propio arnés:
+  // cualquier error no declarado tumba el camino, y aquí NO se declara ninguno.
+  return c
+}
+
+/**
+ * La otra mitad: cuando el precalentado falla DE VERDAD, el fallo SIGUE registrándose.
+ * «No había nada que calentar» se calla; «falló» no. Si el cliente dejara de registrarlo,
+ * este camino cae solo (el arnés exige que el error declarado ocurra de verdad).
+ */
+async function caminoPrecalentadoFalloSeRegistra(page, base) {
+  const c = new Camino('precalentado-fallo-se-registra')
+  scenario.magicLinkMode = 'constant'
+
+  if (REAL) {
+    c.noCubierta('fallo-del-precalentado',
+      'el fallo del precalentado se pide con `scenario.warmFalla`, una palanca del backend simulado; contra el sistema real no hay forma honesta de tumbarlo a voluntad')
+    return c
+  }
+
+  c.esperarErrorConsola(/gasCall warmBundle: server returned ok=false/,
+    'escenario deliberado: el precalentado falla de verdad; la app se lo traga de cara al usuario pero DEBE dejarlo registrado')
+  calls = []
+  scenario.warmFalla = true
+  const pantalla = await rellenarPortada(page, base, DATOS.emailKnown)
+  scenario.warmFalla = false
+
+  c.evidencia.elementos = pantalla.tarjetas + (pantalla.sobreEnviado ? 1 : 0)
+  c.afirmar('un fallo real del precalentado no rompe la pantalla', pantalla.sobreEnviado && !pantalla.errorFatal,
+    'la pantalla cambió o el ErrorBoundary saltó cuando el precalentado falló')
   return c
 }
 
@@ -4083,6 +4178,13 @@ async function caminoAvisoGuardadoSeCierra(page, base) {
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
+  // El precalentado no pinta un error rojo cuando no había nada que calentar. Contra el
+  // sistema real se declara NO CUBIERTO y sale sin tocar la pantalla (pedir el enlace dos
+  // veces rotaría el token de los caminos siguientes), así que ahí no se le exige evidencia.
+  { nombre: 'precalentado-sin-ruido', fn: caminoPrecalentadoSinRuido,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
+  { nombre: 'precalentado-fallo-se-registra', fn: caminoPrecalentadoFalloSeRegistra,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'recuperar-aterrizar', fn: caminoRecuperarAterrizar, minLlamadas: 1, minElementos: 11 },
   { nombre: 'guardar-paso',        fn: caminoGuardarPaso,        minLlamadas: 1, minElementos: 11 },
   // ①31 — la familia que se incorpora a mitad de curso no puede quedarse encerrada en el paso 1.

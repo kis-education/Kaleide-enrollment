@@ -2938,20 +2938,44 @@ function sendMagicLink_(p) {
     }
 
     try {
+      // ── LAS DOS LECTURAS DE ENTRADA, A LA VEZ (2026-08-15) ──────────────────
+      // MEDIDO: el correo del enlace tarda ~2 min y la mitad de esa espera es el
+      // trabajo que va POR DELANTE del envío — cada ida y vuelta a AppSheet que se
+      // encadena aquí retrasa el momento en que el correo se pone en cola.
+      //
+      // Estas dos lecturas NO dependen una de otra: las dos filtran por el MISMO
+      // email tecleado, que se conoce desde la primera línea. Iban en serie (la de
+      // grupos aquí, la de correos DESPUÉS de rotar el token) sin ningún motivo.
+      // Filtros COPIADOS VERBATIM de los dos lectores probados:
+      //   · grupos  → el `appsheetRequest_(T.ENROLLMENT_GROUPS,…)` que vivía aquí.
+      //   · correos → `findOpenGroupsByGuardianEmail_` (mismo `"value" = "<email>"`).
+      // Transporte: `appsheetRequestBatch_`, el que esta misma función ya usaba para
+      // los correos por grupo. No hay lógica de acceso a datos nueva.
+      //
       // Find all non-abandoned sessions for this email — INCLUDING submitted/AD.
       // DL-E38: recovery MUST work for submitted/AD families so the magic link can
       // resume them into signing. We only exclude abandoned sessions; submitted
       // sessions get their EXISTING token sent (token renewal is skipped below for
       // them, mirroring Path 1's behaviour).
-      let rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-        Filter: '"primary_email" = "' + appsheetEscape_(p.primary_email) + '" && ISBLANK([abandoned_at])'
-      });
+      const emailEsc = appsheetEscape_(p.primary_email);
+      const lecturaEntrada = appsheetRequestBatch_([
+        { table: T.ENROLLMENT_GROUPS, action: 'Find', selector: {
+            Filter: '"primary_email" = "' + emailEsc + '" && ISBLANK([abandoned_at])' } },
+        { table: T.EMAILS,            action: 'Find', selector: {
+            Filter: '"value" = "' + emailEsc + '"' } },
+      ]);
+      let rows = lecturaEntrada[0].ok ? lecturaEntrada[0].data : null;
+      // Filas de enrEmails del buzón tecleado (TODOS sus grupos). Sirven a los DOS
+      // consumidores de abajo; cada uno se queda SOLO con las de su grupo, que es el
+      // contrato de `findEmailIdForGuardian_` ("filas del MISMO grupo"). Lectura
+      // caída → null ⇒ cada consumidor cae a su propio Find (degradación, no error).
+      const correosDelBuzon = lecturaEntrada[1].ok ? wizardSoloVivas_(lecturaEntrada[1].data) : null;
       // DL-E38 a1: a non-primary guardian recovers with their OWN email — locate
       // open group(s) via enrEmails (guardians) when primary_email doesn't match.
       // The link is sent to the typed email (p.primary_email) below, i.e. to the
       // guardian's own inbox.
       if (!rows || !rows.length) {
-        rows = findOpenGroupsByGuardianEmail_(p.primary_email);
+        rows = findOpenGroupsByGuardianEmail_(p.primary_email, correosDelBuzon);
       }
       if (!rows || !rows.length) {
         // WIZ-ENUM: sin grupo NO se lanza — ack constante. Y como la landing ya no
@@ -3006,13 +3030,17 @@ function sendMagicLink_(p) {
           Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message));
         }
       });
-      const emailSpecs = sorted.map(g => ({ table: T.EMAILS, action: 'Find', selector: {
-        Filter: '"enrollment_group_id" = "' + appsheetEscape_(g.enrollment_group_id) + '"' } }));
-      const batchRes = appsheetRequestBatch_(emailSpecs);
+      // Los correos ya se bajaron ARRIBA, en la misma tanda que los grupos: aquí ya no
+      // se vuelve a AppSheet (era la ida y vuelta que se comía la espera justo antes
+      // del envío). Cada grupo recibe SOLO sus filas — el contrato de
+      // `findEmailIdForGuardian_` es "filas enrEmails del MISMO grupo", y pasarle las
+      // de otro grupo devolvería un `email_id` ajeno en el enlace.
       const emailsHintByGroup = {};
-      sorted.forEach((g, i) => {
-        const r = batchRes[i];
-        emailsHintByGroup[g.enrollment_group_id] = (r && r.ok) ? wizardSoloVivas_(r.data) : null;
+      sorted.forEach(g => {
+        const gid = g.enrollment_group_id;
+        emailsHintByGroup[gid] = correosDelBuzon
+          ? correosDelBuzon.filter(r => r && r.enrollment_group_id === gid)   // ya coladas en la lectura
+          : null;   // lectura caída → null ⇒ findEmailIdForGuardian_ hace su propio Find
       });
       const grps = sorted.map(g => {
         const gid = g.enrollment_group_id;
@@ -3351,15 +3379,22 @@ function resolveGuardianForRecovery_(groupId, recoveredEmail, emailsHint, person
  * de grupo completas (con resume_token/primary_email/preferred_language).
  *
  * @param {string} rawEmail
+ * @param {Array=} correosHint filas de enrEmails de ESE buzón ya bajadas por el caller
+ *                 con el mismo filtro (`"value" = "<email>"`); ausente → Find propio.
  * @returns {Array} filas enrEnrollmentGroups abiertas con guardian match
  */
-function findOpenGroupsByGuardianEmail_(rawEmail) {
+function findOpenGroupsByGuardianEmail_(rawEmail, correosHint) {
   var email;
   try { assertValidEmail_(rawEmail, 'primary_email'); email = String(rawEmail).toLowerCase().trim(); }
   catch (e) { return []; }
 
-  var emailRows = wizardSoloVivas_(appsheetRequest_(T.EMAILS, 'Find', [],
-    { Filter: '"value" = "' + appsheetEscape_(rawEmail) + '"' }));
+  // `correosHint` = filas de enrEmails de ESE buzón ya bajadas por el caller con el
+  // MISMO filtro de abajo (`sendMagicLink_` las pide a la vez que los grupos, para no
+  // encadenar idas y vueltas antes de mandar el correo). Sin hint, el Find de siempre.
+  // Mismo idioma que el `emailsHint` de `findEmailIdForGuardian_`.
+  var emailRows = wizardSoloVivas_(Array.isArray(correosHint) ? correosHint
+    : appsheetRequest_(T.EMAILS, 'Find', [],
+        { Filter: '"value" = "' + appsheetEscape_(rawEmail) + '"' }));
   var matched = emailRows.filter(function(e) {
     return String(e.value || '').toLowerCase().trim() === email && e.enrollment_group_id;
   });
@@ -3372,8 +3407,17 @@ function findOpenGroupsByGuardianEmail_(rawEmail) {
   catch (e) { return []; }
   var grpFilter = ids.map(function(id) { return '"enrollment_group_id" = "' + appsheetEscape_(id) + '"'; }).join(' || ');
 
-  var groups  = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], { Filter: grpFilter }) || [];
-  var persons = wizardSoloVivas_(appsheetRequest_(T.PERSONS,           'Find', [], { Filter: grpFilter }));
+  // Las dos lecturas llevan el MISMO filtro y no dependen una de otra: van a la vez.
+  // FALLA CERRADO — si alguna no se pudo leer se LANZA (como lanzaba `appsheetRequest_`):
+  // devolver [] diría "esta familia no tiene expediente" y el caller le abriría uno NUEVO.
+  var lote = appsheetRequestBatch_([
+    { table: T.ENROLLMENT_GROUPS, action: 'Find', selector: { Filter: grpFilter } },
+    { table: T.PERSONS,           action: 'Find', selector: { Filter: grpFilter } },
+  ]);
+  if (!lote[0].ok) throw new Error('findOpenGroupsByGuardianEmail_: ' + lote[0].error);
+  if (!lote[1].ok) throw new Error('findOpenGroupsByGuardianEmail_: ' + lote[1].error);
+  var groups  = lote[0].data || [];
+  var persons = wizardSoloVivas_(lote[1].data);
 
   // Solo enviar si el email matcheado pertenece a un GUARDIAN del grupo (no a un
   // applicant) — evita mandar recuperación al email de un menor.
@@ -8390,7 +8434,9 @@ function warmSession_(p) {
  * Dos modos:
  *  - { ticket }: ticket opaco single-use (TTL 300s, _mintWarmTicket_) que mapea
  *    server-side a [{t,n,e,l}] — el frontend nunca conoce el resume_token nuevo.
- *    Ticket desconocido/expirado/reusado → {ok:false} silencioso (sin oráculo).
+ *    Ticket desconocido/expirado/reusado → NO hay nada que calentar: {ok:true} (la
+ *    MISMA respuesta del ticket real y del señuelo — sin oráculo) + log. Solo un
+ *    ticket MAL FORMADO es un fallo: {ok:false, error:{code:'TICKET_MALFORMADO'}}.
  *  - { resume_token, n?, language? }: passthrough a warmSession_ (gate KAL-4
  *    requireResumeToken_ dentro). Útil para verificación outside-in por curl.
  *
@@ -8423,15 +8469,39 @@ function warmBundle_(p) {
     }
   }
   if (p && p.ticket) {
+    // ── «NO HABÍA NADA QUE CALENTAR» NO ES UN FALLO (2026-08-15) ──────────────
+    // El ticket es SINGLE-USE y dura 300 s: que ya esté gastado (la familia recargó,
+    // el navegador repitió la petición) o caducado es lo NORMAL, no una avería. Al
+    // devolver `{ok:false}` sin más, el sobre de `doPost` sale con `ok:false`
+    // (`jsonResponse_({ok:true, ...result})` — el resultado pisa al sobre), y el
+    // cliente lo trata como error del servidor: `api.js` escribe un ERROR ROJO en la
+    // consola de la familia («Unknown server error», porque tampoco había `error`)
+    // para algo que fue bien. El precalentado es best-effort POR CONTRATO — no puede
+    // usar el canal de error del sobre para decir "no había nada".
+    //
+    // Se distingue AQUÍ, en el único sitio que sabe cuál de las dos cosas pasó:
+    //   · ticket mal formado          → FALLO del llamante  → `ok:false` NOMBRADO.
+    //   · gastado / caducado / vacío  → nada que calentar   → `ok:true` y al log.
+    // WIZ-ENUM: la respuesta del camino "nada que calentar" es la MISMA `{ok:true}`
+    // del ticket real y del señuelo (`_magicLinkConstantAck_`), así que sigue sin
+    // haber por dónde preguntar si ese correo tiene expediente.
     var tk = String(p.ticket).trim();
-    try { assertValidUuid_(tk, 'ticket'); } catch (eV) { return { ok: false }; }
+    try { assertValidUuid_(tk, 'ticket'); }
+    catch (eV) { return { ok: false, error: { code: 'TICKET_MALFORMADO', message: 'ticket inválido' } }; }
     var cache = CacheService.getScriptCache();
     var key = 'wzwt_' + tk;
     var raw = cache.get(key);
     cache.remove(key); // single-use SIEMPRE (también si el parse falla)
-    if (!raw) return { ok: false };
+    if (!raw) {
+      Logger.log('[warmBundle_] nada que calentar: ticket gastado o caducado');
+      return { ok: true };
+    }
     var items = [];
-    try { items = JSON.parse(raw) || []; } catch (eP) { return { ok: false }; }
+    try { items = JSON.parse(raw) || []; }
+    catch (eP) {
+      Logger.log('[warmBundle_] nada que calentar: ticket ilegible en cache');
+      return { ok: true };
+    }
     // V2.1: por cada item, DOS fases hijas CONCURRENTES (fetchAll al propio /exec):
     //  - 'res': payload de resume wizard-side (~25-30s) — lo primero que pide el click.
     //  - 'kms': hydrate+admission+members+bytes PDF (30-90s, dominado por el pull KMS).

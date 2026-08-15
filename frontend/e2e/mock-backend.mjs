@@ -460,6 +460,11 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
  * camino lo reconfigura antes de navegar (los recorridos corren en serie).
  */
 export function createDispatcher(scenario, record) {
+  // El ticket del precalentado es de UN SOLO USO server-side (`_mintWarmTicket_`, TTL
+  // 300 s): `warmBundle_` lo BORRA de la cache al primer uso. Sin esto el simulado
+  // aceptaba el mismo ticket infinitas veces y el caso que de verdad ve la familia
+  // —recarga, petición repetida, ticket caducado— no aparecía nunca.
+  const ticketsGastados = new Set();
   const H = {
     // ── Portada ───────────────────────────────────────────────────────────────
     sendMagicLink: (p) => {
@@ -472,7 +477,22 @@ export function createDispatcher(scenario, record) {
       // Ack CONSTANTE — idéntico exista o no el email (WIZ-ENUM / KAL-10).
       return { ok: true, sent: true, warm_ticket: '99999999-9999-4999-8999-999999999999' };
     },
-    warmBundle:            () => ({ ok: true }),
+    // Forma COPIADA de la rama de ticket de `warmBundle_` (backend/Code.js): un ticket
+    // ya gastado o caducado NO es un fallo — es que no hay nada que calentar — y
+    // contesta `{ok:true}`, la MISMA respuesta del ticket real y del señuelo (WIZ-ENUM:
+    // si "nada que calentar" se distinguiera, volvería a haber por dónde preguntar si
+    // ese correo tiene expediente). Un fallo de VERDAD sí sale nombrado y con `ok:false`.
+    warmBundle: (p) => {
+      if (scenario.warmFalla) {
+        return { ok: false, error: { code: 'PRECALENTADO_FALLIDO', message: 'el precalentado falló de verdad' } };
+      }
+      const tk = p && p.ticket;
+      if (tk) {
+        if (ticketsGastados.has(tk)) return { ok: true };   // gastado ⇒ nada que calentar
+        ticketsGastados.add(tk);
+      }
+      return { ok: true };
+    },
     warmSession:           () => ({ ok: true, warmed: true }),
     verifyRecaptcha:       () => ({ ok: true, score: 0.9 }),
     initEnrollmentSession: (p) => ({ ok: true, enrollment_group_id: FIXTURE.groupId }),
