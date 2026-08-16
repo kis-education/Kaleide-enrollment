@@ -240,6 +240,11 @@ const QUESTIONS = {
         question: {
           question_id: 'q-e2e-1', question_code: 'e2e_texto',
           response_type_id: 'TEXT', response_type_code: 'TEXT',
+          // ③51 — esta pregunta DECLARA su control y la de abajo NO, siendo del MISMO tipo.
+          // Es a propósito: así el camino comprueba a la vez que lo declarado manda y que la
+          // caída al código del tipo sigue viva. Con las dos declaradas —o ninguna— la
+          // afirmación pasaría sin distinguir una cosa de la otra.
+          ui_widget: 'input',
           is_required: false, audience_category_id: null,
           question_text: 'Cuenta algo del robot', help_text: '', placeholder_text: '',
           options: [], conditions: [],

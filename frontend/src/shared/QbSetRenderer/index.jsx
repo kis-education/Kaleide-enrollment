@@ -240,11 +240,43 @@ function readInitiatorEmail() {
 
 // ─── Internal: single input renderer ─────────────────────────────────────────
 
-function QuestionField({ question, value, onChange, readOnly }) {
-  // response_type_code es el code legible resuelto en el backend (JOIN
-  // response_type_id→code). El OR con response_type_id queda como backup si un
-  // backend antiguo aún no envía el code.
+// ─── ③51 (2026-08-16) · EL CONTROL LO DECIDE LO DECLARADO, NO EL CÓDIGO DEL TIPO ─────
+//
+// La ficha de un tipo de respuesta DECLARA con qué control se pinta (`ui_widget`, catálogo
+// Capa 2 del KMS `config/qb-response-types.html`). Hasta ③51 esa declaración NO LLEGABA aquí
+// y este fichero elegía por el CÓDIGO del tipo: cambiar el control declarado no tenía NINGÚN
+// efecto, y los dos tipos de escala —declarados `scale_buttons`— se pintaban como un área de
+// texto libre.
+//
+// ⛔ LA CAÍDA NO ES ADORNO: sin control declarado, o con uno que este fichero no sabe pintar,
+// se pinta EXACTAMENTE lo de siempre. Una familia no puede quedarse sin poder contestar
+// porque el colegio declare un control que la pantalla aún no conoce.
+//
+// El vocabulario vive en el catálogo y AQUÍ; el servidor lo transporta VERBATIM sin
+// validarlo (una tercera copia de la lista es justo el defecto que ③51 cerró).
+const CONTROLES_QUE_SE_SABEN_PINTAR = ['input', 'textarea', 'switch', 'radio_or_select', 'checkboxes'];
+
+function controlDeLaPregunta(question) {
+  const declarado = (question.ui_widget || '').toString().trim().toLowerCase();
+  if (declarado && CONTROLES_QUE_SE_SABEN_PINTAR.includes(declarado)) return declarado;
+  if (declarado) {
+    // `scale_buttons` cae aquí HOY, y se dice: el control declarado no dice de 1 a cuánto va
+    // la escala, y sacar el rango del código del tipo sería volver a elegir por el código —
+    // exactamente lo que ③51 cierra. Decisión abierta anotada en la cola (③51).
+    console.warn(`[QbSetRenderer] control declarado "${declarado}" que esta pantalla aún no sabe pintar — se pinta el de siempre (por el código del tipo).`);
+  }
+  // CAÍDA: el código del tipo, tal y como se elegía hasta ③51. Verbatim.
   const type = (question.response_type_code || question.response_type_id || 'text').toString().toLowerCase();
+  if (type === 'boolean') return 'switch';
+  if (type === 'select') return 'radio_or_select';
+  if (type === 'multi_select' || type === 'multi-select') return 'checkboxes';
+  if (type === 'number') return 'number';
+  return 'textarea';
+}
+
+function QuestionField({ question, value, onChange, readOnly }) {
+  // ③51 — el CONTROL sale de lo declarado (`ui_widget`), con caída al código del tipo.
+  const control = controlDeLaPregunta(question);
 
   // ── readOnly path: render value as plain text, regardless of type ──────────
   if (readOnly) {
@@ -261,7 +293,7 @@ function QuestionField({ question, value, onChange, readOnly }) {
     );
   }
 
-  if (type === 'boolean') {
+  if (control === 'switch') {
     return (
       <div className="form-check form-switch">
         <input type="checkbox" className="form-check-input" role="switch"
@@ -272,7 +304,7 @@ function QuestionField({ question, value, onChange, readOnly }) {
     );
   }
 
-  if (type === 'select') {
+  if (control === 'radio_or_select') {
     return (
       <div>
         <label className="form-label">{question.question_text}{question.is_required && ' *'}</label>
@@ -299,7 +331,7 @@ function QuestionField({ question, value, onChange, readOnly }) {
     );
   }
 
-  if (type === 'multi_select' || type === 'multi-select') {
+  if (control === 'checkboxes') {
     const sel = Array.isArray(value) ? value : [];
     return (
       <div>
@@ -320,7 +352,7 @@ function QuestionField({ question, value, onChange, readOnly }) {
     );
   }
 
-  if (type === 'number') {
+  if (control === 'number') {
     return (
       <div>
         <label className="form-label">{question.question_text}{question.is_required && ' *'}</label>
@@ -333,7 +365,20 @@ function QuestionField({ question, value, onChange, readOnly }) {
     );
   }
 
-  // Default: text / textarea
+  if (control === 'input') {
+    return (
+      <div>
+        <label className="form-label">{question.question_text}{question.is_required && ' *'}</label>
+        {question.help_text && <div className="form-text mb-1">{question.help_text}</div>}
+        <input type="text" className="form-control"
+          placeholder={question.placeholder_text || ''}
+          value={value || ''}
+          onChange={e => onChange(e.target.value)} />
+      </div>
+    );
+  }
+
+  // Default (control 'textarea' y la CAÍDA de todo lo que no se sepa pintar): área de texto.
   return (
     <div>
       <label className="form-label">{question.question_text}{question.is_required && ' *'}</label>
@@ -348,18 +393,21 @@ function QuestionField({ question, value, onChange, readOnly }) {
 
 function formatReadOnlyValue(question, value) {
   if (value === null || value === undefined || value === '') return '';
-  const type = (question.response_type_code || question.response_type_id || 'text').toString().toLowerCase();
+  // ③51 — el MISMO resolvedor que elige el control: cómo se muestra una respuesta guardada y
+  // con qué se contestó son la misma pregunta. Dos criterios aquí divergirían (una pregunta
+  // declarada de casillas mostraría su lista sin unir).
+  const control = controlDeLaPregunta(question);
 
-  if (type === 'boolean') {
+  if (control === 'switch') {
     return value ? '✓' : '✗';
   }
 
-  if (type === 'select') {
+  if (control === 'radio_or_select') {
     const opt = (question.options || []).find(o => o.option_value === value);
     return opt ? opt.text : String(value);
   }
 
-  if (type === 'multi_select' || type === 'multi-select') {
+  if (control === 'checkboxes') {
     const sel = Array.isArray(value) ? value : String(value).split(',').filter(Boolean);
     return sel
       .map(v => {

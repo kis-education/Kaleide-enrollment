@@ -5232,7 +5232,7 @@ function manual_diagFetchQuestions() {
  * KMS qb-core (Q05-S1) devuelve:
  *   { consumer_code, context_code, context_id, locale,
  *     sets: [{ set_id, set_code, designation, description, is_default_for_context,
- *              questions: [{ question_id, question_code, response_type_code,
+ *              questions: [{ question_id, question_code, response_type_code, ui_widget,
  *                            designation, description, is_required, sequence,
  *                            answer_options: [{ option_id, option_value, display_order, designation, description }],
  *                            conditions: [{ question_condition_id, condition_ref_table, condition_ref_id }] }] }] }
@@ -5241,12 +5241,13 @@ function manual_diagFetchQuestions() {
  *   { context, sets: [{ ...s, items: [{ ..., question: { ..., question_text, help_text,
  *                                                       placeholder_text, options: [{ ..., text }],
  *                                                       conditions: [...], response_type_id,
- *                                                       audience_category_id, is_required } }] }] }
+ *                                                       ui_widget, audience_category_id, is_required } }] }] }
  *
  * Mapeo aplicado:
  *   - q.designation                   → question.question_text
  *   - q.description                   → question.help_text (placeholder_text vacío — KMS no expone aún)
  *   - q.response_type_code            → question.response_type_id (lowercased; el render hace toLowerCase)
+ *   - q.ui_widget                     → question.ui_widget (③51 — el CONTROL declarado, passthrough)
  *   - q.answer_options[i].designation → option.text
  *   - q.answer_options[i].option_value → option.option_value (passthrough)
  *   - q.conditions                    → question.conditions (passthrough — condition_ref_table/_id)
@@ -5305,6 +5306,13 @@ function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
         // mantenemos el response_type_code crudo (es UPPER_SNAKE como BOOLEAN/SELECT/...).
         response_type_id:   q.response_type_code || 'text',
         response_type_code: q.response_type_code || null,
+        // ③51 (2026-08-16) — CON QUÉ CONTROL se pinta la pregunta, tal y como lo DECLARA la
+        // ficha del tipo de respuesta en el KMS (`qbResponseTypes.ui_widget`, emitido por
+        // `qb_core_enrichQuestion_`). Se pasa VERBATIM: quien decide es el renderer
+        // (`QbSetRenderer/index.jsx`), que cae al código del tipo cuando no viene o no lo
+        // reconoce — así una familia nunca se queda sin poder contestar. Aquí no se traduce
+        // ni se valida contra ninguna lista: sería una segunda copia del vocabulario.
+        ui_widget:          q.ui_widget || null,
         is_required:        !!q.is_required,
         // P116 cerrado (KMS deploy @283 commit kis-app e9a424a): el engine
         // qb_resolveSetForConsumer aplica runtime filtering qbAudienceRules a

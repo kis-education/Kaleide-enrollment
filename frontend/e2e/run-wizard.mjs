@@ -2352,6 +2352,7 @@ async function conducirPreguntas(c, page) {
   }
   const campos = await page.$$('input[type="radio"], input[type="checkbox"], textarea, select.form-select, input[type="text"], input[type="number"], input[type="date"]')
   c.notas.push(`    · el cuestionario del tenant pinta ${campos.length} control(es) de respuesta`)
+
   if (!campos.length) {
     c.noCubierta('paso 5 · preguntas·respuesta-desde-la-pantalla',
       'el tenant no tiene ninguna pregunta configurada para este programa: no hay nada que responder en la pantalla. Es configuración de tenant, no defecto del wizard.')
@@ -2841,6 +2842,24 @@ async function caminoCuestionarioNoSeApaga(page, base) {
   c.afirmar('(a) con el servidor sano el cuestionario PINTA preguntas',
     vista.preguntas >= 1,
     `el paso 5 pintó ${vista.preguntas} preguntas: con catálogo servido, cero preguntas es el apagón`)
+
+  // ── ③51 (2026-08-16) · EL CONTROL SALE DE LO DECLARADO, NO DEL CÓDIGO DEL TIPO ───────
+  // El simulado sirve DOS preguntas del MISMO tipo (`TEXT`): una DECLARA `ui_widget:'input'`
+  // y la otra NO declara nada. Si la pantalla siguiera eligiendo por el código del tipo, las
+  // dos saldrían iguales —dos áreas de texto— y esto sale ROJO. Con la declaración honrada
+  // sale una caja de una línea Y un área de texto, y esa mezcla acredita a la vez las dos
+  // mitades: que lo declarado manda, y que la CAÍDA sigue viva (sin ella, un control que la
+  // pantalla no sepa pintar dejaría a la familia sin poder contestar).
+  const controles = await page.evaluate(() => ({
+    unaLinea: document.querySelectorAll('input[type="text"]').length,
+    areas:    document.querySelectorAll('textarea').length,
+  }))
+  c.afirmar('(a.bis) el control lo elige lo DECLARADO, no el código del tipo',
+    controles.unaLinea >= 1 && controles.areas >= 1,
+    `dos preguntas del MISMO tipo, una con control declarado ('input') y otra sin declarar: ` +
+    `se esperaba al menos una caja de una línea Y un área de texto, y salieron ` +
+    `cajas=${controles.unaLinea} áreas=${controles.areas}. Todo áreas ⇒ la pantalla sigue ` +
+    `eligiendo por el código del tipo y ③51 no tiene efecto; todo cajas ⇒ se perdió la caída.`)
 
   // ── Servidor caído + sesión nueva: es como llega una familia cuyo servidor falla.
   scenario.preguntasMode = 'caido'
