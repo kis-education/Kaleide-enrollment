@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR"). **Medido el 2026-08-15: quedan 57 lecturas directas + 1 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 58, solo 18 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos"). **Medido el 2026-08-16: quedan 55 lecturas directas + 1 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 56, solo 16 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **`submitEnrollmentSession_` está a CERO.** **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -457,10 +457,11 @@ con los **mismos filtros por expediente** y el mismo criterio de fila viva.
   las personas a propósito y devuelve **un solo tutor** —el que mira— por privacidad entre tutores
   (DL-E49 §2). El envío necesita el conjunto completo para exigirle teléfono a cada uno, así que
   reutilizarla obligaría a abrir un rodeo dentro de la única función que decide esa privacidad.
-- **Lo que este tramo NO cierra, y se dice:** las **dos** lecturas de `recFiles`/`recScopes` del
-  mismo manejador **siguen en el asistente**. No es olvido: llevan dentro el literal
-  `enr_admission_school`, y DL-E48 prohíbe escribir a mano el tipo de expediente — moverlas exige
-  resolver el dominio por su cadena declarada, y eso es tramo propio.
+- **Las dos lecturas de `recFiles`/`recScopes` del mismo manejador salieron en el UNDÉCIMO tramo**
+  (§"②17 — las ETIQUETAS de los documentos", 2026-08-16). Aquí se dijo que no podían moverse porque
+  «llevan dentro el literal `enr_admission_school` y DL-E48 prohíbe escribir a mano el tipo de
+  expediente» — **eso era FALSO y aplazó el trabajo cuatro vueltas**: `enr_admission_school` en
+  minúsculas no es un tipo de expediente, es un `scope_type_code`.
 
 **Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición):
 **78 → 72** sueltas; las de lote se quedan en 4. En el manejador del envío: **8 → 2**.
@@ -684,6 +685,87 @@ medición se corrigió a sí misma:** su afirmación de «el escritor no vuelve 
 demasiado tosca — el escritor tiene **otra** lectura legítima de `enrPersons`, la que resuelve el
 iniciador de la sesión — y hubo que acotarla al recorrido real. **Quien toque este manejador, que lo
 mida.**
+
+### ②17 (2026-08-16) — las ETIQUETAS de los documentos: el envío queda a CERO lecturas, y el guarda del reintento llevaba un día roto
+
+**Eran las DOS ÚLTIMAS lecturas directas a AppSheet del camino del envío**, y enganchaban los
+documentos que la familia sube en el paso 6 —cuando todavía no existe ningún expediente de alumno—
+a los expedientes que acaban de nacer:
+
+| Qué leía | Qué pasaba |
+|---|---|
+| `recFiles` por `school_id` + `origin='WIZARD'` + `origin_reference = <el grupo>` | los documentos del paso 6 |
+| `recScopes` por `file_id` + `scope_type_code` | el guarda del reintento — **UNA CONSULTA POR FICHERO** |
+
+Las hacía **este** proceso, que es público y anónimo, con la credencial de AppSheet de la
+aplicación entera. **Ahora las etiquetas las compone el KMS**, en el mismo manejador que ya las
+escribía (`enr.wizardPersistSubmitSideEffects` → `enr_ambitosDelEnvio_`,
+`kis-app kms-server/enr/wizard-gateway.gs`), que ya tiene todo lo que hace falta: el grupo derivado
+del `resume_token` por su propia puerta (KAL-4) y los expedientes que él mismo acaba de
+materializar. **El asistente ya no manda `rec_scopes`.**
+
+⚠️ **Y LA PREMISA QUE BLOQUEÓ ESTE TRAMO CUATRO VUELTAS ERA FALSA.** Decía —aquí y en el JSDoc del
+KMS— que no se podía mover *«porque lleva dentro el literal `enr_admission_school` y DL-E48 prohíbe
+escribir a mano el tipo de expediente»*. **`enr_admission_school` en MINÚSCULAS no es un tipo de
+expediente**: es un `scope_type_code` de `recScopes`. El tipo de expediente es
+`ENR_ADMISSION_SCHOOL`, en mayúsculas y contra `sysEntityTypes`, y **no aparecía en ese trozo**. Es
+el precedente exacto de §"Un COMENTARIO del código no es criterio normativo" (`kis-app/CLAUDE.md`):
+un comentario no cierra una pregunta de diseño, y éste aplazó trabajo cuatro veces.
+
+⚠️ **Y EL GUARDA DEL REINTENTO ESTABA ROTO desde D78 (2026-08-15), un día.** Filtraba
+`scope_type_code = 'enr_admission_school'` — un ámbito **RETIRADO** (`is_deprecated: true` en
+`kis-app kms-server/config/rec-scope-type-templates.html`) —, mientras que el KMS escribe en ese
+campo el **TEMA** del documento (`rec_temaPrincipalDelFichero_`, DL-R16) y dice de quién es con el
+par canónico `(scope_entity_type_code, scope_target_id)`. ⇒ **el guarda no casaba NUNCA**, y un
+reenvío —el caso normal cuando el colegio pide corregir algo— **duplicaba las etiquetas de todos
+los documentos de la familia**. Hoy se pregunta lo que el guarda siempre quiso preguntar, en el
+vocabulario de hoy: **¿este documento ya está enganchado a un expediente de este grupo?** — que es
+exactamente el recorrido de `enr_getDocuments` (`enr/milestones.gs`), el lector canónico.
+
+**Lo que hay que retener al tocar esto:**
+
+- **EL CRITERIO NO SE MOVIÓ.** El filtro de los ficheros va **verbatim**, y `is_primary` lo sigue
+  llevando **la primera ficha de alumno y solo ella** — con el **orden de los ALUMNOS declarados**,
+  el mismo con el que `enr_persistSubmit_` construye `enrollment_ids`. Por eso el compositor recorre
+  `enrPersons` → `applicant` → su expediente, en vez de leer `enrEnrollments` y fiarse del orden en
+  que AppSheet devuelva las filas.
+- **DEGRADA, no lanza, y es deliberado.** Se llega aquí con el envío **YA materializado** y
+  `submitted_at` estampado: lanzar dejaría a la familia con la solicitud a medias y su reintento
+  chocando contra `NOT_EDITABLE` — el atasco que el bloque W1 documenta. El asistente lo tenía en un
+  `try` con «non-fatal» y **se conserva igual**. Lo peor que pasa es que los documentos queden sin
+  enganchar y el reenvío lo arregle.
+- **Menos viajes, no más**: el guarda costaba **una consulta por fichero**; ahora es **una sola**
+  lectura de etiquetas por envío.
+- **Las que lleguen en el cuerpo se IGNORAN, contadas y con ruido** (`rec_scopes_ignored`), igual
+  que las anotaciones de situación de D33 — y **se les sigue exigiendo pertenencia** aunque no se
+  escriban: un intento de colar el documento o el expediente de otra familia por una ruta pública es
+  justo lo que hay que poder ver. Medido: el **ÚNICO** llamante vivo de esa ruta en los dos
+  repositorios es este manejador, que en el mismo cambio deja de mandarlas.
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
+ídem `appsheetRequestBatch_`): **57 → 55** sueltas, **1** en lote sin cambio. El camino vivo:
+**18 → 16**; en este manejador, **2 → 0**.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarLasEtiquetasDelEnvio` — el manejador no
+vuelve a leer `recFiles`/`recScopes` · ya no manda `rec_scopes` · el ámbito retirado no reaparece
+escrito a mano · y **DOS anclas**: sigue llamando a `enr.wizardPersistSubmitSideEffects` y sigue
+mandándole los consentimientos, para que el control no salga verde sobre un manejador vaciado.
+**Rojo demostrado SIETE veces**, cada una nombrando su caso (la del renombrado deja el control
+**CIEGO**). **Y el control se corrigió a sí mismo:** el ancla de los consentimientos era
+`/consents\s*:/` y casaba el `?:` de `Array.isArray(p.consents) ? p.consents : []` ⇒ **salía VERDE
+con el ancla rota**; se acotó a la llamada real.
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
+**21 afirmaciones**, y la de más peso es que **ejecuta el bloque de ORO retirado y el compositor
+nuevo sobre LOS MISMOS datos y compara** — ternas idénticas y en el mismo orden cuando no hay
+etiquetas previas, y la **divergencia acreditada** cuando sí las hay (el oro no saltaba). **No
+ciega, demostrado con siete roturas**: quitar el guarda · `is_primary` en todas · relanzar en vez de
+degradar · volver al criterio viejo del ámbito retirado · invertir el orden · tomar el grupo del
+cuerpo en vez del token · renombrar el compositor → *«MEDICIÓN CIEGA»*. **Y la medición se corrigió
+a sí misma dos veces:** la rotura del orden **no se aplicaba** (era la rotura la que era débil, no
+la afirmación) y la del renombrado **reventaba** en vez de declararse ciega. **Quien toque este
+compositor, que lo mida.**
 
 ### ②17 (2026-08-15) — la RECUPERACIÓN DEL ENLACE: la ficha de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor
 

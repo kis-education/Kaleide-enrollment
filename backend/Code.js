@@ -4545,71 +4545,40 @@ function submitEnrollmentSession_(p) {
   // quedan intactas (no se borra dato) — solo se deja de escribir y se elimina `generateConsentPdf_`.
   // Cross-ref: kis-app operational-pending §P262 + KMS `enr/signing-status.gs` (sysConsentsLog canónico).
 
-  // Materialise scopes for pre-submit uploads: files captured during Step6
-  // have a recFiles row but no recScopes (no enrollment_id existed yet).
-  // Now that the N enrollments exist, fan out one scope per (file, enrollment).
-  // P1-A: los reads (Find) siguen aquí (no son el vector — no mutan); solo la ESCRITURA
-  // de los scopes se PORTA al KMS. Se recogen en `submitRecScopes` y se envían junto al
-  // resto de escrituras cross-cutting en la única llamada al KMS de abajo.
-  // El ámbito con el que se etiqueta un documento a su EXPEDIENTE. Estaba escrito a mano dos
-  // veces en este bloque (el guarda de reintento y la fila); se declara UNA para que no puedan
-  // divergir. Es el mismo que declara el KMS en `REC_WIZARD_SCOPE_TYPE_CODE_`, y cuál de los
-  // dos ámbitos vivos se queda es decisión ABIERTA de Diego (D41) — no se cambia desde aquí.
-  const AMBITO_DEL_EXPEDIENTE = 'enr_admission_school';
-  const submitRecScopes = [];
-  try {
-    if (enrollmentIds.length) {
-      const preSubmitFiles = appsheetRequest_(T.REC_FILES, 'Find', [], {
-        Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "origin" = "WIZARD" && "origin_reference" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-      }) || [];
-      preSubmitFiles.forEach(f => {
-        // Skip any file that already has a scope OF THIS ámbito (idempotency on retry).
-        //
-        // ★ 2026-08-11 (DL-R17) — antes bastaba «tiene ALGÚN scope» para saltárselo, y desde
-        // que el paso 6 pregunta de quién es el documento eso ya no vale: un archivo con su
-        // dueño declarado llega aquí CON filas de `recScopes` (las de la persona) y se habría
-        // saltado la vuelta entera ⇒ el documento se quedaba sin engancharse a ningún
-        // expediente. La intención del guarda no cambia (no duplicar al reintentar); lo que se
-        // acota es a QUÉ mira: al ámbito que esta misma vuelta escribe.
-        //
-        // El `&&` es la forma que este backend escribe SIEMPRE: quien traduce a `AND(…)` es
-        // `wizardTraducirFiltro_`, dentro de `appsheetRequest_`. Escribir aquí `AND(…)` a mano
-        // lo haría pasar dos veces por el traductor.
-        const existing = appsheetRequest_(T.REC_SCOPES, 'Find', [], {
-          Filter: '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "file_id" = "' + appsheetEscape_(f.file_id) + '" && "scope_type_code" = "' + appsheetEscape_(AMBITO_DEL_EXPEDIENTE) + '"'
-        }) || [];
-        if (existing.length) return;
-        enrollmentIds.forEach((eid, i) => {
-          submitRecScopes.push({
-            scope_id:               generateUuid_(),
-            school_id:              SCHOOL_ID,
-            file_id:                f.file_id,
-            scope_type_code:        AMBITO_DEL_EXPEDIENTE,
-            scope_target_id:        eid,
-            is_primary:             i === 0,
-            shortcut_drive_file_id: null,
-            created_at:             now,
-            created_by:             'SYSTEM:WIZARD',
-            updated_at:             now,
-            updated_by:             'SYSTEM:WIZARD',
-          });
-        });
-      });
-    }
-  } catch (scopeErr) {
-    Logger.log('rec scope materialisation error (non-fatal): ' + scopeErr.message);
-  }
+  // ②17 (2026-08-16) — AQUÍ VIVÍAN LAS DOS ÚLTIMAS LECTURAS DIRECTAS A APPSHEET DEL ENVÍO.
+  //
+  // Eran las que enganchaban los documentos del paso 6 a los expedientes que acaban de nacer:
+  // `recFiles` (los ficheros con `origin_reference = <el grupo>`) y `recScopes` (el guarda que
+  // evita duplicar al reintentar). Las hacía ESTE proceso, que es público y anónimo, con la
+  // credencial de AppSheet de la aplicación entera — y la segunda corría UNA VEZ POR FICHERO.
+  //
+  // Ahora las etiquetas las compone el KMS, en `enr.wizardPersistSubmitSideEffects` (helper
+  // `enr_ambitosDelEnvio_`), que ya tiene lo que hace falta: el grupo derivado del
+  // `resume_token` por su propia puerta (KAL-4) y los expedientes que él mismo acaba de
+  // materializar. El asistente ya NO manda `rec_scopes`: si las mandara, habría DOS
+  // composiciones del mismo dato y divergirían.
+  //
+  // ⚠️ LA PREMISA QUE BLOQUEÓ ESTE TRAMO CUATRO VUELTAS ERA FALSA, y conviene dejarlo escrito:
+  // se decía que este trozo no se podía mover porque «lleva dentro el literal
+  // `enr_admission_school` y DL-E48 prohíbe escribir a mano el tipo de expediente».
+  // `enr_admission_school` en MINÚSCULAS **no es un tipo de expediente**: era un
+  // `scope_type_code` de `recScopes` —y desde D78 uno RETIRADO—. El tipo de expediente es
+  // `ENR_ADMISSION_SCHOOL`, en mayúsculas y contra `sysEntityTypes`, y aquí no aparecía.
+  //
+  // Y el guarda del reintento estaba MIRANDO UN VALOR QUE EL KMS YA NO ESCRIBE: filtraba por
+  // ese ámbito retirado mientras el KMS escribe el TEMA del documento (D78/DL-R16), así que no
+  // casaba nunca ⇒ un reenvío duplicaba las etiquetas de todos los documentos. El KMS pregunta
+  // ahora lo que el guarda siempre quiso preguntar: ¿ya está este documento enganchado a un
+  // expediente de este grupo?
 
   // ── P1-A: escrituras cross-cutting del submit → KMS (único escritor) ──────────
-  // sysStateTransitionLog + sysConsentsLog + recScopes se persisten en el KMS, que
-  // re-deriva el grupo del resume_token (KAL-4) y fuerza school_id server-side. El
-  // wizard anónimo ya NO tiene write directo a sys*/rec*. Síncrono (mirror del proxy
-  // de documentos): un fallo se propaga (sin éxito falso) — coherente con la semántica
-  // síncrona del código original.
+  // sysConsentsLog + recScopes se persisten en el KMS, que re-deriva el grupo del
+  // resume_token (KAL-4) y fuerza school_id server-side. El wizard anónimo ya NO tiene
+  // write directo a sys*/rec*. Síncrono (mirror del proxy de documentos): un fallo se
+  // propaga (sin éxito falso) — coherente con la semántica síncrona del código original.
   kmsProxy_('enr.wizardPersistSubmitSideEffects', {
     resume_token:      p.resume_token,
     consents:          consentRows,
-    rec_scopes:        submitRecScopes,
   });
 
   // ── Los dos correos del envio los pide el KMS, NO el wizard (tramo D, Paso 2) ──

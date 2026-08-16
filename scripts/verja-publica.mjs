@@ -939,6 +939,80 @@ function comprobarLasRespuestas(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 (undécimo tramo) — LAS ETIQUETAS DE LOS DOCUMENTOS ya no se componen aquí.
+ *
+ * QUÉ DEFECTO VIGILA, medido contra `origin/main` el 2026-08-16. `submitEnrollmentSession_`
+ * conservaba las DOS últimas lecturas directas a AppSheet del camino del envío: los ficheros
+ * del paso 6 (`recFiles` por `origin_reference`) y el guarda de reintento (`recScopes`, **una
+ * consulta POR FICHERO**). Las hacía este proceso, que es público y anónimo, con la credencial
+ * de la aplicación entera. Y el guarda estaba **roto desde D78**: filtraba
+ * `scope_type_code = 'enr_admission_school'` —un ámbito RETIRADO— mientras el KMS escribe ahí
+ * el TEMA del documento ⇒ no casaba nunca y un reenvío DUPLICABA las etiquetas de todos los
+ * documentos de la familia.
+ *
+ * QUÉ AFIRMA, sobre el código real:
+ *   (a) `submitEnrollmentSession_` **no lee** `recFiles` ni `recScopes` de AppSheet;
+ *   (b) **ya no manda** `rec_scopes` al KMS — si volviera, habría DOS composiciones del mismo
+ *       dato y divergirían (§"Regla — refactors preservan el código probado");
+ *   (c) el ámbito escrito a mano (`enr_admission_school`) no reaparece en el manejador;
+ *   (d) ANCLAS anti-vacío — el manejador sigue existiendo, sigue llamando a
+ *       `enr.wizardPersistSubmitSideEffects` y sigue mandándole los consentimientos. Sin ellas,
+ *       «ya no lee AppSheet» saldría VERDE sobre un manejador vaciado.
+ *
+ * QUÉ **NO** AFIRMA: que el KMS componga las etiquetas correctas, ni que su guarda de
+ * idempotencia acierte, ni que degrade en vez de tumbar el envío. Eso no se lee aquí — se midió
+ * aparte, ejecutando el compositor real del KMS con dobles y comparándolo con el bloque de oro.
+ * Y arrastra el LÍMITE del módulo: detector por líneas, no analizador sintáctico.
+ */
+function comprobarLasEtiquetasDelEnvio(fuenteLimpia) {
+  const fallos = []
+
+  const cuerpo = cuerpoDe(fuenteLimpia, 'submitEnrollmentSession_')
+  if (cuerpo === null) {
+    return ['no se encontró `submitEnrollmentSession_` — control CIEGO en las etiquetas de los documentos (②17)']
+  }
+
+  // (a) las dos lecturas que se fueron.
+  for (const [constante, tabla, queEs] of [
+    ['REC_FILES', 'recFiles', 'los documentos que la familia subió en el paso 6'],
+    ['REC_SCOPES', 'recScopes', 'el guarda del reintento, una consulta POR FICHERO'],
+  ]) {
+    const re = new RegExp('appsheetRequest(Batch)?_\\s*\\(\\s*(T\\.' + constante + "|'" + tabla + "')")
+    if (re.test(cuerpo)) {
+      fallos.push('`submitEnrollmentSession_` vuelve a leer `' + tabla + '` directamente de ' +
+        'AppSheet — eso es lo que ②17 quitó (' + queEs + ')')
+    }
+  }
+
+  // (b) y no se vuelve a componer aquí lo que compone el KMS.
+  if (/rec_scopes\s*:/.test(cuerpo)) {
+    fallos.push('el envío vuelve a mandar `rec_scopes` a `enr.wizardPersistSubmitSideEffects` — ' +
+      'las compone el KMS desde los documentos y expedientes reales del grupo; dos composiciones ' +
+      'del mismo dato divergen')
+  }
+
+  // (c) el ámbito retirado, escrito a mano, no vuelve.
+  if (/enr_admission_school|AMBITO_DEL_EXPEDIENTE/.test(cuerpo)) {
+    fallos.push('reaparece el ámbito `enr_admission_school` escrito a mano en el envío — está ' +
+      'RETIRADO desde D78 y era justo lo que dejaba el guarda del reintento sin casar nunca')
+  }
+
+  // (d) ANCLAS: sin ellas el control mediría un manejador vaciado.
+  if (!/kmsProxy_\s*\(\s*'enr\.wizardPersistSubmitSideEffects'/.test(cuerpo)) {
+    fallos.push('el envío ya no llama a `enr.wizardPersistSubmitSideEffects` — el control estaría ' +
+      'afirmando ausencias sobre un manejador que ya no persiste nada')
+  }
+  // Se ancla en la LLAMADA, no en la palabra suelta: `/consents\s*:/` a secas casaba el `?:`
+  // de `Array.isArray(p.consents) ? p.consents : []` y dejaba el ancla inerte (medido).
+  if (!/kmsProxy_\s*\(\s*'enr\.wizardPersistSubmitSideEffects'\s*,\s*\{[^}]*\bconsents\s*:/.test(cuerpo)) {
+    fallos.push('el envío ya no le manda los consentimientos al KMS — quitar de dónde salen las ' +
+      'etiquetas NO puede llevarse por delante el libro de consentimientos')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -955,5 +1029,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarLaRecuperacionDelEnlace(limpia),
     ...comprobarLaIdentidadDeQuienRecupera(limpia),
     ...comprobarLasRespuestas(limpia),
+    ...comprobarLasEtiquetasDelEnvio(limpia),
   ]
 }
