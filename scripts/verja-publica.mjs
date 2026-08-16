@@ -1224,6 +1224,113 @@ function comprobarElPulsoDeLaAdmision(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 (decimocuarto tramo, 2026-08-16) — EL RACIMO DE FIRMA E HITOS.
+ *
+ * `resolveSigningToken_` resolvía el token de firma con SEIS lecturas directas a AppSheet
+ * desde este proceso público y anónimo (`sysSigningSessionSigners` + `sysSigningSessions`,
+ * y `sysMilestones` + `sysMilestoneTypes` DOS veces en sus dos ayudantes de hitos), siendo
+ * su propio comentario el que se declaraba **«espejo VERBATIM del lector canónico del
+ * KMS»** ⇒ dos lectores del mismo dato, que ya habían DIVERGIDO en cuatro puntos.
+ *
+ * Qué afirma, y por qué cada afirmación:
+ *  (a) las cuatro tablas no vuelven a leerse aquí — es lo que el tramo quitó;
+ *  (b) pasa por el lector ÚNICO, que apunta a la entrada declarada del KMS;
+ *  (c) los dos ayudantes de hitos y su diagnóstico NO reaparecen: eran el segundo lector;
+ *  (d) `signing_url` NO se copia a la respuesta — CLI 81 / S5 / KAL-NEW-1: el KMS SÍ lo
+ *      devuelve, y devolverlo desde aquí reabriría una mitigación cerrada;
+ *  (e) un fallo de TRANSPORTE no se disfraza de «token inválido»;
+ *  (f) DL-E48: el tipo de expediente no vuelve a escribirse a mano;
+ *  (g) ANCLAS — sin ellas, «ya no lee AppSheet» saldría VERDE sobre un gate vaciado.
+ *
+ * Lo que NO afirma: que el KMS resuelva bien el token. Eso vive en `kms-server/sys/signing.gs`
+ * y **ninguna batería lo ejecuta**; se midió aparte, con un arnés efímero.
+ */
+function comprobarElRacimoDeFirma(fuenteLimpia) {
+  const fallos = []
+
+  const resolutor = cuerpoDe(fuenteLimpia, 'resolveSigningToken_')
+  if (resolutor === null) {
+    fallos.push('no se encontró `resolveSigningToken_` — control CIEGO en el racimo de firma (②17)')
+    return fallos
+  }
+
+  // (a) las cuatro tablas migradas no vuelven al asistente.
+  const tablasMigradas = [
+    ['SIGNING_SESSION_SIGNERS', 'sysSigningSessionSigners', 'la fila del firmante, buscada por el token'],
+    ['SIGNING_SESSIONS', 'sysSigningSessions', 'la sesión de firma'],
+    ['MILESTONES', 'sysMilestones', 'los hitos del expediente'],
+    ['MILESTONE_TYPES', 'sysMilestoneTypes', 'el catálogo de tipos de hito, ENTERO y sin filtro'],
+  ]
+  for (const [constante, tabla, queEs] of tablasMigradas) {
+    const re = new RegExp('appsheetRequest(Batch)?_\\s*\\([\\s\\S]{0,400}?(T\\.' + constante + "|'" + tabla + "')")
+    if (re.test(resolutor)) {
+      fallos.push('`resolveSigningToken_` vuelve a leer `' + tabla + '` directamente de AppSheet — ' +
+        'eso es lo que ②17 quitó del camino de FIRMA (' + queEs + ')')
+    }
+  }
+
+  // (b) pasa por el lector ÚNICO, y el lector apunta a la entrada declarada.
+  if (!/_resolucionDelTokenDeFirma_\s*\(/.test(resolutor)) {
+    fallos.push('`resolveSigningToken_` ya no pide la resolución por el lector ÚNICO ' +
+      '(`_resolucionDelTokenDeFirma_`) — o se quitó, o volvió a resolverse por su cuenta, y ' +
+      'dos lectores del mismo dato divergen (ya lo hicieron: cuatro divergencias medidas)')
+  }
+  const lector = cuerpoDe(fuenteLimpia, '_resolucionDelTokenDeFirma_')
+  if (lector === null) {
+    fallos.push('no se encontró `_resolucionDelTokenDeFirma_` — control CIEGO: es el lector ÚNICO (②17)')
+  } else if (!/kmsProxy_\s*\(\s*'enr\.resolveSigningToken'/.test(lector)) {
+    fallos.push('`_resolucionDelTokenDeFirma_` ya no pregunta a `enr.resolveSigningToken` — el ' +
+      'lector único dejó de apuntar a la entrada declarada del KMS')
+  }
+
+  // (c) el SEGUNDO lector no reaparece.
+  for (const muerto of ['isMilestoneCompleted_', 'isDurableSigningMilestoneCompleted_',
+    'manual_testSigningStepsFromMilestones']) {
+    if (cuerpoDe(fuenteLimpia, muerto) !== null) {
+      fallos.push('`' + muerto + '` ha vuelto al asistente — era el SEGUNDO lector de los hitos ' +
+        'de firma, con el tipo de expediente escrito a mano y el ancla sin traducir (DL-E44/DL-S105 §10)')
+    }
+  }
+
+  // (d) `signing_url` NO se devuelve desde la resolución previa a la firma.
+  if (/signing_url/.test(resolutor)) {
+    fallos.push('`resolveSigningToken_` vuelve a nombrar `signing_url` — el KMS SÍ lo devuelve, y ' +
+      'copiarlo aquí REABRE la mitigación CLI 81 / S5 / KAL-NEW-1: la resolución previa a la firma ' +
+      'no puede revelar la URL del proveedor con solo el bearer')
+  }
+
+  // (e) un fallo de TRANSPORTE se nombra, no se disfraza de token inválido.
+  if (!/KMS_UNREACHABLE/.test(resolutor)) {
+    fallos.push('`resolveSigningToken_` ya no distingue «no se pudo preguntar» de «el token no ' +
+      'vale» — decirle a un tutor legítimo que su enlace de firma no sirve porque el KMS está ' +
+      'caído es peor que el fallo (mismo criterio que la puerta)')
+  }
+
+  // (f) DL-E48.
+  if (/ENR_ADMISSION_SCHOOL/.test(resolutor)) {
+    fallos.push('`resolveSigningToken_` vuelve a escribir a mano el tipo de expediente ' +
+      '(`ENR_ADMISSION_SCHOOL`) — DL-E48 lo prohíbe: la clase la lleva escrita la propia sesión de firma')
+  }
+
+  // (g) ANCLAS: sin ellas el control mediría un manejador vaciado.
+  if (!/assertValidSigningToken_\s*\(/.test(resolutor)) {
+    fallos.push('`resolveSigningToken_` ya no valida la FORMA del token (`assertValidSigningToken_`, ' +
+      'P211: UUID v4 o 32-hex sin guiones) — el control estaría afirmando que no lee AppSheet sobre ' +
+      'un manejador sin validación de entrada')
+  }
+  const puerta = cuerpoDe(fuenteLimpia, 'requireSigningToken_')
+  if (puerta === null) {
+    fallos.push('no se encontró `requireSigningToken_` — control CIEGO: es la puerta de los cuatro ' +
+      'proxies de firma y el llamante vivo del resolutor')
+  } else if (!/resolveSigningToken_\s*\(/.test(puerta) || !/UNAUTHORIZED/.test(puerta)) {
+    fallos.push('`requireSigningToken_` dejó de resolver el token o de rechazar con `UNAUTHORIZED` — ' +
+      'KAL-4: el expediente y el firmante salen del token, y un token que no vale no abre nada')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -1243,5 +1350,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarLasEtiquetasDelEnvio(limpia),
     ...comprobarLaPuerta(limpia),
     ...comprobarElPulsoDeLaAdmision(limpia),
+    ...comprobarElRacimoDeFirma(limpia),
   ]
 }

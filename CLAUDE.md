@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos") y **LA PUERTA y sus tres hermanas** (§"②17 — LA PUERTA") y **EL PULSO DE LA ADMISIÓN** (§"②17 — EL PULSO"). **Medido el 2026-08-16: quedan 50 lecturas directas y NINGUNA en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 50, solo 10 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **`submitEnrollmentSession_`, `requireResumeToken_`, `assertGroupEditable_`, `getAdmissionState_` y `buildAdmissionContext_` están a CERO.** **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos") y **LA PUERTA y sus tres hermanas** (§"②17 — LA PUERTA") y **EL PULSO DE LA ADMISIÓN** (§"②17 — EL PULSO") y **EL RACIMO DE FIRMA E HITOS** (§"②17 — EL RACIMO DE FIRMA"). **Medido el 2026-08-16: quedan 44 lecturas directas y NINGUNA en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 44, solo DOS están en el camino vivo** —`sendMagicLink_` y `sendVerificationCode_`, las dos con su motivo escrito para no moverse—; las otras **42** viven en funciones `manual_*` de editor **y en `adminCleanupOrphanSessions`, que NO está en el despachador** ⇒ **no alcanzables desde internet**. Bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto ya no se coge por el número. **`submitEnrollmentSession_`, `requireResumeToken_`, `assertGroupEditable_`, `getAdmissionState_`, `buildAdmissionContext_` y `resolveSigningToken_` están a CERO.** **La entrada sigue ABIERTA: la credencial sigue en el asistente** — acotarla por cliente es `②18`, y hoy es lo único que queda de peso en esta ficha.
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -879,11 +879,9 @@ personas **dos** y del catálogo **cuatro**.
   lo resuelve el KMS por su cadena declarada (`program_id → enrPrograms → enrProgramTypes`) y **sin
   respaldo silencioso**: si el colegio no lo declara, `DOMAIN_NOT_DECLARED` nombrando el eslabón que
   falta. Observable: el pulso da error en lugar de enseñar la situación de un campamento leída de la
-  máquina de admisión escolar. ⚠️ **NO es el último del fichero, y decirlo sería falso**: medidos el
-  2026-08-16 quedan **CUATRO** apariciones ejecutables — `submitEnrollmentSession_:4677`,
-  `isDurableSigningMilestoneCompleted_:7012`, `resolveSigningToken_:7176` y el diagnóstico de editor
-  `manual_testSigningStepsFromMilestones:10806` —, todas en el **racimo de hitos y firma**, que es
-  otro tramo de `②17` y sigue abierto.
+  máquina de admisión escolar. ⚠️ **NO era el último del fichero**: quedaban **CUATRO** ejecutables,
+  y las **tres del racimo de hitos y firma** salieron en el decimocuarto tramo (§"②17 — EL RACIMO DE
+  FIRMA"). **Re-medido el 2026-08-16 queda UNA**: `submitEnrollmentSession_:4676`.
 - **⚠️ FALLA CERRADO, y esto CORRIGE el oro.** `appsheetRequestBatch_` **nunca lanza** (devuelve
   `{ok}` por elemento) ⇒ un fallo de AppSheet dejaba `enrollments = []` y `buildAdmissionContext_`
   retornaba en su primera línea con **`editable: true`** y `state_code` vacío: el servidor afirmando
@@ -925,6 +923,91 @@ fila** vuelve. **Quien toque este manejador, que lo mida.**
 (era su último). No se retira aquí: es el transporte que los controles `escrituras-directas.mjs` y
 `personas-quitadas.mjs` nombran como **permitido**, así que quitarlo obliga a tocar dos controles de
 seguridad en un cambio que no va de eso. Queda anotado.
+
+### ②17 (2026-08-16) — EL RACIMO DE FIRMA: había DOS lectores del mismo dato, y ya habían divergido en CUATRO puntos
+
+**`resolveSigningToken_` resolvía el token de firma con SEIS lecturas directas a AppSheet** desde
+este proceso, que es público y anónimo, con la credencial de la aplicación entera:
+
+| Quién | Qué leía |
+|---|---|
+| `resolveSigningToken_` | la fila del **firmante** buscada por el token (`sysSigningSessionSigners`) y su **sesión de firma** (`sysSigningSessions`) |
+| `isMilestoneCompleted_` | los **hitos** del expediente y el **catálogo de tipos de hito ENTERO, sin filtro** |
+| `isDurableSigningMilestoneCompleted_` | **los mismos dos**, otra vez |
+
+**Y su propio comentario se declaraba «espejo VERBATIM del lector canónico del KMS»** —
+`sys_resolveSigningToken_`. Eran **dos lectores del mismo dato**, que es exactamente el anti-patrón
+que §"Regla — refactors preservan el código probado" prohíbe. **Ahora lo resuelve el KMS** por
+`enr.resolveSigningToken` —ruta que **ya existía y ya estaba declarada `'public'`**— y lo consume
+**UN SOLO ayudante**, `_resolucionDelTokenDeFirma_`.
+
+⚠️ **Y EL BLOQUEO ESCRITO ERA FALSO, dos vueltas.** Decía que *«autentica por el propio token de
+firma ⇒ no hay token de recuperación del que derivar nada, y eso es otra decisión»*. Medido contra
+`origin/master`: la ruta del KMS **ya acepta ese bearer del cuerpo**, ya está declarada pública
+(*«token-gated; signer may be a family/external party»*) y su cabecera dice que la forma que
+devuelve está *«preserved for the wizard»*. **No hacía falta ninguna decisión: hacía falta el
+tramo.** Es el mismo precedente que el ámbito en minúsculas del undécimo — un comentario no cierra
+una pregunta de diseño.
+
+**⭐ Las CUATRO divergencias que cierra, todas a favor de la familia:**
+
+| # | Qué | Qué le pasaba a la familia |
+|---|---|---|
+| 1 | **El ancla de la sesión (DL-S105 §10)** — desde ese cambio la sesión cuelga del **EXPEDIENTE del alumno**, no de la solicitud. El KMS traduce con el lector único `enr_signingGroupIdForSession_`; el asistente usaba `session['entity_id']` **crudo** | al tutor que **ya consintió y ya revisó** se le volvía a pedir todo, **cada vez** |
+| 2 | **El tipo de expediente (DL-E48)** escrito a mano; el KMS usa la clase que la **propia sesión de firma ya lleva escrita** | en un campamento se buscaba el hito bajo una clase que no es la suya |
+| 3 | **`gdpr_blocked`** se devolvía `false` a pelo (*«deferred per roadmap §4.5»*); el KMS lo **calcula** contra el libro de consentimientos | *(hoy **no se nota**: medido, ese campo **no tiene ni un consumidor en el frontal**. Se dice para que nadie lo cuente como arreglo visible)* |
+| 4 | **El plazo y la invalidación por estado** — el KMS aplica el vencimiento de la sesión y el rol `INVALIDATES_SIGNING_TOKENS` del catálogo del colegio; aquí solo se miraban **tres códigos escritos a mano** | un token de una sesión vencida seguía valiendo |
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ `signing_url` SE RECORTA AQUÍ, en el CONSUMIDOR — y no es estilo.** El KMS **sí** lo
+  devuelve, y hace bien: esa ruta la usa también el panel del KMS, donde la URL es legítima. Pero
+  CLI 81 / S5 / KAL-NEW-1 cerró que **la resolución previa a la firma no revele la URL del
+  proveedor con solo el bearer**; copiarla desde aquí **reabriría esa mitigación**. Sigue llegando
+  solo por `initiateSigningSession_` (`session.signerUrls`) — medido: `Step11Sign.jsx` la lee de
+  ahí y **`resolveSigningToken` no tiene ni un llamante en el frontal**.
+- **La VALIDACIÓN DE FORMA se queda aquí, verbatim** (`assertValidSigningToken_`, P211: UUID v4 con
+  guiones **o** 32 hex sin guiones, que es como los emite el KMS). Rechazar la forma antes de gastar
+  un viaje es lo mismo que hacía antes de gastar una lectura — medido: con un token malformado **no
+  se pregunta al KMS**.
+- **⚠️ FALLA CERRADO NOMBRANDO, y esto CORRIGE el oro.** El bloque retirado convertía un fallo de
+  lectura de AppSheet en `{valid:false, reason:'INVALID'}` ⇒ la familia leía *«tu enlace de firma no
+  vale»* cuando la verdad era que la base de datos no contestaba. Hoy **lanza `KMS_UNREACHABLE`**.
+  Los dos caminos son igual de cerrados —ninguno deja pasar a nadie—, pero solo uno **nombra** el
+  problema. Mismo criterio que la puerta (duodécimo tramo), y el código ya es vecino del fichero:
+  `doPost` lo mapea uniforme como cualquier otro.
+- **NO viaja ningún identificador de expediente ni nombre de tabla**: el cuerpo lleva **un solo
+  campo**, el `signing_token`, que es la identidad de este camino (aquí no hay `resume_token` del
+  que derivar nada — quien firma llega por su propio token). El KMS resuelve firmante, sesión y
+  expediente server-side.
+
+**Retirados enteros**, por ser el segundo lector: **`isMilestoneCompleted_`** ·
+**`isDurableSigningMilestoneCompleted_`** · y **`manual_testSigningStepsFromMilestones`**, su único
+llamante que quedaba —y **caducado por dentro**: buscaba los consentimientos y la revisión bajo el
+ancla del firmante, que DL-E44 dejó como respaldo legado—. Con ellos salen del catálogo de tablas
+`MILESTONES` y `MILESTONE_TYPES` (medido: **0 usos**).
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
+ídem `appsheetRequestBatch_`): **50 → 44** sueltas, **0** en lote. Y lo que de verdad importa:
+**el camino vivo baja de 8 a DOS**.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarElRacimoDeFirma` — las cuatro tablas no
+vuelven · pasa por el lector único, que apunta a la ruta declarada · los dos ayudantes y su
+diagnóstico **no reaparecen** · `signing_url` no se copia · un KMS caído no se disfraza de token
+inválido · el literal del dominio no vuelve · y **DOS anclas** (sigue validando la forma del token,
+y `requireSigningToken_` sigue resolviendo y rechazando con `UNAUTHORIZED`). **Rojo demostrado ONCE
+veces**, cada una nombrando su caso; la del renombrado deja el control **CIEGO**.
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**, y **el acto de firmar está declarado fuera de cobertura a propósito**. El lado
+del KMS tampoco lo cubre ningún control, así que se **midió aparte**: **16 afirmaciones** sobre el
+manejador real extraído del fuente y ejecutado con dobles, **demostradas no ciegas** con **siete
+roturas** (devolver `signing_url` · disfrazar el transporte caído · mandar el expediente en la
+petición · volver a clavar `gdpr_blocked` en falso · preguntar antes de validar la forma · y el
+renombrado, que debe salir **«MEDICIÓN CIEGA»**). **Y la medición se corrigió a sí misma:** su
+rotura del renombrado **explotaba** en vez de declararse ciega —era la rotura la que era débil, no
+la afirmación—, y hubo que aplicarla al FUENTE, que es donde alguien renombraría de verdad.
+**Quien toque este manejador, que lo mida.**
 
 ### ②17 (2026-08-15) — la RECUPERACIÓN DEL ENLACE: la ficha de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor
 

@@ -211,14 +211,13 @@ const T = {
   // SIGNING_SESSION_DOCUMENTS borrado CLI 60 (sólo usado por getSigningTokenFromResumeToken_).
   // ADMISSION_DECISION, TENANT_CONFIG, FIN_PAYMENTS, BANK_ACCOUNTS, SUBSCRIPTION_TYPES
   // borrados CLI 60 (sólo usados por los endpoints huérfanos post CLI 59).
-  // MILESTONES / MILESTONE_TYPES RE-AÑADIDOS por P237: resolveSigningToken_ deriva
-  // los flags de steps (BILLING/GDPR/REVIEW) desde sysMilestones reales (estado
-  // COMPLETED), resueltos vía el catálogo sysMilestoneTypes (invariante: la fila de
-  // sysMilestones NO lleva milestone_type_code, solo milestone_type_id).
+  // ②17 (decimocuarto tramo, 2026-08-16): MILESTONES / MILESTONE_TYPES RETIRADOS del
+  // catálogo. Los añadió P237 para que `resolveSigningToken_` derivase aquí los cuatro
+  // indicadores de paso (facturación / consentimientos / revisión / firmado); hoy los
+  // resuelve el KMS y **ningún sitio de este fichero los nombra ya** (medido: 0 usos).
+  // Las dos de firma SÍ se quedan: las usa el diagnóstico de editor del gate de firma.
   SIGNING_SESSION_SIGNERS:   'sysSigningSessionSigners',
   SIGNING_SESSIONS:          'sysSigningSessions',
-  MILESTONES:                'sysMilestones',
-  MILESTONE_TYPES:           'sysMilestoneTypes',
   // Lookup / reference tables
   LOOKUP_RELATION_TYPES:  'relationTypes',
 };
@@ -6967,140 +6966,110 @@ function appsheetRequestBatch_(specs) {
 // ─── Signing token resolution (Ola 4 — P37) ──────────────────────────────────
 
 /**
- * P237 — Devuelve true si existe un milestone COMPLETED del type/anchor dados.
- * Fuente canónica de los flags de steps del wizard de firma.
+ * ②17 (decimocuarto tramo, 2026-08-16) — LECTOR ÚNICO de la resolución del token de firma.
  *
- * Resuelve `milestone_type_code` vía el catálogo `sysMilestoneTypes` (invariante
- * kis-app: la fila de `sysMilestones` NO lleva `milestone_type_code`, solo
- * `milestone_type_id` FK). `entity_type_code` y `entity_id` SÍ viven en la fila
- * (anchor escrito directo por el KMS).
+ * Le pide al KMS `enr.resolveSigningToken` —ruta que YA existía y YA está declarada
+ * `'public'` (`kis-app kms-server/_api.gs:75` + `:1265`, *«token-gated; signer may be a
+ * family/external party»*)— lo que este fichero resolvía por su cuenta con SEIS lecturas
+ * directas a AppSheet desde un proceso público y anónimo:
+ *   · `sysSigningSessionSigners` + `sysSigningSessions` (`resolveSigningToken_`), y
+ *   · `sysMilestones` + `sysMilestoneTypes`, DOS VECES, en los ayudantes de hitos
+ *     `isMilestoneCompleted_` / `isDurableSigningMilestoneCompleted_`, hoy RETIRADOS.
  *
- * KAL-5: assertValidUuid_(entityId) + appsheetEscape_ en el Filter. entityTypeCode
- * y milestoneTypeCode son constantes server-side (no user input) → no requieren
- * escape. Defensa P72/KAL-11: ante read vacío/error devuelve false (no lanza),
- * loguea redactado.
+ * El comentario del bloque retirado se declaraba a sí mismo **«espejo VERBATIM del lector
+ * canónico del KMS»** ⇒ eran DOS lectores del mismo dato, que es exactamente el anti-patrón
+ * que §"Regla — refactors preservan el código probado" prohíbe. **PROHIBIDO escribir un
+ * segundo**: la resolución de la firma se pide aquí y solo aquí.
  *
- * @param {string} entityTypeCode   'ENR_ADMISSION_SCHOOL' | 'SYS_SIGNING_SESSION_SIGNER'
- * @param {string} entityId         enrollment_group_id (BILLING) | signer_id (GDPR/REVIEW)
- * @param {string} milestoneTypeCode 'BILLING_STEP_COMPLETED' | 'GDPR_CONSENTS_SUBMITTED' | 'REVIEW_CONFIRMED'
- * @returns {boolean}
- */
-/**
- * DL-E44 (2026-06-12) — hito DURABLE de grupo de progreso de firma, matcheado al
- * guardian via evidence_metadata_json.guardian_person_id (la fila milestone es
- * per-guardian, tipo is_repeatable). Una fila legacy sin guardian en evidencia
- * cuenta para cualquier firmante del grupo (degradacion conservadora: no re-pedir
- * un acto ya hecho). Mismo invariante de catalogo que isMilestoneCompleted_.
+ * ⛔ **NO se manda ningún identificador de expediente ni el nombre de ninguna tabla.** El
+ * bearer que viaja es el `signing_token`, que es la identidad de este camino (no hay
+ * `resume_token` del que derivar nada: quien firma llega por su propio token). El KMS
+ * resuelve firmante, sesión y expediente server-side desde la fila del token.
+ *
+ * ⚠️ **Devuelve TRES cosas, y hay que respetarlo** (mismo criterio que `_expedienteDelToken_`
+ * y `_ficheroDelExpediente_`, que distinguen sus fallos):
+ *   · `{ok:true,  resolucion:<obj>}`  → la respuesta del KMS, tal cual (válida o no válida:
+ *     un `{valid:false, reason:'EXPIRED'}` es una RESPUESTA, no una avería).
+ *   · `{ok:false, motivo:<msg>}`      → **no se pudo preguntar** (transporte: el KMS no
+ *     responde, no está configurado, o devuelve algo ilegible).
+ *
+ * **Y esto CORRIGE el oro, a propósito.** El bloque retirado convertía un fallo de lectura
+ * de AppSheet en `{valid:false, reason:'INVALID'}` ⇒ la familia leía *«tu enlace de firma no
+ * vale»* cuando la verdad era que la base de datos no contestaba. Los dos caminos son
+ * igual de CERRADOS (ninguno deja pasar a nadie), pero solo uno **nombra** el problema —
+ * §"Falla hacia cerrado y NOMBRANDO". Mismo precedente que `KMS_UNREACHABLE` en la puerta.
+ *
+ * @param {string} token  el `signing_token` YA validado de forma por `assertValidSigningToken_`
+ * @returns {{ok:boolean, resolucion:(Object|null), motivo:(string|null)}}
  * @private
  */
-function isDurableSigningMilestoneCompleted_(groupId, guardianPersonId, milestoneTypeCode) {
+function _resolucionDelTokenDeFirma_(token) {
   try {
-    assertValidUuid_(groupId, 'enrollment_group_id');
+    var r = kmsProxy_('enr.resolveSigningToken', { signing_token: String(token).trim() }) || {};
+    return { ok: true, resolucion: r, motivo: null };
   } catch (e) {
-    return false;
-  }
-  try {
-    var milestones = appsheetRequest_(T.MILESTONES, 'Find', [],
-      { Filter: '"entity_id" = "' + appsheetEscape_(groupId) + '"' }) || [];
-    if (!milestones.length) return false;
-    var typeRows = appsheetRequest_(T.MILESTONE_TYPES, 'Find', [], {}) || [];
-    var codeById = {};
-    typeRows.forEach(function(t) { codeById[t.milestone_type_id] = t.milestone_type_code; });
-    var gpid = String(guardianPersonId || '');
-    for (var i = 0; i < milestones.length; i++) {
-      var m = milestones[i];
-      if (m.entity_type_code !== 'ENR_ADMISSION_SCHOOL') continue;
-      if (m.deleted_at) continue;
-      if (m.status !== 'COMPLETED') continue;
-      var code = m.milestone_type_code || codeById[m.milestone_type_id] || null;
-      if (code !== milestoneTypeCode) continue;
-      var ev = {};
-      try { ev = JSON.parse(m.evidence_metadata_json || '{}'); } catch (eEv) { ev = {}; }
-      var evPid = String(ev.guardian_person_id || '');
-      if (!evPid || (gpid && evPid === gpid)) return true;
-    }
-    return false;
-  } catch (e2) {
-    Logger.log(redact_('[isDurableSigningMilestoneCompleted_] read failed para ' + milestoneTypeCode + ': ' + e2.message));
-    return false;
-  }
-}
-
-function isMilestoneCompleted_(entityTypeCode, entityId, milestoneTypeCode) {
-  try {
-    assertValidUuid_(entityId, 'entityId');
-  } catch (e) {
-    Logger.log(redact_('[isMilestoneCompleted_] entityId inválido para ' + milestoneTypeCode + ': ' + e.message));
-    return false;
-  }
-
-  try {
-    var milestones = appsheetRequest_(T.MILESTONES, 'Find', [],
-      { Filter: '"entity_id" = "' + appsheetEscape_(entityId) + '"' }) || [];
-    if (!milestones.length) return false;
-
-    // Catálogo: milestone_type_id → milestone_type_code (invariante: la fila NO lo lleva).
-    var typeRows = appsheetRequest_(T.MILESTONE_TYPES, 'Find', [], {}) || [];
-    var codeByTypeId = {};
-    typeRows.forEach(function(t) {
-      if (t && t['milestone_type_id']) codeByTypeId[t['milestone_type_id']] = t['milestone_type_code'];
-    });
-
-    return milestones.some(function(m) {
-      if (!m || m['deleted_at']) return false;
-      if (m['status'] !== 'COMPLETED') return false;
-      if (m['entity_type_code'] !== entityTypeCode) return false;
-      return codeByTypeId[m['milestone_type_id']] === milestoneTypeCode;
-    });
-  } catch (e) {
-    // P72 / tabla no sembrada / columna ausente → no bloquear la resolución del token.
-    Logger.log(redact_('[isMilestoneCompleted_] read defensivo (' + milestoneTypeCode +
-      ' anchor=' + entityTypeCode + ') devuelve false: ' + e.message));
-    return false;
+    var msg = (e && e.message) || String(e);
+    Logger.log(redact_('[_resolucionDelTokenDeFirma_] no se pudo preguntar al KMS — ' + msg));
+    return { ok: false, resolucion: null, motivo: msg };
   }
 }
 
 /**
- * Validates a guardian's signing_token against sysSigningSessionSigners and
- * resolves the associated signing session state.
+ * Valida el `signing_token` de un tutor contra `sysSigningSessionSigners` y resuelve el
+ * estado de su sesión de firma. Idempotente — solo lectura.
  *
- * Queries AppSheet directly (same credentials as the rest of the wizard —
- * no KMS internal API call needed). Idempotent — read-only.
+ * ②17 (decimocuarto tramo, 2026-08-16): **ya NO lee AppSheet.** Lo resuelve el KMS por el
+ * lector ÚNICO `_resolucionDelTokenDeFirma_` (ver su cabecera). Lo que se queda AQUÍ —y
+ * hay que conservarlo— es la **validación de forma** del token (P211: acepta UUID v4 con
+ * guiones Y `dashless` de 32 hex, porque el KMS emite los suyos así) y el **recorte de
+ * `signing_url`**, que se explica abajo.
  *
- * ⚠️ ②17 — POR QUÉ ESTE CAMINO SIGUE LEYENDO AppSheet, y no es un olvido.
- * Las tres resoluciones de firma de `buildAdmissionContext_` pasaron a pedirle las filas
- * al KMS (`enr.wizardDatosDeFirma`), que las acota al expediente del `resume_token`
- * (KAL-4). **Ésta no puede**: autentica POR EL PROPIO `signing_token` y no conoce ningún
- * expediente hasta DESPUÉS de encontrar la fila del firmante, así que no hay token de
- * recuperación del que derivar nada. Moverla exigiría una entrada pública del KMS que
- * acepte un bearer del cuerpo de la petición — otra decisión, y toca el camino de
- * compatibilidad de la firma. **Consecuencia:** esta función y las dos de hitos que
- * cuelga (`isMilestoneCompleted_`, `isDurableSigningMilestoneCompleted_` — sus ÚNICOS
- * llamantes vivos) siguen siendo las 6 lecturas directas de firma/hitos que quedan.
+ * ⛔ **`signing_url` SE RECORTA AQUÍ, en el CONSUMIDOR — y no es un detalle de estilo.**
+ * El KMS SÍ lo devuelve, y hace bien: esa misma ruta la usa el panel del KMS, donde la URL
+ * del proveedor es legítima. Pero CLI 81 / S5 / KAL-NEW-1 cerró que **la resolución
+ * PRE-AUTENTICACIÓN no revele la URL materializada del proveedor con solo el bearer**;
+ * devolverla desde aquí REABRIRÍA esa mitigación. La URL sigue llegando SOLO por
+ * `initiateSigningSession_` (`session.signerUrls`), una vez el tutor ya está dentro del
+ * paso S-SIGN y el token ya salió de la barra de direcciones (S4). `SigningSteps.jsx` lee
+ * `signerUrls` de ahí, nunca de esta función — verificado CLI 81.
+ *
+ * ⭐ **Y esto arregla CUATRO divergencias medidas contra `origin/master` el 2026-08-16**,
+ * todas a favor de la familia:
+ *   1. **El ancla de la sesión (DL-S105 §10).** Desde ese cambio la sesión cuelga del
+ *      EXPEDIENTE del alumno, no de la solicitud. El KMS traduce con el lector único
+ *      `enr_signingGroupIdForSession_` antes de buscar los hitos durables; aquí se usaba
+ *      `session['entity_id']` **crudo** ⇒ al tutor que YA consintió y YA revisó **se le
+ *      volvía a pedir todo, cada vez**.
+ *   2. **El tipo de expediente (DL-E48).** Estaba escrito a mano (`ENR_ADMISSION_SCHOOL`);
+ *      el KMS usa la clase que la propia sesión de firma ya lleva escrita ⇒ en un
+ *      campamento se buscaba el hito bajo una clase que no es la suya.
+ *   3. **`gdpr_blocked`** se devolvía `false` a pelo («deferred per roadmap §4.5»); el KMS
+ *      lo CALCULA contra `sysConsentsLog`. Cambia el comportamiento, a mejor.
+ *   4. **El plazo y la invalidación por estado**: el KMS aplica el vencimiento de la sesión
+ *      (`expires_at`) y el rol `INVALIDATES_SIGNING_TOKENS` del catálogo del colegio, que
+ *      aquí no existían — solo se miraban tres códigos escritos a mano.
  *
  * Per roadmap §4.2 (wizard-admissions-roadmap.md) + DL-E24 §6.
- *
- * CLI 81 (S5 / KAL-NEW-1): the return shape NO LONGER includes signing_url —
- * the pre-auth resolve must not disclose the provider signing URL with only the
- * bearer token. signing_url[] is materialised by initiateSigningSession_.
  *
  * @param {{ signing_token: string }} p
  * @returns {{ valid: true, signer_id, session_id, enrollment_group_id,
  *             guardian_person_id, signer_role, signer_status, steps }
  *        | { valid: false, reason: 'INVALID'|'EXPIRED'|'REVOKED', state?: string }}
+ * @throws code='KMS_UNREACHABLE' si no se pudo PREGUNTAR (transporte) — nunca se disfraza
+ *         de «token inválido».
  */
 function resolveSigningToken_(p) {
   if (!p || !p.signing_token) throw new Error('signing_token required');
 
   const token = String(p.signing_token).trim();
 
-  // Audit: log attempt (partial token only — no PII)
+  // Auditoría: solo el prefijo (KAL-11) — nunca el token entero.
   Logger.log('[resolveSigningToken_] attempt token=' + token.substring(0, 8) + '...');
 
   // P211: el KMS emite signing_tokens dashless (32-hex); el layout estricto UUID-v4
   // (KAL-5) los rechazaba todos. assertValidSigningToken_ acepta v4-con-guiones Y
-  // dashless 32-hex (sigue hex-only). El appsheetEscape_ en la concatenación del
-  // Filter (capa 2 KAL-5) permanece intacto como frontera de seguridad.
+  // dashless 32-hex (sigue hex-only). Se conserva AQUÍ: rechazar la forma antes de
+  // gastar un viaje al KMS es lo mismo que hacía antes de gastar una lectura.
   try {
     assertValidSigningToken_(token, 'signing_token');
   } catch (_) {
@@ -7108,102 +7077,44 @@ function resolveSigningToken_(p) {
     return { valid: false, reason: 'INVALID' };
   }
 
-  // 1. Lookup signer by signing_token via AppSheet Filter
-  let signerRows;
-  try {
-    signerRows = appsheetRequest_(T.SIGNING_SESSION_SIGNERS, 'Find', [],
-      { Filter: '"signing_token" = "' + appsheetEscape_(token) + '"' });
-  } catch (findErr) {
-    Logger.log('[resolveSigningToken_] sysSigningSessionSigners lookup failed: ' + findErr.message);
-    return { valid: false, reason: 'INVALID' };
+  const r = _resolucionDelTokenDeFirma_(token);
+  if (!r.ok) {
+    // No se pudo PREGUNTAR. Decirle a un tutor legítimo que su enlace de firma no vale
+    // porque el KMS está caído es peor que el fallo: se nombra.
+    const errK = new Error('No se pudo resolver el token de firma: ' + (r.motivo || 'KMS no disponible'));
+    errK.code = 'KMS_UNREACHABLE';
+    throw errK;
   }
 
-  const signer = signerRows && signerRows.find(r => !r['deleted_at']);
-  if (!signer) {
-    Logger.log('[resolveSigningToken_] TOKEN_NOT_FOUND token=' + token.substring(0, 8) + '...');
-    return { valid: false, reason: 'INVALID' };
+  const res = r.resolucion || {};
+  if (!res.valid) {
+    const reason = res.reason || 'INVALID';
+    Logger.log('[resolveSigningToken_] invalid token: ' + reason);
+    const fuera = { valid: false, reason: reason };
+    if (res.state) fuera.state = res.state;
+    return fuera;
   }
 
-  const signerId  = signer['signer_id'];
-  const sessionId = signer['session_id'];
+  Logger.log(redact_('[resolveSigningToken_] valid=true signer=' + (res.signer_id || '') +
+    ' group=' + (res.enrollment_group_id || '')));
 
-  // 2. Load signing session (sessionId is DB-derived; assert UUID + escape)
-  assertValidUuid_(sessionId, 'session_id');
-  let sessionRows;
-  try {
-    sessionRows = appsheetRequest_(T.SIGNING_SESSIONS, 'Find', [],
-      { Filter: '"session_id" = "' + appsheetEscape_(sessionId) + '"' });
-  } catch (sessErr) {
-    Logger.log('[resolveSigningToken_] sysSigningSessions lookup failed: ' + sessErr.message);
-    return { valid: false, reason: 'INVALID' };
-  }
-
-  const session = sessionRows && sessionRows.find(s => !s['deleted_at']);
-  if (!session) {
-    Logger.log(redact_('[resolveSigningToken_] SESSION_NOT_FOUND session=' + sessionId));
-    return { valid: false, reason: 'INVALID' };
-  }
-
-  // 3. Check terminal states
-  const stateCode = session['current_state_code'] || '';
-  if (stateCode === 'COMPLETED') {
-    Logger.log(redact_('[resolveSigningToken_] SESSION_COMPLETED signer=' + signerId));
-    return { valid: false, reason: 'REVOKED', state: stateCode };
-  }
-  if (stateCode === 'CANCELLED' || stateCode === 'EXPIRED') {
-    Logger.log('[resolveSigningToken_] SESSION_TERMINAL state=' + stateCode);
-    return { valid: false, reason: 'EXPIRED', state: stateCode };
-  }
-
-  // 4. entity_id = enrollment_group_id (DL-S46 polymorphic anchor)
-  const enrollmentGroupId = session['entity_id'];
-
-  // 5. Step completion states — P237 CERRADO: fuente canónica = milestones reales
-  // en sysMilestones (estado COMPLETED), resueltos vía catálogo sysMilestoneTypes
-  // (invariante kis-app: la fila NO lleva milestone_type_code). Anchors EXACTOS
-  // según cómo los completa el KMS:
-  //   BILLING_STEP_COMPLETED  → ENR_ADMISSION_SCHOOL    / enrollment_group_id (per-grupo)
-  //   GDPR_CONSENTS_SUBMITTED → SYS_SIGNING_SESSION_SIGNER / signer_id        (per-firmante)
-  //   REVIEW_CONFIRMED        → SYS_SIGNING_SESSION_SIGNER / signer_id        (per-firmante)
-  // Ya NO se leen las cols DEROGADAS gdpr_step_completed_at / review_step_completed_at
-  // (tombstone DL-E27/E28) ni el hardcode billing_confirmed=false (enrGroupBilling
-  // CANCELADO DL-E28 §4/§12 — el billing canónico es finBillingParties + el milestone).
-  // DL-E44 (2026-06-12): GDPR/REVIEW son ahora hitos DURABLES del GRUPO
-  // (ENR_ADMISSION_SCHOOL / enrollment_group_id) con discriminador per-guardian en
-  // evidence_metadata_json.guardian_person_id — sobreviven a la recreacion de la
-  // sesion/firmante (antes: per-signer, entidad efimera → progreso orfano). Espejo
-  // VERBATIM del lector canonico del KMS (sys/signing.gs sys_resolveSigningToken_).
-  const billingConfirmed = isMilestoneCompleted_('ENR_ADMISSION_SCHOOL', enrollmentGroupId, 'BILLING_STEP_COMPLETED');
-  const gdprCompleted    = isDurableSigningMilestoneCompleted_(enrollmentGroupId, signer['signer_person_id'], 'GDPR_CONSENTS_SUBMITTED')
-                        || isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', signerId, 'GDPR_CONSENTS_SUBMITTED'); // fallback legacy pre-migracion
-  const reviewCompleted  = isDurableSigningMilestoneCompleted_(enrollmentGroupId, signer['signer_person_id'], 'REVIEW_CONFIRMED')
-                        || isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', signerId, 'REVIEW_CONFIRMED');       // fallback legacy pre-migracion
-  const signed           = !!(signer['signed_at']);  // válido: campo real de la fila del signer
-
-  Logger.log(redact_('[resolveSigningToken_] valid=true signer=' + signerId + ' group=' + enrollmentGroupId));
-
+  const steps = res.steps || {};
   return {
     valid:               true,
-    signer_id:           signerId,
-    session_id:          sessionId,
-    enrollment_group_id: enrollmentGroupId,
-    guardian_person_id:  signer['signer_person_id'] || null,
-    signer_role:         signer['signer_role']       || null,
-    signer_status:       stateCode,
+    signer_id:           res.signer_id           || null,
+    session_id:          res.session_id          || null,
+    enrollment_group_id: res.enrollment_group_id || null,
+    guardian_person_id:  res.guardian_person_id  || null,
+    signer_role:         res.signer_role         || null,
+    signer_status:       res.signer_status       || null,
     steps: {
-      billing_confirmed: billingConfirmed,
-      gdpr_completed:    gdprCompleted,
-      gdpr_blocked:      false,  // sysConsentsLog check deferred per roadmap §4.5
-      review_completed:  reviewCompleted,
-      signed:            signed,
+      billing_confirmed: !!steps.billing_confirmed,
+      gdpr_completed:    !!steps.gdpr_completed,
+      gdpr_blocked:      !!steps.gdpr_blocked,
+      review_completed:  !!steps.review_completed,
+      signed:            !!steps.signed,
     },
-    // signing_url removed (CLI 81 / S5 / KAL-NEW-1 mitigation Stage 1): the
-    // pre-auth resolve must NOT disclose the materialised provider signing URL
-    // with only the bearer token. The signing_url[] is returned exclusively by
-    // initiateSigningSession_ (session.signerUrls) once the guardian is inside
-    // the S-SIGN step and the token has already been stripped from the URL (S4).
-    // SigningSteps.jsx reads signerUrls from initiateSigningSession, never from
-    // resolveSigningToken — verified CLI 81.
+    // `signing_url` NO se copia — ver el ⛔ de la cabecera (CLI 81 / S5 / KAL-NEW-1).
   };
 }
 
@@ -10788,33 +10699,14 @@ function manual_diagWizardSigningGate() {
   return admission;
 }
 
-/**
- * P237 — Verifica los 4 flags de steps que resolveSigningToken_ deriva desde
- * sysMilestones reales. Rellena GROUP_ID + SIGNER_ID (reales) arriba e imprime en
- * Logs cada flag + el anchor usado. KAL-11: ids redactados con redact_().
- */
-function manual_testSigningStepsFromMilestones() {
-  var GROUP_ID  = 'REPLACE-WITH-REAL-GROUP-ID';   // enrollment_group_id (anchor BILLING)
-  var SIGNER_ID = 'REPLACE-WITH-REAL-SIGNER-ID';  // signer_id (anchor GDPR/REVIEW)
-
-  Logger.log('=== manual_testSigningStepsFromMilestones ===');
-  if (GROUP_ID.indexOf('REPLACE-') === 0 || SIGNER_ID.indexOf('REPLACE-') === 0) {
-    Logger.log('  ✗ Rellena GROUP_ID y SIGNER_ID reales antes de ejecutar.');
-    return;
-  }
-
-  var billing = isMilestoneCompleted_('ENR_ADMISSION_SCHOOL', GROUP_ID, 'BILLING_STEP_COMPLETED');
-  var gdpr    = isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', SIGNER_ID, 'GDPR_CONSENTS_SUBMITTED');
-  var review  = isMilestoneCompleted_('SYS_SIGNING_SESSION_SIGNER', SIGNER_ID, 'REVIEW_CONFIRMED');
-
-  Logger.log(redact_('  group=' + GROUP_ID + ' signer=' + SIGNER_ID));
-  Logger.log('  billing_confirmed (BILLING_STEP_COMPLETED @ ENR_ADMISSION_SCHOOL/grupo): ' + billing);
-  Logger.log('  gdpr_completed    (GDPR_CONSENTS_SUBMITTED @ SYS_SIGNING_SESSION_SIGNER/signer): ' + gdpr);
-  Logger.log('  review_completed  (REVIEW_CONFIRMED @ SYS_SIGNING_SESSION_SIGNER/signer): ' + review);
-  Logger.log('  (signed se deriva de signer.signed_at en resolveSigningToken_, no de milestone)');
-  Logger.log('=== fin manual_testSigningStepsFromMilestones ===');
-  return { billing_confirmed: billing, gdpr_completed: gdpr, review_completed: review };
-}
+// ②17 (decimocuarto tramo, 2026-08-16) — AQUÍ vivía `manual_testSigningStepsFromMilestones`.
+// Se RETIRA con los dos ayudantes de hitos que ejercitaba (`isMilestoneCompleted_` /
+// `isDurableSigningMilestoneCompleted_`): era su ÚNICO llamante que quedaba, y medía un
+// camino que ya no existe. Además había caducado por dentro — buscaba GDPR/REVIEW bajo
+// `SYS_SIGNING_SESSION_SIGNER`, que DL-E44 dejó como respaldo legado: los hitos vivos son
+// DURABLES del grupo, con el tutor en la evidencia. Conservarlo dejaba un SEGUNDO lector
+// del mismo dato, divergente y con el tipo de expediente escrito a mano (DL-E48).
+// Hoy los cuatro indicadores los resuelve el KMS; para verlos, `resolveSigningToken_`.
 
 /**
  * RESP-FIX — Diagnóstico: cuenta cuántas filas qbResponses hay bajo cada clase de
