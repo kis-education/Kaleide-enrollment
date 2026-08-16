@@ -161,6 +161,21 @@ const LOOKUPS = {
     { id: 'me_asma',    label: 'Asma' },
     { id: 'me_alergia', label: 'Alergia estacional' },
   ],
+  // ── 18.bis.35 · TIPOS DE DOCUMENTO QUE LA FAMILIA PUEDE APORTAR (DL-R16) ──────────
+  // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation}`, tal cual la arma
+  // `rec_resolveInterestedPartyType_` (`kis-app kms-server/rec/catalogue.gs`) y la sirve
+  // `enr_wizardFetchLookups` bajo `recTypesInterestedParty`. Un simulado que sirve otro
+  // contrato no puede cazar nada.
+  //
+  // DOS a propósito, y no es un adorno: con UNO el servidor asigna el tipo él solo y la
+  // pantalla NO pregunta (DL-R16, «un desplegable de una opción no es elección»), así que
+  // un banco con un solo tipo dejaría el desplegable sin pintar y la comprobación pasando
+  // en vacío — que es peor que no tenerla. Los casos de 0 y de 1 NO están cubiertos por la
+  // batería y se declaran como tales en `CLAUDE.md` §18.bis.35.
+  recTypesInterestedParty: [
+    { code: 'APPLICATION_DOCUMENTATION', designation: 'Documentación de la solicitud' },
+    { code: 'MEDICAL_RECORD',            designation: 'Informe médico' },
+  ],
 };
 
 /**

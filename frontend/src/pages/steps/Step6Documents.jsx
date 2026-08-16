@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
-import { gasCall, identidadDelEnlace } from '../../api';
+import { gasCall, fetchLookups, identidadDelEnlace } from '../../api';
 import { openDocument } from '../../utils/documentProxy';
 import LockedBanner from '../../components/LockedBanner';
 import StepNav from '../../components/StepNav';
@@ -20,9 +20,15 @@ import { confirmarYQuitar } from '../../lib/quitar';
 // ★ CORRECCIÓN 2026-08-04: esta nota decía «con un rec_type_code genérico ('OTHER')»
 //   y ESO ERA EL DEFECTO, no el diseño. `'OTHER'` no existe en el catálogo del tenant:
 //   el servidor rechazaba TODA subida de familia con [INVALID_REC_TYPE] mientras la
-//   pantalla dejaba adjuntar y avanzar. El tipo lo pone ahora el catálogo, resuelto por
-//   el KMS (DL-R16); el wizard no manda ninguno. Ver el bloque «EL TIPO DE DOCUMENTO LO
-//   PONE EL CATÁLOGO» en `backend/Code.js`.
+//   pantalla dejaba adjuntar y avanzar. El tipo lo pone el CATÁLOGO del centro, resuelto
+//   por el KMS (DL-R16). Ver el bloque «EL TIPO DE DOCUMENTO LO PONE EL CATÁLOGO» en
+//   `backend/Code.js`.
+// ★ 18.bis.35 (2026-08-16): DESCRIBIR NO ES CLASIFICAR — la casilla de texto libre no le
+//   asigna al papel su nivel de confidencialidad ni sus etiquetas, que es lo único que
+//   decide quién puede verlo (DL-R07). Por eso este adjuntador pregunta ADEMÁS qué es cada
+//   archivo, con las opciones que manda el propio KMS. Sigue sin haber tipos tasados ni
+//   códigos escritos aquí: se ofrece lo que el colegio haya marcado como «lo aporta la
+//   familia», y solo a partir del SEGUNDO (con uno, lo asigna el servidor).
 //
 // WIZARD-DOCS2 (2026-06-13): patrón "añadir ítem" como en Step2Persons (tutores/
 // alumnos). Estado inicial = CERO paneles: solo el botón "Añadir archivo". Cada
@@ -60,7 +66,7 @@ const newRowId = () => `doc_row_${++_rowSeq}_${Date.now()}`;
  * Una fila del adjuntador genérico: descripción (texto libre) + archivo.
  * Sube vía gasCall('uploadDocument', { description, … }) al seleccionar el archivo.
  */
-function GenericAttachment({ row, personas, enrollmentGroupId, resumeToken, identidad, onUploaded, onDescriptionChange, onDuenoChange, onRemove, onStepUpVerified, onActivity }) {
+function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId, resumeToken, identidad, onUploaded, onDescriptionChange, onDuenoChange, onTipoChange, onRemove, onStepUpVerified, onActivity }) {
   const { t } = useTranslation();
   const [status, setStatus] = useState(row.file_id ? 'success' : '');
   const [fileId, setFileId] = useState(row.file_id || '');
@@ -69,6 +75,14 @@ function GenericAttachment({ row, personas, enrollmentGroupId, resumeToken, iden
   const [stepUpRetry, setStepUpRetry] = useState(null); // null | () => void
 
   const isStepUpError = (e) => e?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(e?.message || '');
+
+  // 18.bis.35 — SOLO SE PREGUNTA A PARTIR DEL SEGUNDO TIPO, y no es una decisión de estilo:
+  // el catálogo del centro es quien manda (DL-R16). Con NINGUNO marcado «lo aporta la familia»
+  // no hay nada que ofrecer; con UNO, el servidor lo asigna él («un desplegable de una opción
+  // no es elección», DL-R16 literal) y preguntarlo sería teatro. Con dos o más, elige la
+  // familia — y entonces su respuesta es OBLIGATORIA: sin ella el KMS rechaza la subida.
+  const tipos    = Array.isArray(tiposDeDocumento) ? tiposDeDocumento : [];
+  const eligeTipo = tipos.length >= 2;
 
   const doUpload = async (file) => {
     setStatus('uploading');
@@ -84,6 +98,12 @@ function GenericAttachment({ row, personas, enrollmentGroupId, resumeToken, iden
         filename:    file.name,
         // WIZARD-DOCS: el usuario describe qué es el archivo (texto libre, opcional).
         description: (row.description || '').trim(),
+        // 18.bis.35 · DL-R16 — QUÉ ES el archivo. Describir no es clasificar: la casilla de
+        // arriba es texto libre y no le asigna al papel ni su nivel de confidencialidad ni sus
+        // etiquetas. Se manda lo que la familia ELIGIÓ, tal cual, y solo si eligió: con 0 ó 1
+        // tipo en el catálogo no se pregunta y lo resuelve el servidor. Aquí no se decide
+        // nada — el navegador no clasifica documentos.
+        ...(row.rec_type_code ? { rec_type_code: row.rec_type_code } : {}),
         // DL-R17 — DE QUIÉN es el documento. Se manda lo que la familia CONTESTÓ, tal cual:
         // «de la solicitud» viaja como respuesta EXPLÍCITA (`SOLICITUD`), no como la ausencia
         // de las dos. Si no contestó, no se manda nada y la regla de reparto por defecto —que
@@ -120,6 +140,12 @@ function GenericAttachment({ row, personas, enrollmentGroupId, resumeToken, iden
   const handleFile = (file) => {
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) { setErr(t('error.file_too_large')); return; }
+    // 18.bis.35 — SE PREGUNTA DONDE LA FAMILIA PUEDE CONTESTAR. Cuando hay dos o más tipos,
+    // el KMS RECHAZA la subida que no dice cuál (`REC_TYPE_REQUIRED`), así que dispararla sin
+    // respuesta es mandar megabytes a un rechazo seguro y devolverle un mensaje lleno de
+    // códigos internos. El servidor sigue siendo el suelo; esto solo evita el viaje inútil.
+    // Mismo criterio (y misma función) que el tope de tamaño de la línea de arriba.
+    if (eligeTipo && !row.rec_type_code) { setErr(t('doc.type_required')); return; }
     doUpload(file);
   };
 
@@ -166,6 +192,37 @@ function GenericAttachment({ row, personas, enrollmentGroupId, resumeToken, iden
         onChange={e => onDescriptionChange(row.id, e.target.value)}
         disabled={status === 'success'}
       />
+
+      {/* 18.bis.35 · DL-R16 — QUÉ ES ESTE ARCHIVO. La casilla de arriba es texto libre y sirve
+          para que la familia se entienda con el colegio; NO clasifica: no le asigna al papel su
+          nivel de confidencialidad ni sus etiquetas, que es lo único que decide quién puede
+          verlo (DL-R07). Eso lo hace el TIPO, y por eso se pregunta aparte.
+          Las opciones salen del catálogo del centro, tal y como las manda el KMS en las listas
+          (`recTypesInterestedParty`) — aquí no hay ni un código escrito a mano.
+          NINGUNA viene preseleccionada: elegir por la familia sería inventar la respuesta.
+          Solo mientras se elige el archivo, por lo mismo que el desplegable de abajo: un archivo
+          YA subido tiene su tipo escrito en el servidor y la hidratación no lo devuelve. */}
+      {status !== 'success' && eligeTipo && (
+        <>
+          <label className="form-label fw-semibold mb-1" htmlFor={`tipo_${row.id}`}>
+            {t('doc.type_label')}
+          </label>
+          <select
+            id={`tipo_${row.id}`}
+            className="form-select mb-1 doc-type"
+            value={row.rec_type_code || ''}
+            onChange={e => onTipoChange(row.id, e.target.value)}
+          >
+            <option value="">{t('doc.type_unset')}</option>
+            {tipos.map(tp => (
+              <option key={tp.code} value={tp.code}>{tp.designation || tp.code}</option>
+            ))}
+          </select>
+          <p className="mb-2" style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+            {t('doc.type_hint')}
+          </p>
+        </>
+      )}
 
       {/* DL-R17 — DE QUIÉN ES ESTE ARCHIVO. Con el archivo por fecha, esta respuesta es el
           único sitio donde consta a quién pertenece el papel: sin ella el fichero existe y
@@ -325,6 +382,30 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
 
   const [rows, setRows] = useState(seedRows);
 
+  // 18.bis.35 · DL-R16 — LOS TIPOS DE DOCUMENTO QUE LA FAMILIA PUEDE APORTAR.
+  //
+  // Salen del CATÁLOGO del centro y viajan por el canal que el asistente YA usa: el KMS los
+  // mete en las mismas listas que sirven alergias, dietas y tipos de vínculo
+  // (`recTypesInterestedParty`, `enr_wizardFetchLookups`). NO se abre ninguna llamada nueva y
+  // aquí no se escribe ni un código: la lista es la que el colegio haya marcado como
+  // «Aportado por: parte interesada», ni una más.
+  //
+  // DEGRADA SIN ROMPER, y por eso arranca vacío y ningún fallo se propaga: un centro que aún
+  // no ha marcado ninguno —o una lectura que no llega— deja la pantalla exactamente como
+  // estaba antes de esto (sin desplegable), y la familia sigue pudiendo adjuntar. Si además
+  // el catálogo está sin configurar, el rechazo lo da el servidor NOMBRANDO qué falta, que es
+  // lo que ya hacía. El mismo patrón de carga que `Step3Relations` usa para sus catálogos.
+  const [tiposDeDocumento, setTiposDeDocumento] = useState([]);
+  useEffect(() => {
+    fetchLookups()
+      .then(data => {
+        const tipos = (data && data.recTypesInterestedParty) || [];
+        log.info('Step6: tipos de documento del catálogo', { count: tipos.length });
+        if (tipos.length) setTiposDeDocumento(tipos.filter(tp => tp && tp.code));
+      })
+      .catch(err => log.error('Step6: fetchLookups failed', { message: err.message }));
+  }, []);
+
   // RE-SEMBRADO: si los archivos del servidor llegan DESPUÉS de montar esta pantalla, la
   // lista los incorpora en vez de quedarse con la foto del primer instante.
   //
@@ -374,6 +455,12 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     setRows(prev => prev.map(r => r.id === rowId ? { ...r, dueno: value } : r));
   };
 
+  // 18.bis.35 — QUÉ ES el archivo. Igual que la respuesta de arriba: viaja con la subida
+  // (ver `doUpload`); aquí solo se recuerda mientras la familia elige el archivo.
+  const handleTipoChange = (rowId, value) => {
+    setRows(prev => prev.map(r => r.id === rowId ? { ...r, rec_type_code: value } : r));
+  };
+
   const handleUploaded = (rowId, doc) => {
     // WIZARD-DOCS2: NO se auto-añade una fila vacía tras subir. Para otro archivo,
     // el usuario vuelve a pulsar "Añadir archivo" (patrón Step2Persons).
@@ -381,7 +468,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   };
 
   const handleAddRow = () => {
-    setRows(prev => [...prev, { id: newRowId(), description: '', dueno: '', file_id: '', file_name: '' }]);
+    setRows(prev => [...prev, { id: newRowId(), description: '', dueno: '', rec_type_code: '', file_id: '', file_name: '' }]);
   };
 
   // Aviso de que un documento se retira, cuando el servidor no explica por qué no pudo.
@@ -474,12 +561,14 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
             key={row.id}
             row={row}
             personas={personasDelDocumento}
+            tiposDeDocumento={tiposDeDocumento}
             enrollmentGroupId={enrollmentGroupId}
             resumeToken={resumeToken}
             identidad={identidad}
             onUploaded={handleUploaded}
             onDescriptionChange={handleDescriptionChange}
             onDuenoChange={handleDuenoChange}
+            onTipoChange={handleTipoChange}
             onRemove={handleRemoveRow}
             onStepUpVerified={markStepUpFresh}
             onActivity={touchActivity}

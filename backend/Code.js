@@ -5757,11 +5757,20 @@ function _parteDeEsteTutorYaEnviada_(p, personId) {
  * código que **no existe en el catálogo del tenant**. Un respaldo escrito a mano no es una
  * red: es una invención que el catálogo no tiene por qué respaldar.
  *
- * Ahora el wizard **no manda tipo**. Lo resuelve el KMS contra `recTypes_T`
- * (`enr_wizardPersistUpload` → `rec_resolveInterestedPartyType_`, DL-R16): un solo tipo
- * marcado como aportado por la familia ⇒ lo asigna el servidor; varios ⇒ error accionable
- * que los NOMBRA; ninguno ⇒ error que dice qué configurar. En los tres casos el tipo sale
- * del catálogo del tenant, y ninguno es un default silencioso.
+ * Quien decide es `recTypes_T`, y lo resuelve el KMS en un solo sitio
+ * (`enr_wizardPersistUpload` → `rec_resolveInterestedPartyType_`, DL-R16): **ninguno**
+ * marcado como aportado por la familia ⇒ error que dice qué configurar; **uno** ⇒ lo asigna
+ * el servidor; **varios** ⇒ **elige la familia**. En los tres casos el tipo sale del catálogo
+ * del tenant, y ninguno es un default silencioso.
+ *
+ * ★ 18.bis.35 (2026-08-16) — EL TERCER CASO YA TIENE PANTALLA, Y ANTES NO LA TENÍA. Este
+ * bloque decía «ahora el wizard **no manda tipo**», y con eso el caso de varios tipos estaba
+ * ROTO de punta a punta: el KMS lanzaba `REC_TYPE_REQUIRED` («la subida tiene que decir
+ * cuál») y el asistente no tenía forma de decirlo ⇒ ninguna familia podía adjuntar nada en
+ * cuanto el centro marcaba un segundo tipo. Hoy el paso 6 pregunta **qué es** cada archivo
+ * con las opciones que el propio KMS manda en las listas (`recTypesInterestedParty`), y la
+ * respuesta viaja en `rec_type_code`. El asistente sigue sin elegir, sin listar códigos a
+ * mano y sin respaldo: solo transporta lo que contestó la familia.
  */
 
 /**
@@ -5770,9 +5779,11 @@ function _parteDeEsteTutorYaEnviada_(p, personId) {
  * DL-R09 / DL-R13: documents now live in the rec* module (canonical):
  *   - recFiles row with status='ACTIVE', origin='WIZARD',
  *     origin_reference=enrollment_group_id (so submit can find pre-submit
- *     uploads of this session). El `rec_type_code` NO lo pone el wizard: lo
- *     resuelve el KMS contra el catálogo del tenant (DL-R16) — ver el bloque
- *     «EL TIPO DE DOCUMENTO LO PONE EL CATÁLOGO» aquí arriba.
+ *     uploads of this session). El `rec_type_code` viaja SOLO cuando la familia
+ *     lo eligió en el paso 6 (a partir del segundo tipo marcado «lo aporta la
+ *     familia»); el asistente nunca lo decide ni lo inventa, y quién es
+ *     admisible lo dice el catálogo del tenant dentro del KMS (DL-R16) — ver el
+ *     bloque «EL TIPO DE DOCUMENTO LO PONE EL CATÁLOGO» aquí arriba.
  *   - recScopes are NOT written here. The canonical scope_type for admissions
  *     ('enr_admission_school' per config/kis/recScopeTypes_T.json) targets
  *     enrEnrollments.enrollment_id, which does not exist pre-submit. Scopes
@@ -5899,6 +5910,46 @@ function _duenosDelDocumento_(p, groupId) {
   return [tutor];
 }
 
+/**
+ * DL-R16 · QUÉ ES EL DOCUMENTO — la respuesta que la familia dio en el paso 6, validada.
+ *
+ * Quien MANDA es el catálogo del centro, y lo resuelve el KMS en un solo sitio
+ * (`rec_resolveInterestedPartyType_`): con **0** tipos marcados «lo aporta la familia» la
+ * subida se rechaza con un error que NOMBRA qué configurar; con **1** lo asigna el servidor
+ * («un desplegable de una opción no es elección», DL-R16) y la pantalla no pregunta nada; **a
+ * partir del segundo elige la familia**, y entonces su respuesta TIENE que viajar — si no
+ * viaja, el KMS rechaza con `REC_TYPE_REQUIRED` y el archivo se queda fuera.
+ *
+ * ⛔ Aquí NO se elige el tipo, ni se ofrece lista, ni hay respaldo: eso sería volver a decidir
+ * en el cliente lo que decide el catálogo, que es exactamente el defecto que borró `'OTHER'`
+ * (ver el bloque «EL TIPO DE DOCUMENTO LO PONE EL CATÁLOGO»). Lo único que pasa aquí es la
+ * validación de FORMA (KAL-5 capa 1), para no gastar un viaje con basura; QUÉ códigos son
+ * admisibles lo dice el KMS contra la lista viva del centro, y su rechazo es el suelo.
+ *
+ * La forma admitida es la MISMA que la de un identificador de fichero legible
+ * (`^[A-Za-z0-9._-]{1,128}$`, sin comillas ⇒ no rompe el Selector de AppSheet). Los códigos de
+ * fábrica son MAYÚSCULAS_CON_GUION_BAJO, pero el centro puede dar de alta el suyo y el KMS **no
+ * le impone forma alguna** (medido el 2026-08-16: `rec_upsertRecType` solo exige que el código
+ * exista y no colisione) — un validador más estricto aquí dejaría a una familia sin poder subir
+ * un documento por un código perfectamente válido de su colegio. Mismo precedente que
+ * `assertValidFileIdForRead_` (F-17·#10).
+ *
+ * @param {Object} p payload del manejador.
+ * @returns {string|null} el código elegido, o `null` si la familia no eligió (0 ó 1 opción).
+ * @private
+ */
+function _tipoDeDocumentoElegido_(p) {
+  const raw = p && p.rec_type_code;
+  if (raw == null || raw === '') return null;   // no eligió ⇒ lo resuelve el catálogo, en el KMS
+  const v = String(raw).trim();
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(v)) {
+    const err = new Error('Invalid rec_type_code: ' + JSON.stringify(raw));
+    err.code = 'BAD_REQUEST';
+    throw err;
+  }
+  return v;
+}
+
 function uploadDocument_(p) {
   // KAL-4: derive authorised group_id from resume_token; never trust the
   // payload's enrollment_group_id directly. Cross-check inside the helper.
@@ -5926,6 +5977,11 @@ function uploadDocument_(p) {
   // un Add como valor de columna; AppSheet API v2 parametriza el body JSON).
   let uploadDescription = (typeof p.description === 'string') ? p.description : '';
   uploadDescription = uploadDescription.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 200);
+  // 18.bis.35 — QUÉ tipo de documento dijo la familia que es. Describir no es clasificar: la
+  // casilla de texto de arriba no le asigna al papel ni su nivel de confidencialidad ni sus
+  // etiquetas; el TIPO sí, y es lo único que decide quién puede verlo (DL-R16 + DL-R07).
+  // Se valida la FORMA aquí y se decide el código en el catálogo, dentro del KMS.
+  const tipoDeDocumento = _tipoDeDocumentoElegido_(p);
   if (enrollmentId) assertValidUuid_(enrollmentId, 'enrollment_id');
 
   const idempotencyToken = p.upload_idempotency_token || generateUuid_();
@@ -6021,10 +6077,13 @@ function uploadDocument_(p) {
   const recFileRow = {
     file_id:                  fileId,
     school_id:                SCHOOL_ID,
-    // `rec_type_code` NO va: lo pone el KMS desde el catálogo del tenant
-    // (`enr_wizardPersistUpload` → `rec_resolveInterestedPartyType_`, DL-R16). Mandarlo
-    // desde aquí sería volver a decidir en el cliente lo que decide el catálogo — y eso
-    // es exactamente lo que rechazaba el servidor con [INVALID_REC_TYPE].
+    // QUÉ ES EL DOCUMENTO — la respuesta de la familia, CUANDO la hubo (18.bis.35, DL-R16).
+    // Va solo si eligió, y solo se le pregunta a partir del SEGUNDO tipo marcado «lo aporta
+    // la familia»: con 0 ó 1 no viaja nada y lo resuelve el catálogo del centro dentro del
+    // KMS (`enr_wizardPersistUpload` → `rec_resolveInterestedPartyType_`), igual que hasta
+    // hoy. Lo que NO puede pasar es que el asistente elija por su cuenta o invente un código
+    // de respaldo — eso es lo que el servidor rechazaba con [INVALID_REC_TYPE].
+    ...(tipoDeDocumento ? { rec_type_code: tipoDeDocumento } : {}),
     drive_file_id:            driveFileId,
     drive_folder_id:          folder.getId(),
     file_name:                filename,

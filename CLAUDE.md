@@ -1009,6 +1009,61 @@ rotura del renombrado **explotaba** en vez de declararse ciega —era la rotura 
 la afirmación—, y hubo que aplicarla al FUENTE, que es donde alguien renombraría de verdad.
 **Quien toque este manejador, que lo mida.**
 
+### 18.bis.35 (2026-08-16) — el paso 6 deja ELEGIR qué es el documento, y con dos tipos declarados estaba ROTO de punta a punta
+
+**Describir no es clasificar.** El paso 6 era un adjuntador genérico con una casilla de **texto
+libre** donde la familia *describía* el archivo, y esa descripción va a `recFiles.description`. Un
+texto no le asigna al papel **ni su nivel de confidencialidad ni sus etiquetas**, que es lo único
+que decide quién puede verlo (DL-R07) ⇒ todo lo que sube una familia caía en un cajón único y el
+reparto fallaba **en las dos direcciones**: la enfermera **no ve** un informe médico etiquetado de
+admisión, y **todo el que tenga admisión sí lo ve**.
+
+⛔ **Y no era solo alcance que faltaba: con DOS tipos declarados, adjuntar NO FUNCIONABA.** El KMS
+rechaza con `REC_TYPE_REQUIRED` la subida que no dice cuál (*«el trabajo tiene que decir cuál»*), y
+el asistente **no tenía forma de decirlo** ⇒ en cuanto el colegio marcase un segundo tipo como «lo
+aporta la familia», **ninguna familia podría adjuntar nada**. Hoy funciona solo porque hay
+exactamente uno marcado. **Por eso el orden obligado era: primero la pantalla, después los tipos.**
+
+**Lo que ya estaba, y por eso este tramo es pequeño** (medido contra `origin/master` del KMS): el
+KMS **ya mandaba las opciones** en las MISMAS listas que el asistente ya pide
+(`recTypesInterestedParty`, `enr_wizardFetchLookups`) y **ya aceptaba y validaba** el código
+elegido contra el catálogo (`enr_wizardPersistUpload`). El asistente **tiraba las dos cosas**: 0
+apariciones de `recTypesInterestedParty` y `rec_type_code` solo en comentarios. **No se abrió
+ninguna ruta nueva.**
+
+**Lo que hay que retener al tocar esto:**
+
+- **Se pregunta a partir del SEGUNDO tipo, y no es estilo.** Con **0** el servidor rechaza
+  nombrando qué configurar; con **1** lo asigna él (*«un desplegable de una opción no es
+  elección»*, DL-R16) y la pantalla no pregunta; **con 2 o más elige la familia**, y entonces su
+  respuesta es **obligatoria**.
+- **DEGRADA SIN ROMPER**: la lista arranca vacía y ningún fallo de lectura se propaga ⇒ un colegio
+  que no ha marcado ninguno, o una lectura que no llega, deja la pantalla **exactamente como estaba**
+  y la familia sigue adjuntando.
+- **Ni un código escrito a mano**, ni en la pantalla ni en el servidor. El asistente **solo
+  transporta** lo que contestó la familia: valida la FORMA (KAL-5 capa 1, la misma que un
+  identificador de fichero legible — el colegio puede dar de alta códigos con la forma que quiera) y
+  **quién es admisible lo dice el KMS** contra la lista viva. **Sin respaldo**: un respaldo escrito a
+  mano fue exactamente el defecto que `'OTHER'` causó.
+- **Se avisa DONDE la familia puede contestar**: con dos o más tipos, la pantalla no dispara la
+  subida sin respuesta — mandar megabytes a un rechazo seguro y devolver un código interno es peor.
+  **El servidor sigue siendo el suelo**; esto solo evita el viaje inútil.
+
+**Control**: la batería gana **cuatro afirmaciones** en `subir-documento` —que se pregunte · que las
+opciones salgan del **catálogo que manda el servidor** · que **ninguna** venga preseleccionada · y
+que la respuesta **viaje en la petición**—, y el simulado sirve **dos** tipos a propósito: con uno
+la pantalla no pinta el desplegable y la comprobación pasaría **en vacío**, que es peor que no
+tenerla. **Rojo demostrado dos veces**: quitándole a la pantalla el envío del tipo → **ROJO**
+nombrando el caso (*«rec_type_code recibido: undefined»*), y sustituyendo el catálogo por una lista
+escrita a mano → **ROJO en las cuatro**.
+
+⚠️ **LA MITAD DEL SERVIDOR NO TIENE RED, Y ESTÁ DEMOSTRADO — no supuesto.** Se rompió a propósito
+el paso del tipo en `uploadDocument_` (que el `rec_type_code` validado **no viaje** al KMS) y **la
+batería salió VERDE**, igual que los cuatro controles: corre contra un backend simulado que **nunca
+ejecuta `backend/Code.js`**, así que sus afirmaciones miden lo que manda **el navegador**, no lo que
+reenvía el servidor del asistente. **No se escribió una red para tapar el hueco** (prohibido durante
+la misión). **Quien toque `uploadDocument_`, que lo mida.**
+
 ### ②17 (2026-08-16) — el transporte en LOTE se RETIRA: no era código muerto, era un escritor genérico esperando
 
 **`appsheetRequestBatch_` se quedó sin ni un llamante** cuando el decimotercer tramo (el pulso de

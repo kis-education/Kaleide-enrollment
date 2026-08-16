@@ -1887,6 +1887,28 @@ async function caminoSubirDocumento(page, base) {
   await page.waitForSelector('.doc-attachment', { timeout: 10000 })
   await page.fill('.doc-attachment input[type="text"]', 'Documento sintético E2E')
 
+  // ── 18.bis.35 · QUÉ ES EL DOCUMENTO (DL-R16) ─────────────────────────────────────────
+  // La casilla de texto de arriba DESCRIBE, y describir no CLASIFICA: no le asigna al papel
+  // ni su nivel de confidencialidad ni sus etiquetas, que es lo único que decide quién puede
+  // verlo. Eso lo hace el TIPO. Se afirman tres cosas por separado, porque fallan por motivos
+  // distintos: que se pregunte, que las opciones salgan del CATÁLOGO que manda el servidor (no
+  // de una lista escrita en la pantalla), y que la respuesta VIAJE con la subida.
+  const opcionesDeTipo = await page.$$eval('.doc-attachment .doc-type option',
+    os => os.map(o => ({ valor: o.value, texto: (o.textContent || '').trim() })))
+  c.afirmar('el paso 6 pregunta qué tipo de documento es', opcionesDeTipo.length > 0,
+    'la pantalla no ofrece el desplegable «qué tipo de documento es» (.doc-type)')
+  c.afirmar('las opciones de tipo son las que manda el catálogo del centro',
+    opcionesDeTipo.some(o => o.valor === 'APPLICATION_DOCUMENTATION') &&
+    opcionesDeTipo.some(o => o.valor === 'MEDICAL_RECORD'),
+    `las opciones ofrecidas fueron: ${opcionesDeTipo.map(o => o.valor).join(' · ') || '(ninguna)'} — se sirvieron APPLICATION_DOCUMENTATION y MEDICAL_RECORD`)
+  c.afirmar('no viene ningún tipo preseleccionado',
+    await page.$eval('.doc-attachment .doc-type', s => s.value === '').catch(() => false),
+    'el desplegable de tipo arrancó con una opción ya elegida: elegir por la familia es inventar la respuesta')
+  const TIPO_ELEGIDO = 'MEDICAL_RECORD'
+  if (opcionesDeTipo.some(o => o.valor === TIPO_ELEGIDO)) {
+    await page.selectOption('.doc-attachment .doc-type', TIPO_ELEGIDO)
+  }
+
   // ── DL-R17 · DE QUIÉN ES EL DOCUMENTO ────────────────────────────────────────────────
   // Con el archivo por fecha, esta respuesta es el ÚNICO sitio donde consta a quién pertenece
   // el papel: si la pantalla deja de preguntarlo, o lo pregunta y no lo manda, el fichero
@@ -1945,6 +1967,13 @@ async function caminoSubirDocumento(page, base) {
       Array.isArray(p.person_ids) && p.person_ids.length === 1 &&
       p.person_ids[0] === (personasOfrecidas[0] || {}).valor,
       `person_ids recibido: ${JSON.stringify(p.person_ids)} (se eligió ${(personasOfrecidas[0] || {}).valor})`)
+    // 18.bis.35 — y lleva QUÉ ES. Preguntarlo en pantalla no sirve de nada si la respuesta se
+    // queda en el navegador: es este campo el que hace que el KMS le ponga al papel su nivel de
+    // confidencialidad y sus etiquetas. Y con dos o más tipos en el catálogo, sin él el
+    // servidor RECHAZA la subida entera (`REC_TYPE_REQUIRED`).
+    c.afirmar('la subida dice QUÉ tipo de documento es',
+      p.rec_type_code === TIPO_ELEGIDO,
+      `rec_type_code recibido: ${JSON.stringify(p.rec_type_code)} (se eligió ${TIPO_ELEGIDO})`)
   } else {
     c.noCubierta('contenido-de-la-subida', 'no hubo ninguna subida que inspeccionar')
   }
@@ -1977,6 +2006,15 @@ async function caminoSubirDocumento(page, base) {
     await page.waitForTimeout(300)
     const cajas = await page.$$('.doc-attachment input[type="text"]')
     if (cajas.length) await cajas[cajas.length - 1].fill('Documento sintético E2E (18.bis.95)')
+    // 18.bis.35 — se contesta también QUÉ es, porque lo que aquí se quiere provocar es que el
+    // KMS rechace la ESCRITURA de la ficha; sin tipo, la subida ni saldría de la pantalla y se
+    // estaría midiendo otra cosa.
+    const tiposDeLaRechazada = await page.$$('.doc-attachment .doc-type')
+    if (tiposDeLaRechazada.length) {
+      const opts = await tiposDeLaRechazada[tiposDeLaRechazada.length - 1]
+        .$$eval('option', os => os.map(o => o.value).filter(Boolean))
+      if (opts.length) await tiposDeLaRechazada[tiposDeLaRechazada.length - 1].selectOption(opts[0])
+    }
     const ficheros = await page.$$('.doc-attachment input[type="file"]')
     if (!ficheros.length) { c.fallos.push('la fila de documento no ofrece campo de archivo'); return c }
     await ficheros[ficheros.length - 1].setInputFiles({
@@ -4091,6 +4129,16 @@ async function subirUnDocumento(c, page, descripcion) {
   await page.waitForSelector('.doc-attachment', { timeout: 10000 })
   const cajas = await page.$$('.doc-attachment input[type="text"]')
   if (cajas.length) await cajas[cajas.length - 1].fill(descripcion)
+  // 18.bis.35 — Y SE CONTESTA QUÉ ES, como lo haría una familia. Cuando el catálogo del
+  // centro ofrece dos o más tipos, la respuesta es OBLIGATORIA (el KMS rechaza la subida que
+  // no la lleva), así que un ayudante que no la conteste deja de subir nada — y este ayudante
+  // es la ESCRITURA QUE SÍ ENTRA de otros tres caminos, que se quedarían sin medir. Con 0 ó 1
+  // tipo no hay desplegable que contestar y esto no hace nada, igual que la pantalla.
+  const tipos = await page.$$('.doc-attachment .doc-type')
+  if (tipos.length) {
+    const opciones = await tipos[tipos.length - 1].$$eval('option', os => os.map(o => o.value).filter(Boolean))
+    if (opciones.length) await tipos[tipos.length - 1].selectOption(opciones[0])
+  }
   const ficheros = await page.$$('.doc-attachment input[type="file"]')
   if (!ficheros.length) {
     c.fallos.push('la fila de documento no ofrece campo de archivo')
