@@ -919,10 +919,10 @@ rotura del expediente tomado del cuerpo salió **VERDE** al primer intento —la
 la LONGITUD de la lista y el juego de pruebas tiene una fila por grupo—, y hubo que acotarla a **qué
 fila** vuelve. **Quien toque este manejador, que lo mida.**
 
-**Lo que apareció de paso y NO se tocó:** `appsheetRequestBatch_` se queda **sin ni un llamante**
-(era su último). No se retira aquí: es el transporte que los controles `escrituras-directas.mjs` y
-`personas-quitadas.mjs` nombran como **permitido**, así que quitarlo obliga a tocar dos controles de
-seguridad en un cambio que no va de eso. Queda anotado.
+**Lo que apareció de paso, y se RETIRÓ en la vuelta siguiente:** `appsheetRequestBatch_` se quedó
+**sin ni un llamante** (éste era su último). Aquí no se tocó —quitarlo obligaba a mirar tres
+controles de seguridad, en un cambio que no iba de eso— y quedó anotado. **Se retiró entero el
+2026-08-16**: ver §"②17 — el transporte en LOTE se RETIRA".
 
 ### ②17 (2026-08-16) — EL RACIMO DE FIRMA: había DOS lectores del mismo dato, y ya habían divergido en CUATRO puntos
 
@@ -1008,6 +1008,42 @@ renombrado, que debe salir **«MEDICIÓN CIEGA»**). **Y la medición se corrigi
 rotura del renombrado **explotaba** en vez de declararse ciega —era la rotura la que era débil, no
 la afirmación—, y hubo que aplicarla al FUENTE, que es donde alguien renombraría de verdad.
 **Quien toque este manejador, que lo mida.**
+
+### ②17 (2026-08-16) — el transporte en LOTE se RETIRA: no era código muerto, era un escritor genérico esperando
+
+**`appsheetRequestBatch_` se quedó sin ni un llamante** cuando el decimotercer tramo (el pulso de
+la admisión) se llevó el último. Aquel tramo lo dejó **anotado y sin tocar**, con su motivo. Esta
+vuelta lo retira entero: **118 líneas fuera**, una lápida de once en su sitio.
+
+**Por qué no es solo limpieza, y es lo único que hay que retener:** este proceso es
+`ANYONE_ANONYMOUS`, y lo que quedaba dormido aquí **no era un lector**. Su firma admite
+`'Find'|'Add'|'Edit'|'Delete'` **sobre CUALQUIER tabla** —el nombre viaja como parámetro— y lee la
+credencial de AppSheet de las propiedades del proyecto. O sea: un **escritor genérico y completo**,
+listo para usar, dentro del mismo fichero cuyo invariante declarado es que **el asistente NO
+ESCRIBE NUNCA en AppSheet**. No había agujero —nadie lo llamaba y no estaba en el despachador—,
+pero un escritor que sobra en una superficie pública no se aparca: se quita (§"lo vestigial se
+ELIMINA en cuanto se detecta", `kis-app/CLAUDE.md`).
+
+**Lo que NO cambia, medido:** las **44** lecturas directas de `appsheetRequest_` siguen siendo 44
+(esto no era una lectura) y las de lote siguen en **0**. Se repite con
+`grep -c 'appsheetRequest_(' backend/Code.js` **menos 1**, la definición.
+
+**Su nombre SÍ se conserva en los tres controles**, y es deliberado: en
+`scripts/escrituras-directas.mjs` no es una exención que sobre —es la lista de transportes
+permitidos— y en `personas-quitadas.mjs` y `verja-publica.mjs` forma parte de lo que vigilan. **Un
+nombre que ya no existe en el código sigue valiendo para impedir que vuelva**; borrarlo de ahí sería
+aflojar tres controles a cambio de nada.
+
+**Control**: no se añade ninguna afirmación nueva —no hay comportamiento nuevo que afirmar—, pero
+**sí se comprobó que retirar el nombre del código NO deja ciega la vigilancia**: se rompió a
+propósito dos veces sobre el fichero ya retirado y `escrituras-directas` salió **ROJO las dos**,
+nombrando fichero y línea — una escritura con acción literal (`appsheetRequest_(…, 'Add', …)`) y un
+**transporte paralelo** (la URL de AppSheet montada a mano con `UrlFetchApp.fetch`). Restaurado,
+**VERDE**. Los **cuatro** controles siguen verdes y la batería, **23 de 23**.
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. Aquí no hace falta más: lo retirado **no tenía llamantes**, y eso se acredita
+con el `grep`, no con una prueba.
 
 ### ②17 (2026-08-15) — la RECUPERACIÓN DEL ENLACE: la ficha de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor
 

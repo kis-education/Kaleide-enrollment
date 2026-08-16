@@ -6834,124 +6834,17 @@ function appsheetRequest_(table, action, rows, selector, debugOut) {
   return resultRows || parsed || null;
 }
 
-/**
- * Parallel sibling of appsheetRequest_. Dispatches N AppSheet API calls
- * concurrently via UrlFetchApp.fetchAll() and returns the per-spec
- * results in the same order. Used by the wizard's hot paths
- * (savePersons_, fetchLookups_, resumeSession_) to collapse what were
- * 5-11 sequential ~600ms-1s calls into a single round-trip-limited
- * batch (~1-1.5s total).
- *
- * Differs from appsheetRequest_:
- *   - Never throws — every spec returns { ok, data, error, http } so the
- *     caller decides whether one failure aborts everything or is logged
- *     and skipped. The current callers prefer "log and continue".
- *   - Specs with empty rows[] on Add/Edit/Delete are skipped at build
- *     time (returns { ok: true, data: [], skipped: true }) — matches the
- *     "write_" no-op semantics that savePersons_ used to do per write.
- *
- * Apps Script's fetchAll runs the underlying HTTP in parallel up to its
- * internal concurrency limit (empirically ~10-20 in flight at once is
- * fine; we never get close in this codebase).
- *
- * @param {Array<{ table: string, action: 'Find'|'Add'|'Edit'|'Delete', rows?: Array, selector?: Object }>} specs
- * @returns {Array<{ ok: boolean, data?: *, error?: string, http?: number, skipped?: boolean }>}
- */
-function appsheetRequestBatch_(specs) {
-  if (!specs || !specs.length) return [];
-  const props  = PropertiesService.getScriptProperties();
-  const appId  = props.getProperty('APPSHEET_APP_ID');
-  const apiKey = props.getProperty('APPSHEET_ACCESS_KEY');
-  if (!appId || !apiKey) throw new Error('AppSheet credentials not configured in Script Properties');
-
-  const sanitize_ = (r) => {
-    const out = {};
-    for (const k in r) {
-      const v = r[k];
-      if (v === null || v === undefined) continue;
-      else if (v === true)              out[k] = 'TRUE';
-      else if (v === false)             out[k] = 'FALSE';
-      else                              out[k] = v;
-    }
-    return out;
-  };
-
-  // Pre-decide skips so the per-spec result array maps 1:1 to the input.
-  const built = specs.map(spec => {
-    const writeAction = (spec.action === 'Add' || spec.action === 'Edit' || spec.action === 'Delete');
-    if (writeAction && (!spec.rows || spec.rows.length === 0)) {
-      return { skipped: true, spec };
-    }
-    const body = { Action: spec.action, Properties: { Locale: 'en-US' } };
-    if (spec.rows && spec.rows.length > 0) body.Rows = spec.rows.map(sanitize_);
-    if (spec.selector) {
-      if (spec.selector.Filter) {
-        const expr = wizardTraducirFiltro_(spec.selector.Filter);
-        body.Properties.Selector = 'FILTER("' + spec.table + '", ' + expr + ')';
-      } else {
-        body.Properties = Object.assign({}, body.Properties, spec.selector);
-      }
-    }
-    return {
-      skipped: false,
-      spec,
-      request: {
-        url:                APPSHEET_BASE_URL + appId + '/tables/' + encodeURIComponent(spec.table) + '/Action',
-        method:             'post',
-        contentType:        'application/json',
-        headers:            { ApplicationAccessKey: apiKey },
-        payload:            JSON.stringify(body),
-        muteHttpExceptions: true,
-      },
-    };
-  });
-
-  const dispatchIdx = []; // map dispatched-index → built-index, for stitching
-  const requests = [];
-  built.forEach((b, i) => {
-    if (!b.skipped) { dispatchIdx.push(i); requests.push(b.request); }
-  });
-  const startMs = Date.now();
-  _dbgEv_('as_batch_call', specs.map(function(sp) { return sp.table + '/' + sp.action; }).join(','));
-  const responses = requests.length ? UrlFetchApp.fetchAll(requests) : [];
-  _dbgEv_('as_batch_resp', requests.length + ' calls ' + (Date.now() - startMs) + 'ms');
-  Logger.log('appsheetRequestBatch_: ' + requests.length + ' parallel calls in ' + (Date.now() - startMs) + 'ms');
-
-  const out = new Array(specs.length);
-  built.forEach((b, i) => {
-    if (b.skipped) {
-      out[i] = { ok: true, data: [], skipped: true };
-    }
-  });
-  responses.forEach((response, j) => {
-    const i = dispatchIdx[j];
-    const spec = specs[i];
-    const statusCode = response.getResponseCode();
-    const text       = response.getContentText();
-    if (statusCode < 200 || statusCode >= 300) {
-      out[i] = { ok: false, http: statusCode, error: 'HTTP ' + statusCode + ' on ' + spec.table + '/' + spec.action + ': ' + text.slice(0, 200) };
-      return;
-    }
-    let parsed;
-    try { parsed = JSON.parse(text); } catch (_) {
-      out[i] = { ok: false, http: statusCode, error: 'Non-JSON response on ' + spec.table + '/' + spec.action + ': ' + text.slice(0, 200) };
-      return;
-    }
-    if (parsed && typeof parsed.error === 'string') {
-      out[i] = { ok: false, http: statusCode, error: 'AppSheet error on ' + spec.table + '/' + spec.action + ': ' + parsed.error };
-      return;
-    }
-    const resultRows = parsed.Rows || parsed.rows || null;
-    if ((spec.action === 'Add' || spec.action === 'Edit') && spec.rows && spec.rows.length > 0) {
-      if (!resultRows || resultRows.length === 0) {
-        out[i] = { ok: false, http: statusCode, error: 'AppSheet silently rejected ' + spec.action + ' on ' + spec.table + ' (0 rows returned)' };
-        return;
-      }
-    }
-    out[i] = { ok: true, http: statusCode, data: resultRows || parsed || null };
-  });
-  return out;
-}
+// ─── appsheetRequestBatch_ — RETIRADO (②17, 2026-08-16) ──────────────────────
+// El transporte en LOTE a AppSheet se ELIMINA: el decimotercer tramo de ②17 (el pulso de la
+// admisión) se llevó a su ÚLTIMO llamante, y este proceso es PÚBLICO Y ANÓNIMO. No era solo
+// código muerto — era un escritor GENÉRICO (Add/Edit/Delete sobre CUALQUIER tabla, con la
+// credencial dentro) esperando a que alguien lo llamase, en el mismo fichero donde el
+// invariante es que el asistente NO ESCRIBE NUNCA en AppSheet (§"El wizard NO escribe
+// NINGUNA tabla AppSheet"). Lo vestigial se elimina en cuanto se detecta.
+//
+// Su nombre SÍ sobrevive en los tres controles del repositorio —escrituras-directas,
+// personas-quitadas y verja-publica— y es DELIBERADO: ahí no es una exención que sobre, es
+// la vigilancia de que no vuelva. El código retirado está en git.
 
 // ─── PDF generation ───────────────────────────────────────────────────────────
 // P262 (2026-06-25) — `generateConsentPdf_` (generaba el "Signed Consent Record" PDF en el
