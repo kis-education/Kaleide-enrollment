@@ -40,6 +40,7 @@ try {
     console.log('  ✓ la identidad de quien recupera no lee AppSheet: los tres eslabones pasan por el lector ÚNICO del KMS, y ni el resolvedor gemelo ni `findEmailIdForGuardian_` han vuelto (②17 · P245)')
     console.log('  ✓ quién puede contestar no se resuelve bajando las fichas: el conjunto lo sirve el KMS con el recorrido del ESCRITOR, y el token, el código de un solo uso y el rechazo siguen en pie (②17)')
     console.log('  ✓ las etiquetas de los documentos las compone el KMS: el envío ya no lee `recFiles`/`recScopes` ni manda `rec_scopes`, y el ámbito retirado no ha vuelto (②17)')
+    console.log('  ✓ la puerta y sus tres hermanas no leen `enrEnrollmentGroups`: la cabecera la sirve el lector ÚNICO en modo tolerante, `assertGroupEditable_` reusa la fila ya validada, y el gate conserva forma, TTL y cross-group guard (②17)')
   }
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)

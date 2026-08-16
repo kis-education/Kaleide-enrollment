@@ -594,13 +594,33 @@ function requireResumeToken_(payload) {
   _dbgEv_('gate', 'requireResumeToken (live)');
   const token = payload && payload.resume_token;
   assertValidUuid_(token, 'resume_token');
-  const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
-  });
-  if (!rows || !rows.length) {
+
+  // ②17 (DUODÉCIMO tramo) — la cabecera la sirve el KMS, por el lector ÚNICO
+  // `_expedienteDelToken_`. Esta era la lectura directa a `enrEnrollmentGroups` MÁS LLAMADA
+  // del asistente: la hacía este proceso, que es PÚBLICO y ANÓNIMO, con la credencial de
+  // AppSheet de la aplicación entera (la que alcanza cualquier tabla, porque la URL lleva la
+  // tabla como parámetro). Ahora cruzan SIETE campos, no la fila con `magic_link_token`.
+  //
+  // MODO TOLERANTE, y es lo que permite que LA DECISIÓN NO SE MUEVA: el KMS devuelve la fila
+  // aunque el token esté caducado o la sesión abandonada, y los rechazos de abajo —con sus
+  // mensajes EXACTOS, el de caducidad incluido (①22)— se siguen aplicando AQUÍ, verbatim.
+  // Si la puerta del KMS rechazara antes, no se podría distinguir «caducado» de «no existe»
+  // y la familia con la solicitud caducada leería el mensaje equivocado.
+  const consulta = _expedienteDelToken_(token, { tolerarSesionCerrada: true });
+  if (!consulta.ok && !consulta.rechazo) {
+    // NO se pudo PREGUNTAR (transporte). Se LANZA —como lanzaba `appsheetRequest_`, que aquí
+    // no estaba envuelto en `try`— pero NUNCA como «no autorizado»: decirle a una familia
+    // legítima que su enlace no vale porque el KMS está caído es peor que el fallo.
+    const errT = new Error('No se pudo comprobar el enlace ahora mismo; inténtalo de nuevo en un momento');
+    errT.code = 'KMS_UNREACHABLE';
+    throw errT;
+  }
+  const group = consulta.fila;
+  if (!group) {
+    // `consulta.rechazo` (el KMS dijo que ese token no vale) o fila ausente ⇒ mismo mensaje
+    // que daba el `!rows.length` de la lectura directa.
     throw new Error('Unauthorized: resume_token not recognized');
   }
-  const group = rows[0];
 
   // === CLI 81 (S8 / KAL-NEW-7): TTL + abandoned_at gate ──────────────────────
   // Before this fix, an expired or phished-then-abandoned resume_token was
@@ -626,6 +646,11 @@ function requireResumeToken_(payload) {
   }
 
   const tokenGroupId = group.enrollment_group_id;
+  // ②17 (DUODÉCIMO tramo) — memoria de EJECUCIÓN: la fila que la puerta acaba de validar
+  // queda disponible para `assertGroupEditable_`, que era la SEGUNDA lectura de esta MISMA
+  // fila en la MISMA petición. No es caché (muere con la ejecución) y no es un segundo
+  // resolvedor: es esta misma fila, ya autorizada por el token.
+  _memoCabeceraEjecucion_[tokenGroupId] = group;
   // SPEC-WIZ-WARMUP-V2: poblar el memo de LECTURA (rtmemo_) tras la validación
   // VIVA — así la primera llamada de lectura posterior (getDocument_) ya tiene el
   // gate caliente sin pagar otra lectura AppSheet. Best-effort; no cambia la
@@ -868,10 +893,15 @@ function requireSignerIdentity_(payload) {
 // @throws {Error & {code: 'NOT_EDITABLE'}} when the group is locked
 function assertGroupEditable_(enrollmentGroupId) {
   assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
-  const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-  });
-  const group = rows && rows[0];
+  // ②17 (DUODÉCIMO tramo) — CERO lecturas: esta era la SEGUNDA lectura de la MISMA fila en
+  // la MISMA petición. Sus CINCO llamantes van inmediatamente precedidos de
+  // `requireResumeToken_` (medido contra `origin/main`), que ya la trae de la puerta y la
+  // deja en la memoria de EJECUCIÓN.
+  //
+  // ⛔ Si no está, se FALLA CERRADO con el MISMO error de siempre. NUNCA se vuelve a leer
+  // por el identificador: derivar el expediente de un id es lo que KAL-4 prohíbe, y aquí el
+  // id llega como argumento — un lector por id sería una puerta trasera a esa regla.
+  const group = _memoCabeceraEjecucion_[enrollmentGroupId];
   if (!group) {
     // Should be impossible — requireResumeToken_ already resolved a group.
     const err = new Error('Enrollment group not found');
@@ -3083,10 +3113,19 @@ function abandonSession_(p) {
   if (!token) throw new Error('Missing resume_token');
   assertValidUuid_(token, 'resume_token');
 
-  const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-    Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
-  });
-  const grp = rows && rows[0];
+  // ②17 (DUODÉCIMO tramo) — la cabecera la sirve el KMS, por el lector ÚNICO. Modo TOLERANTE
+  // porque este manejador EXISTE para operar sobre sesiones que la puerta rechazaría: su
+  // idempotencia («ya estaba abandonada») lo exige, y el oro leía la fila sin filtro alguno.
+  // LA DECISIÓN NO SE MUEVE: los tres rechazos de abajo siguen aquí, verbatim.
+  const consulta = _expedienteDelToken_(token, { tolerarSesionCerrada: true });
+  if (!consulta.ok && !consulta.rechazo) {
+    // No se pudo PREGUNTAR: se lanza (el oro lanzaba), pero sin decir «no existe» —
+    // «empezar de nuevo» que falla por un KMS caído no debe parecer un enlace inválido.
+    const errT = new Error('No se pudo comprobar el enlace ahora mismo; inténtalo de nuevo en un momento');
+    errT.code = 'KMS_UNREACHABLE';
+    throw errT;
+  }
+  const grp = consulta.fila;
   if (!grp) throw new Error('Enrollment group not found');
   if (grp.submitted_at) throw new Error('Cannot abandon a submitted application');
   if (grp.abandoned_at) return { abandoned: true }; // idempotent
@@ -3131,10 +3170,18 @@ function reportUnsolicited_(p) {
   }
 
   try {
-    const groups = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"resume_token" = "' + appsheetEscape_(token) + '"'
-    });
-    const group = groups && groups[0];
+    // ②17 (DUODÉCIMO tramo) — la cabecera la sirve el KMS, por el lector ÚNICO. Modo
+    // TOLERANTE: quien dice «esto no es mío» puede tener delante una sesión ya abandonada o
+    // caducada, y el oro leía la fila sin filtro. LOS DOS FALLOS ACABAN IGUAL —acuse
+    // silencioso— porque cualquier respuesta distinta reabriría el oráculo de existencia que
+    // este manejador cierra a propósito; antes ocurría por el `catch` de fuera, ahora se dice.
+    const consulta = _expedienteDelToken_(token, { tolerarSesionCerrada: true });
+    if (!consulta.ok) {
+      Logger.log(redact_('reportUnsolicited_: no se pudo resolver el expediente — ' +
+        (consulta.motivo || '') + ' (acuse silencioso)'));
+      return { reported: true };
+    }
+    const group = consulta.fila;
     if (!group) return { reported: true }; // silent ack
 
     const email = (group.primary_email || '').toLowerCase().trim();
@@ -3524,45 +3571,106 @@ function _ficheroDelExpediente_(resumeToken, fileId) {
 }
 
 /**
- * ②17 (sexto tramo) — LA CABECERA del expediente que deriva el `resume_token`, pedida al
- * KMS. **UN SOLO lector**: lo llaman los TRES puntos del camino de entrada que antes
- * repetían la MISMA lectura directa de `enrEnrollmentGroups` (`hydrateSession_` dos veces
- * —la rama con el candado puesto y el hint de identidad— y `warmSession_`, cuyo propio
- * comentario decía «VERBATIM de hydrateSession_»).
+ * ②17 (sexto tramo · ampliado en el DUODÉCIMO) — LA CABECERA del expediente que deriva el
+ * `resume_token`, pedida al KMS. **UN SOLO lector.** Lo llaman:
+ *   · los TRES puntos del camino de ENTRADA (sexto tramo) — `hydrateSession_` dos veces (la
+ *     rama con el candado puesto y el hint de identidad) y `warmSession_`, cuyo propio
+ *     comentario decía «VERBATIM de hydrateSession_»;
+ *   · **LA PUERTA y sus tres hermanas** (duodécimo tramo) — `requireResumeToken_`,
+ *     `abandonSession_` y `reportUnsolicited_`, que repetían la MISMA lectura directa de
+ *     `enrEnrollmentGroups` por `resume_token` desde este proceso público y anónimo.
  *
  * PROHIBIDO escribir un segundo lector de esto: dos lectores del mismo dato divergen, y esa
  * es la regresión que documenta §"Regla — refactors preservan el código probado".
  *
  * KAL-4: aquí NO se manda ningún identificador de grupo — el KMS lo deriva del token con su
- * puerta (mismo TTL de 7 días, mismo rechazo de sesión abandonada que `requireResumeToken_`).
- * El nombre de la tabla tampoco viaja. KAL-11: log redactado.
+ * puerta. El nombre de la tabla tampoco viaja. KAL-11: log redactado.
  *
- * ⚠️ **Devuelve DOS cosas, y hay que respetarlo** (mismo motivo que `_ficheroDelExpediente_`):
- * `ok:false` es «no se pudo preguntar», y ese caso NO es «no hay expediente». Quien llama
- * decide qué hacer con cada uno — y hoy no hacen lo mismo:
- *   · la rama del candado LANZA si no se pudo preguntar (la lectura de AppSheet que vivía
- *     ahí no estaba envuelta en `try`, y `appsheetRequest_` lanza siempre);
+ * ── `opciones.tolerarSesionCerrada` (duodécimo tramo) ──────────────────────────────────
+ * Sin ella, la puerta del KMS aplica su TTL de 7 días y su rechazo de sesión abandonada —el
+ * comportamiento de siempre, y el de los TRES llamantes del sexto tramo, que **quedan
+ * byte-idénticos**—. Con ella, el KMS **acepta el token caducado o abandonado y devuelve la
+ * fila**, para que el asistente aplique SUS PROPIOS rechazos con sus MENSAJES EXACTOS
+ * (`resume_token abandoned` · `resume_token expired (7 days); …`). Ensancha **qué token se
+ * acepta**, JAMÁS qué expediente: sigue saliendo del token y solo del token. Un token
+ * INEXISTENTE se rechaza siempre.
+ *
+ * ⚠️ **Devuelve TRES cosas, y hay que respetarlo** (mismo motivo que `_ficheroDelExpediente_`,
+ * que distingue sus dos fallos):
+ *   · `{ok:true,  fila:<obj>}`                → la cabecera.
+ *   · `{ok:true,  fila:null}`                 → no había token que preguntar (vacío o mal
+ *     formado). No es un fallo: es que no hay nada que resolver.
+ *   · `{ok:false, rechazo:<msg>}`             → **el KMS CONTESTÓ que ese token no vale**
+ *     (`UNAUTHORIZED`/`BAD_REQUEST`). Es una RESPUESTA, no una avería.
+ *   · `{ok:false, rechazo:null, motivo:<msg>}` → **no se pudo preguntar** (transporte: el KMS
+ *     no responde, no está configurado, o devuelve algo ilegible). NO es «no hay expediente»,
+ *     y decírselo así a una familia legítima sería peor que el fallo.
+ *
+ * ⛔ **`ok` NO cambió de valor al añadirse `rechazo`**: un rechazo del KMS ya caía en este
+ * `catch` y salía como `ok:false`, y sigue saliendo así. Los tres llamantes del sexto tramo
+ * leen `.fila` (y uno, `.ok`) y no ven diferencia alguna. `rechazo` es información NUEVA para
+ * quien la quiera, no un cambio de contrato.
+ *
+ * Quién hace qué con cada caso, hoy:
+ *   · la rama del candado de `hydrateSession_` LANZA si `!ok` (la lectura de AppSheet que
+ *     vivía ahí no estaba envuelta en `try`, y `appsheetRequest_` lanza siempre);
  *   · el hint de identidad y el precalentado DEGRADAN a `null` (su `try/catch` de siempre)
- *     ⇒ identidad group-scoped, que es el comportamiento previo exacto.
+ *     ⇒ identidad group-scoped, que es el comportamiento previo exacto;
+ *   · `requireResumeToken_` / `abandonSession_` distinguen: `rechazo` ⇒ su propio
+ *     `Unauthorized`/`not found`; transporte caído ⇒ LANZAN `KMS_UNREACHABLE`, nunca
+ *     «tu enlace no vale»;
+ *   · `reportUnsolicited_` da su acuse silencioso en los dos casos (anti-enumeración).
  *
  * @param {string} resumeToken
- * @returns {{ok:boolean, fila:Object|null}} `ok:false` ⇒ no se pudo preguntar.
+ * @param {{tolerarSesionCerrada?:boolean}} [opciones]
+ * @returns {{ok:boolean, fila:Object|null, rechazo:(string|null), motivo:(string|null)}}
  * @private
  */
-function _expedienteDelToken_(resumeToken) {
+function _expedienteDelToken_(resumeToken, opciones) {
   var token = resumeToken ? String(resumeToken).trim() : '';
-  if (!token) return { ok: true, fila: null };
-  try { assertValidUuid_(token, 'resume_token'); } catch (e) { return { ok: true, fila: null }; }
+  if (!token) return { ok: true, fila: null, rechazo: null, motivo: null };
+  try { assertValidUuid_(token, 'resume_token'); }
+  catch (e) { return { ok: true, fila: null, rechazo: null, motivo: null }; }
+
+  var cuerpo = { resume_token: token };
+  if (opciones && opciones.tolerarSesionCerrada) cuerpo.tolerar_sesion_cerrada = true;
 
   try {
-    var r = kmsProxy_('enr.wizardExpedienteDelToken', { resume_token: token }) || {};
-    return { ok: true, fila: r.expediente || null };
+    var r = kmsProxy_('enr.wizardExpedienteDelToken', cuerpo) || {};
+    return { ok: true, fila: r.expediente || null, rechazo: null, motivo: null };
   } catch (e2) {
-    Logger.log(redact_('[_expedienteDelToken_] lectura KMS fallida — ' +
-      ((e2 && e2.message) || e2)));
-    return { ok: false, fila: null };
+    var msg = (e2 && e2.message) || String(e2);
+    // El KMS CONTESTÓ (error de negocio, llega en JSON con su código) vs. NO se pudo
+    // preguntar (`kmsProxy_` marca el transporte ilegible con sus propios códigos
+    // `KMS_HTTP_ERROR` / `KMS_BAD_RESPONSE` / `KMS_NOT_CONFIGURED`). Confundirlos es lo que
+    // convertiría un KMS caído en «tu enlace no vale».
+    var codigo = (e2 && e2.code) || '';
+    var contestado = codigo === 'UNAUTHORIZED' || codigo === 'BAD_REQUEST';
+    Logger.log(redact_('[_expedienteDelToken_] ' + (contestado ? 'token rechazado por el KMS' :
+      'lectura KMS fallida') + ' — ' + msg));
+    return { ok: false, fila: null, rechazo: contestado ? msg : null, motivo: msg };
   }
 }
+
+/**
+ * ②17 (duodécimo tramo) — memoria de EJECUCIÓN de la cabecera que ya validó la puerta.
+ *
+ * NO es un segundo resolvedor y NO es una memoria de 300 s: vive solo mientras dura ESTA
+ * ejecución de Apps Script (el ámbito global se recrea en cada petición) ⇒ cero riesgo de
+ * servir una fila vieja, que es lo que descarta el reparo obvio a cachear una cabecera.
+ *
+ * Existe porque `assertGroupEditable_` era la SEGUNDA lectura de la MISMA fila en la MISMA
+ * petición: sus CINCO llamantes van inmediatamente precedidos de `requireResumeToken_`
+ * (medido contra `origin/main`: `saveStep_` `:4093/:4103`, `submitEnrollmentSession_`
+ * `:4216/:4226`, `saveResponses_` `:5389/:5391`, `uploadDocument_` `:5710/:5716`,
+ * `saveNeae_` `:6336/:6341`). La puerta ya trae la fila; guardarla aquí la ahorra entera.
+ *
+ * ⛔ Quien la lea y NO la encuentre **falla cerrado con el error de siempre** — JAMÁS vuelve
+ * a leer por un identificador: derivar el expediente de un id es exactamente lo que KAL-4
+ * prohíbe.
+ * @private
+ */
+var _memoCabeceraEjecucion_ = {};
 
 /**
  * ②17 (séptimo tramo) — los expedientes de UN correo, servidos por el KMS.

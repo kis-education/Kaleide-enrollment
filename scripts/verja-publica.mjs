@@ -1013,6 +1013,126 @@ function comprobarLasEtiquetasDelEnvio(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 (duodécimo tramo) — LA PUERTA y sus tres hermanas ya no leen `enrEnrollmentGroups`.
+ *
+ * QUÉ DEFECTO VIGILA, medido contra `origin/main` el 2026-08-16. CUATRO funciones repetían la
+ * MISMA lectura directa de la cabecera del expediente desde este proceso, que es **público y
+ * anónimo**, con la credencial de AppSheet de la aplicación entera:
+ *   · `requireResumeToken_`  — el gate de TODA mutación, y la lectura MÁS LLAMADA del asistente;
+ *   · `assertGroupEditable_` — la **SEGUNDA lectura de la MISMA fila en la MISMA petición**
+ *     (sus cinco llamantes van inmediatamente precedidos del gate);
+ *   · `abandonSession_` y `reportUnsolicited_` — otra vez, por `resume_token`.
+ * Cruzaba la fila ENTERA, con `magic_link_token` (un secreto de portador) dentro. Ahora la
+ * sirve el KMS proyectada a SIETE campos, por el lector ÚNICO `_expedienteDelToken_`, y
+ * `assertGroupEditable_` no lee nada: reusa la fila que la puerta acaba de validar.
+ *
+ * QUÉ AFIRMA, sobre el código real:
+ *   (a) ninguna de las cuatro vuelve a leer `enrEnrollmentGroups` de AppSheet;
+ *   (b) las TRES que tienen token pasan por el lector ÚNICO, y en **modo TOLERANTE** — sin él
+ *       la puerta del KMS rechazaría antes y el asistente no podría distinguir «caducado» de
+ *       «no existe» (⇒ mensaje equivocado a una familia con la solicitud caducada);
+ *   (c) `assertGroupEditable_` **no consulta por identificador** —ni AppSheet ni el KMS— y lee
+ *       la memoria de EJECUCIÓN, que la puerta rellena. Un lector por id sería una puerta
+ *       trasera a KAL-4, porque ahí el id llega como argumento;
+ *   (d) ANCLAS anti-vacío — `requireResumeToken_` sigue existiendo, sigue validando la forma
+ *       del token (`assertValidUuid_`), sigue aplicando el TTL de 7 días y sigue con el
+ *       cross-group guard. Sin ellas, «ya no lee AppSheet» saldría VERDE sobre un gate vaciado.
+ *
+ * QUÉ **NO** AFIRMA: que el KMS proyecte los siete campos y no más, que el modo tolerante solo
+ * ensanche qué token se acepta, ni que un token inexistente se siga rechazando. Eso no se lee
+ * aquí — se midió aparte, ejecutando el manejador real del KMS con dobles. Y arrastra el LÍMITE
+ * del módulo: detector por líneas, no analizador sintáctico.
+ */
+function comprobarLaPuerta(fuenteLimpia) {
+  const fallos = []
+
+  const conToken = [
+    ['requireResumeToken_', 'el gate de TODA mutación, la lectura más llamada del asistente'],
+    ['abandonSession_',     '«empezar de nuevo»'],
+    ['reportUnsolicited_',  '«esto no es mío»'],
+  ]
+
+  for (const [nombre, queEs] of conToken) {
+    const cuerpo = cuerpoDe(fuenteLimpia, nombre)
+    if (cuerpo === null) {
+      fallos.push('no se encontró `' + nombre + '` — control CIEGO en la puerta (②17 duodécimo tramo)')
+      continue
+    }
+    if (/appsheetRequest(Batch)?_\s*\(\s*(T\.ENROLLMENT_GROUPS|'enrEnrollmentGroups')/.test(cuerpo)) {
+      fallos.push('`' + nombre + '` vuelve a leer `enrEnrollmentGroups` directamente de AppSheet — ' +
+        'eso es lo que ②17 quitó de: ' + queEs + '. La fila entera (con `magic_link_token`) ' +
+        'volvería a cruzar a este proceso público y anónimo')
+    }
+    if (!/_expedienteDelToken_\s*\(/.test(cuerpo)) {
+      fallos.push('`' + nombre + '` ya no le pide la cabecera al KMS por el lector ÚNICO ' +
+        '(`_expedienteDelToken_`) — o se quitó, o volvió a resolverse por su cuenta, y dos ' +
+        'lectores del mismo dato divergen')
+    }
+    if (!/tolerarSesionCerrada/.test(cuerpo)) {
+      fallos.push('`' + nombre + '` pide la cabecera SIN el modo tolerante — la puerta del KMS ' +
+        'rechazaría el token caducado o abandonado antes de devolver la fila, y este manejador ' +
+        'perdería su propio rechazo (mensaje equivocado a la familia, o idempotencia rota)')
+    }
+  }
+
+  // (c) la segunda lectura de la misma fila DESAPARECE, y no vuelve por la puerta de atrás.
+  const editable = cuerpoDe(fuenteLimpia, 'assertGroupEditable_')
+  if (editable === null) {
+    fallos.push('no se encontró `assertGroupEditable_` — control CIEGO en la segunda lectura (②17)')
+  } else {
+    if (/appsheetRequest(Batch)?_\s*\(/.test(editable)) {
+      fallos.push('`assertGroupEditable_` vuelve a leer AppSheet — era la SEGUNDA lectura de la ' +
+        'MISMA fila en la MISMA petición; la puerta ya la trae')
+    }
+    if (/kmsProxy_\s*\(|_expedienteDelToken_\s*\(/.test(editable)) {
+      fallos.push('`assertGroupEditable_` vuelve a consultar por el identificador de expediente — ' +
+        'ahí el id llega como ARGUMENTO, así que un lector por id es una puerta trasera a KAL-4; ' +
+        'debe reusar la fila que la puerta ya validó')
+    }
+    if (!/_memoCabeceraEjecucion_/.test(editable)) {
+      fallos.push('`assertGroupEditable_` ya no lee la memoria de EJECUCIÓN — o volvió a leer por ' +
+        'su cuenta, o dejó de comprobar la editabilidad')
+    }
+  }
+
+  // La puerta tiene que RELLENAR esa memoria; si no, `assertGroupEditable_` fallaría cerrado
+  // en TODA mutación y el control de arriba seguiría verde.
+  const gate = cuerpoDe(fuenteLimpia, 'requireResumeToken_')
+  if (gate !== null) {
+    if (!/_memoCabeceraEjecucion_\s*\[/.test(gate)) {
+      fallos.push('`requireResumeToken_` ya no deja la cabecera en la memoria de EJECUCIÓN — ' +
+        '`assertGroupEditable_` fallaría cerrado en TODA mutación de la familia')
+    }
+    // (d) ANCLAS: sin ellas el control mediría un gate vaciado.
+    if (!/assertValidUuid_\s*\(/.test(gate)) {
+      fallos.push('`requireResumeToken_` ya no valida la FORMA del token (`assertValidUuid_`) — ' +
+        'es la capa 1 de KAL-5 y va ANTES de tocar nada')
+    }
+    if (!/7\s*\*\s*24\s*\*\s*60\s*\*\s*60\s*\*\s*1000|RESUME_TOKEN_TTL_MS/.test(gate)) {
+      fallos.push('`requireResumeToken_` ya no aplica el TTL de 7 días — mover de dónde sale la ' +
+        'fila NO puede llevarse por delante el rechazo que se hace con ella')
+    }
+    if (!/does not match resume_token grant/.test(gate)) {
+      fallos.push('`requireResumeToken_` ya no tiene el cross-group guard — KAL-4 exige que un ' +
+        '`enrollment_group_id` del cuerpo que no case con el del token se rechace')
+    }
+  }
+
+  // El lector único tiene que seguir distinguiendo los DOS fallos: «el KMS dijo que no» vs «no
+  // se pudo preguntar». Colapsarlos convertiría un KMS caído en «tu enlace no vale».
+  const ayudante = cuerpoDe(fuenteLimpia, '_expedienteDelToken_')
+  if (ayudante === null) {
+    fallos.push('no se encontró `_expedienteDelToken_` — control CIEGO: es el lector ÚNICO (②17)')
+  } else if (!/rechazo/.test(ayudante)) {
+    fallos.push('`_expedienteDelToken_` ya no distingue «el KMS rechazó el token» de «no se pudo ' +
+      'preguntar» — con los dos colapsados, un KMS caído le diría a una familia legítima que su ' +
+      'enlace no vale')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -1030,5 +1150,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarLaIdentidadDeQuienRecupera(limpia),
     ...comprobarLasRespuestas(limpia),
     ...comprobarLasEtiquetasDelEnvio(limpia),
+    ...comprobarLaPuerta(limpia),
   ]
 }

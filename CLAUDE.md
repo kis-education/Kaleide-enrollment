@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos"). **Medido el 2026-08-16: quedan 55 lecturas directas + 1 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 56, solo 16 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **`submitEnrollmentSession_` está a CERO.** **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos") y **LA PUERTA y sus tres hermanas** (§"②17 — LA PUERTA"). **Medido el 2026-08-16: quedan 51 lecturas directas + 1 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 52, solo 12 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **`submitEnrollmentSession_`, `requireResumeToken_` y `assertGroupEditable_` están a CERO.** **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -767,6 +767,84 @@ a sí misma dos veces:** la rotura del orden **no se aplicaba** (era la rotura l
 la afirmación) y la del renombrado **reventaba** en vez de declararse ciega. **Quien toque este
 compositor, que lo mida.**
 
+### ②17 (2026-08-16) — LA PUERTA: la lectura más llamada del asistente, y la que se hacía DOS VECES en la misma petición
+
+**Eran CUATRO funciones repitiendo la MISMA lectura directa de `enrEnrollmentGroups`** —filtrada por
+`resume_token`, o por el identificador que ese token acababa de autorizar— desde este proceso, que es
+**público y anónimo**, con la credencial de AppSheet de la aplicación entera:
+
+| Quién | Qué era |
+|---|---|
+| `requireResumeToken_` | **el gate de TODA mutación**, y la lectura **más llamada** del asistente |
+| `assertGroupEditable_` | la **SEGUNDA lectura de la MISMA fila en la MISMA petición** |
+| `abandonSession_` | «empezar de nuevo» |
+| `reportUnsolicited_` | «esto no es mío» |
+
+Cruzaba la **fila ENTERA**, con **`magic_link_token`** —un secreto de portador— dentro, más
+`school_id`, `program_id`, `source_id`, `source_locale`, `preferred_language` y el bloque de
+auditoría. **Ahora la sirve el KMS** por `enr.wizardExpedienteDelToken` —la entrada del sexto tramo,
+**ampliada, no duplicada**— proyectada a **SIETE campos** (los cinco de antes más `abandoned_at` y
+`created_at`, ninguno dato personal) y por el lector **ÚNICO** `_expedienteDelToken_`.
+
+**Y la segunda lectura DESAPARECE, no se migra.** Se midió antes de tocar nada, contra
+`origin/main`: los **CINCO** llamantes de `assertGroupEditable_` van **inmediatamente precedidos** de
+`requireResumeToken_` (`saveStep_` `:4093/:4103` · `submitEnrollmentSession_` `:4216/:4226` ·
+`saveResponses_` `:5389/:5391` · `uploadDocument_` `:5710/:5716` · `saveNeae_` `:6336/:6341`) ⇒ la
+puerta deja la fila en una **memoria de EJECUCIÓN** (`_memoCabeceraEjecucion_`) y
+`assertGroupEditable_` la lee de ahí. **No es caché** —muere con la petición, cero riesgo de servir
+una fila vieja— y **no es un segundo resolvedor**: es esa misma fila, ya autorizada por el token.
+
+**Lo que hay que retener al tocar esto:**
+
+- **LA DECISIÓN NO SE MOVIÓ.** Los rechazos con sus **mensajes EXACTOS** (`resume_token abandoned`,
+  el de caducidad que arregló `①22`), el TTL de 7 días desde `created_at`, la exención de los
+  `submitted`, el memo de lectura `rtmemo_`, el **cross-group guard** y el **acuse silencioso
+  anti-enumeración** de `reportUnsolicited_` siguen **aquí, verbatim**. Cambia **de dónde sale la
+  fila**, no qué se hace con ella — y el control lo vigila con cuatro anclas.
+- **Eso obligó al MODO TOLERANTE, y está ACOTADO Y DECLARADO.** `tolerar_sesion_cerrada` hace que la
+  puerta del KMS acepte el token caducado o abandonado **y devuelva la fila**, para que el asistente
+  aplique SUS rechazos. Ensancha **SOLO qué token se acepta**, JAMÁS **qué expediente** (sigue
+  saliendo del token, KAL-4), sigue exigiendo el `service_token`, y un token **inexistente se
+  rechaza SIEMPRE**. **No es capacidad nueva**: `enr.wizardAbandonSession` ya acepta hoy esos mismos
+  tokens por la misma vía pública. Sin la bandera, los **tres llamantes del sexto tramo quedan
+  byte-idénticos**. Si la puerta del KMS rechazara antes, `requireResumeToken_` no podría distinguir
+  «caducado» de «no existe» y la familia con la solicitud caducada leería el mensaje equivocado.
+- **⛔ `assertGroupEditable_` FALLA CERRADO con el `NOT_FOUND` de siempre si la memoria no está, y
+  NUNCA vuelve a leer por identificador** —ni de AppSheet ni del KMS—: ahí el id llega como
+  **argumento**, así que un lector por id sería una puerta trasera a KAL-4.
+- **Los dos fallos NO pesan igual**, y el lector único gana un **tercer estado** para distinguirlos:
+  «el KMS **contestó** que ese token no vale» (`rechazo`) ⇒ el rechazo propio del manejador; «**no se
+  pudo preguntar**» (transporte) ⇒ **lanza `KMS_UNREACHABLE`**, nunca «tu enlace no vale». Decirle
+  eso a una familia legítima porque el KMS está caído es peor que el fallo. **`ok` no cambió de
+  valor** al añadirse `rechazo`, así que los tres llamantes del sexto tramo no ven diferencia.
+  `reportUnsolicited_` da su acuse silencioso en los dos casos, como ya hacía por su `catch`.
+
+⚠️ **Y una premisa del encargo era FALSA, medida:** decía que la lectura de `sendVerificationCode_`
+(`:4799`) filtra por un identificador **«que viene en el cuerpo (rama de alta)»**. **No.** Está en la
+rama **step-up**, y el identificador lo deriva `_resolveStepUpGroup_` **del bearer**. **Aun así NO
+entra**, por un motivo distinto: es el respaldo del respaldo y **solo se alcanza cuando NO hay
+`resume_token`** (camino de `signing_token`, `frontend/src/pages/steps/signingCommon.js:49`) — ahí no
+hay token del que derivar la cabecera ni memoria que reusar, así que quitarla dejaría a esa familia
+con `BAD_REQUEST` en lugar de su código.
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
+ídem `appsheetRequestBatch_`): **55 → 51** sueltas, **1** en lote sin cambio. El camino vivo:
+**16 → 12**.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarLaPuerta` — las cuatro no vuelven a leer
+`enrEnrollmentGroups` · las tres con token pasan por el lector único **y en modo tolerante** ·
+`assertGroupEditable_` no consulta por identificador y lee la memoria · la puerta la rellena · y
+**CUATRO anclas** (la puerta existe, valida la forma del token, aplica el TTL y conserva el
+cross-group guard) para que «ya no lee AppSheet» no salga verde sobre un gate vaciado. **Rojo
+demostrado NUEVE veces**, cada una nombrando su caso (la del renombrado deja el control **CIEGO**).
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
+**14 afirmaciones** sobre el manejador real extraído del fuente y ejecutado con dobles,
+**demostradas no ciegas** con **seis roturas** (ensanchar la proyección · tomar el expediente del
+cuerpo · quitarle el `service_token` al modo tolerante · tolerar siempre · aceptar el token
+inexistente · renombrar el manejador → *«MEDICIÓN CIEGA»*). **Quien toque esta puerta, que lo mida.**
+
 ### ②17 (2026-08-15) — la RECUPERACIÓN DEL ENLACE: la ficha de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor
 
 **La rama pública de `sendMagicLink_` es la puerta por la que una familia vuelve a su solicitud**, y
@@ -927,7 +1005,7 @@ Regla obligatoria para nuevos componentes que reciban un secret por path:
 
 **Fix**:
 - **Frontend**: `Step7Review.handleSubmit` ahora llama `setIsSubmitted(true)` tras éxito de `submitEnrollmentSession`. `setIsSubmitted` exportado desde el provider. `WizardPage` ya tenía la lógica de bloqueo correcta condicionada a `isSubmitted`.
-- **Backend (defensa en profundidad)**: helper `assertGroupEditable_(enrollment_group_id)` en `backend/Code.js`, llamado al inicio de `saveStep_`, `saveResponses_`, `uploadDocument_`. Si `submitted_at IS NOT NULL` o `abandoned_at IS NOT NULL`, throw con `err.code='NOT_EDITABLE'`. `doPost` mapea ese código a HTTP 200 + `{ok:false, error:{code:'NOT_EDITABLE', message}}` — patrón P72 silent reject estructurado, NUNCA HTTP 403.
+- **Backend (defensa en profundidad)**: helper `assertGroupEditable_(enrollment_group_id)` en `backend/Code.js`, llamado al inicio de sus **CINCO** llamantes — `saveStep_`, `submitEnrollmentSession_`, `saveResponses_`, `uploadDocument_` y `saveNeae_`—, **siempre inmediatamente después de `requireResumeToken_`**. Si `submitted_at IS NOT NULL` o `abandoned_at IS NOT NULL`, throw con `err.code='NOT_EDITABLE'`. `doPost` mapea ese código a HTTP 200 + `{ok:false, error:{code:'NOT_EDITABLE', message}}` — patrón P72 silent reject estructurado, NUNCA HTTP 403. *(②17 duodécimo tramo, 2026-08-16: **ya no lee nada** — reusa la fila que la puerta acaba de validar, en la memoria de EJECUCIÓN, y falla cerrado con el mismo `NOT_FOUND` si no está. Ver §"②17 — LA PUERTA".)*
 
 **Estados editables canónicos (regla derivada)**: solamente cuando `submitted_at IS NULL` (≡ DRAFT) y `abandoned_at IS NULL`. La rama "reopen" (KMS transiciona enrollments a IN para pedir más info) ya está cubierta server-side: **`hydrateSession_`** —el camino VIVO— sobrescribe `submitted_at = null` en la respuesta cuando la fase del expediente es editable (busca `REOPEN-FIX` en `backend/Code.js`). Por tanto el modelo conceptual del wizard es:
 
