@@ -3333,8 +3333,14 @@ function derivarPantallaAdmision_(stateCode, signingStatus, signingContext) {
 }
 
 function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons, admHints) {
-  // admHints (OPCIONAL) = {states, sessions, signersBySession, resumeToken}.
-  //  · `states` — filas de `sysStates_T` ya bajadas por el caller (AppSheet, sigue igual).
+  // admHints (OPCIONAL) = {situaciones, sessions, signersBySession, resumeToken}.
+  //  · `situaciones` — ②17 (decimotercer tramo): el catálogo de situaciones **servido por el
+  //    KMS**, YA ACOTADO al colegio y a la máquina de estados DECLARADA del expediente
+  //    (`enr.wizardEstadoDeLaAdmision`). Aquí NO se vuelve a filtrar por colegio ni por tipo:
+  //    ese filtro es inseparable de la lectura y viajó con ella. **Y con él se fue el literal
+  //    `ENR_ADMISSION_SCHOOL`, que DL-E48 prohíbe escribir a mano**: el dominio lo resuelve el
+  //    KMS por la cadena `program_id → enrPrograms → enrProgramTypes`. Si el caller no las
+  //    trae, se piden aquí con `resumeToken` (mismo patrón que las filas de firma).
   //  · `sessions` / `signersBySession` — ②17: filas de firma **servidas por el KMS**. Si el
   //    caller no las trae, se piden aquí con `resumeToken` (ver el bloque del estado 'AD').
   //    YA NO hay lectura directa de AppSheet para estas dos: sin filas se degrada como
@@ -3346,18 +3352,25 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
   var out = { state_code: null, state_label: null, signing_available: false, signing_context: null, signing_ready: false, editable: true };
   if (!enrollments || !enrollments.length) return out;
 
-  // Catálogo de estados ENR_ADMISSION_SCHOOL del tenant (mismo patrón que el
-  // reopen-check de `hydrateSession_` — busca REOPEN-FIX en este fichero).
+  // Catálogo de situaciones del expediente — lo sirve el KMS, ya acotado (②17).
   var perfS0 = Date.now(); // PERF-KMS2 (no-op si PERF2_.adm inactivo)
-  var allStates = Array.isArray(admHints.states)
-    ? admHints.states
-    : (appsheetRequest_(T.STATES_T, 'Find', [], {}) || []);
+  var allStates = admHints.situaciones;
+  if (!Array.isArray(allStates)) {
+    // ⛔ FALLA CERRADO. La lectura que esto sustituye (`appsheetRequest_`) LANZABA, y aquí no
+    // había `try`: seguir con el catálogo vacío devolvería `editable:true` para una familia
+    // que ya envió, que es la degradación que este tramo vino a corregir.
+    var pulso = _pulsoDeLaAdmision_(admHints.resumeToken);
+    if (!pulso.ok) {
+      var ePulso = new Error('No se pudo leer el catálogo de situaciones del expediente.');
+      ePulso.code = 'KMS_UNREACHABLE';
+      throw ePulso;
+    }
+    allStates = pulso.situaciones;
+  }
   if (PERF2_.adm) PERF2_.adm.states_ms = Date.now() - perfS0;
   var statesById = {};
   allStates.forEach(function(s) {
-    if (s && s.school_id === SCHOOL_ID && s.entity_type_code === 'ENR_ADMISSION_SCHOOL' && !s.deleted_at) {
-      statesById[s.state_id] = s;
-    }
+    if (s && s.state_id) statesById[s.state_id] = s;
   });
 
   var enrStates = enrollments
@@ -3387,7 +3400,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
       var firmaKms = _datosDeFirmaDelExpediente_(admHints.resumeToken);
       if (firmaKms) {
         admHints = {
-          states:           admHints.states,
+          situaciones:      admHints.situaciones,
           resumeToken:      admHints.resumeToken,
           sessions:         firmaKms.sessions,
           signersBySession: firmaKms.signersBySession,
@@ -3526,6 +3539,74 @@ function _datosDeFirmaDelExpediente_(resumeToken) {
     Logger.log(redact_('[_datosDeFirmaDelExpediente_] lectura KMS fallida — ' + (e && e.message)));
   }
   _FIRMA_MEMO_[token] = out;
+  return out;
+}
+
+/**
+ * Memoria de ESTA ejecución (no ScriptCache) — misma justificación que `_FIRMA_MEMO_`: el
+ * pulso resuelve el mismo expediente hasta dos veces en la misma petición (una en
+ * `getAdmissionState_` y otra en el respaldo de `buildAdmissionContext_`). Vive lo que vive
+ * la petición ⇒ cero riesgo de servir filas rancias.
+ * @private
+ */
+var _PULSO_MEMO_ = {};
+
+/**
+ * EL PULSO DE LA ADMISIÓN — lo que hace falta para saber en qué situación está el
+ * expediente del `resume_token`, servido por el KMS (②17, decimotercer tramo).
+ *
+ * **LECTOR ÚNICO.** Sustituye al lote de TRES lecturas directas a AppSheet que hacía
+ * `getAdmissionState_` —una acción PÚBLICA del despachador anónimo, disparada repetidamente
+ * mientras la familia espera— más el respaldo de `buildAdmissionContext_`. Bajaba la ficha
+ * COMPLETA de cada persona **—MENORES INCLUIDOS**— y el catálogo de situaciones ENTERO.
+ * **PROHIBIDO escribir un segundo lector**: es la regresión que documenta §"Regla — refactors
+ * preservan el código probado".
+ *
+ * KAL-4: el expediente lo deriva el KMS del token; aquí NO se manda ningún id de grupo, y el
+ * nombre de la tabla no viaja. KAL-11: log redactado, nunca el token entero.
+ *
+ * ⛔ **DEVUELVE DOS COSAS, y hay que respetarlo** (mismo motivo que `_expedienteDelToken_`):
+ *   · `{ok:true,  expedientes, personas, situaciones}` → los datos.
+ *   · `{ok:false, motivo}`                             → **no se pudo preguntar** (o el KMS
+ *     rechazó). NO es «no hay expediente»: quien llama **falla cerrado**, porque decir «no hay
+ *     nada» hace que `buildAdmissionContext_` devuelva `editable:true` para una familia que ya
+ *     envió, y borra de su pantalla la situación real y el puente a la firma.
+ *
+ * @param {string} resumeToken
+ * @returns {{ok:boolean, expedientes:Object[], personas:Object[], situaciones:Object[], motivo:(string|null)}}
+ * @private
+ */
+function _pulsoDeLaAdmision_(resumeToken) {
+  var token = resumeToken ? String(resumeToken).trim() : '';
+  var fallo = function(motivo) {
+    return { ok: false, expedientes: [], personas: [], situaciones: [], motivo: motivo };
+  };
+  if (!token) return fallo('sin resume_token');
+  try { assertValidUuid_(token, 'resume_token'); }
+  catch (e) { return fallo('resume_token con forma inválida'); }
+  if (Object.prototype.hasOwnProperty.call(_PULSO_MEMO_, token)) return _PULSO_MEMO_[token];
+
+  var out;
+  try {
+    var r = kmsProxy_('enr.wizardEstadoDeLaAdmision', { resume_token: token }) || {};
+    if (Array.isArray(r.expedientes) && Array.isArray(r.personas) && Array.isArray(r.situaciones)) {
+      out = {
+        ok:          true,
+        expedientes: r.expedientes,
+        personas:    r.personas,
+        situaciones: r.situaciones,
+        motivo:      null,
+      };
+    } else {
+      Logger.log('[_pulsoDeLaAdmision_] respuesta incompleta del KMS — se falla cerrado');
+      out = fallo('respuesta incompleta');
+    }
+  } catch (e2) {
+    var msg = (e2 && e2.message) || String(e2);
+    Logger.log(redact_('[_pulsoDeLaAdmision_] lectura KMS fallida — ' + msg));
+    out = fallo(msg);
+  }
+  _PULSO_MEMO_[token] = out;
   return out;
 }
 
@@ -4013,12 +4094,19 @@ function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint,
  * y el pulse lo disparaba repetidamente solapado → saturación. El pulse SOLO necesita
  * el estado de admisión + el contexto de firma, NO el expediente completo.
  *
- * Lee solo: grupo (vía token), enrollments del grupo, persons del grupo (para Path 2
- * de buildAdmissionContext_), y emails (lazy, solo si hay recovered_email) — más el
- * read interno de `sysStates_T` de buildAdmissionContext_. NO lee
- * relations/documents/responses/interviews ni los sub-reads por persona. ②17: las filas
- * de firma NO se leen de AppSheet — las sirve el KMS, y solo si el expediente está
- * admitido.
+ * ②17 (decimotercer tramo): **este manejador YA NO lee AppSheet.** Los expedientes de alumno,
+ * las personas (proyectadas a papel + identificador, para la Vía 2 de
+ * `buildAdmissionContext_`) y el catálogo de situaciones —ya acotado al colegio y a la máquina
+ * DECLARADA— los sirve el KMS en UNA pregunta (`_pulsoDeLaAdmision_`). Las filas de firma, la
+ * cabecera y la identidad del tutor ya venían del KMS de tramos anteriores. NO lee
+ * relations/documents/responses/interviews ni los sub-reads por persona.
+ *
+ * ⛔ **FALLA CERRADO**: si el KMS no contesta, LANZA. Antes el lote de AppSheet degradaba en
+ * silencio (`appsheetRequestBatch_` nunca lanza) y devolvía `editable:true` con `state_code`
+ * vacío — el servidor afirmando que la solicitud de una familia que ya envió se puede editar,
+ * y su situación real y el puente a la firma borrados de la pantalla. El cliente ya sabe tratar
+ * un fallo del pulso (`WizardPage.jsx`: `.catch` + no avanza la versión ⇒ reintenta al tick
+ * siguiente conservando lo que ya tenía).
  *
  * KAL-4: el grupo se deriva del resume_token server-side (requireResumeToken_), nunca
  * del payload. El guardian (Path 1) se re-resuelve del recovered_email contra datos
@@ -4094,33 +4182,33 @@ function getAdmissionState_(p) {
     }
   } catch (eWzAdm) { /* best-effort → camino vivo */ }
 
-  const idEsc = appsheetEscape_(id);
+  // ②17 (decimotercer tramo) — las TRES lecturas de AppSheet que vivían aquí (los expedientes
+  // de alumno, las personas y el catálogo de situaciones SIN FILTRO) las sirve el KMS en UNA
+  // pregunta, por el lector ÚNICO `_pulsoDeLaAdmision_`. El expediente lo deriva el KMS del
+  // `resume_token` (KAL-4): aquí no viaja ningún id ni ningún nombre de tabla.
+  //
+  // Lo que ya venía del KMS de tramos anteriores y NO se toca: la CABECERA (sexto tramo,
+  // `_expedienteDelToken_`), la IDENTIDAD del tutor (noveno, `enr.wizardTutorQueRecupera`) y
+  // las FILAS DE FIRMA (`enr.wizardDatosDeFirma`, pedidas dentro de `buildAdmissionContext_`
+  // y solo si el expediente está admitido).
+  //
+  // ⛔ FALLA CERRADO, y esto CORRIGE el oro: el lote `appsheetRequestBatch_` NUNCA lanzaba,
+  // así que un fallo de AppSheet dejaba `enrollments = []` ⇒ `editable:true` para una familia
+  // que ya envió, con su situación real y el puente a la firma borrados de la pantalla.
   const perfB0 = Date.now(); // PERF-KMS2
-  const lightRead = appsheetRequestBatch_([
-    { table: T.ENROLLMENTS,      action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    { table: T.PERSONS,          action: 'Find', selector: { Filter: '"enrollment_group_id" = "' + idEsc + '"' } },
-    // ②17 (sexto tramo): la CABECERA la sirve el KMS por su lector único; aquí ya no se
-    // lee `enrEnrollmentGroups` — se pide abajo con `_expedienteDelToken_` y viaja como
-    // hint del respaldo «tutor 1» de la cadena de identidad.
-    // PERF-KMS2 (2026-06-11): `sysStates_T` en el MISMO lote paralelo (cero latencia extra)
-    // que antes se leía en SERIE aguas abajo (medido: 10-13 s). Filtro VERBATIM del lector
-    // probado `buildAdmissionContext_` (sin filtro). Las filas viajan como hint — el
-    // consumidor re-aplica su filtro fino en memoria.
-    //
-    // ②17: `sysSigningSessions` (y el segundo lote de `sysSigningSessionSigners` que
-    // colgaba de él) YA NO se leen aquí. Esas filas las sirve el KMS
-    // (`enr.wizardDatosDeFirma`), acotadas al expediente del `resume_token`, y se piden
-    // SOLO si el expediente está admitido — que es cuando hay firma que mirar.
-    //
-    // ②17 (noveno tramo): `enrEmails` TAMPOCO — era el hint de la cadena de identidad, que
-    // hoy la resuelve el KMS entera (`enr.wizardTutorQueRecupera`).
-    { table: T.STATES_T,          action: 'Find', selector: {} },
-  ]);
+  const pulso = _pulsoDeLaAdmision_(p && p.resume_token);
   const perfBatchMs = Date.now() - perfB0;
-  const enrollments = lightRead[0].ok ? (lightRead[0].data || []) : [];
-  const persons     = lightRead[1].ok ? wizardSoloVivas_(lightRead[1].data) : [];
-  // PERF-KMS2: hint (null si su read del batch falló → el consumidor cae a su live).
-  const statesHint   = lightRead[2].ok ? (lightRead[2].data || []) : null;
+  if (!pulso.ok) {
+    const ePulso = new Error('No se pudo leer el estado de la solicitud.');
+    ePulso.code = 'KMS_UNREACHABLE';
+    throw ePulso;
+  }
+  // Las personas llegan YA filtradas a quien sigue en la solicitud (el KMS aplica
+  // `sys_rowIsActiveLiveOptionalFlag_`, gemelo declarado de `wizardSoloVivas_`) y proyectadas
+  // a `{person_id, person_type_id}` — los DOS únicos campos que la Vía 2 toca.
+  const enrollments = pulso.expedientes;
+  const persons     = pulso.personas;
+  const statesHint  = pulso.situaciones;
 
   // IDENTITY-FROM-LINK (2026-06-11): la identidad viaja en el ENLACE — `p.n` (email_id) →
   // email del guardian, resuelto contra el expediente del token (KAL-4). Prioridad `n` >
@@ -4138,7 +4226,7 @@ function getAdmissionState_(p) {
   // ②17: las filas de firma ya no viajan desde el batch de AppSheet — se piden al KMS
   // con este token, y solo si el expediente está admitido.
   const admission = buildAdmissionContext_(id, enrollments, guardianId, persons,
-    { states: statesHint, resumeToken: (p && p.resume_token) || null });
+    { situaciones: statesHint, resumeToken: (p && p.resume_token) || null });
   const perfAdmMs = Date.now() - perfA0;
   Logger.log('[PERF] getAdmissionState t_gate=' + perfGateMs + ' t_batch=' + perfBatchMs +
              ' t_guardian=' + perfGuardianMs + ' t_admission=' + perfAdmMs +
@@ -10685,8 +10773,13 @@ function manual_diagWizardSigningGate() {
   Logger.log('  signing_status (lifecycle): ' + signingStatus);
 
   // Resultado final del gate tal como lo ve el frontend.
+  // ②17 (decimotercer tramo): el catálogo de situaciones lo sirve el KMS por el lector ÚNICO
+  // (`_pulsoDeLaAdmision_`), así que este diagnóstico le pasa el `resume_token` de la cabecera
+  // que ya leyó. Sin él, `buildAdmissionContext_` fallaría cerrado — que es lo correcto: un
+  // catálogo que no se pudo leer no puede pasar por «no hay situación».
   var admission = buildAdmissionContext_(GROUP_ID, enrollments, recoveredGuardianId, persons,
-    { sessions: sessions, signersBySession: signersBySessionDiag });
+    { sessions: sessions, signersBySession: signersBySessionDiag,
+      resumeToken: (grp && grp.resume_token) || null });
   Logger.log('  >>> buildAdmissionContext_: state_code=' + admission.state_code +
              ' signing_available=' + admission.signing_available +
              ' signing_context=' + (admission.signing_context ? 'sí' : 'no') +

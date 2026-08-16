@@ -316,7 +316,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos") y **LA PUERTA y sus tres hermanas** (§"②17 — LA PUERTA"). **Medido el 2026-08-16: quedan 51 lecturas directas + 1 en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 52, solo 12 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **`submitEnrollmentSession_`, `requireResumeToken_` y `assertGroupEditable_` están a CERO.** **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos") y **LA PUERTA y sus tres hermanas** (§"②17 — LA PUERTA") y **EL PULSO DE LA ADMISIÓN** (§"②17 — EL PULSO"). **Medido el 2026-08-16: quedan 50 lecturas directas y NINGUNA en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 50, solo 10 están en el camino vivo**: las otras 40 viven en funciones `manual_*` de editor, **no alcanzables desde internet** — bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto no se coge por el número. **`submitEnrollmentSession_`, `requireResumeToken_`, `assertGroupEditable_`, `getAdmissionState_` y `buildAdmissionContext_` están a CERO.** **La entrada sigue ABIERTA: la credencial sigue en el asistente.**
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -844,6 +844,87 @@ demostrado NUEVE veces**, cada una nombrando su caso (la del renombrado deja el 
 **demostradas no ciegas** con **seis roturas** (ensanchar la proyección · tomar el expediente del
 cuerpo · quitarle el `service_token` al modo tolerante · tolerar siempre · aceptar el token
 inexistente · renombrar el manejador → *«MEDICIÓN CIEGA»*). **Quien toque esta puerta, que lo mida.**
+
+### ②17 (2026-08-16) — EL PULSO: la acción más llamada mientras la familia espera, y bajaba el catálogo de situaciones ENTERO
+
+**`getAdmissionState_` es una acción PÚBLICA del despachador anónimo**, y el cliente la dispara
+**repetidamente** mientras la familia mira la pantalla. Hacía TRES lecturas directas a AppSheet en un
+lote, con la credencial de la aplicación entera:
+
+| Qué leía | Para qué, de verdad |
+|---|---|
+| `enrEnrollments` del expediente | **UN campo**: `current_state_id`. Cruzaba la fila entera |
+| `enrPersons` del expediente | **la ficha COMPLETA de cada persona —MENORES INCLUIDOS**: nombre, fecha de nacimiento, documento— **solo para CONTAR tutores**, y solo cuando hay varios firmantes pendientes |
+| `sysStates_T` **SIN FILTRO** | el **catálogo de situaciones ENTERO**, de todas las máquinas de estados de todos los colegios, para quedarse con las de una |
+
+Y su respaldo, `buildAdmissionContext_`, **releía el catálogo por su cuenta** cuando el llamante no
+se lo pasaba. **Ahora lo sirve el KMS en UNA pregunta** —`enr.wizardEstadoDeLaAdmision`
+(`kis-app kms-server/enr/wizard-gateway.gs`)— y lo consume **UN SOLO ayudante**,
+`_pulsoDeLaAdmision_`, con memoria de EJECUCIÓN. De los expedientes sale **un campo**, de las
+personas **dos** y del catálogo **cuatro**.
+
+**Lo que hay que retener al tocar esto:**
+
+- **LA DECISIÓN NO SE MOVIÓ.** Elegir la situación **menos avanzada por `display_order`**,
+  `derivarPantallaAdmision_` (las tres derivaciones de pantalla que DL-E41 ★ACOTACIÓN dejó a
+  propósito de este lado), las Vías 1 y 2 del contexto de firma, `resolveSigningStatus_`, la memoria
+  `wz_adm_`, la gracia del enlace y la frescura del código de un solo uso: **todo sigue aquí**.
+  Cambia **de dónde salen las filas**, no qué se hace con ellas — y el control lo vigila con tres
+  anclas.
+- **El FILTRO del catálogo VIAJA con su lectura; la ELECCIÓN no.** Qué filas *son* el catálogo de
+  este expediente (colegio + máquina declarada + no borradas) es inseparable de la lectura, igual
+  que la guarda del tutor de la recuperación y que las dos comprobaciones de la subida.
+- **⛔ Y con ese filtro SALE EL LITERAL DEL DOMINIO de este camino.** El oro comparaba
+  `entity_type_code === 'ENR_ADMISSION_SCHOOL'` a mano — justo lo que DL-E48 prohíbe. Hoy el dominio
+  lo resuelve el KMS por su cadena declarada (`program_id → enrPrograms → enrProgramTypes`) y **sin
+  respaldo silencioso**: si el colegio no lo declara, `DOMAIN_NOT_DECLARED` nombrando el eslabón que
+  falta. Observable: el pulso da error en lugar de enseñar la situación de un campamento leída de la
+  máquina de admisión escolar. ⚠️ **NO es el último del fichero, y decirlo sería falso**: medidos el
+  2026-08-16 quedan **CUATRO** apariciones ejecutables — `submitEnrollmentSession_:4677`,
+  `isDurableSigningMilestoneCompleted_:7012`, `resolveSigningToken_:7176` y el diagnóstico de editor
+  `manual_testSigningStepsFromMilestones:10806` —, todas en el **racimo de hitos y firma**, que es
+  otro tramo de `②17` y sigue abierto.
+- **⚠️ FALLA CERRADO, y esto CORRIGE el oro.** `appsheetRequestBatch_` **nunca lanza** (devuelve
+  `{ok}` por elemento) ⇒ un fallo de AppSheet dejaba `enrollments = []` y `buildAdmissionContext_`
+  retornaba en su primera línea con **`editable: true`** y `state_code` vacío: el servidor afirmando
+  que la solicitud de una familia que **ya envió** se puede editar. *(Medido en el cliente: ese
+  `editable:true` **no** llega a desbloquear la pantalla, porque `WizardContext.jsx:1310` solo lo
+  aplica `if (data.state_code)`; lo que la familia **sí** observa es que la situación real de su
+  expediente y el puente a la firma **desaparecen en silencio**.)* Hoy lanza — y el cliente ya sabe
+  tratarlo: `.catch` + no avanza la versión ⇒ reintenta al tick siguiente **conservando lo que
+  tenía**.
+- **Las personas llegan YA filtradas** a quien sigue en la solicitud (el KMS aplica
+  `sys_rowIsActiveLiveOptionalFlag_`, el gemelo declarado de `wizardSoloVivas_`), así que aquí ya no
+  se cuela ese colador: llegan dos campos, no fichas.
+- **El diagnóstico de editor `manual_diagWizardSigningGate` le pasa el `resume_token`** que lee de la
+  cabecera. Sin él, `buildAdmissionContext_` falla cerrado — que es lo correcto: un catálogo que no
+  se pudo leer no puede pasar por «no hay situación».
+
+**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
+ídem `appsheetRequestBatch_`): **51 → 50** sueltas y **1 → 0** en lote. El camino vivo: **12 → 10**;
+en estos dos, **4 consultas → 0**.
+
+**Control**: `scripts/verja-publica.mjs` gana `comprobarElPulsoDeLaAdmision` — los dos no vuelven a
+leer `enrEnrollments`/`enrPersons`/`sysStates_T` · los dos pasan por el lector único · el ayudante
+pregunta a la ruta declarada · el literal del dominio no reaparece · y **TRES anclas** (el expediente
+sigue saliendo del token, la frescura del código de un solo uso sigue computándose, y la situación se
+sigue eligiendo por `display_order`). **Rojo demostrado NUEVE veces**, cada una nombrando su caso (la
+del renombrado deja el control **CIEGO**).
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
+**18 afirmaciones** sobre el manejador real extraído del fuente y ejecutado con dobles,
+**demostradas no ciegas** con **cinco roturas** (ensanchar la proyección a la ficha entera · tomar el
+expediente del cuerpo · disfrazar de «no hay» un fallo de lectura · quitar la declaración pública de
+la ruta · renombrar el manejador → *«MEDICIÓN CIEGA»*). **Y la medición se corrigió a sí misma:** la
+rotura del expediente tomado del cuerpo salió **VERDE** al primer intento —la afirmación miraba solo
+la LONGITUD de la lista y el juego de pruebas tiene una fila por grupo—, y hubo que acotarla a **qué
+fila** vuelve. **Quien toque este manejador, que lo mida.**
+
+**Lo que apareció de paso y NO se tocó:** `appsheetRequestBatch_` se queda **sin ni un llamante**
+(era su último). No se retira aquí: es el transporte que los controles `escrituras-directas.mjs` y
+`personas-quitadas.mjs` nombran como **permitido**, así que quitarlo obliga a tocar dos controles de
+seguridad en un cambio que no va de eso. Queda anotado.
 
 ### ②17 (2026-08-15) — la RECUPERACIÓN DEL ENLACE: la ficha de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor
 

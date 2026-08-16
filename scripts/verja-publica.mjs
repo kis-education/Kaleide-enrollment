@@ -1133,6 +1133,97 @@ function comprobarLaPuerta(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * ②17 (decimotercer tramo) — EL PULSO DE LA ADMISIÓN no lee AppSheet, y lo lee UN SOLO sitio.
+ *
+ * `getAdmissionState_` es una acción PÚBLICA del despachador anónimo y el cliente la dispara
+ * repetidamente mientras la familia espera. Hacía TRES lecturas directas en un lote: los
+ * expedientes de alumno, las personas del expediente —la ficha COMPLETA de cada una, MENORES
+ * INCLUIDOS, solo para CONTAR tutores— y `sysStates_T` **SIN FILTRO: el catálogo de situaciones
+ * ENTERO**. Su respaldo, `buildAdmissionContext_`, releía el catálogo por su cuenta.
+ *
+ * Lo que se afirma, y es lo observable en el fuente: los dos **no vuelven a leer** esas tres
+ * tablas de AppSheet, los dos pasan por el lector ÚNICO `_pulsoDeLaAdmision_`, ese ayudante
+ * pregunta a la ruta declarada, y el literal del dominio (`ENR_ADMISSION_SCHOOL`) **no vuelve**
+ * a escribirse a mano en el filtro del catálogo (DL-E48).
+ *
+ * Las ANCLAS —sin ellas el control mediría manejadores vaciados—: `getAdmissionState_` sigue
+ * derivando el expediente del token y sigue computando la frescura del código de un solo uso;
+ * `buildAdmissionContext_` sigue eligiendo la situación por `display_order`.
+ *
+ * Lo que NO se afirma, y se dice: que el KMS conteste la proyección correcta, ni que el fallo
+ * cerrado esté bien puesto. Eso no se lee aquí — se midió aparte.
+ */
+function comprobarElPulsoDeLaAdmision(fuenteLimpia) {
+  const fallos = []
+
+  const pulso = cuerpoDe(fuenteLimpia, 'getAdmissionState_')
+  const contexto = cuerpoDe(fuenteLimpia, 'buildAdmissionContext_')
+  if (pulso === null) {
+    fallos.push('no se encontró `getAdmissionState_` — control CIEGO en el pulso de la admisión (②17)')
+  }
+  if (contexto === null) {
+    fallos.push('no se encontró `buildAdmissionContext_` — control CIEGO en el pulso de la admisión (②17)')
+  }
+  if (pulso === null || contexto === null) return fallos
+
+  const tablasMigradas = [
+    ['ENROLLMENTS', 'enrEnrollments', 'los expedientes de alumno del grupo'],
+    ['PERSONS', 'enrPersons', 'la ficha completa de cada persona, MENORES INCLUIDOS, solo para contar tutores'],
+    ['STATES_T', 'sysStates_T', 'el catálogo de situaciones ENTERO, sin filtro'],
+  ]
+  for (const [nombre, cuerpo] of [['getAdmissionState_', pulso], ['buildAdmissionContext_', contexto]]) {
+    for (const [constante, tabla, queEs] of tablasMigradas) {
+      const re = new RegExp('appsheetRequest(Batch)?_\\s*\\([\\s\\S]{0,400}?(T\\.' + constante + "|'" + tabla + "')")
+      if (re.test(cuerpo)) {
+        fallos.push('`' + nombre + '` vuelve a leer `' + tabla + '` directamente de AppSheet — ' +
+          'eso es lo que ②17 quitó del camino MÁS LLAMADO del expediente (' + queEs + ')')
+      }
+    }
+  }
+
+  // (b) los dos pasan por el lector ÚNICO.
+  for (const [nombre, cuerpo] of [['getAdmissionState_', pulso], ['buildAdmissionContext_', contexto]]) {
+    if (!/_pulsoDeLaAdmision_\s*\(/.test(cuerpo)) {
+      fallos.push('`' + nombre + '` ya no pide el estado de la admisión por el lector ÚNICO ' +
+        '(`_pulsoDeLaAdmision_`) — o se quitó, o volvió a resolverse por su cuenta, y dos ' +
+        'lectores del mismo dato divergen')
+    }
+  }
+
+  const ayudante = cuerpoDe(fuenteLimpia, '_pulsoDeLaAdmision_')
+  if (ayudante === null) {
+    fallos.push('no se encontró `_pulsoDeLaAdmision_` — control CIEGO: es el lector ÚNICO (②17)')
+  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardEstadoDeLaAdmision'/.test(ayudante)) {
+    fallos.push('`_pulsoDeLaAdmision_` ya no pregunta a `enr.wizardEstadoDeLaAdmision` — el ' +
+      'lector único dejó de apuntar a la entrada declarada del KMS')
+  }
+
+  // (c) DL-E48: el tipo de expediente NO se escribe a mano al filtrar el catálogo.
+  if (/ENR_ADMISSION_SCHOOL/.test(contexto)) {
+    fallos.push('`buildAdmissionContext_` vuelve a escribir a mano el tipo de expediente ' +
+      '(`ENR_ADMISSION_SCHOOL`) — DL-E48 lo prohíbe: el dominio lo resuelve el KMS por la ' +
+      'cadena del programa, y el filtro del catálogo viaja con su lectura')
+  }
+
+  // (d) ANCLAS: sin ellas el control mediría manejadores vaciados.
+  if (!/requireResumeTokenMemo_\s*\(|requireResumeToken_\s*\(/.test(pulso)) {
+    fallos.push('`getAdmissionState_` ya no deriva el expediente del `resume_token` — KAL-4 ' +
+      'exige que salga del token y nunca del cuerpo; el control estaría afirmando que no lee ' +
+      'AppSheet sobre un manejador sin puerta')
+  }
+  if (!/_isStepUpFresh_\s*\(/.test(pulso)) {
+    fallos.push('`getAdmissionState_` ya no computa la frescura del código de un solo uso — es ' +
+      'lo que decide si el `signing_token` se sirve o se redacta (SEC WIZ-SIGNTOKEN)')
+  }
+  if (!/display_order/.test(contexto)) {
+    fallos.push('`buildAdmissionContext_` ya no elige la situación por `display_order` — la ' +
+      'DECISIÓN tenía que quedarse aquí; si se fue, el tramo movió más que el acceso al dato')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -1151,5 +1242,6 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarLasRespuestas(limpia),
     ...comprobarLasEtiquetasDelEnvio(limpia),
     ...comprobarLaPuerta(limpia),
+    ...comprobarElPulsoDeLaAdmision(limpia),
   ]
 }

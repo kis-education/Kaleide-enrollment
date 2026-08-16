@@ -41,6 +41,7 @@ try {
     console.log('  ✓ quién puede contestar no se resuelve bajando las fichas: el conjunto lo sirve el KMS con el recorrido del ESCRITOR, y el token, el código de un solo uso y el rechazo siguen en pie (②17)')
     console.log('  ✓ las etiquetas de los documentos las compone el KMS: el envío ya no lee `recFiles`/`recScopes` ni manda `rec_scopes`, y el ámbito retirado no ha vuelto (②17)')
     console.log('  ✓ la puerta y sus tres hermanas no leen `enrEnrollmentGroups`: la cabecera la sirve el lector ÚNICO en modo tolerante, `assertGroupEditable_` reusa la fila ya validada, y el gate conserva forma, TTL y cross-group guard (②17)')
+    console.log('  ✓ el pulso de la admisión no lee `enrEnrollments`/`enrPersons`/`sysStates_T`: lo sirve el lector ÚNICO contra el KMS, sin el literal del dominio (DL-E48), y siguen en pie el token, la frescura y la elección por `display_order` (②17)')
   }
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)
