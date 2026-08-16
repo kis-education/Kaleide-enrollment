@@ -148,6 +148,31 @@ export function retirarDelExpediente(resumeToken, elementos, identidad) {
   });
 }
 
+/**
+ * DL-E49 §4/§9 — avisa al tutor DECLARADO mandándole SU propio enlace de la solicitud.
+ *
+ * Sin esto, un segundo tutor solo entra si alguien se lo dice: puede pedir su enlace
+ * tecleando su correo en la portada, pero nadie le avisa de que tiene una parte que
+ * rellenar — y la solicitud se queda esperándole indefinidamente (DL-E49 §1).
+ *
+ * A quién se avisa lo dice el `person_id` de la ficha; **el correo lo resuelve el servidor**
+ * de lo que la familia ya declaró, así que por aquí no se puede mandar el enlace a una
+ * dirección arbitraria. El expediente lo deriva el servidor del enlace de la familia
+ * (KAL-4), y exige además el código de un solo uso (②27) — por eso la llamada dice QUIÉN
+ * OPERA, como toda llamada gateada (②24).
+ *
+ * @param {string} resumeToken
+ * @param {string} personId — la ficha del tutor a avisar
+ * @param {{n?:string, recoveredEmail?:string}} [identidad]
+ */
+export function avisarATutor(resumeToken, personId, identidad) {
+  return gasCall('avisarATutor', {
+    resume_token: resumeToken,
+    ...identidadDelEnlace(identidad),
+    person_id: personId,
+  });
+}
+
 export function fetchLookups() {
   if (_lookupsCache)  return Promise.resolve(_lookupsCache);
   if (_lookupsFlight) return _lookupsFlight;

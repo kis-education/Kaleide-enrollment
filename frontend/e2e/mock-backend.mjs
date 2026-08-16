@@ -602,6 +602,21 @@ export function createDispatcher(scenario, record) {
         resultados: [{ clase: it.clase, id: it.id, estado: 'QUITADO', arrastrado: 2 }] };
     },
 
+    // DL-E49 §4/§9 — la familia AVISA al tutor que acaba de declarar: le manda SU enlace.
+    // `avisarMode` decide qué contesta el servidor, y los tres tienen que verse DISTINTOS:
+    //   · 'ok'            → el aviso salió, y la pantalla dice A QUIÉN (buzón tapado);
+    //   · 'aun_no_consta' → su ficha todavía se está guardando: NO es un error, es «todavía
+    //                       no» — el cliente reintenta solo antes de molestar a la familia;
+    //   · 'no_se_pudo'    → no salió, y NO se puede decir «enviado».
+    // El caso que protege es el tercero: si la pantalla lo trata como un sí, la familia se
+    // queda esperando a un tutor al que nunca le llegó nada.
+    avisarATutor: (p) => {
+      if (scenario.avisarMode === 'aun_no_consta') return { ok: false, motivo: 'AUN_NO_CONSTA' };
+      if (scenario.avisarMode === 'no_se_pudo')    return { ok: true, aviso_enviado: false };
+      return { ok: true, aviso_enviado: true, person_id: p.person_id,
+               destino_enmascarado: 'ju…@ej…' };
+    },
+
     // ── Catálogos ────────────────────────────────────────────────────────────
     fetchLookups:   () => ({ ok: true, ...lookupsSegunEscenario_(scenario) }),
     fetchQuestions: () => (scenario.preguntasMode === 'caido'

@@ -255,6 +255,10 @@ function comprobarParidadDelCodigo(fuenteLimpia) {
     ['uploadDocument_',          'requireResumeToken_'],
     ['submitEnrollmentSession_', 'requireResumeToken_'],   // ②27
     ['retirarDelExpediente_',    'requireResumeToken_'],   // ②27
+    // DL-E49 §4/§9 — «avisar al otro tutor» MANDA UN ENLACE DE ACCESO a la solicitud: con
+    // un token observado y sin el código de un solo uso se podría colar a un tercero en
+    // silencio, y la familia no se enteraría. Pide lo mismo que corregir una letra.
+    ['avisarATutor_',            'requireResumeToken_'],
     ['saveBillingInfo_',         'requireSignerIdentity_'],
     ['applyPaymentModality_',    'requireSignerIdentity_'], // ②27
     ['submitGdprConsents_',      'requireSignerIdentity_'],

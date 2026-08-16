@@ -3179,6 +3179,148 @@ async function caminoQuitarDeLaSolicitud(page, base) {
 
 
 /**
+ * AVISAR AL OTRO TUTOR — DL-E49 §4/§9, pedido por Diego el 2026-08-16.
+ *
+ * El defecto que cierra, MEDIDO antes de construir: la familia YA podía declarar al segundo
+ * tutor con su correo, y ese tutor YA podía entrar pidiendo su enlace en la portada — pero
+ * **nadie se lo decía**. Ningún camino del asistente le mandaba nada, ni al declararlo, ni
+ * al guardar, ni al enviar. ⇒ si la madre no le avisaba por su cuenta, la solicitud se
+ * quedaba esperando su parte indefinidamente (DL-E49 §1, que sí está construido y muerde).
+ *
+ * Afirma TRES cosas, y en la pantalla:
+ *   (a) el botón está **junto al tutor que la familia acaba de añadir**, y NO junto a la
+ *       ficha del que está rellenando — avisarse a uno mismo no es nada;
+ *   (b) al pulsarlo **sale la petición** con la ficha de ESE tutor y con el enlace de la
+ *       familia (el servidor deriva de ahí el expediente y resuelve su correo; por aquí no
+ *       viaja ninguna dirección);
+ *   (c) si el servidor **no pudo mandarlo, NO se dice «enviado»** — y ése es el fondo del
+ *       asunto: una pantalla que finge deja a la familia esperando a un tutor al que nunca
+ *       le llegó nada.
+ */
+async function caminoAvisarAlOtroTutor(page, base) {
+  const c = new Camino('avisar-al-otro-tutor')
+  scenario.stage = 'hasta_preguntas'
+  scenario.avisarMode = 'ok'
+
+  let llamadas = 0
+  let ultimoCuerpo = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'avisarATutor') { llamadas++; ultimoCuerpo = body }
+  }
+  page.on('request', espiar)
+  const limpiar = () => page.off('request', espiar)
+
+  /** Los botones de avisar que hay ahora mismo en la pantalla. */
+  const botonesAvisar = () => page.$$('button.add-btn:has(i.bi-send)')
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(200)
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+
+    // ── (a) el botón sale con el SEGUNDO tutor, no con el que rellena ────────────────
+    // DL-E49 §2: el servidor solo enseña al tutor que mira, así que de entrada hay uno y
+    // NO puede haber botón. Aparece cuando la familia añade al otro — que es justo el
+    // momento en el que Diego lo pidió («cuando María mete a Juan…»).
+    const antesDeAnadir = (await botonesAvisar()).length
+    if (!c.afirmar('sin un segundo tutor no se ofrece avisar a nadie', antesDeAnadir === 0,
+      `había ${antesDeAnadir} botón(es) de avisar con un solo tutor en pantalla: se estaría ofreciendo avisarse a uno mismo`)) return c
+
+    const anadirTutor = await page.$('button.add-btn:has-text("tutor"), button.add-btn:has-text("guardian")')
+    if (!c.afirmar('se puede añadir un segundo tutor', !!anadirTutor,
+      'no se encontró el botón de añadir tutor: sin él no hay a quién avisar')) return c
+    await anadirTutor.click()
+    await page.waitForTimeout(300)
+
+    // Su correo, tal y como lo hace la familia: la ficha nace SIN ninguno, así que primero
+    // se pulsa «añadir correo» y luego se escribe. Sin correo la pantalla explica que falta
+    // —en vez de ofrecer un botón que solo puede fallar—, y eso también es lo correcto.
+    // ⚠️ Las fichas de ALUMNO también son `.dynamic-section` y van DESPUÉS, así que «la
+    // última» es la de un menor, no la del tutor. Se acota por el rótulo — si no, las tres
+    // afirmaciones siguientes medirían la ficha equivocada y pasarían en vacío.
+    const todas = await page.$$('.dynamic-section')
+    const seccionesTutor = []
+    for (const s of todas) {
+      const rotulo = await s.$eval('.dynamic-section-title', el => el.textContent || '').catch(() => '')
+      if (/Tutor|Guardian/i.test(rotulo)) seccionesTutor.push(s)
+    }
+    if (!c.afirmar('se distingue la ficha del tutor añadido', seccionesTutor.length >= 2,
+      `se encontraron ${seccionesTutor.length} fichas de tutor: el segundo no llegó a pintarse`)) return c
+    const suSeccion = seccionesTutor[seccionesTutor.length - 1]
+    const sinCorreoTodavia = await suSeccion.$$('button.add-btn:has(i.bi-send)')
+    c.afirmar('sin correo NO se ofrece avisar', sinCorreoTodavia.length === 0,
+      'se ofrecía avisar a un tutor sin correo declarado: el aviso no podría salir a ninguna parte')
+
+    const anadirCorreo = await suSeccion.$('button.add-btn:has(i.bi-plus)')
+    if (!c.afirmar('se le puede añadir un correo', !!anadirCorreo,
+      'no se encontró el botón de añadir correo en la ficha del tutor añadido')) return c
+    await anadirCorreo.click()
+    await page.waitForTimeout(250)
+    const suCorreo = await suSeccion.$('input[type="email"]')
+    if (!c.afirmar('hay dónde escribir su correo', !!suCorreo,
+      'no apareció el campo de correo tras pulsar añadir')) return c
+    await suCorreo.fill('juan.tutor2@ejemplo.invalid')
+    await page.waitForTimeout(200)
+
+    const botones = await botonesAvisar()
+    if (!c.afirmar('el tutor recién añadido tiene botón de avisar', botones.length === 1,
+      `se pintaron ${botones.length} botones de avisar: se espera exactamente uno, el del tutor añadido`)) return c
+
+    // ── (b) al pulsar, SALE la petición con la ficha de ese tutor ────────────────────
+    await botones[0].click()
+    await page.waitForTimeout(900)
+    if (!c.afirmar('pulsar avisa al servidor', llamadas >= 1,
+      'no salió ninguna petición `avisarATutor`: el botón no haría absolutamente nada')) return c
+    c.afirmar('la petición dice A QUIÉN se avisa y de qué solicitud',
+      !!(ultimoCuerpo && ultimoCuerpo.person_id && ultimoCuerpo.resume_token),
+      `person_id recibido: ${ultimoCuerpo && ultimoCuerpo.person_id} · resume_token: ${!!(ultimoCuerpo && ultimoCuerpo.resume_token)}`)
+    // Y NO viaja el correo: el servidor lo resuelve de lo que la familia ya declaró, así
+    // que por esta puerta no se puede mandar el enlace a una dirección arbitraria.
+    c.afirmar('la petición NO lleva una dirección de correo',
+      !!(ultimoCuerpo && !ultimoCuerpo.email && !ultimoCuerpo.destino),
+      'la petición llevaba un correo: por ahí se podría mandar el enlace a quien fuera')
+
+    const textoOk = await page.evaluate(() => document.body.innerText || '')
+    c.afirmar('se ve que el aviso salió, y a quién',
+      /Aviso enviado|Notification sent/i.test(textoOk),
+      'la pantalla no confirma el envío: la familia no sabe si su tutor recibió el enlace')
+
+    // ── (c) si NO se pudo mandar, NO se dice «enviado» ───────────────────────────────
+    scenario.avisarMode = 'no_se_pudo'
+    const botones2 = await botonesAvisar()
+    if (botones2.length) {
+      await botones2[0].click()
+      await page.waitForTimeout(900)
+      const texto2 = await page.evaluate(() => document.body.innerText || '')
+      c.afirmar('un envío fallido NO se pinta como enviado',
+        /No se ha podido enviar|could not be sent/i.test(texto2),
+        'la pantalla no dice que falló: la familia se queda esperando a un tutor al que no le llegó nada')
+    }
+    return c
+  } catch (e) {
+    c.afirmar('el camino termina sin reventar', false, String((e && e.message) || e))
+    return c
+  } finally {
+    scenario.avisarMode = 'ok'
+    limpiar()
+  }
+}
+
+/**
  * LAS RESPUESTAS VUELVEN — cola 18.bis.25, reportado por Diego el 2026-08-09: recupera su
  * solicitud y el cuestionario aparece EN BLANCO, aunque lo había contestado.
  *
@@ -4393,6 +4535,8 @@ const CAMINOS = [
   // Cola 18.quater — la familia pide corregir su solicitud ya enviada.
   { nombre: 'pedir-correccion',    fn: caminoPedirCorreccion,    minLlamadas: 2, minElementos: 11 },
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
+  // DL-E49 §4/§9 — la familia AVISA al tutor que acaba de declarar (pedido por Diego).
+  { nombre: 'avisar-al-otro-tutor', fn: caminoAvisarAlOtroTutor, minLlamadas: 1, minElementos: 11 },
   // Cola 18.bis.25 — lo que la familia escribió sigue ahí cuando vuelve.
   { nombre: 'respuestas-vuelven', fn: caminoRespuestasVuelven, minLlamadas: 1, minElementos: 11 },
   // ②24.sexies — cuando el servidor descarta el cuestionario, la familia se entera.

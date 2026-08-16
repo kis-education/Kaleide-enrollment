@@ -1956,6 +1956,7 @@ function doPost(e) {
       case 'applyPaymentModality':    result = applyPaymentModality_(payload);    break;
       case 'requestCorrection':       result = requestCorrection_(payload);       break;
       case 'retirarDelExpediente':    result = retirarDelExpediente_(payload);    break;
+      case 'avisarATutor':            result = avisarATutor_(payload);            break;
       case 'submitGdprConsents':      result = submitGdprConsents_(payload);      break;
       case 'confirmReview':           result = confirmReview_(payload);           break;
       case 'initiateSigningSession':  result = initiateSigningSession_(payload);  break;
@@ -7676,6 +7677,42 @@ function retirarDelExpediente_(p) {
         id:    it && it.id    ? String(it.id).slice(0, 64) : '',
       };
     }),
+  });
+}
+
+/**
+ * DL-E49 §4/§9 — LA FAMILIA AVISA AL TUTOR QUE ACABA DE DECLARAR.
+ *
+ * Manda a ESE tutor su propio enlace de la solicitud, para que no dependa de que alguien
+ * se lo diga. Es el **EMPUJÓN** que faltaba: declarar al segundo tutor ya se podía, y él
+ * ya podía pedir su enlace tecleando SU correo en la portada — pero nadie se lo decía.
+ *
+ * ⛔ NO ES UN SEGUNDO REMITENTE. Proxy fino a `enr.avisarATutorDeLaSolicitud`, que delega
+ * en `enr_addGuardianCore_` — la MISMA pieza que usa la escuela (`enr.addGuardianToApplication`).
+ * Aquí no se compone ningún correo ni se escribe en ninguna tabla.
+ *
+ * LAS DOS PUERTAS, EN ESTE ORDEN (§"El token es la PRIMERA capa…", ②27):
+ *   1. KAL-4 — el expediente sale del `resume_token`, NUNCA del cuerpo.
+ *   2. El código de un solo uso, **a nombre del buzón que opera** (②24) y **antes** del
+ *      viaje al KMS. Esto MANDA UN ENLACE DE ACCESO a la solicitud: con un token observado
+ *      y sin candado se podría colar a un tercero en silencio. Pide lo mismo que corregir
+ *      una letra de un nombre, que es lo mínimo defendible.
+ *
+ * NO lleva `assertGroupEditable_` a propósito: el KMS ya exige el asistente abierto
+ * (`enr_assertWizardOpen_`) y contesta con un motivo accionable que la pantalla enseña;
+ * un `NOT_EDITABLE` por delante lo sustituiría por el genérico «no se pudo».
+ *
+ * @param {Object} p — { resume_token, person_id, n?/recovered_email? }
+ * @returns {Object} `data` del KMS: `{ok:true, aviso_enviado, destino_enmascarado, …}` o
+ *   `{ok:false, motivo:'AUN_NO_CONSTA'|'SIN_CORREO'|'NO_ES_TUTOR'}`.
+ */
+function avisarATutor_(p) {
+  p = p || {};
+  var grupoDelAviso = requireResumeToken_(p);   // KAL-4 — primero, y el KMS lo re-valida.
+  assertStepUpFresh_(grupoDelAviso, _identidadDelEnlace_(p, grupoDelAviso));
+  return kmsProxy_('enr.avisarATutorDeLaSolicitud', {
+    resume_token: String(p.resume_token),
+    person_id:    p.person_id ? String(p.person_id).slice(0, 64) : '',
   });
 }
 

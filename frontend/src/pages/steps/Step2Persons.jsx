@@ -11,7 +11,7 @@ import { validatePhone } from '../../utils/phone';
 import { parseBool, preparePersonForUI, preparePersonsForUI, deriveSameAddressFlags, addressIsEmpty_, ADDRESS_FIELDS } from './personShape';
 import { confirmarYQuitar } from '../../lib/quitar';
 import StepUpReverify from '../../components/StepUpReverify';
-import { identidadDelEnlace } from '../../api';
+import { identidadDelEnlace, avisarATutor } from '../../api';
 
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
@@ -367,7 +367,75 @@ function PreviousSchoolRow({ school, onChange, onRemove, birthYear }) {
   );
 }
 
-function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar }) {
+/**
+ * DL-E49 §4/§9 — el botón «Avisar» de un tutor declarado.
+ *
+ * Manda a ESE tutor su propio enlace de la solicitud. Sin esto, la familia declara al
+ * segundo tutor y **no le llega nada**: puede entrar tecleando su correo en la portada,
+ * pero nadie se lo dice, así que la solicitud se queda esperando su parte (DL-E49 §1).
+ *
+ * ⛔ NO FINGE. Solo dice «Aviso enviado» cuando el servidor confirma que salió; si falla,
+ * lo dice y deja volver a pulsar. Repetir es inofensivo: el servidor reenvía el mismo
+ * enlace al mismo buzón, sin crear ni duplicar nada.
+ *
+ * ⚠️ EL REINTENTO NO ES ADORNO. Lo que la familia escribe se guarda **por detrás**: al
+ * pulsar recién tecleado, la ficha de ese tutor puede no estar guardada todavía y el
+ * servidor contesta `AUN_NO_CONSTA` — que NO es un error, es «todavía no». Se reintenta
+ * dos veces por su cuenta antes de pedirle nada a la familia.
+ */
+function AvisarTutorBoton({ person, avisar }) {
+  const { t } = useTranslation();
+  const [estado, setEstado] = useState('idle');   // idle | enviando | enviado | fallo
+  const [detalle, setDetalle] = useState('');
+  const email = guardianEmail_(person);
+
+  // Sin correo declarado no hay a dónde mandar nada: se explica en vez de ofrecer un
+  // botón que solo puede fallar.
+  if (!email) {
+    return <div className="form-text mt-2">{t('avisar_tutor.falta_correo')}</div>;
+  }
+
+  const pulsar = async () => {
+    setEstado('enviando');
+    setDetalle('');
+    const r = await avisar(person);
+    if (r.enviado) {
+      setEstado('enviado');
+      setDetalle(r.destino || '');
+      return;
+    }
+    setEstado('fallo');
+    setDetalle(r.motivo || '');
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        className="add-btn"
+        disabled={estado === 'enviando'}
+        onClick={pulsar}
+      >
+        <i className="bi bi-send me-1" />
+        {estado === 'enviando'
+          ? t('avisar_tutor.enviando')
+          : (estado === 'enviado' ? t('avisar_tutor.volver_a_enviar') : t('avisar_tutor.boton'))}
+      </button>
+      <div className="form-text">{t('avisar_tutor.explicacion')}</div>
+      {estado === 'enviado' && (
+        <div className="form-text" style={{ color: 'var(--teal-dk)' }}>
+          <i className="bi bi-check-circle me-1" />
+          {t('avisar_tutor.enviado', { destino: detalle })}
+        </div>
+      )}
+      {estado === 'fallo' && (
+        <div className="form-text text-danger">{detalle || t('avisar_tutor.no_se_pudo')}</div>
+      )}
+    </div>
+  );
+}
+
+function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar }) {
   const { t } = useTranslation();
   // UX-2: resaltado por-campo. `inv(field)` consulta si está marcado inválido; editar un
   // campo lo limpia (vía onFieldEdit, subido al estado del padre).
@@ -561,6 +629,13 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         <button className="add-btn" onClick={() => u('emails', [...(person.emails || []), emptyEmail()])}>
           <i className="bi bi-plus" /> {t('contact.add_email')}
         </button>
+        {/* DL-E49 §4/§9 — AVISAR a este tutor. Va aquí, pegado a su correo, porque es el
+            momento en que la familia acaba de escribirlo. Solo para los tutores DISTINTOS
+            del que está rellenando (`!isFirst`): avisarse a uno mismo no tiene sentido, y
+            el servidor lo rechazaría nombrándolo. */}
+        {isGuardian && !isFirst && (
+          <AvisarTutorBoton person={person} avisar={avisar} />
+        )}
       </div>
 
       {/* Phones */}
@@ -877,6 +952,48 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const addPerson = (type) => setPersons([...persons, emptyPerson(type)]);
 
   /**
+   * DL-E49 §4/§9 — AVISAR a un tutor declarado: se le manda SU enlace de la solicitud.
+   *
+   * ⚠️ Lo que la familia escribe se guarda POR DETRÁS, así que al pulsar recién tecleado la
+   * ficha puede no estar todavía en el servidor. Eso NO es un error: el servidor contesta
+   * `AUN_NO_CONSTA` y aquí se reintenta un par de veces antes de molestar a la familia.
+   * **No se da de alta nada desde este camino** — hacerlo duplicaría al tutor cuando el
+   * guardado que va por detrás llegue con su propia ficha.
+   *
+   * Devuelve `{enviado, motivo?, destino?}`. NUNCA lanza: quien lo llama pinta el resultado.
+   */
+  const avisarATutorDeclarado = async (p, intento = 0) => {
+    try {
+      const r = await avisarATutor(resumeToken, p.person_id, identidad);
+      if (r && r.ok) {
+        // El servidor puede haber aceptado la petición y aun así no haber podido mandar el
+        // correo. Se distingue: decir «enviado» sin estarlo es justo lo que no se hace.
+        return r.aviso_enviado
+          ? { enviado: true, destino: r.destino_enmascarado || '' }
+          : { enviado: false, motivo: t('avisar_tutor.no_se_pudo') };
+      }
+      const motivo = r && r.motivo;
+      if (motivo === 'AUN_NO_CONSTA' && intento < 2) {
+        await new Promise(res => setTimeout(res, 6000));
+        return avisarATutorDeclarado(p, intento + 1);
+      }
+      if (motivo === 'AUN_NO_CONSTA')  return { enviado: false, motivo: t('avisar_tutor.aun_no_consta') };
+      if (motivo === 'SIN_CORREO')     return { enviado: false, motivo: t('avisar_tutor.falta_correo') };
+      if (motivo === 'NO_ES_TUTOR')    return { enviado: false, motivo: t('avisar_tutor.no_es_tutor') };
+      return { enviado: false, motivo: t('avisar_tutor.no_se_pudo') };
+    } catch (e) {
+      // ②27 — «hay que comprobar que eres tú» NO es «no se pudo»: se enseña el cuadro de
+      // verificación y, al acertar, se repite el gesto. Mismo patrón que quitar y subir.
+      if (e && (e.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(e.message || ''))) {
+        setQuitarStepUp(() => () => { avisarATutorDeclarado(p); });
+        return { enviado: false, motivo: t('quitar.necesita_codigo') };
+      }
+      log.warn('[avisar-tutor] no se pudo avisar', { error: String((e && e.message) || e) });
+      return { enviado: false, motivo: t('avisar_tutor.no_se_pudo') };
+    }
+  };
+
+  /**
    * QUITAR de la solicitud — un solo camino para las tres cosas que se quitan en este paso
    * (persona, correo, teléfono). Se pregunta antes, desaparece al instante, y si el servidor
    * dice que NO se pudo se vuelve a ver con el motivo. Nunca se finge que se quitó.
@@ -1164,6 +1281,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               onChange={val => updatePerson(i, val)}
               onRemove={() => removePerson(i)}
               pedirQuitar={pedirQuitar}
+              avisar={avisarATutorDeclarado}
               firstPersonId={firstPersonId}
               primaryEmail={primaryEmail}
               invalidFields={invalidFields}
