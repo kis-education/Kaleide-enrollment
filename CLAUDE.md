@@ -136,6 +136,14 @@ assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.reco
 (por delante mediría un expediente que no viene del token, justo lo que KAL-4 prohíbe) y **ANTES**
 del trabajo caro (rechazar después de escribir no es una puerta, es un parte de daños).
 
+**El duodécimo, dado de alta el 2026-08-19:** `guardarModalidadPreferida_` — la forma de pago que
+la familia elige en la SIMULACIÓN del paso 7. No compromete a nadie (la elección en firme es la del
+paso 8, que es la que se firma), pero **es una escritura sobre el expediente de la familia** y va
+por la misma puerta que las demás: un `resume_token` filtrado no debe poder tocarle nada sin
+acreditar el buzón. Su hermano de la misma pantalla —`simularCuotas_`— **NO** lleva el código a
+propósito: es una LECTURA que no muta nada, y pedirlo dejaría sin ver sus tarifas a la familia que
+lleva más de diez minutos repasando su solicitud, que es exactamente cuando llega al paso 7.
+
 **Exentos, con su motivo — la lista vive en `scripts/verja-publica.mjs` y allí se amplía:**
 `requestCorrection_` (completa UNA MARCA que dice que la familia pidió corregir; poner candado a
 una petición de ayuda) · `abandonSession_` («empezar de nuevo» sobre una solicitud aún sin enviar) ·
@@ -1430,14 +1438,14 @@ instante (fire-and-forget).
 la verja real extraída del fuente (6 casos), comprueba las **cuatro** entradas anónimas y
 comprueba que la **quinta exige el token**, **antes del cupo**, y que `sendMagicLink_` **ya no
 lee el identificador del expediente del cuerpo** (si lo leyera, la puerta seguiría abierta).
-**Y, ya detrás del token (②27), comprueba la PARIDAD**: que los **11 manejadores de mutación**
+**Y, ya detrás del token (②27), comprueba la PARIDAD**: que los **12 manejadores de mutación**
 exigen el código de un solo uso, **tras** derivar el expediente del bearer y **antes** del trabajo
 caro (§"El token es la PRIMERA capa…"). **NO afirma** que la ventana de 10 min sea correcta ni que
 la marca sea del buzón que opera — eso es ②24 y vive en `_isStepUpFresh_`.
 **Rojo demostrado veintiuna veces** antes de darlo por bueno — cinco en ②27 (quitando el código de
 `retirarDelExpediente_` · quitándolo de `submitEnrollmentSession_` · exigiéndolo ANTES de derivar
 el expediente en `applyPaymentModality_` · poniendo el viaje al KMS por delante del código ·
-renombrando `assertStepUpFresh_`, que deja el control CIEGO en los once) y seis en ②2 (quitando la verja de
+renombrando `assertStepUpFresh_`, que deja el control CIEGO en todos) y seis en ②2 (quitando la verja de
 la recuperación · poniéndola después del trabajo caro · haciendo que lance en vez de devolver el
 ack · ablandándola a fail-open · renombrándola, *«el control está CIEGO»* · y quitándola de
 `initEnrollmentSession_`), cinco en ②12 (quitando la verja de la rama de alta · poniéndola
