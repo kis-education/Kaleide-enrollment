@@ -650,6 +650,23 @@ function requireResumeToken_(payload) {
   // fila en la MISMA petición. No es caché (muere con la ejecución) y no es un segundo
   // resolvedor: es esta misma fila, ya autorizada por el token.
   _memoCabeceraEjecucion_[tokenGroupId] = group;
+  // ②17 (2026-08-19) — MISMA memoria, MISMA escritura, SEGUNDO índice: por TOKEN, que es
+  // como la pide `_expedienteDelToken_`. Sin él, la MISMA ficha se volvía a pedir al KMS
+  // más abajo en la MISMA petición (13-31 s cada vez: `hydrateSession`, `warmBundle`,
+  // `warmSession`).
+  //
+  // ⛔ SE ARCHIVA COMO ESTRICTA, Y ESO HAY QUE PODER DEMOSTRARLO. La fila se pidió en modo
+  // tolerante (arriba), pero justo aquí ACABAN de aplicarse los TRES rechazos —token que no
+  // resuelve · sesión abandonada · caducada a los 7 días salvo enviada— que son, VERBATIM,
+  // los tres que la puerta estricta del KMS aplica sobre esta misma fila
+  // (`enr_resolveWizardSession_`, del que este gate es espejo declarado). Habiendo pasado
+  // los tres, una consulta estricta habría devuelto exactamente esto. Por eso, y SOLO por
+  // eso, puede archivarse bajo la clave estricta.
+  //
+  // ⛔ Si algún día se AFLOJA cualquiera de los tres rechazos de arriba, esta línea deja de
+  // ser cierta y hay que quitarla: pasaría a servirle a un llamante estricto una fila que el
+  // KMS habría rechazado. La modalidad tolerante ya la archivó `_expedienteDelToken_`.
+  _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)] = group;
   // SPEC-WIZ-WARMUP-V2: poblar el memo de LECTURA (rtmemo_) tras la validación
   // VIVA — así la primera llamada de lectura posterior (getDocument_) ya tiene el
   // gate caliente sin pagar otra lectura AppSheet. Best-effort; no cambia la
@@ -2856,6 +2873,14 @@ function sendMagicLink_(p) {
     if (!grp.submitted_at) {
       const touch = kmsProxy_('enr.wizardTouchSession', { resume_token: grp.resume_token });
       tokenToSend = (touch && touch.resume_token) || grp.resume_token;
+      // ⛔ ②17 (2026-08-19) — AQUÍ SE ROTA EL ENLACE, así que la cabecera que la puerta dejó
+      // en la memoria de EJECUCIÓN queda CADUCA: lleva dentro el `resume_token` VIEJO, que a
+      // partir de esta línea ya no resuelve. Se OLVIDA en el acto —la vieja y la nueva— para
+      // que nadie, ni hoy ni en un camino futuro, sirva de memoria un enlace muerto. Esta
+      // rama NUNCA se sirve de la memoria: su gate es `requireResumeToken_` en forma VIVA, y
+      // corre ANTES de esta rotación.
+      _olvidarCabeceraMemo_(p.resume_token, groupId);
+      _olvidarCabeceraMemo_(tokenToSend, groupId);
       if (touch && touch.renewed) {
         // KAL-11: redact group_id UUID before persisting to Stackdriver.
         Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
@@ -3013,6 +3038,9 @@ function sendMagicLink_(p) {
         if (g.submitted_at) return; // submitted: send existing token, do not renew
         try {
           const touch = kmsProxy_('enr.wizardTouchSession', { resume_token: g.resume_token });
+          // ⛔ ②17 (2026-08-19) — misma rotación, mismo olvido que en la rama de arriba.
+          _olvidarCabeceraMemo_(g.resume_token, g.enrollment_group_id);
+          if (touch && touch.resume_token) _olvidarCabeceraMemo_(touch.resume_token, g.enrollment_group_id);
           if (touch && touch.renewed && touch.resume_token) {
             newTokens[g.enrollment_group_id] = touch.resume_token;
           } else {
@@ -3717,12 +3745,33 @@ function _expedienteDelToken_(resumeToken, opciones) {
   try { assertValidUuid_(token, 'resume_token'); }
   catch (e) { return { ok: true, fila: null, rechazo: null, motivo: null }; }
 
+  var tolerante = !!(opciones && opciones.tolerarSesionCerrada);
+
+  // ②17 (2026-08-19) — LA MISMA FICHA SE PEDÍA DOS VECES POR PETICIÓN. Medido en el log
+  // real del asistente desplegado: `hydrateSession` emitía `enr.wizardExpedienteDelToken`
+  // en t+410 ms (16 s) y otra vez en t+43 s (18 s); ídem `warmBundle` y `warmSession`. La
+  // primera es la PUERTA (`requireResumeToken_`), la segunda el punto que necesita la
+  // cabecera. Es la MISMA fila, del MISMO token, en la MISMA ejecución.
+  //
+  // La memoria de EJECUCIÓN ya existía (duodécimo tramo) pero SOLO se indexaba por
+  // identificador de expediente, y aquí lo que hay es un TOKEN ⇒ nadie la encontraba.
+  // Ahora se consulta por token. Sigue siendo memoria de EJECUCIÓN —muere con la
+  // petición—: NO es caché, no tiene plazo, y no puede servir una fila de otra petición.
+  var clave = _memoCabeceraClave_(token, tolerante);
+  var yaResuelta = _memoCabeceraEjecucion_[clave];
+  if (yaResuelta) return { ok: true, fila: yaResuelta, rechazo: null, motivo: null };
+
   var cuerpo = { resume_token: token };
-  if (opciones && opciones.tolerarSesionCerrada) cuerpo.tolerar_sesion_cerrada = true;
+  if (tolerante) cuerpo.tolerar_sesion_cerrada = true;
 
   try {
     var r = kmsProxy_('enr.wizardExpedienteDelToken', cuerpo) || {};
-    return { ok: true, fila: r.expediente || null, rechazo: null, motivo: null };
+    var fila = r.expediente || null;
+    // Solo se guarda el ACIERTO. Un rechazo o una avería NO se memorizan: son baratos de
+    // repetir y memorizarlos convertiría un tropiezo puntual en el veredicto de toda la
+    // petición.
+    if (fila) _memoCabeceraEjecucion_[clave] = fila;
+    return { ok: true, fila: fila, rechazo: null, motivo: null };
   } catch (e2) {
     var msg = (e2 && e2.message) || String(e2);
     // El KMS CONTESTÓ (error de negocio, llega en JSON con su código) vs. NO se pudo
@@ -3756,6 +3805,43 @@ function _expedienteDelToken_(resumeToken, opciones) {
  * @private
  */
 var _memoCabeceraEjecucion_ = {};
+
+/**
+ * ②17 (2026-08-19) — la CLAVE de esa memoria cuando lo que hay es un TOKEN.
+ *
+ * ⛔ **LLEVA LA MODALIDAD DENTRO, y no es decoración.** `_expedienteDelToken_` pregunta de
+ * DOS maneras: la ESTRICTA (la puerta del KMS aplica su TTL de 7 días y su rechazo de
+ * sesión abandonada) y la TOLERANTE (`tolerarSesionCerrada`, que acepta el token caducado o
+ * abandonado y devuelve la fila igual). La FILA que vuelve es idéntica en ambas — lo que
+ * cambia es QUÉ TOKEN se acepta. Si la clave no llevara la modalidad, una cabecera obtenida
+ * CON tolerancia se le serviría a un llamante que NO la pidió, y ese llamante dejaría de
+ * rechazar un enlace caducado o abandonado. Eso cambia comportamiento: prohibido.
+ *
+ * El prefijo evita chocar con el índice por identificador de expediente que
+ * `assertGroupEditable_` lee (misma memoria, misma escritura, dos índices).
+ * @private
+ */
+function _memoCabeceraClave_(token, tolerante) {
+  return 'tok:' + String(token || '').trim() + '|' + (tolerante ? 'tolerarSesionCerrada' : 'estricto');
+}
+
+/**
+ * ②17 (2026-08-19) — OLVIDA la cabecera guardada para un token (las DOS modalidades) y su
+ * índice por expediente.
+ *
+ * ⛔ Existe por la ROTACIÓN del enlace: `sendMagicLink_` llama a `enr.wizardTouchSession`,
+ * que minta un `resume_token` NUEVO y deja el viejo sin resolver. La ficha que la puerta
+ * dejó en la memoria lleva DENTRO el token VIEJO ⇒ servirla después de rotar sería devolver
+ * un enlace muerto. Se olvida en el acto: la memoria nunca es la autoridad, solo un ahorro.
+ * @private
+ */
+function _olvidarCabeceraMemo_(token, groupId) {
+  try {
+    delete _memoCabeceraEjecucion_[_memoCabeceraClave_(token, true)];
+    delete _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)];
+    if (groupId) delete _memoCabeceraEjecucion_[groupId];
+  } catch (e) { /* best-effort: olvidar no puede tumbar el envío del enlace */ }
+}
 
 /**
  * ②17 (séptimo tramo) — los expedientes de UN correo, servidos por el KMS.

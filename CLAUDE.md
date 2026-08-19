@@ -853,6 +853,59 @@ demostrado NUEVE veces**, cada una nombrando su caso (la del renombrado deja el 
 cuerpo · quitarle el `service_token` al modo tolerante · tolerar siempre · aceptar el token
 inexistente · renombrar el manejador → *«MEDICIÓN CIEGA»*). **Quien toque esta puerta, que lo mida.**
 
+### ②17 (2026-08-19) — la cabecera se pedía DOS VECES por petición: la memoria estaba, y nadie la encontraba
+
+**No es un tramo de migración: es la memoria del duodécimo, que solo se indexaba por una clave
+que su único lector no tiene.** Medido en el registro real del asistente ya desplegado, con cada
+pregunta al KMS costando **13-31 s**:
+
+| Camino | Viajes a `enr.wizardExpedienteDelToken` |
+|---|---|
+| `hydrateSession` | t+410 ms (16,3 s) **y** t+43,3 s (18,1 s) |
+| `warmBundle` | t+878 ms **y** t+26,3 s |
+| `warmSession` | t+866 ms **y** t+19,5 s |
+
+La primera es **la puerta** (`requireResumeToken_`); la segunda, el punto que necesita la cabecera
+(`:8215`/`:8246`/`:8046`). **La misma fila, del mismo token, en la misma ejecución.** La memoria de
+EJECUCIÓN `_memoCabeceraEjecucion_` ya existía —la escribe la puerta— pero **se indexaba por
+identificador de expediente**, y `_expedienteDelToken_` recibe un **TOKEN** ⇒ no la encontraba nunca.
+Ahora la consulta antes de salir al KMS. **Medido ejecutando las funciones reales con dobles:
+2 → 1 viaje** en los tres caminos (la mutación ya estaba en 1).
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ LA CLAVE LLEVA LA MODALIDAD DENTRO** (`_memoCabeceraClave_`, `tok:<token>|estricto` ·
+  `|tolerarSesionCerrada`). La **fila** que devuelve el KMS es idéntica en los dos modos: lo que
+  cambia es **qué token se acepta**. Sin la modalidad en la clave, una cabecera obtenida **con**
+  tolerancia —la que se llevan `abandonSession_` y `reportUnsolicited_`, que operan a propósito
+  sobre sesiones cerradas— se le serviría a un llamante estricto, y ese llamante **dejaría de
+  rechazar un enlace caducado o abandonado**. Comprobado ejecutándolo: el estricto vuelve a
+  preguntar.
+- **La puerta archiva su fila bajo la clave ESTRICTA, y eso se demuestra, no se supone.** La pidió
+  en modo tolerante, pero justo ahí acaban de aplicarse los **tres** rechazos —token que no resuelve
+  · sesión abandonada · caducada a los 7 días salvo enviada— que son **verbatim** los tres de la
+  puerta estricta del KMS (`enr_resolveWizardSession_`, del que ese gate es espejo declarado).
+  **Si algún día se afloja uno de los tres, esa línea deja de ser cierta y se quita.**
+- **⛔ La rama que ROTA el enlace la OLVIDA** (`_olvidarCabeceraMemo_`, tras
+  `enr.wizardTouchSession` en las dos ramas de `sendMagicLink_`): la ficha guardada lleva dentro el
+  `resume_token` **viejo**, que a partir de ahí ya no resuelve. Hoy nadie la leería después de rotar
+  —es una barandilla para el camino futuro—, y se dice así.
+- **Sigue siendo memoria de EJECUCIÓN, no caché**: muere con la petición, no tiene plazo, y no puede
+  servir la fila de otra. **Solo se guarda el acierto** — un rechazo o una avería no se memorizan.
+- **`assertGroupEditable_` no cambia**: sigue leyendo por identificador de expediente y sigue
+  fallando cerrado con `NOT_FOUND` si no está (comprobado ejecutándolo).
+
+**Control**: `scripts/verja-publica.mjs` gana cuatro afirmaciones dentro de `comprobarLaPuerta` —la
+clave lleva la modalidad · `_expedienteDelToken_` consulta la memoria por su clave · la puerta la
+indexa también por token · la rama que rota la olvida—. **Rojo demostrado las cuatro**, cada una
+nombrando su caso.
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. Se **midió aparte**, ejecutando `requireResumeToken_`,
+`_expedienteDelToken_`, `_memoCabeceraClave_`, `_olvidarCabeceraMemo_` y `assertGroupEditable_`
+extraídos del fuente y corridos con dobles: **antes 2/2/2/1 viajes, después 1/1/1/1**, más las tres
+afirmaciones de seguridad de arriba. **Quien toque esta memoria, que lo mida.**
+
 ### ②17 (2026-08-16) — EL PULSO: la acción más llamada mientras la familia espera, y bajaba el catálogo de situaciones ENTERO
 
 **`getAdmissionState_` es una acción PÚBLICA del despachador anónimo**, y el cliente la dispara

@@ -1138,6 +1138,41 @@ function comprobarLaPuerta(fuenteLimpia) {
       'enlace no vale')
   }
 
+  // ②17 (2026-08-19) — LA MISMA FICHA, DOS VECES POR PETICIÓN. La memoria de EJECUCIÓN sólo
+  // se indexaba por identificador de expediente, y `_expedienteDelToken_` recibe un TOKEN ⇒
+  // nadie la encontraba y `hydrateSession`/`warmBundle`/`warmSession` pagaban dos viajes al
+  // KMS (13-31 s cada uno) por la MISMA fila del MISMO token.
+  const clave = cuerpoDe(fuenteLimpia, '_memoCabeceraClave_')
+  if (clave === null) {
+    fallos.push('no se encontró `_memoCabeceraClave_` — control CIEGO sobre la memoria por token ' +
+      '(②17, 2026-08-19)')
+  } else if (!/tolerarSesionCerrada/.test(clave)) {
+    fallos.push('la clave de la memoria de EJECUCIÓN ya no lleva la modalidad ' +
+      '(`tolerarSesionCerrada`) — una cabecera obtenida CON tolerancia se le serviría a un ' +
+      'llamante que NO la pidió, y ese llamante dejaría de rechazar un enlace caducado o ' +
+      'abandonado')
+  }
+  if (ayudante !== null && (!/_memoCabeceraEjecucion_/.test(ayudante) ||
+                            !/_memoCabeceraClave_\s*\(/.test(ayudante))) {
+    fallos.push('`_expedienteDelToken_` no consulta la memoria de EJECUCIÓN por su clave — la ' +
+      'MISMA ficha del MISMO token se vuelve a pedir al KMS dentro de la MISMA petición')
+  }
+  if (gate !== null && !/_memoCabeceraClave_\s*\(/.test(gate)) {
+    fallos.push('`requireResumeToken_` deja la cabecera SOLO indexada por expediente — ' +
+      '`_expedienteDelToken_` la pide por TOKEN, así que no la encuentra y vuelve a preguntar')
+  }
+
+  // ⛔ La rama que ROTA el enlace no puede servirse de esa memoria: la ficha guardada lleva
+  // dentro el `resume_token` VIEJO, que tras la rotación ya no resuelve.
+  const magic = cuerpoDe(fuenteLimpia, 'sendMagicLink_')
+  if (magic === null) {
+    fallos.push('no se encontró `sendMagicLink_` — control CIEGO en la rama que ROTA el token')
+  } else if (/wizardTouchSession/.test(magic) && !/_olvidarCabeceraMemo_\s*\(/.test(magic)) {
+    fallos.push('`sendMagicLink_` ROTA el token (`enr.wizardTouchSession`) y NO olvida la cabecera ' +
+      'de la memoria de EJECUCIÓN — la ficha guardada lleva dentro el `resume_token` VIEJO, y ' +
+      'servirla después de rotar sería devolver un enlace muerto')
+  }
+
   return fallos
 }
 
