@@ -7,14 +7,35 @@
 // fetchLookups result is static for the lifetime of the page — cache it.
 // prefetchLookups() kicks off the request early; fetchLookups() returns the
 // cached promise (or value) so steps get the result immediately if it's ready.
-let _lookupsCache  = null;
-let _lookupsFlight = null;
+//
+// ★ 2026-08-19 — LA CACHÉ VA POR IDIOMA, y ya no es UNA sola. Desde hoy una parte de estos
+// catálogos SÍ depende del idioma: los tipos de documento que la familia puede aportar
+// (`recTypesInterestedParty`) salen traducidos cuando el centro ha guardado la versión en
+// ese idioma. Con una caché única, la familia que cambiase el interruptor EN/ES de la
+// cabecera seguiría leyendo la lista del idioma anterior durante toda la sesión. El molde es
+// el de su hermana de este mismo fichero, la caché de preguntas (`_questionsCache`), que ya
+// va por idioma — no se inventa otro.
+const _lookupsCache  = {};   // { [idioma]: datos }
+const _lookupsFlight = {};   // { [idioma]: promesa en vuelo }
 
-export function prefetchLookups() {
-  if (_lookupsCache || _lookupsFlight) return;
-  _lookupsFlight = gasCall('fetchLookups', {})
-    .then(data  => { _lookupsCache = data; _lookupsFlight = null; return data; })
-    .catch(_err => { _lookupsFlight = null; });
+/**
+ * UN solo sitio decide bajo qué clave se guarda un idioma. `es-ES`, `ES`, `es` y `es-AR` son
+ * el MISMO catálogo para esto: el KMS resuelve la traducción por idioma (`es` sirve para
+ * `es-ES` y al revés — `sys_resolveTenantTranslation_`), así que separarlos por región solo
+ * produciría cache-misses y llamadas de más. Sin idioma → 'es', que es el del centro.
+ */
+function _clave(lang) {
+  const s = String(lang == null ? '' : lang).trim().toLowerCase();
+  const m = s.match(/^([a-z]{2})/);
+  return m ? m[1] : 'es';
+}
+
+export function prefetchLookups(lang) {
+  const key = _clave(lang);
+  if (_lookupsCache[key] || _lookupsFlight[key]) return;
+  _lookupsFlight[key] = gasCall('fetchLookups', { language: key })
+    .then(data  => { _lookupsCache[key] = data; delete _lookupsFlight[key]; return data; })
+    .catch(_err => { delete _lookupsFlight[key]; });
 }
 
 /**
@@ -22,13 +43,22 @@ export function prefetchLookups() {
  * (hydrateSession devuelve `lookups`). Tras esto, fetchLookups()/prefetchLookups()
  * resuelven DESDE MEMORIA sin tocar la red → cero fetch de catálogos por-entrada
  * (Step3/Step4/Step7). Idempotente: solo siembra si trae datos y no había caché.
- * @param {Object} lookups — { allergies, dietary, medical, relationTypes, programs }
+ * @param {Object} lookups — { allergies, dietary, medical, relationTypes, programs,
+ *                             recTypesInterestedParty, recTypesLocale }
+ * @param {string} [lang] — idioma con el que se PIDIÓ la hidratación (respaldo del sello).
  */
-export function primeLookups(lookups) {
+export function primeLookups(lookups, lang) {
   if (!lookups || typeof lookups !== 'object') return;
-  if (_lookupsCache) return;
-  _lookupsCache  = lookups;
-  _lookupsFlight = null;
+  // ⭐ SE SIEMBRA BAJO EL IDIOMA QUE DE VERDAD VIENE, NO BAJO EL QUE SE PIDIÓ.
+  // La hidratación pasa por DOS cachés intermedias (la del KMS y la del propio asistente,
+  // ninguna de las dos bajo nuestro control desde aquí), así que la respuesta puede venir
+  // cocinada en otra petición y en OTRO idioma. Por eso el KMS sella el idioma que sirvió
+  // (`recTypesLocale`) y aquí manda ese sello; `lang` es solo el respaldo para una respuesta
+  // vieja que aún no lo traiga (y entonces el comportamiento es el de siempre).
+  const key = _clave(lookups.recTypesLocale || lang);
+  if (_lookupsCache[key]) return;
+  _lookupsCache[key] = lookups;
+  delete _lookupsFlight[key];
 }
 
 /**
@@ -207,13 +237,14 @@ export function avisarATutor(resumeToken, personId, identidad) {
   });
 }
 
-export function fetchLookups() {
-  if (_lookupsCache)  return Promise.resolve(_lookupsCache);
-  if (_lookupsFlight) return _lookupsFlight;
-  _lookupsFlight = gasCall('fetchLookups', {})
-    .then(data  => { _lookupsCache = data; _lookupsFlight = null; return data; })
-    .catch(err  => { _lookupsFlight = null; throw err; });
-  return _lookupsFlight;
+export function fetchLookups(lang) {
+  const key = _clave(lang);
+  if (_lookupsCache[key])  return Promise.resolve(_lookupsCache[key]);
+  if (_lookupsFlight[key]) return _lookupsFlight[key];
+  _lookupsFlight[key] = gasCall('fetchLookups', { language: key })
+    .then(data  => { _lookupsCache[key] = data; delete _lookupsFlight[key]; return data; })
+    .catch(err  => { delete _lookupsFlight[key]; throw err; });
+  return _lookupsFlight[key];
 }
 
 // ─── Signing-session READ single-flight (data-layer pieza 5: corta la tormenta) ──

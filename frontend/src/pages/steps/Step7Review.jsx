@@ -418,7 +418,8 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   const [questionSets, setQuestionSets] = useState([]);
 
   useEffect(() => {
-    fetchLookups()
+    // Idioma en la petición: la caché de catálogos va por idioma (ver `api.js`, 2026-08-19).
+    fetchLookups(i18n.language)
       .then(data => setLookups({
         relationTypes: data.relationTypes || [],
         allergies:     data.allergies     || [],

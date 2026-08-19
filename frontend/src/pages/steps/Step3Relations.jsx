@@ -79,7 +79,7 @@ function buildInitialRelations(persons, existingRelations) {
 }
 
 export default function Step3Relations({ onNext, onBack, locked, onUnlock, savePending }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { stepData, updateStep } = useWizard();
 
   const persons    = stepData.persons || [];
@@ -99,7 +99,8 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
   const [highlightEdit, setHighlightEdit] = useState(false);
 
   useEffect(() => {
-    fetchLookups()
+    // Idioma en la petición: la caché de catálogos va por idioma (ver `api.js`, 2026-08-19).
+    fetchLookups(i18n.language)
       .then(data => {
         log.info('Step3: fetchLookups relationTypes', { count: data.relationTypes?.length, data: JSON.stringify(data.relationTypes) });
         if (data.relationTypes?.length) setRelationTypes(data.relationTypes);

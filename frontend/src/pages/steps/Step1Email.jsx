@@ -78,7 +78,11 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
     || (desiredStartDate && onlyDate(desiredStartDate) !== programStartsOn ? 'midterm' : 'september');
 
   useEffect(() => {
-    fetchLookups()
+    // El idioma va SIEMPRE en la petición de catálogos: no porque los programas se traduzcan
+    // (no lo hacen), sino porque la caché de `api.js` va por idioma desde 2026-08-19 — pedir
+    // sin idioma caería en la clave 'es' y provocaría una llamada de más a la familia que
+    // está leyendo en inglés.
+    fetchLookups(i18n.language)
       .then(lookups => {
         const progs = lookups.programs || [];
         setPrograms(progs);

@@ -442,7 +442,8 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
   const [medicalOpts,   setMedicalOpts]   = useState([]);
 
   useEffect(() => {
-    fetchLookups()
+    // Idioma en la petición: la caché de catálogos va por idioma (ver `api.js`, 2026-08-19).
+    fetchLookups(i18n.language)
       .then(data => {
         setAllergiesOpts(data.allergies || []);
         setDietaryOpts(data.dietary   || []);

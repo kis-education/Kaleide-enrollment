@@ -5481,7 +5481,7 @@ function wizardResolverPreguntasDeHidratacion_(data, lang) {
  * Fetches lookup options for health fields (allergies, dietary, medical).
  * @returns {{ allergies: Array, dietary: Array, medical: Array }}
  */
-function fetchLookups_() {
+function fetchLookups_(p) {
   // Thin-client (DL-E41 / WPERF-3): los catálogos del wizard (sin PII) los sirve el
   // KMS — el wizard deja de leer AppSheet directo. kmsProxy_ añade service_token +
   // Bearer OAuth; el KMS (enr.wizardFetchLookups) los valida y devuelve el mismo shape
@@ -5494,7 +5494,16 @@ function fetchLookups_() {
   // 2026-08-09 es cierta, y lo es EN UN SOLO SITIO: `enr_wizardFetchLookups` normaliza con
   // `utils_appsheetDateToIso_` (`kis-app kms-server/enr/wizard-gateway.gs`). Si alguien
   // quita esa normalización, esta frase vuelve a ser mentira — se comprueba allí, no aquí.
-  return kmsProxy_('enr.wizardFetchLookups', { school_id: SCHOOL_ID });
+  //
+  // ★ 2026-08-19 — EL IDIOMA VIAJA. Los tipos de documento que la familia puede aportar
+  // (`recTypesInterestedParty`, el desplegable del paso 6) salen del catálogo del centro, y
+  // desde hoy en el idioma que la familia esté leyendo cuando el centro ha guardado esa
+  // versión (primitivo de traducciones del KMS, resuelto en `rec_resolveInterestedPartyType_`).
+  // Aquí NO se traduce nada ni se decide nada: se reenvía el idioma que manda la pantalla y
+  // se devuelve lo que conteste el KMS. Sin idioma —o sin versión guardada— la respuesta es
+  // exactamente la de siempre: la descripción de la ficha.
+  var idioma = (p && p.language) ? String(p.language).trim() : '';
+  return kmsProxy_('enr.wizardFetchLookups', { school_id: SCHOOL_ID, language: idioma || null });
 }
 
 /**

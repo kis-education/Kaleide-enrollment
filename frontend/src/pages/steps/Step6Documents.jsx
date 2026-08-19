@@ -337,7 +337,7 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
 }
 
 export default function Step6Documents({ onNext, onBack, locked, onUnlock, savePending }) {
-  const { t }  = useTranslation();
+  const { t, i18n }  = useTranslation();
   const {
     enrollmentGroupId, resumeToken, stepData, updateStep,
     markStepUpFresh, touchActivity,
@@ -395,16 +395,28 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   // estaba antes de esto (sin desplegable), y la familia sigue pudiendo adjuntar. Si además
   // el catálogo está sin configurar, el rechazo lo da el servidor NOMBRANDO qué falta, que es
   // lo que ya hacía. El mismo patrón de carga que `Step3Relations` usa para sus catálogos.
+  //
+  // ★ 2026-08-19 — Y EN EL IDIOMA QUE LA FAMILIA ESTÁ LEYENDO. El texto de cada opción es la
+  // descripción que el centro escribió en la ficha del tipo; su versión en otro idioma vive
+  // en el primitivo de traducciones del KMS y la resuelve el servidor
+  // (`rec_resolveInterestedPartyType_`). Aquí solo se PIDE el idioma y se pinta lo que llega:
+  // ni se traduce nada en el cliente ni se escribe un código a mano.
+  //
+  // El efecto DEPENDE del idioma a propósito: el interruptor EN/ES de la cabecera cambia
+  // `i18n.language` sin desmontar el paso, así que sin esa dependencia la familia que lo
+  // pulsara con el paso 6 abierto se quedaría con la lista del idioma anterior. Sin versión
+  // guardada el servidor devuelve la descripción de la ficha, o sea lo mismo que ahora — el
+  // cambio de idioma nunca deja la lista vacía.
   const [tiposDeDocumento, setTiposDeDocumento] = useState([]);
   useEffect(() => {
-    fetchLookups()
+    fetchLookups(i18n.language)
       .then(data => {
         const tipos = (data && data.recTypesInterestedParty) || [];
-        log.info('Step6: tipos de documento del catálogo', { count: tipos.length });
+        log.info('Step6: tipos de documento del catálogo', { count: tipos.length, idioma: i18n.language });
         if (tipos.length) setTiposDeDocumento(tipos.filter(tp => tp && tp.code));
       })
       .catch(err => log.error('Step6: fetchLookups failed', { message: err.message }));
-  }, []);
+  }, [i18n.language]);
 
   // RE-SEMBRADO: si los archivos del servidor llegan DESPUÉS de montar esta pantalla, la
   // lista los incorpora en vez de quedarse con la foto del primer instante.

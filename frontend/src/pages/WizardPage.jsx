@@ -82,7 +82,7 @@ export default function WizardPage() {
   // el invariante del Step 5 (set completo o loader, nunca parcial). Esto desacopla
   // el catálogo del primer paint (parte frontend de SPEC-WIZ-LAZY; la opción (a) de
   // quitar el plegado del hydrate es backend y queda fuera de este carril FE).
-  useEffect(() => { prefetchLookups(); prefetchQuestions(i18n.language); }, []); // eslint-disable-line
+  useEffect(() => { prefetchLookups(i18n.language); prefetchQuestions(i18n.language); }, []); // eslint-disable-line
 
   // WPERF-1 criterio "eager docs": si el expediente está Aprobado (AD) y la firma está
   // lista para este guardian (no completada), calienta el paquete contractual (members

@@ -1127,7 +1127,12 @@ export function WizardProvider({ children }) {
     // desde memoria sin fetch por-entrada. Billing splits: guardar para que el Step 8
     // rehidrate el reparto sin una lectura getSavedBillingSplits aparte. live_version:
     // baseline del cheap-poll (Opción A): el poll ligero solo refresca cuando sube.
-    if (data.lookups) primeLookups(data.lookups);
+    // 2026-08-19 — con el IDIOMA, mismo molde que `primeQuestions` dos líneas más abajo:
+    // parte de estos catálogos ya depende del idioma (los tipos de documento del paso 6). El
+    // sello que manda es el que trae la propia respuesta (`recTypesLocale`); esto es solo el
+    // respaldo, y es el MISMO idioma con el que se pidió la hidratación (`language:
+    // i18n.language`, `WizardPage.jsx` / `ResumePage.jsx`).
+    if (data.lookups) primeLookups(data.lookups, i18n.language);
     // DL-C-B (g): el catálogo de preguntas viene plegado en el hydrate (DL-C-A) →
     // sembramos la cache (mismo patrón que primeLookups) bajo el locale UI actual.
     // Step5/Step7 lo resuelven de cache sin la llamada fetchQuestions suelta (~42s).
