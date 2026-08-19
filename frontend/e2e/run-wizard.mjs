@@ -142,6 +142,10 @@ const NO_CUBIERTAS_PERMITIDAS = {
 // el sistema de verdad no. No son un perdón general — cada uno con su motivo, y la
 // comprobación de "declarada pero HOY sí se cubre" sigue viva en ambos modos.
 const NO_CUBIERTAS_SOLO_REAL = {
+  'simulador-paso7': {
+    'simulador-en-pie': 'guardar la forma de pago elegida exige el código de un solo uso, que el servidor manda al buzón de la familia y este arnés no lee buzones; en modo simulado sí se cubre',
+    'simulador-caido': 'el escenario hostil (el simulador no responde) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
+  },
   'fecha-a-mitad-de-curso': {
     'limite-ilegible': 'el escenario hostil (el servidor devuelve los límites del programa en el formato crudo de AppSheet) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
   },
@@ -372,7 +376,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // archivos ya subidos — los usa `documentos-vuelven` y los deja como estaban al salir.
 // `warmFalla`: el precalentado falla DE VERDAD (no "no había nada que calentar") — la
 // otra mitad de `precalentado-sin-ruido`: un fallo real sigue registrándose.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -4506,6 +4510,135 @@ async function caminoAvisoGuardadoSeCierra(page, base) {
   }
 }
 
+/**
+ * PASO 7 · EL SIMULADOR DE CUOTAS — y, sobre todo, que NO GATEA EL ENVÍO (Diego 2026-08-19).
+ *
+ * Dos mitades, y la SEGUNDA es la que importa:
+ *   (A) con el simulador en pie: la familia ve las formas de pago con sus importes, elige
+ *       una, y esa elección viaja al servidor identificada.
+ *   (B) CON EL SIMULADOR CAÍDO: la pantalla lo dice sin drama y **la familia sigue pudiendo
+ *       enviar su solicitud**. Si esto se rompe, un fallo del simulador deja a una familia
+ *       sin poder matricular — que es el daño que este camino existe para impedir.
+ *
+ * ⚠️ Y las opciones se comprueban contra lo que MANDA EL SERVIDOR (dos formas de pago en el
+ * doble), no contra una lista escrita aquí: con una sola opción la comprobación de que la
+ * familia PUEDE elegir pasaría en vacío.
+ */
+async function caminoSimuladorPaso7(page, base) {
+  const c = new Camino('simulador-paso7')
+  scenario.stage = 'lista_para_enviar'
+  scenario.simulacionFalla = false
+
+  if (REAL) {
+    // La mitad (B) —el simulador CAÍDO— no se puede FORZAR sobre el sistema de verdad sin
+    // desplegarle un cambio, y guardar la elección exige el código de un solo uso, que
+    // llega a un buzón que este arnés no lee. No se afloja ninguna de las dos cosas para
+    // que la prueba pase; en modo simulado sí se cubren.
+    c.noCubierta('simulador-en-pie',
+      'guardar la forma de pago elegida exige el código de un solo uso, que el servidor manda al buzón de la familia y el arnés no lee; en modo simulado sí se cubre')
+    c.noCubierta('simulador-caido',
+      'el escenario hostil (el simulador no responde) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre')
+    return c
+  }
+
+  let eleccion = null
+  let envio = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'guardarModalidadPreferida') eleccion = body
+    if (body && body.action === 'submitEnrollmentSession') envio = body
+  }
+  page.on('request', espiar)
+  const limpiar = () => { page.off('request', espiar); scenario.simulacionFalla = false }
+
+  const irARevision = async (etiqueta) => {
+    if (!await entrarPorElEnlace(c, page, base)) return false
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) < 6; i++) {
+      if (!await continuar(c, page, (await dondeEstoy(page)) + 1, etiqueta)) break
+    }
+    return c.afirmar(`se llega a Revisión (${etiqueta})`, (await dondeEstoy(page)) === 6,
+      `se quedó en el índice ${await dondeEstoy(page)}`)
+  }
+
+  try {
+    // ── (A) El simulador en pie ────────────────────────────────────────────────
+    if (!await irARevision('con simulador')) return c
+    await desbloquear(page)
+    await page.waitForTimeout(LATENCY + 600)
+
+    const bloque = await page.$('[data-testid="paso7-simulador"]')
+    if (!c.afirmar('el paso 7 enseña la simulación de cuotas', !!bloque,
+      'no se pintó el recuadro del simulador en Revisión')) return c
+
+    // El aviso de que esto NO compromete tiene que estar SIEMPRE: es lo que separa una
+    // simulación de una elección en firme, y la familia lo tiene que leer antes de elegir.
+    const aviso = await page.$eval('[data-testid="paso7-simulador-aviso"]',
+      el => (el.textContent || '').trim()).catch(() => '')
+    c.afirmar('la pantalla dice que la simulación es orientativa y no compromete',
+      /orientativ|no compromete|indicative|commits you to nothing/i.test(aviso),
+      `el aviso leído fue ${JSON.stringify(aviso)}: sin él, la familia puede creer que ya ha elegido cómo paga`)
+
+    const opciones = await page.$$eval('[data-testid="paso7-modalidad"]', bs => bs.map(b => ({
+      id: b.getAttribute('data-modality-id'),
+      txt: (b.textContent || '').trim(),
+    })))
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, opciones.length)
+    if (!c.afirmar('se ofrecen al menos DOS formas de pago (hay algo que elegir)',
+      opciones.length >= 2,
+      `se pintaron ${opciones.length} opción(es): con una sola, «permitir elegir la modalidad» no se está comprobando`)) return c
+
+    c.afirmar('cada forma de pago enseña su importe',
+      opciones.every(o => /\d/.test(o.txt) && /€|EUR/.test(o.txt)),
+      `los textos de las opciones fueron ${JSON.stringify(opciones.map(o => o.txt))}: sin importe, esto no es un simulador de tarifas`)
+
+    await page.click('[data-testid="paso7-modalidad"]')
+    await page.waitForTimeout(LATENCY + 600)
+    c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, 1)
+    c.afirmar('la forma de pago elegida viaja al servidor, identificada',
+      !!(eleccion && eleccion.modality_id === opciones[0].id),
+      `se registró ${JSON.stringify(eleccion && eleccion.modality_id)} y se esperaba ${JSON.stringify(opciones[0].id)}: una elección que no viaja no llega al resumen de la solicitud`)
+
+    // ── (B) EL SIMULADOR CAÍDO — la familia sigue pudiendo enviar ──────────────
+    scenario.simulacionFalla = true
+    envio = null
+    if (!await irARevision('con simulador caído')) return c
+    await desbloquear(page)
+    await page.waitForTimeout(LATENCY + 600)
+
+    const sinOpciones = await page.$$('[data-testid="paso7-modalidad"]')
+    c.afirmar('con el simulador caído no se pinta ninguna forma de pago (ni números falsos)',
+      sinOpciones.length === 0,
+      `se pintaron ${sinOpciones.length} opción(es) pese a que el servidor no contestó`)
+    const vacio = await page.$('[data-testid="paso7-simulador-vacio"]')
+    c.afirmar('con el simulador caído la pantalla lo dice, sin romper el paso', !!vacio,
+      'no se encontró el mensaje de «todavía no podemos mostrarte una simulación»')
+
+    const enviado = await page.evaluate(() => {
+      document.querySelectorAll('input[type=checkbox]').forEach(ch => { if (!ch.checked) ch.click() })
+      const firma = document.querySelector('input[type=text]')
+      if (firma) {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        setter.call(firma, 'RobotUnoE2E PruebaE2E')
+        firma.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      const btn = [...document.querySelectorAll('button')].find(b => /enviar|submit/i.test(b.textContent || ''))
+      if (btn && !btn.disabled) { btn.click(); return true }
+      return false
+    })
+    c.afirmar('con el simulador caído el botón de enviar sigue disponible y se pulsa', enviado,
+      'no se encontró un botón de enviar habilitado: un simulador caído estaría impidiendo matricular')
+    await page.waitForTimeout(LATENCY + 1200)
+    c.afirmar('con el simulador caído la solicitud SE ENVÍA IGUAL', !!envio,
+      'no se registró ninguna llamada a submitEnrollmentSession: el envío quedó gateado por el simulador, que es justo lo que no puede pasar')
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -4534,6 +4667,11 @@ const CAMINOS = [
   { nombre: 'cuestionario-no-se-apaga', fn: caminoCuestionarioNoSeApaga, minLlamadas: 1, minElementos: 2 },
   // Cola 18.quater — la familia pide corregir su solicitud ya enviada.
   { nombre: 'pedir-correccion',    fn: caminoPedirCorreccion,    minLlamadas: 2, minElementos: 11 },
+  // Paso 7 · el simulador de cuotas — y que un simulador caído NO impide enviar.
+  // Contra el sistema real se declara NO CUBIERTO: el paso 7 exige el código de un solo
+  // uso para guardar la preferencia, y ese código llega a un buzón que el arnés no lee.
+  { nombre: 'simulador-paso7', fn: caminoSimuladorPaso7,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
   // DL-E49 §4/§9 — la familia AVISA al tutor que acaba de declarar (pedido por Diego).
   { nombre: 'avisar-al-otro-tutor', fn: caminoAvisarAlOtroTutor, minLlamadas: 1, minElementos: 11 },

@@ -552,5 +552,18 @@
   "step7.correction_sending": "Sending…",
   "step7.correction_sent": "We have received your request. The school will write to you with the next steps.",
   "step7.correction_failed": "We could not register your request. Please write to admisiones@kaleide.org and we will sort it out.",
-  "common.cancel": "Cancel"
+  "common.cancel": "Cancel",
+  "step7.sim.title": "What would the fees look like?",
+  "step7.sim.disclaimer": "This is an indicative simulation using today's prices: it commits you to nothing and reserves no place. When the school admits your child you will choose the final payment option, and that one is signed.",
+  "step7.sim.loading": "Calculating…",
+  "step7.sim.unavailable": "We cannot show you a fee simulation yet. The school will tell you the amounts when it reviews your application.",
+  "step7.sim.installments": "{{n}} payment(s) of {{amount}}",
+  "step7.sim.installments_varied": "{{n}} payments (varying amounts)",
+  "step7.sim.total": "Total: {{amount}}",
+  "step7.sim.saving_amount": "You save {{amount}}",
+  "step7.sim.first_due": "First payment: {{date}}",
+  "step7.sim.saving": "saving…",
+  "step7.sim.option_unavailable": "Not available for this case.",
+  "step7.sim.save_error": "We could not save the payment option you chose. You can still submit your application: you will choose it for real later on.",
+  "step7.sim.save_stepup": "To save your preferred payment option we need to check it is you. You can still submit your application: you will choose it for real later on."
 }

@@ -3,9 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
 import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
-import { gasCall, fetchLookups, fetchQuestions, requestCorrection, identidadDelEnlace } from '../../api';
+import { gasCall, fetchLookups, fetchQuestions, requestCorrection, identidadDelEnlace,
+         simularCuotas, guardarModalidadPreferida } from '../../api';
 import StepNav from '../../components/StepNav';
 import StepUpReverify from '../../components/StepUpReverify';
+import { isStepUpRequiredError } from './signingCommon';
 import { openDocument } from '../../utils/documentProxy';
 import { translateRelationLabel, translateGender, translateIdType } from '../../utils/enumLabels';
 import { CONSENT_TEXTS } from '../../consentTexts';
@@ -112,6 +114,188 @@ function CorrectionRequest({ resumeToken, t }) {
           {enviando ? t('step7.correction_sending') : t('step7.correction_send')}
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * PASO 7 · EL SIMULADOR DE CUOTAS — orientativo, y lo dice (Diego, 2026-08-19).
+ *
+ * Cita literal de Diego: «el paso 7 debería mostrar un pequeño simulador de las tarifas que
+ * se aplicarían, permitiendo elegir la modalidad de pago. […] Esto no es una elección en
+ * firme, es una simulación. La elección en firme se da en el paso 8, porque es la que se va
+ * a firmar.»
+ *
+ * ⛔ ESTO NO PUEDE IMPEDIR QUE UNA FAMILIA ENVÍE SU SOLICITUD, y es lo más importante del
+ * bloque: vive FUERA del camino de `handleSubmit`, no comparte con él ni un estado, y
+ * cualquier fallo suyo —la lectura, el guardado de la elección, el servidor entero— se
+ * queda dentro de este recuadro. Si no carga, el paso 7 se ve exactamente como antes.
+ *
+ * LA FORMA está COPIADA de `Step8Billing.jsx` (carga · error de lectura que degrada ·
+ * tarjeta por forma de pago · opción no disponible atenuada con su motivo), no rediseñada.
+ *
+ * ⛔ AQUÍ NO SE CALCULA DINERO: `money()` divide entre 100 y formatea, y nada más. Los
+ * importes salen SIEMPRE del motor del KMS — un segundo sitio que los calculara es
+ * exactamente lo que DL-080-A prohíbe.
+ */
+function SimulacionDeCuotas({ resumeToken, applicants, t }) {
+  const [sim, setSim]           = useState(null);   // null = cargando
+  const [elegida, setElegida]   = useState(null);
+  const [guardando, setGuardando] = useState(null); // modality_id en curso
+  const [aviso, setAviso]       = useState('');
+
+  useEffect(() => {
+    let vivo = true;
+    if (!resumeToken) { setSim({ simulable: false, simulaciones: [] }); return undefined; }
+    simularCuotas(resumeToken)
+      .then(res => {
+        if (!vivo) return;
+        const r = (res && typeof res === 'object') ? res : { simulable: false, simulaciones: [] };
+        setSim(r);
+        if (r.preferred_modality_id) setElegida(r.preferred_modality_id);
+      })
+      .catch(e => {
+        // Degrada y calla: el resto del paso 7 tiene que funcionar igual.
+        log.warn('Step7: simularCuotas failed', { message: e && e.message });
+        if (vivo) setSim({ simulable: false, simulaciones: [] });
+      });
+    return () => { vivo = false; };
+  }, [resumeToken]);
+
+  const money = (cents, currency) => {
+    const n = Number(cents || 0) / 100;
+    try {
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'EUR' }).format(n);
+    } catch (e) { return n.toFixed(2) + ' ' + (currency || 'EUR'); }
+  };
+
+  const elegir = (modalityId) => {
+    if (guardando) return;
+    setAviso('');
+    setElegida(modalityId);          // optimista: es una preferencia, no dinero en firme
+    setGuardando(modalityId);
+    guardarModalidadPreferida(resumeToken, modalityId)
+      .catch(e => {
+        log.warn('Step7: guardarModalidadPreferida failed', { message: e && e.message });
+        // Se dice que la ELECCIÓN no quedó anotada — nunca que el envío esté en riesgo.
+        setAviso(isStepUpRequiredError(e) ? t('step7.sim.save_stepup') : t('step7.sim.save_error'));
+      })
+      .finally(() => setGuardando(null));
+  };
+
+  const nombreDe = (personId) => {
+    const a = (applicants || []).find(x => (x.person_id || x._uid) === personId);
+    return a ? [a.first_name, a.last_name].filter(Boolean).join(' ').trim() : '';
+  };
+
+  const conOpciones = ((sim && sim.simulaciones) || []).filter(x => (x.modalidades || []).length > 0);
+
+  return (
+    <div className="kis-card mt-3" data-testid="paso7-simulador">
+      <h3 style={{ color: 'var(--teal-dk)', marginTop: 0, fontSize: '1rem' }}>
+        {t('step7.sim.title')}
+      </h3>
+      {/* Lo que ESTO es, dicho con todas las letras y siempre visible — también mientras
+          carga y también cuando no hay nada que enseñar. */}
+      <p data-testid="paso7-simulador-aviso"
+         style={{ color: 'var(--muted)', fontSize: '0.85rem', marginBottom: 12 }}>
+        {t('step7.sim.disclaimer')}
+      </p>
+
+      {sim === null && (
+        <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 0 }}>
+          {t('step7.sim.loading')}
+        </p>
+      )}
+
+      {sim !== null && !conOpciones.length && (
+        <p data-testid="paso7-simulador-vacio"
+           style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 0 }}>
+          {t('step7.sim.unavailable')}
+        </p>
+      )}
+
+      {conOpciones.map(bloque => (
+        <div key={bloque.applicant_person_id} style={{ marginBottom: 18 }}>
+          {conOpciones.length > 1 && nombreDe(bloque.applicant_person_id) && (
+            <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8 }}>
+              {nombreDe(bloque.applicant_person_id)}
+            </div>
+          )}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            {(bloque.modalidades || []).map(m => {
+              const seleccionada = elegida != null && m.modality_id === elegida;
+              const ocupada      = guardando === m.modality_id;
+              const noDisponible = m.available === false;
+              return (
+                <button
+                  key={m.modality_id}
+                  type="button"
+                  data-testid="paso7-modalidad"
+                  data-modality-id={m.modality_id}
+                  onClick={() => elegir(m.modality_id)}
+                  disabled={noDisponible || !!guardando}
+                  aria-pressed={seleccionada}
+                  style={{
+                    textAlign: 'left', minWidth: 210, flex: '1 1 210px',
+                    border: '2px solid ' + (seleccionada ? 'var(--teal-dk)' : 'var(--border)'),
+                    background: seleccionada ? 'rgba(0,161,154,0.06)' : '#fff',
+                    borderRadius: 8, padding: '10px 12px',
+                    cursor: noDisponible ? 'not-allowed' : 'pointer',
+                    opacity: noDisponible ? 0.55 : 1,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--teal-dk)' }}>
+                    {m.designation || m.modality_code}
+                    {ocupada && <span style={{ marginLeft: 8, fontWeight: 400, fontSize: '0.78rem' }}>
+                      {t('step7.sim.saving')}
+                    </span>}
+                  </div>
+                  {noDisponible ? (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
+                      {t('step7.sim.option_unavailable')}
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: '0.84rem', marginTop: 4 }}>
+                        {m.per_installment_cents != null
+                          ? t('step7.sim.installments', { n: m.installments, amount: money(m.per_installment_cents, m.currency_code) })
+                          : t('step7.sim.installments_varied', { n: m.installments })}
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 2 }}>
+                        {t('step7.sim.total', { amount: money(m.net_cents, m.currency_code) })}
+                      </div>
+                      {Number(m.discount_cents || 0) > 0 && (
+                        <div style={{ fontSize: '0.8rem', color: '#1a7f37', fontWeight: 600, marginTop: 2 }}>
+                          {t('step7.sim.saving_amount', { amount: money(m.discount_cents, m.currency_code) })}
+                        </div>
+                      )}
+                      {(m.descuentos || []).length > 0 && (
+                        <div style={{ fontSize: '0.76rem', color: 'var(--muted)', marginTop: 2 }}>
+                          {(m.descuentos || []).map(d => d.designation || d.policy_code).filter(Boolean).join(' · ')}
+                        </div>
+                      )}
+                      {(m.cuotas || []).length > 0 && (
+                        <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 6 }}>
+                          {t('step7.sim.first_due', { date: m.cuotas[0].due_date || '—' })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {aviso && (
+        <div className="alert alert-warning" role="alert"
+             data-testid="paso7-simulador-error"
+             style={{ fontSize: '0.84rem', marginTop: 10, marginBottom: 0 }}>
+          {aviso}
+        </div>
+      )}
     </div>
   );
 }
@@ -808,6 +992,10 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         </>
       ) : (
         <>
+          {/* Paso 7 · el simulador de cuotas. Va ANTES del botón de enviar y NO lo gatea:
+              es un recuadro aparte, sin ningún estado compartido con `handleSubmit`. */}
+          <SimulacionDeCuotas resumeToken={resumeToken} applicants={applicants} t={t} />
+
           <div className="kis-card mt-3">
             <h3 style={{ color: 'var(--teal-dk)', marginTop: 0, fontSize: '1rem' }}>{t('step7.legal_title')}</h3>
 

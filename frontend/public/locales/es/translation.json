@@ -552,5 +552,18 @@
   "step7.correction_sending": "Enviando…",
   "step7.correction_sent": "Hemos recibido tu petición. El colegio te escribirá para decirte cómo seguir.",
   "step7.correction_failed": "No hemos podido registrar tu petición. Escríbenos a admisiones@kaleide.org y lo resolvemos.",
-  "common.cancel": "Cancelar"
+  "common.cancel": "Cancelar",
+  "step7.sim.title": "¿Cómo quedarían las cuotas?",
+  "step7.sim.disclaimer": "Esto es una simulación orientativa con las tarifas de hoy: no compromete a nada y no reserva plaza. Cuando el colegio admita a tu hijo o hija elegirás la forma de pago definitiva, y esa sí se firma.",
+  "step7.sim.loading": "Calculando…",
+  "step7.sim.unavailable": "Todavía no podemos mostrarte una simulación de las cuotas. El colegio te informará de los importes cuando estudie tu solicitud.",
+  "step7.sim.installments": "{{n}} pago(s) de {{amount}}",
+  "step7.sim.installments_varied": "{{n}} pagos (importes variables)",
+  "step7.sim.total": "Total: {{amount}}",
+  "step7.sim.saving_amount": "Ahorras {{amount}}",
+  "step7.sim.first_due": "Primer pago: {{date}}",
+  "step7.sim.saving": "guardando…",
+  "step7.sim.option_unavailable": "No disponible para este caso.",
+  "step7.sim.save_error": "No hemos podido guardar la forma de pago que has elegido. Puedes enviar tu solicitud igualmente: la elegirás en firme más adelante.",
+  "step7.sim.save_stepup": "Para guardar la forma de pago que prefieres tenemos que comprobar que eres tú. Puedes enviar tu solicitud igualmente: la elegirás en firme más adelante."
 }

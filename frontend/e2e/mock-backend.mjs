@@ -707,6 +707,43 @@ export function createDispatcher(scenario, record) {
     // servidor de verdad).
     verifyEmail:          (p) => { if (p && p.stepup) scenario.otpSuperado = true; return { ok: true, verified: true }; },
 
+    // ── Paso 7 · el SIMULADOR de cuotas (orientativo, no compromete) ─────────
+    // La forma la copia del contrato real (`enr_proyectarSimulacionesDelEnsayo_` del KMS).
+    // Se sirven DOS formas de pago a propósito: con una sola, la comprobación de que la
+    // familia PUEDE elegir pasaría en vacío, que es peor que no tenerla.
+    simularCuotas: () => {
+      // ⛔ El simulador CAÍDO responde `simulable:false`, NO `ok:false`: el despachador
+      // real envuelve el resultado en `{ok:true, ...}` y este manejador NUNCA lanza por
+      // un fallo de simulación (`enr_wizardSimularCuotas`, KMS). Fingirlo con `ok:false`
+      // simularía un fallo de TRANSPORTE, que es otra cosa y otro camino.
+      if (scenario.simulacionFalla) {
+        return { ok: true, simulable: false, motivo: 'NO_SE_PUDO_SIMULAR', simulaciones: [],
+                 preferred_modality_id: null };
+      }
+      return {
+        ok: true, simulable: true, motivo: null, preferred_modality_id: null,
+        simulaciones: [{
+          applicant_person_id: FIXTURE.applicantId,
+          template_id: 'tpl-e2e', motivo: null,
+          modalidades: [
+            { modality_id: 'mod-anual-e2e', modality_code: 'ANNUAL', designation: 'Pago anual',
+              installments: 1, cuotas: [{ due_date: '2027-09-01', amount_cents: 525000 }],
+              per_installment_cents: null, gross_cents: 525000, discount_cents: 26500,
+              net_cents: 498500, currency_code: 'EUR', available: true,
+              descuentos: [{ policy_code: 'ANNUAL', designation: 'Descuento por pago anual' }] },
+            { modality_id: 'mod-mensual-e2e', modality_code: 'MONTHLY', designation: 'Pago mensual',
+              installments: 10,
+              cuotas: Array.from({ length: 10 }, (_, i) => ({
+                due_date: `2027-${String(9 + (i % 4)).padStart(2, '0')}-01`, amount_cents: 52500 })),
+              per_installment_cents: 52500, gross_cents: 525000, discount_cents: 0,
+              net_cents: 525000, currency_code: 'EUR', available: true, descuentos: [] },
+          ],
+        }],
+      };
+    },
+    guardarModalidadPreferida: (p) => ({ ok: true, saved: true,
+                                         preferred_modality_id: (p && p.modality_id) || null }),
+
     // ── Tramo de firma ───────────────────────────────────────────────────────
     getSubscriptionBudget:   () => ({ ok: true, subscriptions: [], modalities_available: false }),
     getSavedBillingSplits:   () => ({ ok: true, payers: [], per_participant: [] }),

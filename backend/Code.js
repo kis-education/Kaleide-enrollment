@@ -1954,6 +1954,10 @@ function doPost(e) {
       // DL-080-A — Step 8: presupuesto del borrador + elección de modalidad.
       case 'getSubscriptionBudget':   result = getSubscriptionBudget_(payload);   break;
       case 'applyPaymentModality':    result = applyPaymentModality_(payload);    break;
+      // Paso 7 · el simulador de cuotas (lectura) y la forma de pago elegida a título
+      // ORIENTATIVO (mutación con la puerta completa de ②27). La firme es la del paso 8.
+      case 'simularCuotas':           result = simularCuotas_(payload);           break;
+      case 'guardarModalidadPreferida': result = guardarModalidadPreferida_(payload); break;
       case 'requestCorrection':       result = requestCorrection_(payload);       break;
       case 'retirarDelExpediente':    result = retirarDelExpediente_(payload);    break;
       case 'avisarATutor':            result = avisarATutor_(payload);            break;
@@ -7574,6 +7578,65 @@ function applyPaymentModality_(p) {
     subscription_id: subscriptionId,
     modality_id:     modalityId,
   }));
+}
+
+/**
+ * PASO 7 · EL SIMULADOR DE CUOTAS — lectura, orientativa y sin compromiso (Diego 2026-08-19).
+ *
+ * Cita literal de Diego: «el paso 7 debería mostrar un pequeño simulador de las tarifas que
+ * se aplicarían, permitiendo elegir la modalidad de pago. […] Esto no es una elección en
+ * firme, es una simulación. La elección en firme se da en el paso 8, porque es la que se va
+ * a firmar.»
+ *
+ * Proxy FINO a `enr.simularCuotas`. El KMS deriva el expediente del `resume_token` (KAL-4),
+ * resuelve qué plantilla le toca a cada alumno y ensaya el calendario SIN escribir nada
+ * (`fin.previewTemplateSchedule`). **El asistente NO calcula dinero**: pide y formatea
+ * `amount_cents/100`, exactamente igual que el paso 8 — un segundo sitio que calculara
+ * importes es lo que DL-080-A prohíbe.
+ *
+ * LECTURA ⇒ no invalida caché. Y **no lleva el código de un solo uso a propósito**: no muta
+ * nada y no devuelve ni un dato personal más allá de los identificadores que la propia
+ * sesión ya tiene; pedirlo dejaría sin ver sus tarifas a la familia que lleva más de diez
+ * minutos repasando su solicitud, que es justo cuando llega al paso 7.
+ *
+ * @param {Object} p — { resume_token }
+ * @returns {Object} `data` del KMS — { ok, motivo, simulaciones, preferred_modality_id }
+ */
+function simularCuotas_(p) {
+  // KAL-4: el expediente sale del token, nunca del cuerpo. El KMS lo re-deriva igual.
+  requireResumeToken_(p);
+  return kmsProxy_('enr.simularCuotas', { resume_token: p.resume_token });
+}
+
+/**
+ * PASO 7 · La forma de pago que la familia ELIGIÓ EN LA SIMULACIÓN — una PREFERENCIA.
+ *
+ * ⚠️ NO ES UNA ELECCIÓN EN FIRME: no crea suscripción, no reserva nada y no compromete a la
+ * familia. Solo queda anotada en su expediente para que el resumen de su solicitud pueda
+ * decir qué eligió. La elección firme es la del paso 8 (`applyPaymentModality_`), que es la
+ * que se firma.
+ *
+ * ②27 — es una MUTACIÓN, así que lleva la puerta completa y EN ESTE ORDEN, copiada de
+ * `saveNeae_` (el patrón obligatorio): el expediente sale del bearer (KAL-4), se comprueba
+ * que la solicitud sigue siendo editable, y se exige el código de un solo uso ANTES del
+ * viaje al KMS. La marca es del buzón que OPERA (②24), no siempre la del tutor 1.
+ *
+ * ESCRITURA ⇒ invalida la caché del grupo (nunca servir algo viejo tras escribir).
+ *
+ * @param {Object} p — { resume_token, modality_id? }  (vacío = borrar la preferencia)
+ * @returns {Object} `data` del KMS — { ok, saved, preferred_modality_id }
+ */
+function guardarModalidadPreferida_(p) {
+  const enrollmentGroupId = requireResumeToken_(p);
+  assertGroupEditable_(enrollmentGroupId);
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
+  _wzCacheInvalidate_(p && p.resume_token);
+
+  const modalityId = (p && p.modality_id) ? String(p.modality_id).trim() : '';
+  return kmsProxy_('enr.guardarModalidadPreferida', {
+    resume_token: p.resume_token,
+    modality_id:  modalityId,
+  });
 }
 
 /**

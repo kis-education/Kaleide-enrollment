@@ -259,6 +259,10 @@ function comprobarParidadDelCodigo(fuenteLimpia) {
     // un token observado y sin el código de un solo uso se podría colar a un tercero en
     // silencio, y la familia no se enteraría. Pide lo mismo que corregir una letra.
     ['avisarATutor_',            'requireResumeToken_'],
+    // Paso 7 · la forma de pago elegida en la SIMULACIÓN. No compromete a nadie, pero es
+    // una escritura sobre el expediente de la familia y va por la misma puerta que las
+    // demás: un `resume_token` filtrado no debe poder tocarle nada sin acreditar el buzón.
+    ['guardarModalidadPreferida_', 'requireResumeToken_'],
     ['saveBillingInfo_',         'requireSignerIdentity_'],
     ['applyPaymentModality_',    'requireSignerIdentity_'], // ②27
     ['submitGdprConsents_',      'requireSignerIdentity_'],

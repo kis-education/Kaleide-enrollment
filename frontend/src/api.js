@@ -90,6 +90,40 @@ export function requestCorrection(resumeToken, note) {
 }
 
 /**
+ * PASO 7 · «¿cómo me quedarían las cuotas?» — SIMULACIÓN, no compromiso (Diego 2026-08-19).
+ *
+ * LECTURA — por eso NO entra en `ACCIONES_QUE_ESCRIBEN`. El servidor resuelve qué tarifa le
+ * tocaría a cada hijo y ensaya el calendario sin escribir ni una fila; aquí no se calcula
+ * dinero, solo se formatea lo que vuelve (los importes llegan en céntimos).
+ *
+ * El expediente lo deriva el servidor del `resume_token` (KAL-4).
+ *
+ * @param {string} resumeToken
+ * @returns {Promise<{simulable:boolean, motivo:?string, simulaciones:Array, preferred_modality_id:?string}>}
+ */
+export function simularCuotas(resumeToken) {
+  return gasCall('simularCuotas', { resume_token: resumeToken });
+}
+
+/**
+ * PASO 7 · La forma de pago que la familia elige EN LA SIMULACIÓN.
+ *
+ * ⚠️ Es una PREFERENCIA orientativa: no crea ninguna suscripción, no reserva nada y no
+ * compromete a la familia. Queda anotada para que el resumen de su solicitud pueda decir
+ * qué eligió; **la elección en firme es la del paso 8**, que es la que se firma.
+ *
+ * @param {string} resumeToken
+ * @param {?string} modalityId  vacío = borrar la preferencia.
+ * @returns {Promise<{ok:boolean, saved:boolean, preferred_modality_id:?string}>}
+ */
+export function guardarModalidadPreferida(resumeToken, modalityId) {
+  return gasCall('guardarModalidadPreferida', {
+    resume_token: resumeToken,
+    modality_id:  modalityId || '',
+  });
+}
+
+/**
  * 18.bis.84 · ¿CÓMO ACABARON LOS GUARDADOS QUE EL KMS DEJÓ APUNTADOS?
  *
  * El servidor NO guarda los pasos en el acto: los apunta y los hace después. Que una
@@ -539,7 +573,7 @@ const GAS_ENDPOINT = import.meta.env.VITE_GAS_ENDPOINT;
 const ACCIONES_QUE_ESCRIBEN = new Set([
   'saveStep', 'saveResponses', 'saveNeae', 'uploadDocument', 'retirarDelExpediente',
   'saveBillingInfo', 'submitGdprConsents', 'confirmReview', 'applyPaymentModality',
-  'submitEnrollmentSession', 'requestCorrection',
+  'submitEnrollmentSession', 'requestCorrection', 'guardarModalidadPreferida',
 ]);
 
 const _oyentesEscritura = new Set();
