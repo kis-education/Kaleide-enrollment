@@ -605,7 +605,21 @@ function requireResumeToken_(payload) {
   // mensajes EXACTOS, el de caducidad incluido (①22)— se siguen aplicando AQUÍ, verbatim.
   // Si la puerta del KMS rechazara antes, no se podría distinguir «caducado» de «no existe»
   // y la familia con la solicitud caducada leería el mensaje equivocado.
-  const consulta = _expedienteDelToken_(token, { tolerarSesionCerrada: true });
+  //
+  // ★ 0º.bis (2026-08-20) — si el payload YA trae el discriminador de identidad (`n` del
+  // enlace, o `recovered_email` del cliente), se pregunta en la MISMA llamada: la puerta es
+  // el PRIMER sitio de la petición que ve este payload, y la mayoría de sus llamantes piden
+  // la identidad justo después (`_identidadDelEnlace_`, el patrón `assertStepUpFresh_` de
+  // ②27). Precedencia n > recovered_email — la misma de `effectiveRecoveredEmail_`; sin
+  // discriminador, cero cambio (ni un campo de más en el cuerpo que sale hacia el KMS).
+  const nDiscPuerta = payload && payload.n ? String(payload.n).trim() : '';
+  const correoDiscPuerta = (!nDiscPuerta && payload && payload.recovered_email)
+    ? String(payload.recovered_email).toLowerCase().trim() : '';
+  const consulta = _expedienteDelToken_(token, {
+    tolerarSesionCerrada: true,
+    n: nDiscPuerta || null,
+    correo: correoDiscPuerta || null,
+  });
   if (!consulta.ok && !consulta.rechazo) {
     // NO se pudo PREGUNTAR (transporte). Se LANZA —como lanzaba `appsheetRequest_`, que aquí
     // no estaba envuelto en `try`— pero NUNCA como «no autorizado»: decirle a una familia
@@ -3734,8 +3748,24 @@ function _ficheroDelExpediente_(resumeToken, fileId) {
  *     «tu enlace no vale»;
  *   · `reportUnsolicited_` da su acuse silencioso en los dos casos (anti-enumeración).
  *
+ * ── ★ 0º.bis (2026-08-20) — `opciones.n` / `opciones.correo`: la IDENTIDAD en la MISMA
+ * pregunta ──────────────────────────────────────────────────────────────────────────────
+ * Medido en un registro real del asistente (2026-08-19): pedir la cabecera y, después,
+ * de quién es el enlace (`_tutorQueRecupera_` → `enr.wizardTutorQueRecupera`) son DOS viajes
+ * de 13-31 s cada uno — y el segundo resuelve la MISMA sesión con el MISMO enlace que el
+ * primero ya tenía en la mano. Si el llamante trae UNO de los dos discriminadores (nunca los
+ * dos — precedencia `n` > `correo`, la de `effectiveRecoveredEmail_`, forzada aquí para que
+ * jamás viajen juntos), el cuerpo se lo lleva a la MISMA pregunta, y **el resultado se archiva
+ * donde `_tutorQueRecupera_` lo busca** (`_TUTOR_MEMO_`, misma clave, mismas dos entradas que
+ * archiva su propia respuesta) — para que la primera llamada de `_tutorQueRecupera_` que venga
+ * después en esta ejecución sea un acierto de memoria, no un segundo viaje.
+ *
+ * Solo se archiva el ACIERTO (`identidad.ok`) — un fallo de identidad NO se memoriza, por el
+ * mismo motivo que la cabecera: es barato de repetir y memorizarlo convertiría un tropiezo
+ * puntual en el veredicto de una llamada futura que ni siquiera lo pidió.
+ *
  * @param {string} resumeToken
- * @param {{tolerarSesionCerrada?:boolean}} [opciones]
+ * @param {{tolerarSesionCerrada?:boolean, n?:string, correo?:string}} [opciones]
  * @returns {{ok:boolean, fila:Object|null, rechazo:(string|null), motivo:(string|null)}}
  * @private
  */
@@ -3746,6 +3776,11 @@ function _expedienteDelToken_(resumeToken, opciones) {
   catch (e) { return { ok: true, fila: null, rechazo: null, motivo: null }; }
 
   var tolerante = !!(opciones && opciones.tolerarSesionCerrada);
+  // ★ 0º.bis — precedencia n > correo, FORZADA aquí: nunca se mandan los dos juntos al KMS
+  // (que los rechazaría enteros, cabecera incluida — el KMS no elige por el llamante).
+  var nDisc      = (opciones && opciones.n)      ? String(opciones.n).trim() : '';
+  var correoDisc = (opciones && opciones.correo && !nDisc)
+    ? String(opciones.correo).toLowerCase().trim() : '';
 
   // ②17 (2026-08-19) — LA MISMA FICHA SE PEDÍA DOS VECES POR PETICIÓN. Medido en el log
   // real del asistente desplegado: `hydrateSession` emitía `enr.wizardExpedienteDelToken`
@@ -3757,12 +3792,18 @@ function _expedienteDelToken_(resumeToken, opciones) {
   // identificador de expediente, y aquí lo que hay es un TOKEN ⇒ nadie la encontraba.
   // Ahora se consulta por token. Sigue siendo memoria de EJECUCIÓN —muere con la
   // petición—: NO es caché, no tiene plazo, y no puede servir una fila de otra petición.
+  //
+  // El acierto de la cabecera SOLO sirve de atajo cuando NO se pide identidad: si se pide,
+  // hace falta ir al KMS igual (la cabecera ya la tenemos, pero la identidad no).
   var clave = _memoCabeceraClave_(token, tolerante);
   var yaResuelta = _memoCabeceraEjecucion_[clave];
-  if (yaResuelta) return { ok: true, fila: yaResuelta, rechazo: null, motivo: null };
+  if (yaResuelta && !nDisc && !correoDisc) {
+    return { ok: true, fila: yaResuelta, rechazo: null, motivo: null };
+  }
 
   var cuerpo = { resume_token: token };
   if (tolerante) cuerpo.tolerar_sesion_cerrada = true;
+  if (nDisc) cuerpo.n = nDisc; else if (correoDisc) cuerpo.correo = correoDisc;
 
   try {
     var r = kmsProxy_('enr.wizardExpedienteDelToken', cuerpo) || {};
@@ -3771,6 +3812,18 @@ function _expedienteDelToken_(resumeToken, opciones) {
     // repetir y memorizarlos convertiría un tropiezo puntual en el veredicto de toda la
     // petición.
     if (fila) _memoCabeceraEjecucion_[clave] = fila;
+    // ★ 0º.bis — la identidad viajó en la MISMA respuesta: se archiva donde
+    // `_tutorQueRecupera_` la busca (mismo formato `{correo,tutor,email_id}`, misma
+    // convención de clave — la pedida, y si resolvió por `n`, también la de su correo).
+    if ((nDisc || correoDisc) && r.identidad && r.identidad.ok) {
+      var outIdent = {
+        correo: r.identidad.correo || null,
+        tutor: r.identidad.tutor || null,
+        email_id: r.identidad.email_id || null,
+      };
+      _TUTOR_MEMO_[token + '|' + (nDisc ? 'n:' + nDisc : 'c:' + correoDisc)] = outIdent;
+      if (nDisc && outIdent.correo) _TUTOR_MEMO_[token + '|c:' + outIdent.correo] = outIdent;
+    }
     return { ok: true, fila: fila, rechazo: null, motivo: null };
   } catch (e2) {
     var msg = (e2 && e2.message) || String(e2);

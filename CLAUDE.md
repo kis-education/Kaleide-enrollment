@@ -906,6 +906,45 @@ nombrando su caso.
 extraídos del fuente y corridos con dobles: **antes 2/2/2/1 viajes, después 1/1/1/1**, más las tres
 afirmaciones de seguridad de arriba. **Quien toque esta memoria, que lo mida.**
 
+### `0º.bis` (2026-08-20, DL-E57) — la PUERTA y la IDENTIDAD se piden en la MISMA pregunta al KMS
+
+**El tramo de arriba dedupó DOS pedidos de la MISMA cosa (la cabecera). Éste va un paso más allá:
+cuando la petición además necesita saber DE QUÉ TUTOR es el enlace —`n` del propio enlace, o
+`recovered_email` del cliente—, la puerta ya no manda esa pregunta a un SEGUNDO viaje al KMS.**
+Medido: `sendVerificationCode` (rama step-up) hacía **tres** viajes —`enr.wizardExpedienteDelToken`
+(la cabecera) · `enr.wizardTutorQueRecupera` (el tutor, re-resolviendo la MISMA sesión con el
+MISMO enlace) · `sys-public.sendAuthCode`—; el segundo desaparece. Lo mismo aplica a **cualquiera**
+de los doce manejadores de mutación que llevan el patrón `requireResumeToken_` +
+`assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId))` (②27) cuando el payload trae `n`.
+
+**`requireResumeToken_` lee `payload.n`/`payload.recovered_email`** (la misma precedencia `n` >
+`recovered_email` de `effectiveRecoveredEmail_`, nunca los dos a la vez) y se los pasa a
+`_expedienteDelToken_`, que ahora sabe llevarlos en el MISMO cuerpo que pide la cabecera
+(`enr.wizardExpedienteDelToken`, KMS). Si el KMS resuelve la identidad, **la archiva en
+`_TUTOR_MEMO_`** —la misma memoria y el mismo formato con que `_tutorQueRecupera_` archiva su
+propia respuesta— así que la primera llamada a `_tutorQueRecupera_` que corra después en esta
+MISMA ejecución (dentro de `effectiveRecoveredEmail_` → `resolveEmailFromLinkParam_`, invocada
+por `_identidadDelEnlace_`) encuentra el acierto y no paga un segundo viaje.
+
+**Sin discriminador, cero cambio: byte-idéntico.** Y **los dos fallos no se contagian** — si la
+identidad no se puede resolver, la cabecera (ya resuelta arriba, en el KMS) sigue viajando igual;
+el fallo de identidad va en su propio campo y nunca tumba la puerta.
+
+**Lo que NO se movió, y es lo que había que preservar**: la PRECEDENCIA de la identidad y el modo
+estricto de ②24.bis siguen viviendo **solo** en `effectiveRecoveredEmail_`/`_identidadDelEnlace_`
+— ninguna de las dos se tocó. La ruta combinada del KMS nunca ve `primary_email` (el respaldo
+«tutor 1») como discriminador: solo `n`/`recovered_email`, la identidad DECLARADA.
+
+⚠️ **Sin prueba automática (la batería nunca ejecuta `backend/Code.js` ni el KMS).** Medido con dos
+arneses efímeros fuera de los repositorios, extrayendo las funciones reales y ejecutándolas con
+dobles: **con `n` presente, 2 → 1 viaje al KMS**; sin discriminador, **1 viaje, cero cambio**; una
+relectura posterior de la cabecera (el patrón de `hydrateSession_`/`warmSession_`) sigue en
+**0 viajes extra** (memo-hit). Rojo demostrado (lado KMS): quitar el `try/catch` que aísla el
+fallo de identidad → la puerta entera se tumba · perder el guardia que fuerza la precedencia
+`n`>`correo` → `BAD_REQUEST` entero (el KMS rechaza los dos discriminadores juntos) · renombrar
+`enr_resolverIdentidadDeSesion_` → «NO ENCONTRADA» (medición ciega detectada). Detalle completo:
+`kis-app/docs/kms/decisions/enr.md` DL-E57.
+
 ### ②17 (2026-08-16) — EL PULSO: la acción más llamada mientras la familia espera, y bajaba el catálogo de situaciones ENTERO
 
 **`getAdmissionState_` es una acción PÚBLICA del despachador anónimo**, y el cliente la dispara
