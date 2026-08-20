@@ -236,6 +236,7 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'el-pulso-no-alarga-nada':           'exige leer el tiempo restante dos veces seguidas de la MISMA marca; contra el real habría que esperar minutos entre lecturas y el resultado dependería del reloj de Google',
     'caducada-no-se-resucita':           'exige dejar caducar una ventana a propósito; contra el real son 10 minutos de espera por afirmación',
     'otra-huella-no-vale':               'exige fabricar peticiones con la huella de otra página y el buzón de otro tutor: contra el sistema real eso es exactamente lo que no se hace',
+    'el-techo-avisa-por-seguridad':      'contra el sistema real el techo son DOS HORAS de reloj desde que se teclea el código: comprobarlo exigiría tener el robot dos horas tocando la pantalla. En modo simulado sí se cubre, comprimiendo el techo con `scenario.techoMs`.',
   },
   'codigo-sin-congelar': {
     'aviso-antes-que-la-respuesta': 'exige forzar la verja del código (dejar caducar la gracia del enlace) y cronometrar un viaje cuyo tiempo decide Google; en modo simulado sí se cubre, con `scenario.codigoDemoraMs`',
@@ -5010,6 +5011,7 @@ async function caminoVentanaPorInactividad(page, base) {
     c.noCubierta('el-pulso-no-alarga-nada',           'ver NO_CUBIERTAS_SOLO_REAL')
     c.noCubierta('caducada-no-se-resucita',           'ver NO_CUBIERTAS_SOLO_REAL')
     c.noCubierta('otra-huella-no-vale',               'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('el-techo-avisa-por-seguridad',      'ver NO_CUBIERTAS_SOLO_REAL')
     return c
   }
 
@@ -5033,6 +5035,7 @@ async function caminoVentanaPorInactividad(page, base) {
     scenario.otpSuperado = false
     scenario.ventanaViva = false
     scenario.ventanaMs = 0
+    scenario.techoMs = 0
   }
 
   /** ¿Está el asistente abierto (pasos pintados) o cerrado tras la verja del código? */
@@ -5243,6 +5246,43 @@ async function caminoVentanaPorInactividad(page, base) {
     c.afirmar('(6) sobre una ventana YA caducada el refresco NO crea nada: pide código',
       yaCaducada.ok === false && /STEPUP_REQUIRED/.test(JSON.stringify(yaCaducada)),
       `con la ventana caducada el servidor contestó ${JSON.stringify(yaCaducada).slice(0, 140)}: la actividad estaría resucitando una sesión que ya había expirado`)
+
+    // ══ FASE F · EL TECHO: el aviso dice que se cierra POR SEGURIDAD, y NO ofrece quedarse ══
+    // Diego, 2026-08-20: *«es importante avisar que se va a cerrar por seguridad»*. La
+    // diferencia con el aviso de inactividad no es de redacción: es que el botón «sigo aquí»
+    // NO PUEDE funcionar contra el techo (el refresco devuelve 0), así que ofrecerlo sería
+    // prometerle a la familia que se queda y echarla dos minutos después.
+    scenario.ventanaMs = 20000   // ventana larga…
+    scenario.techoMs   = 6000    // …y techo CORTO: el que manda es el techo
+    if (!c.afirmar('la familia entra una vez más, ya con el techo cerca',
+      await entrarConElCodigo('f'), 'el asistente no se pintó en el sexto pase')) return c
+
+    const conTecho = await alServidor('getAdmissionState')
+    c.afirmar('(8) el servidor DICE cuál de los dos límites va a cerrar, resuelto',
+      conTecho.step_up_cierre === 'TECHO' && Number(conTecho.step_up_restante_s) <= 6,
+      `el pulso contestó cierre=${conTecho.step_up_cierre} restante=${conTecho.step_up_restante_s} s: con la ventana en 20 s y el techo en 6 s, el que manda es el techo y hay que decirlo`)
+
+    const avisoTecho = await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-testid="aviso-ventana"]')
+        return el ? { cierre: el.getAttribute('data-cierre'),
+                      texto: el.innerText.trim(),
+                      haySigo: !!el.querySelector('[data-testid="aviso-ventana-sigo"]') } : null
+      }, null, { timeout: 20000 }).then(h => h.jsonValue()).catch(() => null)
+
+    c.afirmar('(9) el aviso del techo se pinta, y se identifica como tal',
+      !!avisoTecho && avisoTecho.cierre === 'TECHO',
+      `el aviso que salió fue ${JSON.stringify(avisoTecho)}: con el techo cerca no puede salir el de inactividad`)
+    // ⚠️ Comprobar solo «¿dice seguridad?» NO distingue: el aviso de INACTIVIDAD también lo
+    // dice. Lo que separa a los dos es que el del techo NO pregunta «¿sigues ahí?» —no hay
+    // nada que contestar— y sí promete que lo escrito no se pierde. Se exige eso.
+    c.afirmar('(10) dice que se cierra POR SEGURIDAD, sin preguntar «¿sigues ahí?» a quien no puede quedarse',
+      !!avisoTecho && /seguridad/i.test(avisoTecho.texto) && /c[oó]digo/i.test(avisoTecho.texto)
+        && !/sigues ah[ií]|still there/i.test(avisoTecho.texto),
+      `el texto era ${JSON.stringify(avisoTecho && avisoTecho.texto)}: si nombra «¿sigues ahí?» es el aviso de inactividad, que ofrece quedarse — contra el techo eso es mentira`)
+    c.afirmar('(11) y NO ofrece «sigo aquí», porque contra el techo ese botón no puede funcionar',
+      !!avisoTecho && avisoTecho.haySigo === false,
+      'el aviso del techo traía el botón de quedarse: es una promesa que el servidor va a rechazar')
 
     return c
   } finally {

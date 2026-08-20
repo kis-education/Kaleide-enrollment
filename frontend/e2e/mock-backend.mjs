@@ -505,26 +505,40 @@ export function createDispatcher(scenario, record) {
   // `scenario.ventanaMs` comprime los 10 minutos a unos pocos segundos. Lo que se comprime
   // es el RELOJ, no el mecanismo: el cliente pinta el aviso sobre el tiempo restante que
   // le manda el servidor, así que la secuencia que se observa es la misma que a los 10 min.
-  let marca = null;   // { exp, persona, pagina }
+  // ★ 2026-08-20 — y con TECHO ABSOLUTO, copia declarada del modelo del servidor: la ventana
+  // de arriba se reinicia con la actividad, el techo NO se reinicia con nada. `scenario.techoMs`
+  // lo comprime igual que `ventanaMs` comprime la ventana; sin la palanca son 2 h, así que los
+  // recorridos que no lo tocan quedan byte-idénticos.
+  let marca = null;   // { exp, techo, persona, pagina }
   const ventanaMs = () => Number(scenario.ventanaMs) || 10 * 60 * 1000;
-  const acunar = (p) => { marca = { exp: Date.now() + ventanaMs(), persona: (p && p.n) || '', pagina: (p && p.pv) || '' }; };
+  const techoMs   = () => Number(scenario.techoMs)   || 2 * 60 * 60 * 1000;
+  const acunar = (p) => {
+    const techo = Date.now() + techoMs();
+    marca = { exp: Math.min(Date.now() + ventanaMs(), techo), techo,
+              persona: (p && p.n) || '', pagina: (p && p.pv) || '' };
+  };
   const leerMarca = (p) => {
-    if (!marca) return { fresh: false, restante_s: 0 };
+    if (!marca) return { fresh: false, restante_s: 0, cierre: 'INACTIVIDAD' };
     const persona = (p && p.n) || '';
     const pagina  = (p && p.pv) || '';
-    const enVentana   = marca.exp >= Date.now();
+    const enVentana   = marca.exp >= Date.now() && marca.techo >= Date.now();
     // Misma regla y mismo comodín que el servidor: dos valores CONOCIDOS y distintos no
     // se transfieren; cuando uno de los dos lados no consta, se deja pasar.
     const mismaPersona = !marca.persona || !persona || marca.persona === persona;
     const mismaPagina  = !marca.pagina  || !pagina  || marca.pagina  === pagina;
     const fresh = enVentana && mismaPersona && mismaPagina;
-    return { fresh, restante_s: fresh ? Math.max(0, Math.ceil((marca.exp - Date.now()) / 1000)) : 0 };
+    // CUÁL de los dos límites va a cerrar: lo resuelve el servidor, no el cliente.
+    const cierre = (marca.exp >= marca.techo) ? 'TECHO' : 'INACTIVIDAD';
+    return { fresh, restante_s: fresh ? Math.max(0, Math.ceil((marca.exp - Date.now()) / 1000)) : 0, cierre };
   };
   // Extiende, JAMÁS crea, y conserva el atado con el que la marca nació.
   const extender = () => {
     if (!marca || marca.exp < Date.now()) return 0;
-    marca.exp = Date.now() + ventanaMs();
-    return Math.ceil(ventanaMs() / 1000);
+    // El techo NO se mueve al extender: se capa contra él, como hace el servidor.
+    const nueva = Math.min(Date.now() + ventanaMs(), marca.techo);
+    if (nueva <= Date.now()) return 0;
+    marca.exp = nueva;
+    return Math.ceil((nueva - Date.now()) / 1000);
   };
   // Lo que el simulado le contesta a la puerta de datos personales. Con la palanca puesta
   // manda la MARCA; sin ella, el comportamiento de siempre (`scenario.otpSuperado`).
@@ -597,7 +611,7 @@ export function createDispatcher(scenario, record) {
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos);
       const conVentana = scenario.ventanaViva
-        ? { step_up_fresh: true, step_up_restante_s: leerMarca(p).restante_s }
+        ? { step_up_fresh: true, step_up_restante_s: leerMarca(p).restante_s, step_up_cierre: leerMarca(p).cierre }
         : {};
       return { ok: true, ...h, lookups: lookupsSegunEscenario_(scenario), ...conVentana };
     },
@@ -609,7 +623,8 @@ export function createDispatcher(scenario, record) {
       const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos);
       const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
       return { ok: true, ...(h.admission || { state_code: null }),
-               ...(conVentana ? { step_up_fresh: conVentana.fresh, step_up_restante_s: conVentana.restante_s } : {}) };
+               ...(conVentana ? { step_up_fresh: conVentana.fresh, step_up_restante_s: conVentana.restante_s,
+                                  step_up_cierre: conVentana.cierre } : {}) };
     },
     // «Sigo aquí»: EXTIENDE si la marca sigue viva y el atado casa; si no, pide código.
     refrescarVentana: (p) => {
@@ -617,7 +632,7 @@ export function createDispatcher(scenario, record) {
       if (!leerMarca(p).fresh) return { ok: false, error: { code: 'STEPUP_REQUIRED', message: 'Step-up re-verification required' } };
       const s = extender();
       if (!s) return { ok: false, error: { code: 'STEPUP_REQUIRED', message: 'Step-up re-verification required' } };
-      return { ok: true, step_up_fresh: true, step_up_restante_s: s };
+      return { ok: true, step_up_fresh: true, step_up_restante_s: s, step_up_cierre: leerMarca(p).cierre };
     },
     getLiveStateVersion: () => ({ ok: true, version: 1 }),
     abandonSession:      () => ({ ok: true, abandoned: true }),

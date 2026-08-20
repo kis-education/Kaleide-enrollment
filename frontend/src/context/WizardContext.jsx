@@ -676,6 +676,11 @@ export function WizardProvider({ children }) {
   // pasado. Ambos viven SOLO en memoria — un reload exige re-verificar (más
   // seguro: nunca se persiste evidencia de "puedo ver PII" en sessionStorage).
   const [stepUpVerifiedUntil, setStepUpVerifiedUntil] = useState(0);
+  // ★ 2026-08-20 — CUÁL de los dos límites va a cerrar la sesión: 'INACTIVIDAD' (se puede
+  // reiniciar quedándose) o 'TECHO' (las 2 h desde que se tecleó el código; no se puede
+  // reiniciar con nada). Lo dice el SERVIDOR, resuelto — aquí no se deduce restando números:
+  // el cliente no echa cuentas sobre la ventana, por lo mismo que `step_up_restante_s`.
+  const [stepUpCierre, setStepUpCierre] = useState('INACTIVIDAD');
   const [lastActivityAt, setLastActivityAt] = useState(() => Date.now());
 
   // DL-E39 ENMIENDA (gate de ENTRADA, Diego 2026-06-06): el step-up deja de ser
@@ -768,6 +773,7 @@ export function WizardProvider({ children }) {
       .then((r) => {
         const s = Number(r && r.step_up_restante_s) || 0;
         setStepUpVerifiedUntil(Date.now() + (s > 0 ? s * 1000 : STEPUP_WINDOW_MS));
+        if (r && r.step_up_cierre) setStepUpCierre(r.step_up_cierre);
       })
       .catch((e) => {
         // El servidor dice que ya no hay ventana que estirar → se re-sincroniza el
@@ -791,10 +797,11 @@ export function WizardProvider({ children }) {
   // de la del servidor (es el defecto que #30 documentó: tras un F5 a mitad de ventana
   // el espejo local sobrevivía más que la marca real). Y el aviso de los dos minutos se
   // pinta sobre este número, así que tiene que ser el de verdad, no una estimación.
-  const markStepUpFresh = useCallback((restanteS) => {
+  const markStepUpFresh = useCallback((restanteS, cierre) => {
     const now = Date.now();
     const ms = (Number(restanteS) > 0) ? Number(restanteS) * 1000 : STEPUP_WINDOW_MS;
     setStepUpVerifiedUntil(now + ms);
+    setStepUpCierre(cierre || 'INACTIVIDAD');
     setLastActivityAt(now);
     log.success(`step-up: verificación fresca registrada (${Math.round(ms / 1000)} s)`);
   }, []);
@@ -1039,7 +1046,7 @@ export function WizardProvider({ children }) {
     // (B) vuelve true dentro de los 10 min. Solo log, no cambia ninguna rama de lógica.
     log.info('hydrateFromResume: step_up_fresh recibido', { step_up_fresh: !!data.step_up_fresh });
     if (data.step_up_fresh) {
-      markStepUpFresh(data.step_up_restante_s);
+      markStepUpFresh(data.step_up_restante_s, data.step_up_cierre);
       markOtpAutoSentForRecovery();
       log.info('hydrateFromResume: magic-link grace activa (nonce válido <10min) — sin OTP');
     }
@@ -1458,6 +1465,7 @@ export function WizardProvider({ children }) {
       recoveryNonce, setRecoveryNonce,           // IDENTITY-FROM-LINK: `n` = email_id del enlace
       isStepUpFresh, markStepUpFresh, revokeStepUpFresh, touchActivity, // DL-E39 step-up PII-primero + #30 espejo revocable
       stepUpVerifiedUntil,                              // 2026-08-20: hasta cuándo, para el aviso de los dos minutos
+      stepUpCierre,                                     // 2026-08-20: QUÉ lo cierra — 'INACTIVIDAD' | 'TECHO'
       recoveredViaMagicLink, setRecoveredViaMagicLink, // DL-E39 gate de entrada
       otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER: auto-send solo 1ª recuperación
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),

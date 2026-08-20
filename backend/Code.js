@@ -1435,7 +1435,7 @@ function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina) {
   const val = CacheService.getScriptCache().get('stepup_ok_' + enrollmentGroupId);
   if (!val) {
     Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=false no_mark'));
-    return { fresh: false, restante_s: 0 };
+    return { fresh: false, restante_s: 0, cierre: 'INACTIVIDAD' };
   }
   // El valor guardado es «<caducidad>|<huella del buzón>|<huella de la página viva>».
   // Una marca ANTERIOR a ②24 es solo el número, y una anterior al 2026-08-20 no trae la
@@ -1472,13 +1472,23 @@ function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina) {
   const mismaPagina = !paginaMarcada || !pagina || paginaMarcada === pagina;
   const fresh = enVentana && mismaPersona && mismaPagina;
   const remainingS = Math.max(0, Math.round((exp - Date.now()) / 1000));
+  // ★ 2026-08-20 (Diego: *«es importante avisar que se va a cerrar por seguridad»*) — el
+  // cliente necesita saber CUÁL de los dos límites es el que va a cerrar, porque el aviso no
+  // puede ser el mismo. Si cierra por INACTIVIDAD, «¿sigues ahí?» con un botón que de verdad
+  // reinicia el contador. Si cierra por el TECHO, ese botón NO PUEDE funcionar —el refresco
+  // devolverá 0— y ofrecerlo sería prometer algo que no va a pasar: ahí el aviso dice que se
+  // cierra por seguridad y que se pedirá el código otra vez.
+  // Se manda RESUELTO desde aquí, no se deduce en el cliente restando números: dos fuentes de
+  // verdad sobre lo mismo divergen (es la misma razón por la que `restante_s` lo manda el
+  // servidor). Sin techo (marca de antes del cambio) ⇒ INACTIVIDAD, como ayer.
+  const cierre = (techo && exp >= techo) ? 'TECHO' : 'INACTIVIDAD';
   Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=' + fresh +
                      ' remaining_s=' + remainingS +
                      ' persona=' + (persona || '(sin identificar)') +
                      ' marcada=' + (marcada || '(sin identificar)') +
                      (enVentana && !mismaPersona ? ' motivo=OTRO_TUTOR' : '') +
                      (enVentana && mismaPersona && !mismaPagina ? ' motivo=OTRA_PAGINA' : '')));
-  return { fresh: fresh, restante_s: fresh ? remainingS : 0 };
+  return { fresh: fresh, restante_s: fresh ? remainingS : 0, cierre: cierre };
 }
 
 function _isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina) {
@@ -1528,7 +1538,11 @@ function refrescarVentanaDeInactividad_(p) {
     err.code = 'STEPUP_REQUIRED';
     throw err;
   }
-  return { ok: true, step_up_fresh: true, step_up_restante_s: restante };
+  // Tras extender, el límite que manda puede haber cambiado de INACTIVIDAD a TECHO (la
+  // ventana ya viene recortada por el techo): se vuelve a LEER en vez de suponerlo.
+  const tras = _leerMarcaStepUp_(enrollmentGroupId, persona, pagina);
+  return { ok: true, step_up_fresh: true, step_up_restante_s: restante,
+           step_up_cierre: tras.cierre };
 }
 
 /**
@@ -4472,6 +4486,7 @@ function getAdmissionState_(p) {
   const personaEmail = _identidadDelEnlace_(p, id);
   const paginaViva = _huellaDePagina_(p);
   let stepUpRestanteS = 0;
+  let stepUpCierre = 'INACTIVIDAD';
   if (stepUpFresh) {
     _markStepUpFresh_(id, 'GRACE', personaEmail, paginaViva);
     stepUpRestanteS = Math.ceil(STEPUP_INACTIVITY_MS / 1000);
@@ -4486,6 +4501,7 @@ function getAdmissionState_(p) {
     const marca = _leerMarcaStepUp_(id, personaEmail, paginaViva);
     stepUpFresh = marca.fresh;
     stepUpRestanteS = marca.restante_s;
+    stepUpCierre = marca.cierre;
   }
 
   // WIZARD-CACHE (2026-06-12) — cache-first: si el warm dejó wz_adm_<token> y la
@@ -4521,6 +4537,7 @@ function getAdmissionState_(p) {
           editable:          admC.editable,
           step_up_fresh:     stepUpFresh,
           step_up_restante_s: stepUpRestanteS,
+          step_up_cierre:     stepUpCierre,
         };
       }
       if (wzEntry && wzEntry.admission) {
@@ -4614,6 +4631,7 @@ function getAdmissionState_(p) {
     editable:          admission.editable,   // URGENT-PASS3 BUG A: state-driven editabilidad
     step_up_fresh:     stepUpFresh,
     step_up_restante_s: stepUpRestanteS,
+    step_up_cierre:     stepUpCierre,
   };
 }
 
@@ -8728,6 +8746,7 @@ function hydrateSession_(p) {
   // la del servidor (el defecto que #30 documentó). Ahora la cuenta la manda quien la
   // tiene, y el aviso de los dos minutos se pinta sobre el tiempo REAL.
   const stepUpRestanteS = marcaStepUp.restante_s;
+  const stepUpCierre = marcaStepUp.cierre;
 
   // A (WIZARD-STEPUP) — gate ANTES de pagar el hydrate pesado. El gate PII (DL-E39)
   // estaba DESPUÉS del kmsProxy_ (~30s) → el OTP de entrada salía tras la espera. Ahora,
@@ -8925,7 +8944,8 @@ function hydrateSession_(p) {
     data.group.submitted_at = null;
   }
 
-  return Object.assign({}, data, { step_up_fresh: stepUpFresh, step_up_restante_s: stepUpRestanteS });
+  return Object.assign({}, data, { step_up_fresh: stepUpFresh, step_up_restante_s: stepUpRestanteS,
+                                   step_up_cierre: stepUpCierre });
 }
 
 /**

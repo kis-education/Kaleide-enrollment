@@ -29,7 +29,7 @@ import { useWizard, AVISO_ANTES_S } from '../context/WizardContext';
  */
 export default function AvisoDeVentana() {
   const { t } = useTranslation();
-  const { stepUpVerifiedUntil, touchActivity, revokeStepUpFresh } = useWizard();
+  const { stepUpVerifiedUntil, stepUpCierre, touchActivity, revokeStepUpFresh } = useWizard();
   const [ahora, setAhora] = useState(() => Date.now());
 
   useEffect(() => {
@@ -55,9 +55,21 @@ export default function AvisoDeVentana() {
   const seg = restante % 60;
   const reloj = `${min}:${String(seg).padStart(2, '0')}`;
 
+  // ★ 2026-08-20 (Diego: *«es importante avisar que se va a cerrar por seguridad»*) — DOS avisos,
+  // y la diferencia no es de redacción: es que el botón CAMBIA DE SENTIDO.
+  //   · INACTIVIDAD → «¿sigues ahí?» + «Sigo aquí», que de verdad reinicia el contador.
+  //   · TECHO (las 2 h desde que se tecleó el código) → ese botón NO PUEDE funcionar: el
+  //     refresco devolverá 0 y la familia saldría igual. Ofrecerlo sería prometerle que se
+  //     queda y echarla dos minutos después, que es peor que no avisar. Así que aquí NO hay
+  //     botón: se dice que la sesión se cierra POR SEGURIDAD y que se le pedirá el código
+  //     otra vez — que es exactamente lo que va a pasar, y no una avería.
+  // Cuál de los dos manda lo dice el SERVIDOR (`step_up_cierre`), no una resta hecha aquí.
+  const porTecho = stepUpCierre === 'TECHO';
+
   return (
     <div
       data-testid="aviso-ventana"
+      data-cierre={porTecho ? 'TECHO' : 'INACTIVIDAD'}
       role="status"
       style={{
         position: 'fixed', left: 16, right: 16, bottom: 16, zIndex: 1080,
@@ -67,18 +79,23 @@ export default function AvisoDeVentana() {
         display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
       }}
     >
-      <i className="bi bi-clock-history" style={{ color: '#8a6d00', fontSize: '1.2rem' }} />
+      <i
+        className={porTecho ? 'bi bi-shield-lock' : 'bi bi-clock-history'}
+        style={{ color: '#8a6d00', fontSize: '1.2rem' }}
+      />
       <span style={{ flex: 1, minWidth: 200, fontSize: '0.9rem', color: '#5f4b00' }}>
-        {t('stepup.aviso_ventana', { reloj })}
+        {t(porTecho ? 'stepup.aviso_techo' : 'stepup.aviso_ventana', { reloj })}
       </span>
-      <button
-        type="button"
-        data-testid="aviso-ventana-sigo"
-        className="btn-primary-kis"
-        onClick={touchActivity}
-      >
-        {t('stepup.aviso_sigo_aqui')}
-      </button>
+      {!porTecho && (
+        <button
+          type="button"
+          data-testid="aviso-ventana-sigo"
+          className="btn-primary-kis"
+          onClick={touchActivity}
+        >
+          {t('stepup.aviso_sigo_aqui')}
+        </button>
+      )}
     </div>
   );
 }
