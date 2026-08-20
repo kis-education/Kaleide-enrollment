@@ -125,16 +125,34 @@ function wizardCodigoDeConsentimiento_(raw) {
 // (assertStepUpFresh_). Reutiliza sendVerificationCode_/verifyEmail_ (endurecidos
 // KAL-NEW-2) — NO hay token ni endpoint nuevo.
 //
-// ★ SEC-STEPUP (finding #55, 2026-06-11): la ventana es DURA (10 min EXACTOS desde
-// la última RE-VERIFICACIÓN real), NO deslizante. El modelo anterior
-// (P-STEPUP-SLIDING) re-extendía la marca en CADA save de PII y en CADA pulso
-// getAdmissionState → 10 min se volvían infinitos mientras la pestaña pulsara/el
-// usuario estuviera activo, y una RECARGA dentro de esa ventana viva entraba SIN
-// OTP (bypass del PII-gate reportado por Diego). Ahora _markStepUpFresh_ se invoca
-// SOLO en (1) OTP verificado y (2) consumo de la gracia — NUNCA en lecturas/saves.
-// Pasados los 10 min, el PII-gate vuelve a exigir OTP. (El resume_token TTL de 7
-// días sigue siendo el TTL de sesión; este es el TTL corto de re-verificación.)
-const STEPUP_INACTIVITY_MS = 10 * 60 * 1000; // 10 min (ventana DURA, no deslizante)
+// ★ LA VENTANA SE MIDE DESDE LA ÚLTIMA ACCIÓN REAL DE UNA PERSONA (Diego, 2026-08-20).
+// Son 10 minutos de INACTIVIDAD, no 10 minutos de reloj: mientras alguien esté
+// clicando, tecleando o cambiando de paso, el contador se reinicia y no se le vuelve a
+// pedir el código. Quien deja de tocar la pantalla 10 minutos, sí. Cita literal:
+// «Es muy incómodo para las familias tener que estar pidiendo el código cada 10 minutos
+// […] Cada acción del usuario debe reiniciar el contador de 10 minutos».
+//
+// ⚠️ ESTO NO REABRE SEC-STEPUP (finding #55, 2026-06-11), y la diferencia es EL SUJETO.
+// Lo que #55 cerró fue que el PULSO AUTOMÁTICO (`getAdmissionState`, que late solo cada
+// pocos segundos) y cada save re-extendieran la marca: una pestaña abierta y SOLA se
+// quedaba viva indefinidamente, y una RECARGA dentro de esa ventana entraba SIN código.
+// Aquí la ventana la estira ÚNICAMENTE `refrescarVentanaDeInactividad_`, que la persona
+// dispara con su actividad — el pulso y los saves siguen SIN tocarla, y se afirma en
+// `getAdmissionState_`. Y la recarga queda MÁS cerrada que antes de este cambio: la
+// marca va atada a una HUELLA DE PÁGINA VIVA que el navegador acuña en memoria de
+// JavaScript y solo ahí (ni `sessionStorage` ni `localStorage`), así que una recarga la
+// pierde, no la puede presentar y vuelve a pedir el código. Antes de hoy, una recarga
+// dentro de los 10 minutos entraba sin pedir nada.
+//
+// Las TRES reglas que sostienen esto, y ninguna es opcional:
+//   (1) la marca NACE solo en re-verificación real — OTP acertado o gracia del enlace;
+//   (2) `refrescarVentanaDeInactividad_` EXTIENDE, JAMÁS CREA: sobre una marca caducada
+//       lanza STEPUP_REQUIRED (no se resucita nada sin acreditar el buzón), y conserva
+//       intactos el buzón (②24) y la huella de página con los que nació;
+//   (3) el pulso es LECTURA: reporta la frescura vigente y su tiempo restante.
+// (El resume_token TTL de 7 días sigue siendo el TTL de sesión; este es el TTL corto de
+// re-verificación.)
+const STEPUP_INACTIVITY_MS = 10 * 60 * 1000; // 10 min DESDE LA ÚLTIMA ACCIÓN REAL
 
 // Magic-link grace (UX, no urgente): un magic link recién enviado NO exige OTP si
 // se usa dentro de esta ventana. La gracia se vincula a un NONCE single-use de ESE
@@ -1008,25 +1026,19 @@ function _resolveStepUpGroup_(p) {
 /**
  * Marca el grupo como "step-up fresco" durante STEPUP_INACTIVITY_MS — VENTANA DURA.
  *
- * ★ SEC-STEPUP (finding #55, 2026-06-11). Esta marca se acuña EXCLUSIVAMENTE en
- * eventos de RE-VERIFICACIÓN REAL del inbox:
+ * ★ ESTA MARCA NACE SOLO EN RE-VERIFICACIÓN REAL DEL BUZÓN. Dos eventos, y ninguno más:
  *   (1) verifyEmail_ con stepup:true (OTP fresco verificado), y
  *   (2) consumo single-use de la gracia de magic-link (mlgrace_<resume_token>,
  *       que prueba un envío reciente al inbox del expediente).
  *
- * NUNCA se re-escribe en una mera RESOLUCIÓN/LECTURA (hydrate, pulso
- * getAdmissionState, save de PII). Antes (P-STEPUP-SLIDING) cada save y cada
- * pulso re-extendían la ventana → 10 min se convertían en infinitos mientras la
- * pestaña estuviera abierta o el usuario activo, y una recarga dentro de esa
- * ventana viva entraba SIN OTP (bypass del PII-gate). Ahora la ventana es DURA:
- * 10 min EXACTOS desde la última re-verificación, sin extensión por uso. Pasados
- * los 10 min, el PII-gate vuelve a exigir OTP.
+ * ⛔ NUNCA se llama desde una LECTURA (hydrate, pulso getAdmissionState) ni desde un
+ * save. Eso es exactamente el bug que SEC-STEPUP (#55) cerró: el pulso late SOLO, así
+ * que dejarle re-escribir la marca hacía que una pestaña abierta y sin nadie delante se
+ * quedara viva indefinidamente. Para ESTIRAR la ventana por actividad REAL de una
+ * persona está `_extenderVentanaStepUp_`, que EXTIENDE y jamás CREA — ver allí.
  *
  * Guarda el timestamp de EXPIRACIÓN (Date.now()+ventana) en el ScriptCache; el
  * gate compara contra Date.now(). El TTL del cache se alinea a la misma ventana.
- *
- * NO usar para "deslizar" la ventana en cada actividad — eso es precisamente el
- * bug que SEC-STEPUP cerró. Para una ventana viva más larga, el usuario re-OTPa.
  *
  * ②24 (2026-08-10) — LA MARCA ES DEL TUTOR QUE SE VERIFICÓ, NO DEL EXPEDIENTE. Hasta
  * hoy la clave era `stepup_ok_<expediente>` a secas: un código pedido y acertado por UN
@@ -1036,22 +1048,103 @@ function _resolveStepUpGroup_(p) {
  * además del instante de caducidad, A QUIÉN se le mandó el código; ver `_isStepUpFresh_`
  * para la regla exacta de comparación.
  *
+ * 2026-08-20 — LA MARCA VA ATADA TAMBIÉN A LA PÁGINA VIVA QUE SE VERIFICÓ. Un tercer
+ * dato al lado de los dos anteriores (caducidad y buzón): la huella que el navegador
+ * acuña en memoria de JavaScript al cargar y que NO sobrevive a una recarga. Es lo que
+ * hace que un F5 vuelva a pedir el código aunque la marca siga viva; ver
+ * `_isStepUpFresh_` para la regla de comparación y su límite declarado.
+ *
  * @param {string} enrollmentGroupId - ya derivado del token (KAL-4)
  * @param {string} [reason]          - etiqueta del evento (OTP|GRACE) para el log
  * @param {string|null} [personaEmail] - buzón del tutor que operó (`_identidadDelEnlace_`),
  *                                     o null si no se pudo identificar.
+ * @param {string} [huellaPagina]    - huella de la página viva (`_huellaDePagina_`), o ''.
  * @private
  */
-function _markStepUpFresh_(enrollmentGroupId, reason, personaEmail) {
+function _markStepUpFresh_(enrollmentGroupId, reason, personaEmail, huellaPagina) {
   var persona = _stepUpPersonaKey_(personaEmail);
+  var huella  = _huellaPaginaLimpia_(huellaPagina);
   CacheService.getScriptCache().put(
     'stepup_ok_' + enrollmentGroupId,
-    String(Date.now() + STEPUP_INACTIVITY_MS) + '|' + persona,
+    String(Date.now() + STEPUP_INACTIVITY_MS) + '|' + persona + '|' + huella,
     Math.ceil(STEPUP_INACTIVITY_MS / 1000)
   );
   Logger.log(redact_('[DBG stepup] mint reason=' + (reason || '?') + ' group=' + enrollmentGroupId +
                      ' persona=' + (persona || '(sin identificar)') +
+                     ' pagina=' + (huella || '(sin huella)') +
                      ' ttl_s=' + Math.ceil(STEPUP_INACTIVITY_MS / 1000)));
+}
+
+/**
+ * 2026-08-20 · HUELLA DE LA PÁGINA VIVA — la que el navegador acuña en memoria de
+ * JavaScript y SOLO ahí (nunca `sessionStorage` ni `localStorage`, que sobreviven a la
+ * recarga y anularían todo esto). Llega en `pv` de cualquier petición del asistente.
+ *
+ * NO es un secreto ni autoriza nada por sí sola: el expediente sigue saliendo del
+ * `resume_token` (KAL-4). Es un DISCRIMINADOR de «la misma carga de página», igual que
+ * el buzón de ②24 es el discriminador de «el mismo tutor».
+ *
+ * Se acepta solo la FORMA (hexadecimal/guiones, 8-64) porque el valor lo elige el
+ * navegador; lo que no case se trata como «no consta» (cadena vacía), nunca como error:
+ * un formato raro no puede dejar a una familia fuera de su propia solicitud.
+ *
+ * @param {string|null} v
+ * @returns {string} huella normalizada, o '' si no consta / no tiene forma.
+ * @private
+ */
+function _huellaPaginaLimpia_(v) {
+  if (!v) return '';
+  var t = String(v).trim().toLowerCase();
+  return /^[a-f0-9-]{8,64}$/.test(t) ? t : '';
+}
+
+/**
+ * La huella de página que trae ESTA petición. Un solo sitio la lee del cuerpo, para que
+ * emisión y comprobación no puedan divergir (mismo motivo que `_stepUpCodeKey_`).
+ * @param {Object} p cuerpo de la petición
+ * @returns {string}
+ * @private
+ */
+function _huellaDePagina_(p) {
+  return _huellaPaginaLimpia_(p && p.pv);
+}
+
+/**
+ * 2026-08-20 · EXTIENDE la ventana de inactividad — y JAMÁS la CREA.
+ *
+ * Lee la marca vigente y le sube SOLO la caducidad, conservando **intactos** el buzón
+ * (②24) y la huella de página con los que nació. Es deliberado y es la mitad del
+ * asunto: si re-acuñara con los datos del llamante, quien llegara sin huella (o con
+ * otra) borraría el atado y una recarga podría estirarse a sí misma para siempre.
+ *
+ * Si NO hay marca —o ya caducó— devuelve false y no escribe nada: la ventana caducada
+ * no se resucita sin volver a acreditar el buzón. Quien llama ya ha pasado
+ * `assertStepUpFresh_`, así que este false solo puede darse por una carrera con la
+ * caducidad; devolverlo (en vez de crear) es fallar cerrado.
+ *
+ * @param {string} enrollmentGroupId - ya derivado del token (KAL-4)
+ * @returns {number} segundos que quedan tras extender, o 0 si no se extendió nada.
+ * @private
+ */
+function _extenderVentanaStepUp_(enrollmentGroupId) {
+  var cache = CacheService.getScriptCache();
+  var val = cache.get('stepup_ok_' + enrollmentGroupId);
+  if (!val) return 0;
+  var partes = String(val).split('|');
+  var exp = Number(partes[0]);
+  if (!exp || exp < Date.now()) return 0;   // caducada ⇒ NO se resucita
+  var persona = partes.length > 1 ? String(partes[1]) : '';
+  var huella  = partes.length > 2 ? String(partes[2]) : '';
+  cache.put(
+    'stepup_ok_' + enrollmentGroupId,
+    String(Date.now() + STEPUP_INACTIVITY_MS) + '|' + persona + '|' + huella,
+    Math.ceil(STEPUP_INACTIVITY_MS / 1000)
+  );
+  Logger.log(redact_('[DBG stepup] extend group=' + enrollmentGroupId +
+                     ' persona=' + (persona || '(sin identificar)') +
+                     ' pagina=' + (huella || '(sin huella)') +
+                     ' ttl_s=' + Math.ceil(STEPUP_INACTIVITY_MS / 1000)));
+  return Math.ceil(STEPUP_INACTIVITY_MS / 1000);
 }
 
 /**
@@ -1287,25 +1380,38 @@ function _consumeMagicLinkNonce_(resumeToken, expectedGroupId) {
  * @private
  */
 /**
- * Versión booleana del gate de step-up: ¿el grupo tiene una marca fresca y no
- * expirada? No lanza — para call-sites que solo quieren REPORTAR la frescura (p.ej.
- * el endpoint ligero getAdmissionState_). assertStepUpFresh_ la reusa.
- * @param {string} enrollmentGroupId - ya derivado del token (KAL-4)
- * @returns {boolean}
+ * LECTOR ÚNICO de la marca de step-up: ¿sigue fresca, y CUÁNTO le queda?
+ *
+ * Devuelve las dos cosas porque el cliente necesita las dos: el booleano abre o cierra la
+ * puerta, y los segundos son sobre los que pinta el aviso de los dos minutos. Antes solo
+ * salía el booleano y el cliente echaba su propia cuenta de 10 min, que divergía de la
+ * del servidor (el defecto que #30 documentó). No lanza.
+ *
+ * `_isStepUpFresh_` es su envoltorio booleano y `assertStepUpFresh_` el que lanza. UN
+ * SOLO sitio compara, para que la puerta y lo que se le enseña a la familia no puedan
+ * decir cosas distintas.
+ *
+ * @param {string} enrollmentGroupId   - ya derivado del token (KAL-4)
+ * @param {string|null} [personaEmail] - buzón que opera (②24)
+ * @param {string} [huellaPagina]      - huella de la página viva (2026-08-20)
+ * @returns {{fresh: boolean, restante_s: number}}
  * @private
  */
-function _isStepUpFresh_(enrollmentGroupId, personaEmail) {
+function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina) {
   const val = CacheService.getScriptCache().get('stepup_ok_' + enrollmentGroupId);
   if (!val) {
     Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=false no_mark'));
-    return false;
+    return { fresh: false, restante_s: 0 };
   }
-  // ②24 — el valor guardado es «<caducidad>|<huella del buzón>». Una marca ANTERIOR a
-  // este cambio es solo el número: se lee igual y su huella queda vacía (comodín).
+  // El valor guardado es «<caducidad>|<huella del buzón>|<huella de la página viva>».
+  // Una marca ANTERIOR a ②24 es solo el número, y una anterior al 2026-08-20 no trae la
+  // tercera parte: las dos se leen igual y el campo que falta queda vacío (comodín).
   const partes = String(val).split('|');
   const exp = Number(partes[0]);
   const marcada = partes.length > 1 ? String(partes[1]) : '';
+  const paginaMarcada = partes.length > 2 ? String(partes[2]) : '';
   const persona = _stepUpPersonaKey_(personaEmail);
+  const pagina = _huellaPaginaLimpia_(huellaPagina);
   const enVentana = !!exp && exp >= Date.now();
   // LA REGLA, y su límite declarado: la marca NO se transfiere entre DOS buzones
   // conocidos y distintos. Cuando uno de los dos lados no consta, se deja pasar — así
@@ -1315,24 +1421,75 @@ function _isStepUpFresh_(enrollmentGroupId, personaEmail) {
   // (consentimientos, confirmación de lectura, inicio de firma) ya no pueden hacerse
   // en nombre de un tutor con la marca que se ganó otro.
   const mismaPersona = !marcada || !persona || marcada === persona;
-  const fresh = enVentana && mismaPersona;
+  // 2026-08-20 · MISMA REGLA, MISMO LÍMITE, para la página viva: dos huellas conocidas y
+  // distintas NO se transfieren ⇒ una RECARGA (que pierde la variable de memoria y acuña
+  // otra) vuelve a pedir el código. Cuando uno de los dos lados no consta se deja pasar,
+  // por lo mismo que en el buzón: un cliente que todavía no manda `pv` —un paquete viejo
+  // en caché tras publicar— no puede quedarse fuera de su propia solicitud, y no se le
+  // concede nada que no tuviera ya ayer. LÍMITE HONESTO, escrito para que nadie lo
+  // sobrevenda: esto cierra la RECARGA DEL CLIENTE REAL, que es lo que Diego pidió; NO es
+  // una defensa contra un llamante fabricado que sencillamente omita el campo — ése ya
+  // tenía exactamente este mismo acceso antes de hoy.
+  const mismaPagina = !paginaMarcada || !pagina || paginaMarcada === pagina;
+  const fresh = enVentana && mismaPersona && mismaPagina;
   const remainingS = Math.max(0, Math.round((exp - Date.now()) / 1000));
   Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=' + fresh +
                      ' remaining_s=' + remainingS +
                      ' persona=' + (persona || '(sin identificar)') +
                      ' marcada=' + (marcada || '(sin identificar)') +
-                     (enVentana && !mismaPersona ? ' motivo=OTRO_TUTOR' : '')));
-  return fresh;
+                     (enVentana && !mismaPersona ? ' motivo=OTRO_TUTOR' : '') +
+                     (enVentana && mismaPersona && !mismaPagina ? ' motivo=OTRA_PAGINA' : '')));
+  return { fresh: fresh, restante_s: fresh ? remainingS : 0 };
 }
 
-function assertStepUpFresh_(enrollmentGroupId, personaEmail) {
-  if (!_isStepUpFresh_(enrollmentGroupId, personaEmail)) {
+function _isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina) {
+  return _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina).fresh;
+}
+
+function assertStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina) {
+  if (!_isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina)) {
     var err = new Error('Step-up re-verification required');
     err.code = 'STEPUP_REQUIRED';
     Logger.log(redact_('[assertStepUpFresh_] reject group=' + enrollmentGroupId));
     throw err;
   }
   // Fresco.
+}
+
+/**
+ * 2026-08-20 · «SIGO AQUÍ» — la actividad REAL de una persona reinicia el contador.
+ *
+ * Es lo que hace que la ventana sea de INACTIVIDAD y no de reloj (Diego, 2026-08-20).
+ * La dispara el asistente cuando alguien clica, teclea o cambia de paso, con un freno de
+ * un minuto en el cliente para no llamar por pulsación.
+ *
+ * ⛔ NO CREA NADA. Exige, y falla cerrado si falta cualquiera de las cuatro:
+ *   1. el enlace (KAL-4: el expediente sale del `resume_token`, nunca del cuerpo);
+ *   2. que la marca siga VIVA — sobre una caducada lanza STEPUP_REQUIRED y hay que
+ *      volver a acreditar el buzón con el código;
+ *   3. que el buzón case (②24) — la marca de un tutor no la estira otro;
+ *   4. que la huella de página case — una recarga no puede estirarse a sí misma.
+ * Y al extender conserva buzón y huella originales (`_extenderVentanaStepUp_`), para que
+ * pasar por aquí no pueda AFLOJAR el atado con el que la marca nació.
+ *
+ * No hace ningún trabajo caro: es una sola escritura al ScriptCache, sin BD ni KMS.
+ *
+ * @param {{resume_token:string, n?:string, recovered_email?:string, pv?:string}} p
+ * @returns {{ok:boolean, step_up_fresh:boolean, step_up_restante_s:number}}
+ */
+function refrescarVentanaDeInactividad_(p) {
+  const enrollmentGroupId = requireResumeToken_(p);
+  const persona = _identidadDelEnlace_(p, enrollmentGroupId);
+  const pagina  = _huellaDePagina_(p);
+  assertStepUpFresh_(enrollmentGroupId, persona, pagina);
+  const restante = _extenderVentanaStepUp_(enrollmentGroupId);
+  if (!restante) {
+    // Carrera con la caducidad entre el gate y la escritura: se falla cerrado, no se crea.
+    var err = new Error('Step-up re-verification required');
+    err.code = 'STEPUP_REQUIRED';
+    throw err;
+  }
+  return { ok: true, step_up_fresh: true, step_up_restante_s: restante };
 }
 
 /**
@@ -1954,6 +2111,9 @@ function doPost(e) {
       case 'saveNeae':             result = saveNeae_(payload);             break;
       case 'sendVerificationCode': result = sendVerificationCode_(payload); break;
       case 'verifyEmail':          result = verifyEmail_(payload);          break;
+      // 2026-08-20 — la actividad REAL de la familia reinicia el contador de los 10 min
+      // (ventana de INACTIVIDAD, no de reloj). EXTIENDE, jamás CREA: ver el handler.
+      case 'refrescarVentana':     result = refrescarVentanaDeInactividad_(payload); break;
       case 'fetchQuestions':       result = fetchQuestions_(payload);       break;
       case 'saveResponses':        result = saveResponses_(payload);        break;
       case 'estadoDeLasPartes':    result = estadoDeLasPartes_(payload);    break;
@@ -4271,16 +4431,22 @@ function getAdmissionState_(p) {
   let stepUpFresh = _consumeMagicLinkNonce_(p && p.resume_token, id);
   // ②24 — de qué buzón es la marca (un solo resolvedor, con memoria).
   const personaEmail = _identidadDelEnlace_(p, id);
+  const paginaViva = _huellaDePagina_(p);
+  let stepUpRestanteS = 0;
   if (stepUpFresh) {
-    _markStepUpFresh_(id, 'GRACE', personaEmail);
+    _markStepUpFresh_(id, 'GRACE', personaEmail, paginaViva);
+    stepUpRestanteS = Math.ceil(STEPUP_INACTIVITY_MS / 1000);
   } else {
-    // ★ SEC-STEPUP (finding #55): el pulso es una LECTURA — REPORTA la frescura
-    // vigente, NUNCA la re-extiende. Antes (P-STEPUP-SLIDING) este else re-escribía
-    // stepup_ok_<group> en cada pulso → la ventana de 10 min se deslizaba indefinida
-    // mientras la pestaña estuviera abierta, y una recarga dentro de esa ventana viva
-    // entraba SIN OTP (bypass del PII-gate). La ventana es DURA: 10 min desde la última
-    // RE-VERIFICACIÓN (OTP o gracia), sin extensión por uso. Solo se reporta aquí.
-    stepUpFresh = _isStepUpFresh_(id, personaEmail);
+    // ⛔ EL PULSO ES UNA LECTURA — REPORTA la frescura vigente y lo que le queda, y NUNCA
+    // la re-extiende. Esto es SEC-STEPUP (#55) y sigue exactamente igual de cerrado tras
+    // el cambio del 2026-08-20: el pulso late SOLO cada pocos segundos, así que dejarle
+    // tocar la marca mantendría viva una pestaña abandonada sin nadie delante. Quien
+    // estira la ventana es `refrescarVentanaDeInactividad_`, y lo dispara la ACTIVIDAD
+    // REAL de una persona, no un temporizador. NO llamar aquí a `_markStepUpFresh_` ni a
+    // `_extenderVentanaStepUp_`.
+    const marca = _leerMarcaStepUp_(id, personaEmail, paginaViva);
+    stepUpFresh = marca.fresh;
+    stepUpRestanteS = marca.restante_s;
   }
 
   // WIZARD-CACHE (2026-06-12) — cache-first: si el warm dejó wz_adm_<token> y la
@@ -4315,6 +4481,7 @@ function getAdmissionState_(p) {
           signing_context:   _redactSigningTokenIfNotFresh_(admC.signing_context, stepUpFresh),
           editable:          admC.editable,
           step_up_fresh:     stepUpFresh,
+          step_up_restante_s: stepUpRestanteS,
         };
       }
       if (wzEntry && wzEntry.admission) {
@@ -4407,6 +4574,7 @@ function getAdmissionState_(p) {
     signing_context:   _redactSigningTokenIfNotFresh_(admission.signing_context, stepUpFresh),
     editable:          admission.editable,   // URGENT-PASS3 BUG A: state-driven editabilidad
     step_up_fresh:     stepUpFresh,
+    step_up_restante_s: stepUpRestanteS,
   };
 }
 
@@ -4451,7 +4619,7 @@ function saveStep_(p) {
   // KAL-4: enrollmentGroupId ya viene de requireResumeToken_ (token), no payload.
   if (p.step === 'persons' || p.step === 'relations' || p.step === 'health') {
     // ②24 — la puerta pregunta por el BUZÓN que opera: la marca de otro tutor no vale.
-    assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
+    assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
   }
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana en un save (eso era
   // P-STEPUP-SLIDING — convertía 10 min en infinitos por uso → bypass del gate en
@@ -4574,7 +4742,7 @@ function submitEnrollmentSession_(p) {
   // `saveStep_`: identidad del enlace (②24) + ventana DURA de 10 min (SEC-STEPUP #55).
   // El cliente comprueba la frescura ANTES de navegar (Step7Review) para que la familia
   // pueda re-verificar donde sí hay pantalla para hacerlo; esto es el suelo del servidor.
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
 
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
@@ -5194,9 +5362,15 @@ function verifyEmail_(p) {
   // durante STEPUP_INACTIVITY_MS. Los handlers de PII (assertStepUpFresh_)
   // pasarán hasta que la ventana expire. (Flujo NO-stepup intacto.)
   // ②24: la marca se estampa A NOMBRE DEL BUZÓN al que se mandó el código — es lo único
-  // que el acierto demuestra. Ver `_isStepUpFresh_` para la regla de comparación.
+  // que el acierto demuestra. Ver `_leerMarcaStepUp_` para la regla de comparación.
+  //
+  // 2026-08-20 · Y TAMBIÉN A NOMBRE DE LA PÁGINA VIVA QUE ACERTÓ (`pv`). Es EL sitio donde
+  // el atado se acuña: quien tecleó el código estaba en ESTA carga de página, y una recarga
+  // —que pierde la variable de memoria y acuña otra— vuelve a pedir el código. Si esta
+  // llamada se quedara sin la huella, el atado no existiría para el camino principal y todo
+  // lo demás sería decorativo.
   if (isStepUp) {
-    _markStepUpFresh_(enrollmentGroupId, 'OTP', personaEmail);
+    _markStepUpFresh_(enrollmentGroupId, 'OTP', personaEmail, _huellaDePagina_(p));
   }
 
   // No DB write — `email_confirmed` columns are removed in DL-E15. The
@@ -5749,7 +5923,7 @@ function saveResponses_(p) {
   // DL-E39 step-up gate: las respuestas del cuestionario son PII del expediente.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   // ②24: y la marca tiene que ser DEL BUZÓN que opera, no de cualquiera del expediente.
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const { respondent_id, respondent_type_category_id, responses } = p;
@@ -6125,7 +6299,7 @@ function uploadDocument_(p) {
   // DL-E39 step-up gate: subir documentos del expediente es PII sensible.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const enrollmentId      = p.enrollment_id || null;
@@ -6434,7 +6608,7 @@ function getDocument_(p) {
   // DL-E39 step-up gate: servir el documento en CLARO (bytes) revela PII.
   // groupId ya viene del token (resume_token o signing_token), nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
-  assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId));
+  assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId), _huellaDePagina_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   const fileId = p.file_id;
@@ -6762,7 +6936,7 @@ function saveNeae_(p) {
   // resume_token filtrado podía escribir/enriquecer NEAE sin probar posesión del
   // buzón. KAL-4: enrollmentGroupId derivado del token, nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: no servir stale tras un write del grupo
 
   const neaeData = Array.isArray(p && p.neae) ? p.neae
@@ -7777,7 +7951,7 @@ function saveBillingInfo_(p) {
   // enrollment_group_id derivado del token (KAL-4), nunca del payload.
   // ②24: el buzón ya lo resolvió `requireSignerIdentity_` — se reusa, no se vuelve a
   // resolver (dos lectores del mismo dato divergen; y aquí además costaría lecturas).
-  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
@@ -7886,7 +8060,7 @@ function applyPaymentModality_(p) {
   // pagos a una familia sin acreditar el buzón. Puerta copiada literal de
   // `saveBillingInfo_`: el buzón ya lo resolvió `requireSignerIdentity_` y se REUSA (dos
   // lectores del mismo dato divergen, y aquí además costaría lecturas).
-  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: nunca stale tras un write
 
   return kmsProxy_('enr.wizardApplyModality', Object.assign({}, sctx.identity, {
@@ -7944,7 +8118,7 @@ function simularCuotas_(p) {
 function guardarModalidadPreferida_(p) {
   const enrollmentGroupId = requireResumeToken_(p);
   assertGroupEditable_(enrollmentGroupId);
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId));
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
   _wzCacheInvalidate_(p && p.resume_token);
 
   const modalityId = (p && p.modality_id) ? String(p.modality_id).trim() : '';
@@ -8032,7 +8206,7 @@ function retirarDelExpediente_(p) {
   // los OCHO manejadores que ya la llevaban, copiada literal de `saveStep_`: identidad del enlace
   // (②24 — la marca es del buzón que operó, la de otro tutor no vale) y ventana DURA de
   // 10 min sin extensión por uso (SEC-STEPUP finding #55).
-  assertStepUpFresh_(grupoDeQuitar, _identidadDelEnlace_(p, grupoDeQuitar));
+  assertStepUpFresh_(grupoDeQuitar, _identidadDelEnlace_(p, grupoDeQuitar), _huellaDePagina_(p));
   // NO se añade `assertGroupEditable_` aquí, y es deliberado: el KMS ya exige el borrador
   // y contesta con un `{bloqueado:'YA_ENVIADA', mensaje:…}` ESCRITO PARA LA FAMILIA
   // (kis-app kms-server/enr/retirada.gs) que la pantalla enseña tal cual. Un `throw`
@@ -8087,7 +8261,7 @@ function retirarDelExpediente_(p) {
 function avisarATutor_(p) {
   p = p || {};
   var grupoDelAviso = requireResumeToken_(p);   // KAL-4 — primero, y el KMS lo re-valida.
-  assertStepUpFresh_(grupoDelAviso, _identidadDelEnlace_(p, grupoDelAviso));
+  assertStepUpFresh_(grupoDelAviso, _identidadDelEnlace_(p, grupoDelAviso), _huellaDePagina_(p));
   return kmsProxy_('enr.avisarATutorDeLaSolicitud', {
     resume_token: String(p.resume_token),
     person_id:    p.person_id ? String(p.person_id).slice(0, 64) : '',
@@ -8126,7 +8300,7 @@ function submitGdprConsents_(p) {
   // persistir consentimientos GDPR (legalmente vinculantes). Paridad con
   // initiateSigningSession_. Grupo derivado del token (KAL-4), nunca del payload.
   // ②24: y a nombre del buzón que opera — la marca de un tutor no firma por el otro.
-  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
 
   if (!Array.isArray(p.consents) || !p.consents.length) {
     throw new Error('consents must be a non-empty array');
@@ -8163,7 +8337,7 @@ function confirmReview_(p) {
   // confirmar la revisión (evidencia del acto de firma). Paridad con
   // initiateSigningSession_. Grupo derivado del token (KAL-4), nunca del payload.
   // ②24: y a nombre del buzón que opera.
-  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
@@ -8232,7 +8406,7 @@ function initiateSigningSession_(p) {
   // enrollment_group_id derivado de la identidad (KAL-4), nunca del payload.
   // ②24: y a nombre del buzón que opera — nadie inicia la firma del otro con la marca
   // que se ganó él. El buzón ya lo resolvió el gate de identidad: se reusa.
-  if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
+  if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   // IP forense (best-effort): adjunta client_ip a la metadata del acto si el
@@ -8506,8 +8680,15 @@ function hydrateSession_(p) {
   const graceOk = _consumeMagicLinkNonce_(p && p.resume_token, groupId);
   // ②24 — la marca es del buzón que operó, no del expediente entero (un solo resolvedor).
   const personaEmail = _identidadDelEnlace_(p, groupId);
-  if (graceOk) _markStepUpFresh_(groupId, 'GRACE', personaEmail);
-  const stepUpFresh = _isStepUpFresh_(groupId, personaEmail);
+  const paginaViva = _huellaDePagina_(p);
+  if (graceOk) _markStepUpFresh_(groupId, 'GRACE', personaEmail, paginaViva);
+  const marcaStepUp = _leerMarcaStepUp_(groupId, personaEmail, paginaViva);
+  const stepUpFresh = marcaStepUp.fresh;
+  // 2026-08-20 — el cliente necesita saber CUÁNTO le queda, no solo si está fresco: con
+  // el booleano a secas su espejo local echaba su propia cuenta de 10 min y divergía de
+  // la del servidor (el defecto que #30 documentó). Ahora la cuenta la manda quien la
+  // tiene, y el aviso de los dos minutos se pinta sobre el tiempo REAL.
+  const stepUpRestanteS = marcaStepUp.restante_s;
 
   // A (WIZARD-STEPUP) — gate ANTES de pagar el hydrate pesado. El gate PII (DL-E39)
   // estaba DESPUÉS del kmsProxy_ (~30s) → el OTP de entrada salía tras la espera. Ahora,
@@ -8544,6 +8725,7 @@ function hydrateSession_(p) {
       persons:        [], relations: [], documents: [], responses: [],
       billing_splits: { payers: [], per_participant: [] },
       step_up_fresh:  false,
+      step_up_restante_s: 0,
       pii_gated:      true,
     };
   }
@@ -8704,7 +8886,7 @@ function hydrateSession_(p) {
     data.group.submitted_at = null;
   }
 
-  return Object.assign({}, data, { step_up_fresh: stepUpFresh });
+  return Object.assign({}, data, { step_up_fresh: stepUpFresh, step_up_restante_s: stepUpRestanteS });
 }
 
 /**
@@ -10642,6 +10824,32 @@ function manual_testStepUpGate() {
     if (e && e.code === 'STEPUP_REQUIRED') Logger.log('  c) marca expirada → ✓ PASS (STEPUP_REQUIRED)');
     else { Logger.log('  c) marca expirada → ✗ FAIL (code=' + (e && e.code) + ')'); pass = false; }
   }
+
+  // (e) 2026-08-20 — la actividad EXTIENDE una marca viva, y conserva su atado.
+  cache.remove(key);
+  _markStepUpFresh_(GROUP_ID, 'OTP', null, 'aaaaaaaa1111');
+  var antes = String(cache.get(key) || '').split('|')[0];
+  Utilities.sleep(1100);
+  var restante = _extenderVentanaStepUp_(GROUP_ID);
+  var despues = String(cache.get(key) || '').split('|');
+  if (restante > 0 && Number(despues[0]) > Number(antes) && despues[2] === 'aaaaaaaa1111') {
+    Logger.log('  e) actividad extiende y conserva la huella → ✓ PASS');
+  } else {
+    Logger.log('  e) actividad extiende y conserva la huella → ✗ FAIL (' + String(cache.get(key)) + ')'); pass = false;
+  }
+
+  // (f) sobre una marca CADUCADA no se resucita nada.
+  cache.put(key, String(Date.now() - 1) + '|' + '|' + 'aaaaaaaa1111', 600);
+  if (_extenderVentanaStepUp_(GROUP_ID) === 0) Logger.log('  f) caducada NO se resucita → ✓ PASS');
+  else { Logger.log('  f) caducada NO se resucita → ✗ FAIL'); pass = false; }
+
+  // (g) la huella de OTRA página no vale (la recarga vuelve a pedir el código).
+  cache.remove(key);
+  _markStepUpFresh_(GROUP_ID, 'OTP', null, 'aaaaaaaa1111');
+  if (_isStepUpFresh_(GROUP_ID, null, 'aaaaaaaa1111') && !_isStepUpFresh_(GROUP_ID, null, 'bbbbbbbb2222')) {
+    Logger.log('  g) huella de otra página NO vale → ✓ PASS');
+  } else { Logger.log('  g) huella de otra página NO vale → ✗ FAIL'); pass = false; }
+  cache.remove(key);
 
   // (d) recordatorio firma incondicional
   Logger.log('  d) NOTA: initiateSigningSession_ exige step-up INCONDICIONAL ' +

@@ -21,7 +21,7 @@ No se construye una red por cambio, ni un gate por clase, ni una auditoría por 
 
 Aplica a los documentos que una sesión tiene que **leer para trabajar**. Los `decisions/` y design-logs del KMS son **registro append-only**: no se truncan por decreto — si crecen, se parten por módulo, nunca se recortan.
 
-**MEDIDO el 2026-08-03: este `CLAUDE.md` tiene 518 líneas** — lo pasa por poco, y es lo primero que se recorta cuando algo de aquí quede obsoleto (la §"Dos bearer tokens" y la §"Wizard steps canónicos" arrastran texto histórico ya SUPERSEDIDO que hoy solo se conserva por precaución). Recontar con `wc -l CLAUDE.md`.
+**RE-MEDIDO el 2026-08-20: este `CLAUDE.md` tiene 2.081 líneas** — CUATRO VECES el límite que él mismo declara, y crece con cada tramo (la cifra de abajo, 518, era la del 2026-08-03). No se recorta en este cambio porque partirlo es un trabajo con su propia decisión, pero queda dicho: **hoy este documento incumple su propia regla y ningún agente lo lee entero**. Lo primero que sobra sigue siendo lo mismo: la §"Dos bearer tokens" y la §"Wizard steps canónicos" arrastran texto histórico ya SUPERSEDIDO que hoy solo se conserva por precaución. Recontar con `wc -l CLAUDE.md`.
 
 ## Project
 Public-facing enrollment wizard (admissions.kaleide.org). Families submit applications anonymously; data lands in the AppSheet tables shared with the KMS.
@@ -104,7 +104,8 @@ Handlers blindados 2026-05-30: saveStep_, submitEnrollmentSession_, saveResponse
 
 **Un `resume_token` vive 7 días y se reutiliza; el código de un solo uso prueba que quien opera
 AHORA controla el buzón.** Por eso todo manejador que MUTE datos de la familia lleva las dos
-cosas: KAL-4 (el expediente sale del bearer) **y** `assertStepUpFresh_` (ventana DURA de 10 min).
+cosas: KAL-4 (el expediente sale del bearer) **y** `assertStepUpFresh_` (la ventana de 10 minutos
+de INACTIVIDAD — ver §"Los 10 minutos son DE INACTIVIDAD").
 
 **El defecto que cerró ②27, medido contra `origin/main` el 2026-08-10:** ocho manejadores lo
 pedían y **tres no** — y eran justamente los más consecuentes. **`retirarDelExpediente_`** llevaba
@@ -121,7 +122,8 @@ expediente y escribe N filas del libro de consentimientos **atribuidas a un tuto
 ```javascript
 const groupId = requireResumeToken_(p);                       // KAL-4 primero
 assertGroupEditable_(groupId);                                // si el acto exige borrador
-assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId)); // ②24: la marca es del buzón que opera
+// ②24: la marca es del buzón que opera · 2026-08-20: y de la página viva que se verificó
+assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId), _huellaDePagina_(p));
 ```
 
 …o, en los pasos de firma, reusando el buzón que el gate de identidad ya resolvió (**no se vuelve
@@ -129,7 +131,7 @@ a resolver**: dos lectores del mismo dato divergen, y aquí además costaría le
 
 ```javascript
 const sctx = requireSignerIdentity_(p);
-assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email);
+assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
 ```
 
 **Y el orden importa, las dos veces:** el código va **DESPUÉS** de derivar el expediente del bearer
@@ -158,9 +160,105 @@ de navegar; `lib/quitar.js` distingue `STEPUP_REQUIRED` de «no se pudo» y ofre
 (`pedirCodigo`), y `Step8Billing` lo nombra en su aviso. El servidor es el suelo, no el mensaje.
 
 **Coste medido para las familias:** ninguno en el camino normal — quien está editando personas,
-vínculos o documentos ya tiene que pasar esa misma puerta para guardar. La frición real y única es
-**un código de más cuando pasan más de 10 minutos entre el último guardado y pulsar «Enviar»**, que
-es exactamente el caso en el que ya no consta que el tutor siga delante.
+vínculos o documentos ya tiene que pasar esa misma puerta para guardar. **Y desde el 2026-08-20
+tampoco cuesta un código de más al enviar**: los 10 minutos se cuentan desde la última ACCIÓN, no
+desde el último guardado, así que una familia que sigue delante nunca se los come (§"Los 10 minutos
+son DE INACTIVIDAD").
+
+#### Los 10 minutos son DE INACTIVIDAD, no de reloj — y una RECARGA vuelve a pedir código (2026-08-20)
+
+> Cita literal de Diego: *«Es muy incómodo para las familias tener que estar pidiendo el código cada
+> 10 minutos. Hay que evitar que se pueda entrar con recarga (esto debe bloquear, sí), pero no
+> impedir que el usuario pueda seguir. Cada acción del usuario debe reiniciar el contador de 10
+> minutos. No me parece mal un aviso dos minutos antes que el usuario tenga que aceptar, pero solo
+> si no ha estado haciendo clic, pasando de pantallas, etc.»*
+
+**Mientras alguien esté clicando, tecleando o cambiando de paso, el contador se reinicia y no se le
+vuelve a pedir el código. Quien deja de tocar la pantalla 10 minutos, sí. Y una recarga pide código
+SIEMPRE, aunque la ventana siga viva.**
+
+⚠️ **ESTO NO REABRE SEC-STEPUP (finding #55), y la diferencia es EL SUJETO.** Lo que #55 cerró fue
+que **el PULSO AUTOMÁTICO** (`getAdmissionState`, que late solo cada 30 s) y cada save re-extendieran
+la marca: una pestaña abierta y **sin nadie delante** se quedaba viva indefinidamente, y una
+**recarga** dentro de esa ventana entraba **sin código**. Aquí la ventana la estira **únicamente**
+`refrescarVentanaDeInactividad_`, que dispara **una persona** con su actividad; el pulso y los saves
+siguen sin tocarla. **Y el eje de la recarga queda MÁS cerrado que antes de este cambio**: hasta hoy
+un F5 dentro de los 10 minutos entraba sin pedir nada.
+
+**Las CUATRO piezas, y ninguna es opcional:**
+
+| Pieza | Dónde | Qué hace |
+|---|---|---|
+| **la huella de página viva** | `api.js` → `pv` en toda petición · `_huellaDePagina_` | identificador acuñado **en memoria de JavaScript y solo ahí**; una recarga lo pierde |
+| **la marca, con tres datos** | `_markStepUpFresh_` / `_leerMarcaStepUp_` | `caducidad \| buzón \| página viva` — ②24 gana un tercer campo al lado |
+| **el «sigo aquí»** | `refrescarVentanaDeInactividad_` (`case 'refrescarVentana'`) | **EXTIENDE, jamás CREA** |
+| **el tiempo restante** | `step_up_restante_s` en pulso e hidratación | el cliente **ya no echa su propia cuenta** |
+
+**⛔ `refrescarVentanaDeInactividad_` NO CREA NADA.** Exige las cuatro cosas y falla cerrado si falta
+una: el enlace (KAL-4), que la marca siga **viva** (sobre una caducada lanza `STEPUP_REQUIRED` — no
+se resucita sin volver a acreditar el buzón), que **case el buzón** (②24) y que **case la huella de
+página**. Y al extender **conserva buzón y huella originales** (`_extenderVentanaStepUp_`): si
+re-acuñara con los datos del llamante, quien llegase sin huella borraría el atado y una recarga
+podría estirarse a sí misma para siempre.
+
+**⛔ NINGÚN TEMPORIZADOR lo llama.** Solo eventos de una persona (`pointerdown`, `keydown`,
+escuchados una vez en el documento desde `WizardContext`). Nada de `visibilitychange` ni `focus`:
+una pestaña que vuelve al primer plano sola **no es actividad**. El control
+`comprobar-verja-publica.mjs` lo afirma (`getAdmissionState_` no puede llamar a
+`_extenderVentanaStepUp_`).
+
+**Los DOS frenos, y por qué cada uno:**
+
+1. **Con la ventana medio llena no se llama siquiera** (`REFRESCO_UMBRAL_S`, la mitad de los 10
+   min). Si sobra tiempo no hay nada que reiniciar, así que llamar es gasto puro. **Medido el
+   2026-08-20**: además era ruido REAL — la petición se quedaba en vuelo al cambiar de pantalla, el
+   navegador la abortaba y la familia veía un `network/fetch error` que no era suyo (tumbó el
+   recorrido `fecha-a-mitad-de-curso` de la batería). Con el umbral, quien está activo refresca
+   **una vez cada ~5 minutos** en lugar de cada minuto, y la garantía no cambia: mientras haya
+   actividad, el tiempo restante nunca llega a bajar de la mitad.
+2. **Y por encima, como mucho una llamada por minuto** — salvo **dentro de los dos últimos
+   minutos**, donde no se frena nada. Es justo cuando la familia está diciendo «sigo aquí», y
+   tragarse ESA pulsación la echaría de su solicitud teniendo la mano en la pantalla.
+
+**El aviso de los dos minutos** (`AvisoDeVentana.jsx`) se pinta cuando quedan ≤ `AVISO_ANTES_S`
+(120 s) del tiempo que **reporta el servidor**. *«Solo si no ha estado haciendo clic»* **no necesita
+una condición aparte**: como la actividad reinicia el contador, bajar de dos minutos ya significa
+—por construcción— que nadie ha tocado la pantalla en ocho. Añadir una segunda comprobación sería
+una segunda fuente de verdad sobre lo mismo, y dos fuentes divergen. Al llegar a cero **revoca el
+espejo local** para que el candado se eche en ese momento, y no hasta 30 s después.
+
+**LÍMITE HONESTO, escrito para que nadie lo sobrevenda:** el atado a la página cierra **la recarga
+del cliente real**, que es lo que Diego pidió. **NO** es una defensa contra un llamante fabricado que
+sencillamente **omita** el campo `pv` — a ése se le trata como «no consta» y pasa, exactamente igual
+que le pasaba ayer. El comodín-cuando-falta es deliberado y es el mismo de ②24: sin él, un paquete
+viejo en caché tras publicar dejaría a familias fuera de su propia solicitud.
+
+**Y una PREGUNTA ABIERTA que NO se ha decidido** (ver el reporte): si debe haber un **techo
+absoluto** (p. ej. 8 h) para que una pestaña en un ordenador compartido no siga viva
+indefinidamente a base de clics. Hoy **no lo hay**: con actividad, la sesión dura lo que dure el
+`resume_token` (7 días).
+
+**Textos tocados:** `stepup.gate_duration_note` **decía algo FALSO** («se bloqueará tras 10 minutos
+de inactividad» cuando en realidad eran 10 de reloj) y hoy es verdad; se le añade la recarga. Nuevos:
+`stepup.aviso_ventana` y `stepup.aviso_sigo_aqui`. Los dos idiomas, en
+`frontend/public/locales/{es,en}/translation.json`.
+
+**Red**: el recorrido `ventana-por-inactividad` de la batería (19 afirmaciones). Comprime el reloj
+con `scenario.ventanaMs` — legítimo porque **el cliente ya no echa su propia cuenta**: pinta y decide
+sobre el `step_up_restante_s` del servidor, así que la secuencia observada es la misma que a los 10
+minutos. **Rojo demostrado CINCO veces**: dejando que el pulso extienda · dejando que el refresco
+cree una marca de cero · guardando la huella en `sessionStorage` (la recarga entraba) · retirando el
+atado al buzón de ②24 · anulando el refresco por actividad en el cliente.
+
+**Y la fase de la RECARGA va la PRIMERA del recorrido, a propósito.** Medido: puesta al final, el
+fallo de «la huella sobrevive» se manifestaba como *«el asistente no se pintó en el tercer pase»* —
+que es verdad pero no nombra el caso. Un rojo que no dice qué se rompió cuesta una sesión entera.
+
+⚠️ **La batería NO ejecuta `backend/Code.js`** (backend simulado): sus afirmaciones (5), (6) y (7)
+miden el **contrato** contra el modelo del simulado, que es copia declarada del real. Quien toque
+`_leerMarcaStepUp_` / `_extenderVentanaStepUp_` / `refrescarVentanaDeInactividad_`, **que lo mida
+allí** — el diagnóstico de editor `manual_testStepUpGate` cubre los casos (e) extender conservando
+la huella, (f) caducada no se resucita y (g) huella de otra página.
 
 **Control**: la comprobación de paridad **se ejecuta con `node scripts/comprobar-verja-publica.mjs`**;
 su lógica vive en `scripts/verja-publica.mjs` (`comprobarParidadDelCodigo`) — ver §"Las CINCO puertas

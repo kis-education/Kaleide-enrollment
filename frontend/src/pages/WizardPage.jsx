@@ -12,6 +12,7 @@ import LegalFooter from '../components/LegalFooter';
 import WizardProgress from '../components/WizardProgress';
 import StepUpReverify from '../components/StepUpReverify';
 import StepUpGate from '../components/StepUpGate';
+import AvisoDeVentana from '../components/AvisoDeVentana';
 import { Toast, useToast } from '../components/Toast';
 import { pedirConfirmacion } from '../components/ConfirmDialog';
 
@@ -673,6 +674,11 @@ const handleNext = async (stepKey, data, extra = null) => {
           </div>
         </div>
       )}
+
+      {/* 2026-08-20 — «¿sigues ahí?»: el aviso de los dos minutos. Solo se pinta cuando la
+          ventana está a punto de caducar, que —al reiniciarla la actividad— significa que
+          nadie ha tocado la pantalla en ocho minutos. Ver `AvisoDeVentana`. */}
+      <AvisoDeVentana />
 
       {/* Progress */}
       <WizardProgress currentStep={currentStep} />

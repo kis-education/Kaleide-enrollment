@@ -228,6 +228,15 @@ const NO_CUBIERTAS_SOLO_REAL = {
   'respuestas-rechazadas-se-dicen': {
     'respuestas-rechazadas': 'exige un expediente real con un tutor que YA envió su parte y otro que sigue rellenando; el arnés no puede montar ese estado sin dejar datos a medias. En modo simulado sí se cubre, con la palanca `scenario.respuestasRechazadas`.',
   },
+  'ventana-por-inactividad': {
+    'la-actividad-reinicia-el-contador': 'contra el sistema real la ventana son 10 minutos de RELOJ: comprobarla exigiría tener el robot 20 minutos tocando la pantalla, y el código llega a un buzón que este arnés no lee. En modo simulado sí se cubre, comprimiendo la ventana con `scenario.ventanaMs` (el cliente decide sobre el tiempo restante que le manda el servidor, así que la secuencia observada es la misma).',
+    'sin-actividad-avisa-y-bloquea':     'misma razón',
+    'con-actividad-no-hay-aviso':        'misma razón',
+    'la-recarga-vuelve-a-pedir-codigo':  'misma razón: hace falta pasar la verja del código antes de poder recargar con la ventana viva',
+    'el-pulso-no-alarga-nada':           'exige leer el tiempo restante dos veces seguidas de la MISMA marca; contra el real habría que esperar minutos entre lecturas y el resultado dependería del reloj de Google',
+    'caducada-no-se-resucita':           'exige dejar caducar una ventana a propósito; contra el real son 10 minutos de espera por afirmación',
+    'otra-huella-no-vale':               'exige fabricar peticiones con la huella de otra página y el buzón de otro tutor: contra el sistema real eso es exactamente lo que no se hace',
+  },
   'codigo-sin-congelar': {
     'aviso-antes-que-la-respuesta': 'exige forzar la verja del código (dejar caducar la gracia del enlace) y cronometrar un viaje cuyo tiempo decide Google; en modo simulado sí se cubre, con `scenario.codigoDemoraMs`',
     'casilla-lista-sin-esperar':    'misma razón',
@@ -386,7 +395,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0 }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -4965,6 +4974,282 @@ async function caminoCodigoSinCongelar(page, base) {
   }
 }
 
+/**
+ * ventana-por-inactividad — el contador de los 10 minutos se reinicia con la actividad
+ * REAL de la familia, el aviso sale dos minutos antes, y una RECARGA vuelve a pedir código.
+ *
+ * Decisión de Diego (2026-08-20): *«Es muy incómodo para las familias tener que estar
+ * pidiendo el código cada 10 minutos. Hay que evitar que se pueda entrar con recarga (esto
+ * debe bloquear, sí), pero no impedir que el usuario pueda seguir. Cada acción del usuario
+ * debe reiniciar el contador de 10 minutos. No me parece mal un aviso dos minutos antes
+ * […] pero solo si no ha estado haciendo clic»*.
+ *
+ * ⏱ EL RELOJ SE COMPRIME, EL MECANISMO NO. `scenario.ventanaMs` hace que el servidor
+ * simulado conceda ventanas de segundos en vez de 10 minutos. Es legítimo porque el
+ * cliente NO echa su propia cuenta: pinta y decide sobre el `step_up_restante_s` que le
+ * manda el servidor (ése es justo el arreglo de este cambio). La secuencia que se observa
+ * —se avisa, se reinicia con la actividad, se bloquea sin ella— es la misma que a los 10
+ * minutos; lo único distinto es cuánto hay que esperar para verla.
+ *
+ * ⚠️ LO QUE ESTE RECORRIDO NO CUBRE, Y HAY QUE DECIRLO: `backend/Code.js` NO se ejecuta
+ * aquí (el backend es simulado). Las afirmaciones (5), (6) y (7) miden el CONTRATO del
+ * servidor contra el modelo del simulado, que es copia declarada del real. Quien toque
+ * `_leerMarcaStepUp_` / `_extenderVentanaStepUp_` en el backend, que lo mida allí.
+ */
+async function caminoVentanaPorInactividad(page, base) {
+  const c = new Camino('ventana-por-inactividad')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    // Contra el sistema de verdad la ventana son 10 minutos de reloj y el código llega a
+    // un buzón que este arnés no lee. No se afloja nada para que la prueba pase.
+    c.noCubierta('la-actividad-reinicia-el-contador', 'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('sin-actividad-avisa-y-bloquea',     'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('con-actividad-no-hay-aviso',        'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('la-recarga-vuelve-a-pedir-codigo',  'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('el-pulso-no-alarga-nada',           'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('caducada-no-se-resucita',           'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('otra-huella-no-vale',               'ver NO_CUBIERTAS_SOLO_REAL')
+    return c
+  }
+
+  // La huella de página viva que el navegador acuña: se lee de una petición real, porque
+  // es memoria privada del módulo y no hay otra forma honesta de conocerla.
+  let huellaVista = null
+  let refrescos = 0
+  const alPedir = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    try {
+      const b = JSON.parse(req.postData() || '{}')
+      if (b.pv) huellaVista = b.pv
+      if (b.action === 'refrescarVentana') refrescos++
+    } catch { /* cuerpo raro */ }
+  }
+  page.on('request', alPedir)
+
+  const limpiar = () => {
+    page.off('request', alPedir)
+    scenario.piiGated = false
+    scenario.otpSuperado = false
+    scenario.ventanaViva = false
+    scenario.ventanaMs = 0
+  }
+
+  /** ¿Está el asistente abierto (pasos pintados) o cerrado tras la verja del código? */
+  const pantalla = () => page.evaluate(() => ({
+    hayVerja: !!document.querySelector('input[autocomplete="one-time-code"]'),
+    hayPasos: !!document.querySelector('.wizard-step'),
+    hayAviso: !!document.querySelector('[data-testid="aviso-ventana"]'),
+    textoAviso: (document.querySelector('[data-testid="aviso-ventana"]')?.innerText || '').trim(),
+    pasos: document.querySelectorAll('.wizard-step').length,
+    campos: document.querySelectorAll('input, select, textarea').length,
+  }))
+
+  /**
+   * Irse de la página con un `fetch` a medias lo ABORTA, y la aplicación registra un
+   * «network/fetch error» que NO es suyo sino del robot (mismo motivo que
+   * `esperarSilencioDeRed`). Este recorrido navega CINCO veces, así que se espera a que
+   * no quede nada en vuelo antes de cada salto.
+   */
+  const drenar = async (techo = 12000) => {
+    const t0 = Date.now()
+    while (enVuelo.n > 0 && Date.now() - t0 < techo) await page.waitForTimeout(120)
+    await page.waitForTimeout(300)
+  }
+
+  /** Entra: abre la verja, pide el código, lo teclea y espera a que se pinte el asistente. */
+  const entrarConElCodigo = async (etiqueta) => {
+    await drenar()
+    await page.goto(`${base}/?ventana=${etiqueta}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const hayVerja = await page.waitForSelector('input[autocomplete="one-time-code"]', { timeout: LATENCY * 3 + 15000 })
+      .then(() => true).catch(() => false)
+    if (!hayVerja) return false
+    // La verja se REMONTA en la entrada (el envío automático de la primera recuperación se
+    // pierde en ese remontaje — está documentado en `codigo-sin-congelar`). Si se teclea
+    // antes de que se asiente, se teclea en la instancia que va a desaparecer. Se deja
+    // reposar y, si la casilla sigue bloqueada, se pide el código y se reintenta.
+    await drenar()
+    for (let intento = 0; intento < 4; intento++) {
+      const lista = await page.$eval('input[autocomplete="one-time-code"]', el => !el.disabled).catch(() => false)
+      if (lista) break
+      await page.evaluate(() => { const b = document.querySelector('[data-testid="stepup-reenviar"]'); if (b && !b.disabled) b.click() })
+      await page.waitForTimeout(900)
+      await drenar()
+    }
+    const casillaLista = await page.$eval('input[autocomplete="one-time-code"]', el => !el.disabled).catch(() => false)
+    if (!casillaLista) return false
+    await page.fill('input[autocomplete="one-time-code"]', '123456')
+    await page.evaluate(() => {
+      const b = [...document.querySelectorAll('button.btn-primary-kis')].find(x => !x.disabled)
+      if (b) b.click()
+    })
+    const abierto = await page.waitForFunction(
+      () => !!document.querySelector('.wizard-step'), null, { timeout: LATENCY * 4 + 20000 })
+      .then(() => true).catch(() => false)
+    if (abierto) {
+      const f = await pantalla()
+      c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, f.pasos + f.campos)
+    }
+    return abierto
+  }
+
+  /** Un gesto REAL de persona: el mismo evento que escucha la aplicación. */
+  const gesto = () => page.evaluate(() => {
+    document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  })
+
+  /** Llamada al servidor simulado desde fuera del navegador — para el contrato puro. */
+  const alServidor = async (action, extra) => {
+    const r = await fetch(`${base}/__gas`, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action, _hp: '', resume_token: DATOS.resumeToken,
+                             n: DATOS.emailId, pv: huellaVista, ...extra }),
+    })
+    return await r.json()
+  }
+
+  try {
+    scenario.piiGated = true
+    scenario.ventanaViva = true
+
+    // ══ FASE A · una RECARGA vuelve a pedir el código aunque la marca siga viva ════════
+    // Va la PRIMERA a propósito: si la huella de página sobreviviese a la recarga (el fallo
+    // que este atado cierra), TODAS las fases siguientes cambiarían de comportamiento y el
+    // rojo saldría en el sitio equivocado. Medido rompiéndolo: puesta al final, el fallo se
+    // manifestaba como «el asistente no se pintó en el tercer pase», que no nombra el caso.
+    scenario.ventanaMs = 600000     // ventana LARGA: si entrase, sería por la marca viva
+    if (!c.afirmar('la familia entra con una ventana larga por delante', await entrarConElCodigo('a'),
+      'el asistente no se pintó en el primer pase')) return c
+    const huellaAntes = huellaVista
+    await drenar()
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 })
+    // Mientras el asistente re-hidrata pinta su armazón VACÍO a propósito (el loader de
+    // WIZARD-GATE-ORDER), así que mirar en ese instante mediría la pantalla equivocada: se
+    // espera a que la hidratación conteste y la pantalla se asiente.
+    const pidioCodigo = await page.waitForSelector('input[autocomplete="one-time-code"]',
+      { timeout: LATENCY * 4 + 20000 }).then(() => true).catch(() => false)
+    await drenar()
+    const foto = await pantalla()
+    c.afirmar('(4) una recarga vuelve a pedir el código aunque la ventana siga viva',
+      pidioCodigo && foto.hayVerja,
+      'tras recargar, el asistente NO pidió el código: la huella de página viva no está cerrando la recarga, ' +
+      `y con la ventana viva (10 min) se entraría con un F5 (pasos pintados: ${foto.pasos})`)
+    c.afirmar('(4.bis) y es porque la página acuñó una huella NUEVA (no sobrevive a la recarga)',
+      !!huellaAntes && !!huellaVista && huellaVista !== huellaAntes,
+      `la huella de página viva es la misma antes y después de recargar (${String(huellaVista).slice(0, 8)}…): está sobreviviendo a la recarga, así que se estará guardando donde no debe`)
+
+    // ══ FASE B · con actividad continua se sobrepasa la ventana ENTERA sin bloquearse ═══
+    scenario.ventanaMs = 6000        // 6 s hacen de los 10 min
+
+    if (!c.afirmar('la familia entra tecleando su código', await entrarConElCodigo('b'),
+      'el asistente no llegó a pintarse tras teclear el código: la secuencia que este recorrido mide no llegó a darse')) return c
+
+    const refrescosAntes = refrescos
+    const arranque = Date.now()
+    // Tres ventanas enteras de reloj (18 s) tocando la pantalla cada segundo y medio.
+    while (Date.now() - arranque < 18000) {
+      await gesto()
+      await page.waitForTimeout(1500)
+    }
+    const trasActividad = await pantalla()
+    c.afirmar('(1) con actividad continua, pasadas TRES ventanas enteras, NO se bloquea',
+      trasActividad.hayPasos && !trasActividad.hayVerja,
+      trasActividad.hayVerja
+        ? 'el asistente volvió a pedir el código estando la familia tocando la pantalla todo el rato: el contador NO se reinicia con la actividad'
+        : 'el asistente dejó de pintar los pasos')
+    c.afirmar('(1.bis) y ese «sigo aquí» viaja al servidor, no se resuelve en el navegador',
+      refrescos - refrescosAntes >= 3,
+      `solo salieron ${refrescos - refrescosAntes} peticiones de refresco en 18 s: si la ventana se estirase sola en el cliente, el servidor seguiría rechazando el siguiente guardado`)
+
+    // ══ FASE C · el aviso sale dos minutos antes, y la actividad lo quita ══════════════
+    // Ventana de 125 s: al entrar quedan 125 (por encima del umbral de aviso, 120), así que
+    // el aviso NO puede estar; a los pocos segundos de quietud se cruza el umbral y sale.
+    scenario.ventanaMs = 125000
+    if (!c.afirmar('la familia vuelve a entrar para el segundo pase', await entrarConElCodigo('c'),
+      'el asistente no se pintó en el segundo pase')) return c
+
+    const reciénEntrado = await pantalla()
+    c.afirmar('(3) recién entrado, con la ventana entera por delante, NO hay aviso',
+      !reciénEntrado.hayAviso,
+      `el aviso de «¿sigues ahí?» está en pantalla con 125 s de ventana por delante: «${reciénEntrado.textoAviso}»`)
+
+    const salioElAviso = await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="aviso-ventana"]'), null, { timeout: 20000 })
+      .then(() => true).catch(() => false)
+    const conAviso = await pantalla()
+    c.afirmar('(2.a) sin tocar nada, el aviso sale ANTES de bloquear y dice cuánto queda',
+      salioElAviso && /\d:\d\d/.test(conAviso.textoAviso),
+      salioElAviso
+        ? `el aviso salió pero no dice el tiempo que queda: «${conAviso.textoAviso}»`
+        : 'nunca salió el aviso de «¿sigues ahí?»: la familia pasaría de trabajar a estar bloqueada sin previo aviso')
+    c.afirmar('(2.a.bis) y sale con el asistente todavía abierto, no después de bloquear',
+      conAviso.hayPasos && !conAviso.hayVerja,
+      'cuando salió el aviso el asistente ya estaba bloqueado: avisar después no es avisar')
+
+    // Pulsar «sigo aquí» devuelve la ventana entera ⇒ el aviso se retira.
+    await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="aviso-ventana-sigo"]')
+      if (b) b.click()
+    })
+    const seFue = await page.waitForFunction(
+      () => !document.querySelector('[data-testid="aviso-ventana"]'), null, { timeout: 15000 })
+      .then(() => true).catch(() => false)
+    c.afirmar('(3.bis) al decir «sigo aquí» el contador se reinicia y el aviso desaparece',
+      seFue, 'el aviso siguió en pantalla tras pulsar «sigo aquí»: el contador no se reinició')
+
+    // ══ FASE D · sin actividad, se bloquea ════════════════════════════════════════════
+    scenario.ventanaMs = 5000
+    if (!c.afirmar('la familia vuelve a entrar para el tercer pase', await entrarConElCodigo('d'),
+      'el asistente no se pintó en el tercer pase')) return c
+    const seBloqueo = await page.waitForFunction(
+      () => !!document.querySelector('input[autocomplete="one-time-code"]'), null, { timeout: 25000 })
+      .then(() => true).catch(() => false)
+    c.afirmar('(2.b) sin actividad, al agotarse la ventana el asistente vuelve a pedir el código',
+      seBloqueo,
+      'pasada la ventana entera SIN tocar nada, el asistente seguía abierto: la puerta no se cierra sola')
+
+    // ══ FASE E · el CONTRATO del servidor, sin navegador de por medio ═════════════════
+    // Se vuelve a entrar para tener una marca viva y una huella conocida.
+    scenario.ventanaMs = 8000
+    if (!c.afirmar('la familia entra por última vez, para medir el contrato del servidor',
+      await entrarConElCodigo('e'), 'el asistente no se pintó en el quinto pase')) return c
+
+    const uno = await alServidor('getAdmissionState')
+    await page.waitForTimeout(2000)
+    const dos = await alServidor('getAdmissionState')
+    c.afirmar('(5) el pulso NO alarga nada: solo REPORTA lo que queda, y sigue bajando',
+      Number(dos.step_up_restante_s) > 0 && Number(dos.step_up_restante_s) < Number(uno.step_up_restante_s),
+      `dos pulsos separados 2 s reportaron ${uno.step_up_restante_s} s y ${dos.step_up_restante_s} s: si el segundo no es MENOR, el pulso está estirando la ventana solo (eso es SEC-STEPUP #55)`)
+
+    const refresco = await alServidor('refrescarVentana')
+    c.afirmar('(5.bis) y quien SÍ la alarga es el «sigo aquí», que la devuelve entera',
+      refresco.ok === true && Number(refresco.step_up_restante_s) > Number(dos.step_up_restante_s),
+      `el refresco devolvió ${JSON.stringify(refresco).slice(0, 120)}`)
+
+    const otraHuella = await alServidor('refrescarVentana', { pv: 'ffffffff0000ffffffff0000ffffffff' })
+    c.afirmar('(7.a) la huella de OTRA página no sirve para alargar la ventana',
+      otraHuella.ok === false && /STEPUP_REQUIRED/.test(JSON.stringify(otraHuella)),
+      `con una huella de página distinta el servidor contestó ${JSON.stringify(otraHuella).slice(0, 140)}: una recarga podría estirarse a sí misma`)
+
+    const otroBuzon = await alServidor('refrescarVentana', { n: 'email-de-otro-tutor' })
+    c.afirmar('(7.b) la marca de un tutor tampoco la alarga OTRO buzón',
+      otroBuzon.ok === false && /STEPUP_REQUIRED/.test(JSON.stringify(otroBuzon)),
+      `con otro buzón el servidor contestó ${JSON.stringify(otroBuzon).slice(0, 140)}: se estaría transfiriendo la marca de ②24`)
+
+    // Dejar caducar del todo y pedir refresco: NO se resucita.
+    await page.waitForTimeout(9000)
+    const yaCaducada = await alServidor('refrescarVentana')
+    c.afirmar('(6) sobre una ventana YA caducada el refresco NO crea nada: pide código',
+      yaCaducada.ok === false && /STEPUP_REQUIRED/.test(JSON.stringify(yaCaducada)),
+      `con la ventana caducada el servidor contestó ${JSON.stringify(yaCaducada).slice(0, 140)}: la actividad estaría resucitando una sesión que ya había expirado`)
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -5017,6 +5302,10 @@ const CAMINOS = [
   // Contra el sistema real se declara NO CUBIERTO (no se fuerza la verja ni se lee el buzón),
   // así que allí no se le exige evidencia.
   { nombre: 'codigo-sin-congelar', fn: caminoCodigoSinCongelar,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
+  // 2026-08-20 — la ventana de los 10 min es de INACTIVIDAD: la actividad la reinicia,
+  // el aviso sale dos minutos antes y una RECARGA vuelve a pedir el código.
+  { nombre: 'ventana-por-inactividad', fn: caminoVentanaPorInactividad,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'documentos-vuelven', fn: caminoDocumentosVuelven,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 3 },

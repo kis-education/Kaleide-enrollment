@@ -263,6 +263,12 @@ function comprobarParidadDelCodigo(fuenteLimpia) {
     // una escritura sobre el expediente de la familia y va por la misma puerta que las
     // demás: un `resume_token` filtrado no debe poder tocarle nada sin acreditar el buzón.
     ['guardarModalidadPreferida_', 'requireResumeToken_'],
+    // 2026-08-20 · «sigo aquí» — reinicia el contador de los 10 min de inactividad. Es
+    // una escritura sobre la propia marca del código de un solo uso, así que va por la
+    // MISMA puerta que todo lo demás: primero el expediente del bearer (KAL-4), luego el
+    // código. Y su handler EXTIENDE, jamás CREA — eso lo mide `manual_testStepUpGate`
+    // (casos e/f/g), no este control, que solo afirma el ORDEN de las puertas.
+    ['refrescarVentanaDeInactividad_', 'requireResumeToken_'],
     ['saveBillingInfo_',         'requireSignerIdentity_'],
     ['applyPaymentModality_',    'requireSignerIdentity_'], // ②27
     ['submitGdprConsents_',      'requireSignerIdentity_'],
@@ -1255,9 +1261,20 @@ function comprobarElPulsoDeLaAdmision(fuenteLimpia) {
       'exige que salga del token y nunca del cuerpo; el control estaría afirmando que no lee ' +
       'AppSheet sobre un manejador sin puerta')
   }
-  if (!/_isStepUpFresh_\s*\(/.test(pulso)) {
+  // `_leerMarcaStepUp_` es el mismo lector con el tiempo restante añadido (2026-08-20);
+  // `_isStepUpFresh_` es su envoltorio booleano. Vale cualquiera de los dos.
+  if (!/_isStepUpFresh_\s*\(|_leerMarcaStepUp_\s*\(/.test(pulso)) {
     fallos.push('`getAdmissionState_` ya no computa la frescura del código de un solo uso — es ' +
       'lo que decide si el `signing_token` se sirve o se redacta (SEC WIZ-SIGNTOKEN)')
+  }
+  // 2026-08-20 · ⛔ EL PULSO NO ESTIRA LA VENTANA. Es SEC-STEPUP (#55) escrito como
+  // control: el pulso late SOLO cada pocos segundos, así que dejarle acuñar o extender la
+  // marca mantendría viva una pestaña abandonada sin nadie delante. Quien la estira es
+  // `refrescarVentanaDeInactividad_`, y lo dispara una persona. Se permite el
+  // `_markStepUpFresh_` de la GRACIA del enlace, que es re-verificación real y ya estaba.
+  if (/_extenderVentanaStepUp_\s*\(/.test(pulso)) {
+    fallos.push('`getAdmissionState_` EXTIENDE la ventana del código de un solo uso — el pulso ' +
+      'es un temporizador, no una persona: eso deja viva una pestaña abandonada (SEC-STEPUP #55)')
   }
   if (!/display_order/.test(contexto)) {
     fallos.push('`buildAdmissionContext_` ya no elige la situación por `display_order` — la ' +

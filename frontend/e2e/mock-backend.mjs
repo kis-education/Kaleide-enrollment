@@ -492,6 +492,43 @@ export function createDispatcher(scenario, record) {
   // sin identificador, el asistente no apunta nada y no pregunta nada.
   let contadorDeTrabajos = 0;
   const trabajoApuntado = () => (scenario.trabajoResultado ? `job-e2e-${++contadorDeTrabajos}` : null);
+
+  // ── LA VENTANA DE INACTIVIDAD, MODELADA COMO LA MODELA EL SERVIDOR (2026-08-20) ──────
+  // Copia la forma de `backend/Code.js` (`_markStepUpFresh_` / `_leerMarcaStepUp_` /
+  // `_extenderVentanaStepUp_`): una marca con CADUCIDAD, BUZÓN y HUELLA DE PÁGINA VIVA.
+  // No se inventa nada — es lo que hace el de verdad, y por eso el recorrido puede afirmar
+  // sobre lo que la FAMILIA ve sin fingir el comportamiento del servidor.
+  //
+  // Se enciende SOLO con `scenario.ventanaViva`, para que los demás recorridos sigan
+  // byte-idénticos: sin esa palanca, `hydrateSession` se comporta exactamente como antes.
+  //
+  // `scenario.ventanaMs` comprime los 10 minutos a unos pocos segundos. Lo que se comprime
+  // es el RELOJ, no el mecanismo: el cliente pinta el aviso sobre el tiempo restante que
+  // le manda el servidor, así que la secuencia que se observa es la misma que a los 10 min.
+  let marca = null;   // { exp, persona, pagina }
+  const ventanaMs = () => Number(scenario.ventanaMs) || 10 * 60 * 1000;
+  const acunar = (p) => { marca = { exp: Date.now() + ventanaMs(), persona: (p && p.n) || '', pagina: (p && p.pv) || '' }; };
+  const leerMarca = (p) => {
+    if (!marca) return { fresh: false, restante_s: 0 };
+    const persona = (p && p.n) || '';
+    const pagina  = (p && p.pv) || '';
+    const enVentana   = marca.exp >= Date.now();
+    // Misma regla y mismo comodín que el servidor: dos valores CONOCIDOS y distintos no
+    // se transfieren; cuando uno de los dos lados no consta, se deja pasar.
+    const mismaPersona = !marca.persona || !persona || marca.persona === persona;
+    const mismaPagina  = !marca.pagina  || !pagina  || marca.pagina  === pagina;
+    const fresh = enVentana && mismaPersona && mismaPagina;
+    return { fresh, restante_s: fresh ? Math.max(0, Math.ceil((marca.exp - Date.now()) / 1000)) : 0 };
+  };
+  // Extiende, JAMÁS crea, y conserva el atado con el que la marca nació.
+  const extender = () => {
+    if (!marca || marca.exp < Date.now()) return 0;
+    marca.exp = Date.now() + ventanaMs();
+    return Math.ceil(ventanaMs() / 1000);
+  };
+  // Lo que el simulado le contesta a la puerta de datos personales. Con la palanca puesta
+  // manda la MARCA; sin ella, el comportamiento de siempre (`scenario.otpSuperado`).
+  const puertaAbierta = (p) => (scenario.ventanaViva ? leerMarca(p).fresh : !!scenario.otpSuperado);
   const H = {
     // ── Portada ───────────────────────────────────────────────────────────────
     sendMagicLink: (p) => {
@@ -536,7 +573,7 @@ export function createDispatcher(scenario, record) {
       // el código de un solo uso, y todo llega en la SEGUNDA hidratación. La forma es la
       // del contrato de verdad (`backend/Code.js`, la rama `if (!stepUpFresh)` de
       // `hydrateSession_`), no una inventada. `verifyEmail` abre la verja.
-      if (scenario.piiGated && !scenario.otpSuperado) {
+      if (scenario.piiGated && !puertaAbierta(p)) {
         return {
           ok: true,
           group: {
@@ -559,11 +596,28 @@ export function createDispatcher(scenario, record) {
         };
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos);
-      return { ok: true, ...h, lookups: lookupsSegunEscenario_(scenario) };
+      const conVentana = scenario.ventanaViva
+        ? { step_up_fresh: true, step_up_restante_s: leerMarca(p).restante_s }
+        : {};
+      return { ok: true, ...h, lookups: lookupsSegunEscenario_(scenario), ...conVentana };
     },
+    // ⛔ EL PULSO ES UNA LECTURA. No toca la marca ni por asomo: si la extendiera, una
+    // pestaña abandonada se quedaría viva sola, que es SEC-STEPUP (#55). El recorrido
+    // `ventana-por-inactividad` lo AFIRMA haciendo latir el pulso y comprobando que el
+    // tiempo restante sigue bajando.
     getAdmissionState: (p) => {
       const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos);
-      return { ok: true, ...(h.admission || { state_code: null }) };
+      const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
+      return { ok: true, ...(h.admission || { state_code: null }),
+               ...(conVentana ? { step_up_fresh: conVentana.fresh, step_up_restante_s: conVentana.restante_s } : {}) };
+    },
+    // «Sigo aquí»: EXTIENDE si la marca sigue viva y el atado casa; si no, pide código.
+    refrescarVentana: (p) => {
+      if (!scenario.ventanaViva) return { ok: true, step_up_fresh: true, step_up_restante_s: 600 };
+      if (!leerMarca(p).fresh) return { ok: false, error: { code: 'STEPUP_REQUIRED', message: 'Step-up re-verification required' } };
+      const s = extender();
+      if (!s) return { ok: false, error: { code: 'STEPUP_REQUIRED', message: 'Step-up re-verification required' } };
+      return { ok: true, step_up_fresh: true, step_up_restante_s: s };
     },
     getLiveStateVersion: () => ({ ok: true, version: 1 }),
     abandonSession:      () => ({ ok: true, abandoned: true }),
@@ -717,7 +771,10 @@ export function createDispatcher(scenario, record) {
     // El código correcto abre la verja de datos personales: a partir de aquí la
     // hidratación SÍ trae lo de la familia (mismo efecto que `_markStepUpFresh_` en el
     // servidor de verdad).
-    verifyEmail:          (p) => { if (p && p.stepup) scenario.otpSuperado = true; return { ok: true, verified: true }; },
+    verifyEmail:          (p) => {
+      if (p && p.stepup) { scenario.otpSuperado = true; if (scenario.ventanaViva) acunar(p); }
+      return { ok: true, verified: true };
+    },
 
     // ── Paso 7 · el SIMULADOR de cuotas (orientativo, no compromete) ─────────
     // La forma la copia del contrato real (`enr_proyectarSimulacionesDelEnsayo_` del KMS).

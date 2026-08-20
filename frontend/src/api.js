@@ -620,6 +620,50 @@ export function alConfirmarEscritura(fn) {
   return () => { _oyentesEscritura.delete(fn); };
 }
 
+// ── HUELLA DE LA PÁGINA VIVA (2026-08-20) ────────────────────────────────────────────
+// Un identificador que se acuña UNA vez por carga de página y vive EXCLUSIVAMENTE en la
+// memoria de este módulo. Viaja como `pv` en toda petición y el servidor lo guarda al
+// lado de la marca del código de un solo uso: mientras case, la ventana de 10 minutos se
+// puede reiniciar con la actividad de la familia; en cuanto deja de casar, se vuelve a
+// pedir el código.
+//
+// ⛔ NO SE PERSISTE, Y ÉSE ES TODO EL PUNTO. Ni `sessionStorage` ni `localStorage`:
+// los dos SOBREVIVEN a una recarga, así que guardarlo ahí devolvería exactamente el
+// agujero que esto cierra — entrar con F5 sin teclear nada. Una variable de módulo muere
+// con la página, que es el comportamiento que se quiere.
+//
+// No es un secreto ni autoriza nada por sí solo: el expediente sigue saliendo del
+// `resume_token` server-side (KAL-4). Es un discriminador de «la misma carga de página».
+const HUELLA_DE_PAGINA_VIVA = (() => {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      const b = new Uint8Array(16); crypto.getRandomValues(b);
+      return [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+    }
+  } catch { /* navegador sin crypto: se cae al respaldo */ }
+  // Respaldo: peor entropía, misma propiedad (muere con la página). El servidor trata
+  // «no consta» como comodín, así que un respaldo raro nunca deja a nadie fuera.
+  return (Date.now().toString(16) + Math.random().toString(16).slice(2)).slice(0, 32);
+})();
+
+/**
+ * 2026-08-20 · «SIGO AQUÍ» — reinicia el contador de los 10 minutos de inactividad.
+ *
+ * La dispara la ACTIVIDAD REAL de la familia (clic, tecla, cambio de paso), con freno en
+ * el contexto para no llamar por pulsación. El servidor EXTIENDE, jamás CREA: sobre una
+ * ventana ya caducada devuelve STEPUP_REQUIRED y hay que volver a pedir el código.
+ *
+ * @param {string} resumeToken
+ * @param {{n?:string, recoveredEmail?:string}} [identidad] ②24 — quién está operando.
+ * @returns {Promise<{ok:boolean, step_up_restante_s:number}>}
+ */
+export function refrescarVentana(resumeToken, identidad) {
+  return gasCall('refrescarVentana', {
+    resume_token: resumeToken, ...identidadDelEnlace(identidad),
+  });
+}
+
 /**
  * Calls the GAS backend with the given action and payload.
  * @param {string} action
@@ -642,7 +686,7 @@ export async function gasCall(action, payload = {}) {
   // DBG-TRACE (Diego 2026-06-12): pedir al backend la cronología server-side de la
   // request (gates, llamadas wizard→KMS con inicio/duración, HIT/MISS de cache,
   // esperas single-flight). Vuelve como `_dbg` y se vuelca al debug log abajo.
-  const body = JSON.stringify({ action, _hp: '', _dbg: true, ...payload });
+  const body = JSON.stringify({ action, _hp: '', _dbg: true, pv: HUELLA_DE_PAGINA_VIVA, ...payload });
   const t0   = performance.now();
 
   // ── UNA LLAMADA QUE NO VUELVE NO PUEDE DURAR PARA SIEMPRE (medido 2026-08-04) ─────────

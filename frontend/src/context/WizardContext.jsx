@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, useEffect, useRef } f
 import * as log from '../logger';
 import { preparePersonsForUI } from '../pages/steps/personShape';
 import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
-import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache, alConfirmarEscritura, estadoDelGuardado } from '../api';  // 18.bis.84: preguntar cómo acabaron los guardados que el KMS dejó apuntados; WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
+import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache, alConfirmarEscritura, estadoDelGuardado, refrescarVentana } from '../api';  // 18.bis.84: preguntar cómo acabaron los guardados que el KMS dejó apuntados; WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
 import { seReintentaTrasFallo, codigoDelDescarte } from '../lib/rechazos';       // 18.bis.85: el ÚNICO sitio que decide si un rechazo se vuelve a intentar (lo consulta también el aviso) · 18.bis.84: y el que traduce lo que el trabajo apuntado descartó
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
@@ -71,6 +71,27 @@ const WizardContext = createContext(null);
 // ENMASCARADA por defecto y se revela en claro solo tras un step-up (código
 // fresco al buzón). El step-up "fresco" caduca a los 10 min de INACTIVIDAD.
 export const STEPUP_WINDOW_MS = 10 * 60 * 1000; // 10 minutos
+
+// 2026-08-20 — FRENO del «sigo aquí»: como mucho una llamada por minuto, por muchas
+// pulsaciones que haya. Sin esto habría una petición por clic y por tecla. Un minuto es
+// holgadísimo frente a los diez de la ventana.
+export const REFRESCO_MINIMO_MS = 60 * 1000;
+
+// Y el «sigo aquí» NI SIQUIERA SE PLANTEA mientras sobra ventana: solo a partir de la
+// MITAD gastada. Con la ventana entera por delante no hay nada que reiniciar, así que
+// llamar sería gasto puro — y, medido el 2026-08-20 en la batería, ruido de verdad: la
+// petición se quedaba en vuelo al cambiar de pantalla, el navegador la abortaba y la
+// familia veía un «network/fetch error» que no era suyo (tumbó `fecha-a-mitad-de-curso`).
+// Con este umbral, quien está activo refresca UNA vez cada ~5 minutos en lugar de cada
+// minuto, y la garantía es la misma: mientras haya actividad, el tiempo restante nunca
+// llega a bajar de la mitad.
+export const REFRESCO_UMBRAL_S = Math.round(STEPUP_WINDOW_MS / 2 / 1000);
+
+// Cuánto antes de que caduque la ventana se le avisa a la familia. Diego, 2026-08-20:
+// «No me parece mal un aviso dos minutos antes que el usuario tenga que aceptar, pero
+// solo si no ha estado haciendo clic». Lo segundo sale SOLO: si ha estado clicando, el
+// contador ya se reinició y nunca se baja de este umbral.
+export const AVISO_ANTES_S = 120;
 
 // Wizard canónico — 11 steps per roadmap (docs/kms/plan/wizard-admissions-roadmap.md
 // líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28). NO inventar pasos extra.
@@ -696,23 +717,86 @@ export function WizardProvider({ children }) {
     return () => clearInterval(id);
   }, []);
 
-  // ★ SEC-STEPUP (finding #55, 2026-06-11): la ventana de step-up es DURA (10 min
-  // EXACTOS desde el OTP/gracia), NO deslizante. Antes la actividad re-extendía
-  // `stepUpVerifiedUntil` en el cliente → divergía de la ventana DURA del servidor
-  // y dejaba la UI desbloqueada (candado stale) más allá de lo que el backend honra
-  // (que ahora exige re-OTP pasados los 10 min en cada write de PII). touchActivity
-  // se conserva como marca de actividad SIN extender la frescura — el cliente espeja
-  // EXCLUSIVAMENTE la verdad del servidor (step_up_fresh del hydrate/pulso).
+  // ── LA ACTIVIDAD REAL REINICIA EL CONTADOR (Diego, 2026-08-20) ─────────────────
+  // «Cada acción del usuario debe reiniciar el contador de 10 minutos». Un clic, una
+  // tecla o un cambio de paso pasan por aquí.
+  //
+  // Y lo hace PIDIÉNDOSELO AL SERVIDOR, no estirando el espejo local: quien manda sigue
+  // siendo la marca server-side, y el cliente solo refleja lo que le contestan. Estirar
+  // el espejo por su cuenta es justo lo que producía el candado stale de #30 (la UI
+  // desbloqueada más allá de lo que el backend honra).
+  //
+  // ⛔ NO LO LLAMA NINGÚN TEMPORIZADOR. Ni el pulso de admisión, ni el ticker de
+  // frescura, ni un `setInterval`: eso sería SEC-STEPUP (#55) otra vez —una pestaña
+  // abandonada sin nadie delante quedándose viva—. Solo eventos de una persona.
+  //
+  // FRENO de un minuto: sin él habría una llamada por pulsación. Un minuto es
+  // holgadísimo frente a los 10 de la ventana (quien está activo la reinicia ocho veces
+  // antes de que el aviso llegue a salir).
+  //
+  // ⛔ CON LA EXCEPCIÓN QUE LO HACE ÚTIL: dentro de la zona de aviso (los últimos dos
+  // minutos) NO se frena nada. Es justo cuando la familia está diciendo «sigo aquí», y
+  // tragarse ESA pulsación por un freno la echaría de su solicitud teniendo la mano en la
+  // pantalla. Fuera de esa zona, el freno vale y no se nota; dentro, cada gesto cuenta —
+  // y son a lo sumo un par de llamadas, porque la primera devuelve la ventana entera.
+  const ultimoRefresco = useRef(0);
+  const refrescandoVentana = useRef(false);
+  // Espejos síncronos de lo que necesita el refresco. Se usan refs (y no las variables de
+  // estado) para que `touchActivity` sea ESTABLE: se lo pasan por props unas cuantas
+  // pantallas, y re-crearlo en cada cambio de estado remontaría sus manejadores.
+  const resumeTokenRef = useRef(null);
+  const stepUpVerifiedUntilRef = useRef(0);
+  const recoveryNonceRef = useRef(null);
+  const recoveredEmailRef = useRef(null);
   const touchActivity = useCallback(() => {
-    setLastActivityAt(Date.now());
+    const ahora = Date.now();
+    setLastActivityAt(ahora);
+    if (!resumeTokenRef.current) return;
+    // Sin ventana viva no hay nada que reiniciar: la puerta ya está cerrada y quien
+    // manda es el código. Pedir un refresco aquí solo sería una llamada a un rechazo.
+    if (!(stepUpVerifiedUntilRef.current && ahora < stepUpVerifiedUntilRef.current)) return;
+    if (refrescandoVentana.current) return;
+    const restanteS = Math.round((stepUpVerifiedUntilRef.current - ahora) / 1000);
+    if (restanteS > REFRESCO_UMBRAL_S) return;      // sobra ventana: no hay nada que reiniciar
+    const enZonaDeAviso = restanteS <= AVISO_ANTES_S;
+    if (!enZonaDeAviso && ahora - ultimoRefresco.current < REFRESCO_MINIMO_MS) return;
+    ultimoRefresco.current = ahora;
+    refrescandoVentana.current = true;
+    refrescarVentana(resumeTokenRef.current, {
+      n: recoveryNonceRef.current, recoveredEmail: recoveredEmailRef.current,
+    })
+      .then((r) => {
+        const s = Number(r && r.step_up_restante_s) || 0;
+        setStepUpVerifiedUntil(Date.now() + (s > 0 ? s * 1000 : STEPUP_WINDOW_MS));
+      })
+      .catch((e) => {
+        // El servidor dice que ya no hay ventana que estirar → se re-sincroniza el
+        // espejo a «caducado» y el gate de entrada se cierra para TODA la UI, en vez de
+        // dejar una pantalla abierta que el siguiente guardado va a rechazar igual.
+        if (/STEPUP_REQUIRED/.test(String((e && (e.code || e.message)) || ''))) {
+          setStepUpVerifiedUntil(0);
+          log.warn('step-up: la ventana ya no se puede reiniciar — hace falta el código');
+        }
+        // Cualquier otro fallo (red, servidor caído) NO toca el espejo: un corte de red
+        // no es motivo para echar a nadie de su solicitud.
+      })
+      .finally(() => { refrescandoVentana.current = false; });
   }, []);
 
   // Tras un verifyEmail({stepup:true}) OK → step-up fresco durante 10 min.
-  const markStepUpFresh = useCallback(() => {
+  //
+  // 2026-08-20 — EL TIEMPO QUE QUEDA LO MANDA QUIEN LO SABE. Si el servidor reporta
+  // `step_up_restante_s`, se usa ESE; los 10 min locales son solo el respaldo para una
+  // respuesta que aún no lo traiga. Antes el cliente echaba su propia cuenta y divergía
+  // de la del servidor (es el defecto que #30 documentó: tras un F5 a mitad de ventana
+  // el espejo local sobrevivía más que la marca real). Y el aviso de los dos minutos se
+  // pinta sobre este número, así que tiene que ser el de verdad, no una estimación.
+  const markStepUpFresh = useCallback((restanteS) => {
     const now = Date.now();
-    setStepUpVerifiedUntil(now + STEPUP_WINDOW_MS);
+    const ms = (Number(restanteS) > 0) ? Number(restanteS) * 1000 : STEPUP_WINDOW_MS;
+    setStepUpVerifiedUntil(now + ms);
     setLastActivityAt(now);
-    log.success('step-up: verificación fresca registrada (10 min)');
+    log.success(`step-up: verificación fresca registrada (${Math.round(ms / 1000)} s)`);
   }, []);
 
   // #30 (lock proactivo, post-#55): revoca el espejo LOCAL de frescura. El servidor es
@@ -723,8 +807,11 @@ export function WizardProvider({ children }) {
   // re-renderiza y el gate de entrada (mustPassEntryGate) se cierra para TODA la UI
   // PII, no solo para el save que falló. NUNCA extiende — solo revoca (anti-sliding).
   const revokeStepUpFresh = useCallback(() => {
-    setStepUpVerifiedUntil(0);
-    log.warn('step-up: frescura revocada (servidor reportó STEPUP_REQUIRED)');
+    setStepUpVerifiedUntil(prev => {
+      if (!prev) return prev;              // ya revocada: ni re-render ni registro de más
+      log.warn('step-up: frescura revocada (el servidor la rechazó, o se agotó la cuenta atrás)');
+      return 0;
+    });
   }, []);
 
   // True si el step-up sigue fresco. ★ SEC-STEPUP: ventana DURA (no deslizante):
@@ -756,6 +843,29 @@ export function WizardProvider({ children }) {
     setRecoveryNonceRaw(v);
     saveSession({ recoveryNonce: v });
   }, []);
+
+  // Espejos síncronos para `touchActivity` (ver su declaración): un solo sitio los pone
+  // al día, para que no puedan divergir de las variables de estado que reflejan.
+  useEffect(() => { resumeTokenRef.current = resumeToken; }, [resumeToken]);
+  useEffect(() => { stepUpVerifiedUntilRef.current = stepUpVerifiedUntil; }, [stepUpVerifiedUntil]);
+  useEffect(() => { recoveryNonceRef.current = recoveryNonce; }, [recoveryNonce]);
+  useEffect(() => { recoveredEmailRef.current = recoveredEmail; }, [recoveredEmail]);
+
+  // ── LA ACTIVIDAD, ESCUCHADA DE UNA VEZ Y EN TODA LA APLICACIÓN ─────────────────
+  // Diego: «clic, pasando de pantallas, etc.». Antes solo contaba el clic DENTRO del
+  // contenido de algunos pasos (`StepShell`, Step2, Step4, Step6), así que teclear en un
+  // campo, pulsar «Siguiente» o moverse por la cabecera no reiniciaba nada. Se escucha en
+  // el documento, en fase de captura, y de forma pasiva: no interfiere con ningún gesto.
+  //
+  // ⛔ Los eventos son de una PERSONA a propósito (clic, tecla, gesto táctil). Nada de
+  // temporizadores, `visibilitychange` ni `focus`: una pestaña que vuelve al primer plano
+  // sola no es actividad, y contarla sería SEC-STEPUP (#55) por la puerta de atrás.
+  useEffect(() => {
+    const eventos = ['pointerdown', 'keydown'];
+    const oyente = () => touchActivity();
+    eventos.forEach(e => document.addEventListener(e, oyente, { capture: true, passive: true }));
+    return () => eventos.forEach(e => document.removeEventListener(e, oyente, { capture: true }));
+  }, [touchActivity]);
 
   // D-E18: recognition result from initEnrollmentSession. Survives reloads via
   // sessionStorage so Step2 can show the "we recognised your family" banner
@@ -929,7 +1039,7 @@ export function WizardProvider({ children }) {
     // (B) vuelve true dentro de los 10 min. Solo log, no cambia ninguna rama de lógica.
     log.info('hydrateFromResume: step_up_fresh recibido', { step_up_fresh: !!data.step_up_fresh });
     if (data.step_up_fresh) {
-      markStepUpFresh();
+      markStepUpFresh(data.step_up_restante_s);
       markOtpAutoSentForRecovery();
       log.info('hydrateFromResume: magic-link grace activa (nonce válido <10min) — sin OTP');
     }
@@ -1347,6 +1457,7 @@ export function WizardProvider({ children }) {
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       recoveryNonce, setRecoveryNonce,           // IDENTITY-FROM-LINK: `n` = email_id del enlace
       isStepUpFresh, markStepUpFresh, revokeStepUpFresh, touchActivity, // DL-E39 step-up PII-primero + #30 espejo revocable
+      stepUpVerifiedUntil,                              // 2026-08-20: hasta cuándo, para el aviso de los dos minutos
       recoveredViaMagicLink, setRecoveredViaMagicLink, // DL-E39 gate de entrada
       otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER: auto-send solo 1ª recuperación
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
