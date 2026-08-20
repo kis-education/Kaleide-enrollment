@@ -228,6 +228,13 @@ const NO_CUBIERTAS_SOLO_REAL = {
   'respuestas-rechazadas-se-dicen': {
     'respuestas-rechazadas': 'exige un expediente real con un tutor que YA envió su parte y otro que sigue rellenando; el arnés no puede montar ese estado sin dejar datos a medias. En modo simulado sí se cubre, con la palanca `scenario.respuestasRechazadas`.',
   },
+  'codigo-sin-congelar': {
+    'aviso-antes-que-la-respuesta': 'exige forzar la verja del código (dejar caducar la gracia del enlace) y cronometrar un viaje cuyo tiempo decide Google; en modo simulado sí se cubre, con `scenario.codigoDemoraMs`',
+    'casilla-lista-sin-esperar':    'misma razón',
+    'se-entra-sin-esperar':         'misma razón: además el código llega a un buzón que este arnés no lee',
+    'el-fallo-sustituye-al-aviso':  'exige que el servidor RECHACE la petición del código; no se provoca contra datos reales. En modo simulado sí se cubre, con `scenario.codigoFalla`.',
+    'reenviar-limitado-por-reloj':  'misma razón que las tres primeras',
+  },
 }
 if (REAL) {
   for (const [camino, entradas] of Object.entries(NO_CUBIERTAS_SOLO_REAL)) {
@@ -376,7 +383,10 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // archivos ya subidos — los usa `documentos-vuelven` y los deja como estaban al salir.
 // `warmFalla`: el precalentado falla DE VERDAD (no "no había nada que calentar") — la
 // otra mitad de `precalentado-sin-ruido`: un fallo real sigue registrándose.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false }
+// `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
+// RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
+// de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -713,7 +723,16 @@ function startServer() {
         const out = dispatch(payload)
         // Latencia simulada: sin ella no se puede distinguir un avance optimista
         // de uno que espera al servidor. En real no se inyecta: ya tarda de verdad.
-        setTimeout(() => responder(out), LATENCY)
+        //
+        // ── UNA acción puede pedir MÁS demora que las demás ────────────────────────
+        // `sendVerificationCode` tarda EN LA VIDA REAL mucho más que el resto (medido el
+        // 2026-08-19 en el registro de Diego: 77 s de reloj), y ésa es justamente la
+        // condición en la que se ve si la pantalla espera al servidor o no. Con la
+        // latencia uniforme el margen era de 800 ms — demasiado estrecho para distinguir
+        // «apareció antes de la respuesta» de «apareció justo después».
+        const extra = (payload && payload.action === 'sendVerificationCode')
+          ? Number(scenario.codigoDemoraMs || 0) : 0
+        setTimeout(() => responder(out), LATENCY + extra)
       })
       return
     }
@@ -4639,6 +4658,313 @@ async function caminoSimuladorPaso7(page, base) {
   }
 }
 
+/**
+ * codigo-sin-congelar — PEDIR EL CÓDIGO DE UN SOLO USO NO CONGELA LA PANTALLA.
+ *
+ * ── El defecto que cierra, MEDIDO (registro real de Diego, 2026-08-19) ───────────────
+ * `sendVerificationCode` tardó **77 s** de reloj (73 s de servidor: dos viajes al KMS para
+ * resolver de quién es el buzón + uno para APUNTAR el envío — que ni siquiera manda el
+ * correo: lo manda después un repaso que tarda otros ~56 s de media). Durante esos 77 s la
+ * pantalla ataba `codeSent` a la RESPUESTA ⇒ casilla del código deshabilitada, «Acceder»
+ * deshabilitado y «reenviar» también. La familia miraba una tarjeta congelada, y el código
+ * podía llegarle al buzón ANTES de que la pantalla la dejase teclearlo.
+ *
+ * ── Cómo se mide, y por qué así ─────────────────────────────────────────────────────
+ * El invariante NO es «aparece rápido»: es «lo que se ve NO puede venir de la respuesta».
+ * Así que se cronometra contra el propio viaje — se apunta CUÁNDO sale y CUÁNDO vuelve cada
+ * petición (eventos de red de Playwright, no el reloj del robot) y se comprueba que el aviso
+ * ya estaba en pantalla ANTES de que volviera. Para que la distinción sea holgada y no una
+ * carrera de milisegundos, este camino pide al servidor de la batería que ESE viaje tarde
+ * mucho más que los demás (`scenario.codigoDemoraMs`) — que es justo lo que pasa de verdad.
+ *
+ * ── Se conduce el BOTÓN, no el envío automático. MEDIDO el 2026-08-20 ────────────────
+ * Al entrar por el enlace, el gate se monta, auto-envía el código… y **se vuelve a montar**
+ * (`WizardPage` pone `rehydrating` a true al re-hidratar ⇒ `mustPassEntryGate` cae y el gate
+ * desaparece un instante). La segunda instancia nace ya con `shouldAutoSend=false` — porque
+ * la primera marcó la sesión — así que la familia se encuentra «Pulsa para recibir tu
+ * código» con **un código ya en vuelo**. Se comprobó: 1 sola petición y la pantalla en
+ * estado «sin enviar» desde el primer milisegundo observable.
+ *   · Eso es un DEFECTO del producto, anterior a este cambio y ajeno a él (la familia gasta
+ *     una segunda petición de su cupo sin necesidad). Queda ANOTADO aquí; no se arregla en
+ *     este cambio, que es de otra cosa.
+ *   · Y por eso este camino mide el gesto que la familia SÍ hace en esa pantalla: **pulsar
+ *     el botón**. El invariante que se afirma es el mismo, y no depende de una carrera de
+ *     montajes que hoy se pierde.
+ *
+ * ⚠️ Esto cubre LA PANTALLA. El `backend/Code.js` no se ejecuta en esta batería (el backend
+ * es simulado): lo que el servidor del asistente hace con la petición no está aquí.
+ */
+async function caminoCodigoSinCongelar(page, base) {
+  const c = new Camino('codigo-sin-congelar')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    // Contra el sistema de verdad la verja solo se abre dejando caducar la gracia del
+    // enlace, y el código llega a un buzón que este arnés no lee. No se afloja la verja
+    // para que la prueba pase.
+    c.noCubierta('aviso-antes-que-la-respuesta', 'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('casilla-lista-sin-esperar',    'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('se-entra-sin-esperar',         'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('el-fallo-sustituye-al-aviso',  'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('reenviar-limitado-por-reloj',  'ver NO_CUBIERTAS_SOLO_REAL')
+    return c
+  }
+
+  // Cuándo SALE y cuándo VUELVE cada petición. Listas, no un solo valor: por el remontaje
+  // de arriba hay un envío automático en vuelo antes de que la familia toque nada, y
+  // quedarse con «la primera» mediría la petición equivocada.
+  const salidas = {}
+  const vueltas = {}
+  const accionDe = (req) => {
+    try { return JSON.parse(req.postData() || '{}').action || '' } catch { return '' }
+  }
+  const anota = (bolsa) => (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    const a = accionDe(req)
+    if (!a) return
+    ;(bolsa[a] = bolsa[a] || []).push(Date.now())
+  }
+  const alPedir = anota(salidas)
+  const alVolver = anota(vueltas)
+  page.on('request', alPedir)
+  page.on('requestfinished', alVolver)
+  const cuantas = (bolsa, a) => (bolsa[a] || []).length
+  const ultima  = (bolsa, a) => { const l = bolsa[a] || []; return l.length ? l[l.length - 1] : null }
+
+  const limpiar = () => {
+    page.off('request', alPedir)
+    page.off('requestfinished', alVolver)
+    scenario.piiGated = false
+    scenario.otpSuperado = false
+    scenario.codigoDemoraMs = 0
+    scenario.codigoFalla = null
+  }
+
+  /** Lo que la familia VE en la verja y lo que puede hacer, en un solo tiro. */
+  const verja = () => page.evaluate(() => {
+    const casilla  = document.querySelector('input[autocomplete="one-time-code"]')
+    const acceder  = [...document.querySelectorAll('button.btn-primary-kis')][0] || null
+    const reenviar = document.querySelector('[data-testid="stepup-reenviar"]')
+    const aviso    = document.querySelector('[data-testid="stepup-enviado"]')
+    const error    = document.querySelector('[data-testid="stepup-error"]')
+    return {
+      hayVerja:          !!casilla,
+      casillaLista:      !!(casilla && !casilla.disabled),
+      accederBloqueado:  !!(acceder && acceder.disabled),
+      aviso:             aviso ? (aviso.innerText || '').trim() : null,
+      error:             error ? (error.innerText || '').trim() : null,
+      reenviarBloqueado: !!(reenviar && reenviar.disabled),
+      reenviarTexto:     reenviar ? (reenviar.textContent || '').trim() : null,
+    }
+  })
+
+  /**
+   * Espera a que NO quede ninguna petición del código en vuelo.
+   *
+   * Hace falta en los DOS extremos de cada pase: irse de la página con un `fetch` a medias
+   * lo ABORTA y la app registra un «network/fetch error» que NO es suyo, sino del robot
+   * (mismo motivo que `esperarSilencioDeRed`); y empezar a medir con una petición vieja
+   * volando mediría la petición equivocada.
+   */
+  const drenar = async () => {
+    const t0 = Date.now()
+    const techo = LATENCY + Number(scenario.codigoDemoraMs || 0) + 12000
+    while (cuantas(vueltas, 'sendVerificationCode') < cuantas(salidas, 'sendVerificationCode')
+           && Date.now() - t0 < techo) {
+      await page.waitForTimeout(120)
+    }
+    await page.waitForTimeout(300)
+  }
+
+  /**
+   * Abre la verja de cero y deja la pantalla QUIETA: espera a que el envío automático
+   * (el que se pierde en el remontaje) haya ido y vuelto, para que lo que se mida después
+   * sea la petición del BOTÓN y no la suya.
+   */
+  const abrirLaVerja = async (etiqueta) => {
+    await drenar()
+    await page.goto(`${base}/?verja=${etiqueta}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const hay = await page.waitForSelector('input[autocomplete="one-time-code"]', { timeout: LATENCY * 3 + 15000 })
+      .then(() => true).catch(() => false)
+    if (!hay) return false
+    await drenar()
+    return true
+  }
+
+  /** Pulsa «Enviar código» / «Reenviar código» y devuelve false si estaba bloqueado. */
+  const pedirElCodigo = () => page.evaluate(() => {
+    const b = document.querySelector('[data-testid="stepup-reenviar"]')
+    if (!b || b.disabled) return false
+    b.click(); return true
+  })
+
+  try {
+    scenario.piiGated = true
+    scenario.otpSuperado = false
+    // El viaje del código tarda MUCHO más que la latencia normal — como en la vida real.
+    scenario.codigoDemoraMs = 4000
+
+    // ══ PASE 1 · el aviso, la casilla y la espera del reenvío ═════════════════════
+    if (!c.afirmar('con la verja puesta, el asistente pide el código antes de enseñar nada',
+      await abrirLaVerja('p1'),
+      'nunca apareció la casilla del código: la secuencia que este recorrido mide no llegó a darse')) return c
+
+    const salidasAntes = cuantas(salidas, 'sendVerificationCode')
+    const vueltasAntes = cuantas(vueltas, 'sendVerificationCode')
+    if (!c.afirmar('la familia puede pedir su código', await pedirElCodigo(),
+      'el botón de pedir el código estaba bloqueado nada más abrir la verja')) return c
+
+    // El aviso tiene que estar ANTES de que vuelva esa petición. Se le da un techo corto
+    // (2,5 s) frente a los 4,8 s que tarda el servidor: si no cabe ahí, es que espera.
+    let foto = null
+    let respuestaYaVuelta = null
+    try {
+      await page.waitForFunction(
+        () => !!document.querySelector('[data-testid="stepup-enviado"]'),
+        null, { timeout: 2500 })
+      foto = await verja()
+      respuestaYaVuelta = cuantas(vueltas, 'sendVerificationCode') > vueltasAntes
+    } catch {
+      // Un rojo se DIAGNOSTICA: se imprime lo que de verdad hay en la verja.
+      const f = await verja()
+      c.fallos.push('el aviso de «te hemos enviado un código» no apareció en 2,5 s, con una respuesta del servidor que tarda ' +
+        `${LATENCY + scenario.codigoDemoraMs} ms: la pantalla está esperando al servidor para decir lo que ya sabe. ` +
+        `Estado de la verja: ${JSON.stringify(f)}`)
+      return c
+    }
+    c.evidencia.elementos = 1
+    c.evidencia.llamadas  = cuantas(salidas, 'sendVerificationCode')
+
+    c.afirmar('el aviso de «enviado» aparece ANTES de que el servidor conteste',
+      !respuestaYaVuelta,
+      'cuando el aviso apareció, la respuesta de sendVerificationCode YA había vuelto: el aviso viene del viaje, no del gesto')
+
+    c.afirmar('la casilla del código está lista en ese mismo momento',
+      foto.casillaLista,
+      'se le decía a la familia que el código estaba enviado y la casilla seguía deshabilitada: la pantalla se queda congelada esperando al servidor')
+
+    c.afirmar('el aviso dice qué hacer si el código no llega',
+      /2-3|2 ?a ?3/.test(foto.aviso || ''),
+      `el aviso dice «${foto.aviso}» y no da un plazo concreto: «espera unos minutos» no le sirve a quien no sabe si pedir otro`)
+
+    // ── «reenviar» limitado por RELOJ, no por el viaje ─────────────────────────────
+    // Ya con la petición contestada (ningún viaje en vuelo), si el botón sigue bloqueado
+    // solo puede ser por la espera corta y deliberada.
+    const t0 = Date.now()
+    while (cuantas(vueltas, 'sendVerificationCode') <= vueltasAntes
+           && Date.now() - t0 < LATENCY + scenario.codigoDemoraMs + 8000) {
+      await page.waitForTimeout(120)
+    }
+    if (cuantas(vueltas, 'sendVerificationCode') <= vueltasAntes) {
+      c.fallos.push('la respuesta de sendVerificationCode nunca volvió: no se puede distinguir «bloqueado por el viaje» de «bloqueado por el reloj»')
+      return c
+    }
+    await page.waitForTimeout(500)
+    const trasVolver = await verja()
+    c.afirmar('«reenviar» sigue limitado por su espera corta cuando ya NO hay viaje en vuelo',
+      trasVolver.reenviarBloqueado && /\d/.test(trasVolver.reenviarTexto || ''),
+      trasVolver.reenviarBloqueado
+        ? `el botón está bloqueado pero no dice cuánto falta («${trasVolver.reenviarTexto}»): la familia no puede saber si está roto o esperando`
+        : `el botón quedó libre («${trasVolver.reenviarTexto}») en cuanto contestó el servidor: la limitación seguía siendo el viaje, no una espera deliberada`)
+    c.afirmar('el envío de la petición no dejó nada bloqueado ni borró lo tecleado',
+      trasVolver.casillaLista, 'la casilla se deshabilitó al volver la respuesta')
+
+    // ══ PASE 2 · se puede TECLEAR y ENTRAR sin esperar a esa respuesta ════════════
+    scenario.otpSuperado = false
+    if (!c.afirmar('la verja vuelve a abrirse para el segundo pase', await abrirLaVerja('p2'),
+      'la casilla del código no volvió a aparecer')) return c
+    const vueltasP2 = cuantas(vueltas, 'sendVerificationCode')
+    if (!c.afirmar('la familia vuelve a poder pedir su código', await pedirElCodigo(),
+      'el botón de pedir el código estaba bloqueado al abrir la verja de nuevo')) return c
+    await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="stepup-enviado"]'), null, { timeout: 2500 }).catch(() => {})
+
+    await page.fill('input[autocomplete="one-time-code"]', '123456')
+    const pulsado = await page.evaluate(() => {
+      const b = [...document.querySelectorAll('button.btn-primary-kis')].find(x => !x.disabled)
+      if (!b) return false
+      b.click(); return true
+    })
+    if (!c.afirmar('«Acceder» se puede pulsar sin esperar a la respuesta del código', pulsado,
+      'el botón de acceder seguía deshabilitado: la familia no puede entrar aunque tenga el código delante')) return c
+
+    // La prueba dura: la verificación SALIÓ antes de que volviera la petición del código.
+    const t1 = Date.now()
+    while (!ultima(salidas, 'verifyEmail') && Date.now() - t1 < 4000) await page.waitForTimeout(80)
+    const salidaVerify = ultima(salidas, 'verifyEmail')
+    const vueltaCodigo = cuantas(vueltas, 'sendVerificationCode') > vueltasP2
+      ? ultima(vueltas, 'sendVerificationCode') : null
+    c.afirmar('la verificación sale ANTES de que vuelva la petición del código',
+      !!salidaVerify && (vueltaCodigo == null || salidaVerify < vueltaCodigo),
+      salidaVerify == null
+        ? 'nunca salió la llamada verifyEmail: pulsar «Acceder» no hizo nada'
+        : 'la verificación no salió hasta que el servidor contestó a la petición del código: entrar sigue encadenado al viaje')
+
+    c.afirmar('tras el código, el asistente abre la solicitud',
+      await page.waitForFunction(() => {
+        const pasos = document.querySelectorAll('.wizard-step')
+        return !!(pasos.length && [...pasos].some(p => p.classList.contains('active')))
+      }, null, { timeout: LATENCY * 4 + 20000 }).then(() => true).catch(() => false),
+      'el asistente no llegó a pintar los pasos después de verificar el código')
+
+    // ══ PASE 3 · un «enviado» que era MENTIRA se corrige en pantalla ══════════════
+    // El rechazo se PROVOCA a propósito: que quede registrado en consola es lo correcto.
+    c.esperarErrorConsola(/gasCall sendVerificationCode: server returned ok=false/,
+      'el servidor rechaza la petición del código a propósito, para comprobar que la familia se entera')
+    c.esperarErrorConsola(/StepUpGate: sendVerificationCode failed/,
+      'la pantalla registra el rechazo provocado antes de explicárselo a la familia')
+    scenario.otpSuperado = false
+    scenario.codigoFalla = 'RATE_LIMITED'
+    scenario.codigoDemoraMs = 1500
+    if (!c.afirmar('la verja vuelve a abrirse para el tercer pase', await abrirLaVerja('p3'),
+      'la casilla del código no volvió a aparecer')) return c
+    const vueltasP3 = cuantas(vueltas, 'sendVerificationCode')
+    if (!c.afirmar('la familia pide su código con el servidor a punto de rechazar', await pedirElCodigo(),
+      'el botón de pedir el código estaba bloqueado')) return c
+
+    let optimista = null
+    try {
+      await page.waitForFunction(
+        () => !!document.querySelector('[data-testid="stepup-enviado"]'), null, { timeout: 1200 })
+      optimista = cuantas(vueltas, 'sendVerificationCode') <= vueltasP3
+    } catch { optimista = null }
+    if (!c.afirmar('también con el servidor a punto de rechazar, el aviso sale primero',
+      optimista === true,
+      optimista === null
+        ? 'no se llegó a ver el aviso optimista, así que no se puede comprobar que se corrige'
+        : 'el aviso apareció cuando el servidor ya había contestado: no era optimista')) return c
+
+    // Se teclea un código ANTES de que llegue el rechazo: la corrección no puede quitárselo.
+    await page.fill('input[autocomplete="one-time-code"]', '123456')
+
+    const corregido = await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="stepup-error"]'),
+      null, { timeout: LATENCY + scenario.codigoDemoraMs + 8000 }).then(() => true).catch(() => false)
+    await page.waitForTimeout(300)
+    const tras = await verja()
+    const tecleado = await page.$eval('input[autocomplete="one-time-code"]', el => el.value).catch(() => '')
+    c.afirmar('cuando la petición acaba mal, el aviso se SUSTITUYE por el error real',
+      corregido && !!tras.error && tras.aviso == null,
+      corregido
+        ? `el error salió pero el «te lo hemos enviado» sigue en pantalla («${tras.aviso}»): la familia lee dos cosas que se contradicen`
+        : 'la pantalla se quedó diciendo «te hemos enviado un código» después de que el servidor rechazara la petición: el fallo se tragó')
+    c.afirmar('el error que se muestra es el REAL del servidor, no uno genérico',
+      /demasiados c[oó]digos|requested too many/i.test(tras.error || ''),
+      `el aviso de error dice «${tras.error}» y no el de cupo agotado (RATE_LIMITED) que devolvió el servidor`)
+    c.afirmar('un fallo al pedir el código NO cierra el camino de entrar',
+      tras.casillaLista && !tras.accederBloqueado && tecleado === '123456',
+      `tras el rechazo la casilla está ${tras.casillaLista ? 'lista' : 'DESHABILITADA'}, «Acceder» está ${tras.accederBloqueado ? 'BLOQUEADO' : 'disponible'} y lo tecleado es «${tecleado}»: una familia con un código válido de un envío anterior se queda fuera por un fallo que no le afecta`)
+
+    // Ni un fetch a medias al salir: el camino siguiente no puede heredar un error de red
+    // que provocó el robot al irse de la página.
+    await drenar()
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -4687,6 +5013,11 @@ const CAMINOS = [
   // pantalla (el código de un solo uso llega a un buzón que el arnés no lee), así que
   // ahí no se le puede exigir evidencia pintada: se exigiría por algo que se declaró
   // que no se hace, y el veredicto acusaría al producto de una carencia del arnés.
+  // La verja del código de un solo uso: pedirlo NO puede congelar la pantalla (clase #32).
+  // Contra el sistema real se declara NO CUBIERTO (no se fuerza la verja ni se lee el buzón),
+  // así que allí no se le exige evidencia.
+  { nombre: 'codigo-sin-congelar', fn: caminoCodigoSinCongelar,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'documentos-vuelven', fn: caminoDocumentosVuelven,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 3 },
   // DL-E49 §1 — el envío es POR TUTOR: quien termina envía su parte, y la solicitud solo

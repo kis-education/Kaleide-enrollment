@@ -1,7 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
 import * as log from '../logger';
+
+// Espera CORTA entre peticiones de código, por RELOJ (no por el viaje del servidor).
+// Mismo criterio y mismo número que `StepUpGate`: no molestar y no quemar el cupo.
+const REENVIO_ESPERA_S = 45;
 
 /**
  * StepUpReverify — DL-E39 (PII-primero) re-verificación step-up.
@@ -22,6 +26,14 @@ import * as log from '../logger';
  * Al verificar OK invoca onVerified() — el padre marca step-up fresco
  * (markStepUpFresh) y reintenta la acción gateada.
  *
+ * ── PEDIR EL CÓDIGO NO BLOQUEA NADA (clase #32 «fire-and-forget», 2026-08-20) ──
+ * Mismo defecto y mismo arreglo que su hermano `StepUpGate` (ver su cabecera, con la
+ * medición del 2026-08-19: 77 s de reloj para un viaje que ni siquiera manda el correo,
+ * solo lo apunta). Aquí la casilla del código NI SIQUIERA APARECÍA hasta que el viaje
+ * volvía. Ahora `sendCode` dispara y sigue: la casilla sale en el mismo gesto, el fallo
+ * SUSTITUYE al aviso optimista sin cerrar el camino de verificar, y «reenviar» se limita
+ * por RELOJ (`REENVIO_ESPERA_S`), no por el viaje.
+ *
  * KAL-7 / KAL-11: nunca metemos el código/token en la URL ni logueamos el
  * código completo (el logger ya redacta; aquí no logueamos el code).
  *
@@ -35,12 +47,28 @@ import * as log from '../logger';
  */
 export default function StepUpReverify({ onVerified, tokenPayload = {}, prompt, compact = false }) {
   const { t } = useTranslation();
-  const [sending,   setSending]   = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [codeSent,  setCodeSent]  = useState(false);
   const [code,      setCode]      = useState('');
   const [err,       setErr]       = useState('');
   const [info,      setInfo]      = useState('');
+  const [espera,    setEspera]    = useState(0);
+  const esperaRef = useRef(null);
+
+  const pararEspera = () => {
+    if (esperaRef.current) { clearInterval(esperaRef.current); esperaRef.current = null; }
+  };
+  const arrancarEspera = () => {
+    pararEspera();
+    setEspera(REENVIO_ESPERA_S);
+    esperaRef.current = setInterval(() => {
+      setEspera(s => {
+        if (s <= 1) { pararEspera(); return 0; }
+        return s - 1;
+      });
+    }, 1000);
+  };
+  useEffect(() => pararEspera, []);
 
   // Mapea códigos de error del backend a mensajes i18n claros.
   const errorMessage = (e) => {
@@ -54,20 +82,30 @@ export default function StepUpReverify({ onVerified, tokenPayload = {}, prompt, 
     return e?.message || t('stepup.err_generic');
   };
 
-  const sendCode = async () => {
-    setErr(''); setInfo(''); setSending(true);
-    try {
-      // NO mandamos email — el backend lo deriva del token (server-side).
-      await gasCall('sendVerificationCode', { stepup: true, ...tokenPayload });
-      setCodeSent(true);
-      setInfo(t('stepup.code_sent'));
-      log.info('step-up: código fresco solicitado');
-    } catch (e) {
-      log.error('StepUpReverify: sendVerificationCode failed', { message: e.message });
-      setErr(errorMessage(e));
-    } finally {
-      setSending(false);
-    }
+  /**
+   * Pide un código y SIGUE — no espera al servidor para enseñar la casilla.
+   * `manual` (siempre true aquí: los dos disparos son botones) borra lo tecleado,
+   * porque el código anterior deja de valer al pedir otro.
+   */
+  const sendCode = ({ manual = false } = {}) => {
+    if (manual) setCode('');
+    setErr('');
+    // FIRE-AND-FORGET (clase #32): la casilla aparece EN EL MISMO gesto.
+    setCodeSent(true);
+    setInfo(t('stepup.code_sent'));
+    arrancarEspera();
+    // NO mandamos email — el backend lo deriva del token (server-side).
+    gasCall('sendVerificationCode', { stepup: true, ...tokenPayload })
+      .then(() => { log.info('step-up: código fresco solicitado'); })
+      .catch(e => {
+        log.error('StepUpReverify: sendVerificationCode failed', { message: e.message });
+        // El aviso optimista era mentira: se retira y se pone el error real, SIN cerrar
+        // el camino de verificar (la familia puede tener un código válido anterior).
+        setInfo('');
+        setErr(errorMessage(e));
+        pararEspera();
+        setEspera(0);
+      });
   };
 
   const verify = async () => {
@@ -109,10 +147,8 @@ export default function StepUpReverify({ onVerified, tokenPayload = {}, prompt, 
       </p>
 
       {!codeSent ? (
-        <button className="btn-primary-kis" onClick={sendCode} disabled={sending}>
-          {sending
-            ? <><span className="spinner-border spinner-border-sm me-2" />{t('stepup.sending')}</>
-            : <><i className="bi bi-envelope-fill me-1" />{t('stepup.send_code')}</>}
+        <button className="btn-primary-kis" onClick={() => sendCode({ manual: true })}>
+          <i className="bi bi-envelope-fill me-1" />{t('stepup.send_code')}
         </button>
       ) : (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -133,14 +169,15 @@ export default function StepUpReverify({ onVerified, tokenPayload = {}, prompt, 
               ? <><span className="spinner-border spinner-border-sm me-2" />{t('stepup.verifying')}</>
               : t('stepup.verify')}
           </button>
+          {/* Limitado por RELOJ, no por el viaje: la cuenta atrás dice cuánto falta. */}
           <button
             type="button"
             className="btn btn-link btn-sm p-0"
             style={{ fontSize: '0.82rem' }}
-            onClick={sendCode}
-            disabled={sending}
+            onClick={() => sendCode({ manual: true })}
+            disabled={espera > 0}
           >
-            {t('stepup.resend')}
+            {espera > 0 ? t('stepup.resend_in', { s: espera }) : t('stepup.resend')}
           </button>
         </div>
       )}

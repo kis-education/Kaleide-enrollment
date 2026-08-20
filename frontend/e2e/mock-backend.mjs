@@ -701,7 +701,19 @@ export function createDispatcher(scenario, record) {
     getDocument: () => ({ ok: true, base64: 'JVBERi0xLjQK', mimeType: 'application/pdf', filename: 'doc-e2e.pdf' }),
 
     // ── Verificación / step-up ───────────────────────────────────────────────
-    sendVerificationCode: () => ({ ok: true, sent: true }),
+    // `codigoFalla` deja al servidor RECHAZAR la petición del código con un código de
+    // error real del contrato (`RATE_LIMITED` / `TOO_MANY_ATTEMPTS`, `backend/Code.js`).
+    // Lo pide EXPLÍCITAMENTE el camino que mide que un «te lo hemos enviado» optimista se
+    // corrige en pantalla cuando resulta ser mentira; sin la palanca, byte-idéntico.
+    // La DEMORA de este viaje la inyecta el servidor de la batería (`scenario.codigoDemoraMs`),
+    // no este manejador: aquí solo se decide QUÉ contesta, no CUÁNDO.
+    sendVerificationCode: () => {
+      if (scenario.codigoFalla) {
+        return { ok: false, error: { code: scenario.codigoFalla,
+                                     message: 'demasiadas peticiones de código' } };
+      }
+      return { ok: true, sent: true };
+    },
     // El código correcto abre la verja de datos personales: a partir de aquí la
     // hidratación SÍ trae lo de la familia (mismo efecto que `_markStepUpFresh_` en el
     // servidor de verdad).
