@@ -8575,10 +8575,59 @@ function initiateSigningSession_(p) {
  *
  * Guardas: requireResumeToken_ (KAL-4) + rate-limit 1 warm/grupo/120s (es caro). El
  * frontend lo dispara fire-and-forget al pintar la pantalla OTP.
+ *
+ * `0º.septies` (2026-08-21): el freno se comprueba en DOS capas — primero por token (sin viaje),
+ * después la de siempre por expediente. Ver el comentario dentro de la función.
  */
+/**
+ * Llave del freno del precalentado por TOKEN — `0º.septies` (2026-08-21).
+ *
+ * Existe para poder frenar ANTES de la puerta, que hoy cuesta un viaje al KMS de ~22 s. El token
+ * es la única identidad que el llamante trae sin coste, y **un token pertenece a un solo
+ * expediente**, así que por ese eje el freno no se afloja.
+ *
+ * Va RESUMIDA (`sha256` truncado, mismo molde que el memo de lectura del gate `rtmemo_`): el
+ * `resume_token` es un secreto de portador y no se escribe en claro (KAL-11).
+ *
+ * Token ausente o malformado → `null` ⇒ NO se frena aquí y `requireResumeToken_` lo rechaza igual
+ * que siempre (`assertValidUuid_` → `BAD_REQUEST`): comportamiento byte-idéntico al de antes.
+ * @private
+ */
+function _warmRateLimitTokenKey_(token) {
+  try {
+    assertValidUuid_(token, 'resume_token');
+    return 'warmrltok_' + sha256Hex_(Utilities.newBlob(String(token).trim()).getBytes()).slice(0, 40);
+  } catch (e) {
+    return null;
+  }
+}
+
 function warmSession_(p) {
-  const groupId = requireResumeToken_(p);
+  // ⛔ `0º.septies` (2026-08-21) — EL FRENO VA DELANTE DEL TRABAJO CARO. Esto es EL MODELO, no un
+  //    respaldo: mismo criterio que §"Las CINCO puertas del asistente" (*«la verja va ANTES del
+  //    trabajo caro y del cupo»*). MEDIDO en el registro real de Diego del 2026-08-20: una SEGUNDA
+  //    llamada de precalentado gastó 24.200 ms —22.023 de ellos en el viaje
+  //    `enr.wizardExpedienteDelToken` que hace `requireResumeToken_`— para acabar contestando
+  //    `RATE_LIMITED`. El freno mira una memoria local y cuesta microsegundos.
+  //
+  //    SON DOS CAPAS, y la segunda NO SE TOCA. La de abajo (por EXPEDIENTE, `warmrl_<groupId>`)
+  //    sigue exactamente donde estaba y con la misma llave, así que el freno NO se afloja aunque el
+  //    enlace ROTE — y rota: `sendMagicLink_` lo renueva por `enr.wizardTouchSession`, con cupo de
+  //    hasta 5 por hora y buzón (`_checkMagicLinkRateLimit_`). La capa nueva va por TOKEN, la llave
+  //    que el llamante YA trae sin coste, y solo puede AÑADIR cortes: nunca quitarlos. En el peor
+  //    caso (token rotado) el comportamiento es el de siempre — se paga el viaje y frena la capa 2.
+  //
+  //    KAL-4 INTACTA: el expediente lo sigue derivando la puerta DEL ENLACE, jamás del cuerpo de la
+  //    petición. La llave va resumida (`sha256`), como el memo del gate: el token es un secreto de
+  //    portador y no se escribe en claro en ningún sitio (KAL-11).
   const rlCache = CacheService.getScriptCache();
+  const rlTokenKey = _warmRateLimitTokenKey_(p && p.resume_token);
+  if (rlTokenKey) {
+    if (rlCache.get(rlTokenKey)) return { ok: true, warmed: false, reason: 'RATE_LIMITED' };
+    rlCache.put(rlTokenKey, '1', 120);
+  }
+
+  const groupId = requireResumeToken_(p);
   const rlKey = 'warmrl_' + groupId;
   if (rlCache.get(rlKey)) return { ok: true, warmed: false, reason: 'RATE_LIMITED' };
   rlCache.put(rlKey, '1', 120);

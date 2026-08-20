@@ -1686,6 +1686,57 @@ de la respuesta** (apuntar el trabajo para que se haga y contestar al momento), 
 dos proyectos y **retrasa el correo de la familia** — decisión de producto, no de código.
 Queda escrito en la cola (`kis-app/docs/kms/loop-backlog.md` ②2).
 
+### `0º.septies` (2026-08-21) — el precalentado comprueba su freno ANTES de salir al KMS
+
+**No es una avería: no se pierde ni un dato y no hay fuga. Es tiempo tirado en el camino de entrada
+de la familia.** Medido en el registro real de Diego del **2026-08-20**: una **segunda** llamada de
+precalentado gastó **24.200 ms de servidor** —de ellos **22.023 ms** en el viaje
+`enr.wizardExpedienteDelToken` que hace la puerta— **para acabar contestando `RATE_LIMITED`**. El
+freno mira una memoria local y cuesta microsegundos; el que iba delante costaba 22 segundos.
+
+**Es el mismo criterio que ya rige en la verja pública** (§"Las CINCO puertas del asistente":
+*«la verja va ANTES del trabajo caro y del cupo»*). Aquí no hay oráculo que cerrar; el desperdicio
+es el mismo.
+
+**SON DOS CAPAS, y la de siempre NO SE TOCA:**
+
+| Capa | Llave | Dónde |
+|---|---|---|
+| **nueva** | el `resume_token`, **resumido** (`warmrltok_<sha256[0:40]>`) | **ANTES** de la puerta — el llamante ya lo trae, no cuesta viaje |
+| **la de siempre** | el expediente (`warmrl_<groupId>`) | **DESPUÉS** de la puerta, exactamente donde estaba |
+
+**⛔ Por qué la segunda no se sustituye por la primera, y está MEDIDO: el enlace ROTA.**
+`sendMagicLink_` lo renueva por `enr.wizardTouchSession`, y su cupo (`_checkMagicLinkRateLimit_`)
+permite **hasta 5 por hora y buzón** ⇒ con la llave por token **sola**, un enlace rotado abriría un
+hueco de freno. Con las dos capas **no hay hueco**: la nueva **solo puede AÑADIR cortes**, y en el
+peor caso (token recién rotado) el comportamiento es **el de siempre** — se paga el viaje y frena la
+de abajo. Nunca peor que antes; mucho mejor en el caso medido, que es el mismo token dos veces.
+
+**Lo que hay que retener al tocar esto:**
+
+- **KAL-4 INTACTA.** El expediente lo sigue derivando la puerta **del enlace**, jamás del cuerpo de
+  la petición. Lo que se movió es **el orden**, no la autoridad.
+- **La llave va RESUMIDA** (`sha256` truncado, el molde del memo de lectura del gate `rtmemo_`): el
+  `resume_token` es un secreto de portador y no se escribe en claro en ningún sitio (KAL-11).
+- **Token ausente o malformado ⇒ NO se frena aquí** (`_warmRateLimitTokenKey_` devuelve `null`) y la
+  puerta lo rechaza igual que siempre con `BAD_REQUEST`. Byte-idéntico al comportamiento previo.
+- **La respuesta no cambia**: un precalentado frenado sigue contestando **exactamente**
+  `{ ok:true, warmed:false, reason:'RATE_LIMITED' }` — el cliente lo trata como «no había nada que
+  calentar» y **no es un error** (recorrido `precalentado-sin-ruido` de la batería).
+- **El plazo de 120 s no se toca**, ni lo que hace el precalentado cuando SÍ calienta.
+- **Medido: el patrón está en UN solo sitio.** `warmBundle_` con `{resume_token}` es un passthrough
+  a `warmSession_` ⇒ hereda el arreglo sin tocarlo.
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. Se **midió aparte**, con un arnés efímero fuera del repositorio que extrae del
+fuente `warmSession_` y `_warmRateLimitTokenKey_` y las ejecuta con dobles de `CacheService`, de la
+puerta y del proxy: **6 afirmaciones verdes** (con el freno puesto **cero** viajes al KMS · sin él
+calienta igual · el expediente del cuerpo no cambia nada · con el enlace **rotado** sigue frenando ·
+la llave no lleva el token en claro · un token basura da `BAD_REQUEST` como siempre) y **TRES rojos
+demostrados**: devolver el freno detrás del viaje (**ROJO** en la (1), *«viajes 2→3»*) · quitar la
+capa por expediente (**ROJO** en la (4)) · renombrar lo medido, que sale **«MEDICIÓN CIEGA»** y no
+verde. **Quien toque este manejador, que lo mida.**
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.
