@@ -1686,6 +1686,67 @@ de la respuesta** (apuntar el trabajo para que se haga y contestar al momento), 
 dos proyectos y **retrasa el correo de la familia** — decisión de producto, no de código.
 Queda escrito en la cola (`kis-app/docs/kms/loop-backlog.md` ②2).
 
+### `0º.octies` (2026-08-21) — el PULSO no paga el viaje de la identidad cuando su valor no cambia el resultado
+
+**No es una avería: no se pierde ni un dato y no hay fuga. Es espera evitable en el latido más
+repetido del asistente**, el que el cliente dispara una y otra vez mientras la familia mira la
+pantalla. Registro real de Diego del **2026-08-20**: `getAdmissionState` tardó **31.467 ms** y su
+propio registro dice **`[WZCACHE] HIT adm`** —el dato **estaba guardado**— porque antes se habían
+pagado **29.086 ms** en `enr.wizardTutorQueRecupera`. **Una caché a la que hay que pagar 29 s para
+llegar no ahorra nada.**
+
+**La causa estructural, medida:** la caché del pulso (`wz_adm_`) vive **1800 s** y la memoria de la
+identidad (`idlinkd_`) **300 s** ⇒ pasados cinco minutos, cada pulso resolvía la identidad **desde
+cero** para servir una respuesta que ya tenía guardada.
+
+**El arreglo, en una línea: la identidad se resuelve PEREZOSAMENTE — solo cuando su valor puede
+cambiar el resultado.** `getAdmissionState_` ya no la calcula por adelantado; pasa un *thunk*, y
+`_leerMarcaStepUp_` lo invoca **únicamente si la marca guardada LLEVA buzón**. Cuando `marcada` está
+vacía (no hay marca, o es anterior a ②24), su regla `mismaPersona` vale `true` **sea cual sea** la
+identidad ⇒ calcularla no puede cambiar nada. **Es la MISMA comparación, byte a byte**: lo que se
+evita es el CÁLCULO de un dato que no se usa.
+
+**⛔ LA BARANDILLA, y no se afloja: la clave de la caché sigue llevando el buzón dentro.** Es una
+frontera de PRIVACIDAD ENTRE TUTORES (②24): en un expediente ya enviado el `resume_token` **no
+rota**, así que dos tutores comparten token, y sin el buzón en la clave a uno se le serviría la foto
+del otro. **Y no hacía falta tocarla**: `_wzN_` la construye con el `n`/`recovered_email` **CRUDOS**
+del payload, no con la identidad resuelta ⇒ **cero viajes** para armarla.
+
+**⛔ Y NO se toca al revés: pasar el buzón VACÍO sería MÁS PERMISIVO, no neutro.** `mismaPersona`
+deja pasar en cuanto uno de los dos lados no consta, así que hacerlo deshace el atado de ②24 y le da
+a un tutor la marca que se ganó otro — **una regresión de seguridad, no una optimización**. Por eso
+la identidad SÍ se resuelve, y se compara, en cuanto la marca lleva buzón.
+
+**Dónde muerde y dónde no, dicho sin adornar:** ahorra el viaje en **toda la parte del recorrido sin
+marca viva** —antes de que la familia teclee el código, y después de que caduque por inactividad—,
+que es buena parte de la vida del asistente. **Con una marca viva atada a un buzón NO ahorra nada**,
+y ése es exactamente el caso del registro de arriba: ahí la identidad decide, y saltársela es lo que
+la barandilla prohíbe.
+
+⚠️ **Una premisa del encargo resultó FALSA al medirla, y hay que decirlo:** decía que la unión de
+DL-E57 no alcanza al camino con memoria y que forzar la puerta viva convertiría **«dos viajes en
+UNO»**. **Hoy ese camino ya hace UN viaje**: con el memo del gate acertando son 0 (puerta) + 1
+(identidad); yendo por la puerta viva serían 1 (que trae las dos cosas) + 0. **Se cambia un viaje por
+otro, no se elimina ninguno** ⇒ **el arreglo (b) del encargo NO se hizo**, y no por falta de tiempo.
+El ahorro real está en no resolver lo que no se usa.
+
+⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. Se **midió aparte**, con un arnés efímero fuera del repositorio que extrae del
+fuente `getAdmissionState_`, `_leerMarcaStepUp_`, `_stepUpPersonaKey_`, `_huellaPaginaLimpia_`,
+`_huellaDePagina_` y `_wzN_` y los ejecuta con dobles de `CacheService` y del proxy al KMS: **6
+afirmaciones verdes** (caché caliente sin marca ⇒ **0 viajes**, antes 1 · la identidad se resuelve
+**una sola vez** cuando hace falta · dos tutores **no comparten foto** · una marca de otro buzón **no
+da fresco** · el pulso **no estira** la ventana · sin caché el camino vivo se recorre entero) y
+**CINCO rojos demostrados**: devolver la identidad por delante (**ROJO** en la (1), *«viajes 0→1»*) ·
+una clave que ignore el buzón (**ROJO** en la (3), *«tutor1 ve RQ y tutor2 ve RQ»*) · pasar el buzón
+vacío al lector (**ROJO** en la (4), *«fresh=true, debe ser false»*) · dejar que el pulso refresque
+(**ROJO** en la (5)) · renombrar lo medido, que sale **«MEDICIÓN CIEGA»** y no verde. **Y la medición
+se corrigió a sí misma**: su afirmación (6) contaba `_identidadDelEnlace_` en el camino vivo, que ese
+camino **nunca usó** — lo que de paso acredita que el cambio no le quita nada.
+
+**Manual, ayuda en pantalla y textos: ninguno toca.** La familia ve la misma pantalla y el mismo
+mensaje, solo que antes.
+
 ### `0º.septies` (2026-08-21) — el precalentado comprueba su freno ANTES de salir al KMS
 
 **No es una avería: no se pierde ni un dato y no hay fuga. Es tiempo tirado en el camino de entrada

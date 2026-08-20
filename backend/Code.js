@@ -1425,8 +1425,18 @@ function _consumeMagicLinkNonce_(resumeToken, expectedGroupId) {
  * SOLO sitio compara, para que la puerta y lo que se le enseña a la familia no puedan
  * decir cosas distintas.
  *
+ * ★ 0º.octies (2026-08-21) — `personaEmail` admite además una FUNCIÓN, y solo se invoca cuando la
+ * marca guardada LLEVA buzón. No afloja nada y no es una excepción: es la MISMA comparación. Cuando
+ * `marcada` está vacía (no hay marca, o es anterior a ②24), la regla `mismaPersona` de abajo vale
+ * `true` **sea cual sea** `persona` ⇒ resolver la identidad no puede cambiar el resultado, y en el
+ * pulso ese cálculo cuesta un viaje al KMS de 20-30 s. Lo que se evita es el CÁLCULO de un dato que
+ * no se usa; el criterio, byte a byte, es el de siempre. ⛔ Y NO se toca al revés: cuando `marcada`
+ * SÍ consta, la identidad se resuelve y se compara — pasarla vacía sería MÁS PERMISIVO (deshace el
+ * atado al buzón de ②24) y eso es una regresión de seguridad, no una optimización.
+ *
  * @param {string} enrollmentGroupId   - ya derivado del token (KAL-4)
- * @param {string|null} [personaEmail] - buzón que opera (②24)
+ * @param {string|null|function():(string|null)} [personaEmail] - buzón que opera (②24), o el thunk
+ *        que lo resuelve; se invoca SOLO si la marca lleva buzón (ver arriba).
  * @param {string} [huellaPagina]      - huella de la página viva (2026-08-20)
  * @returns {{fresh: boolean, restante_s: number}}
  * @private
@@ -1449,7 +1459,11 @@ function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina) {
   // escribiera una caducidad por encima del techo, aquí se cierra igual. Marca sin techo (la
   // de antes de este cambio) ⇒ manda solo `exp`, como ayer.
   const techo = partes.length > 3 ? Number(partes[3]) : 0;
-  const persona = _stepUpPersonaKey_(personaEmail);
+  // ★ 0º.octies — el buzón que opera solo se RESUELVE si la marca lleva uno con el que comparar
+  // (ver la cabecera). Sin `marcada`, `mismaPersona` es `true` pase lo que pase aquí.
+  const persona = marcada
+    ? _stepUpPersonaKey_(typeof personaEmail === 'function' ? personaEmail() : personaEmail)
+    : '';
   const pagina = _huellaPaginaLimpia_(huellaPagina);
   const enVentana = !!exp && exp >= Date.now() && (!techo || techo >= Date.now());
   // LA REGLA, y su límite declarado: la marca NO se transfiere entre DOS buzones
@@ -1484,7 +1498,7 @@ function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina) {
   const cierre = (techo && exp >= techo) ? 'TECHO' : 'INACTIVIDAD';
   Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=' + fresh +
                      ' remaining_s=' + remainingS +
-                     ' persona=' + (persona || '(sin identificar)') +
+                     ' persona=' + (persona || (marcada ? '(sin identificar)' : '(no consultado)')) +
                      ' marcada=' + (marcada || '(sin identificar)') +
                      (enVentana && !mismaPersona ? ' motivo=OTRO_TUTOR' : '') +
                      (enVentana && mismaPersona && !mismaPagina ? ' motivo=OTRA_PAGINA' : '')));
@@ -4482,13 +4496,28 @@ function getAdmissionState_(p) {
   // (mlgrace_<resume_token>); single-use, 10 min → consume + marca fresco. Si no hay
   // marcador, REPORTAMOS la frescura vigente del grupo (no la cambiamos).
   let stepUpFresh = _consumeMagicLinkNonce_(p && p.resume_token, id);
-  // ②24 — de qué buzón es la marca (un solo resolvedor, con memoria).
-  const personaEmail = _identidadDelEnlace_(p, id);
+  // ②24 — de qué buzón es la marca (UN SOLO resolvedor, con memoria).
+  //
+  // ★ 0º.octies (2026-08-21) — se resuelve PEREZOSAMENTE, y esto es lo único que cambió aquí.
+  // Resolverlo cuesta un viaje al KMS de 20-30 s cuando su memoria de 300 s (`idlinkd_`) no
+  // acierta, y el pulso late una y otra vez mientras la familia mira la pantalla. Medido en el
+  // registro real del 2026-08-20: `getAdmissionState` tardó 31.467 ms diciendo «HIT adm» —el dato
+  // ESTABA guardado— porque antes se habían pagado 29.086 ms en `enr.wizardTutorQueRecupera`.
+  // ⛔ NO es un segundo resolvedor ni una identidad de repuesto: es EL MISMO, llamado solo cuando
+  // su valor puede cambiar el resultado (ver `_leerMarcaStepUp_`). Se memoiza en la ejecución para
+  // que dos usos dentro de esta misma petición no paguen dos veces.
+  let _identidadHecha = false;
+  let _identidadValor = null;
+  const identidadDelBuzon = function () {
+    if (!_identidadHecha) { _identidadValor = _identidadDelEnlace_(p, id); _identidadHecha = true; }
+    return _identidadValor;
+  };
   const paginaViva = _huellaDePagina_(p);
   let stepUpRestanteS = 0;
   let stepUpCierre = 'INACTIVIDAD';
   if (stepUpFresh) {
-    _markStepUpFresh_(id, 'GRACE', personaEmail, paginaViva);
+    // La gracia CREA la marca ⇒ aquí el buzón hace falta SIEMPRE (es a quien queda atada).
+    _markStepUpFresh_(id, 'GRACE', identidadDelBuzon(), paginaViva);
     stepUpRestanteS = Math.ceil(STEPUP_INACTIVITY_MS / 1000);
   } else {
     // ⛔ EL PULSO ES UNA LECTURA — REPORTA la frescura vigente y lo que le queda, y NUNCA
@@ -4498,7 +4527,7 @@ function getAdmissionState_(p) {
     // estira la ventana es `refrescarVentanaDeInactividad_`, y lo dispara la ACTIVIDAD
     // REAL de una persona, no un temporizador. NO llamar aquí a `_markStepUpFresh_` ni a
     // `_extenderVentanaStepUp_`.
-    const marca = _leerMarcaStepUp_(id, personaEmail, paginaViva);
+    const marca = _leerMarcaStepUp_(id, identidadDelBuzon, paginaViva);
     stepUpFresh = marca.fresh;
     stepUpRestanteS = marca.restante_s;
     stepUpCierre = marca.cierre;
@@ -4510,6 +4539,17 @@ function getAdmissionState_(p) {
   // subió respecto al cacheado → invalida y ve al vivo. Gates intactos:
   // requireResumeToken_ (KAL-4) + gracia/step-up ya corrieron arriba; step_up_fresh
   // SIEMPRE se computa en vivo (estado per-llamada, nunca del cache).
+  //
+  // ⛔ LA CLAVE LLEVA EL BUZÓN DENTRO A PROPÓSITO, Y NO SE AFLOJA PARA GANAR VELOCIDAD (②24).
+  // Es una frontera de PRIVACIDAD ENTRE TUTORES: en un expediente ya enviado el `resume_token` NO
+  // rota, así que dos tutores de la misma familia comparten token. Sin el buzón en la clave, a uno
+  // se le serviría la foto guardada del OTRO — muchísimo peor que cualquier espera. Quien venga a
+  // «simplificar» esta clave, que lea antes ②24 y el §"Un COMENTARIO del código no es criterio
+  // normativo" de `kis-app/CLAUDE.md`.
+  //
+  // ★ 0º.octies — el discriminador sale de `_wzN_` con el `n`/`recovered_email` CRUDOS del payload,
+  // NO de la identidad resuelta ⇒ construir esta clave no cuesta ni un viaje al KMS. Por eso el
+  // reorden perezoso de arriba es posible sin tocar el alcance de la clave.
   try {
     const wzAdmKey = _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n, p && p.recovered_email));
     const wzAdmRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzAdmKey);
