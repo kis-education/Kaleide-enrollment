@@ -153,6 +153,15 @@ function wizardCodigoDeConsentimiento_(raw) {
 // (El resume_token TTL de 7 días sigue siendo el TTL de sesión; este es el TTL corto de
 // re-verificación.)
 const STEPUP_INACTIVITY_MS = 10 * 60 * 1000; // 10 min DESDE LA ÚLTIMA ACCIÓN REAL
+// ⛔ TECHO ABSOLUTO desde que la familia tecleó el código (Diego, 2026-08-20). La ventana de
+// arriba se REINICIA con la actividad; ésta NO se reinicia con nada. Sin ella, quien tuviera el
+// enlace de una familia mientras hubiera una marca viva podía mantenerla indefinidamente
+// —hasta los 7 días del propio enlace— sin más que pedir el refresco cada pocos minutos, porque
+// la comprobación de la página viva es COMODÍN cuando el llamante no manda el dato (deliberado:
+// sin ese comodín un paquete viejo en caché dejaría fuera a familias reales). Antes de que la
+// ventana deslizara, la exposición estaba acotada a 10 min por verificación; el techo la
+// devuelve a estar acotada. 2 h porque nadie rellena la solicitud dos horas seguidas.
+const STEPUP_TECHO_MS = 2 * 60 * 60 * 1000; // 2 h DESDE LA VERIFICACIÓN, pase lo que pase
 
 // Magic-link grace (UX, no urgente): un magic link recién enviado NO exige OTP si
 // se usa dentro de esta ventana. La gracia se vincula a un NONCE single-use de ESE
@@ -1064,15 +1073,23 @@ function _resolveStepUpGroup_(p) {
 function _markStepUpFresh_(enrollmentGroupId, reason, personaEmail, huellaPagina) {
   var persona = _stepUpPersonaKey_(personaEmail);
   var huella  = _huellaPaginaLimpia_(huellaPagina);
+  // ★ 2026-08-20 — la marca nace con su TECHO ABSOLUTO al lado (cuarto campo). El techo se
+  // fija AQUÍ, en la verificación, y `_extenderVentanaStepUp_` lo conserva verbatim y jamás lo
+  // mueve: es lo único que la actividad NO puede reiniciar.
+  var ahora = Date.now();
+  var techo = ahora + STEPUP_TECHO_MS;
+  var exp = Math.min(ahora + STEPUP_INACTIVITY_MS, techo);
+  var ttl = Math.ceil((exp - ahora) / 1000);
   CacheService.getScriptCache().put(
     'stepup_ok_' + enrollmentGroupId,
-    String(Date.now() + STEPUP_INACTIVITY_MS) + '|' + persona + '|' + huella,
-    Math.ceil(STEPUP_INACTIVITY_MS / 1000)
+    String(exp) + '|' + persona + '|' + huella + '|' + String(techo),
+    ttl
   );
   Logger.log(redact_('[DBG stepup] mint reason=' + (reason || '?') + ' group=' + enrollmentGroupId +
                      ' persona=' + (persona || '(sin identificar)') +
                      ' pagina=' + (huella || '(sin huella)') +
-                     ' ttl_s=' + Math.ceil(STEPUP_INACTIVITY_MS / 1000)));
+                     ' techo_s=' + Math.ceil(STEPUP_TECHO_MS / 1000) +
+                     ' ttl_s=' + ttl));
 }
 
 /**
@@ -1131,20 +1148,37 @@ function _extenderVentanaStepUp_(enrollmentGroupId) {
   var val = cache.get('stepup_ok_' + enrollmentGroupId);
   if (!val) return 0;
   var partes = String(val).split('|');
+  var ahora = Date.now();
   var exp = Number(partes[0]);
-  if (!exp || exp < Date.now()) return 0;   // caducada ⇒ NO se resucita
+  if (!exp || exp < ahora) return 0;        // caducada ⇒ NO se resucita
   var persona = partes.length > 1 ? String(partes[1]) : '';
   var huella  = partes.length > 2 ? String(partes[2]) : '';
+  // ⛔ EL TECHO NO SE MUEVE. Se lee de la marca y se vuelve a escribir VERBATIM: si se
+  // recalculara aquí, cada refresco lo empujaría hacia adelante y el techo no existiría.
+  // Una marca de antes de este cambio no lo lleva (tres campos) ⇒ se trata como «sin techo»,
+  // igual que ayer; se agota sola en 10 min de inactividad y a partir de ahí toda marca nueva
+  // nace con el suyo. Ése es todo el periodo de convivencia.
+  var techo = partes.length > 3 ? Number(partes[3]) : 0;
+  var nuevaExp = techo ? Math.min(ahora + STEPUP_INACTIVITY_MS, techo)
+                       : ahora + STEPUP_INACTIVITY_MS;
+  // ⛔ UN SOLO CORTE, y es éste. Con el techo alcanzado, `nuevaExp` ES el techo y por tanto ya
+  // no está en el futuro ⇒ devuelve 0 y el manejador lanza STEPUP_REQUIRED. Aquí hubo un
+  // `if (techo && techo <= ahora) return 0;` por delante: se retiró porque era REDUNDANTE —
+  // romperlo a propósito no ponía roja la medición, que es como se descubrió que no cortaba
+  // nada. Dos guardianes para lo mismo se acaban contradiciendo; éste basta.
+  if (nuevaExp <= ahora) return 0;
+  var ttl = Math.ceil((nuevaExp - ahora) / 1000);
   cache.put(
     'stepup_ok_' + enrollmentGroupId,
-    String(Date.now() + STEPUP_INACTIVITY_MS) + '|' + persona + '|' + huella,
-    Math.ceil(STEPUP_INACTIVITY_MS / 1000)
+    String(nuevaExp) + '|' + persona + '|' + huella + '|' + (techo ? String(techo) : ''),
+    ttl
   );
   Logger.log(redact_('[DBG stepup] extend group=' + enrollmentGroupId +
                      ' persona=' + (persona || '(sin identificar)') +
                      ' pagina=' + (huella || '(sin huella)') +
-                     ' ttl_s=' + Math.ceil(STEPUP_INACTIVITY_MS / 1000)));
-  return Math.ceil(STEPUP_INACTIVITY_MS / 1000);
+                     ' techo_restante_s=' + (techo ? Math.ceil((techo - ahora) / 1000) : '(sin techo)') +
+                     ' ttl_s=' + ttl));
+  return ttl;
 }
 
 /**
@@ -1410,9 +1444,14 @@ function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina) {
   const exp = Number(partes[0]);
   const marcada = partes.length > 1 ? String(partes[1]) : '';
   const paginaMarcada = partes.length > 2 ? String(partes[2]) : '';
+  // ★ 2026-08-20 — el TECHO ABSOLUTO. Por construcción `exp` nunca lo pasa (lo capan tanto el
+  // que la crea como el que la extiende), así que esto es un cinturón: si alguna vez alguien
+  // escribiera una caducidad por encima del techo, aquí se cierra igual. Marca sin techo (la
+  // de antes de este cambio) ⇒ manda solo `exp`, como ayer.
+  const techo = partes.length > 3 ? Number(partes[3]) : 0;
   const persona = _stepUpPersonaKey_(personaEmail);
   const pagina = _huellaPaginaLimpia_(huellaPagina);
-  const enVentana = !!exp && exp >= Date.now();
+  const enVentana = !!exp && exp >= Date.now() && (!techo || techo >= Date.now());
   // LA REGLA, y su límite declarado: la marca NO se transfiere entre DOS buzones
   // conocidos y distintos. Cuando uno de los dos lados no consta, se deja pasar — así
   // esto no rompe ningún camino que hoy no manda identidad, y no concede nada nuevo:

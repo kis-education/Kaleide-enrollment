@@ -233,13 +233,45 @@ sencillamente **omita** el campo `pv` — a ése se le trata como «no consta» 
 que le pasaba ayer. El comodín-cuando-falta es deliberado y es el mismo de ②24: sin él, un paquete
 viejo en caché tras publicar dejaría a familias fuera de su propia solicitud.
 
-**Y una PREGUNTA ABIERTA que NO se ha decidido** (ver el reporte): si debe haber un **techo
-absoluto** (p. ej. 8 h) para que una pestaña en un ordenador compartido no siga viva
-indefinidamente a base de clics. Hoy **no lo hay**: con actividad, la sesión dura lo que dure el
-`resume_token` (7 días).
+**★ Y EL TECHO ABSOLUTO YA ESTÁ: 2 HORAS desde que se tecleó el código** (Diego, 2026-08-20 —
+*«No creo que nadie esté 2h rellenando el wizard»*). **Esto era una pregunta abierta y era también
+una vulnerabilidad real**, medida sobre el código publicado: sin techo, quien tuviera el
+`resume_token` de una familia **mientras hubiera una marca viva** podía mantenerla indefinidamente
+—hasta los 7 días del propio enlace— sin más que pedir el refresco cada pocos minutos, porque la
+comprobación de la página viva es **comodín cuando el llamante no manda el dato** (§ del límite
+honesto, arriba: deliberado, para que un paquete viejo en caché no deje fuera a familias reales).
+Antes de que la ventana deslizara, esa exposición estaba acotada a **10 min por verificación**; el
+techo la vuelve a acotar. **Es el único eje en el que el cambio de la ventana deslizante aflojaba.**
+
+- **`STEPUP_TECHO_MS = 2 h`**, y la marca pasa a llevar **CUATRO** campos:
+  `caducidad|buzón|página viva|techo`.
+- **El techo se fija al VERIFICAR** (`_markStepUpFresh_`) y **`_extenderVentanaStepUp_` lo conserva
+  VERBATIM**: si lo recalculara, cada refresco lo empujaría hacia adelante y el techo no existiría.
+- **La caducidad se capa al techo** (`min(ahora + 10 min, techo)`) ⇒ cerca del final la ventana
+  se recorta sola (a 3 min del techo devuelve 180 s, no 600), el aviso de los dos minutos sale
+  igual porque el cliente pinta el `step_up_restante_s` del servidor, y al llegar **el refresco
+  devuelve 0 ⇒ `STEPUP_REQUIRED`**: hay que volver a teclear el código.
+- **UN SOLO CORTE** en el extensor (`if (nuevaExp <= ahora) return 0;`). Hubo un
+  `if (techo && techo <= ahora) return 0;` por delante y **se retiró por redundante**: romperlo a
+  propósito NO ponía roja la medición, que es como se descubrió que no cortaba nada.
+- **Compatibilidad, y dura poco:** una marca escrita antes de este cambio tiene tres campos ⇒ se
+  trata como «sin techo», exactamente como ayer, y se agota sola en 10 min de inactividad. A partir
+  de ahí toda marca nueva nace con el suyo.
+
+⚠️ **Sin prueba automática, y no se escribió una para taparlo:** la batería corre contra un backend
+simulado que **nunca ejecuta `backend/Code.js`**. Se midió con un arnés efímero (fuera del
+repositorio, no commiteado) que extrae del fuente `_markStepUpFresh_`, `_extenderVentanaStepUp_`,
+`_leerMarcaStepUp_`, `_stepUpPersonaKey_` y `_huellaPaginaLimpia_` y los ejecuta con un reloj y una
+caché de mentira: **8 afirmaciones verdes** y **rojos demostrados** al recalcular el techo en el
+extensor, al no capar la caducidad al techo, al quitarle el cinturón al lector y al renombrar la
+función medida (*«MEDICIÓN CIEGA»*). **Y la medición se corrigió a sí misma tres veces**: dos
+afirmaciones pasaban **por el motivo equivocado** —la del cinturón porque el juego de datos llevaba
+una huella con forma inválida, y la del techo porque la salvaba la caducidad normal en vez del
+techo— y una rotura salía verde por atacar código redundante. **Quien toque esto, que lo mida.**
 
 **Textos tocados:** `stepup.gate_duration_note` **decía algo FALSO** («se bloqueará tras 10 minutos
-de inactividad» cuando en realidad eran 10 de reloj) y hoy es verdad; se le añade la recarga. Nuevos:
+de inactividad» cuando en realidad eran 10 de reloj) y hoy es verdad; se le añaden la recarga y el
+techo de 2 horas. Nuevos:
 `stepup.aviso_ventana` y `stepup.aviso_sigo_aqui`. Los dos idiomas, en
 `frontend/public/locales/{es,en}/translation.json`.
 

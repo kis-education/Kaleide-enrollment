@@ -474,7 +474,7 @@
   "stepup.gate_title": "Verifica tu identidad",
   "stepup.gate_subtitle": "Para acceder a tu solicitud, introduce el código de verificación que te hemos enviado a tu correo. No necesitas volver a escribir tu email.",
   "stepup.gate_subtitle_unsent": "Para acceder a tu solicitud, pulsa «Enviar código» y te enviaremos un código de verificación a tu correo. No necesitas volver a escribir tu email.",
-  "stepup.gate_duration_note": "El código caduca en 10 minutos. Mientras estés usando la solicitud no se te volverá a pedir: el contador se reinicia con cada acción tuya. Se bloqueará tras 10 minutos sin actividad, y también si recargas la página.",
+  "stepup.gate_duration_note": "El código caduca en 10 minutos. Mientras estés usando la solicitud no se te volverá a pedir: el contador se reinicia con cada acción tuya. Se bloqueará tras 10 minutos sin actividad, también si recargas la página, y en todo caso a las 2 horas desde que introdujiste el código.",
   "stepup.aviso_ventana": "¿Sigues ahí? Por seguridad, la sesión se bloqueará en {{reloj}} y tendrás que pedir un código nuevo.",
   "stepup.aviso_sigo_aqui": "Sigo aquí",
   "stepup.gate_enter": "Acceder",
