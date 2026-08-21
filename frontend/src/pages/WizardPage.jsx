@@ -37,6 +37,7 @@ export default function WizardPage() {
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
     setPendingSave, enqueueSave, hasPendingSave, saveState,
+    hasUploadInFlight,                                             // 0º.quindecies — el pulso se aparta mientras sube un documento
     validationError, setValidationError,                          // UX-1 aviso sticky
     markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
     isSubmitted,
@@ -168,6 +169,14 @@ export default function WizardPage() {
       const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer, preguntar } = pulseRef.current;
       if (!rt || !gid) return;                            // sin sesión → nada que sincronizar
       if (pending) return;                                // save en vuelo → saltar este tick
+      // 0º.quindecies (segunda pieza, 2026-08-21) — subir un documento es OTRO canal (directo
+      // por gasCall, nunca pasa por `enqueueSave`), así que `hasPendingSave` no lo veía: medido
+      // en el registro real de Diego, mientras un documento de 90 KB tardaba 96 s en subir el
+      // pulso siguiente disparaba igual `getAdmissionState` y pagaba su propia pregunta a la
+      // puerta del expediente EN PARALELO con la que ya estaba pagando la subida. Se salta este
+      // tick igual que con un guardado en vuelo — la próxima vuelta (30 s, o el `focus`) lo
+      // recupera; no toca ninguna puerta de seguridad, solo evita la pregunta redundante.
+      if (typeof hasUploadInFlight === 'function' && hasUploadInFlight()) return;
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return; // pestaña oculta → saltar
       // ── 18.bis.84 · ¿CÓMO ACABARON LOS GUARDADOS QUE EL SERVIDOR DEJÓ APUNTADOS? ────────
       // Va AQUÍ, en el latido que ya existe, para que no le cueste espera a ninguna familia:

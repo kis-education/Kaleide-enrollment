@@ -1839,7 +1839,8 @@ revienta. Nada de esto toca los handlers de MUTACIÓN, que siguen validando siem
 
 ⚠️ **Lo que queda SIN tocar de `0º.quindecies`, y por qué se deja para otra vuelta:** (1) si las
 tres acciones simultáneas del cliente (subir, refrescar la ventana, el pulso) deberían dejar de
-dispararse a la vez — es un cambio de cliente, y éste era un cambio de servidor; (2) el hallazgo
+dispararse a la vez — es un cambio de cliente, y éste era un cambio de servidor *(★ el pulso YA se
+resolvió — ver la sección siguiente; queda solo la colisión con «sigo aquí»)*; (2) el hallazgo
 de `simularCuotas` tardando 72 s para decir «no hay nada que simular» — es un camino distinto
 (`SIN_MODALIDADES`), sin relación con la puerta; (3) si el propio `enr.wizardComprobarSubida` +
 `enr.wizardPersistUpload` de la subida pueden fundirse en menos viajes. Los tres quedan anotados
@@ -1859,6 +1860,76 @@ MUTACIÓN también vuelve a costar 1 viaje). `check-quality-gates.mjs` **VERDE**
 tocó nada ahí) y en el asistente `comprobar-escrituras-directas.mjs` + `comprobar-selector-appsheet.mjs`
 **VERDE**; el resultado de `npm run e2e:wizard` se registra en `EN-CURSO.md` del turno que
 publica.
+
+### `0º.quindecies` (tercera pieza, 2026-08-21) — el pulso ya no le pregunta nada a la puerta mientras un documento se está subiendo
+
+**Sigue sin cerrar `0º.quindecies` entera** — cierra el segundo de los tres hallazgos que quedaban
+anotados: de las **tres acciones simultáneas** que medían el choque (subir un documento ·
+«sigo aquí» · el pulso), el **pulso** deja de dispararse mientras hay una subida en vuelo. El
+choque entre la subida y «sigo aquí» **sigue sin tocarse**, y se explica más abajo por qué no era
+prudente resolverlo esta misma noche.
+
+**Lo medido, con fichero y línea, contra `origin/main` antes de tocar nada.** El pulso
+(`WizardPage.jsx`, el `setInterval` de 30 s) ya tenía una guarda —`if (pending) return`— para no
+disparar `getAdmissionState` mientras hay «algo en vuelo». Pero `pending` es `hasPendingSave`, que
+solo refleja la **cola de guardado de PASOS** (`enqueueSave`, `saveState==='saving'`). Subir un
+documento (`Step6Documents.jsx:114`, `gasCall('uploadDocument', …)`) es **otro canal**, directo,
+que **nunca pasa por esa cola** ⇒ la guarda no lo veía. Es exactamente el patrón del registro real
+de Diego citado arriba: mientras un documento de 90 KB tardaba 96 s en subir, el pulso siguiente
+disparó igual `getAdmissionState` y pagó su propia pregunta a la puerta del expediente **en
+paralelo** con la que ya estaba pagando la subida.
+
+**El arreglo, en tres sitios, todos del mismo mecanismo, y ninguno toca seguridad.**
+`WizardContext.jsx` gana un contador de EJECUCIÓN (`uploadsInFlightRef`, nunca persistido) con dos
+funciones — `beginUpload()`/`endUpload()` — y un lector, `hasUploadInFlight()`.
+`Step6Documents.jsx` los llama alrededor de CADA subida (`try/finally`, así que un fallo o un
+`return` anticipado —el caso del código de un solo uso caducado— también lo suelta).
+`WizardPage.jsx` añade una guarda más al `tick()` del pulso, **antes** de la primera llamada de
+red (`getLiveStateVersion`, la comprobación «ultra-ligera» que ya existía): si hay una subida en
+vuelo, el tick se salta entero, igual que con un guardado de paso pendiente.
+
+**Lo que NO se toca, y por qué es lo correcto:**
+- **La cola de guardado de pasos no se toca.** `hasPendingSave` sigue significando exactamente lo
+  mismo que significaba; la subida tiene su PROPIA señal, para no mezclar dos cosas que fallan por
+  motivos distintos.
+- **Ninguna puerta de seguridad se toca.** El contador es de CLIENTE y de EJECUCIÓN — decide
+  únicamente si el navegador dispara o no una pregunta de conveniencia (`getLiveStateVersion` /
+  `getAdmissionState`). La subida, cuando SÍ se dispara, sigue validando en vivo exactamente igual
+  que antes (KAL-4 + `assertStepUpFresh_`), byte por byte.
+- **El pulso no se queda apartado para siempre**: en cuanto la subida termina (éxito o fallo,
+  gracias al `finally`), la SIGUIENTE vez que algo dispare el latido (el `setInterval` de 30 s, o
+  que la familia vuelva a la pestaña) vuelve a preguntar con normalidad — demostrado en la red.
+
+⛔ **Lo que se MIDIÓ y se decidió NO tocar esta noche, con su motivo: la colisión entre subir un
+documento y «sigo aquí» (`refrescarVentanaDeInactividad_`).** Las dos son MUTACIONES que validan
+la puerta **siempre en vivo** (KAL-4 §"El token es la PRIMERA capa…") — ninguna puede usar la
+caché de 300 s sin romper ese invariante, así que no hay forma de fundir sus dos viajes sin tocar
+el modelo de seguridad. Y apartar «sigo aquí» mientras una subida está en vuelo —la salida que se
+consideró— **tiene un coste real y medido**: `uploadDocument_` **NO** extiende la ventana por
+diseño (comentario `SEC-STEPUP #55` en el propio código — un éxito de mutación no es lo mismo que
+actividad, para que nada la alargue en silencio), así que la ÚNICA vía que hoy reinicia el
+contador de 10 minutos cuando la familia hace clic mientras espera una subida larga es
+precisamente «sigo aquí». Apartarla ahí dejaría a una familia con un archivo grande en curso más
+expuesta a que la ventana caduque a mitad de subida — el efecto contrario al que Diego pidió
+(*«cada acción del usuario debe reiniciar el contador»*). Tocar esto exige su propia medición y su
+propio arnés sobre `_leerMarcaStepUp_`/`_extenderVentanaStepUp_`, con el mismo rigor que ya llevan
+②24 y el techo de 2 horas — no una decisión de una noche. Queda anotado, con esta razón exacta,
+para la próxima vuelta.
+
+**Comprobado antes de publicar**: `frontend/e2e/run-wizard.mjs`, camino `subir-documento` — dos
+afirmaciones NUEVAS que fuerzan la carrera de verdad: una subida deliberadamente lenta
+(`scenario.subidaDemoraMs`) se deja en vuelo, se fuerza el latido (`latirLaVentana`, el mismo
+evento `focus` que dispara la aplicación real) A MITAD de la subida y se comprueba que
+`getLiveStateVersion` **NO** sale; luego se espera a que la subida termine, se vuelve a forzar el
+latido, y se comprueba que **SÍ** sale (el apartado no se queda pegado). **Rojo demostrado**:
+comentando la guarda nueva en `WizardPage.jsx`, la primera afirmación cae nombrando el caso
+(*«el latido forzado a mitad de la subida SÍ disparó getLiveStateVersion»*) — restaurada, verde.
+Batería completa `VEREDICTO: VERDE` (28 de 28, mismo número de caminos — no se añadió ninguno
+nuevo, la comprobación vive dentro de `subir-documento`) y los dos controles de seguridad del
+repositorio, `VERDE`. **Solo frontend**: se publica solo al empujar a `main` (CI/Pages), sin tocar
+`backend/Code.js` ni el KMS. **Manual, ayuda en pantalla y textos: ninguno toca** — la familia ve
+exactamente la misma pantalla; es un ahorro de tiempo por dentro, sin ni un campo ni un mensaje
+nuevo.
 
 ### `0º.septies` (2026-08-21) — el precalentado comprueba su freno ANTES de salir al KMS
 

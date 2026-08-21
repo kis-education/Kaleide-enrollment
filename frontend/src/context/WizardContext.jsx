@@ -156,6 +156,18 @@ export function WizardProvider({ children }) {
   const pendingCountRef = useRef(0);
   const [saveState, setSaveState] = useState('idle');
   const hasPendingSave = saveState === 'saving';
+  // 0º.quindecies (segunda pieza) — la cola de arriba SOLO sabe de los guardados de paso;
+  // una subida de documento (Step6Documents) es OTRO canal, directo por gasCall, que nunca
+  // pasa por `enqueueSave`. El pulso (WizardPage) comprobaba `hasPendingSave` creyendo que
+  // eso cubría «hay algo en vuelo», y no cubría subir un archivo — así se midió el choque
+  // real: mientras un documento de 90 KB tardaba 96 s en subir, el pulso siguiente disparaba
+  // igual `getAdmissionState` y pagaba su propia pregunta a la puerta del expediente en
+  // paralelo. Este contador es SOLO para que el pulso se aparte — no toca el guardado de
+  // pasos ni ninguna puerta de seguridad.
+  const uploadsInFlightRef = useRef(0);
+  const beginUpload = useCallback(() => { uploadsInFlightRef.current += 1; }, []);
+  const endUpload = useCallback(() => { uploadsInFlightRef.current = Math.max(0, uploadsInFlightRef.current - 1); }, []);
+  const hasUploadInFlight = useCallback(() => uploadsInFlightRef.current > 0, []);
   // ── El estado del aviso se cambia POR UN SOLO SITIO (cola 18.bis — la barra roja) ─────
   // `saveErrorSeq` cuenta los EPISODIOS de fallo: sube en cada entrada en 'error'. Sirve
   // para dos cosas que necesitan distinguir «sigue el mismo fallo» de «ha fallado otra
@@ -1446,6 +1458,7 @@ export function WizardProvider({ children }) {
       completedSteps, addCompletedStep, removeCompletedStep,
       isStepDirty, markStepSaved,
       setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
+      beginUpload, endUpload, hasUploadInFlight,      // 0º.quindecies — el pulso se aparta mientras sube un documento
       retryLastSave,                                              // WPERF-1 criterio 3
       apuntarTrabajo, preguntarPorLosGuardados,                   // 18.bis.84 — «apuntado» no es «guardado»: hay que volver a preguntar
       saveErrorSeq, saveErrorQue, saveErrorCodigo,                // cola 18.bis — aviso de guardado (episodio + qué falló + por qué, ②24.sexies)

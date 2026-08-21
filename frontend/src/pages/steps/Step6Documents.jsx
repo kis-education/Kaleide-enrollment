@@ -66,7 +66,7 @@ const newRowId = () => `doc_row_${++_rowSeq}_${Date.now()}`;
  * Una fila del adjuntador genérico: descripción (texto libre) + archivo.
  * Sube vía gasCall('uploadDocument', { description, … }) al seleccionar el archivo.
  */
-function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId, resumeToken, identidad, onUploaded, onDescriptionChange, onDuenoChange, onTipoChange, onRemove, onStepUpVerified, onActivity }) {
+function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId, resumeToken, identidad, onUploaded, onDescriptionChange, onDuenoChange, onTipoChange, onRemove, onStepUpVerified, onActivity, onUploadStart, onUploadEnd }) {
   const { t } = useTranslation();
   const [status, setStatus] = useState(row.file_id ? 'success' : '');
   const [fileId, setFileId] = useState(row.file_id || '');
@@ -109,6 +109,11 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
   const doUpload = async (file) => {
     setStatus('uploading');
     setErr('');
+    // 0º.quindecies (segunda pieza) — le dice al pulso que hay una subida en vuelo, para que
+    // no le pida a la puerta del expediente la misma pregunta que ya está pagando esta subida.
+    // Nunca toca el guardado de pasos ni ninguna comprobación de seguridad — solo evita que el
+    // pulso se dispare en paralelo.
+    if (onUploadStart) onUploadStart();
     try {
       const base64 = await fileToBase64(file);
       const data   = await gasCall('uploadDocument', {
@@ -165,6 +170,8 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
       // enganchado al alumno, reintentar duplicaría, así que se pide avisar al colegio. El
       // resto de fallos se comporta byte-idéntico (mensaje del servidor tal cual).
       setErr(TEXTO_DE_SUBIDA_FALLIDA[e?.code] ? t(TEXTO_DE_SUBIDA_FALLIDA[e.code]) : e.message);
+    } finally {
+      if (onUploadEnd) onUploadEnd();
     }
   };
 
@@ -386,6 +393,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     enrollmentGroupId, resumeToken, stepData, updateStep,
     markStepUpFresh, touchActivity,
     recoveryNonce, recoveredEmail,   // ②24 — quién está operando (identidad del enlace)
+    beginUpload, endUpload,          // 0º.quindecies — el pulso se aparta mientras sube un documento
   } = useWizard();
   const identidad = { n: recoveryNonce, recoveredEmail };
 
@@ -636,6 +644,8 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
             onRemove={handleRemoveRow}
             onStepUpVerified={markStepUpFresh}
             onActivity={touchActivity}
+            onUploadStart={beginUpload}
+            onUploadEnd={endUpload}
           />
         ))}
 

@@ -399,7 +399,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0 }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0 }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -743,8 +743,14 @@ function startServer() {
         // condición en la que se ve si la pantalla espera al servidor o no. Con la
         // latencia uniforme el margen era de 800 ms — demasiado estrecho para distinguir
         // «apareció antes de la respuesta» de «apareció justo después».
+        // 0º.quindecies (segunda pieza) — `uploadDocument` puede pedir SU PROPIA demora
+        // extra, igual que `sendVerificationCode`: es la única forma de dejar una subida
+        // deliberadamente en vuelo el tiempo suficiente para forzar un latido a mitad y
+        // comprobar que el pulso se aparta (ver `caminoSubirDocumento`).
         const extra = (payload && payload.action === 'sendVerificationCode')
-          ? Number(scenario.codigoDemoraMs || 0) : 0
+          ? Number(scenario.codigoDemoraMs || 0)
+          : (payload && payload.action === 'uploadDocument')
+          ? Number(scenario.subidaDemoraMs || 0) : 0
         setTimeout(() => responder(out), LATENCY + extra)
       })
       return
@@ -2078,6 +2084,65 @@ async function caminoSubirDocumento(page, base) {
   } finally {
     scenario.subidaNoRegistrada = false
   }
+
+  // ── 0º.quindecies (segunda pieza, 2026-08-21) · EL PULSO SE APARTA MIENTRAS SUBE UN
+  // DOCUMENTO ──────────────────────────────────────────────────────────────────────
+  // Medido en el registro real de Diego del 2026-08-20: mientras un documento de 90 KB
+  // tardaba 96 s en subir, el latido de la pantalla (`WizardPage.jsx`, cada 30 s) disparó
+  // igual `getAdmissionState` y pagó su propia pregunta a la puerta del expediente EN
+  // PARALELO con la que ya estaba pagando la subida — el pulso solo miraba la cola de
+  // guardado de PASOS (`hasPendingSave`), que una subida de documento nunca toca (es un
+  // canal aparte, directo por `gasCall`). Se demuestra forzando el latido —el mismo evento
+  // `focus` que dispara la aplicación real, `latirLaVentana`— A MITAD de una subida
+  // deliberadamente lenta (`scenario.subidaDemoraMs`), y comprobando que
+  // `getLiveStateVersion` —la PRIMERA llamada que el pulso hace, antes de preguntar nada
+  // más— NO sale mientras la subida sigue en vuelo, y SÍ sale en cuanto termina.
+  scenario.subidaDemoraMs = 3000
+  try {
+    const otroAñadirLento = await page.$('.add-btn')
+    if (!otroAñadirLento) { c.fallos.push('el paso de Documentos dejó de ofrecer el botón de añadir archivo'); return c }
+    await otroAñadirLento.click()
+    await page.waitForTimeout(300)
+    const cajasLentas = await page.$$('.doc-attachment input[type="text"]')
+    if (cajasLentas.length) await cajasLentas[cajasLentas.length - 1].fill('Documento lento E2E (0º.quindecies)')
+    const tiposLentos = await page.$$('.doc-attachment .doc-type')
+    if (tiposLentos.length) {
+      const opts = await tiposLentos[tiposLentos.length - 1]
+        .$$eval('option', os => os.map(o => o.value).filter(Boolean))
+      if (opts.length) await tiposLentos[tiposLentos.length - 1].selectOption(opts[0])
+    }
+    const ficherosLentos = await page.$$('.doc-attachment input[type="file"]')
+    if (!ficherosLentos.length) { c.fallos.push('la fila de documento no ofrece campo de archivo'); return c }
+    await ficherosLentos[ficherosLentos.length - 1].setInputFiles({
+      name: 'prueba-lenta-e2e.pdf',
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4\n% documento lento sintetico E2E\n'),
+    })
+    await page.waitForTimeout(600) // deja que la subida SALGA y quede registrada, sin dar tiempo a que vuelva
+    const subidasEnVueloAntes = llamadas('uploadDocument').length
+    c.afirmar('la subida lenta llega a salir antes de forzar el latido',
+      subidasEnVueloAntes > subidas.length,
+      'no se registró la subida deliberadamente lenta: la carrera no se puede montar')
+    const marcaDeLlamadas = calls.length
+    await latirLaVentana(page)
+    await page.waitForTimeout(400)
+    const versionesDurantelaSubida = llamadas('getLiveStateVersion').filter(l => calls.indexOf(l) >= marcaDeLlamadas)
+    c.afirmar('el pulso NO pregunta nada mientras un documento sigue subiéndose',
+      versionesDurantelaSubida.length === 0,
+      `el latido forzado a mitad de la subida SÍ disparó getLiveStateVersion (${versionesDurantelaSubida.length} vez/veces): el pulso y la subida vuelven a colisionar`)
+    // La subida termina (LATENCY + subidaDemoraMs) y el pulso vuelve a funcionar con normalidad.
+    await page.waitForTimeout(LATENCY + scenario.subidaDemoraMs + 1500)
+    const marcaTrasLaSubida = calls.length
+    await latirLaVentana(page)
+    await page.waitForTimeout(400)
+    const versionesTrasLaSubida = llamadas('getLiveStateVersion').filter(l => calls.indexOf(l) >= marcaTrasLaSubida)
+    c.afirmar('el pulso vuelve a preguntar en cuanto la subida termina (no se queda apartado para siempre)',
+      versionesTrasLaSubida.length > 0,
+      'tras terminar la subida, un latido forzado siguió sin disparar getLiveStateVersion: el apartado no se libera')
+  } finally {
+    scenario.subidaDemoraMs = 0
+  }
+
   c.evidencia.llamadas = llamadas('uploadDocument').length
   return c
 }
