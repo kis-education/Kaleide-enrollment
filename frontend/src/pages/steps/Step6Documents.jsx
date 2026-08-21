@@ -84,6 +84,28 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
   const tipos    = Array.isArray(tiposDeDocumento) ? tiposDeDocumento : [];
   const eligeTipo = tipos.length >= 2;
 
+  // 0º.sexdecies — UNA VEZ SUBIDO, la familia no podía comprobar qué tipo declaró ni de quién
+  // dijo que era: los dos desplegables se ocultan al confirmar la subida (a propósito — un
+  // archivo ya subido tiene su respuesta escrita en el servidor, no en este formulario), y
+  // hasta ahora no quedaba NADA en su lugar. El servidor SIEMPRE guardó las dos cosas
+  // (DL-R16/DL-R17); esto solo las ENSEÑA de vuelta, en un texto de solo lectura.
+  const tipoLabel = (code) => {
+    if (!code) return '';
+    const encontrado = tipos.find(tp => tp.code === code);
+    return encontrado ? (encontrado.designation || encontrado.code) : code;
+  };
+  // `ownerIds` vacío es AMBIGUO tras el recorte de privacidad del servidor (DL-E49): puede ser
+  // «de la solicitud» de verdad, o un documento del OTRO tutor cuyo identificador el servidor
+  // ya no manda. Ante la duda se dice «de la solicitud» — nunca se arriesga a delatar al otro
+  // tutor, y es la MISMA regla que ya sigue el resto del asistente ante ese recorte.
+  const duenoLabel = (ownerIds) => {
+    if (!Array.isArray(ownerIds) || !ownerIds.length) return t('doc.owner_application');
+    const nombres = ownerIds
+      .map(pid => (personas.find(p => p.person_id === pid) || {}).etiqueta)
+      .filter(Boolean);
+    return nombres.length ? nombres.join(', ') : t('doc.owner_application');
+  };
+
   const doUpload = async (file) => {
     setStatus('uploading');
     setErr('');
@@ -118,7 +140,16 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
       });
       setFileId(data.file_id);
       setStatus('success');
-      onUploaded(row.id, { file_id: data.file_id, file_name: file.name, description: (row.description || '').trim() });
+      // 0º.sexdecies — solo se pinta `owner_person_ids` cuando la familia CONTESTÓ (SOLICITUD
+      // o una persona): sin respuesta, el servidor reparte al tutor que sube (DL-R17) y este
+      // formulario no sabe a cuál — enseñar «de la solicitud» ahí sería INVENTAR la respuesta.
+      // La fila se queda sin el campo hasta la próxima hidratación, que trae el reparto real.
+      const duenoElegido =
+        row.dueno === 'SOLICITUD' ? [] : row.dueno ? [row.dueno] : undefined;
+      onUploaded(row.id, {
+        file_id: data.file_id, file_name: file.name, description: (row.description || '').trim(),
+        ...(duenoElegido !== undefined ? { owner_person_ids: duenoElegido } : {}),
+      });
     } catch (e) {
       if (isStepUpError(e)) {
         log.warn('Step6: uploadDocument requires step-up');
@@ -309,6 +340,19 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
                 : t('doc.view')}
             </button>
           )}
+          {/* 0º.sexdecies — el tipo y el dueño YA se guardaron al subir (DL-R16/DL-R17); esto
+              solo los enseña de vuelta, en texto — no vuelve a ser un formulario. Sin tipo
+              resuelto (subida antigua, o el catálogo no dio ninguno) no se pinta esa línea. */}
+          {row.rec_type_code && (
+            <p className="mb-0 mt-1" style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+              {t('doc.type_summary', { tipo: tipoLabel(row.rec_type_code) })}
+            </p>
+          )}
+          {row.owner_person_ids !== undefined && (
+            <p className="mb-0" style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+              {t('doc.owner_summary', { duenio: duenoLabel(row.owner_person_ids) })}
+            </p>
+          )}
         </div>
       )}
       {status === 'error' && (
@@ -374,10 +418,16 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     (stepData.documents || [])
       .filter(d => d && d.file_id)
       .map(d => ({
-        id:          newRowId(),
-        description: d.description || '',
-        file_id:     d.file_id,
-        file_name:   d.file_name || '',
+        id:               newRowId(),
+        description:      d.description || '',
+        file_id:          d.file_id,
+        file_name:        d.file_name || '',
+        // 0º.sexdecies — el servidor SIEMPRE guardó el tipo y el dueño (DL-R16/DL-R17); lo
+        // que faltaba era llevarlos de la hidratación a la fila para poder ENSEÑARLOS de
+        // vuelta. `owner_person_ids` vacío es la respuesta EXPLÍCITA «de la solicitud», no
+        // «no consta» — ver el JSDoc de `documents` en `enr_wizardHydrateCompute_` (KMS).
+        rec_type_code:    d.rec_type_code || '',
+        owner_person_ids: Array.isArray(d.owner_person_ids) ? d.owner_person_ids : [],
       }));
 
   const [rows, setRows] = useState(seedRows);
@@ -441,10 +491,12 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
       const nuevas = delServidor
         .filter(d => !yaListados.has(d.file_id))
         .map(d => ({
-          id:          newRowId(),
-          description: d.description || '',
-          file_id:     d.file_id,
-          file_name:   d.file_name || '',
+          id:               newRowId(),
+          description:      d.description || '',
+          file_id:          d.file_id,
+          file_name:        d.file_name || '',
+          rec_type_code:    d.rec_type_code || '',
+          owner_person_ids: Array.isArray(d.owner_person_ids) ? d.owner_person_ids : [],
         }));
       return nuevas.length ? [...prev, ...nuevas] : prev;
     });
