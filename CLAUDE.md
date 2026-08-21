@@ -2066,6 +2066,42 @@ demostrados**: devolver el freno detrás del viaje (**ROJO** en la (1), *«viaje
 capa por expediente (**ROJO** en la (4)) · renombrar lo medido, que sale **«MEDICIÓN CIEGA»** y no
 verde. **Quien toque este manejador, que lo mida.**
 
+### `0º.vicies.semel` (2026-08-21) — el paso 7 ya no pide una firma tecleada que nadie leía
+
+**Decisión de Diego esa misma noche, literal:** *«Aquí sobra lo de la firma con el nombre completo,
+hay que quitarla, y las validaciones que la exigen también.»*
+
+**El campo «Firma electrónica — Escribe tu nombre completo como firma electrónica», debajo de los
+dos consentimientos del paso 7, se RETIRA entero.** Medido contra `origin/main` antes de tocar
+nada: el dato (`esignature`) viajaba en el envío y se tiraba — en el backend del asistente aparece
+**solo en un comentario** (`backend/Code.js:4860`, un `@param` de JSDoc, cero lecturas) y en el KMS
+**cero apariciones**. No se retira ninguna evidencia, porque no había evidencia: la firma que SÍ
+cuenta es la del paso 11 (Click & Sign), y **no se toca**, igual que los dos consentimientos de esta
+misma pantalla (que sí se registran en `sysConsentsLog`). Mientras tanto, un campo que nadie miraba
+**impedía enviar** si la familia no lo rellenaba — el defecto que esto cierra.
+
+**Retirado, todo en `frontend/src/pages/steps/Step7Review.jsx`:** el estado (`esig`/`setEsig`), la
+validación que bloqueaba el envío, la traza de depuración, el campo `esignature` del payload de
+envío y el bloque visible (etiqueta, instrucciones, casilla). Los cuatro textos
+(`step7.esig_label`/`esig_instructions`/`esig_placeholder`/`error.esig_required`) salen de los dos
+idiomas en `frontend/public/locales/{es,en}/translation.json` — no viven en `src/locales/` (ese
+directorio no existe en este repositorio). El estilo `.esig-field`, sin más usuarios, sale de
+`theme.css`. El encargo antiguo que proponía **reforzar la integridad** de este mismo campo
+(`docs/prompts/cli-kal-7-esignature-integrity-hash.md`, KAL-7/KAL-NEW-9) queda sin objeto — se
+elimina, y `docs/prompts/INDEX.md` se corrige para decir que el campo se retiró, no que espera un
+refuerzo.
+
+**Red**: `npm run e2e:wizard` — el camino compartido `conducirEnvio` (usado por tres recorridos)
+tecleaba en `.esig-field`, así que la batería formaba parte de la entrega. Se cambió la afirmación
+de *«se rellena el campo»* a *«el campo YA NO existe, y aun así se puede enviar»* — y el **rojo
+demostrado** salió solo, sin tener que romper nada a propósito: al correr la batería vieja contra
+el código ya cambiado, el camino `segundo-tutor-envia` cayó nombrando el caso exacto (*«la pantalla
+de revisión no ofrece el campo de firma manuscrita»*). Corregida la afirmación, **VEREDICTO: VERDE
+— 28 de 28**. Los cuatro controles del repositorio, VERDES.
+
+**Publicado**: solo `Kaleide-enrollment`, solo `frontend/` — no toca `backend/Code.js` ni el KMS.
+Se publica al empujar a `main` (GitHub Pages, con la batería como puerta en el CI).
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

@@ -19,7 +19,6 @@ listo para copy-paste de un click al CLI local.
 | **KAL-4** | KAL-NEW-8 | 🟡 | M | `cli-kal-4-csp-sri-hardening.md` |
 | **KAL-5** | KAL-NEW-11 | 🟡 | S | `cli-kal-5-frontend-log-redaction-deeper.md` |
 | **KAL-6** | KAL-NEW-10 | 🟡 | S | `cli-kal-6-pii-error-messages-sanitize.md` |
-| **KAL-7** | KAL-NEW-9 (mitad fast-path) | 🟡 | M | `cli-kal-7-esignature-integrity-hash.md` |
 
 ## Orden recomendado de ejecución
 
@@ -33,9 +32,6 @@ hardening + complejidad de testing:
 5. **KAL-5** (logger PII expansion) — frontend-only, sin backend.
 6. **KAL-4** (CSP + SRI) — requiere testing local meticuloso, riesgo de romper
    el wizard si la CSP queda demasiado restrictiva.
-7. **KAL-7** (esignature hash) — requiere pre-cond AppSheet columnas + dudoso
-   si vale la pena cerrar la mitad fast-path antes de que DL-S65/sysLegalActsLog
-   lo cubra canónicamente. Si Diego prefiere esperar al refactor S-SIGN, diferir.
 
 ## Items KAL-NEW-* YA cerrados (no requieren CLI)
 
@@ -49,9 +45,11 @@ hardening + complejidad de testing:
 
 - **SSRF-1 / SSRF-KEY** del driver Click & Sign → vive en KMS (`kis-app/master`),
   no en wizard. Diferible Stage 1 si CLI 83 (PRIVESC) se cierra primero.
-- **KAL-NEW-9 mitad canónica** — espera al refactor S-SIGN + DL-S65
-  `sysLegalActsLog` (vive en KMS, no en wizard). Este lote solo cubre la mitad
-  fast-path client-side (KAL-7).
+- **KAL-NEW-9** — ANULADO 2026-08-21 (`0º.vicies.semel`): el campo de firma tecleada
+  del paso 7 (`esignature`) se RETIRÓ entero — nadie lo leía, ni el asistente ni el
+  KMS, y bloqueaba el envío sin motivo. La mitad fast-path client-side (KAL-7) queda
+  sin objeto; la firma legalmente vinculante sigue siendo la del paso 11 (Click & Sign,
+  DL-S65 `sysLegalActsLog`, en el KMS), que no se tocó.
 
 ## Cross-refs canónicos
 

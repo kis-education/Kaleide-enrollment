@@ -537,23 +537,6 @@ body {
   line-height: 1.6;
 }
 
-/* E-signature */
-.esig-field {
-  font-family: Georgia, serif;
-  font-size: 1.3rem;
-  border: none;
-  border-bottom: 2px solid var(--teal);
-  padding: 6px 0;
-  width: 100%;
-  background: transparent;
-  color: var(--teal-dk);
-  letter-spacing: 1px;
-}
-.esig-field:focus {
-  outline: none;
-  border-bottom-color: var(--teal-dk);
-}
-
 /* Loading spinner */
 .spinner {
   width: 36px;

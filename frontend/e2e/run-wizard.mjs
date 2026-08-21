@@ -2534,9 +2534,12 @@ async function conducirDocumentos(c, page) {
  */
 async function conducirEnvio(c, page) {
   traza('paso 7 · revisión y envío')
-  const esig = await page.$('.esig-field')
-  if (!esig) { c.fallos.push('paso 7 · envío — la pantalla de revisión no ofrece el campo de firma manuscrita'); return false }
-  await esig.fill(`Tutor1 ${DATOS.apellido}`)
+  // `0º.vicies.semel` (2026-08-21) — la firma tecleada se retiró: nadie la leía y bloqueaba
+  // el envío sin motivo. Se afirma que el campo YA NO existe (no que se rellena) y que se
+  // puede enviar sin teclear ningún nombre — solo con los dos consentimientos.
+  if (!c.afirmar('paso 7 · envío — se puede enviar sin teclear ninguna firma manuscrita',
+    !(await page.$('.esig-field')),
+    'la pantalla de revisión sigue ofreciendo el campo de firma manuscrita (.esig-field)')) return false
   for (const id of ['#consent_gdpr', '#consent_legal']) {
     const ch = await page.$(id)
     if (!ch) { c.fallos.push(`paso 7 · envío — falta el consentimiento ${id} en la pantalla de revisión`); return false }

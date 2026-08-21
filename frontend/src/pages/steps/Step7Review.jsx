@@ -528,7 +528,6 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
 
   // ─── Submit logic ──────────────────────────────────────────────────────────
 
-  const [esig,         setEsig]         = useState('');
   const [consentGdpr,  setConsentGdpr]  = useState(false);
   const [consentLegal, setConsentLegal] = useState(false);
   const [submitting,   setSubmitting]   = useState(false);
@@ -546,7 +545,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   // (`yaVerificado`), que además es obligatorio: `markStepUpFresh` es asíncrono y su efecto
   // todavía no se ve en la misma vuelta.
   const [pidiendoCodigo, setPidiendoCodigo] = useState(false);
-  // UX-1: eleva el aviso de validación (esig/consents/recaptcha) a la zona sticky superior.
+  // UX-1: eleva el aviso de validación (consents/recaptcha) a la zona sticky superior.
   useEffect(() => { setValidationError(err); }, [err, setValidationError]);
   useEffect(() => () => setValidationError(''), [setValidationError]);
 
@@ -555,7 +554,6 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   // no tiene esa propiedad ⇒ la comprobación se hace, que es lo correcto.
   const handleSubmit = async (opciones) => {
     const yaVerificado = !!(opciones && opciones.yaVerificado === true);
-    if (!esig.trim()) { setErr(t('error.esig_required')); return; }
     if (!consentGdpr)  { setErr(t('error.consent_required')); return; }
     if (!consentLegal) { setErr(t('error.consent_required')); return; }
 
@@ -572,7 +570,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
 
     setErr('');
     setSubmitting(true);
-    log.info('Step7: handleSubmit — submitting enrollment', { enrollmentGroupId, hasPendingSave, esig: esig.trim() ? '[signed]' : '[empty]' });
+    log.info('Step7: handleSubmit — submitting enrollment', { enrollmentGroupId, hasPendingSave });
 
     // ── Tramo SÍNCRONO (antes de asumir el envío): drenar saves pendientes + reCAPTCHA.
     //    Si el reCAPTCHA o la red fallan aquí, NO asumimos un submit que ni arrancó —
@@ -631,7 +629,6 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
       application_id:      enrollmentGroupId,
       desired_start_date:  email?.desired_start_date || null,
       program_id:          email?.program_id         || null,
-      esignature:          esig,
       language:            lang,
       consents: [
         { type: 'gdpr',  accepted: consentGdpr,  consent_text_shown: CONSENT_TEXTS.gdpr[lang]  },
@@ -1109,19 +1106,6 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
               </div>
             </div>
 
-            <div className="mt-4">
-              <label className="form-label fw-semibold">{t('step7.esig_label')}</label>
-              <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginBottom: 8 }}>
-                {t('step7.esig_instructions')}
-              </p>
-              <input
-                type="text"
-                className="esig-field"
-                value={esig}
-                onChange={e => setEsig(e.target.value)}
-                placeholder={t('step7.esig_placeholder')}
-              />
-            </div>
           </div>
 
           {/* UX-1: el aviso de validación se muestra en la zona sticky superior (WizardPage). */}
