@@ -16,7 +16,6 @@
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const CORS_ORIGIN        = 'https://admissions.kaleide.org';
-const DRIVE_FOLDER_NAME  = 'KIS Admissions Documents';
 const SCHOOL_ID          = 'KIS';
 const ADMISSIONS_EMAIL   = 'admissions@kaleide.org';
 const FROM_NAME          = 'Kaleide International School';
@@ -6541,8 +6540,19 @@ function uploadDocument_(p) {
   // Drive es privado al dueño del deployment (executeAs: USER_DEPLOYING). El
   // read-back se sirve vía getDocument_ (proxy de bytes gateado por token +
   // guard de propiedad).
+  //
+  // 0º.undevicies (2026-08-21) — la carpeta la DICE el KMS, no este proceso.
+  // Antes: getOrCreateDriveFolder_(DRIVE_FOLDER_NAME) creaba (o encontraba) una
+  // carpeta suelta en el Drive de la cuenta que publicó el asistente, fuera del
+  // árbol único del archivo de registros (`rec_carpetaDelDia_`) que ya usa TODO
+  // lo que genera el KMS. Quién ESCRIBE no cambia (el asistente sigue creando
+  // el fichero, con su propia credencial de Drive); quién DECIDE, sí.
+  // Si el KMS no puede decir la carpeta (REC_ARCHIVE_ROOT_NOT_CONFIGURED), NO
+  // SE SUBE: el error se propaga tal cual — guardar en un sitio inventado es
+  // peor que no guardar (`rec/archivo.gs`, kis-app).
+  const carpeta = kmsProxy_('enr.carpetaDelArchivo', { resume_token: p.resume_token });
   const blob   = Utilities.newBlob(decoded, mimeType, filename);
-  const folder = getOrCreateDriveFolder_(DRIVE_FOLDER_NAME);
+  const folder = DriveApp.getFolderById(carpeta.folder_id);
   const file   = folder.createFile(blob);
 
   const driveFileId   = file.getId();
@@ -9304,18 +9314,6 @@ function formatTimestamp_(isoString) {
 }
 
 /**
- * Gets or creates a Drive folder by name at the root.
- * @param {string} name
- * @returns {Folder}
- */
-function getOrCreateDriveFolder_(name) {
-  const folders = DriveApp.getFoldersByName(name);
-  if (folders.hasNext()) return folders.next();
-  return DriveApp.createFolder(name);
-}
-
-
-/**
  * One-shot maintenance: marks pre-existing orphan sessions as abandoned.
  *
  * Run MANUALLY from the Apps Script editor (Run → adminCleanupOrphanSessions)
@@ -11688,6 +11686,19 @@ function manual_diagPersonasRetiradas() {
     if (expedientes[gid].bloquea > 0) out.expedientes_bloqueados_por_un_tutor_retirado_sin_telefono++;
   });
 
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
+/**
+ * 0º.undevicies — CUÁNTOS documentos quedan en la carpeta VIEJA (la que creaba
+ * getOrCreateDriveFolder_ antes de este cambio). Solo cuenta: no mueve nada,
+ * no imprime ni un dato personal (KAL-11). Moverlos es decisión de Diego.
+ */
+function manual_diagFicherosEnCarpetaVieja() {
+  var filtro = '"school_id" = "' + appsheetEscape_(SCHOOL_ID) + '" && "origin" = "WIZARD"';
+  var filas = appsheetRequest_(T.REC_FILES, 'Find', [], { Filter: filtro }) || [];
+  var out = { ficheros_del_asistente_en_recFiles: filas.length };
   Logger.log(JSON.stringify(out, null, 2));
   return out;
 }

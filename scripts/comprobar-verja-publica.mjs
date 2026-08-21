@@ -44,6 +44,7 @@ try {
     console.log('  ✓ la cabecera del expediente se pide UNA vez por petición: la memoria de EJECUCIÓN se indexa por token CON su modalidad, y la rama que ROTA el enlace la olvida (②17, 2026-08-19)')
     console.log('  ✓ el pulso de la admisión no lee `enrEnrollments`/`enrPersons`/`sysStates_T`: lo sirve el lector ÚNICO contra el KMS, sin el literal del dominio (DL-E48), y siguen en pie el token, la frescura y la elección por `display_order` (②17)')
     console.log('  ✓ el racimo de firma no lee `sysSigningSessionSigners`/`sysSigningSessions`/`sysMilestones`/`sysMilestoneTypes`: lo sirve el lector ÚNICO contra el KMS, `signing_url` sigue recortado (CLI 81 / S5), un KMS caído no se disfraza de token inválido, y los dos ayudantes de hitos no han vuelto (②17)')
+    console.log('  ✓ subir un documento ya no crea una carpeta suelta propia: la carpeta del día la dice el KMS (`enr.carpetaDelArchivo`), `getOrCreateDriveFolder_` no ha vuelto, y el expediente sigue saliendo del `resume_token` (0º.undevicies)')
   }
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)

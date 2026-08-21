@@ -1391,6 +1391,51 @@ function comprobarElRacimoDeFirma(fuenteLimpia) {
   return fallos
 }
 
+/**
+ * 0º.undevicies — DÓNDE aterriza un documento que sube una familia lo DICE el KMS, no
+ * este proceso.
+ *
+ * Antes `uploadDocument_` creaba (o encontraba) el fichero en una carpeta suelta de su
+ * propio Drive (`getOrCreateDriveFolder_('KIS Admissions Documents')`), fuera del árbol
+ * único del archivo de registros que ya usa TODO lo que genera el KMS. Ahora le pregunta
+ * al KMS la carpeta del día (`enr.carpetaDelArchivo`) y crea el fichero AHÍ.
+ *
+ * Lo que se afirma: `uploadDocument_` no vuelve a llamar a `getOrCreateDriveFolder_` (ni
+ * la función sigue existiendo — es vestigial, sin más llamantes), SÍ le pregunta al KMS
+ * dónde va el fichero, y sigue derivando el expediente del `resume_token` (KAL-4) antes
+ * de tocar Drive.
+ */
+function comprobarLaCarpetaDelArchivo(fuenteLimpia) {
+  const fallos = []
+
+  const cuerpo = cuerpoDe(fuenteLimpia, 'uploadDocument_')
+  if (cuerpo === null) {
+    fallos.push('no se encontró `uploadDocument_` — control CIEGO en dónde aterriza un documento subido')
+    return fallos
+  }
+
+  if (/getOrCreateDriveFolder_\s*\(/.test(cuerpo)) {
+    fallos.push('`uploadDocument_` vuelve a llamar a `getOrCreateDriveFolder_` — eso es la carpeta ' +
+      'suelta fuera del árbol único del archivo que 0º.undevicies quitó')
+  }
+  if (!/kmsProxy_\s*\(\s*'enr\.carpetaDelArchivo'/.test(cuerpo)) {
+    fallos.push('`uploadDocument_` ya no le pregunta al KMS dónde va el fichero (`enr.carpetaDelArchivo`) — ' +
+      'o se quitó la pregunta, o volvió a decidir la carpeta por su cuenta')
+  }
+  if (/function\s+getOrCreateDriveFolder_\s*\(/.test(fuenteLimpia)) {
+    fallos.push('`getOrCreateDriveFolder_` sigue definida sin llamantes — es vestigial y debe retirarse ' +
+      '(§"lo vestigial se ELIMINA en cuanto se detecta")')
+  }
+
+  // Ancla KAL-4: el expediente sigue saliendo del bearer, no del cuerpo — sin esto el
+  // control podría salir verde sobre un manejador que perdió la comprobación de acceso.
+  if (!/requireResumeToken_\s*\(\s*p\s*\)/.test(cuerpo)) {
+    fallos.push('`uploadDocument_` ya no deriva el expediente del `resume_token` — KAL-4 rota')
+  }
+
+  return fallos
+}
+
 export function comprobarVerjaPublica(fuente) {
   const limpia = sinComentarios(fuente)
   return [
@@ -1400,6 +1445,7 @@ export function comprobarVerjaPublica(fuente) {
     ...comprobarGuardarYSeguirLuego(limpia),
     ...comprobarParidadDelCodigo(limpia),
     ...comprobarLosDocumentosDeLaFamilia(limpia),
+    ...comprobarLaCarpetaDelArchivo(limpia),
     ...comprobarLaHidratacionDeEntrada(limpia),
     ...comprobarElEnvio(limpia),
     ...comprobarLaEntradaDelExpediente(limpia),
