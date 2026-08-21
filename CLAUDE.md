@@ -1686,6 +1686,60 @@ de la respuesta** (apuntar el trabajo para que se haga y contestar al momento), 
 dos proyectos y **retrasa el correo de la familia** — decisión de producto, no de código.
 Queda escrito en la cola (`kis-app/docs/kms/loop-backlog.md` ②2).
 
+### `0º.sexdecies` (2026-08-21) — tras subir un documento, la familia ya puede comprobar qué tipo declaró y de quién dijo que era
+
+**No era una carencia del servidor: el tipo SIEMPRE se guardó (DL-R16), y el comentario que decía
+lo contrario estaba caducado.** `Step6Documents.jsx` oculta a propósito los dos desplegables
+(«qué tipo» / «de quién») en cuanto el archivo queda subido — el servidor ya tiene la respuesta
+escrita, así que volver a preguntarla sería mentir—, pero hasta hoy no quedaba **nada** en su
+lugar. **Medido contra `origin/master` antes de tocar nada**: `enr_wizardHydrate` (KMS,
+`wizard-datalayer.gs`) YA proyectaba `rec_type_code` en cada documento de la hidratación —
+`seedRows()` y el re-sembrado de esta misma pantalla lo **tiraban**, copiando solo `file_id`,
+`file_name` y `description`. El comentario del propio fichero decía *«un archivo YA subido tiene
+su tipo escrito en el servidor y la hidratación no lo devuelve»* — falso, y exactamente el
+precedente de §"Un COMENTARIO del código no es criterio normativo" (`kis-app/CLAUDE.md`).
+
+**El dueño (DL-R17) sí faltaba de verdad.** «De quién es» vive en `recScopes`
+(`kis-app kms-server`), con el par canónico `('ENR_PERSON', person_id)` — la hidratación no lo
+proyectaba en absoluto, había que leerlo.
+
+**Lo construido:**
+
+- **KMS** (`kis-app kms-server/enr/wizard-datalayer.gs`, `enr_wizardHydrateCompute_`): sección
+  nueva `document_owners` — lee `recScopes` por **selector fino** (solo los `file_id` de ESTE
+  grupo; mismo patrón que la sección `responses`, nunca la tabla entera) y proyecta
+  `owner_person_ids` por documento. **Filtrado por DL-E49**: solo cuentan los `person_id` que ya
+  son visibles para el tutor que pregunta (él mismo + los menores) — el documento de OTRO tutor
+  no delata ni su identificador opaco, mismo criterio que el resto de la función.
+- **Asistente**: `Step6Documents.jsx` lleva ahora `rec_type_code` y `owner_person_ids` de la
+  hidratación a la fila, y pinta —una vez subido, en TEXTO, no en un formulario— «Tipo: X» y «De
+  quién: Y». Sin tipo resuelto no se pinta esa línea; `owner_person_ids` vacío se lee «De la
+  solicitud», la respuesta EXPLÍCITA de DL-R17 — nunca «no consta».
+- **Inmediatamente tras subir, en la MISMA sesión**, la línea de «de quién» solo se pinta si la
+  familia CONTESTÓ (SOLICITUD o una persona): sin respuesta, el reparto por defecto lo decide el
+  servidor (al tutor que sube) y el navegador no sabe a cuál — inventar «de la solicitud» ahí
+  sería mentir. Se completa sola con la próxima hidratación.
+
+**Textos nuevos**: `doc.type_summary` / `doc.owner_summary`, `es` y `en`.
+
+⚠️ **PUBLICADO SOLO EN PARTE, y por un motivo ajeno a este cambio.** El lado del asistente está
+publicado (`main`, CI). El lado del KMS está terminado, comprobado y commiteado
+(`kis-app@93e6554`) pero **SIN DESPLEGAR**: el proyecto de Apps Script del KMS llegó al tope de
+200 versiones (mismo bloqueo que `0º.terdecies`, `pendiente-diego.md` D88) — Diego tiene que
+liberar una versión antes de que `clasp deploy` pueda crear la siguiente. **Degrada sin romper
+mientras tanto**: `owner_person_ids` llega `undefined` de la hidratación real (el KMS desplegado
+es el de ayer) y la línea «De quién» sencillamente no se pinta — comprobado con la guarda
+`row.owner_person_ids !== undefined`. El tipo (`rec_type_code`) SÍ se ve ya, porque esa parte de
+la hidratación llevaba desplegada desde antes de esta vuelta.
+
+**Comprobado antes de publicar**: `kis-app/scripts/check-quality-gates.mjs` `VEREDICTO: VERDE`
+(25 gates, 0 inertes; sin cambios de `frontend/src/` en el KMS). Batería del asistente
+`VEREDICTO: VERDE` (28 de 28) y los dos controles de seguridad del repositorio
+(`comprobar-escrituras-directas.mjs`, `comprobar-selector-appsheet.mjs`) `VERDE`. La batería **no
+cubre** la proyección nueva del KMS (corre contra un backend simulado que nunca llama al KMS
+real) — se midió leyendo el código real contra `origin/master` (arriba: `rec_type_code` ya estaba,
+`owner_person_ids` no existía en absoluto antes de este cambio).
+
 ### `0º.octies` (2026-08-21) — el PULSO no paga el viaje de la identidad cuando su valor no cambia el resultado
 
 **No es una avería: no se pierde ni un dato y no hay fuga. Es espera evitable en el latido más
