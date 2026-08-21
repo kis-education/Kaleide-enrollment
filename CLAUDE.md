@@ -1931,6 +1931,90 @@ repositorio, `VERDE`. **Solo frontend**: se publica solo al empujar a `main` (CI
 exactamente la misma pantalla; es un ahorro de tiempo por dentro, sin ni un campo ni un mensaje
 nuevo.
 
+### `0º.quindecies` (cierre de la ficha, 2026-08-21) — los TRES hallazgos que quedaban, medidos, y ninguno con un arreglo seguro de una sola vuelta
+
+**Esto cierra la ficha `0º.quindecies` entera.** Los dos primeros ya estaban resueltos (la caché
+de la puerta con la ficha completa, y el pulso apartándose durante una subida). Quedaban tres
+hallazgos sin tocar y **ninguna salida estaba prescrita** — se midieron los tres, y los tres
+terminan sin código nuevo esta vuelta, con su motivo cada uno.
+
+**1 · El choque entre subir un documento y «sigo aquí» — MEDIDO: NO es raro, y el freno que
+hacía falta YA EXISTE.**
+
+Con un arnés efímero (fuera del repositorio) que reimplementa VERBATIM la condición de disparo de
+`touchActivity()` (`WizardContext.jsx:768-802` — `REFRESCO_UMBRAL_S = 300 s`, la mitad de los
+10 minutos de la ventana) sobre 200.000 instantes uniformes dentro de la ventana de step-up: **el
+50,0 % de la ventana está en la zona donde CUALQUIER clic dispara `refrescarVentana()`** — el
+resultado teórico exacto, porque el umbral es la mitad de la ventana. Rojo demostrado: con el
+umbral roto a 0 s la fracción cae a 0,00 %, confirmando que la medición mide lo que dice medir.
+
+⇒ **la colisión NO es un caso raro de la sesión de Diego: pasa siempre que la familia lleva más de
+5 minutos sin refrescar y hace clic para adjuntar un archivo** (el clic que abre el selector es
+exactamente el que dispara `touchActivity`, justo antes de que arranque la subida).
+
+**Y el debounce que el encargo proponía como salida —«si `refrescarVentana` ya está en vuelo,
+no lanzar una segunda petición»— YA ESTÁ CONSTRUIDO**: `if (refrescandoVentana.current) return;`
+(`WizardContext.jsx:775`), antes de disparar cualquier llamada nueva. No hay una segunda petición
+que evitar que no se evite ya.
+
+**Por qué no se toca nada más: las dos mutaciones validan SIEMPRE en vivo (KAL-4), y no pueden
+compartir la caché de 300 s sin romper ese invariante** — es la misma razón por la que la tercera
+pieza tampoco tocó esta colisión. `_leerMarcaStepUp_`/`_extenderVentanaStepUp_` son de las piezas
+más medidas y más frágiles del repositorio (②24, el techo de 2 horas): tocarlas sin un arnés del
+mismo rigor no es el trabajo de una vuelta. **Se cierra como «medida, sin arreglo esta vez»** —
+la salida que el propio encargo autorizaba cuando no hay nada seguro que hacer.
+
+**2 · Fundir los viajes de la subida dentro del KMS — CONFIRMADA la redundancia, encargo APARTE.**
+
+Leído el manejador real, `enr_wizardComprobarSubida` (`kis-app kms-server/enr/wizard-gateway.gs:1747`):
+su primera línea es `var s = enr_wizardGate_(payload);` — **sí re-resuelve la sesión desde cero**,
+la MISMA pregunta que la puerta (`enr.wizardExpedienteDelToken`) ya contestó unas líneas antes en
+el mismo `uploadDocument_`. Confirma la sospecha del encargo. La forma correcta, igual que
+`DL-E57`, es que la puerta acepte en el mismo cuerpo los datos que hoy pide `wizardComprobarSubida`
+(`enrollment_id` + `upload_idempotency_token`) y devuelva las dos respuestas en una — nunca al
+revés.
+
+**No se hace esta vuelta**: toca los DOS repositorios y es más grande que las piezas ya cerradas —
+exactamente el caso que el propio encargo preveía («trátalo como una entrada aparte si no cabe en
+la misma vuelta»). Queda **anotado aquí, con el fichero y la línea exactos**, para que la próxima
+vuelta no tenga que volver a medir esto.
+
+**3 · `simularCuotas` — 72 s para decir que no hay nada que simular — MEDIDO, y NO se toca dinero
+sin el arnés que le corresponde.**
+
+Leído `fin_previewTemplateSchedule`/`fin_previewTemplateScheduleBody_`
+(`kis-app kms-server/fin/template-preview.gs`): el enganche `SIN_MODALIDADES` no sale de una
+lectura de más que se pueda saltar — sale de que, **por diseño** (el guardarraíl anti-«segundo
+derivador» que la propia cabecera del fichero declara: *«NO hay matemática nueva aquí»*), el
+ensayo COMPONE VERBATIM los mismos resolvedores de producción que corren al instanciar de verdad,
+por cada ítem × cada modalidad candidata: variante, tarifa, ventana, calendario, motor de
+descuentos con sus políticas y sus escaleras. Es cara PORQUE reutiliza el camino real, a
+propósito, para que el ensayo y el cobro nunca diverjan.
+
+**Todas las lecturas DIRECTAS de este fichero están cubiertas por el prewarm/memo** ya declarado
+(`db_readMemoPrewarm_`, `template-preview.gs:156-170`) — medido con
+`grep -noE "db_find\(\s*'[A-Za-z0-9_]+'" kms-server/fin/template-preview.gs`: las ocho tablas que
+lee este fichero (`finProducts`, `finSubscriptionTemplateItems`, `finSubscriptionTemplates`,
+`finDiscountPolicies`, `finDiscountProductEligibility`, `finDiscountPolicyTiers`,
+`finVariantPrices`, `finPaymentModalities`, `sysTenantMilestones_T`) están **todas** en la lista de
+prewarm. El coste de los 72 s, por tanto, **no está aquí**: vive dentro de las funciones que este
+fichero LLAMA (`fin_resolveAutomaticPolicies_`, `fin_varianteYTarifaDePartida_`,
+`fin_declaracionesQueAlcanzanLaPlantilla_`, la cadena del evaluador `qb_evaluateCondition_`…),
+cada una con sus propias lecturas — trazarlas exige su propio inventario de tablas y su propio
+prewarm, en un fichero de OTRO módulo (`fin/discount-engine.gs` y el motor `qb*`).
+
+**No se toca esta vuelta, y el motivo es el mismo que rige todo el módulo `fin`**: es dinero, y
+`fin_previewTemplateSchedule` es de las piezas MÁS auditadas del repositorio precisamente porque
+compone el motor de facturación real — un atajo puesto sin el arnés que exige DL-071/DL-080/DL-082
+(rojos demostrados, comparación byte a byte contra el cobro real) arriesga exactamente el defecto
+que el guardarraíl del fichero existe para impedir: una segunda matemática que diverja de la
+primera. **Se cierra como investigación estructural, no como arreglo** — el sitio exacto donde
+seguir (las funciones llamadas, no este fichero) queda escrito para quien lo retome.
+
+**Con los tres hallazgos medidos y decididos, `0º.quindecies` queda CERRADA.** Su encargo
+(`prompts/cli-quindecies-lo-que-queda.md`) se elimina en el mismo cambio. **Sin código nuevo esta
+vuelta** ⇒ sin batería, sin muro de publicación, sin turno: no hay nada que desplegar.
+
 ### `0º.septies` (2026-08-21) — el precalentado comprueba su freno ANTES de salir al KMS
 
 **No es una avería: no se pierde ni un dato y no hay fuga. Es tiempo tirado en el camino de entrada
