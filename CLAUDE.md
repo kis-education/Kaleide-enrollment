@@ -1747,6 +1747,65 @@ camino **nunca usó** — lo que de paso acredita que el cambio no le quita nada
 **Manual, ayuda en pantalla y textos: ninguno toca.** La familia ve la misma pantalla y el mismo
 mensaje, solo que antes.
 
+### `0º.quindecies` (parcial, 2026-08-21) — el acierto de la caché de 300 s de la puerta ahora lleva la FICHA, no solo el identificador
+
+**Esto NO cierra `0º.quindecies` entera — cierra el primer hallazgo, el barato: la puerta del
+expediente se preguntaba dos veces dentro de la MISMA acción, sin necesidad, porque su propia
+caché de 5 minutos solo recordaba el identificador y no la ficha.**
+
+**Lo medido, con fichero y línea, contra `origin/main` antes de tocar nada.**
+`getAdmissionState_` (`backend/Code.js`) empieza llamando a `requireResumeTokenMemo_` — el memo
+de LECTURA de 300 s (`rtmemo_`, `CacheService`) que existe justamente para no pagar la puerta en
+cada latido. Cuando acierta, devuelve el identificador del expediente en menos de 1 ms — pero
+**solo el identificador**: la memoria de EJECUCIÓN que guarda la FICHA completa
+(`_memoCabeceraEjecucion_`, la de `②17` duodécimo tramo) **solo la rellena el camino EN VIVO**, no
+el acierto de caché. Un poco más abajo, en la MISMA petición, `getAdmissionState_` vuelve a pedir
+la ficha (`_expedienteDelToken_`, para saber de qué buzón es el enlace) — y como esa memoria de
+ejecución estaba vacía, **volvía a preguntarle al KMS por la misma ficha que el acierto de caché
+ya conocía**. Es exactamente el patrón que el registro real de Diego del 2026-08-20 muestra:
+`wizardTutorQueRecupera` (20,6 s) → `wizardEstadoDeLaAdmision` (33,1 s) → `wizardExpedienteDelToken`
+(12,45 s) — el tercer viaje era evitable.
+
+**El arreglo, en dos sitios, ambos del mismo mecanismo:** la caché de 300 s (`rtmemo_`) ahora
+guarda `{identificador, ficha}` en vez de solo el identificador — tanto cuando la escribe el
+camino de LECTURA (`requireResumeTokenMemo_`, tras un fallo de caché) como cuando la escribe
+CUALQUIER mutación en vivo (`requireResumeToken_`, el gate de `uploadDocument_`,
+`saveStep_`, etc. — que **nunca** usa el memo, valida siempre en vivo). Esto último importa
+porque en el caso REAL de Diego el vecino en esa ventana de 90 s era precisamente una mutación
+(`uploadDocument`), no otra lectura. Al acertar, el acierto **archiva la ficha** en la memoria de
+ejecución (`_memoCabeceraEjecucion_`, bajo la clave ESTRICTA — nunca la tolerante, mismo criterio
+que el camino vivo) para que una relectura posterior en esa MISMA petición no vuelva a preguntar.
+
+**Lo que NO se toca:** el TTL sigue siendo 300 s, sin invalidación explícita (el mismo lag
+aceptado de siempre para lecturas); el cross-group guard (KAL-4) sigue aplicándose sobre el
+acierto; y una entrada de caché con la forma VIEJA (de antes de este cambio, solo el
+identificador) se trata como un acierto sin ficha — degrada al comportamiento de ayer, nunca
+revienta. Nada de esto toca los handlers de MUTACIÓN, que siguen validando siempre en vivo
+(`requireResumeTokenMemo_` está prohibido ahí, y sigue estándolo).
+
+⚠️ **Lo que queda SIN tocar de `0º.quindecies`, y por qué se deja para otra vuelta:** (1) si las
+tres acciones simultáneas del cliente (subir, refrescar la ventana, el pulso) deberían dejar de
+dispararse a la vez — es un cambio de cliente, y éste era un cambio de servidor; (2) el hallazgo
+de `simularCuotas` tardando 72 s para decir «no hay nada que simular» — es un camino distinto
+(`SIN_MODALIDADES`), sin relación con la puerta; (3) si el propio `enr.wizardComprobarSubida` +
+`enr.wizardPersistUpload` de la subida pueden fundirse en menos viajes. Los tres quedan anotados
+en `loop-backlog.md`, fila `0º.quindecies`, para que la próxima vuelta no los reinvente ni los dé
+por hechos.
+
+**Comprobado antes de publicar**: un arnés efímero fuera del repositorio que extrae del fuente
+`requireResumeTokenMemo_`, `requireResumeToken_`, `_expedienteDelToken_`, `_memoCabeceraEjecucion_`
+y `_memoCabeceraClave_` y los ejecuta con dobles de `CacheService` y del proxy al KMS —
+**11 afirmaciones verdes** (primera llamada 1 viaje · relectura en la misma ejecución 0 viajes ·
+acierto de caché 0 viajes de la puerta Y 0 de la relectura posterior · cross-group guard intacto ·
+una entrada vieja degrada sin reventar · una mutación deja la caché lista para el pulso que la
+siga, sin viaje ninguno de los dos) y **DOS rojos demostrados** contra la versión anterior del
+mismo fichero (sin el primer arreglo: la relectura de la cabecera tras un acierto de caché de
+LECTURA vuelve a costar 1 viaje · sin el segundo: la relectura tras un acierto que vino de una
+MUTACIÓN también vuelve a costar 1 viaje). `check-quality-gates.mjs` **VERDE** en el KMS (no se
+tocó nada ahí) y en el asistente `comprobar-escrituras-directas.mjs` + `comprobar-selector-appsheet.mjs`
+**VERDE**; el resultado de `npm run e2e:wizard` se registra en `EN-CURSO.md` del turno que
+publica.
+
 ### `0º.septies` (2026-08-21) — el precalentado comprueba su freno ANTES de salir al KMS
 
 **No es una avería: no se pierde ni un dato y no hay fuga. Es tiempo tirado en el camino de entrada

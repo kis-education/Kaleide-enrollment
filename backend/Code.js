@@ -588,6 +588,27 @@ function assertValidSigningToken_(v, fieldName) {
  * esos validan SIEMPRE en vivo. Lag aceptado ≤5 min para abandono/expiración/
  * rotación en lecturas (mismo trade-off aprobado del memo de requireSignerIdentity_);
  * el PII-gate de step-up (ventana dura 10 min) sigue evaluándose EN VIVO aparte.
+ *
+ * ★ 0º.quindecies (2026-08-21) — el acierto ARCHIVA TAMBIÉN LA FICHA, no solo el id, y
+ * la deja en la memoria de EJECUCIÓN (`_memoCabeceraEjecucion_`, clave `estricto` —
+ * ②17 duodécimo/2026-08-19 tramos). Medido en el registro real de Diego (2026-08-20):
+ * `getAdmissionState_` empieza llamando A ESTA función, y cuando acierta (caso normal:
+ * la familia ya llevaba activa unos segundos) el id vuelve en <1 ms — pero la memoria de
+ * ejecución quedaba VACÍA porque solo la escribe el camino VIVO. Más abajo, en la MISMA
+ * petición, `_expedienteDelToken_` volvía a preguntarle al KMS por la MISMA ficha
+ * (`enr.wizardExpedienteDelToken`, 12,45 s medidos) SOLO porque su memoria no la
+ * encontraba — el acierto de aquí no la había dejado. Con la ficha dentro del acierto,
+ * ese segundo viaje se ahorra entero.
+ *
+ * ⛔ SOLO se archiva bajo la clave ESTRICTA, nunca la tolerante — mismo criterio EXACTO
+ * que el camino vivo (ver el comentario de `requireResumeToken_` junto a esa escritura):
+ * lo que vuelve de aquí YA pasó los tres rechazos de la puerta estricta (si no, habría
+ * lanzado), así que archivarlo como estricto no cambia ni un rechazo.
+ * ⛔ El TTL y el criterio de invalidación NO cambian: sigue siendo la MISMA entrada
+ * `rtmemo_` de 300 s, sin invalidación explícita — el lag aceptado es el de siempre.
+ * Un acierto con la forma VIEJA (solo el id, de una entrada sembrada antes de este
+ * cambio) se trata como acierto sin ficha — degrada al comportamiento de ayer, nunca
+ * revienta.
  * @private
  */
 function requireResumeTokenMemo_(payload) {
@@ -600,19 +621,32 @@ function requireResumeTokenMemo_(payload) {
     key = 'rtmemo_' + sha256Hex_(Utilities.newBlob(String(token).trim()).getBytes()).slice(0, 40);
     const hit = cache.get(key);
     if (hit) {
-      // Cross-group guard — paridad EXACTA con requireResumeToken_ (KAL-4).
-      const payloadGroupId = payload && (payload.enrollment_group_id || payload.application_id);
-      if (payloadGroupId && payloadGroupId !== hit) {
-        throw new Error('Unauthorized: payload enrollment_group_id does not match resume_token grant');
+      let hitParsed = null;
+      try { hitParsed = JSON.parse(hit); } catch (eParse) { hitParsed = null; }
+      const hitGid = (hitParsed && hitParsed.gid) ? hitParsed.gid : (hitParsed ? null : hit);
+      if (hitGid) {
+        // Cross-group guard — paridad EXACTA con requireResumeToken_ (KAL-4).
+        const payloadGroupId = payload && (payload.enrollment_group_id || payload.application_id);
+        if (payloadGroupId && payloadGroupId !== hitGid) {
+          throw new Error('Unauthorized: payload enrollment_group_id does not match resume_token grant');
+        }
+        if (hitParsed && hitParsed.fila) {
+          _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)] = hitParsed.fila;
+        }
+        return hitGid;
       }
-      return hit;
     }
   } catch (e) {
     if (e && /Unauthorized/.test(e.message || '')) throw e;
     // assert/cache falló → camino vivo (degradación limpia)
   }
   const groupId = requireResumeToken_(payload);
-  try { if (cache && key) cache.put(key, groupId, 300); } catch (e2) { /* best-effort */ }
+  try {
+    if (cache && key) {
+      const filaViva = _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)] || null;
+      cache.put(key, JSON.stringify({ gid: groupId, fila: filaViva }), 300);
+    }
+  } catch (e2) { /* best-effort */ }
   return groupId;
 }
 
@@ -712,10 +746,21 @@ function requireResumeToken_(payload) {
   // VIVA — así la primera llamada de lectura posterior (getDocument_) ya tiene el
   // gate caliente sin pagar otra lectura AppSheet. Best-effort; no cambia la
   // semántica de validación de NINGÚN caller (esto ES el resultado en vivo).
+  //
+  // ★ 0º.quindecies (2026-08-21) — lleva la FICHA, no solo el id. Este tramo es el
+  // camino VIVO: lo recorre TODO llamante (mutaciones incluidas, vía requireResumeToken_
+  // directo — nunca requireResumeTokenMemo_) cada vez que el acierto de caché de arriba
+  // falla. Si aquí se siguiera guardando solo el id, una mutación (uploadDocument_, que
+  // valida SIEMPRE en vivo, nunca por memo) dejaría la entrada de 300s en la forma VIEJA,
+  // y el pulso que la siga (getAdmissionState_, que SÍ usa el memo) heredaría un acierto
+  // sin ficha — exactamente el caso medido en el registro real de Diego, donde
+  // uploadDocument_ y getAdmissionState_ caían en la MISMA ventana de 90 s. Con la ficha
+  // aquí también, cualquier caller en vivo deja la caché lista para el memo que venga
+  // detrás, sea cual sea el que la escribió primero.
   try {
     CacheService.getScriptCache().put(
       'rtmemo_' + sha256Hex_(Utilities.newBlob(String(payload.resume_token).trim()).getBytes()).slice(0, 40),
-      tokenGroupId, 300);
+      JSON.stringify({ gid: tokenGroupId, fila: group }), 300);
   } catch (eM) { /* best-effort */ }
   // Cross-group guard: if payload also provides group_id (legacy alias
   // `application_id` included), it MUST match the one resolved from token.
