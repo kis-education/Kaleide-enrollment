@@ -146,6 +146,9 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'simulador-en-pie': 'guardar la forma de pago elegida exige el código de un solo uso, que el servidor manda al buzón de la familia y este arnés no lee buzones; en modo simulado sí se cubre',
     'simulador-caido': 'el escenario hostil (el simulador no responde) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
   },
+  'simulador-paso7-varios-planes': {
+    'varios-planes': 'exige declarar en el catálogo real dos plantillas de suscripción aplicables a la vez al mismo solicitante; en modo simulado sí se cubre',
+  },
   'fecha-a-mitad-de-curso': {
     'limite-ilegible': 'el escenario hostil (el servidor devuelve los límites del programa en el formato crudo de AppSheet) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
   },
@@ -4622,6 +4625,16 @@ async function caminoSimuladorPaso7(page, base) {
       opciones.every(o => /\d/.test(o.txt) && /€|EUR/.test(o.txt)),
       `los textos de las opciones fueron ${JSON.stringify(opciones.map(o => o.txt))}: sin importe, esto no es un simulador de tarifas`)
 
+    // `0º.quaterdecies` (2026-08-21) — con UN solo plan aplicable la pantalla tiene que
+    // quedar BYTE-IDÉNTICA a como estaba antes de que un solicitante pudiera tener varios
+    // planes a la vez: sin envoltorio de plan, sin nombre de plan, sin total sumado — esos
+    // tres solo aparecen cuando hay MÁS de un plan (ver `caminoSimuladorPaso7VariosPlanes`).
+    const marcasDeVariosPlanes = await page.$$(
+      '[data-testid="paso7-plan"], [data-testid="paso7-solicitante"], [data-testid="paso7-total-solicitante"]')
+    c.afirmar('con un solo plan, la pantalla NO pinta el envoltorio de "varios planes"',
+      marcasDeVariosPlanes.length === 0,
+      `se encontraron ${marcasDeVariosPlanes.length} marca(s) de varios planes con un único plan aplicable: la pantalla dejó de ser byte-idéntica a la de antes`)
+
     await page.click('[data-testid="paso7-modalidad"]')
     await page.waitForTimeout(LATENCY + 600)
     c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, 1)
@@ -4665,6 +4678,74 @@ async function caminoSimuladorPaso7(page, base) {
     return c
   } finally {
     limpiar()
+  }
+}
+
+/**
+ * simulador-paso7-varios-planes — UN NIÑO PUEDE TENER VARIOS PLANES A LA VEZ
+ * (`0º.quaterdecies`, 2026-08-21).
+ *
+ * ── El defecto que cierra ────────────────────────────────────────────────────────────
+ * Antes, cuando a un solicitante le tocaban VARIAS plantillas de suscripción aplicables a
+ * la vez (cuota escolar + comedor + permanencia — la configuración que Diego está montando
+ * AHORA, con los tres aplicando a todos los niños), la simulación del paso 7 se rendía con
+ * `VARIAS_PLANTILLAS` y la familia dejaba de ver sus cuotas justo en la pantalla donde
+ * revisa antes de enviar. Ahora se ensayan TODAS las plantillas que le tocan y se ven
+ * todas, cada una con su nombre y su forma de pago, más el total sumado del solicitante.
+ *
+ * ── Lo que este camino NO repite ─────────────────────────────────────────────────────
+ * El caso de UN solo plan (el de siempre) lo sigue midiendo `caminoSimuladorPaso7`, que
+ * gana la afirmación de que con un solo plan la pantalla queda byte-idéntica a como
+ * estaba — sin envoltorio de plan, sin total sumado. Aquí solo se mide el caso de VARIOS.
+ */
+async function caminoSimuladorPaso7VariosPlanes(page, base) {
+  const c = new Camino('simulador-paso7-varios-planes')
+  scenario.stage = 'lista_para_enviar'
+  scenario.dosPlanes = true
+
+  if (REAL) {
+    c.noCubierta('varios-planes',
+      'exige declarar en el catálogo real dos plantillas de suscripción aplicables a la vez al mismo solicitante; en modo simulado sí se cubre')
+    return c
+  }
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) < 6; i++) {
+      if (!await continuar(c, page, (await dondeEstoy(page)) + 1, 'con dos planes')) break
+    }
+    if (!c.afirmar('se llega a Revisión con dos planes aplicables', (await dondeEstoy(page)) === 6,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(LATENCY + 600)
+
+    const planes = await page.$$('[data-testid="paso7-plan"]')
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, planes.length)
+    if (!c.afirmar('se ven los DOS planes del solicitante, no uno', planes.length === 2,
+      `se pintaron ${planes.length} bloque(s) de plan: con dos plantillas aplicables tienen que verse las dos`)) return c
+
+    const nombres = await page.$$eval('[data-testid="paso7-plan-nombre"]',
+      els => els.map(e => (e.textContent || '').trim()))
+    c.afirmar('cada plan enseña su NOMBRE (la plantilla), no un identificador',
+      nombres.includes('Cuota escolar') && nombres.includes('Comedor'),
+      `los nombres leídos fueron ${JSON.stringify(nombres)}`)
+
+    const opciones = await page.$$('[data-testid="paso7-modalidad"]')
+    c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, 1)
+    c.afirmar('cada plan sigue ofreciendo su propia forma de pago para elegir',
+      opciones.length === 2,
+      `se pintaron ${opciones.length} opción(es) de forma de pago: se esperaba una por plan`)
+
+    // 3.000,00 € (cuota) + 1.200,00 € (comedor) = 4.200,00 € — la suma, no un solo plan.
+    const totalTxt = await page.$eval('[data-testid="paso7-total-solicitante"]',
+      el => (el.textContent || '').trim()).catch(() => '')
+    c.afirmar('el total del solicitante es la SUMA de sus planes',
+      /4[.,]?200[.,]00/.test(totalTxt),
+      `el total leído fue ${JSON.stringify(totalTxt)}: se esperaba la suma de los dos planes (4.200,00 €)`)
+
+    return c
+  } finally {
+    scenario.dosPlanes = false
   }
 }
 
@@ -5322,6 +5403,11 @@ const CAMINOS = [
   // Contra el sistema real se declara NO CUBIERTO: el paso 7 exige el código de un solo
   // uso para guardar la preferencia, y ese código llega a un buzón que el arnés no lee.
   { nombre: 'simulador-paso7', fn: caminoSimuladorPaso7,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
+  // `0º.quaterdecies` — un solicitante con VARIOS planes aplicables a la vez (cuota +
+  // comedor) ve los dos, con su nombre y su total sumado. Contra el sistema real se
+  // declara NO CUBIERTO: exige declarar dos plantillas aplicables a la vez en el catálogo.
+  { nombre: 'simulador-paso7-varios-planes', fn: caminoSimuladorPaso7VariosPlanes,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
   // DL-E49 §4/§9 — la familia AVISA al tutor que acaba de declarar (pedido por Diego).

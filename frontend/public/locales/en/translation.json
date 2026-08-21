@@ -568,5 +568,7 @@
   "step7.sim.option_unavailable": "Not available for this case.",
   "step7.sim.save_error": "We could not save the payment option you chose. You can still submit your application: you will choose it for real later on.",
   "step7.sim.save_stepup": "To save your preferred payment option we need to check it is you. You can still submit your application: you will choose it for real later on.",
+  "step7.sim.plan_generic": "Other item",
+  "step7.sim.total_solicitante": "Total: {{amount}}",
   "stepup.aviso_techo": "For security, your session will close in {{reloj}}. We will ask for the code from your email again to continue; nothing you have written is lost."
 }

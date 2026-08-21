@@ -804,11 +804,39 @@ export function createDispatcher(scenario, record) {
         return { ok: true, simulable: false, motivo: 'NO_SE_PUDO_SIMULAR', simulaciones: [],
                  preferred_modality_id: null };
       }
+      // `0º.quaterdecies` (2026-08-21) — UN NIÑO PUEDE TENER VARIOS PLANES A LA VEZ: cada
+      // plantilla aplicable llega como SU PROPIA fila de `simulaciones`, con el MISMO
+      // `applicant_person_id`. Se pide EXPLÍCITAMENTE con la palanca del escenario — sin
+      // ella, un solo plan, byte-idéntico al de siempre.
+      if (scenario.dosPlanes) {
+        return {
+          ok: true, simulable: true, motivo: null, preferred_modality_id: null,
+          simulaciones: [{
+            applicant_person_id: FIXTURE.applicantId,
+            template_id: 'tpl-cuota-e2e', template_designation: 'Cuota escolar', motivo: null,
+            modalidades: [
+              { modality_id: 'mod-cuota-e2e', modality_code: 'ANNUAL', designation: 'Pago anual',
+                installments: 1, cuotas: [{ due_date: '2027-09-01', amount_cents: 300000 }],
+                per_installment_cents: null, gross_cents: 300000, discount_cents: 0,
+                net_cents: 300000, currency_code: 'EUR', available: true, descuentos: [] },
+            ],
+          }, {
+            applicant_person_id: FIXTURE.applicantId,
+            template_id: 'tpl-comedor-e2e', template_designation: 'Comedor', motivo: null,
+            modalidades: [
+              { modality_id: 'mod-comedor-e2e', modality_code: 'ANNUAL', designation: 'Pago anual',
+                installments: 1, cuotas: [{ due_date: '2027-09-01', amount_cents: 120000 }],
+                per_installment_cents: null, gross_cents: 120000, discount_cents: 0,
+                net_cents: 120000, currency_code: 'EUR', available: true, descuentos: [] },
+            ],
+          }],
+        };
+      }
       return {
         ok: true, simulable: true, motivo: null, preferred_modality_id: null,
         simulaciones: [{
           applicant_person_id: FIXTURE.applicantId,
-          template_id: 'tpl-e2e', motivo: null,
+          template_id: 'tpl-e2e', template_designation: 'Cuota escolar', motivo: null,
           modalidades: [
             { modality_id: 'mod-anual-e2e', modality_code: 'ANNUAL', designation: 'Pago anual',
               installments: 1, cuotas: [{ due_date: '2027-09-01', amount_cents: 525000 }],

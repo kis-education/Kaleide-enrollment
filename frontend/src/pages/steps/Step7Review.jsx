@@ -139,8 +139,10 @@ function CorrectionRequest({ resumeToken, t }) {
  * exactamente lo que DL-080-A prohíbe.
  */
 function SimulacionDeCuotas({ resumeToken, applicants, t }) {
-  const [sim, setSim]           = useState(null);   // null = cargando
-  const [elegida, setElegida]   = useState(null);
+  const [sim, setSim]             = useState(null);   // null = cargando
+  // { [template_id]: modality_id } — UNA elección por PLAN, no una sola global (2026-08-21:
+  // un solicitante puede tener varios planes a la vez, cada uno con la suya).
+  const [seleccion, setSeleccion] = useState({});
   const [guardando, setGuardando] = useState(null); // modality_id en curso
   const [aviso, setAviso]       = useState('');
 
@@ -152,7 +154,15 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
         if (!vivo) return;
         const r = (res && typeof res === 'object') ? res : { simulable: false, simulaciones: [] };
         setSim(r);
-        if (r.preferred_modality_id) setElegida(r.preferred_modality_id);
+        // La preferencia guardada es DEL EXPEDIENTE, no del plan — el servidor solo
+        // recuerda la última forma de pago elegida en CUALQUIER plan (medido y reportado
+        // en el encargo: `preferred_modality_id` sigue siendo un único valor por grupo).
+        // Se siembra en el plan al que esa forma de pago pertenece de verdad, si aparece.
+        if (r.preferred_modality_id) {
+          const dueño = (r.simulaciones || []).find(pl =>
+            (pl.modalidades || []).some(m => m.modality_id === r.preferred_modality_id));
+          if (dueño) setSeleccion({ [dueño.template_id]: r.preferred_modality_id });
+        }
       })
       .catch(e => {
         // Degrada y calla: el resto del paso 7 tiene que funcionar igual.
@@ -169,10 +179,10 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
     } catch (e) { return n.toFixed(2) + ' ' + (currency || 'EUR'); }
   };
 
-  const elegir = (modalityId) => {
+  const elegir = (templateId, modalityId) => {
     if (guardando) return;
     setAviso('');
-    setElegida(modalityId);          // optimista: es una preferencia, no dinero en firme
+    setSeleccion(prev => ({ ...prev, [templateId]: modalityId })); // optimista, por plan
     setGuardando(modalityId);
     guardarModalidadPreferida(resumeToken, modalityId)
       .catch(e => {
@@ -188,7 +198,111 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
     return a ? [a.first_name, a.last_name].filter(Boolean).join(' ').trim() : '';
   };
 
-  const conOpciones = ((sim && sim.simulaciones) || []).filter(x => (x.modalidades || []).length > 0);
+  // Las tarjetas de forma de pago de UN plan — extraído para reusarlo idéntico en el
+  // camino de un solo plan y en el de varios (ni una línea de JSX distinta entre los dos).
+  const tarjetasDelPlan = (plan) => (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+      {(plan.modalidades || []).map(m => {
+        const seleccionada = seleccion[plan.template_id] != null && m.modality_id === seleccion[plan.template_id];
+        const ocupada      = guardando === m.modality_id;
+        const noDisponible = m.available === false;
+        return (
+          <button
+            key={m.modality_id}
+            type="button"
+            data-testid="paso7-modalidad"
+            data-modality-id={m.modality_id}
+            onClick={() => elegir(plan.template_id, m.modality_id)}
+            disabled={noDisponible || !!guardando}
+            aria-pressed={seleccionada}
+            style={{
+              textAlign: 'left', minWidth: 210, flex: '1 1 210px',
+              border: '2px solid ' + (seleccionada ? 'var(--teal-dk)' : 'var(--border)'),
+              background: seleccionada ? 'rgba(0,161,154,0.06)' : '#fff',
+              borderRadius: 8, padding: '10px 12px',
+              cursor: noDisponible ? 'not-allowed' : 'pointer',
+              opacity: noDisponible ? 0.55 : 1,
+            }}
+          >
+            <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--teal-dk)' }}>
+              {m.designation || m.modality_code}
+              {ocupada && <span style={{ marginLeft: 8, fontWeight: 400, fontSize: '0.78rem' }}>
+                {t('step7.sim.saving')}
+              </span>}
+            </div>
+            {noDisponible ? (
+              <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
+                {t('step7.sim.option_unavailable')}
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: '0.84rem', marginTop: 4 }}>
+                  {m.per_installment_cents != null
+                    ? t('step7.sim.installments', { n: m.installments, amount: money(m.per_installment_cents, m.currency_code) })
+                    : t('step7.sim.installments_varied', { n: m.installments })}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 2 }}>
+                  {t('step7.sim.total', { amount: money(m.net_cents, m.currency_code) })}
+                </div>
+                {Number(m.discount_cents || 0) > 0 && (
+                  <div style={{ fontSize: '0.8rem', color: '#1a7f37', fontWeight: 600, marginTop: 2 }}>
+                    {t('step7.sim.saving_amount', { amount: money(m.discount_cents, m.currency_code) })}
+                  </div>
+                )}
+                {(m.descuentos || []).length > 0 && (
+                  <div style={{ fontSize: '0.76rem', color: 'var(--muted)', marginTop: 2 }}>
+                    {(m.descuentos || []).map(d => d.designation || d.policy_code).filter(Boolean).join(' · ')}
+                  </div>
+                )}
+                {(m.cuotas || []).length > 0 && (
+                  <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 6 }}>
+                    {t('step7.sim.first_due', { date: m.cuotas[0].due_date || '—' })}
+                  </div>
+                )}
+              </>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // La forma de pago QUE CUENTA para el total de un plan: la que la familia eligió en
+  // ESE plan si la hay, si no la primera DISPONIBLE (nunca una atenuada con `available:false`).
+  const modalidadRepresentativa = (plan) => {
+    const elegidaId = seleccion[plan.template_id];
+    if (elegidaId) {
+      const m = (plan.modalidades || []).find(x => x.modality_id === elegidaId);
+      if (m) return m;
+    }
+    const disponibles = (plan.modalidades || []).filter(m => m.available !== false);
+    return disponibles[0] || (plan.modalidades || [])[0] || null;
+  };
+
+  const totalSolicitante = (planes) => {
+    let cents = 0; let currency = null; let alguna = false;
+    planes.forEach(plan => {
+      const m = modalidadRepresentativa(plan);
+      if (m) { cents += Number(m.net_cents || 0); currency = currency || m.currency_code || 'EUR'; alguna = true; }
+    });
+    return alguna ? { cents, currency: currency || 'EUR' } : null;
+  };
+
+  const planesConOpciones = ((sim && sim.simulaciones) || []).filter(x => (x.modalidades || []).length > 0);
+
+  // Agrupados por SOLICITANTE, en el orden de llegada — un niño puede traer varios
+  // planes (cuota + comedor + permanencia), uno por plantilla aplicable (2026-08-21).
+  const porSolicitante = [];
+  const indicePorSolicitante = new Map();
+  planesConOpciones.forEach(plan => {
+    let grupo = indicePorSolicitante.get(plan.applicant_person_id);
+    if (!grupo) {
+      grupo = { applicant_person_id: plan.applicant_person_id, planes: [] };
+      indicePorSolicitante.set(plan.applicant_person_id, grupo);
+      porSolicitante.push(grupo);
+    }
+    grupo.planes.push(plan);
+  });
 
   return (
     <div className="kis-card mt-3" data-testid="paso7-simulador">
@@ -208,86 +322,57 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
         </p>
       )}
 
-      {sim !== null && !conOpciones.length && (
+      {sim !== null && !planesConOpciones.length && (
         <p data-testid="paso7-simulador-vacio"
            style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 0 }}>
           {t('step7.sim.unavailable')}
         </p>
       )}
 
-      {conOpciones.map(bloque => (
-        <div key={bloque.applicant_person_id} style={{ marginBottom: 18 }}>
-          {conOpciones.length > 1 && nombreDe(bloque.applicant_person_id) && (
-            <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8 }}>
-              {nombreDe(bloque.applicant_person_id)}
+      {porSolicitante.map(sol => {
+        const nombre = porSolicitante.length > 1 ? nombreDe(sol.applicant_person_id) : '';
+        // UN solo plan por solicitante ⇒ markup BYTE-IDÉNTICO al de antes de que un niño
+        // pudiera tener varios planes a la vez: ni envoltorio de plan, ni total sumado.
+        if (sol.planes.length === 1) {
+          return (
+            <div key={sol.applicant_person_id} style={{ marginBottom: 18 }}>
+              {nombre && (
+                <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8 }}>
+                  {nombre}
+                </div>
+              )}
+              {tarjetasDelPlan(sol.planes[0])}
             </div>
-          )}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-            {(bloque.modalidades || []).map(m => {
-              const seleccionada = elegida != null && m.modality_id === elegida;
-              const ocupada      = guardando === m.modality_id;
-              const noDisponible = m.available === false;
-              return (
-                <button
-                  key={m.modality_id}
-                  type="button"
-                  data-testid="paso7-modalidad"
-                  data-modality-id={m.modality_id}
-                  onClick={() => elegir(m.modality_id)}
-                  disabled={noDisponible || !!guardando}
-                  aria-pressed={seleccionada}
-                  style={{
-                    textAlign: 'left', minWidth: 210, flex: '1 1 210px',
-                    border: '2px solid ' + (seleccionada ? 'var(--teal-dk)' : 'var(--border)'),
-                    background: seleccionada ? 'rgba(0,161,154,0.06)' : '#fff',
-                    borderRadius: 8, padding: '10px 12px',
-                    cursor: noDisponible ? 'not-allowed' : 'pointer',
-                    opacity: noDisponible ? 0.55 : 1,
-                  }}
-                >
-                  <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--teal-dk)' }}>
-                    {m.designation || m.modality_code}
-                    {ocupada && <span style={{ marginLeft: 8, fontWeight: 400, fontSize: '0.78rem' }}>
-                      {t('step7.sim.saving')}
-                    </span>}
-                  </div>
-                  {noDisponible ? (
-                    <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
-                      {t('step7.sim.option_unavailable')}
-                    </div>
-                  ) : (
-                    <>
-                      <div style={{ fontSize: '0.84rem', marginTop: 4 }}>
-                        {m.per_installment_cents != null
-                          ? t('step7.sim.installments', { n: m.installments, amount: money(m.per_installment_cents, m.currency_code) })
-                          : t('step7.sim.installments_varied', { n: m.installments })}
-                      </div>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 2 }}>
-                        {t('step7.sim.total', { amount: money(m.net_cents, m.currency_code) })}
-                      </div>
-                      {Number(m.discount_cents || 0) > 0 && (
-                        <div style={{ fontSize: '0.8rem', color: '#1a7f37', fontWeight: 600, marginTop: 2 }}>
-                          {t('step7.sim.saving_amount', { amount: money(m.discount_cents, m.currency_code) })}
-                        </div>
-                      )}
-                      {(m.descuentos || []).length > 0 && (
-                        <div style={{ fontSize: '0.76rem', color: 'var(--muted)', marginTop: 2 }}>
-                          {(m.descuentos || []).map(d => d.designation || d.policy_code).filter(Boolean).join(' · ')}
-                        </div>
-                      )}
-                      {(m.cuotas || []).length > 0 && (
-                        <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 6 }}>
-                          {t('step7.sim.first_due', { date: m.cuotas[0].due_date || '—' })}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </button>
-              );
-            })}
+          );
+        }
+
+        const total = totalSolicitante(sol.planes);
+        return (
+          <div key={sol.applicant_person_id} data-testid="paso7-solicitante" style={{ marginBottom: 24 }}>
+            {nombre && (
+              <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8 }}>
+                {nombre}
+              </div>
+            )}
+            {sol.planes.map(plan => (
+              <div key={plan.template_id} data-testid="paso7-plan" data-template-id={plan.template_id}
+                   style={{ marginBottom: 14 }}>
+                <div data-testid="paso7-plan-nombre"
+                     style={{ fontWeight: 600, fontSize: '0.86rem', marginBottom: 6, color: 'var(--muted)' }}>
+                  {plan.template_designation || t('step7.sim.plan_generic')}
+                </div>
+                {tarjetasDelPlan(plan)}
+              </div>
+            ))}
+            {total && (
+              <div data-testid="paso7-total-solicitante"
+                   style={{ fontWeight: 700, fontSize: '0.88rem', marginTop: 4 }}>
+                {t('step7.sim.total_solicitante', { amount: money(total.cents, total.currency) })}
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {aviso && (
         <div className="alert alert-warning" role="alert"
