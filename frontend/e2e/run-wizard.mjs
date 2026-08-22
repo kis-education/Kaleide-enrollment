@@ -399,7 +399,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0 }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -1584,6 +1584,65 @@ async function volverAlPasoDeLaFecha(c, page, pasoActivo) {
   const editable = await page.$eval('input[type="date"], #mid', el => !el.disabled).catch(() => false)
   return c.afirmar('tras «Editar», el paso de la fecha vuelve a ser editable', editable,
     'el campo sigue deshabilitado: la familia no podría corregir su fecha al volver')
+}
+
+/**
+ * programa-se-recupera — EL PROGRAMA ELEGIDO SE VE AL VOLVER, Y DEJA AVANZAR
+ * (`0º.tricies.bis`, Diego 2026-08-22: *«siempre que vuelvo al paso 1 sale "Selecciona un
+ * programa…". De hecho, ahora he vuelto y no me deja avanzar al paso 2»*).
+ *
+ * ── El defecto que cierra, MEDIDO contra el sistema real ─────────────────────────────
+ * El programa **SÍ se guarda** y **SÍ viaja**: la hidratación devuelve la fila entera del
+ * expediente, con `program_id` y `desired_start_date` rellenos (comprobado con
+ * `manual_diagCursoDelPaso7`/`manual_diagQueLlegaAlPaso1` sobre un expediente real). Lo que
+ * fallaba es que **esta pantalla no lo leía**: tomaba `stepData.email.program_id`, y el
+ * hidratador pone el programa en `stepData.application` —lo dice con todas las letras—, así
+ * que ese campo era SIEMPRE `undefined`. Con UN solo programa no se notaba porque el
+ * catálogo lo auto-elegía; con varios, el desplegable salía vacío, `canContinue` quedaba en
+ * `false` y **la familia no podía pasar al paso 2**.
+ *
+ * ⛔ Por eso este camino sirve DOS programas (`scenario.variosProgramas`): con uno solo, la
+ * afirmación pasaría en vacío gracias al auto-elegido, que es exactamente lo que escondió
+ * el defecto durante semanas.
+ */
+async function caminoProgramaSeRecupera(page, base) {
+  const c = new Camino('programa-se-recupera')
+  scenario.stage = 'sin_fecha'        // sin fecha ⇒ aterriza en el paso 1
+  scenario.variosProgramas = true
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 600)
+
+    const opciones = await page.$$eval('select option', os => os.map(o => o.value).filter(Boolean))
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, opciones.length)
+    if (!c.afirmar('el desplegable ofrece MÁS DE UN programa (si no, el auto-elegido lo tapa)',
+      opciones.length >= 2,
+      `el desplegable trajo ${opciones.length} opción(es): con una sola, «el programa se recupera» pasaría en vacío`)) return c
+
+    const elegido = await page.$eval('select', el => el.value).catch(() => null)
+    c.afirmar('el programa que la familia eligió SE VE marcado al volver',
+      !!elegido && elegido !== '',
+      `el desplegable quedó en ${JSON.stringify(elegido)}: la familia ve «Selecciona un programa…» y su elección se perdió de vista`)
+
+    // El síntoma que Diego reportó: no es cosmético, es que NO SE PUEDE AVANZAR.
+    //
+    // ⛔ Se miran TODOS los botones de continuar, no el primero que casa: el paso pinta DOS
+    // (el de la barra de arriba y el del final), los dos gateados por lo mismo, y quedarse
+    // con uno dejaba pasar la rotura — medido: con el desplegable vacío esta afirmación
+    // salía VERDE mirando solo el primero.
+    const botones = await page.$$eval('button', bs => bs
+      .filter(x => /continuar|continue/i.test(x.textContent || ''))
+      .map(x => ({ txt: (x.textContent || '').trim().slice(0, 24), disabled: x.disabled })))
+    if (!c.afirmar('el paso 1 pinta algún botón de continuar (si no, no hay nada que afirmar)',
+      botones.length > 0, 'no se encontró ningún botón de continuar en el paso 1')) return c
+    c.afirmar('con el programa recuperado, el paso 1 DEJA avanzar al paso 2',
+      botones.every(b => b.disabled === false),
+      `los botones de continuar quedaron ${JSON.stringify(botones)}: deshabilitado es justo lo que tenía parada a la familia`)
+    return c
+  } finally {
+    scenario.variosProgramas = false
+  }
 }
 
 async function caminoGuardarPaso(page, base) {
@@ -5687,6 +5746,7 @@ const CAMINOS = [
   // Ejercita el paso 4 DESDE LA PANTALLA también en simulado. Nació para contestar, sin
   // gastar una corrida de 35 min, si el `0 de 1` de la salud contra el sistema real era
   // del producto o del conductor. Se queda: era cobertura que faltaba.
+  { nombre: 'programa-se-recupera', fn: caminoProgramaSeRecupera, minLlamadas: 1, minElementos: 2 },
   { nombre: 'salud-desde-la-pantalla', fn: caminoSaludDesdeLaPantalla, minLlamadas: 1, minElementos: 11 },
   // Defecto 3 de la definición de hecho: el cuestionario se apagaba entero, en silencio
   // y durante media hora, por un fallo pasajero del servidor. Ver el camino.

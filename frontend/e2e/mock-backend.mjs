@@ -112,7 +112,22 @@ const aFormatoAppSheet_ = (iso) => {
  */
 function lookupsSegunEscenario_(scenario) {
   const modo = scenario && scenario.formatoFechasPrograma;
-  if (modo !== 'appsheet' && modo !== 'ilegible') return LOOKUPS;
+  // `0º.tricies.bis` — con UN SOLO programa la pantalla lo auto-elige, así que la
+  // comprobación de «el programa guardado SE VE al volver» pasaría EN VACÍO, que es peor
+  // que no tenerla. La palanca sirve un SEGUNDO programa para que haya algo que recuperar.
+  //
+  // ⛔ Va ANTES de la salida rápida de abajo, y NO es estilo: puesta después, la palanca
+  // solo surtía efecto cuando además se estaba forzando el formato de fechas — y el camino
+  // salía ROJO diciendo «el desplegable trajo 1 opción».
+  const programas = (scenario && scenario.variosProgramas)
+    ? LOOKUPS.programs.concat([{
+        program_id:       'prog-2-e2e',
+        designation:      'Otro programa (E2E)',
+        period_starts_on: LOOKUPS.programs[0].period_starts_on,
+        period_ends_on:   LOOKUPS.programs[0].period_ends_on,
+      }])
+    : LOOKUPS.programs;
+  if (modo !== 'appsheet' && modo !== 'ilegible') return { ...LOOKUPS, programs: programas };
   const convertir = modo === 'appsheet'
     ? aFormatoAppSheet_
     // 'ilegible' — un valor que NINGÚN lector de fechas puede interpretar. No es un caso
@@ -122,7 +137,7 @@ function lookupsSegunEscenario_(scenario) {
     : () => 'sin fecha declarada';
   return {
     ...LOOKUPS,
-    programs: LOOKUPS.programs.map((p) => ({
+    programs: programas.map((p) => ({
       ...p,
       period_starts_on: convertir(p.period_starts_on),
       period_ends_on:   convertir(p.period_ends_on),
@@ -336,7 +351,7 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
     relations:      [],
     documents:      [],
     responses:      [],
-    lookups:        LOOKUPS,
+    lookups:        LOOKUPS,   // lo sobrescriben los despachadores con `lookupsSegunEscenario_`
     // El servidor ARREGLADO no manda `{sets:[]}` cuando falla: RETIRA la clave y marca
     // `questions_no_disponible` (backend/Code.js, wizardResolverPreguntasDeHidratacion_).
     // Por eso el modo de fallo aquí no siembra vacío — no manda catálogo.

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { fetchLookups } from '../../api';
@@ -52,8 +52,21 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
   const data  = stepData.email;
   const email = data.primary_email || '';
 
+  // ⭐ `0º.tricies.bis` (Diego, 2026-08-22: *«no me deja avanzar al paso 2»*) — DE DÓNDE SALE
+  // EL PROGRAMA GUARDADO. **Medido contra el sistema real antes de tocar nada**: el programa
+  // SÍ se guarda y SÍ viaja — la hidratación devuelve la fila entera del expediente, con
+  // `program_id` y `desired_start_date` rellenos. Lo que no era cierto es que esta pantalla
+  // lo leyera: `stepData.email` NO lleva `program_id` (el hidratador lo dice con todas las
+  // letras) — lo pone en `stepData.application`. Esta pantalla leía `data.program_id`, que
+  // por tanto era SIEMPRE `undefined`, dejaba el desplegable vacío y con él
+  // `canContinue = false`. Con un solo programa no se notaba porque el catálogo lo
+  // auto-elegía; en cuanto el centro declara varios, la familia se queda encallada.
+  const guardado = stepData.application || {};
+  const programaGuardado = guardado.program_id || data.program_id || '';
+  const fechaGuardada    = onlyDate(guardado.desired_start_date || data.desired_start_date);
+
   const [programs,          setPrograms]          = useState(null); // null = loading
-  const [selectedProgramId, setSelectedProgramId] = useState(data.program_id || '');
+  const [selectedProgramId, setSelectedProgramId] = useState(programaGuardado);
   // El modo de incorporación NO se decide con una fecha escrita a mano en el código: se
   // DERIVA de la fecha de inicio que declara el programa (`period_starts_on`, que este
   // componente ya carga). Antes se comparaba contra el literal '09-01' ⇒ un curso que
@@ -61,8 +74,19 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
   // curso». Aquí solo se guarda la elección EXPLÍCITA de la familia; `null` = todavía no
   // ha elegido, y entonces manda lo declarado.
   const [startTypeChoice,  setStartTypeChoice]  = useState(null);
-  const [desiredStartDate, setDesiredStartDate] = useState(onlyDate(data.desired_start_date));
+  const [desiredStartDate, setDesiredStartDate] = useState(fechaGuardada);
   const [highlightEdit,    setHighlightEdit]    = useState(false);
+
+  // ⭐ RE-SEMBRADO: los datos del servidor pueden llegar DESPUÉS de que esta pantalla se
+  // monte (la hidratación es asíncrona), y un `useState` solo lee su valor inicial una vez.
+  // Mismo criterio que el re-sembrado de `Step4Health.jsx`: **FUSIONA, no reemplaza** — solo
+  // se siembra lo que la familia NO ha tocado en esta pantalla, para no pisarle lo que
+  // acaba de elegir mientras la respuesta venía de camino.
+  const tocado = useRef({ programa: false, fecha: false });
+  useEffect(() => {
+    if (!tocado.current.programa && programaGuardado) setSelectedProgramId(programaGuardado);
+    if (!tocado.current.fecha    && fechaGuardada)    setDesiredStartDate(fechaGuardada);
+  }, [programaGuardado, fechaGuardada]);
 
   const selectedProgram = (programs || []).find(p => p.program_id === selectedProgramId) || null;
   // Las DOS fuentes declaradas de este paso. Vacías = el programa no lo declara; en ese
@@ -98,6 +122,7 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
   }, []); // eslint-disable-line
 
   const handleProgramChange = (programId) => {
+    tocado.current.programa = true;
     setSelectedProgramId(programId);
     const prog = (programs || []).find(p => p.program_id === programId);
     if (prog?.period_starts_on && startType === 'september') {
@@ -106,6 +131,7 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
   };
 
   const handleStartType = (type) => {
+    tocado.current.fecha = true;
     setStartTypeChoice(type);
     if (type === 'september') {
       setDesiredStartDate(programStartsOn);
