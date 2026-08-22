@@ -199,13 +199,25 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
   // ampliación de horario, que no ofrecen alternativa.
   //
   // ⛔ AQUÍ NO SE CALCULA DINERO (DL-080-A): `money()` divide entre 100 y formatea.
+  // ⛔ UNA FORMA DE PAGO PUEDE NO TENER NOMBRE, y no es un dato que falte: es el caso de un
+  // plan que NO ADMITE NINGUNA forma de pago (permanencia, ampliación de horario — van por
+  // regla o a mano). El KMS lo devuelve así a propósito: `fin_previewTemplateSchedule`
+  // simula con `candidates = [null]` + aviso `NO_MODALITIES_ADMITTED`, y
+  // `enr_proyectarSimulacionesDelEnsayo_` emite UNA modalidad con
+  // `modality_id`/`modality_code`/`designation` a `null` y su calendario entero.
+  // Sin este trozo, la línea salía empezando por un « · » suelto.
   const etiquetaDeModalidad = (x) => {
     const nombre = x.designation || x.modality_code || '';
-    if (x.available === false) return nombre + ' — ' + t('step7.sim.option_unavailable');
+    if (x.available === false) {
+      const noDisp = t('step7.sim.option_unavailable');
+      return nombre ? nombre + ' — ' + noDisp : noDisp;
+    }
     const importe = x.per_installment_cents != null
       ? t('step7.sim.installments', { n: x.installments, amount: money(x.per_installment_cents, x.currency_code) })
       : t('step7.sim.installments_varied', { n: x.installments });
-    return nombre + ' · ' + importe + ' · ' + t('step7.sim.total', { amount: money(x.net_cents, x.currency_code) });
+    const total = t('step7.sim.total', { amount: money(x.net_cents, x.currency_code) });
+    const cola = importe + ' · ' + total;
+    return nombre ? nombre + ' · ' + cola : cola;
   };
 
   const selectorDelPlan = (plan) => {

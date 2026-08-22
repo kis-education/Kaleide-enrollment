@@ -4958,26 +4958,26 @@ async function caminoSimuladorPaso7VariosPlanes(page, base) {
     for (let i = 0; i < 8 && (await dondeEstoy(page)) < 6; i++) {
       if (!await continuar(c, page, (await dondeEstoy(page)) + 1, 'con dos planes')) break
     }
-    if (!c.afirmar('se llega a Revisión con dos planes aplicables', (await dondeEstoy(page)) === 6,
+    if (!c.afirmar('se llega a Revisión con los planes aplicables', (await dondeEstoy(page)) === 6,
       `se quedó en el índice ${await dondeEstoy(page)}`)) return c
     await desbloquear(page)
     await page.waitForTimeout(LATENCY + 600)
 
     const planes = await page.$$('[data-testid="paso7-plan"]')
     c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, planes.length)
-    if (!c.afirmar('se ven los DOS planes del solicitante, no uno', planes.length === 2,
-      `se pintaron ${planes.length} bloque(s) de plan: con dos plantillas aplicables tienen que verse las dos`)) return c
+    if (!c.afirmar('se ven los TRES planes del solicitante, no uno', planes.length === 3,
+      `se pintaron ${planes.length} bloque(s) de plan: con tres plantillas aplicables tienen que verse las tres`)) return c
 
     const nombres = await page.$$eval('[data-testid="paso7-plan-nombre"]',
       els => els.map(e => (e.textContent || '').trim()))
     c.afirmar('cada plan enseña su NOMBRE (la plantilla), no un identificador',
-      nombres.includes('Cuota escolar') && nombres.includes('Comedor'),
+      nombres.includes('Cuota escolar') && nombres.includes('Comedor') && nombres.includes('Permanencia'),
       `los nombres leídos fueron ${JSON.stringify(nombres)}`)
 
     const opciones = await page.$$('[data-testid="paso7-modalidad"]')
     c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, 1)
     c.afirmar('cada plan sigue ofreciendo su propia forma de pago para elegir',
-      opciones.length === 2,
+      opciones.length === 3,
       `se pintaron ${opciones.length} opción(es) de forma de pago: se esperaba una por plan`)
 
     // ⭐ 0º.tricies (c) — UN PLAN SIN SELECTOR TAMBIÉN ENSEÑA SU CALENDARIO. Diego lo pidió
@@ -5002,12 +5002,40 @@ async function caminoSimuladorPaso7VariosPlanes(page, base) {
       desgloseDelComedor.every(f => f.fecha && !/^\d{4}-\d{2}-\d{2}$/.test(f.fecha)),
       `el desglose del comedor fue ${JSON.stringify(desgloseDelComedor)}: sin selector Diego sigue queriendo ver todos los vencimientos`)
 
-    // 3.000,00 € (cuota) + 1.200,00 € (comedor) = 4.200,00 € — la suma, no un solo plan.
+    // ⭐ `0º.tricies` (segunda vuelta) — Y EL PLAN QUE NO ADMITE NINGUNA FORMA DE PAGO.
+    // NO es el mismo caso que el comedor de arriba, que tiene UNA: aquí el KMS devuelve la
+    // modalidad con `designation`/`modality_code` a **null** (`candidates = [null]`), y esa
+    // forma es la que hacía que la línea empezara por un « · » suelto. Sin este caso en el
+    // doble, la comprobación de arriba pasa en vacío sobre un plan que SÍ tiene nombre.
+    const permanencia = await page.$$eval('[data-testid="paso7-plan"]', bloques => {
+      const b = bloques.find(x => /Permanencia/.test(x.textContent || ''))
+      if (!b) return null
+      const linea = b.querySelector('[data-testid="paso7-modalidad"]')
+      return {
+        linea: ((linea || {}).textContent || '').trim(),
+        filas: Array.from(b.querySelectorAll('[data-testid="paso7-desglose-fila"]')).map(tr => ({
+          concepto: ((tr.querySelector('[data-testid="paso7-desglose-concepto"]') || {}).textContent || '').trim(),
+          fecha:    ((tr.querySelector('[data-testid="paso7-desglose-fecha"]')    || {}).textContent || '').trim(),
+        })),
+      }
+    })
+    if (!c.afirmar('el plan que no admite NINGUNA forma de pago se pinta', !!permanencia,
+      'no se encontró el bloque del plan «Permanencia»')) return c
+    c.afirmar('una forma de pago SIN NOMBRE se anuncia con su importe, sin un separador suelto delante',
+      !!permanencia.linea && !/^\s*[·—-]/.test(permanencia.linea),
+      `la línea leída fue ${JSON.stringify(permanencia.linea)}: vacía la familia no ve qué paga, y empezando por « · » lee un renglón roto`)
+    c.afirmar('el plan sin ninguna forma de pago enseña igualmente su calendario completo',
+      permanencia.filas.length === 2 &&
+      permanencia.filas.every(f => f.concepto && f.concepto !== '—') &&
+      permanencia.filas.every(f => f.fecha && !/^\d{4}-\d{2}-\d{2}$/.test(f.fecha)),
+      `el desglose de permanencia fue ${JSON.stringify(permanencia.filas)} (se esperaban 2 filas con concepto y fecha legible)`)
+
+    // 3.000,00 € (cuota) + 1.200,00 € (comedor) + 500,00 € (permanencia) = 4.700,00 €.
     const totalTxt = await page.$eval('[data-testid="paso7-total-solicitante"]',
       el => (el.textContent || '').trim()).catch(() => '')
     c.afirmar('el total del solicitante es la SUMA de sus planes',
-      /4[.,]?200[.,]00/.test(totalTxt),
-      `el total leído fue ${JSON.stringify(totalTxt)}: se esperaba la suma de los dos planes (4.200,00 €)`)
+      /4[.,]?700[.,]00/.test(totalTxt),
+      `el total leído fue ${JSON.stringify(totalTxt)}: se esperaba la suma de los tres planes (4.700,00 €)`)
 
     return c
   } finally {

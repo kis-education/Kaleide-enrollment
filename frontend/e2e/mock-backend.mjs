@@ -853,6 +853,26 @@ export function createDispatcher(scenario, record) {
                 per_installment_cents: 15000, gross_cents: 120000, discount_cents: 0,
                 net_cents: 120000, currency_code: 'EUR', available: true, descuentos: [] },
             ],
+          }, {
+            // ⭐ `0º.tricies` (segunda vuelta) — UN PLAN QUE NO ADMITE NINGUNA FORMA DE PAGO.
+            // NO es lo mismo que el comedor de arriba, que tiene UNA: aquí no hay ninguna, y
+            // el KMS lo devuelve con `modality_id`/`modality_code`/`designation` a **null**
+            // (`fin_previewTemplateSchedule` simula con `candidates = [null]` + aviso
+            // `NO_MODALITIES_ADMITTED`; lo proyecta `enr_proyectarSimulacionesDelEnsayo_`).
+            // Esa forma es la que hacía que la línea empezara por un « · » suelto, y sin este
+            // caso en el doble la comprobación pasaba en vacío sobre el comedor.
+            applicant_person_id: FIXTURE.applicantId,
+            template_id: 'tpl-permanencia-e2e', template_designation: 'Permanencia', motivo: null,
+            modalidades: [
+              { modality_id: null, modality_code: null, designation: null,
+                installments: 2,
+                cuotas: [
+                  { due_date: '2027-09-01', concepto: 'Permanencia mañana', amount_cents: 25000 },
+                  { due_date: '2027-10-01', concepto: 'Permanencia mañana', amount_cents: 25000 },
+                ],
+                per_installment_cents: 25000, gross_cents: 50000, discount_cents: 0,
+                net_cents: 50000, currency_code: 'EUR', available: true, descuentos: [] },
+            ],
           }],
         };
       }

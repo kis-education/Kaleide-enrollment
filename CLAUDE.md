@@ -2185,6 +2185,82 @@ para la batería, que corre contra un backend simulado). Del lado del KMS,
 **Manual, ayuda en pantalla y textos: ninguno toca.** La familia ve exactamente la misma pantalla
 del paso 7 — solo que, la mayoría de las veces, ya está calculada cuando llega.
 
+### `0º.tricies` (2026-08-22) — el paso 7: un DESPLEGABLE de forma de pago, y el calendario completo también cuando NO hay ninguna
+
+**Decisión de Diego, literal, tras probar lo publicado (TERCERA pasada sobre esta pantalla):** *«No
+desglosa los devengos como te dije que tenía que hacer (igual que en el simulador del KMS para cada
+plantilla de suscripción), con fechas, etc. Y sigue sin dejar elegir la modalidad. Lo que ofrece son
+dos tarjetas, pero yo no quiero tarjetas, quiero un botón o desplegable que elija entre modalidades
+y las muestre con todos los conceptos (matrícula, fecha etc.)»*
+
+**Cómo queda la pantalla.** Por cada plan: con **dos o más** formas de pago, un **desplegable**
+—cada opción con su nombre, su número de pagos y su total—; con **una sola**, se dice cuál es y no
+se pregunta (*«un desplegable de una opción no es una elección»*, el mismo criterio que el tipo de
+documento del paso 6). Y **siempre, debajo, el calendario completo**: una fila por vencimiento con
+su concepto, su fecha legible y su importe. Cambiar de forma de pago **repinta al instante y sin ir
+al servidor** — todas vienen en la misma respuesta.
+
+**⛔ EL CASO QUE NO ES «una sola forma de pago» SINO NINGUNA, y por qué importa.** Un plan puede no
+admitir **ninguna** —permanencia, ampliación de horario: van por regla o a mano—, y el KMS lo
+devuelve con una forma particular: `fin_previewTemplateSchedule` simula con `candidates = [null]` +
+aviso `NO_MODALITIES_ADMITTED`, y `enr_proyectarSimulacionesDelEnsayo_` emite **UNA** modalidad con
+`modality_id`/`modality_code`/`designation` a **`null`** y su calendario entero. Con las tarjetas
+eso se pintaba **sin rótulo**; en la primera vuelta del selector, la línea salía **empezando por un
+« · » suelto** (`nombre` vacío + separador). Hoy, sin nombre se anuncia solo con su importe y su
+total, y su calendario se ve igual — que es lo único que le dice a esa familia qué y cuándo paga.
+
+⚠️ **Y UNA PREMISA DE LA FICHA ERA FALSA — medida contra `origin/main` antes de tocar nada.** Su
+segundo punto decía que *«la pantalla sigue pintando solo “Primer pago” (`m.cuotas[0].due_date`) y
+NUNCA pinta el calendario»*. **No era cierto**: `tablaDeDesglose` existía y se pintaba en los dos
+caminos —un plan y varios— desde `0º.vicies.sexies` (`7db4513`, 06:43), y la ficha se escribió
+después (07:46). Lo que **sí** era cierto y era el defecto: **seguían siendo tarjetas**, y el
+«Primer pago» era un resumen redundante teniendo el calendario debajo. Es §"Un COMENTARIO del
+código no es criterio normativo" (`kis-app/CLAUDE.md`) aplicado a una ficha de la cola.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ El asistente NO calcula dinero** (DL-080-A): `money()` divide entre 100 y formatea, y nada
+  más. El total sale del servidor (`net_cents`) y **no se recalcula en pantalla**.
+- **⛔ Elegir NO viaja a ningún sitio.** La marca vive solo en el navegador (`formaDePagoMarcada`,
+  `WizardContext`), decisión de Diego del 2026-08-21. La elección EN FIRME es la del paso 8
+  (`enr.wizardApplyModality`), **que no se toca** y se llama casi igual.
+- **Quién decide qué calendario se ve**: `modalidadMarcadaOPrimera` — la que la familia eligió en
+  ESE plan, si no la primera **disponible**. Un solo sitio; el desglose y el total lo comparten.
+- **Un solo formateador de fechas**, `utils/fechas.js` (`fechaLegible`). No se escribe otro.
+- **El simulador nunca puede impedir enviar**: vive fuera de `handleSubmit` y degrada en silencio.
+
+**Textos**: `step7.sim.modality_label` (es/en) y `breakdown_title` → «Calendario de pagos»; salen
+las claves que dejaron de leerse (`first_due` entre ellas, que se fue con las tarjetas).
+
+**Red**: `npm run e2e:wizard` **VEREDICTO: VERDE — 28 de 28**. Cinco afirmaciones nuevas repartidas
+en los dos recorridos del simulador, y **el doble sirve TRES planes a propósito**: uno con dos
+formas de pago (para que «elegir» no se compruebe en vacío), uno con **una** (comedor, 8
+vencimientos) y uno con **ninguna** (permanencia, `modality_id: null`). **Rojo demostrado**, cada
+uno nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| devolver los botones en vez del `<select>` | *«selector encontrado: false; las opciones eran ["BUTTON","BUTTON"]: han vuelto las tarjetas»* |
+| que el desglose ignore lo elegido | *«el desglose tenía 1 fila(s) y tras cambiar tiene 1»* |
+| quitar el separador condicional del rótulo | *«la línea leída fue "· 2 pago(s) de 250,00 € · Total: 500,00 €"»* |
+| filtrar por `modality_id` en el selector (el plan sin ninguna forma de pago pierde su línea) | *«la línea leída fue ""»* + *«se pintaron 2 opción(es)… se esperaba una por plan»* |
+| que la tabla se calle sin modalidad | *«se leyeron 0 fila(s) (se esperaban 2)»* |
+
+⚠️ **Solo FRONTAL: nada de esto ejerce `backend/Code.js` ni el KMS**, que es de donde salen los
+importes y los conceptos; la batería corre contra el backend simulado. Los cuatro controles del
+repositorio, VERDES. Se publica **solo al empujar a `main`** (CI/Pages) — sin `clasp`.
+
+**Manual y ayuda en pantalla: ninguno toca** (este repositorio no tiene manual de usuario; los
+únicos textos son los de `frontend/public/locales/`, ya actualizados).
+
+⚠️ **DOS MANOS HICIERON ESTA FICHA A LA VEZ, y se dice para que no se repita.** Una rutina la
+construyó y la empujó a las **08:16**; otra la reservó en `kis-app/docs/kms/EN-CURSO.md` a las
+**08:21**, cuando ya estaba en `main` — **la primera no la había reservado**. El trabajo duplicado
+se **descartó** en vez de forzarlo encima: lo que se conservó de la segunda vuelta es lo que la
+primera no cubría (el plan con `modality_id: null`, su rótulo y sus tres afirmaciones) y la
+corrección de la premisa falsa. **La reserva se escribe ANTES de la primera línea de código, no al
+ir a publicar.**
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.
