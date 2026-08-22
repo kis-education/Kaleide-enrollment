@@ -138,13 +138,29 @@ assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.reco
 (por delante mediría un expediente que no viene del token, justo lo que KAL-4 prohíbe) y **ANTES**
 del trabajo caro (rechazar después de escribir no es una puerta, es un parte de daños).
 
-**El duodécimo, dado de alta el 2026-08-19:** `guardarModalidadPreferida_` — la forma de pago que
-la familia elige en la SIMULACIÓN del paso 7. No compromete a nadie (la elección en firme es la del
-paso 8, que es la que se firma), pero **es una escritura sobre el expediente de la familia** y va
-por la misma puerta que las demás: un `resume_token` filtrado no debe poder tocarle nada sin
-acreditar el buzón. Su hermano de la misma pantalla —`simularCuotas_`— **NO** lleva el código a
-propósito: es una LECTURA que no muta nada, y pedirlo dejaría sin ver sus tarifas a la familia que
-lleva más de diez minutos repasando su solicitud, que es exactamente cuando llega al paso 7.
+**Cuántos son, y dónde está la lista que MANDA (re-medido el 2026-08-22): son TRECE, y la lista
+viva es la del control** — `OBLIGADOS` en `scripts/verja-publica.mjs`, no este documento. Ocho
+entran por `requireResumeToken_` (`saveStep_`, `saveNeae_`, `saveResponses_`, `uploadDocument_`,
+`submitEnrollmentSession_`, `retirarDelExpediente_`, `avisarATutor_` y
+`refrescarVentanaDeInactividad_`) y cinco por `requireSignerIdentity_` (`saveBillingInfo_`,
+`applyPaymentModality_`, `submitGdprConsents_`, `confirmReview_` e `initiateSigningSession_`).
+
+⚠️ **Aquí vivía un párrafo que nombraba a `guardarModalidadPreferida_` como «el duodécimo, dado de
+alta el 2026-08-19». Era FALSO desde el 2026-08-21 y se retira**: ese manejador **ya no existe** —lo
+quitó entero `0º.vicies.sexies`, porque la presentación de pagos del paso 7 es meramente informativa
+y la marca de la forma de pago **vive solo en el navegador**, sin escritura que gatear—. El propio
+control ya lo dice en su lista, con su motivo: *«un obligado que no existe deja el control MIDIENDO
+EL AIRE»*. Que la cuenta escrita aquí dijera **doce** con **trece** en el control es la misma clase
+de defecto: un documento que se cita de memoria en vez de leerse del código.
+
+⛔ **NO se confunda con `applyPaymentModality_`, que SÍ sigue obligado**: ésa es la elección **EN
+FIRME** del paso 8, es dinero y se firma.
+
+**Y lo que sigue siendo cierto, porque de ello depende otra pantalla:** `simularCuotas_` **NO** lleva
+el código de un solo uso, a propósito — es una LECTURA que no muta nada, y pedirlo dejaría sin ver
+sus tarifas a la familia que lleva más de diez minutos repasando su solicitud, que es exactamente
+cuando llega al paso 7. Es también lo que permite que el paso 7 siga enseñando la simulación **con la
+solicitud ya enviada** (ficha `③70`), sin tocar el servidor.
 
 **Exentos, con su motivo — la lista vive en `scripts/verja-publica.mjs` y allí se amplía:**
 `requestCorrection_` (completa UNA MARCA que dice que la familia pidió corregir; poner candado a
@@ -1044,7 +1060,7 @@ cuando la petición además necesita saber DE QUÉ TUTOR es el enlace —`n` del
 Medido: `sendVerificationCode` (rama step-up) hacía **tres** viajes —`enr.wizardExpedienteDelToken`
 (la cabecera) · `enr.wizardTutorQueRecupera` (el tutor, re-resolviendo la MISMA sesión con el
 MISMO enlace) · `sys-public.sendAuthCode`—; el segundo desaparece. Lo mismo aplica a **cualquiera**
-de los doce manejadores de mutación que llevan el patrón `requireResumeToken_` +
+de los TRECE manejadores de mutación que llevan el patrón `requireResumeToken_` +
 `assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId))` (②27) cuando el payload trae `n`.
 
 **`requireResumeToken_` lee `payload.n`/`payload.recovered_email`** (la misma precedencia `n` >
@@ -1660,7 +1676,7 @@ instante (fire-and-forget).
 la verja real extraída del fuente (6 casos), comprueba las **cuatro** entradas anónimas y
 comprueba que la **quinta exige el token**, **antes del cupo**, y que `sendMagicLink_` **ya no
 lee el identificador del expediente del cuerpo** (si lo leyera, la puerta seguiría abierta).
-**Y, ya detrás del token (②27), comprueba la PARIDAD**: que los **12 manejadores de mutación**
+**Y, ya detrás del token (②27), comprueba la PARIDAD**: que los **13 manejadores de mutación** (la lista viva es `OBLIGADOS` de ese mismo módulo, no este documento)
 exigen el código de un solo uso, **tras** derivar el expediente del bearer y **antes** del trabajo
 caro (§"El token es la PRIMERA capa…"). **NO afirma** que la ventana de 10 min sea correcta ni que
 la marca sea del buzón que opera — eso es ②24 y vive en `_isStepUpFresh_`.
