@@ -399,7 +399,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -2198,6 +2198,142 @@ async function caminoSubirDocumento(page, base) {
     c.afirmar('el pulso vuelve a preguntar en cuanto la subida termina (no se queda apartado para siempre)',
       versionesTrasLaSubida.length > 0,
       'tras terminar la subida, un latido forzado siguió sin disparar getLiveStateVersion: el apartado no se libera')
+  } finally {
+    scenario.subidaDemoraMs = 0
+  }
+
+  // ── `0º.tricies.quinquies` (Diego, 2026-08-22) · EL DOCUMENTO QUE SE SUBE MIENTRAS LA
+  // FAMILIA AVANZA ────────────────────────────────────────────────────────────────────
+  // Cita literal: *«Elijo un documento… Se queda subiendo. Si en ese momento avanzo al paso 7
+  // y vuelvo al 6, el documento ha desaparecido. No sé si se sigue subiendo o se ha cancelado
+  // la subida.»* Se sigue subiendo —nada la aborta— pero su rastro moría con el panel, y como
+  // el navegador tampoco mandaba la marca de «este envío ya lo hice», volver a subirlo
+  // DUPLICABA. Aquí se miden las tres cosas.
+  //
+  // (a) LA MARCA VIAJA — sin ella el mecanismo anti-duplicado de los dos servidores está muerto.
+  const conMarca = llamadas('uploadDocument').filter(l => l.payload && l.payload.upload_idempotency_token)
+  c.afirmar('la subida manda su marca de idempotencia, con forma de UUID',
+    conMarca.length > 0 &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      .test(conMarca[conMarca.length - 1].payload.upload_idempotency_token),
+    `de ${llamadas('uploadDocument').length} subida(s), ${conMarca.length} llevaron marca; la última fue ` +
+    `${JSON.stringify(conMarca.length ? conMarca[conMarca.length - 1].payload.upload_idempotency_token : null)}: ` +
+    'sin marca válida el servidor acuña una nueva cada vez y el mismo archivo se guarda dos veces')
+
+  // (b) EL REINTENTO DEL MISMO ARCHIVO MANDA LA MISMA MARCA — es lo que hace que el segundo
+  // envío devuelva el fichero que ya estaba en vez de crear otro. El reintento que cuenta es
+  // el REAL: el servidor pide el código de un solo uso, la familia lo teclea y el asistente
+  // repite la subida por `setStepUpRetry`, con el MISMO archivo ya elegido.
+  //
+  // ⛔ Volver a ELEGIR el archivo NO es un reintento y acuña marca nueva a propósito: ahí el
+  // navegador no puede saber que son los mismos bytes, y reutilizar la marca haría que el
+  // servidor devolviera el fichero anterior creyendo la familia que subió el nuevo.
+  const MISMO_ARCHIVO = {
+    name: 'reintento-e2e.pdf', mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.4\n% mismo archivo, dos intentos\n'),
+  }
+  scenario.subidaPideCodigoUnaVez = true
+  try {
+    const anadirR = await page.$('.add-btn')
+    if (!anadirR) { c.fallos.push('el paso de Documentos dejó de ofrecer el botón de añadir archivo'); return c }
+    await anadirR.click()
+    await page.waitForTimeout(300)
+    const tiposR = await page.$$('.doc-attachment .doc-type')
+    if (tiposR.length) {
+      const opts = await tiposR[tiposR.length - 1].$$eval('option', os => os.map(o => o.value).filter(Boolean))
+      if (opts.length) await tiposR[tiposR.length - 1].selectOption(opts[0])
+    }
+    const ficherosR = await page.$$('.doc-attachment input[type="file"]')
+    await ficherosR[ficherosR.length - 1].setInputFiles(MISMO_ARCHIVO)
+    await page.waitForTimeout(LATENCY + 900)
+    // El asistente pide el código; al verificarlo repite la subida YA ELEGIDA
+    // (`setStepUpRetry`), que es el reintento que tiene que reenviar la misma marca.
+    const pedirlo = await page.$('input[autocomplete="one-time-code"]')
+    if (!pedirlo) {
+      // Todavía en «te lo mando»: se pulsa para que aparezca la casilla.
+      const enviar = await page.$$('button.btn-primary-kis')
+      for (const b of enviar) {
+        const txt = await b.evaluate(n => (n.textContent || '').trim())
+        if (/código|code/i.test(txt)) { await b.click(); break }
+      }
+      await page.waitForTimeout(LATENCY + 600)
+    }
+    const casilla = await page.$('input[autocomplete="one-time-code"]')
+    if (casilla) {
+      await casilla.fill('123456')
+      const botones = await page.$$('button.btn-primary-kis')
+      for (const b of botones) {
+        const txt = await b.evaluate(n => (n.textContent || '').trim())
+        if (/verificar|verify/i.test(txt)) { await b.click(); break }
+      }
+      await page.waitForTimeout(LATENCY + 1500)
+    }
+  } finally {
+    scenario.subidaPideCodigoUnaVez = false
+  }
+  const delMismoArchivo = llamadas('uploadDocument')
+    .filter(l => l.payload && l.payload.filename === MISMO_ARCHIVO.name)
+    .map(l => l.payload.upload_idempotency_token)
+  if (!c.afirmar('el reintento del mismo archivo llega a producirse (si no, no hay nada que comparar)',
+    delMismoArchivo.length >= 2,
+    `solo se registró ${delMismoArchivo.length} intento(s) de ${MISMO_ARCHIVO.name}: el reintento tras el código no llegó a dispararse`)) return c
+  c.afirmar('el reintento del MISMO archivo manda la MISMA marca (no lo duplica)',
+    !!delMismoArchivo[0] && delMismoArchivo.every(m => m === delMismoArchivo[0]),
+    `las marcas de los ${delMismoArchivo.length} intento(s) del mismo archivo fueron ${JSON.stringify(delMismoArchivo)}: ` +
+    'con marcas distintas el servidor guarda el archivo otra vez, que es el PDF repetido que Diego ya había visto')
+
+  // (c) LA FILA EN VUELO SOBREVIVE A SALIR DEL PASO. Se lanza una subida deliberadamente
+  // lenta, se avanza al paso 7 y se vuelve al 6: la fila tiene que SEGUIR AHÍ, y acabar en
+  // «subido» cuando la subida termine.
+  scenario.subidaDemoraMs = 4000
+  try {
+    const añadirV = await page.$('.add-btn')
+    if (!añadirV) { c.fallos.push('el paso de Documentos dejó de ofrecer el botón de añadir archivo'); return c }
+    await añadirV.click()
+    await page.waitForTimeout(300)
+    const tiposV = await page.$$('.doc-attachment .doc-type')
+    if (tiposV.length) {
+      const opts = await tiposV[tiposV.length - 1].$$eval('option', os => os.map(o => o.value).filter(Boolean))
+      if (opts.length) await tiposV[tiposV.length - 1].selectOption(opts[0])
+    }
+    const ficherosV = await page.$$('.doc-attachment input[type="file"]')
+    await ficherosV[ficherosV.length - 1].setInputFiles({
+      name: 'en-vuelo-e2e.pdf', mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4\n% subida en vuelo\n'),
+    })
+    await page.waitForTimeout(700)   // que SALGA, sin darle tiempo a volver
+
+    // La familia avanza al paso 7 con la subida en vuelo — a propósito, y NUNCA se le impide.
+    if (!await continuar(c, page, 6, 'al paso 7 con una subida en vuelo')) return c
+    await page.waitForTimeout(400)
+    if (!await irADocumentos(c, page, 'de vuelta con la subida en vuelo')) return c
+    await page.waitForTimeout(300)
+
+    // ⛔ NO se cuentan filas: al volver, las filas vacías o fallidas de antes desaparecen
+    // legítimamente (se siembran de lo guardado), así que un recuento mezcla dos cosas. Lo
+    // que se mide es lo único que dice si la subida sobrevivió: que haya una fila EN VUELO.
+    // ⛔ Se cuentan las filas POR ESTADO, no el texto de la página entera: en este punto ya
+    // hay otras filas que dicen «Subido» de subidas anteriores, así que buscar esa palabra en
+    // el `body` pasaba EN VACÍO — medido: con el aterrizaje roto a propósito, la afirmación
+    // seguía saliendo verde.
+    const porEstado = () => page.$$eval('.doc-attachment', ns => ({
+      enVuelo: ns.filter(n => /Subiendo|Uploading/i.test(n.textContent || '')).length,
+      subidos: ns.filter(n => /Subido|Uploaded/i.test(n.textContent || '')).length,
+    }))
+    const alVolver = await porEstado()
+    if (!c.afirmar('el documento que se estaba subiendo SIGUE en la pantalla al volver al paso 6',
+      alVolver.enVuelo >= 1,
+      `al volver al paso 6 hay ${alVolver.enVuelo} fila(s) en «subiendo…»: la fila en vuelo desapareció, que es justo lo que Diego reportó`)) return c
+
+    // Y termina: la subida acaba y ESA fila pasa a «subido» sola — una menos en vuelo, una
+    // más subida. Es lo único que acredita que el final de la subida llegó a la pantalla
+    // aunque el panel que la lanzó ya no exista.
+    await page.waitForTimeout(LATENCY + scenario.subidaDemoraMs + 3000)
+    const alTerminar = await porEstado()
+    c.afirmar('la subida que quedó en vuelo termina y ESA fila se ve como SUBIDA',
+      alTerminar.enVuelo === alVolver.enVuelo - 1 && alTerminar.subidos === alVolver.subidos + 1,
+      `al volver: ${JSON.stringify(alVolver)} · al terminar: ${JSON.stringify(alTerminar)}. ` +
+      'Se esperaba una fila menos en vuelo y una más subida: la fila se quedó en «subiendo…» porque el final de la subida no llegó a la pantalla')
   } finally {
     scenario.subidaDemoraMs = 0
   }

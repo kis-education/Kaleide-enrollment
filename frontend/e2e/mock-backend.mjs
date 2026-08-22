@@ -145,6 +145,10 @@ function lookupsSegunEscenario_(scenario) {
   };
 }
 
+// `0º.tricies.quinquies` — marca de idempotencia → fichero ya guardado, como en `recFiles`.
+const FICHEROS_POR_MARCA = new Map();
+let _ficheroSeq = 0;
+
 const LOOKUPS = {
   programs: [{
     program_id:       FIXTURE.programId,
@@ -788,6 +792,11 @@ export function createDispatcher(scenario, record) {
           puede_seguir: false, ya_envio: true, faltan_nombres: ['RobotDosE2E PruebaE2E'] }),
 
     // ── Documentos ───────────────────────────────────────────────────────────
+    // `0º.tricies.quinquies` — LA MARCA DE IDEMPOTENCIA, con el contrato del servidor real:
+    // si el mismo envío ya se guardó, se devuelve el fichero QUE YA ESTABA en vez de crear
+    // otro (`uploadDocument_` → `enr_wizardComprobarSubida` → `ya_subido.file_id`). Sin esto
+    // el simulado devolvía SIEMPRE el mismo identificador y no se podía distinguir «no
+    // duplicó» de «no distingue nada».
     uploadDocument: (p) => {
       if (!p.base64 || !p.filename) return { ok: false, error: { code: 'E2E_BAD_UPLOAD', message: 'sin bytes' } };
       // 18.bis.95 · el KMS dice que la ficha del documento NO quedó escrita. La forma la copia
@@ -798,7 +807,21 @@ export function createDispatcher(scenario, record) {
         return { ok: false, error: { code: 'DOCUMENTO_NO_REGISTRADO',
                                      message: 'El archivo se subió pero no quedó registrado en la solicitud: vuelve a intentarlo.' } };
       }
-      return { ok: true, file_id: FIXTURE.fileId };
+      // `0º.tricies.quinquies` — el servidor pide el código UNA vez, para poder medir el
+      // reintento REAL (el de `setStepUpRetry`), que es el que tiene que reenviar la MISMA
+      // marca. Un «volver a elegir el archivo» NO es un reintento: ahí el navegador no puede
+      // saber que son los mismos bytes, y acuñar marca nueva es lo correcto.
+      if (scenario.subidaPideCodigoUnaVez) {
+        scenario.subidaPideCodigoUnaVez = false;
+        return { ok: false, error: { code: 'STEPUP_REQUIRED', message: 'Step-up re-verification required' } };
+      }
+      const marca = p.upload_idempotency_token || '';
+      if (marca && FICHEROS_POR_MARCA.has(marca)) {
+        return { ok: true, file_id: FICHEROS_POR_MARCA.get(marca), repetido: true };
+      }
+      const fileId = `${FIXTURE.fileId}-${++_ficheroSeq}`;
+      if (marca) FICHEROS_POR_MARCA.set(marca, fileId);
+      return { ok: true, file_id: fileId };
     },
     getDocument: () => ({ ok: true, base64: 'JVBERi0xLjQK', mimeType: 'application/pdf', filename: 'doc-e2e.pdf' }),
 

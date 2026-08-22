@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import { gasCall, fetchLookups, identidadDelEnlace } from '../../api';
@@ -63,18 +63,58 @@ let _rowSeq = 0;
 const newRowId = () => `doc_row_${++_rowSeq}_${Date.now()}`;
 
 /**
+ * `0º.tricies.quinquies` — la marca de idempotencia de UNA subida.
+ *
+ * ⛔ TIENE QUE SER UN UUID: el servidor del asistente lo exige (`assertValidUuid_`) y el KMS
+ * busca por ella en `recFiles` para devolver el fichero que ya estaba en vez de crear otro.
+ * Se usa `crypto.randomUUID` cuando el navegador la trae y, si no, se compone con
+ * `getRandomValues` respetando la forma v4 — nunca con `Math.random`, que no da la forma que
+ * el servidor valida y dejaría la subida rechazada por un detalle del navegador.
+ */
+const nuevaMarcaDeSubida = () => {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    const b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    b[6] = (b[6] & 0x0f) | 0x40;   // versión 4
+    b[8] = (b[8] & 0x3f) | 0x80;   // variante
+    const h = [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  } catch (e) {
+    // Sin `crypto` no se puede componer una marca válida. Devolver algo con otra forma sería
+    // peor: el servidor la rechazaría y la familia no podría subir nada. Sin marca, el
+    // servidor acuña la suya y el comportamiento es el de antes de este cambio.
+    return '';
+  }
+};
+
+/**
  * Una fila del adjuntador genérico: descripción (texto libre) + archivo.
  * Sube vía gasCall('uploadDocument', { description, … }) al seleccionar el archivo.
  */
 function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId, resumeToken, identidad, onUploaded, onDescriptionChange, onDuenoChange, onTipoChange, onRemove, onStepUpVerified, onActivity, onUploadStart, onUploadEnd }) {
   const { t } = useTranslation();
-  const [status, setStatus] = useState(row.file_id ? 'success' : '');
+  // `0º.tricies.quinquies` — una fila que YA venía subiendo cuando este panel se montó
+  // (la familia salió del paso y ha vuelto) arranca en «subiendo…», no en blanco.
+  const [status, setStatus] = useState(row.file_id ? 'success' : (row.en_vuelo ? 'uploading' : ''));
   const [fileId, setFileId] = useState(row.file_id || '');
   const [err,    setErr]    = useState('');
   const [viewing, setViewing] = useState(false);
   const [stepUpRetry, setStepUpRetry] = useState(null); // null | () => void
 
   const isStepUpError = (e) => e?.code === 'STEPUP_REQUIRED' || /STEPUP_REQUIRED/.test(e?.message || '');
+
+  // `0º.tricies.quinquies` — una fila que se restauró EN VUELO (la familia salió del paso y
+  // ha vuelto) no puede enterarse por su cuenta de que la subida acabó: la promesa que la
+  // lanzó murió con el panel anterior. Quien la termina es el contexto, que rellena el
+  // `file_id` de la fila; aquí solo se refleja. Sin esto, el archivo se quedaba en
+  // «subiendo…» para siempre aunque ya estuviera guardado.
+  useEffect(() => {
+    if (row.file_id && row.file_id !== fileId) {
+      setFileId(row.file_id);
+      setStatus('success');
+    }
+  }, [row.file_id]); // eslint-disable-line
 
   // 18.bis.35 — SOLO SE PREGUNTA A PARTIR DEL SEGUNDO TIPO, y no es una decisión de estilo:
   // el catálogo del centro es quien manda (DL-R16). Con NINGUNO marcado «lo aporta la familia»
@@ -106,14 +146,34 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
     return nombres.length ? nombres.join(', ') : t('doc.owner_application');
   };
 
+  // ⭐ `0º.tricies.quinquies` — LA MARCA DE IDEMPOTENCIA, que estaba CONSTRUIDA Y MUERTA.
+  // El servidor del asistente la acepta (`backend/Code.js`, `p.upload_idempotency_token ||
+  // generateUuid_()`) y el KMS YA busca en `recFiles` por ella para detectar el repetido
+  // (`enr_wizardComprobarSubida`) — pero el navegador **no la mandaba nunca**, así que el
+  // servidor acuñaba una nueva en cada intento y jamás casaba con la anterior. Ése es el
+  // motivo del PDF duplicado.
+  //
+  // ⛔ Se acuña UNA VEZ POR ARCHIVO ELEGIDO, antes de la llamada, y se reenvía TAL CUAL en
+  // cada reintento del MISMO archivo (incluido el de después de teclear el código de un solo
+  // uso). Si la familia elige otro archivo, marca nueva — si no, un archivo distinto se
+  // confundiría con el anterior y el servidor devolvería el que ya estaba.
+  const marcaDeEsteArchivo = useRef(row.upload_token || '');
+
   const doUpload = async (file) => {
     setStatus('uploading');
     setErr('');
+    const marca = marcaDeEsteArchivo.current || (marcaDeEsteArchivo.current = nuevaMarcaDeSubida());
     // 0º.quindecies (segunda pieza) — le dice al pulso que hay una subida en vuelo, para que
     // no le pida a la puerta del expediente la misma pregunta que ya está pagando esta subida.
     // Nunca toca el guardado de pasos ni ninguna comprobación de seguridad — solo evita que el
     // pulso se dispare en paralelo.
-    if (onUploadStart) onUploadStart();
+    // La subida deja de ser propiedad de este panel: el contexto la registra para que la
+    // fila siga viéndose si la familia se va al paso 7 y vuelve.
+    if (onUploadStart) onUploadStart({
+      token: marca, file_name: file.name,
+      description: (row.description || '').trim(),
+      rec_type_code: row.rec_type_code || '', dueno: row.dueno || '',
+    });
     try {
       const base64 = await fileToBase64(file);
       const data   = await gasCall('uploadDocument', {
@@ -142,6 +202,9 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
         // ②24 — quién está operando: el servidor exige el código de un solo uso y la
         // marca es DEL BUZÓN que se verificó, no del expediente entero.
         ...identidadDelEnlace(identidad),
+        // `0º.tricies.quinquies` — el mismo archivo, la misma marca: si esta petición ya se
+        // guardó, el servidor devuelve el fichero que ya estaba en vez de crear otro.
+        upload_idempotency_token: marca,
       });
       setFileId(data.file_id);
       setStatus('success');
@@ -153,6 +216,8 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
         row.dueno === 'SOLICITUD' ? [] : row.dueno ? [row.dueno] : undefined;
       onUploaded(row.id, {
         file_id: data.file_id, file_name: file.name, description: (row.description || '').trim(),
+        rec_type_code: row.rec_type_code || '',
+        upload_token: marca,
         ...(duenoElegido !== undefined ? { owner_person_ids: duenoElegido } : {}),
       });
     } catch (e) {
@@ -171,13 +236,24 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
       // resto de fallos se comporta byte-idéntico (mensaje del servidor tal cual).
       setErr(TEXTO_DE_SUBIDA_FALLIDA[e?.code] ? t(TEXTO_DE_SUBIDA_FALLIDA[e.code]) : e.message);
     } finally {
-      if (onUploadEnd) onUploadEnd();
+      if (onUploadEnd) onUploadEnd(marca);
     }
   };
+
+  const ultimoArchivo = useRef('');
 
   const handleFile = (file) => {
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) { setErr(t('error.file_too_large')); return; }
+    // ⛔ OTRO archivo ⇒ MARCA NUEVA. Reutilizarla haría que el servidor devolviera el fichero
+    // anterior y la familia creería haber subido el nuevo. El reintento del MISMO archivo
+    // (incluido el de después del código de un solo uso) NO pasa por aquí, así que conserva
+    // su marca — que es justo lo que evita el duplicado.
+    const huella = `${file.name}|${file.size}|${file.lastModified || ''}`;
+    if (ultimoArchivo.current !== huella) {
+      ultimoArchivo.current = huella;
+      marcaDeEsteArchivo.current = '';
+    }
     // 18.bis.35 — SE PREGUNTA DONDE LA FAMILIA PUEDE CONTESTAR. Cuando hay dos o más tipos,
     // el KMS RECHAZA la subida que no dice cuál (`REC_TYPE_REQUIRED`), así que dispararla sin
     // respuesta es mandar megabytes a un rechazo seguro y devolverle un mensaje lleno de
@@ -393,7 +469,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     enrollmentGroupId, resumeToken, stepData, updateStep,
     markStepUpFresh, touchActivity,
     recoveryNonce, recoveredEmail,   // ②24 — quién está operando (identidad del enlace)
-    beginUpload, endUpload,          // 0º.quindecies — el pulso se aparta mientras sube un documento
+    subidasEnVuelo, iniciarSubida, terminarSubida, registrarDocumentoSubido,  // 0º.tricies.quinquies
   } = useWizard();
   const identidad = { n: recoveryNonce, recoveredEmail };
 
@@ -422,6 +498,22 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   // convierte en una fila ya-completada del adjuntador genérico. Si no hay
   // ninguno, arrancamos con CERO paneles (patrón "añadir ítem" de Step2Persons):
   // el usuario verá solo el botón "Añadir archivo".
+  // `0º.tricies.quinquies` — y las subidas EN VUELO, que viven en el contexto justamente para
+  // sobrevivir a que este paso se desmonte. Se pintan con su nombre de archivo y su
+  // «subiendo…»; cuando la subida acabe, el re-sembrado de abajo las CASA POR SU MARCA y les
+  // pone el `file_id` — sin duplicar la fila.
+  const filasEnVuelo = () =>
+    (subidasEnVuelo || []).map(u => ({
+      id:            newRowId(),
+      description:   u.description || '',
+      file_id:       '',
+      file_name:     u.file_name || '',
+      rec_type_code: u.rec_type_code || '',
+      dueno:         u.dueno || '',
+      upload_token:  u.token,
+      en_vuelo:      true,
+    }));
+
   const seedRows = () =>
     (stepData.documents || [])
       .filter(d => d && d.file_id)
@@ -438,7 +530,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
         owner_person_ids: Array.isArray(d.owner_person_ids) ? d.owner_person_ids : [],
       }));
 
-  const [rows, setRows] = useState(seedRows);
+  const [rows, setRows] = useState(() => [...seedRows(), ...filasEnVuelo()]);
 
   // 18.bis.35 · DL-R16 — LOS TIPOS DE DOCUMENTO QUE LA FAMILIA PUEDE APORTAR.
   //
@@ -495,7 +587,16 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     const delServidor = (stepData.documents || []).filter(d => d && d.file_id);
     if (!delServidor.length) return;
     setRows(prev => {
-      const yaListados = new Set(prev.map(r => r.file_id).filter(Boolean));
+      // `0º.tricies.quinquies` — PRIMERO se casa por la MARCA de subida: una fila que estaba
+      // en vuelo tiene que RECIBIR su `file_id`, no que se le añada otra fila al lado. Sin
+      // esto, volver al paso con la subida ya terminada pintaba el archivo DOS veces.
+      const porMarca = {};
+      delServidor.forEach(d => { if (d.upload_token) porMarca[d.upload_token] = d; });
+      const rellenadas = prev.map(r => {
+        const d = r.upload_token && !r.file_id ? porMarca[r.upload_token] : null;
+        return d ? { ...r, file_id: d.file_id, file_name: d.file_name || r.file_name, en_vuelo: false } : r;
+      });
+      const yaListados = new Set(rellenadas.map(r => r.file_id).filter(Boolean));
       const nuevas = delServidor
         .filter(d => !yaListados.has(d.file_id))
         .map(d => ({
@@ -506,16 +607,37 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
           rec_type_code:    d.rec_type_code || '',
           owner_person_ids: Array.isArray(d.owner_person_ids) ? d.owner_person_ids : [],
         }));
-      return nuevas.length ? [...prev, ...nuevas] : prev;
+      if (!nuevas.length) return rellenadas;
+      return [...rellenadas, ...nuevas];
     });
   }, [stepData.documents]); // eslint-disable-line
+
+  // `0º.tricies.quinquies` — y si mientras este paso estaba desmontado ARRANCÓ una subida
+  // (no puede pasar hoy, pero el contexto es de todo el asistente), su fila aparece igual.
+  useEffect(() => {
+    if (!(subidasEnVuelo || []).length) return;
+    setRows(prev => {
+      const yaEstan = new Set(prev.map(r => r.upload_token).filter(Boolean));
+      const faltan = filasEnVuelo().filter(f => !yaEstan.has(f.upload_token));
+      return faltan.length ? [...prev, ...faltan] : prev;
+    });
+  }, [subidasEnVuelo]); // eslint-disable-line
 
   useEffect(() => { log.info('[DBG docs] render', { locked, n_existing: (stepData.documents || []).length }); }, [locked]); // eslint-disable-line
 
   // `documents` derivado: solo las filas con un file_id subido (lo que persiste).
+  //
+  // ⛔ `0º.tricies.quinquies` — una fila EN VUELO sigue sin entrar aquí, y es deliberado: esto
+  // es lo que se guarda y se envía, y una fila a medias no puede colarse. Lo que cambia es que
+  // ya no se PIERDE: mientras sube, vive en el contexto (`subidasEnVuelo`), y al terminar
+  // entra en `stepData.documents` por `registrarDocumentoSubido` aunque este paso ya no esté
+  // montado. La marca de subida viaja con ella para poder casar la fila al volver.
   const uploadedDocs = () => rows
     .filter(r => r.file_id)
-    .map(r => ({ file_id: r.file_id, file_name: r.file_name || '', description: (r.description || '').trim() }));
+    .map(r => ({
+      file_id: r.file_id, file_name: r.file_name || '', description: (r.description || '').trim(),
+      ...(r.upload_token ? { upload_token: r.upload_token } : {}),
+    }));
 
   const handleDescriptionChange = (rowId, value) => {
     setRows(prev => prev.map(r => r.id === rowId ? { ...r, description: value } : r));
@@ -536,7 +658,12 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   const handleUploaded = (rowId, doc) => {
     // WIZARD-DOCS2: NO se auto-añade una fila vacía tras subir. Para otro archivo,
     // el usuario vuelve a pulsar "Añadir archivo" (patrón Step2Persons).
-    setRows(prev => prev.map(r => r.id === rowId ? { ...r, ...doc } : r));
+    setRows(prev => prev.map(r => r.id === rowId ? { ...r, ...doc, en_vuelo: false } : r));
+    // `0º.tricies.quinquies` — Y ATERRIZA EN LO QUE SE PERSISTE, por el contexto. Antes esto
+    // solo tocaba el estado local: si la familia ya se había ido del paso, el documento se
+    // subía de verdad y **no quedaba registrado en ninguna parte**. Ahora entra en
+    // `stepData.documents` esté o no montado este paso.
+    registrarDocumentoSubido(doc);
   };
 
   const handleAddRow = () => {
@@ -644,8 +771,8 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
             onRemove={handleRemoveRow}
             onStepUpVerified={markStepUpFresh}
             onActivity={touchActivity}
-            onUploadStart={beginUpload}
-            onUploadEnd={endUpload}
+            onUploadStart={iniciarSubida}
+            onUploadEnd={terminarSubida}
           />
         ))}
 

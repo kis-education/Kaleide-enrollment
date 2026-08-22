@@ -168,6 +168,41 @@ export function WizardProvider({ children }) {
   const beginUpload = useCallback(() => { uploadsInFlightRef.current += 1; }, []);
   const endUpload = useCallback(() => { uploadsInFlightRef.current = Math.max(0, uploadsInFlightRef.current - 1); }, []);
   const hasUploadInFlight = useCallback(() => uploadsInFlightRef.current > 0, []);
+
+  // ⭐ `0º.tricies.quinquies` (Diego, 2026-08-22) — LA SUBIDA DEJA DE SER PROPIEDAD DEL PANEL.
+  // Cita literal: *«Elijo un documento… Se queda subiendo. Si en ese momento avanzo al paso 7
+  // y vuelvo al 6, el documento ha desaparecido. No sé si se sigue subiendo o se ha cancelado
+  // la subida.»* **Se sigue subiendo** —nada la aborta— pero su rastro vivía en el estado
+  // local del panel y moría al desmontarlo, así que al volver no quedaba ni la fila.
+  //
+  // Aquí viven las DOS cosas que tienen que sobrevivir al desmontaje:
+  //   · `subidasEnVuelo` — lo que hace falta para volver a pintar la fila con su «subiendo…».
+  //   · `registrarDocumentoSubido` — el aterrizaje del documento cuando la subida acaba,
+  //     ESTÉ O NO montado el paso 6.
+  //
+  // ⛔ Una fila EN VUELO **no entra en `stepData.documents`**: eso es lo que se persiste, y
+  // una fila sin `file_id` no puede colarse ahí (ni al guardar el paso ni al enviar). Por eso
+  // son dos sitios distintos y no uno.
+  const [subidasEnVuelo, setSubidasEnVuelo] = useState([]);
+  const iniciarSubida = useCallback((info) => {
+    if (!info || !info.token) return;
+    uploadsInFlightRef.current += 1;
+    setSubidasEnVuelo(prev => prev.some(x => x.token === info.token) ? prev : [...prev, info]);
+  }, []);
+  const terminarSubida = useCallback((token) => {
+    uploadsInFlightRef.current = Math.max(0, uploadsInFlightRef.current - 1);
+    setSubidasEnVuelo(prev => prev.filter(x => x.token !== token));
+  }, []);
+  // El documento ya subido aterriza en `stepData.documents` SIEMPRE — con la actualización
+  // funcional, así que no depende de que ningún componente montado tenga la foto al día.
+  const registrarDocumentoSubido = useCallback((doc) => {
+    if (!doc || !doc.file_id) return;
+    setStepData(prev => {
+      const previos = Array.isArray(prev.documents) ? prev.documents : [];
+      if (previos.some(d => d && d.file_id === doc.file_id)) return prev;
+      return { ...prev, documents: [...previos, doc] };
+    });
+  }, []);
   // ── El estado del aviso se cambia POR UN SOLO SITIO (cola 18.bis — la barra roja) ─────
   // `saveErrorSeq` cuenta los EPISODIOS de fallo: sube en cada entrada en 'error'. Sirve
   // para dos cosas que necesitan distinguir «sigue el mismo fallo» de «ha fallado otra
@@ -1485,6 +1520,7 @@ export function WizardProvider({ children }) {
       isStepDirty, markStepSaved,
       setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
       beginUpload, endUpload, hasUploadInFlight,      // 0º.quindecies — el pulso se aparta mientras sube un documento
+      subidasEnVuelo, iniciarSubida, terminarSubida, registrarDocumentoSubido,  // 0º.tricies.quinquies — la subida sobrevive al desmontaje
       retryLastSave,                                              // WPERF-1 criterio 3
       apuntarTrabajo, preguntarPorLosGuardados,                   // 18.bis.84 — «apuntado» no es «guardado»: hay que volver a preguntar
       saveErrorSeq, saveErrorQue, saveErrorCodigo,                // cola 18.bis — aviso de guardado (episodio + qué falló + por qué, ②24.sexies)
