@@ -2359,11 +2359,36 @@ el grupo sale del `resume_token` (KAL-4), nunca del cuerpo.
 - **⛔ Solo viajan CÓDIGOS DE PASO, jamás `error_msg`.** El motivo literal de AppSheet nombra la
   columna y el valor rechazados: es diagnóstico para quien opera el colegio, no algo que se cruce al
   navegador de una familia. Quien lo necesite lo lee con `manual_diagPorQueFallaronLosTrabajos`.
-- **El KMS AVISA al morir el trabajo**, reusando `enr_notifyWizardLiveState_` (que bumpa la versión
-  del grupo, el mecanismo que ya gobierna el pulso). Sin ese aviso la respuesta cacheada del pulso
-  taparía el fallo **hasta la siguiente escritura, que puede no llegar nunca**. ⛔ **NO toca la cola
-  como mecanismo**: va DESPUÉS de la marca terminal, no cambia ni los reintentos ni el estado, y es
-  best-effort. Del payload sale **un** campo: el identificador del expediente.
+- **El KMS AVISA en los DOS extremos: al MORIR el trabajo y al TERMINAR BIEN**, reusando
+  `enr_notifyWizardLiveState_` (que bumpa la versión del grupo, el mecanismo que ya gobierna el
+  pulso). Sin ese aviso la respuesta cacheada del pulso taparía el cambio **hasta la siguiente
+  escritura, que puede no llegar nunca**. ⛔ **NO toca la cola como mecanismo**: va DESPUÉS de la
+  marca terminal, no cambia ni los reintentos ni el estado, y es best-effort. Del payload sale
+  **un** campo: el identificador del expediente.
+
+  ⭐ **El aviso de que TERMINÓ BIEN llegó después, y es `0º.tricies.duodecies` (2026-08-22) — sin
+  él este trabajo estaba a medias.** Medido con datos reales: Diego arregló la causa (`pair_id`,
+  D97), volvió a guardar los vínculos, **el trabajo salió `Done` a las 17:39 — y el aviso rojo
+  siguió en pantalla**. La regla del aviso era correcta y no había que tocarla
+  (`enr_guardadosQueNoLlegaron_` ya toma **la fila más reciente** de cada paso y solo avisa si
+  **ésa** está en `Failed`, así que con el trabajo bueno delante ya no avisaba). **Lo que fallaba
+  es que nadie se enteraba de que se había arreglado**: el aviso solo salía al morir un trabajo, de
+  modo que el pulso seguía sirviendo su respuesta **cacheada** (`wz_adm_`, con el aviso dentro)
+  hasta que la versión del grupo cambiara por otra cosa. Hoy los **dos** motivos —`SAVE_OK` y
+  `SAVE_FAILED`— salen de **UN SOLO SITIO** en el KMS,
+  `sys_avisarAlAsistenteDelGuardado_(job, motivo)` (`kis-app kms-server/sys/job-queue.gs`): el
+  aviso estaba **copiado** dentro de `sys_jobQueue_markFailed_` y **ya había divergido una vez**
+  —existía solo para el fallo—, que es exactamente lo que §"Regla — refactors preservan el código
+  probado" prohíbe.
+
+  ⛔ **Y solo los PASOS DEL ASISTENTE**, con el MISMO filtro que ya usaba el fallo
+  (`enr_pasoDelTrabajo_`). No es cosmética: **el propio aviso es un trabajo de la cola**
+  (`CALL_WEBHOOK_ASYNC`), así que avisar por todo se realimentaría solo. Ese tipo devuelve `null`
+  en el mapa ⇒ el ciclo no puede cerrarse. **Cuánto tarda ahora en apagarse:** lo mismo que tarda
+  hoy en encenderse el del fallo — el aviso se encola y lo drena el bot de AppSheet al escribirse
+  la fila, con el disparador de 5 min como red. **Coste:** un trabajo de aviso por guardado
+  terminado, con `dedupe_key` `<grupo>:notify:<motivo>` ⇒ mientras uno esté pendiente, los
+  siguientes del mismo grupo y motivo **se colapsan en él**.
 - **«No se pudo mirar» NO es «todo está guardado»**, y son campos distintos
   (`guardados_no_consultables`). Un KMS que aún no manda el campo, o caído, se lee como «no se pudo
   mirar» y **conserva** lo que ya se sabía: apagar el aviso porque la consulta falló sería volver a
@@ -2389,6 +2414,20 @@ dos repositorios, no commiteado) que extrae del fuente `enr_guardadosQueNoLlegar
 ilegible de «todo guardado» · quitar el cinturón del prefijo · retirar el aviso al asistente ·
 arrastrar el payload en el aviso · dar por bueno un KMS sin el campo · y el renombrado, que sale
 **«MEDICIÓN CIEGA»**, no verde). **Quien toque esta cadena, que lo mida.**
+
+⚠️ **Y lo mismo vale para la mitad que apaga el aviso (`0º.tricies.duodecies`, 2026-08-22).** La
+del CLIENTE ya la cubre la afirmación **(4)** de `guardado-muerto-se-dice` —«el aviso se apaga SOLO
+cuando el paso vuelve a guardarse bien»—, que **simula** el cambio de versión del grupo
+(`scenario.liveVersion`); la del SERVIDOR, que es quien de verdad lo provoca, **la batería no puede
+cubrirla** porque nunca ejecuta el KMS. Se midió con otro arnés efímero (fuera de los repositorios,
+no commiteado) que extrae del fuente `sys_processJobQueue_`, `sys_jobQueue_markFailed_`,
+`sys_avisarAlAsistenteDelGuardado_` y `enr_pasoDelTrabajo_` y los ejecuta con dobles: **23
+afirmaciones verdes** y **CINCO roturas rojas** (no avisar al terminar bien → 6 rojas · quitar el
+filtro por paso → el aviso se realimenta · quitarle el best-effort → el trabajo YA HECHO vuelve a la
+cola y se repite · arrastrar el payload → datos de familia dentro del aviso · avisar también al
+reintentar), **más el renombrado, que sale «MEDICIÓN CIEGA»**. *(Y la medición se corrigió a sí
+misma: al renombrar reventaba con una traza en vez de declararse ciega, que es una forma de rojo que
+no informa.)* **Quien toque el aviso, que lo mida.**
 
 ### `0º.tricies.quater` (2026-08-22) — «Sigo aquí» ya avisa de que el clic surtió efecto
 
