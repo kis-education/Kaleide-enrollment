@@ -2448,6 +2448,108 @@ seguridad del repositorio, VERDES.
 **Publicado**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
 `main` (CI/Pages).
 
+### `0º.tricies.nonies` (2026-08-22) — entrar por el enlace manda UN código, y la pantalla lo dice
+
+**Diego, 2026-08-22, cita literal:** *«cuando se carga el wizard desde un enlace, automáticamente
+envía un OTP y eso da error, porque la pantalla de carga permite enviar otro. No tiene sentido. Si
+acceder vía enlace automáticamente envía otp, debe informar de ello. Y si no, que no lo envíe y lo
+pide el usuario.»*
+
+**LA CAUSA, MEDIDA — y no era ninguno de los dos candidatos que traía la ficha.** `WizardPage`
+monta la verja (`StepUpGate`), que auto-envía el código, y **acto seguido su efecto de
+rehidratación pone `rehydrating=true`** —cierto porque la hidratación con el candado puesto vuelve
+sin `email.verified`, así que `needsHydration` es verdadero— ⇒ el padre devuelve el loader neutro y
+**la verja se DESMONTA**. Cuando la hidratación contesta (15-40 s), se monta una **SEGUNDA
+instancia con su estado local a cero**: «pulsa para recibir tu código», **casilla DESHABILITADA** y
+botón «Enviar» **LIBRE**, con el primer código ya volando al buzón. La familia no tenía más remedio
+que pulsar **solo para poder teclear**, y ese segundo envío **PISA al primero** en la caché del
+servidor (`cache.put(codeKey, code, 600)`, `backend/Code.js`) ⇒ el código que ya le había llegado
+deja de valer. **Ése es el «da error».**
+
+| Candidato de la ficha | Medido |
+|---|---|
+| el auto-envío FALLA y su `catch` desbloquea el botón | **NO**: el envío sale bien; el botón se libera por el remontaje, no por el fallo |
+| la verja se remonta ⇒ `autoSentRef` se reinicia y **auto-envía otra vez** | **NO**: `shouldAutoSend` ya es falso en la segunda instancia, porque `otpAutoSentForRecovery` persiste en `sessionStorage` |
+
+⇒ **lo que se perdía no era el freno del envío: era la MEMORIA de que ya se había enviado.**
+
+⚠️ **Y estaba MEDIDO Y ESCRITO desde el 2026-08-20, dentro de la propia batería** (cabecera de
+`codigo-sin-congelar`), declarado *«un DEFECTO del producto… queda ANOTADO aquí; no se arregla en
+este cambio»*. La ficha de la cola se escribió después sin recogerlo. Es §"Un COMENTARIO del código
+no es criterio normativo" (`kis-app/CLAUDE.md`) por la otra cara: **lo que sí estaba medido, no se
+leyó**.
+
+**De las dos salidas que Diego autoriza se elige CONSERVAR el auto-envío**, y el motivo es medido:
+la petición tarda ~77 s en aceptarse y el correo otros ~56 s de media, y ese envío **ya corre
+mientras el asistente rehidrata**. Quitarlo le sumaría todo eso a **toda** familia que entra por su
+enlace. El defecto no es que se auto-envíe: es que la pantalla lo olvidaba.
+
+**Cómo queda.** Al asentarse la pantalla, la verja dice «Te hemos enviado un código», la casilla
+está **lista para teclear** y «Reenviar» sigue **en su espera corta**, contando desde el envío real.
+Un solo código, y ninguna invitación a quemar otro.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ El hecho vive FUERA del componente, en `WizardContext` (`otpEnvioEntrada`), y es estado de
+  REACT — NUNCA `sessionStorage`.** La distinción es deliberada: una **RECARGA** debe volver a
+  «pulsa para enviar» (req. c de 2026-06-07, y la FASE A de `ventana-por-inactividad` lo afirma), y
+  eso solo se cumple si esto se pierde al recargar. `otpAutoSentForRecovery` responde a **otra**
+  pregunta —«¿ya auto-enviamos una vez en esta sesión recuperada?»— y por eso sí persiste. **No se
+  fusionan.**
+- **⛔ La marca CADUCA a los 10 minutos**, la vida del propio código en el servidor. Pasado eso,
+  decir «introduce el código que te hemos enviado» sería mentira —el que tiene ya no vale—, así que
+  la verja que reaparece tras la inactividad vuelve a pedir que se pulse. Fuera de la vigencia, el
+  comportamiento es **exactamente** el de antes de este cambio.
+- **La cuenta atrás se REANUDA, no se reinicia**: la segunda instancia arranca en los segundos que
+  quedaban. Sin eso, el remontaje regalaba un botón libre — y con él el segundo código.
+- **⛔ Y un fallo que llega TARDE también se pinta.** Es la otra mitad: la petición la dispara la
+  instancia 1, y cuando el servidor rechaza esa instancia **ya está desmontada**; su `.catch` sigue
+  corriendo pero sus `setErr`/`setEspera` no pintan nada, así que la instancia 2 se quedaba diciendo
+  «te hemos enviado un código» ante un envío que nunca salió. El fallo viaja por el contexto y la
+  verja viva lo adopta.
+- **Un fallo NUNCA cierra el camino de entrar**: no se borra lo tecleado ni se deshabilita la
+  casilla — la familia puede tener en la mano un código válido de un envío anterior.
+
+**Lo que NO se toca**: la ventana de 10 min, el techo de 2 h, `assertStepUpFresh_`, los dos cupos
+(`_checkStepUpCodeRateLimit_` 8/h por buzón), de dónde sale el buzón (KAL-4, siempre del token) y el
+«dispara y sigue» (clase #32 — el recorrido `codigo-sin-congelar` sigue verde). **Ni una línea de
+`backend/Code.js` ni del KMS.**
+
+**Textos: ninguno nuevo y ninguno cambiado.** La familia lee los mismos de siempre
+(`stepup.code_sent`, `stepup.gate_subtitle`) — lo que cambia es que ahora salen cuando son verdad.
+
+**Red**: `npm run e2e:wizard`, camino NUEVO `codigo-al-entrar-por-enlace` (10 afirmaciones).
+`VEREDICTO: VERDE — 34 de 34`. **ROJO DEMOSTRADO** corriéndolo contra el código sin arreglar: **seis
+afirmaciones en rojo**, cada una nombrando su caso —
+
+| Afirmación | Rojo obtenido |
+|---|---|
+| (2) la pantalla dice que ya se envió | *«la verja no muestra el aviso de «te hemos enviado un código» (aviso: null): con un código ya en vuelo, invita a pedir otro»* |
+| (3) la casilla está lista | *«la casilla del código está DESHABILITADA con un código ya enviado: la familia se ve obligada a pulsar «Enviar» solo para poder escribir, y ese segundo envío invalida el primero»* |
+| (4) «reenviar» en su espera corta | *«el botón quedó libre («Enviar código») justo después del auto-envío: se está invitando a la familia a quemar un segundo código»* |
+| (5) con ese código se entra | *«no se pudo ni teclear el código…»* |
+| (6) el fallo del auto-envío llega | *«la verja muestra error=null…»* |
+| (7) el fallo no cierra el camino | *«casilla DESHABILITADA…»* |
+
+⚠️ **El recorrido NO teclea a ciegas, y es deliberado**: con la casilla deshabilitada `page.fill`
+LANZA y el runner **descarta el camino entero** («el recorrido se rompió»), perdiendo justo las
+afirmaciones que nombran el defecto. Se comprueba antes de teclear.
+
+**Dos ajustes que son del ROBOT, no del producto** —el arreglo acelera los recorridos y destapó dos
+carreras suyas: irse de la página con un `fetch` a medias lo aborta y la aplicación registra un
+«network/fetch error» que no es suyo—. `codigo-sin-congelar` entra **dos veces** para partir de una
+verja que no auto-envía (mide el gesto del BOTÓN; el auto-envío lo mide el camino nuevo), y el
+drenado de `ventana-por-inactividad` exige un tramo de **quietud** antes de navegar y **reconfirma
+tras el margen**: con la ventana comprimida el asistente puede bloquearse en mitad de la espera,
+montar la verja y disparar su precalentado justo después de la última mirada. **Medido con una
+sonda, no supuesto**: se perdía en el pase «c».
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`**. Que el segundo envío pise al primero se acredita **leyendo el servidor real**
+(`cache.put(codeKey, code, 600)`), no con esta batería. Los cuatro controles del repositorio, VERDES.
+
+**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
+
 ### `③70` (2026-08-22) — el paso 7 enseña la simulación TAMBIÉN con la solicitud ya enviada
 
 **Decisión de Diego, 2026-08-21, literal:** *«si una familia entra en el wizard se va a quedar en el
