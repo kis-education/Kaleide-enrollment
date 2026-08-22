@@ -503,7 +503,18 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
       persons,
       relations,
       responses: [{ question_id: 'q-e2e-1', respondent_id: FIXTURE.groupId, response_text: RESPUESTA_GUARDADA }],
-      documents: [{ file_id: FIXTURE.fileId, filename: 'doc-e2e.pdf', description: 'Documento de prueba' }],
+      // ⭐ `0º.tricies.quindecies` — LOS SEIS CAMPOS QUE PROYECTA EL KMS REAL
+      // (`enr_wizardHydrateCompute_`, `kms-server/enr/wizard-datalayer.gs`): `file_id`,
+      // `rec_type_code`, `file_name`, `description`, `created_at`, `owner_person_ids`.
+      // Antes el doble mandaba `filename` (clave que el KMS NO usa) y se dejaba los otros
+      // tres, así que la batería no podía ver el defecto que este tramo cierra: el paso 6
+      // salía SUCIO en cada pasada porque su proyección tenía TRES campos y la hidratación
+      // SEIS. Un doble que no refleja el contrato deja la red midiendo otra cosa.
+      documents: [{
+        file_id: FIXTURE.fileId, rec_type_code: 'REC_TYPE_E2E', file_name: 'doc-e2e.pdf',
+        description: 'Documento de prueba', created_at: '2026-08-01T10:00:00Z',
+        owner_person_ids: [],
+      }],
       recovered_guardian_person_id: viewerIdE2E_(viewerN) || FIXTURE.guardian1Id,
     }, viewerN);
   }
@@ -948,7 +959,7 @@ export function createDispatcher(scenario, record) {
       // ella, un solo plan, byte-idéntico al de siempre.
       if (scenario.dosPlanes) {
         return {
-          ok: true, simulable: true, motivo: null,
+          ok: true, simulable: true, motivo: null, huella: 'HUELLA-E2E-DOS-PLANES',
           simulaciones: [{
             applicant_person_id: FIXTURE.applicantId,
             template_id: 'tpl-cuota-e2e', template_designation: 'Cuota escolar', motivo: null,
@@ -1003,7 +1014,13 @@ export function createDispatcher(scenario, record) {
         };
       }
       return {
-        ok: true, simulable: true, motivo: null,
+        // ⭐ `0º.tricies.quindecies` — LA HUELLA VIAJA CON LA SIMULACIÓN, igual que en el
+        // KMS real (`enr_simularCuotasDelGrupoCore_` la estampa en `out.huella`). Es lo
+        // que decide, en el servidor Y en el navegador, si una simulación ya calculada
+        // sigue valiendo. Sin ella aquí, el doble no reflejaría el contrato y el camino
+        // `simulador-no-recalcula-al-navegar` pasaría midiendo otra cosa.
+        // ⛔ El fallo (`NO_SE_PUDO_SIMULAR`, arriba) NO la lleva — tampoco la lleva el real.
+        ok: true, simulable: true, motivo: null, huella: 'HUELLA-E2E-UN-PLAN',
         simulaciones: [{
           applicant_person_id: FIXTURE.applicantId,
           template_id: 'tpl-e2e', template_designation: 'Cuota escolar', motivo: null,

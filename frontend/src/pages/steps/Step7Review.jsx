@@ -164,16 +164,32 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
   // tener varios planes a la vez y cada uno lleva la suya— y la guarda `WizardContext` con
   // el MISMO mecanismo de sesión que el resto del estado, así que sobrevive a un F5 sin un
   // solo viaje al servidor. ⛔ La elección EN FIRME es la del paso 8, y ésa no se toca.
-  const { formaDePagoMarcada, setFormaDePagoMarcada } = useWizard();
+  const { formaDePagoMarcada, setFormaDePagoMarcada,
+          leerSimulacionMemo, guardarSimulacionMemo } = useWizard();
   const seleccion = formaDePagoMarcada || {};
 
+  // ⭐ `0º.tricies.quindecies` (Diego, 2026-08-22) — AL VOLVER AL PASO 7 NO SE VUELVE A
+  // PEDIR LA SIMULACIÓN si nada ha cambiado. Este componente se DESMONTA al pulsar
+  // «Atrás» (`WizardPage` pinta un solo paso), así que su `useState` se pierde y este
+  // efecto volvía a disparar `simularCuotas` al regresar — MEDIDO: 2 llamadas en un
+  // 7→6→7 sin tocar nada. El servidor sí sabe no recalcular, pero la familia pagaba
+  // igual el viaje entero a Apps Script (decenas de segundos) y veía el recuadro volver
+  // a «cargando».
+  //
+  // La memoria vive en `WizardContext` (sobrevive al desmontaje, muere con la pestaña) y
+  // se OLVIDA sola en cuanto se encola CUALQUIER guardado o sube la versión del grupo.
+  // ⛔ Aquí NO se decide nada más: ni plazos, ni qué es «lo mismo» — eso lo gobierna el
+  // contexto, en un solo sitio.
   useEffect(() => {
     let vivo = true;
     if (!resumeToken) { setSim({ simulable: false, simulaciones: [] }); return undefined; }
+    const memorizada = leerSimulacionMemo && leerSimulacionMemo(resumeToken);
+    if (memorizada) { setSim(memorizada); return undefined; }
     simularCuotas(resumeToken)
       .then(res => {
         if (!vivo) return;
         const r = (res && typeof res === 'object') ? res : { simulable: false, simulaciones: [] };
+        if (guardarSimulacionMemo) guardarSimulacionMemo(resumeToken, r);
         setSim(r);
       })
       .catch(e => {
@@ -182,7 +198,7 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
         if (vivo) setSim({ simulable: false, simulaciones: [] });
       });
     return () => { vivo = false; };
-  }, [resumeToken]);
+  }, [resumeToken, leerSimulacionMemo, guardarSimulacionMemo]);
 
   const money = (cents, currency) => {
     const n = Number(cents || 0) / 100;

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import * as log from '../logger';
 import { preparePersonsForUI } from '../pages/steps/personShape';
+import { formaDeDocumentosDelPaso_ } from '../pages/steps/documentShape';  // 0º.tricies.quindecies: el baseline de documentos con la MISMA forma que produce el paso 6
 import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
 import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache, alConfirmarEscritura, estadoDelGuardado, refrescarVentana } from '../api';  // 18.bis.84: preguntar cómo acabaron los guardados que el KMS dejó apuntados; WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
 import { seReintentaTrasFallo, codigoDelDescarte } from '../lib/rechazos';       // 18.bis.85: el ÚNICO sitio que decide si un rechazo se vuelve a intentar (lo consulta también el aviso) · 18.bis.84: y el que traduce lo que el trabajo apuntado descartó
@@ -334,11 +335,50 @@ export function WizardProvider({ children }) {
   // (las respuestas del cuestionario: van contra el expediente, que existe desde el paso 1).
   // Siguen contando para el indicador y siguen siendo reintentables — lo único que se les
   // quita es tener que esperar a algo con lo que no tienen nada que ver.
+  // ── `0º.tricies.quindecies` (Diego, 2026-08-22) — LA SIMULACIÓN DEL PASO 7 SOBREVIVE
+  // AL DESMONTAJE. Cita literal: *«Las cuotas se siguen recalculando aunque no cambie
+  // absolutamente nada. Si navego hacia atrás desde el paso 7, vuelven a calcularse
+  // innecesariamente»*.
+  //
+  // MEDIDO antes de construir nada (batería, camino `simulador-no-recalcula-al-navegar`):
+  // el paso 7 se DESMONTA al pulsar «Atrás» (`WizardPage` pinta UN solo paso), así que su
+  // `useState` se pierde y su efecto vuelve a pedir `simularCuotas` al regresar — **2
+  // llamadas en un 7→6→7 sin tocar nada**. El servidor sí sabe no recalcular (su caché de
+  // dos niveles acierta: medido aparte, 1 viaje al motor y 1 de huella en ese mismo
+  // recorrido), pero la familia paga igual el viaje entero de ida y vuelta a Apps Script
+  // —decenas de segundos— y ve el recuadro volver a «cargando». Eso es lo que él describe.
+  //
+  // ⛔ NO es una caché con plazo: es una MEMORIA DE SESIÓN en `useRef` que se OLVIDA en
+  // cuanto algo puede haber cambiado. No alarga ningún plazo (prohibido por la ficha) y no
+  // toca ni la matemática ni el motor: guarda tal cual lo que devolvió el servidor.
+  //
+  // ⛔ Y SOLO SE MEMORIZA LO QUE EL SERVIDOR TAMBIÉN CACHEARÍA: la respuesta que trae
+  // `huella`. Es el MISMO criterio que aplica `_wzComputeYCachearSimulacion_`/`simularCuotas_`
+  // en `backend/Code.js` (medido: sin huella, su caché no se puede usar) — una segunda lista
+  // de códigos aquí divergiría de la del servidor. Un fallo (`NO_SE_PUDO_SIMULAR`, o el
+  // `catch` del transporte) NO trae huella ⇒ no se memoriza y el regreso reintenta, que es
+  // lo que la familia necesita.
+  const simulacionMemoRef = useRef(null);   // { token, datos } — nunca a sessionStorage
+  const leerSimulacionMemo = useCallback((token) => {
+    const m = simulacionMemoRef.current;
+    return (m && token && m.token === token) ? m.datos : null;
+  }, []);
+  const guardarSimulacionMemo = useCallback((token, datos) => {
+    // Sin huella no se memoriza: mismo criterio que la caché del servidor.
+    if (!token || !datos || !datos.huella) return;
+    simulacionMemoRef.current = { token: token, datos: datos };
+  }, []);
+  const olvidarSimulacionMemo = useCallback(() => { simulacionMemoRef.current = null; }, []);
+
   const enqueueSave = useCallback((saveFn, opts) => {
     const independiente = !!(opts && opts.independiente);
     // Nombre EN LLANO de lo que se está guardando (p.ej. «Personas»). Opcional: quien no
     // lo pase deja el aviso genérico, nunca uno inventado.
     const que = (opts && opts.que) || '';
+    // `0º.tricies.quindecies` — CUALQUIER escritura del grupo olvida la simulación
+    // memorizada, y se olvida AL ENCOLAR (no al aterrizar): entre que sale el guardado y
+    // vuelve, el paso 7 podría remontarse y servirse una foto de ANTES del cambio.
+    olvidarSimulacionMemo();
     pendingCountRef.current += 1;
     marcarEstadoDeGuardado_('saving');
     const _t0 = Date.now();                          // DBG-SESSION timing
@@ -375,7 +415,7 @@ export function WizardProvider({ children }) {
       seguimiento.then(() => { sueltosRef.current = sueltosRef.current.filter(p => p !== seguimiento); });
     }
     return run;
-  }, [marcarEstadoDeGuardado_, apuntarTrabajo]);
+  }, [marcarEstadoDeGuardado_, apuntarTrabajo, olvidarSimulacionMemo]);
 
   /**
    * WPERF-1 criterio 3: re-encola la última save que falló (la guarda
@@ -701,6 +741,18 @@ export function WizardProvider({ children }) {
   // sube hace el fetch de detalle. Ambos NO persistidos (se rehidratan en cada entrada).
   const [billingSplits, setBillingSplits] = useState(null);
   const [liveVersion, setLiveVersion]     = useState(0);
+
+
+  // Cualquier subida de la versión del grupo (otro tutor editó, o un trabajo del KMS
+  // aterrizó) OLVIDA la simulación memorizada. Es la MISMA señal que el servidor usa como
+  // nivel 1 de su caché — no una segunda idea de «esto ha cambiado».
+  const liveVersionVistaRef = useRef(0);
+  useEffect(() => {
+    if (Number(liveVersion) > liveVersionVistaRef.current) {
+      liveVersionVistaRef.current = Number(liveVersion);
+      olvidarSimulacionMemo();
+    }
+  }, [liveVersion, olvidarSimulacionMemo]);
 
   // ── REBUILD-8-11 (Diego 2026-06-11) — formularios de los pasos de firma 8-10 ──
   // El input del usuario de los pasos de firma (reparto del 8, consentimientos del 9,
@@ -1339,6 +1391,27 @@ export function WizardProvider({ children }) {
         supports:   p.neae_support || [],
       })),
       questions: responsesDict,
+      // ⭐ `0º.tricies.quindecies` (Diego, 2026-08-22) — LA FORMA DE LOS DOCUMENTOS SE
+      // NORMALIZA AQUÍ, en el MISMO sitio y por el MISMO motivo que `persons`, `relations`,
+      // `questions` y los booleanos de P89 justo arriba: `savedBaseline` tiene que quedar con
+      // la MISMA forma que produce el paso, o el dirty-check da positivo en cada navegación.
+      //
+      // MEDIDO el 2026-08-22, y es la causa de fondo de lo que Diego describió («las cuotas
+      // se recalculan aunque no cambie absolutamente nada»): el KMS hidrata CADA documento
+      // con SEIS campos (`file_id`, `rec_type_code`, `file_name`, `description`, `created_at`,
+      // `owner_person_ids` — `enr_wizardHydrateCompute_`) y `uploadedDocs()` de
+      // `Step6Documents` produce TRES ⇒ el paso 6 salía SUCIO en cada pasada y encolaba un
+      // `saveStep` espurio. Y ese guardado NO ES GRATIS aunque el servidor no escriba nada
+      // (`saveStep_` case 'documents' es un no-op declarado): **bumpa la versión del grupo**
+      // (`_wzCacheInvalidate_`) ⇒ tira de golpe las cachés de hidratación, admisión, miembros
+      // y **la de la simulación**, así que el paso 7 se cae al nivel 2 y vuelve a pagar. Y de
+      // paso pasa por `assertStepUpFresh_`, así que puede saltarle a la familia con
+      // `STEPUP_REQUIRED` un guardado que ella no pidió.
+      //
+      // ⛔ SE PROYECTA SOLO EL BASELINE, NUNCA `stepData`: `seedRows()` (`Step6Documents`)
+      // LEE `rec_type_code` y `owner_person_ids` de `stepData.documents` para poder enseñar
+      // de vuelta qué es cada archivo y de quién es (`0º.sexdecies`). Recortarlos de los dos
+      // lados apagaría esas dos líneas de la pantalla.
       documents,
       // DL-E49 §2/§3 — `persons` ya viene recortado por el servidor a "yo + los
       // menores" (nunca el otro tutor). Este número es la ÚNICA señal que sale del
@@ -1358,12 +1431,20 @@ export function WizardProvider({ children }) {
       relations_full: relations,
       persons_full: persons,
     });
+    // `0º.tricies.quindecies` — UNA HIDRATACIÓN NUEVA OLVIDA LA SIMULACIÓN MEMORIZADA.
+    // Aquí el servidor acaba de reponer los once pasos: lo que hubiera memorizado el paso 7
+    // es de ANTES de esa foto y no puede seguir sirviéndose. Lo cazó la batería (fase del
+    // simulador CAÍDO de `simulador-paso7`: sin esta línea, la segunda entrada por el enlace
+    // seguía pintando las formas de pago de la entrada anterior).
+    olvidarSimulacionMemo();
     setStepData(prev => ({ ...prev, ...hydrated }));
     // Seed the saved baseline with the freshly-loaded data so isStepDirty()
     // correctly reports false for steps the user hasn't touched after resume.
     // Without this seed, every Next click after a resume would re-save even
     // when nothing changed.
-    setSavedBaseline(prev => ({ ...prev, ...hydrated }));
+    // `0º.tricies.quindecies` — `documents` va con la forma QUE EL PASO PRODUCE (ver el
+    // comentario de `documents` arriba); todo lo demás, tal cual llegó.
+    setSavedBaseline(prev => ({ ...prev, ...hydrated, documents: formaDeDocumentosDelPaso_(documents) }));
 
     // ── Step-completion inference ───────────────────────────────────────────
     // Marks every step the family has visibly passed through, then jumps to
@@ -1536,7 +1617,7 @@ export function WizardProvider({ children }) {
     }
     log.info('[DBG hydrate] landing', { submitted: false, target });
     setCurrentStep(target);
-  }, []);
+  }, [olvidarSimulacionMemo]);
 
   // ── Flag DERIVADO para el mapeo central (catalog.stepEditMode — decisión Diego
   //    2026-06-12, pasos 1-11 uniformes): la lectura está confirmada si lo dice el
@@ -1637,6 +1718,7 @@ export function WizardProvider({ children }) {
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       recoveryNonce, setRecoveryNonce,           // IDENTITY-FROM-LINK: `n` = email_id del enlace
       formaDePagoMarcada, setFormaDePagoMarcada, // 0º.vicies.sexies: la marca del paso 7, solo en el navegador
+      leerSimulacionMemo, guardarSimulacionMemo, olvidarSimulacionMemo, // 0º.tricies.quindecies: la simulación del paso 7 sobrevive al desmontaje
       isStepUpFresh, markStepUpFresh, revokeStepUpFresh, touchActivity, // DL-E39 step-up PII-primero + #30 espejo revocable
       stepUpVerifiedUntil,                              // 2026-08-20: hasta cuándo, para el aviso de los dos minutos
       stepUpCierre,                                     // 2026-08-20: QUÉ lo cierra — 'INACTIVIDAD' | 'TECHO'

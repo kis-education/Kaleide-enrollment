@@ -146,6 +146,9 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'simulador-en-pie': 'guardar la forma de pago elegida exige el código de un solo uso, que el servidor manda al buzón de la familia y este arnés no lee buzones; en modo simulado sí se cubre',
     'simulador-caido': 'el escenario hostil (el simulador no responde) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
   },
+  'simulador-no-recalcula-al-navegar': {
+    'no-recalcula-al-navegar': 'exige un expediente con plantillas de tarifa declaradas y contar las llamadas del navegador; contra el sistema real el arnés no puede sembrarlo',
+  },
   'simulador-paso7-varios-planes': {
     'varios-planes': 'exige declarar en el catálogo real dos plantillas de suscripción aplicables a la vez al mismo solicitante; en modo simulado sí se cubre',
   },
@@ -5575,6 +5578,96 @@ async function caminoSimuladorPaso7(page, base) {
 }
 
 /**
+ * simulador-no-recalcula-al-navegar — LA MEDICIÓN de `0º.tricies.quindecies`
+ * (Diego, 2026-08-22: *«Las cuotas se siguen recalculando aunque no cambie absolutamente
+ * nada. Si navego hacia atrás desde el paso 7, vuelven a calcularse innecesariamente»*).
+ *
+ * Cuenta las llamadas a `simularCuotas` que salen del navegador al recorrer 7 → 6 → 7 SIN
+ * TOCAR NADA. Cada recálculo del lado del servidor son ~89 s de espera para la familia, así
+ * que una llamada de más no es cosmética.
+ *
+ * ⚠️ Esto mide LO QUE PIDE EL NAVEGADOR, no lo que el servidor recalcula: la batería corre
+ * contra un backend simulado que NUNCA ejecuta `backend/Code.js`. La caché de dos niveles
+ * (`simularCuotas_`) se mide aparte.
+ */
+async function caminoSimuladorNoRecalculaAlNavegar(page, base) {
+  const c = new Camino('simulador-no-recalcula-al-navegar')
+  scenario.stage = 'lista_para_enviar'
+  scenario.simulacionFalla = false
+
+  if (REAL) {
+    c.noCubierta('no-recalcula-al-navegar',
+      'exige un expediente con plantillas de tarifa declaradas y contar las llamadas del navegador; contra el sistema real el arnés no puede sembrarlo')
+    return c
+  }
+
+  let simulaciones = 0
+  const acciones = []
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'simularCuotas') simulaciones++
+    acciones.push(body && body.action === 'saveStep' ? ('saveStep:' + body.step) : (body && body.action))
+  }
+  page.on('request', espiar)
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) < 6; i++) {
+      if (!await continuar(c, page, (await dondeEstoy(page)) + 1, 'hacia Revisión')) break
+    }
+    if (!c.afirmar('se llega a Revisión', (await dondeEstoy(page)) === 6,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(LATENCY + 800)
+
+    const bloque = await page.$('[data-testid="paso7-simulador"]')
+    if (!c.afirmar('el paso 7 enseña la simulación (ancla)', !!bloque,
+      'no se pintó el simulador: sin él esta medición pasaría en vacío')) return c
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, 2)
+
+    const trasLaPrimera = simulaciones
+    c.afirmar('llegar al paso 7 pide la simulación UNA sola vez', trasLaPrimera === 1,
+      `se pidieron ${trasLaPrimera} simulaciones al montar el paso 7`)
+
+    // ── Volver atrás y regresar, SIN TOCAR NADA ──────────────────────────────────────
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!atras) { c.noCubierta('volver-y-regresar', 'el paso 7 no ofrece botón «Atrás»'); return c }
+    await atras.click()
+    await page.waitForTimeout(400)
+    c.afirmar('«Atrás» lleva al paso 6', (await dondeEstoy(page)) === 5,
+      `tras pulsar «Atrás» el stepper marca el índice ${await dondeEstoy(page)}`)
+
+    if (!await continuar(c, page, 6, 'de vuelta a Revisión')) return c
+    await page.waitForTimeout(LATENCY + 800)
+
+    const trasElRegreso = simulaciones
+    c.notas.push(`MEDIDO — simularCuotas: ${trasLaPrimera} al llegar · ${trasElRegreso} tras 7→6→7`)
+    c.notas.push(`MEDIDO — acciones del navegador en todo el recorrido: ${JSON.stringify(acciones)}`)
+    c.afirmar('volver atrás y regresar NO vuelve a pedir la simulación',
+      trasElRegreso === trasLaPrimera,
+      `se pidió ${trasElRegreso - trasLaPrimera} vez/veces más al regresar al paso 7 (total ${trasElRegreso}): ` +
+      `cada una son ~89 s de espera para la familia, y no había cambiado nada`)
+
+    // ── Y LA CAUSA DE FONDO: pasar por el paso 6 sin tocarlo NO puede guardar nada ──────
+    // Un `saveStep` de documentos que la familia no pidió es peor que un viaje de más: el
+    // servidor bumpa la versión del grupo y TIRA la caché de la simulación (además de las
+    // de hidratación, admisión y miembros), así que el paso 7 vuelve a pagar. Y pasa por el
+    // código de un solo uso, así que puede saltarle `STEPUP_REQUIRED` por un guardado que
+    // nunca pidió.
+    const guardadosDeDocumentos = acciones.filter(a => a === 'saveStep:documents')
+    c.afirmar('pasar por el paso 6 SIN TOCAR NADA no encola ningún guardado',
+      guardadosDeDocumentos.length === 0,
+      `se encolaron ${guardadosDeDocumentos.length} guardado(s) de documentos sin que la familia tocara el paso: ` +
+      `eso tira la caché de la simulación y le vuelve a cobrar el cálculo`)
+    return c
+  } finally {
+    page.off('request', espiar)
+  }
+}
+
+/**
  * simulador-paso7-varios-planes — UN NIÑO PUEDE TENER VARIOS PLANES A LA VEZ
  * (`0º.quaterdecies`, 2026-08-21).
  *
@@ -7149,6 +7242,8 @@ const CAMINOS = [
   // `0º.quaterdecies` — un solicitante con VARIOS planes aplicables a la vez (cuota +
   // comedor) ve los dos, con su nombre y su total sumado. Contra el sistema real se
   // declara NO CUBIERTO: exige declarar dos plantillas aplicables a la vez en el catálogo.
+  { nombre: 'simulador-no-recalcula-al-navegar', fn: caminoSimuladorNoRecalculaAlNavegar,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'simulador-paso7-varios-planes', fn: caminoSimuladorPaso7VariosPlanes,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   // `③70` — la familia que YA ENVIÓ consulta sus cuotas en el paso 7: ve las cifras y
