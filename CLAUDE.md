@@ -2834,17 +2834,32 @@ Las cuatro claves de texto pasan de `gender.m|f|nonbinary|prefer_not_to_say` a
 valor cuyo `label_key` no siguiera esa forma se vería bien en el desplegable y **en crudo** en el
 resumen — nunca con una etiqueta equivocada.
 
-**⛔ LA DECISIÓN DE LA VENTANA DE DESPLIEGUE, con su motivo — se CONSERVA un RESPALDO.** El frontal
-se publica al empujar a `main` (CI/Pages) y el KMS se publica aparte, así que hay un rato en que
-este asistente habla con un KMS que todavía no sirve `genderValues`. **Medido: el campo es
-OPCIONAL**, así que un desplegable vacío no bloquearía el paso — pero **el dato se perdería para
-siempre** en quien pase por ahí, y una lectura de catálogos caída haría lo mismo cualquier día.
-Por eso `SEXO_RESPALDO_` (`Step2Persons.jsx`) arranca con los cuatro valores que el catálogo declara
-HOY y **se sustituye en cuanto llega la lista del servidor**; una lista vacía **NO** lo pisa. Está
-declarado en su primera línea como **RESPALDO, no modelo**, con su condición de retirada: en cuanto
-el KMS que sirve `genderValues` esté publicado y se compruebe que la lista llega, sobra. **No
-reintroduce la divergencia que este tramo cierra**: solo se alcanza cuando el catálogo no llega, y
-entonces el comportamiento es exactamente el de ayer.
+**⛔ EL RESPALDO YA NO EXISTE — se RETIRÓ el 2026-08-22, y su condición de retirada la traía escrita
+en su primera línea.** Hubo aquí una lista de cuatro valores en `Step2Persons.jsx`
+(`SEXO_RESPALDO_`), declarada como RESPALDO **y no modelo**, solo para la ventana de despliegue: el
+frontal sale por CI al empujar a `main` y el KMS se publica aparte, así que hubo un rato en que este
+asistente hablaba con un KMS que todavía no servía `genderValues`. Esa condición —*«en cuanto el KMS
+que sirve `genderValues` esté publicado»*— se cumplió, y lo vestigial se elimina en cuanto se
+detecta: una segunda lista aquí **es** la divergencia que este tramo vino a cerrar.
+
+**Y no bastaba con quitarlo, porque el hueco que tapaba es real.** Medido: **el sexo es OPCIONAL**
+(nada en `handleNext` lo exige) ⇒ sin respaldo, un catálogo que no llega dejaría un desplegable
+**vacío y MUDO**, la familia avanzaría y el dato se perdería para siempre sin un solo aviso. Por eso
+ahora hay **TRES** situaciones y no dos —**cargando** (aún no se sabe) · **con catálogo** · **sin
+catálogo**—, y la última **se dice al lado del campo** (`field.gender_unavailable`, los dos idiomas)
+con el desplegable **deshabilitado**: falla NOMBRANDO, nunca en silencio. Cubre las dos formas de no
+llegar: lista **vacía** y lectura **caída**.
+
+**Red**: el camino `sexo-desde-el-catalogo` gana una **FASE B** (3 afirmaciones) con la palanca
+`scenario.catalogoSexoVacio`, que el doble aplica en **los dos** sitios que sirven catálogos
+(`fetchLookups` y la hidratación) — aplicarla a uno solo la dejaría pasando en vacío. **Rojo
+demostrado dos veces**: devolviendo la lista escrita a mano (*«se pintaron ["Male","Female",…] sin
+catálogo del servidor: ha vuelto una lista escrita a mano»*) y quitando el aviso (*«el aviso leído
+fue null: con un desplegable vacío y sin aviso, la familia avanza y el dato se pierde sin que nadie
+diga nada»*). Batería completa `VEREDICTO: VERDE — 38 de 38`. ⚠️ **Y la red se corrigió a sí misma**:
+la FASE B salió roja la primera vez acusando a la pantalla, y era **falso** — lo que volvía era la
+caché de módulo de `api.js`, que sobrevive a un cambio de hash; se cierra tirando el contexto con
+`about:blank` antes de reentrar.
 
 **⛔ Lo que este tramo NO cierra, y es de Diego:** que el catálogo y la **columna**
 `enrPersons.gender` de AppSheet declaren los mismos cuatro valores. Hoy divergen —la columna rechaza
