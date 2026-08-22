@@ -5089,12 +5089,58 @@ async function caminoSimuladorPaso7VariosPlanes(page, base) {
       permanencia.filas.every(f => f.fecha && !/^\d{4}-\d{2}-\d{2}$/.test(f.fecha)),
       `el desglose de permanencia fue ${JSON.stringify(permanencia.filas)} (se esperaban 2 filas con concepto y fecha legible)`)
 
-    // 3.000,00 € (cuota) + 1.200,00 € (comedor) + 500,00 € (permanencia) = 4.700,00 €.
+    // 3.000,00 € (cuota) + 0,00 € (comedor: descuento del 100 %, `0º.tricies.ter`) +
+    // 500,00 € (permanencia) = 3.500,00 €. El total es de NETOS, así que un plan
+    // íntegramente descontado suma cero — que es exactamente el caso real del comedor.
     const totalTxt = await page.$eval('[data-testid="paso7-total-solicitante"]',
       el => (el.textContent || '').trim()).catch(() => '')
     c.afirmar('el total del solicitante es la SUMA de sus planes',
-      /4[.,]?700[.,]00/.test(totalTxt),
-      `el total leído fue ${JSON.stringify(totalTxt)}: se esperaba la suma de los tres planes (4.700,00 €)`)
+      /3[.,]?500[.,]00/.test(totalTxt),
+      `el total leído fue ${JSON.stringify(totalTxt)}: se esperaba la suma de los tres planes en NETO (3.500,00 €)`)
+
+    // ⭐ `0º.tricies.ter` (Diego, 2026-08-22: *«el comedor y la permanencia sí aplican el
+    // descuento, pero pasa muy desapercibido… faltan totales, subtotales»*) — LAS TRES
+    // AFIRMACIONES DEL ESCALÓN QUE FALTABA. El plan del comedor es el caso real: nueve
+    // filas con importe y un total de 0,00 €, sin nada en medio que lo explicara.
+    const comedorCifras = await page.$$eval('[data-testid="paso7-plan"]', bloques => {
+      const b = bloques.find(x => /Comedor/.test(x.textContent || ''))
+      if (!b) return null
+      const fila = b.querySelector('[data-testid="paso7-desglose-fila"]')
+      const sub  = b.querySelector('[data-testid="paso7-subtotal-plan"]')
+      const txt  = (el, sel) => {
+        const n = el && el.querySelector(sel)
+        return n ? (n.textContent || '').trim() : null
+      }
+      return {
+        fila_descuento:  txt(fila, '[data-testid="paso7-desglose-descuento"]'),
+        fila_neto:       txt(fila, '[data-testid="paso7-desglose-neto"]'),
+        sub_bruto:       txt(sub,  '[data-testid="paso7-subtotal-bruto"]'),
+        sub_descuento:   txt(sub,  '[data-testid="paso7-subtotal-descuento"]'),
+        sub_neto:        txt(sub,  '[data-testid="paso7-subtotal-neto"]'),
+      }
+    })
+    if (!c.afirmar('el plan con descuento se encuentra en la pantalla', !!comedorCifras,
+      'no se localizó el bloque del comedor: sin él, las tres afirmaciones siguientes pasarían en vacío')) return c
+
+    // (a) una fila con descuento ENSEÑA SU IMPORTE de descuento — no solo el nombre.
+    c.afirmar('cada vencimiento con descuento enseña SU IMPORTE de descuento',
+      !!comedorCifras.fila_descuento && /\d/.test(comedorCifras.fila_descuento) &&
+      comedorCifras.fila_descuento !== '—',
+      `la columna de descuento de la primera fila leyó ${JSON.stringify(comedorCifras.fila_descuento)}: sin cifra, el descuento sigue pasando desapercibido`)
+
+    // (b) el SUBTOTAL del plan enseña bruto, descuento y neto — el escalón intermedio.
+    c.afirmar('el subtotal del plan enseña bruto, descuento y neto',
+      [comedorCifras.sub_bruto, comedorCifras.sub_descuento, comedorCifras.sub_neto]
+        .every(v => !!v && /\d/.test(v)),
+      `el subtotal leyó ${JSON.stringify({ bruto: comedorCifras.sub_bruto, desc: comedorCifras.sub_descuento, neto: comedorCifras.sub_neto })}: sin las tres cifras no hay nada entre las filas y el total`)
+
+    // (c) LAS CIFRAS VIENEN DEL SERVIDOR, no de una cuenta del navegador: se comprueba que
+    // lo pintado es EXACTAMENTE lo que mandó el simulado, sin recalcular nada.
+    c.afirmar('las cifras del subtotal son las que mandó el servidor, sin recalcular',
+      /1[.,]?200[.,]00/.test(comedorCifras.sub_bruto || '') &&
+      /1[.,]?200[.,]00/.test(comedorCifras.sub_descuento || '') &&
+      /0[.,]00/.test(comedorCifras.sub_neto || ''),
+      `el subtotal leyó ${JSON.stringify({ bruto: comedorCifras.sub_bruto, desc: comedorCifras.sub_descuento, neto: comedorCifras.sub_neto })}: el servidor mandó 1.200,00 € / 1.200,00 € / 0,00 €`)
 
     return c
   } finally {

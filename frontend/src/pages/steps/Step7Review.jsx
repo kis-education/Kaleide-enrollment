@@ -306,6 +306,24 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
     const filas = desgloseDe(plan);
     if (!filas.length) return null;
     const m = modalidadMarcadaOPrimera(plan);
+    const moneda = m && m.currency_code;
+
+    // ⭐ `0º.tricies.ter` (Diego, 2026-08-22) — LA COLUMNA DE DESCUENTO. Cita literal: *«el
+    // comedor y la permanencia sí aplican el descuento, pero pasa muy desapercibido. No se
+    // indica el importe del descuento por pago anual, faltan totales, subtotales»*. El
+    // calendario enseñaba el BRUTO por fila y el plan su NETO: nueve filas de 95,00 € y un
+    // total de 0,00 €, sin nada en medio.
+    //
+    // ⛔ AQUÍ NO SE CALCULA DINERO (DL-080-A): las tres cifras de cada fila y las tres del
+    // subtotal las PROYECTA el KMS desde el motor. `money()` divide entre 100 y formatea, y
+    // nada más — ni una suma, ni una resta, ni un porcentaje.
+    //
+    // ⛔ Y las dos columnas nuevas SOLO salen cuando este plan tiene descuento: con tres
+    // columnas la tabla se lee en un móvil, con cinco no. Sin descuento, el markup queda
+    // BYTE-IDÉNTICO al de antes de este cambio.
+    const hayDescuento = !!(m && Number(m.discount_cents || 0) > 0);
+    const importe = (v) => (v == null ? '—' : money(v, moneda));
+
     return (
       <div data-testid="paso7-desglose" style={{ marginTop: 10 }}>
         <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--teal-dk)', marginBottom: 4 }}>
@@ -316,7 +334,19 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
             <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
               <th style={{ fontWeight: 600, padding: '2px 6px 2px 0' }}>{t('step7.sim.breakdown_concept')}</th>
               <th style={{ fontWeight: 600, padding: '2px 6px' }}>{t('step7.sim.breakdown_date')}</th>
-              <th style={{ fontWeight: 600, padding: '2px 0 2px 6px', textAlign: 'right' }}>{t('step7.sim.breakdown_amount')}</th>
+              <th style={{ fontWeight: 600, padding: '2px 0 2px 6px', textAlign: 'right' }}>
+                {hayDescuento ? t('step7.sim.breakdown_gross') : t('step7.sim.breakdown_amount')}
+              </th>
+              {hayDescuento && (
+                <>
+                  <th style={{ fontWeight: 600, padding: '2px 0 2px 6px', textAlign: 'right' }}>
+                    {t('step7.sim.breakdown_discount')}
+                  </th>
+                  <th style={{ fontWeight: 600, padding: '2px 0 2px 6px', textAlign: 'right' }}>
+                    {t('step7.sim.breakdown_net')}
+                  </th>
+                </>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -325,16 +355,66 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
                 <td data-testid="paso7-desglose-concepto" style={{ padding: '3px 6px 3px 0' }}>{c.concepto || '—'}</td>
                 <td data-testid="paso7-desglose-fecha" style={{ padding: '3px 6px' }}>{fechaLegible(c.due_date, lang) || '—'}</td>
                 <td style={{ padding: '3px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  {money(c.amount_cents, m && m.currency_code)}
+                  {money(c.amount_cents, moneda)}
                 </td>
+                {hayDescuento && (
+                  <>
+                    <td data-testid="paso7-desglose-descuento"
+                        style={{ padding: '3px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {importe(c.descuento_cents)}
+                    </td>
+                    <td data-testid="paso7-desglose-neto"
+                        style={{ padding: '3px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {importe(c.neto_cents)}
+                    </td>
+                  </>
+                )}
               </tr>
             ))}
           </tbody>
+          {/* EL SUBTOTAL DEL PLAN — las tres cifras que el KMS ya proyectaba y que solo se
+              enseñaba una (el neto). Es el escalón que faltaba entre las filas y el total. */}
+          {m && (
+            <tfoot>
+              <tr data-testid="paso7-subtotal-plan"
+                  style={{ borderTop: '2px solid var(--border)', fontWeight: 700 }}>
+                <td colSpan={2} style={{ padding: '5px 6px 3px 0' }}>{t('step7.sim.subtotal')}</td>
+                <td data-testid="paso7-subtotal-bruto"
+                    style={{ padding: '5px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  {money(m.gross_cents, moneda)}
+                </td>
+                {hayDescuento && (
+                  <>
+                    <td data-testid="paso7-subtotal-descuento"
+                        style={{ padding: '5px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {money(m.discount_cents, moneda)}
+                    </td>
+                    <td data-testid="paso7-subtotal-neto"
+                        style={{ padding: '5px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {money(m.net_cents, moneda)}
+                    </td>
+                  </>
+                )}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     );
   };
 
+  // ⚠️ `0º.tricies.ter` — POR QUÉ ESTE TOTAL NO LO PROYECTA EL SERVIDOR, dicho entero.
+  // El encargo pedía que lo hiciera, y NO SE PUEDE mientras la elección de forma de pago
+  // viva solo en el navegador: es una decisión de Diego (`0º.vicies.sexies` retiró el
+  // guardado de esa preferencia a propósito, porque marcar en el paso 7 es COMPARAR, no
+  // comprometerse). El KMS no sabe qué modalidad ha marcado la familia en cada plan, así
+  // que no puede sumar los subtotales que le corresponden. Proyectar un total por CADA
+  // combinación posible sería combinatorio.
+  //
+  // ⛔ Lo que sí se cumple: **NO se añade ni una operación de dinero nueva**. Ésta es la
+  // ÚNICA suma del asistente, la que ya existía, y se queda aislada aquí. Todo lo demás
+  // —las tres cifras de cada vencimiento y las tres del subtotal de cada plan— viene ya
+  // calculado del motor del KMS.
   const totalSolicitante = (planes) => {
     let cents = 0; let currency = null; let alguna = false;
     planes.forEach(plan => {

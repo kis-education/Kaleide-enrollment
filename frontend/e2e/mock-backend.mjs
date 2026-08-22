@@ -862,11 +862,16 @@ export function createDispatcher(scenario, record) {
               // mismo total de 1.200,00 € de antes, para no mover la suma del solicitante.
               { modality_id: 'mod-comedor-e2e', modality_code: 'MONTHLY', designation: 'Pago mensual',
                 installments: 8,
+                // `0º.tricies.ter` — ESTE es el caso del comedor real: TODAS sus filas llevan
+                // descuento y el plan acaba en 0,00 €. Con descuento 0 la comprobación de la
+                // columna pasaría en vacío, que es peor que no tenerla.
                 cuotas: Array.from({ length: 8 }, (_, i) => ({
                   due_date: `2027-${String(9 + (i % 4)).padStart(2, '0')}-0${1 + Math.floor(i / 4)}`,
-                  concepto: 'Comedor mediodía', amount_cents: 15000 })),
-                per_installment_cents: 15000, gross_cents: 120000, discount_cents: 0,
-                net_cents: 120000, currency_code: 'EUR', available: true, descuentos: [] },
+                  concepto: 'Comedor mediodía', amount_cents: 15000,
+                  descuento_cents: 15000, neto_cents: 0 })),
+                per_installment_cents: 15000, gross_cents: 120000, discount_cents: 120000,
+                net_cents: 0, currency_code: 'EUR', available: true,
+                descuentos: [{ policy_code: 'PROMO', designation: 'Promoción servicios accesorios' }] },
             ],
           }, {
             // ⭐ `0º.tricies` (segunda vuelta) — UN PLAN QUE NO ADMITE NINGUNA FORMA DE PAGO.
@@ -897,8 +902,11 @@ export function createDispatcher(scenario, record) {
           applicant_person_id: FIXTURE.applicantId,
           template_id: 'tpl-e2e', template_designation: 'Cuota escolar', motivo: null,
           modalidades: [
+            // `0º.tricies.ter` — la fila lleva sus TRES cifras, como las proyecta el KMS.
             { modality_id: 'mod-anual-e2e', modality_code: 'ANNUAL', designation: 'Pago anual',
-              installments: 1, cuotas: [{ due_date: '2027-09-01', concepto: 'Cuota escolar', amount_cents: 525000 }],
+              installments: 1,
+              cuotas: [{ due_date: '2027-09-01', concepto: 'Cuota escolar', amount_cents: 525000,
+                         descuento_cents: 26500, neto_cents: 498500 }],
               per_installment_cents: null, gross_cents: 525000, discount_cents: 26500,
               net_cents: 498500, currency_code: 'EUR', available: true,
               descuentos: [{ policy_code: 'ANNUAL', designation: 'Descuento por pago anual' }] },
@@ -906,7 +914,8 @@ export function createDispatcher(scenario, record) {
               installments: 10,
               cuotas: Array.from({ length: 10 }, (_, i) => ({
                 due_date: `2027-${String(9 + (i % 4)).padStart(2, '0')}-01`,
-                concepto: 'Cuota escolar', amount_cents: 52500 })),
+                concepto: 'Cuota escolar', amount_cents: 52500,
+                descuento_cents: 0, neto_cents: 52500 })),
               per_installment_cents: 52500, gross_cents: 525000, discount_cents: 0,
               net_cents: 525000, currency_code: 'EUR', available: true, descuentos: [] },
           ],
