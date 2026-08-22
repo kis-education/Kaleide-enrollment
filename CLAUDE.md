@@ -2102,6 +2102,89 @@ de revisión no ofrece el campo de firma manuscrita»*). Corregida la afirmació
 **Publicado**: solo `Kaleide-enrollment`, solo `frontend/` — no toca `backend/Code.js` ni el KMS.
 Se publica al empujar a `main` (GitHub Pages, con la batería como puerta en el CI).
 
+### `0º.vicies.quinquies` (2026-08-22) — al llegar al paso 7, la simulación de cuotas YA ESTÁ
+
+**NO ES UNA AVERÍA: es espera evitable en el paso más caro de mirar.** El paso 7 dispara
+`simularCuotas` para pintar el presupuesto de la familia, y ese cálculo compone el motor de
+descuentos real (DL-071/DL-080/DL-082) — la misma razón por la que `0º.quindecies` medía **72 s**
+en el peor caso y decidió NO tocar el motor. Este tramo no toca el motor tampoco: lo que hace es
+que, cuando la familia LLEGA al paso 7, el resultado **ya esté calentado de fondo**, con el
+precalentado que el asistente ya usa para todo lo demás.
+
+**El mandato de Diego, literal, y es el que fija el diseño:** *«Bien visto, sí, no hay que
+hardcodear, debe emanar de las configuraciones.»* y *«Si la familia marca una alergia, responde a
+una pregunta o cambia la dirección de la ficha NO hace falta recalcular. Sólo aquellos campos que
+puedan afectar a las condiciones de las tarifas de aplicación… son los que provocan el
+recálculo.»* — **prohibido** invalidar con «cualquier escritura del grupo» a secas
+(`_wzCacheInvalidate_` sin más es «correcto pero inútil»: recalcularía en cada guardado, que es
+justo el trabajo que se quiere evitar), y **prohibido** escribir a mano la lista de «campos que
+importan» — tiene que **salir del catálogo de condiciones del propio colegio**, el mismo que
+decide qué tarifa le aplica a un alumno.
+
+**El mecanismo: una HUELLA derivada del catálogo de elegibilidad, no de una lista escrita a mano.**
+`enr_huellaDeLaSimulacion_` (`kis-app kms-server/enr/wizard-gateway.gs`) recorre los vínculos de
+aplicabilidad de las plantillas de este programa (`qbConsumerConditions` →
+`qbConditions_T`/`qbConditionGroups_T`, el mismo catálogo que decide qué tarifa le toca a cada
+solicitante), reúne **qué campos de la ficha del alumno miran esas condiciones**
+(`qb_collectFieldPaths_`, un recorrido genérico y recursivo del árbol de la condición, nuevo en
+`kis-app kms-server/qb/evaluator.gs`) y con eso, más la definición exacta de cada condición
+(operador y valor — para que un centro que cambie un umbral, sin tocar ni un dato de familia,
+también recalcule), y el CONJUNTO de solicitantes declarados, compone un SHA-256. **Si el hash no
+cambia, la simulación de ayer sigue sirviendo. Si cambia, hay que recalcular.** Endpoint nuevo,
+barato de preguntar: `enr.wizardHuellaDeSimulacion` — de paso devuelve `preferred_modality_id`
+(gratis: la puerta ya carga la fila del grupo), para que servir una simulación cacheada nunca
+enseñe una modalidad de pago que la familia ya cambió.
+
+**El lado del asistente reutiliza el precalentado que YA EXISTE, no uno nuevo.** `_wzCacheKey_`
+gana un tercer tipo de caché declarado, `'sim'`, con el mismo molde de dos niveles que ya usan
+`'kms'`/`'mem'`: la escritura la hace un solo sitio,
+`_wzComputeYCachearSimulacion_(groupId, resumeToken)`, y una fase nueva de fondo,
+`_warmSimularCuotasPhase_`, **espejo declarado** de `_warmMembersDocsPhase_` (mismo patrón, mismo
+sitio del fichero). `warmBundle_` la dispara en los mismos dos caminos que ya calientan hoy: el de
+**ticket** (junto a `'kms'`/`'mem'`, en paralelo, sin ralentizar nada) y el **directo con solo
+`resume_token`** (el que usa `ResumePage.jsx`) — ahí, para no retrasar ni un milisegundo la
+hidratación que sí es urgente, se dispara **DESPUÉS** de que `warmSession_` haya terminado, nunca
+antes ni junto.
+
+**Y `simularCuotas_`, cuando la familia SÍ llega al paso 7, ya no recalcula a ciegas.** Dos
+niveles: si la versión de escritura del grupo no ha cambiado desde el último cálculo, sirve la
+caché tal cual — cero viajes. Si SÍ cambió (cualquier guardado del grupo la mueve), en vez de
+recalcular de inmediato **pregunta la huella barata** — y solo si la huella también cambió, hace el
+cálculo caro de verdad. Un cambio de alergia, de dirección o de una respuesta que el catálogo de
+tarifas no mira mueve la versión pero **no** la huella ⇒ la familia recibe la caché de siempre, sin
+pagar el motor.
+
+**El límite honesto, para que nadie lo sobrevenda:** la huella cubre las condiciones de
+**elegibilidad** — qué plantilla de tarifa le corresponde a cada solicitante, que es lo que decide
+la mayor parte de lo que la familia ve. **NO** entra en el árbol de condiciones propio del motor de
+DESCUENTOS (`fin_resolveAutomaticPolicies_` y compañía) — tocar eso es el mismo motor que
+`0º.quindecies` decidió no tocar sin su propio arnés, por ser dinero. Si un colegio algún día
+declara un descuento condicionado a un dato que la huella de elegibilidad no mira, ese caso
+recalcularía tarde — no es el caso de hoy, y queda escrito para quien lo mida.
+
+⚠️ **Sin prueba automática — la batería nunca ejecuta `backend/Code.js` ni el KMS real.** Medido
+con TRES arneses efímeros (fuera de los dos repositorios, no commiteados): uno sobre
+`qb_collectFieldPaths_`/`enr_condicionIdsDeLosVinculos_` (9 afirmaciones verdes, un rojo
+demostrado con un recorrido no-recursivo que se deja condiciones dentro de grupos anidados); uno
+sobre `enr_huellaDeLaSimulacion_` extraído del fuente real del KMS junto al evaluador (7
+afirmaciones — determinismo, un campo mirado por la condición cambia la huella, un campo AJENO no
+la cambia, un centro que cambia el umbral SÍ la cambia sin tocar datos de familia, sin condiciones
+declaradas no revienta, añadir un solicitante la cambia — y un rojo demostrado: si el hash deja de
+llevar el operador y el valor de la condición, un cambio de umbral deja de detectarse); y uno sobre
+`simularCuotas_`/`_warmSimularCuotasPhase_`/`_wzComputeYCachearSimulacion_` extraídos VERBATIM del
+`backend/Code.js` real (10 afirmaciones, y un rojo demostrado: una versión que se salta la
+comprobación de huella sirve datos caducados). **26 afirmaciones verdes en total, 3 rojos
+demostrados. Quien toque esta cadena, que lo mida.**
+
+**Comprobado antes de publicar**: `node --check backend/Code.js` OK ·
+`comprobar-escrituras-directas.mjs` VERDE · `comprobar-selector-appsheet.mjs` VERDE ·
+`npm run e2e:wizard` **VEREDICTO: VERDE — 28 de 28** (sin caminos nuevos: el cambio es invisible
+para la batería, que corre contra un backend simulado). Del lado del KMS,
+`node scripts/check-quality-gates.mjs` **VEREDICTO: VERDE — 25 gates, 0 inertes**.
+
+**Manual, ayuda en pantalla y textos: ninguno toca.** La familia ve exactamente la misma pantalla
+del paso 7 — solo que, la mayoría de las veces, ya está calculada cuando llega.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

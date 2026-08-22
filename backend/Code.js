@@ -1652,7 +1652,7 @@ function _redactSigningTokenIfNotFresh_(signingContext, fresh) {
 // cache DESPUÉS de sus gates (requireResumeToken_ + step-up/PII) — solo cambia el
 // ORIGEN de los datos. KAL-11: logs solo con token.slice(0,8).
 
-/** Clave base del cache wizard (kind: 'hyd' | 'adm' | 'mem' | 'doc').
+/** Clave base del cache wizard (kind: 'hyd' | 'adm' | 'mem' | 'doc' | 'sim').
  *
  * RE-LLAVEO V2.4 (pregunta de Diego 2026-06-12 17:08: "una vez cargada en el
  * servidor, ¿por qué no se queda ahí hasta que caduque la caché?"): las claves
@@ -1662,9 +1662,15 @@ function _redactSigningTokenIfNotFresh_(signingContext, fresh) {
  *         verifica pertenencia post-gate — KAL-4; TTL 6h)
  *   mem → enrollment_group_id (members del paquete, de grupo)
  *   hyd/adm → enrollment_group_id + n (contexto per-guardian)
- * Frescura: live_version (v en la entrada) — los writes bumpan la versión del
- * grupo (_wzCacheInvalidate_) y cualquier entrada con v vieja es MISS. La
- * rotación del token deja de borrar nada: re-entrar 10 min después = HIT. */
+ *   sim → enrollment_group_id (`0º.vicies.quinquies` — la simulación del paso 7
+ *         no se filtra por tutor: todos ven las mismas plantillas de todos los
+ *         solicitantes, igual que hoy). Frescura de DOS niveles, no solo `v`: la
+ *         entrada guarda además `huella` (`enr_huellaDeLaSimulacion_`, KMS),
+ *         derivada de lo que el centro declaró — un `v` distinto NO basta para
+ *         tirarla, se comprueba antes por el camino barato (`simularCuotas_`).
+ * Frescura de hyd/adm/mem/doc: live_version (v en la entrada) — los writes bumpan
+ * la versión del grupo (_wzCacheInvalidate_) y cualquier entrada con v vieja es
+ * MISS. La rotación del token deja de borrar nada: re-entrar 10 min después = HIT. */
 // DL-E49 §2 — 'hyd'/'adm' llevan `v2` a propósito: el hydrate empezó a recortar
 // por identidad y las entradas cacheadas ANTES de este cambio (mismo grupo+n, formato
 // de clave idéntico) seguirían siendo HIT con el grupo entero sin recortar hasta
@@ -1927,6 +1933,94 @@ function _warmMembersDocsPhase_(it) {
   try { cache.remove('wzck_mem_' + (typeof groupId !== 'undefined' && groupId ? groupId : token)); } catch (eR) {}
   out.ms = Date.now() - t0;
   Logger.log('[WZCACHE] warm mem done ' + JSON.stringify(out));
+  return out;
+}
+
+/**
+ * `0º.vicies.quinquies` (2026-08-22) — CALCULA la simulación del paso 7 (el motor
+ * caro del KMS, `enr.simularCuotas`, ~89 s con el memo de `0º.vicies.ter`) y la deja
+ * en caché — SIEMPRE. Es el ÚNICO sitio que escribe `wz_sim_<groupId>`; tanto el
+ * calentado de fondo (`_warmSimularCuotasPhase_`) como el camino en vivo
+ * (`simularCuotas_`, cuando su caché no vale) llaman AQUÍ — nunca cada uno a su
+ * manera, para que no puedan divergir.
+ *
+ * El KMS devuelve la HUELLA junto con la simulación (`enr_huellaDeLaSimulacion_`,
+ * DERIVADA de las circunstancias que el centro declaró — nunca una lista escrita a
+ * mano); aquí solo se guarda tal cual.
+ *
+ * @param {string} groupId
+ * @param {string} resumeToken
+ * @returns {Object} la respuesta de `enr.simularCuotas` (byte-idéntica a la de hoy)
+ * @private
+ */
+function _wzComputeYCachearSimulacion_(groupId, resumeToken) {
+  var data = kmsProxy_('enr.simularCuotas', { resume_token: resumeToken });
+  try {
+    _wzCachePutChunked_(CacheService.getScriptCache(), _wzCacheKey_('sim', groupId),
+      JSON.stringify({ v: _getLiveStateVersion_(groupId), huella: (data && data.huella) || null, data: data }),
+      1800);
+  } catch (eC) { /* best-effort: el cálculo ya se hizo, solo falla guardarlo */ }
+  return data;
+}
+
+/**
+ * FASE HIJA 'sim' del precalentado (`0º.vicies.quinquies`) — calienta de fondo la
+ * simulación de cuotas del paso 7, CONCURRENTE e independiente del hydrate, mismo
+ * criterio que la fase 'mem' (`_warmMembersDocsPhase_`, arriba): lo caro de esta
+ * fase (~89 s) no puede retrasar lo que ya calienta la fase 'kms'.
+ *
+ * Marca `wzck_sim_<groupId>` mientras trabaja (para que dos disparos del mismo
+ * enlace no calculen la misma simulación dos veces a la vez). Antes de recalcular,
+ * si ya hay algo cacheado se le pregunta la HUELLA al camino barato (mismo criterio
+ * que `simularCuotas_`: `v` casa ⇒ sigue valiendo sin preguntar nada; `v` no casa ⇒
+ * se pregunta la huella) — si sigue valiendo, sale sin recalcular, para que una
+ * familia que pide un segundo enlace ("guardar y seguir luego") no vuelva a pagar
+ * un ensayo que su última edición no cambió.
+ *
+ * Best-effort SIEMPRE: un fallo aquí no le impide a la familia ver su simulación —
+ * simplemente la pagará ella al llegar al paso 7, como hoy.
+ *
+ * @param {{t:string}} it
+ * @returns {{ok:boolean, ms:number}}
+ * @private
+ */
+function _warmSimularCuotasPhase_(it) {
+  var out = { ok: false, ms: 0 };
+  var t0 = Date.now();
+  var token = String((it && it.t) || '').trim();
+  var cache = CacheService.getScriptCache();
+  var groupId;
+  try {
+    try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
+    groupId = requireResumeTokenMemo_({ resume_token: token });
+
+    var yaCaliente = false;
+    try {
+      var raw = _wzCacheGetChunked_(cache, _wzCacheKey_('sim', groupId));
+      if (raw) {
+        var env = JSON.parse(raw);
+        if (env && env.data && env.huella) {
+          if (env.v === _getLiveStateVersion_(groupId)) {
+            yaCaliente = true;
+          } else {
+            var chequeo = kmsProxy_('enr.wizardHuellaDeSimulacion', { resume_token: token });
+            yaCaliente = !!(chequeo && chequeo.huella && chequeo.huella === env.huella);
+          }
+        }
+      }
+    } catch (eChk) { yaCaliente = false; }  // sin certeza de que siga valiendo → recalcula
+    if (yaCaliente) { out.ok = true; return out; }
+
+    if (cache.get('wzck_sim_' + groupId)) { out.ok = true; return out; } // ya en marcha
+    try { cache.put('wzck_sim_' + groupId, '1', 300); } catch (eM) { /* best-effort */ }
+    _wzComputeYCachearSimulacion_(groupId, token);
+    out.ok = true;
+  } catch (e) {
+    Logger.log(redact_('[_warmSimularCuotasPhase_] non-fatal — ' + (e && e.message)));
+  }
+  try { cache.remove('wzck_sim_' + (groupId || token)); } catch (eR) { /* best-effort */ }
+  out.ms = Date.now() - t0;
+  Logger.log('[WZCACHE] warm sim done ' + JSON.stringify(out));
   return out;
 }
 
@@ -8240,13 +8334,58 @@ function applyPaymentModality_(p) {
  * sesión ya tiene; pedirlo dejaría sin ver sus tarifas a la familia que lleva más de diez
  * minutos repasando su solicitud, que es justo cuando llega al paso 7.
  *
+ * ⭐ `0º.vicies.quinquies` (2026-08-22) — CACHE-FIRST, con una comprobación BARATA
+ * antes de creerse la caché. El calentado de fondo (`_warmSimularCuotasPhase_`,
+ * fase 'sim' del precalentado) suele dejar el resultado listo ANTES de que la
+ * familia llegue al paso 7. DOS niveles, del más barato al más caro:
+ *
+ *   1. **`v` casa** (nada ha escrito en el grupo desde que se cacheó) → la foto es
+ *      byte-idéntica a la de hoy: se sirve TAL CUAL, sin ni una llamada más.
+ *   2. **`v` no casa** (algo escribió — puede ser una alergia, puede ser el
+ *      programa) → se pregunta la HUELLA por el camino barato
+ *      (`enr.wizardHuellaDeSimulacion`, que NUNCA ensaya una plantilla). Si casa
+ *      con la que se guardó, la simulación sigue siendo la misma — se sirve, con
+ *      **una sola cosa refrescada**: `preferred_modality_id` (la elección de forma
+ *      de pago SÍ pudo cambiar sin tocar la huella, y sería raro que el paso 7
+ *      mostrara una elección vieja tras guardarla).
+ *
+ * Solo si no hay caché o la huella no casa se paga el cálculo completo —
+ * EXACTAMENTE el mismo que hacía esta función antes de hoy.
+ *
  * @param {Object} p — { resume_token }
- * @returns {Object} `data` del KMS — { ok, motivo, simulaciones, preferred_modality_id }
+ * @returns {Object} `data` del KMS — { ok, motivo, simulaciones, preferred_modality_id, huella }
  */
 function simularCuotas_(p) {
   // KAL-4: el expediente sale del token, nunca del cuerpo. El KMS lo re-deriva igual.
-  requireResumeToken_(p);
-  return kmsProxy_('enr.simularCuotas', { resume_token: p.resume_token });
+  var groupId = requireResumeToken_(p);
+  var token = String(p.resume_token).trim();
+  try {
+    var cache = CacheService.getScriptCache();
+    var raw = _wzCacheGetChunked_(cache, _wzCacheKey_('sim', groupId));
+    if (raw) {
+      var env = JSON.parse(raw);
+      if (env && env.data && env.huella) {
+        var liveNow = _getLiveStateVersion_(groupId);
+        if (env.v === liveNow) {
+          Logger.log('[WZCACHE] HIT sim (sin escrituras) token=' + token.slice(0, 8) + '…');
+          return env.data;
+        }
+        var chequeo = kmsProxy_('enr.wizardHuellaDeSimulacion', { resume_token: token });
+        if (chequeo && chequeo.huella && chequeo.huella === env.huella) {
+          var dataFresca = Object.assign({}, env.data, { preferred_modality_id: chequeo.preferred_modality_id || null });
+          // Se re-archiva con la `v` de ahora para que la PRÓXIMA lectura entre por
+          // el nivel 1 (sin ni siquiera preguntar la huella) mientras nada más cambie.
+          try {
+            _wzCachePutChunked_(cache, _wzCacheKey_('sim', groupId),
+              JSON.stringify({ v: liveNow, huella: env.huella, data: dataFresca }), 1800);
+          } catch (eRewrite) { /* best-effort */ }
+          Logger.log('[WZCACHE] HIT sim (huella casa) token=' + token.slice(0, 8) + '…');
+          return dataFresca;
+        }
+      }
+    }
+  } catch (eR) { /* degrada al cálculo completo — nunca romper el paso 7 por esto */ }
+  return _wzComputeYCachearSimulacion_(groupId, token);
 }
 
 /**
@@ -8790,6 +8929,8 @@ function warmBundle_(p) {
     try { it0 = JSON.parse(pRaw) || {}; } catch (ePp) { return { ok: false }; }
     if (!it0.t) return { ok: false };
     if (it0.phase === 'mem') return _warmMembersDocsPhase_(it0);
+    // `0º.vicies.quinquies` — fase 'sim': la simulación de cuotas del paso 7.
+    if (it0.phase === 'sim') return _warmSimularCuotasPhase_(it0);
     // fase 'kms' — bundle KMS-side (hydrate+admission+members+docs), mismo gate
     // KAL-4 y rate-limit que el warm de la pantalla OTP (warmSession_).
     try {
@@ -8833,11 +8974,16 @@ function warmBundle_(p) {
       Logger.log('[warmBundle_] nada que calentar: ticket ilegible en cache');
       return { ok: true };
     }
-    // V2.1: por cada item, DOS fases hijas CONCURRENTES (fetchAll al propio /exec):
+    // V2.1: por cada item, fases hijas CONCURRENTES (fetchAll al propio /exec):
     //  - 'kms': hydrate+admission+members+bytes PDF (30-90s, dominado por el pull KMS).
     //  - 'mem': members + bytes del paquete de firma, independiente del hydrate.
+    //  - 'sim': la simulación de cuotas del paso 7 (`0º.vicies.quinquies`) — ~89 s,
+    //    independiente de las otras dos, para que esté lista antes de que la familia
+    //    llegue al paso 7 (el listón de Diego: «cuando lleguen todo debe ser
+    //    instantáneo»). Best-effort: si no calienta a tiempo, el paso 7 la calcula
+    //    ella misma, como hoy.
     // Antes secuencial: el warm no ganaba la carrera del minuto muerto (round 5).
-    // ②17 (2026-08-15): había una TERCERA fase, 'res', que precocinaba el payload de
+    // ②17 (2026-08-15): había una fase 'res' que precocinaba el payload de
     // `resumeSession` con ~24 lecturas directas a AppSheet —salud, alergias, dieta y
     // NEAE de menores incluidas— en CADA envío de enlace. Se retiró con el manejador:
     // su memoria solo la leía `resumeSession`, y el frontal no lo llamaba desde que el
@@ -8850,8 +8996,10 @@ function warmBundle_(p) {
       // V2.3: fase 'mem' CONCURRENTE e independiente del hydrate — el paso 10
       // (members+docs) queda caliente aunque el usuario llegue en <60s.
       var pm = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'mem' });
+      var psim = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'sim' });
       if (pk) passes.push({ pass: pk });
       if (pm) passes.push({ pass: pm });
+      if (psim) passes.push({ pass: psim });
     });
     _wzSelfFetchAll_(passes);
     // WIZ-ENUM: el CONTEO de fases se queda en el log, no en la respuesta — un
@@ -8862,7 +9010,22 @@ function warmBundle_(p) {
     return { ok: true };
   }
   // Sin ticket: mismo gate y semántica que el warm de la pantalla OTP (KAL-4 dentro).
-  return warmSession_(p);
+  var wsOut = warmSession_(p);
+  // `0º.vicies.quinquies` — esta llamada YA es fire-and-forget desde el cliente
+  // (ResumePage.jsx, tras clicar el enlace: `setTimeout(...).catch(()=>{})`). El
+  // hydrate de arriba YA quedó caliente antes de esta línea — no se le resta ni un
+  // milisegundo—; AHORA, en la misma ejecución ya olvidada por el navegador, se
+  // calienta TAMBIÉN la simulación del paso 7 en su propia fase (mismo mecanismo
+  // del ticket — `_mintWarmPass_`/`_wzSelfFetchAll_` —, nunca uno nuevo). Sin
+  // `resume_token` o con uno inválido, `_warmSimularCuotasPhase_` no hace nada.
+  try {
+    var psimDirecto = _mintWarmPass_({
+      t: p && p.resume_token, n: (p && p.n) || null,
+      e: (p && p.recovered_email) || null, l: (p && p.language) || null, phase: 'sim',
+    });
+    if (psimDirecto) _wzSelfFetchAll_([{ pass: psimDirecto }]);
+  } catch (eSimDirecto) { /* best-effort — nunca puede tumbar el warm de siempre */ }
+  return wsOut;
 }
 
 function hydrateSession_(p) {
