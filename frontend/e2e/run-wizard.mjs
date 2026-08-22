@@ -7012,6 +7012,106 @@ async function caminoVinculoHermanosUnaSolaFila(page, base) {
   }
 }
 
+/**
+ * `0º.duodetricies` — EDITAR UN VÍNCULO YA GUARDADO LLEGA AL SERVIDOR CON SUS DOS EXTREMOS.
+ *
+ * El ÚNICO escritor descarta EN SILENCIO todo vínculo que no traiga `person_id_a` y
+ * `person_id_b` (`enr_persistRelations_`, `kis-app kms-server/enr/wizard-gateway.gs`), y la
+ * hidratación del KMS **no manda esos dos nombres**: proyecta `guardian_person_id` /
+ * `applicant_person_id` encima de `from_person_id` / `to_person_id`. Resultado medido el
+ * 2026-08-22: la familia corregía «madre» por «tutora legal» o marcaba la custodia de un
+ * vínculo YA GUARDADO, la pantalla no protestaba, y **el cambio no se escribía nunca**.
+ *
+ * ⚠️ Esto NO es lo mismo que D97 (el `pair_id` obligatorio), que RECHAZA la escritura entera
+ * y SÍ se ve en pantalla. Éste falla hacia el SILENCIO, que es peor: no hay aviso que mirar.
+ *
+ * Se mide lo observable desde el navegador: qué filas salen en el `saveStep` del paso 3
+ * después de tocar un vínculo que vino de la hidratación. Lo que el KMS haga con ellas la
+ * batería no lo ve —corre contra el backend simulado—, y por eso la afirmación se queda
+ * exactamente en el contrato del escritor: los dos identificadores, y en su orden.
+ */
+async function caminoEditarVinculoGuardado(page, base) {
+  const c = new Camino('editar-vinculo-guardado')
+
+  try {
+  // Etapa con vínculos YA guardados en el expediente. Se usa la familia de UN SOLO tutor a
+  // propósito: es el único molde del simulado cuya hidratación trae los vínculos de TODOS
+  // los hijos, con su tipo y su custodia ya puestos. Con dos tutores, el recorte de
+  // DL-E49 §2 esconde el vínculo del otro y el segundo hijo se queda sin custodia ⇒ el paso
+  // no deja continuar y el camino moriría ANTES de la afirmación, sin medir nada.
+  scenario.stage = 'hasta_preguntas'
+  scenario.tutorUnico = true
+
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  const pantalla = await page.evaluate(sondaPantalla)
+  c.evidencia.elementos = pantalla.pasos + pantalla.campos
+  if (!await irAVinculos(c, page)) return c
+
+  // ANCLA: sin un vínculo YA guardado y con su tipo puesto, todo lo de abajo mediría el
+  // alta de uno nuevo — que es justo el caso que SÍ funcionaba.
+  const selects = await page.$$('.kis-card select.form-select-sm')
+  const tipoPrevio = selects.length ? await selects[0].inputValue() : ''
+  if (!c.afirmar('(1) el paso trae un vínculo YA guardado, con su tipo declarado',
+    selects.length >= 1 && !!tipoPrevio,
+    `se pintaron ${selects.length} desplegable(s) y el primero vale "${tipoPrevio}": ` +
+    'sin un vínculo que venga de la hidratación, este caso no se está midiendo')) return c
+
+  // Se cambia el tipo a OTRO distinto del que vino guardado: es la edición que hoy se pierde.
+  const opciones = await selects[0].$$eval('option', (os) => os.map(o => o.value).filter(Boolean))
+  const tipoNuevo = opciones.find(v => v !== tipoPrevio)
+  if (!c.afirmar('(2) el catálogo ofrece otro tipo al que cambiar',
+    !!tipoNuevo,
+    `las opciones eran ${JSON.stringify(opciones)} y el valor guardado "${tipoPrevio}": ` +
+    'con una sola opción no hay edición que medir')) return c
+  await selects[0].selectOption(tipoNuevo)
+  await page.waitForTimeout(200)
+
+  const antes = calls.length
+  if (!await continuar(c, page, 3, 'paso 3 → 4 tras cambiar el tipo de un vínculo guardado')) return c
+
+  const t0 = Date.now()
+  const guardadosDeVinculos = () => llamadas('saveStep')
+    .filter(g => (g.payload || {}).step === 'relations')
+  while (!guardadosDeVinculos().length && Date.now() - t0 < LATENCY + 3000) {
+    await page.waitForTimeout(200)
+  }
+  c.evidencia.llamadas = calls.length - antes
+  const guardados = guardadosDeVinculos()
+  if (!c.afirmar('(3) tocar un vínculo guardado dispara su guardado', guardados.length > 0,
+    `ningún saveStep con step="relations" salió en ${Date.now() - t0} ms tras continuar: ` +
+    'la edición no llega ni a salir del navegador')) return c
+
+  const filas = (guardados[guardados.length - 1].payload || {}).payload || []
+  const editada = filas.find(r => (r.relation_type_id || '') === tipoNuevo)
+
+  // LA AFIRMACIÓN CENTRAL: sin los dos extremos, el escritor la tira sin decir nada.
+  c.afirmar('(4) la fila editada viaja con `person_id_a` y `person_id_b`',
+    !!(editada && editada.person_id_a && editada.person_id_b),
+    `la fila del vínculo editado salió como ${JSON.stringify(editada || null)}: ` +
+    'sin los DOS identificadores, `enr_persistRelations_` la descarta EN SILENCIO y la ' +
+    'corrección de la familia no se guarda nunca')
+
+  // El ORDEN es parte del dato: el escritor identifica la fila por la terna
+  // `(expediente, a, b)`, así que invertirla no actualiza — crea una fila NUEVA.
+  c.afirmar('(5) y los extremos conservan el orden con el que están guardados',
+    !!(editada && (!editada.from_person_id || editada.person_id_a === editada.from_person_id) &&
+                  (!editada.to_person_id   || editada.person_id_b === editada.to_person_id)),
+    `la fila salió con a=${editada && editada.person_id_a} / b=${editada && editada.person_id_b} ` +
+    `sobre from=${editada && editada.from_person_id} / to=${editada && editada.to_person_id}: ` +
+    'invertir los extremos hace que el KMS cree una fila NUEVA en vez de actualizar la suya')
+
+  // Y el cambio que la familia hizo es el que sale, no el que había.
+  c.afirmar('(6) el tipo que sale es el que la familia acaba de elegir',
+    !!(editada && editada.relation_type_id === tipoNuevo),
+    `se esperaba relation_type_id="${tipoNuevo}" y las filas mandadas fueron ` +
+    JSON.stringify(filas.map(r => r.relation_type_id)))
+
+  return c
+  } finally {
+    scenario.tutorUnico = false
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -7063,6 +7163,10 @@ const CAMINOS = [
   // `0º.septvicies` — el asistente deja de escribir la fila invertida del par de hermanos
   // (DL-S45), y el lector del paso 3 la sigue viendo guardada en cualquier sentido.
   { nombre: 'vinculo-hermanos-una-sola-fila', fn: caminoVinculoHermanosUnaSolaFila,
+    minLlamadas: 1, minElementos: 11 },
+  // `0º.duodetricies` — editar un vínculo YA guardado llega al servidor con sus dos extremos
+  // (sin ellos, el escritor lo descarta EN SILENCIO y la corrección se pierde).
+  { nombre: 'editar-vinculo-guardado', fn: caminoEditarVinculoGuardado,
     minLlamadas: 1, minElementos: 11 },
   { nombre: 'aviso-de-vinculo-señala-donde-es', fn: caminoAvisoDeVinculoSeñalaDondeEs,
     minLlamadas: 0, minElementos: 11 },

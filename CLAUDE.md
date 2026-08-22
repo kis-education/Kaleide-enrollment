@@ -2879,6 +2879,83 @@ aquí no dependía de eso, pero la persistencia de punta a punta sí.
 **Textos, manual y ayuda en pantalla: ninguno toca.** La familia ve exactamente la misma pantalla y
 declara exactamente lo mismo; lo que cambia es cuántas filas salen hacia el expediente.
 
+### `0º.duodetricies` (2026-08-22) — editar un vínculo YA GUARDADO dejaba de escribirse EN SILENCIO
+
+**Un dato que la familia creía guardado y no lo estaba, sin ningún aviso que mirar.** Salió al
+medir `0º.septvicies`, no de un encargo.
+
+**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
+
+| Pieza | Qué dice |
+|---|---|
+| el ÚNICO escritor | `enr_persistRelations_` (`kis-app kms-server/enr/wizard-gateway.gs:3473`): `if (!r \|\| !r.person_id_a \|\| !r.person_id_b) return;` |
+| la hidratación del KMS | proyecta `guardian_person_id`/`applicant_person_id` **ENCIMA** de `from_person_id`/`to_person_id` (`enr/wizard-datalayer.gs:351`) — **ninguno de esos cuatro nombres es el que el escritor mira** |
+| el paso 3, rama de vínculo NUEVO | **SÍ** pone `person_id_a`/`person_id_b` (`Step3Relations.jsx:55`, `:73`) ⇒ los nuevos sí se guardaban |
+| el paso 3, rama de vínculo YA GUARDADO | `{ ...found }` — hereda lo que trajo la hidratación, **sin los dos identificadores** |
+
+⇒ la familia corregía «madre» por «tutora legal», o marcaba la custodia, le daba a continuar,
+**la pantalla no protestaba** y el cambio **no se escribía nunca**.
+
+**⚠️ NO es lo mismo que D97** (el `pair_id` obligatorio), que **rechaza la escritura entera y SÍ
+se ve** en pantalla. Éste **falla hacia el SILENCIO**, que es peor: no hay aviso rojo que mirar.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ SE REPONE EN UN SOLO SITIO, y no es el que parece.** Va en el normalizador de la
+  hidratación (`WizardContext.jsx`, `hydrateFromResume`), **el que ya existe para sembrar el
+  expediente con la MISMA forma que produce el paso 3** (el mismo bloque que normaliza los
+  booleanos y las personas, con su porqué escrito al lado). Desde ahí lo heredan **el
+  `savedBaseline`, `stepData` y el envío**, los tres a la vez.
+- **⛔ Reponerlos AL ENVIAR habría sido el error**: el `savedBaseline` se siembra de la
+  hidratación, así que el envío tendría dos campos MÁS que la referencia ⇒ **dirty-check positivo
+  permanente y un guardado espurio por sesión** — la clase de defecto que ese mismo comentario
+  lleva documentada desde P89. Y hacerlo en los dos lados serían **dos criterios sobre el mismo
+  dato**, que es lo que la regla del código-de-oro prohíbe.
+- **⛔ EL ORDEN ES PARTE DEL DATO: `a` = `from`, `b` = `to`, derivado de la PROPIA fila** y nunca
+  de las personas del bucle que la encontró. El escritor identifica la fila por la terna
+  `(expediente, a, b)` (`enr_upsertRelation_`), así que invertir los extremos **no actualiza: crea
+  una fila NUEVA** — justo el duplicado que DL-S45 vino a cerrar. Importa de verdad en el par
+  hermano↔hermano, que se casa en los dos sentidos.
+- **⛔ La guarda del servidor NO se toca.** Descartar una fila sin sujetos es una comprobación de
+  pertenencia legítima (KAL-4). Lo que estaba mal era **quién manda el dato**, no que se
+  comprobara. Sin ningún extremo reconocible la fila sale como entró y se descarta igual que hoy:
+  **no se inventa un identificador**.
+
+**⚠️ LO QUE ESTA VUELTA NO CIERRA, y su motivo:** que el descarte **se DIGA**. Medido: el trabajo
+sí lo cuenta y lo devuelve (`relations_discarded`, `enr_persistRelations_:3553`) y lo registra
+(`:3533`), pero eso vive en **la respuesta del trabajo de la cola**, que ocurre minutos después de
+que el asistente ya haya contestado ⇒ **no llega a la familia**. Y no lo cubre el aviso de
+`0º.tricies.octies (B)`, que solo mira los trabajos en `Failed`: un descarte **no** hace fallar el
+trabajo. Es `kms-server/enr/*`, **reservado por otra mano en este mismo turno**, así que **no se
+toca**: queda anotado en la ficha. Tras este arreglo el camino legítimo ya no produce descartes.
+
+**⚠️ Y sigue SIN ACREDITAR de punta a punta, por un motivo ajeno:** **D97 no consta aplicado**
+(`kis-app docs/kms/pendiente-diego.md` §D97) ⇒ mientras `sysPersonRelations.pair_id` siga siendo
+obligatorio, AppSheet rechaza toda escritura de vínculo y un descarte silencioso y un rechazo no se
+distinguen. Lo entregado aquí no dependía de eso; la persistencia real, sí.
+
+**Red**: camino NUEVO `editar-vinculo-guardado` (6 afirmaciones). Usa la familia de **UN SOLO
+tutor** a propósito — es el único molde del simulado cuya hidratación trae los vínculos de todos
+los hijos con tipo y custodia ya puestos; con dos tutores el recorte de DL-E49 §2 deja al segundo
+hijo sin custodia y **el camino moriría en la validación del paso, sin medir nada** (pasó al primer
+intento, y por eso se dice). `VEREDICTO: VERDE — 37 de 37`. **Rojo demostrado DOS veces**, cada uno
+nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| quitar la reposición (el código de ayer) | *«la fila del vínculo editado salió como {…"from_person_id":…,"to_person_id":…,"relation_type_id":"rt_father"…}: sin los DOS identificadores, `enr_persistRelations_` la descarta EN SILENCIO»* — y la afirmación (6) **sigue verde**, que es lo que prueba que la edición SÍ llega al envío y solo le faltan los identificadores |
+| invertir los extremos (`a`=`to`, `b`=`from`) | *«la fila salió con a=bbbb… / b=aaaa… sobre from=aaaa… / to=bbbb…: invertir los extremos hace que el KMS cree una fila NUEVA en vez de actualizar la suya»* |
+
+⚠️ **Lo que la red NO cubre:** la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS ⇒ afirma **qué manda el navegador**, no que la fila aterrice en
+`sysPersonRelations`. El contrato del escritor se acredita **leyendo su código real** (arriba, con
+fichero y línea), no con esta batería.
+
+**Publicación**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Sale por CI/Pages al
+empujar a `main`, sin `clasp`. **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve
+exactamente la misma pantalla y hace exactamente lo mismo; lo que cambia es que ahora su corrección
+llega entera al expediente.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

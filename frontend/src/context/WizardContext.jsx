@@ -1283,8 +1283,42 @@ export function WizardProvider({ children }) {
       // dirty-check solo dispara con EDICIONES reales. Subsume el normYN parcial
       // previo (que arreglaba esta misma clase solo para booleanos).
       persons: preparePersonsForUI(persons),
+      // ── LOS DOS EXTREMOS, TAMBIÉN EN LO YA GUARDADO (`0º.duodetricies`) ────────────
+      // El ÚNICO escritor descarta EN SILENCIO todo vínculo que no traiga `person_id_a`
+      // y `person_id_b` (`enr_persistRelations_`, `kis-app kms-server/enr/wizard-gateway.gs`:
+      // `if (!r || !r.person_id_a || !r.person_id_b) return;`). La hidratación del KMS NO
+      // los manda: proyecta `guardian_person_id`/`applicant_person_id` ENCIMA de
+      // `from_person_id`/`to_person_id` (`enr/wizard-datalayer.gs`), y ninguno de esos
+      // cuatro nombres es el que el escritor mira.
+      //
+      // Resultado medido el 2026-08-22: un vínculo que viene de la hidratación se
+      // reenviaba sin los dos identificadores, así que **editar el tipo o la custodia de
+      // un vínculo YA GUARDADO no llegaba a escribirse nunca** — la familia corregía
+      // «madre» por «tutora legal», le daba a continuar, la pantalla no protestaba y el
+      // cambio se perdía. Los vínculos NUEVOS sí se guardaban, porque
+      // `buildInitialRelations` (`steps/Step3Relations.jsx`) sí se los pone a ésos.
+      //
+      // ⛔ SE REPONE AQUÍ Y EN UN SOLO SITIO, y este sitio no es casual: es el que ya
+      // existe para sembrar la hidratación **con la misma forma que produce el paso 3**
+      // (ver el comentario de `persons`, justo arriba). Reponerlos al enviar dejaría el
+      // `savedBaseline` con dos campos MENOS que el envío ⇒ dirty-check positivo
+      // permanente y un guardado espurio por sesión, que es la clase de defecto que ese
+      // comentario documenta. Y reponerlos en los dos lados serían dos criterios sobre el
+      // mismo dato, que es lo que la regla del código-de-oro prohíbe.
+      //
+      // ⛔ EL ORDEN ES PARTE DEL DATO Y SE CONSERVA VERBATIM: `a` = `from`, `b` = `to`.
+      // El escritor identifica la fila por la terna `(expediente, a, b)`
+      // (`enr_upsertRelation_`), así que invertir los extremos no actualizaría la fila:
+      // **crearía una NUEVA**, que es justo el duplicado que DL-S45 vino a cerrar. Por eso
+      // se derivan de la PROPIA fila y nunca de las personas del bucle que la encontró.
+      //
+      // Sin ningún extremo reconocible no se inventa nada: la fila sale como entró y el
+      // escritor la descarta igual que hoy — su guarda es legítima (KAL-4 / pertenencia:
+      // una fila sin sujetos no se escribe) y NO se toca.
       relations: relations.map(r => ({
         ...r,
+        person_id_a:             r.person_id_a || r.from_person_id || r.guardian_person_id  || undefined,
+        person_id_b:             r.person_id_b || r.to_person_id   || r.applicant_person_id || undefined,
         is_custodial:            normYN(r.is_custodial),
         is_pick_up_authorized:   normYN(r.is_pick_up_authorized),
         is_school_rep:           r.is_school_rep           !== undefined ? normYN(r.is_school_rep)           : r.is_school_rep,
