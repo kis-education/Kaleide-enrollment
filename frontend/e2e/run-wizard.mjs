@@ -4994,6 +4994,126 @@ async function caminoIdiomasHablados(page, base) {
   }
 }
 
+/**
+ * CAMINO · «las opciones de sexo salen del catálogo» (`0º.tricies.duodecies` · DL-E51).
+ *
+ * El catálogo Capa 2 del producto (`person-gender-values`) promete en su propio comentario
+ * que un valor nuevo *«se añade AHÍ (una línea) y aparece solo en la pantalla»*. Para el
+ * asistente eso era FALSO: los cuatro `<option>` estaban escritos a mano en
+ * `Step2Persons.jsx`, así que la pantalla y el catálogo podían decir cosas distintas — que
+ * es exactamente lo que perdió el paso de personas de una familia real (`0º.tricies.octies`).
+ *
+ * Las CUATRO cosas que mide, y ninguna sobra:
+ *   (1) el desplegable pinta EXACTAMENTE lo que sirve el catálogo del servidor — ni una
+ *       opción de más ni de menos (el doble sirve una lista DISTINTA de la escrita a mano
+ *       a propósito: sin eso la comprobación pasaría en vacío);
+ *   (2) un valor que la lista escrita a mano SÍ trae y el catálogo NO (`Male`) no aparece —
+ *       si apareciera, la pantalla estaría pintando su respaldo;
+ *   (3) la etiqueta sigue la regla única: con traducción se pinta la traducción; sin ella,
+ *       la `designation` del catálogo (nunca el código en crudo);
+ *   (4) lo que la familia elige VIAJA en el guardado, en `gender`.
+ *
+ * ⚠️ Lo que NO cubre: la batería corre contra un backend SIMULADO que nunca ejecuta
+ * `backend/Code.js` ni llama al KMS. Que `enr_wizardFetchLookups` sirva de verdad el
+ * catálogo no lo acredita esto — se acredita leyendo el manejador real.
+ */
+async function caminoSexoDesdeElCatalogo(page, base) {
+  const c = new Camino('sexo-desde-el-catalogo')
+  scenario.stage = 'hasta_preguntas'
+
+  let ultimoPersons = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'saveStep' && body.step === 'persons') ultimoPersons = body
+  }
+  page.on('request', espiar)
+  const limpiar = () => page.off('request', espiar)
+
+  // El desplegable de la PRIMERA ficha. Se localiza por su `data-testid`, igual que las
+  // casillas de idioma del camino de arriba — sin inventar selectores.
+  const selector = async () => {
+    const ss = await page.$$('.dynamic-section')
+    if (!ss.length) return null
+    return await ss[0].$('select[data-testid^="sexo-"]')
+  }
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(400)
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+
+    // ── ANCLA: sin desplegable, todo lo de abajo mediría el vacío.
+    const sel = await selector()
+    if (!c.afirmar('el paso 2 ofrece el desplegable del sexo', !!sel,
+      'no se pintó ningún select[data-testid^="sexo-"] en la primera ficha')) return c
+
+    const opciones = await sel.$$eval('option', els =>
+      els.map(o => ({ value: o.value, texto: (o.textContent || '').trim() })))
+    const conValor = opciones.filter(o => o.value)
+
+    // ── (1) + (2) LO QUE SE PINTA ES LO QUE SIRVE EL CATÁLOGO ──────────────────────
+    const esperados = ['Female', 'Non-binary', 'ZZ-E2E']   // los que sirve el doble
+    c.afirmar('las opciones son EXACTAMENTE las del catálogo que manda el servidor',
+      conValor.length === esperados.length && esperados.every(x => conValor.some(o => o.value === x)),
+      `se pintaron ${JSON.stringify(conValor.map(o => o.value))}, se esperaba ${JSON.stringify(esperados)}`)
+    c.afirmar('un valor que el catálogo NO declara no aparece (no se pinta la lista escrita a mano)',
+      !conValor.some(o => o.value === 'Male'),
+      'apareció «Male», que el catálogo del servidor no sirve: la pantalla está pintando su respaldo, no el catálogo')
+
+    // ── (3) LA ETIQUETA: traducción si la hay, `designation` si no ─────────────────
+    const female = conValor.find(o => o.value === 'Female')
+    c.afirmar('un valor CON traducción se pinta traducido',
+      !!female && female.texto === 'Femenino',
+      `la opción de «Female» se leyó «${female && female.texto}» (se esperaba «Femenino»)`)
+    const zz = conValor.find(o => o.value === 'ZZ-E2E')
+    c.afirmar('un valor SIN traducción cae a la designación del catálogo, nunca al código crudo',
+      !!zz && zz.texto === 'Valor E2E',
+      `la opción de «ZZ-E2E» se leyó «${zz && zz.texto}» (se esperaba «Valor E2E», la designación del catálogo)`)
+
+    // ── (4) LO ELEGIDO VIAJA ──────────────────────────────────────────────────────
+    // Se comprueba ANTES de intentar elegirlo: `selectOption` sobre una opción que no
+    // existe LANZA, y un recorrido que revienta pierde las afirmaciones ya hechas y
+    // reporta un tiempo de espera agotado en vez de nombrar el caso. Medido rompiéndolo.
+    if (!c.afirmar('el valor del catálogo se puede elegir de verdad',
+      conValor.some(o => o.value === 'ZZ-E2E'),
+      `«ZZ-E2E» no está entre las opciones pintadas (${JSON.stringify(conValor.map(o => o.value))}): la pantalla no ofrece lo que el catálogo declara`)) return c
+    await sel.selectOption('ZZ-E2E')
+    await page.waitForTimeout(150)
+    ultimoPersons = null
+    const botones = await page.$$(BTN_SIGUIENTE)
+    if (!c.afirmar('el paso deja continuar tras elegir el sexo', botones.length > 0,
+      'no había botón «Continuar» activo tras elegir una opción del catálogo')) return c
+    await botones[0].click()
+    await page.waitForTimeout(LATENCY + 900)
+
+    if (!c.afirmar('el paso se guarda', !!ultimoPersons,
+      'no salió ningún saveStep de personas tras elegir el sexo')) return c
+    c.evidencia.llamadas += 1
+    const enviadas = Array.isArray(ultimoPersons.payload) ? ultimoPersons.payload : []
+    const generos = enviadas.map(p => p && p.gender)
+    c.afirmar('el valor elegido VIAJA hacia el servidor, con el código del catálogo',
+      generos.includes('ZZ-E2E'),
+      `los sexos enviados fueron ${JSON.stringify(generos)}: lo que la familia eligió no llega al expediente`)
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // COLA 18.bis — EL AVISO DE «NO SE PUDO GUARDAR» DEJA DE MENTIR.
 //
@@ -6535,6 +6655,7 @@ const CAMINOS = [
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
   // `①45` — el paso 2 recoge los idiomas que habla cada persona (opcional, varios).
   { nombre: 'idiomas-hablados', fn: caminoIdiomasHablados, minLlamadas: 1, minElementos: 11 },
+  { nombre: 'sexo-desde-el-catalogo', fn: caminoSexoDesdeElCatalogo, minLlamadas: 1, minElementos: 11 },
   // `0º.tricies.octies` (D) — no manda ni una petición: mide lo que la pantalla DICE.
   { nombre: 'aviso-de-vinculo-señala-donde-es', fn: caminoAvisoDeVinculoSeñalaDondeEs,
     minLlamadas: 0, minElementos: 11 },

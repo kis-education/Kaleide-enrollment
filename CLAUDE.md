@@ -2588,6 +2588,85 @@ real (arriba, con su fichero), no con esta batería. Los cuatro controles del re
 **Publicación**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
 `main` (CI/Pages), sin `clasp`.
 
+### `0º.tricies.duodecies` (2026-08-22) — las opciones de «sexo» del paso 2 salen del CATÁLOGO
+
+**No era una avería visible: era que el asistente y el catálogo del producto podían decir cosas
+distintas, y ya lo habían hecho.** El catálogo Capa 2 `kis-app kms-server/config/person-gender-values.html`
+(DL-E51) promete en su propio comentario que *«si un día el colegio necesita otros valores, se añaden
+AQUÍ (una línea) y aparecen solos en la pantalla»*. **Para el asistente eso era FALSO.**
+
+**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
+
+| Pieza | Estado medido |
+|---|---|
+| el desplegable del paso 2 | **cuatro `<option>` escritos a mano** (`Step2Persons.jsx:583-586`) |
+| `enr_wizardFetchLookups` (`kis-app kms-server/enr/wizard-gateway.gs`) | servía alergias, dieta, médico, tipos de vínculo, programas y tipos de documento — **el sexo NO** |
+| el lector del catálogo | **YA EXISTÍA y estaba sin usar por esta vía**: `enr_valoresDeclarados_` (`enr/correccion-datos.gs`) |
+| `translateGender` (`utils/enumLabels.js`) | un **TERCER** sitio con la lista, en forma de mapa de códigos escrito a mano |
+| ¿el sexo impide avanzar? | **NO.** Nada en `handleNext` lo exige — es opcional, medido |
+
+**Lo construido, y no se abrió ninguna ruta nueva:** el KMS mete la lista en las MISMAS listas que
+el asistente ya pide, bajo **`genderValues`** (`{code, designation, label_key}`) y
+**`genderValuesReason`**; el asistente la consume con el molde probado de `Step6Documents` con
+`recTypesInterestedParty`. **Un solo lector en el KMS** —el mismo que sirve a la pantalla de
+corregir del colegio y a su puerta—, así que pantalla, asistente y servidor no pueden divergir.
+
+**LA ETIQUETA, en un solo sitio y con una sola regla** (`translateGender`, reescrita): la clave de
+traducción es la que **declara el catálogo** (`label_key`); sin texto para esa clave se pinta la
+`designation`; y sin catálogo delante —el resumen del paso 7, que solo conoce el valor guardado— se
+**deriva** la clave del código, porque el catálogo declara `label_key = 'gender.' + gender_code`.
+Las cuatro claves de texto pasan de `gender.m|f|nonbinary|prefer_not_to_say` a
+`gender.Male|Female|Non-binary|Prefer-not-to-say`, **en los dos idiomas**. ⚠️ **Límite honesto:** un
+valor cuyo `label_key` no siguiera esa forma se vería bien en el desplegable y **en crudo** en el
+resumen — nunca con una etiqueta equivocada.
+
+**⛔ LA DECISIÓN DE LA VENTANA DE DESPLIEGUE, con su motivo — se CONSERVA un RESPALDO.** El frontal
+se publica al empujar a `main` (CI/Pages) y el KMS se publica aparte, así que hay un rato en que
+este asistente habla con un KMS que todavía no sirve `genderValues`. **Medido: el campo es
+OPCIONAL**, así que un desplegable vacío no bloquearía el paso — pero **el dato se perdería para
+siempre** en quien pase por ahí, y una lectura de catálogos caída haría lo mismo cualquier día.
+Por eso `SEXO_RESPALDO_` (`Step2Persons.jsx`) arranca con los cuatro valores que el catálogo declara
+HOY y **se sustituye en cuanto llega la lista del servidor**; una lista vacía **NO** lo pisa. Está
+declarado en su primera línea como **RESPALDO, no modelo**, con su condición de retirada: en cuanto
+el KMS que sirve `genderValues` esté publicado y se compruebe que la lista llega, sobra. **No
+reintroduce la divergencia que este tramo cierra**: solo se alcanza cuando el catálogo no llega, y
+entonces el comportamiento es exactamente el de ayer.
+
+**⛔ Lo que este tramo NO cierra, y es de Diego:** que el catálogo y la **columna**
+`enrPersons.gender` de AppSheet declaren los mismos cuatro valores. Hoy divergen —la columna rechaza
+la escritura ENTERA con HTTP 400 nombrando el valor, que es lo que tumbó el paso de personas de una
+familia real (`0º.tricies.octies`)— y el alta está en `pendiente-diego.md` **D92**.
+
+**Red**: `npm run e2e:wizard`, camino NUEVO `sexo-desde-el-catalogo` (10 afirmaciones), con un
+**ancla** por delante —que el desplegable exista— para que las demás no puedan pasar en vacío. **El
+doble sirve una lista DISTINTA de la escrita a mano, a propósito**: tres valores, sin `Male` (si
+apareciera, la pantalla estaría pintando su respaldo) y con `ZZ-E2E`, que no existe en ningún
+catálogo real y **no tiene traducción**, así que su etiqueta ha de caer a la `designation`.
+`VEREDICTO: VERDE — 34 de 34`. **Rojo demostrado** devolviendo el desplegable a la lista escrita a
+mano: cuatro afirmaciones en rojo, nombrando el caso —
+
+> *«se pintaron ["Male","Female","Non-binary","Prefer-not-to-say"], se esperaba ["Female","Non-binary","ZZ-E2E"]»* ·
+> *«apareció «Male», que el catálogo del servidor no sirve: la pantalla está pintando su respaldo»* ·
+> *«la opción de «ZZ-E2E» se leyó «undefined» (se esperaba «Valor E2E», la designación del catálogo)»*
+
+**Y el camino se corrigió a sí mismo**: en la primera vuelta el rojo era un **tiempo de espera
+agotado** de `selectOption` que **perdía las afirmaciones ya hechas** y no nombraba nada. Se
+comprueba que la opción existe **antes** de intentar elegirla.
+
+⚠️ **La batería NO cubre el lado del KMS** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js` ni llama al KMS**. Se **midió aparte**, con un arnés efímero fuera de los dos
+repositorios que extrae del fuente real `ENR_CAMPOS_ENUMERADOS_`, `enr_valoresDeclarados_` y **la
+propia proyección de `enr_wizardFetchLookups`**, y los ejecuta con dobles: **10 afirmaciones verdes**
+(el catálogo real da sus cuatro valores · la convención `label_key === 'gender.' + código` se cumple
+en los cuatro · catálogo ilegible ⇒ cero valores + motivo **sin reventar la lista entera** · catálogo
+vacío ⇒ `CATALOGO_VACIO` · una fila sin designación, sin código o duplicada no se ofrece · la
+proyección son tres campos y nada más). **Rojo demostrado TRES veces**: renombrar el lector medido
+(sale **«MEDICIÓN CIEGA»**, no verde) · quitar la proyección del manejador · que el lector deje de
+descartar la fila sin designación. **Quien toque esta cadena, que lo mida.**
+
+**Manual y ayuda en pantalla: no aplican** — este repositorio no tiene manual de usuario ni ayuda
+dentro de la aplicación; sus únicos textos son los de `frontend/public/locales/`, ya actualizados.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

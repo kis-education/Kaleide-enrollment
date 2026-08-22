@@ -211,6 +211,22 @@ const LOOKUPS = {
     { code: 'APPLICATION_DOCUMENTATION', designation: 'Documentación de la solicitud' },
     { code: 'MEDICAL_RECORD',            designation: 'Informe médico' },
   ],
+  // ── `0º.tricies.duodecies` · DL-E51 — LOS VALORES QUE ADMITE EL SEXO ─────────────
+  // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation, label_key}`, tal cual la
+  // arma `enr_wizardFetchLookups` a partir del catálogo Capa 2 `person-gender-values`.
+  //
+  // ⚠️ Y LA LISTA ES DISTINTA DE LA ESCRITA A MANO EN LA PANTALLA, A PROPÓSITO: sirviendo
+  // los mismos cuatro valores del respaldo, la comprobación de «las opciones salen del
+  // catálogo» pasaría EN VACÍO — que es peor que no tenerla. Por eso son TRES: falta
+  // `Male` (si apareciera, la pantalla estaría pintando su respaldo) y sobra `ZZ-E2E`,
+  // que NO existe en ningún catálogo real y además NO tiene traducción, así que su
+  // etiqueta ha de caer a la `designation` — la otra mitad de la regla.
+  genderValues: [
+    { code: 'Female',     designation: 'Femenino',  label_key: 'gender.Female' },
+    { code: 'Non-binary', designation: 'No binario', label_key: 'gender.Non-binary' },
+    { code: 'ZZ-E2E',     designation: 'Valor E2E',  label_key: 'gender.ZZ-E2E' },
+  ],
+  genderValuesReason: null,
 };
 
 /**
