@@ -5900,6 +5900,81 @@ async function caminoVentanaPorInactividad(page, base) {
       !!avisoTecho && avisoTecho.haySigo === false,
       'el aviso del techo traía el botón de quedarse: es una promesa que el servidor va a rechazar')
 
+    // ══ FASE G · 0º.tricies.quater — el botón ACUSA RECIBO, y si deja de servir el
+    // asistente SE BLOQUEA ═══════════════════════════════════════════════════════════
+    // Diego, 2026-08-22: *«Si le doy al botón de "sigo aquí" no hace nada. El contador
+    // sigue marcha atrás, no desaparece el mensaje... al llegar a cero se ha cerrado el
+    // mensaje pero no se ha bloqueado el wizard.»* Medido: el clic SÍ viaja y SÍ extiende,
+    // pero según el techo se acerca lo hace por un margen que a simple vista es
+    // imperceptible — y hasta que esa respuesta no vuelve, el botón se sigue ofreciendo
+    // como si fuera a servir de algo. A diferencia de la FASE F (que entra YA con el
+    // techo alcanzado), aquí NACE en INACTIVIDAD y el techo se alcanza a base de clics,
+    // que es la secuencia real que describió Diego.
+    const leerAvisoG = () => page.evaluate(() => {
+      const el = document.querySelector('[data-testid="aviso-ventana"]')
+      if (!el) return null
+      const boton = el.querySelector('[data-testid="aviso-ventana-sigo"]')
+      return { cierre: el.getAttribute('data-cierre'), disabled: boton ? boton.disabled : null }
+    })
+
+    scenario.ventanaMs = 8000    // ventana corta…
+    scenario.techoMs   = 13000   // …y techo un poco más lejos: NACE en INACTIVIDAD
+    if (!c.afirmar('la familia entra por séptima vez, con el techo cerca pero SIN alcanzar',
+      await entrarConElCodigo('g'), 'el asistente no se pintó en el séptimo pase')) return c
+
+    const nacioAviso = await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="aviso-ventana"]'), null, { timeout: 15000 })
+      .then(() => true).catch(() => false)
+    const alNacer = nacioAviso ? await leerAvisoG() : null
+    c.afirmar('(12) nace en modo INACTIVIDAD — el techo todavía no obliga',
+      !!alNacer && alNacer.cierre === 'INACTIVIDAD',
+      `el aviso nació como ${JSON.stringify(alNacer)}: si ya nace en TECHO esta fase no prueba la secuencia gradual que describió Diego`)
+
+    // Un clic, y el botón tiene que acusar recibo AL INSTANTE — antes incluso de que
+    // vuelva la respuesta del servidor: se deshabilita mientras está en vuelo.
+    await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="aviso-ventana-sigo"]')
+      if (b) b.click()
+    })
+    const seDeshabilito = await page.waitForFunction(
+      () => {
+        const b = document.querySelector('[data-testid="aviso-ventana-sigo"]')
+        return !!(b && b.disabled)
+      }, null, { timeout: 3000 }).then(() => true).catch(() => false)
+    c.afirmar('(13) al pulsar «sigo aquí» el botón se deshabilita EN EL ACTO: el clic se acusa, no se queda mudo',
+      seDeshabilito,
+      'el botón nunca se marcó "en vuelo" tras el clic: no hay forma de saber, mirando la pantalla, si el clic surtió algún efecto')
+
+    // Clics repetidos, como los de Diego, hasta que el techo gane: o el aviso pasa a modo
+    // TECHO (deja de ofrecer el botón) o el asistente termina bloqueado — nunca "sigue
+    // igual, para siempre", que es exactamente lo que él describió.
+    let cambioG = null
+    const arranqueG = Date.now()
+    while (Date.now() - arranqueG < 20000 && !cambioG) {
+      await page.evaluate(() => {
+        const b = document.querySelector('[data-testid="aviso-ventana-sigo"]')
+        if (b && !b.disabled) b.click()
+      })
+      await page.waitForTimeout(900)
+      if (await page.$('input[autocomplete="one-time-code"]')) { cambioG = 'BLOQUEADO'; break }
+      const est = await leerAvisoG()
+      if (est && est.cierre === 'TECHO') { cambioG = 'TECHO'; break }
+    }
+    c.afirmar('(14) tras clics sucesivos el techo SE NOTA: pasa a modo TECHO o el asistente se bloquea — nunca sigue exactamente igual',
+      cambioG === 'TECHO' || cambioG === 'BLOQUEADO',
+      `tras 20 s de clics sucesivos no cambió nada observable (cambio=${cambioG}): es exactamente "el botón no hace nada" que reportó Diego`)
+
+    // Y si terminó en modo TECHO (sin llegar aún a bloquear), agotar el resto SIN tocar
+    // nada más tiene que bloquear el asistente igualmente — la mitad (B) del defecto.
+    if (cambioG === 'TECHO') {
+      const seBloqueoTrasTecho = await page.waitForFunction(
+        () => !!document.querySelector('input[autocomplete="one-time-code"]'), null, { timeout: 15000 })
+        .then(() => true).catch(() => false)
+      c.afirmar('(15) y, agotado el techo sin más clics, el asistente SÍ se bloquea',
+        seBloqueoTrasTecho,
+        'llegó a modo TECHO y el contador a cero, pero el asistente se quedó abierto: la pantalla prometía un bloqueo que no ejecutaba')
+    }
+
     return c
   } finally {
     limpiar()

@@ -2261,6 +2261,64 @@ primera no cubría (el plan con `modality_id: null`, su rótulo y sus tres afirm
 corrección de la premisa falsa. **La reserva se escribe ANTES de la primera línea de código, no al
 ir a publicar.**
 
+### `0º.tricies.quater` (2026-08-22) — «Sigo aquí» ya avisa de que el clic surtió efecto
+
+**Diego, 2026-08-22, cita literal:** *«Si le doy al botón de "sigo aquí" no hace nada. El contador
+sigue marcha atrás, no desaparece el mensaje... al llegar a cero se ha cerrado el mensaje pero no
+se ha bloqueado el wizard.»*
+
+**MEDIDO antes de tocar nada, con un arnés fuera del repositorio que reproduce
+`touchActivity`/`refrescarVentanaDeInactividad_` línea a línea, y confirmado después con la propia
+batería.** El encargo dejaba tres candidatos para la parte (A) y uno para (B); solo UNO de los
+cuatro resultó real:
+
+- **El clic SÍ viaja al servidor y SÍ extiende** — los cinco guardas de salida temprana de
+  `touchActivity` NUNCA bloquean dentro de la zona de aviso (los dos minutos), así que «no llega a
+  llamar» queda descartado.
+- **La causa real: cuando el techo está cerca, cada extensión se recorta contra él** —
+  `_extenderVentanaStepUp_` capa la nueva caducidad al techo, así que el contador crece por un
+  margen que a simple vista es imperceptible (sigue bajando casi igual, 1 s por 1 s) — y **hasta que
+  esa respuesta no vuelve, la pantalla no sabía decirlo**: `stepUpCierre` se queda con el valor de
+  la verificación original (normalmente `INACTIVIDAD`) y el botón se sigue ofreciendo como si fuera
+  a servir de algo.
+- **El «se lo traga en silencio» (fallos que no son `STEPUP_REQUIRED`) es real pero secundario**: no
+  era la causa de lo que Diego describió, pero se corrige igual, porque un clic que falla por un
+  corte de red tampoco puede quedarse mudo.
+- **(B) NO era un agujero de seguridad ni de código.** Medido y reconfirmado con la batería real:
+  el asistente **YA se bloqueaba** al agotar la ventana (`mustPassEntryGate` en `WizardPage.jsx`
+  cierra la puerta en cuanto `stepUpVerifiedUntil` llega a 0). Lo que faltaba era que el botón lo
+  avisara ANTES de que la familia se quedara mirando un contador que no se movía.
+
+**El arreglo, en `WizardContext.jsx` + `AvisoDeVentana.jsx`: el botón ACUSA RECIBO, siempre.**
+`touchActivity` gana dos señales de estado nuevas, `refrescoEnVuelo` y `refrescoUltimoFallo`
+(ninguna sustituye al mecanismo — solo lo hace VISIBLE): mientras el refresco está en vuelo el botón
+se deshabilita y dice «Comprobando…»; si la respuesta falla por algo que NO es `STEPUP_REQUIRED`, un
+aviso breve dice que no se pudo comprobar y que se seguirá intentando — **sin cerrar nada**, el
+mismo criterio de siempre («un fallo de red no puede echar a nadie de su solicitud»). Cuando la
+respuesta SÍ llega y el techo ya manda, `stepUpCierre` se actualiza como ya hacía y el aviso cambia
+solo a modo TECHO (oculta el botón, dice que se cierra por seguridad) — eso YA funcionaba; lo nuevo
+es que ahora, ANTES de esa confirmación, el clic deja de parecer mudo.
+
+⛔ **NO se alargó la ventana ni se subió el techo.** ⛔ **`assertStepUpFresh_` y el orden de las
+puertas no se tocaron.** ⛔ **El servidor sigue extendiendo, jamás creando** — nada de esto se tocó,
+en ningún lado.
+
+**Red**: `npm run e2e:wizard`, camino `ventana-por-inactividad`, FASE G nueva (cuatro afirmaciones,
+12-15): nace en modo INACTIVIDAD (no ya en TECHO, para probar la secuencia GRADUAL que describió
+Diego, no la que ya cubría la FASE F) · el botón se deshabilita EN EL ACTO al pulsarlo · tras clics
+sucesivos el techo SE NOTA (pasa a TECHO o el asistente se bloquea — nunca sigue exactamente igual)
+· agotado el techo sin más clics, el asistente SÍ se bloquea. **Rojo demostrado dos veces**:
+quitando el `disabled` del botón → **ROJO** nombrando el caso exacto (*«el botón nunca se marcó "en
+vuelo" tras el clic»*); dejando que `stepUpCierre` no se actualice nunca → **ROJO** (error de
+consola real: el servidor rechaza con `STEPUP_REQUIRED` porque el cliente sigue creyendo que puede
+extender). `VEREDICTO: VERDE — 29 de 29` con ambos arreglos restaurados. Los dos controles de
+seguridad del repositorio, VERDES.
+
+**Textos nuevos**: `stepup.aviso_comprobando` / `stepup.aviso_no_se_pudo`, `es` y `en`.
+
+**Publicado**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
+`main` (CI/Pages).
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

@@ -475,6 +475,8 @@
   "stepup.gate_duration_note": "The code expires in 10 minutes. While you are using the application you will not be asked again: the countdown restarts with every action you take. It locks after 10 minutes with no activity, also if you reload the page, and in any case 2 hours after you entered the code.",
   "stepup.aviso_ventana": "Still there? For your security, this session will lock in {{reloj}} and you will need a new code.",
   "stepup.aviso_sigo_aqui": "I'm still here",
+  "stepup.aviso_comprobando": "Checking…",
+  "stepup.aviso_no_se_pudo": "We couldn't check that. Keep using the page and we'll try again.",
   "stepup.gate_enter": "Enter",
   "stepup.send_code": "Send code",
   "stepup.code_sent": "We've sent a code to your email. If it doesn't arrive in 2-3 minutes, request another one.",

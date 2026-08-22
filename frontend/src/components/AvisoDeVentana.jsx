@@ -29,7 +29,10 @@ import { useWizard, AVISO_ANTES_S } from '../context/WizardContext';
  */
 export default function AvisoDeVentana() {
   const { t } = useTranslation();
-  const { stepUpVerifiedUntil, stepUpCierre, touchActivity, revokeStepUpFresh } = useWizard();
+  const {
+    stepUpVerifiedUntil, stepUpCierre, touchActivity, revokeStepUpFresh,
+    refrescoEnVuelo, refrescoUltimoFallo,
+  } = useWizard();
   const [ahora, setAhora] = useState(() => Date.now());
 
   useEffect(() => {
@@ -85,15 +88,29 @@ export default function AvisoDeVentana() {
       />
       <span style={{ flex: 1, minWidth: 200, fontSize: '0.9rem', color: '#5f4b00' }}>
         {t(porTecho ? 'stepup.aviso_techo' : 'stepup.aviso_ventana', { reloj })}
+        {/* 0º.tricies.quater — cuando el techo está a punto de alcanzarse el clic SÍ
+            extiende, pero por un margen que a simple vista es imperceptible (el número
+            sigue bajando casi igual), y hasta que esa respuesta no vuelve la pantalla
+            sigue ofreciendo el botón como si fuera a servir de algo. Este aviso breve
+            dice que el clic SÍ se registró aunque el reloj apenas se haya movido — no
+            reemplaza al cambio a modo TECHO (que llega en cuanto el servidor lo confirma
+            y ya oculta el botón), es lo que cubre el hueco ANTES de esa confirmación. */}
+        {!porTecho && refrescoUltimoFallo && (
+          <span data-testid="aviso-ventana-fallo" style={{ display: 'block', marginTop: 4, fontSize: '0.8rem' }}>
+            {t('stepup.aviso_no_se_pudo')}
+          </span>
+        )}
       </span>
       {!porTecho && (
         <button
           type="button"
           data-testid="aviso-ventana-sigo"
           className="btn-primary-kis"
+          disabled={refrescoEnVuelo}
+          aria-busy={refrescoEnVuelo}
           onClick={touchActivity}
         >
-          {t('stepup.aviso_sigo_aqui')}
+          {refrescoEnVuelo ? t('stepup.aviso_comprobando') : t('stepup.aviso_sigo_aqui')}
         </button>
       )}
     </div>

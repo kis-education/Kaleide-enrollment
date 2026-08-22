@@ -475,6 +475,8 @@
   "stepup.gate_duration_note": "El código caduca en 10 minutos. Mientras estés usando la solicitud no se te volverá a pedir: el contador se reinicia con cada acción tuya. Se bloqueará tras 10 minutos sin actividad, también si recargas la página, y en todo caso a las 2 horas desde que introdujiste el código.",
   "stepup.aviso_ventana": "¿Sigues ahí? Por seguridad, la sesión se bloqueará en {{reloj}} y tendrás que pedir un código nuevo.",
   "stepup.aviso_sigo_aqui": "Sigo aquí",
+  "stepup.aviso_comprobando": "Comprobando…",
+  "stepup.aviso_no_se_pudo": "No hemos podido comprobarlo. Sigue tocando la pantalla y lo intentaremos de nuevo.",
   "stepup.gate_enter": "Acceder",
   "stepup.send_code": "Enviar código",
   "stepup.code_sent": "Te hemos enviado un código a tu correo. Si no te llega en 2-3 minutos, pide otro.",

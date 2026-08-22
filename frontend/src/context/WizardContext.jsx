@@ -800,6 +800,18 @@ export function WizardProvider({ children }) {
   const stepUpVerifiedUntilRef = useRef(0);
   const recoveryNonceRef = useRef(null);
   const recoveredEmailRef = useRef(null);
+  // 0º.tricies.quater (Diego, 2026-08-22) — «Sigo aquí» pulsado no hacía nada VISIBLE
+  // cuando el techo estaba cerca: el refresco SÍ viajaba y SÍ extendía, pero por un margen
+  // que a simple vista es imperceptible (el contador sigue bajando igual, 1 s por 1 s), y
+  // hasta que ESE clic no vuelve con respuesta, `stepUpCierre` sigue con el valor de la
+  // verificación original — así que el botón se ofrece como si fuera a servir de algo
+  // aunque el techo ya lo haya vaciado de sentido. Estos DOS estados son el «acuse de
+  // recibo» que le faltaba al botón: `refrescoEnVuelo` (para que se vea que el clic se
+  // registró, aunque el número apenas se mueva) y `refrescoUltimoFallo` (para el caso — ya
+  // tolerado por diseño — en que el fallo NO es STEPUP_REQUIRED y hoy se traga en silencio;
+  // aquí solo se INFORMA, nunca se cierra el asistente por ello).
+  const [refrescoEnVuelo, setRefrescoEnVuelo] = useState(false);
+  const [refrescoUltimoFallo, setRefrescoUltimoFallo] = useState(false);
   const touchActivity = useCallback(() => {
     const ahora = Date.now();
     setLastActivityAt(ahora);
@@ -814,6 +826,8 @@ export function WizardProvider({ children }) {
     if (!enZonaDeAviso && ahora - ultimoRefresco.current < REFRESCO_MINIMO_MS) return;
     ultimoRefresco.current = ahora;
     refrescandoVentana.current = true;
+    setRefrescoEnVuelo(true);
+    setRefrescoUltimoFallo(false);
     refrescarVentana(resumeTokenRef.current, {
       n: recoveryNonceRef.current, recoveredEmail: recoveredEmailRef.current,
     })
@@ -829,11 +843,14 @@ export function WizardProvider({ children }) {
         if (/STEPUP_REQUIRED/.test(String((e && (e.code || e.message)) || ''))) {
           setStepUpVerifiedUntil(0);
           log.warn('step-up: la ventana ya no se puede reiniciar — hace falta el código');
+          return;
         }
         // Cualquier otro fallo (red, servidor caído) NO toca el espejo: un corte de red
-        // no es motivo para echar a nadie de su solicitud.
+        // no es motivo para echar a nadie de su solicitud. Pero SÍ se informa — antes se
+        // tragaba en silencio y el clic parecía no haber hecho nada.
+        setRefrescoUltimoFallo(true);
       })
-      .finally(() => { refrescandoVentana.current = false; });
+      .finally(() => { refrescandoVentana.current = false; setRefrescoEnVuelo(false); });
   }, []);
 
   // Tras un verifyEmail({stepup:true}) OK → step-up fresco durante 10 min.
@@ -1542,6 +1559,7 @@ export function WizardProvider({ children }) {
       isStepUpFresh, markStepUpFresh, revokeStepUpFresh, touchActivity, // DL-E39 step-up PII-primero + #30 espejo revocable
       stepUpVerifiedUntil,                              // 2026-08-20: hasta cuándo, para el aviso de los dos minutos
       stepUpCierre,                                     // 2026-08-20: QUÉ lo cierra — 'INACTIVIDAD' | 'TECHO'
+      refrescoEnVuelo, refrescoUltimoFallo,             // 0º.tricies.quater: el «sigo aquí» acusa recibo
       recoveredViaMagicLink, setRecoveredViaMagicLink, // DL-E39 gate de entrada
       otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER: auto-send solo 1ª recuperación
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
