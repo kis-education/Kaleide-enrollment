@@ -142,7 +142,15 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
   // salen del catálogo que sirve el KMS (`relationTypes`), así que aquí no se escribe ni un
   // código de dominio. No enviar el par sería la otra salida, y es peor: perdería en silencio
   // una relación que la familia declaró.
-  const missingRelationType = relations.some(r => !r.relation_type_id);
+  // `0º.tricies.octies` (D) — SON DOS CASOS Y DEBEN DECIRLO. El aviso rojo era UNO solo y
+  // decía «…para todos los TUTORES», pero la condición miraba TODOS los vínculos, incluidos
+  // los de hermano↔hermano que añadió el TODO de arriba. Con los dos tutores ya rellenos y el
+  // par de hermanos vacío, la familia leía un mensaje que la mandaba a mirar donde no era y
+  // se quedaba atascada sin salida (le pasó a Diego, 2026-08-22). Se parte en dos por el
+  // `_kind` que la propia pantalla ya usa para agrupar las tarjetas — no se inventa criterio.
+  const missingRelationTypeGa = relations.some(r => r._kind === 'ga' && !r.relation_type_id);
+  const missingRelationTypeAa = relations.some(r => r._kind === 'aa' && !r.relation_type_id);
+  const missingRelationType = missingRelationTypeGa || missingRelationTypeAa;
   const validationOk = uncoveredApplicants.length === 0 && !missingRelationType;
 
   const handleNext = () => {
@@ -213,10 +221,16 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
           {': '}{t('error.custodial_required')}
         </div>
       )}
-      {!locked && missingRelationType && (
+      {!locked && missingRelationTypeGa && (
         <div className="field-error mb-3">
           <i className="bi bi-exclamation-triangle-fill me-2" />
           {t('error.relation_type_required')}
+        </div>
+      )}
+      {!locked && missingRelationTypeAa && (
+        <div className="field-error mb-3">
+          <i className="bi bi-exclamation-triangle-fill me-2" />
+          {t('error.relation_type_required_siblings')}
         </div>
       )}
 

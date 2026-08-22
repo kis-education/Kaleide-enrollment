@@ -356,6 +356,7 @@
   "error.parental_authority_required": "Marca también la declaración de patria potestad para continuar.",
   "error.person_name_required": "{{name}} debe tener nombre y apellidos.",
   "error.relation_type_required": "Selecciona el tipo de relación para todos los tutores.",
+  "error.relation_type_required_siblings": "Selecciona el tipo de relación entre los alumnos (por ejemplo, hermano o hermana).",
   "error.consent_required": "Por favor, acepta todos los consentimientos requeridos.",
   "error.recaptcha_failed": "La verificación de seguridad ha fallado. Por favor, inténtalo de nuevo.",
   "error.file_too_large": "El archivo es demasiado grande (máx. 10 MB).",

@@ -353,6 +353,7 @@
   "error.parental_authority_required": "Also tick the parental-authority declaration to continue.",
   "error.person_name_required": "{{name}} must have a first and last name.",
   "error.relation_type_required": "Please select a relationship type for all guardians.",
+  "error.relation_type_required_siblings": "Please select the relationship type between the students (for example, brother or sister).",
   "error.consent_required": "Please accept all required consents.",
   "error.recaptcha_failed": "Security check failed. Please try again.",
   "error.file_too_large": "File is too large (max 10 MB).",

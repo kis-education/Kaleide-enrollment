@@ -5981,6 +5981,83 @@ async function caminoVentanaPorInactividad(page, base) {
   }
 }
 
+/**
+ * `0º.tricies.octies` (D) — EL AVISO ROJO DEL PASO 3 MANDA A MIRAR DONDE ES.
+ *
+ * Lo que pasó de verdad (Diego, 2026-08-22): con los DOS tutores ya puestos y el par de
+ * hermanos sin tipo, la pantalla decía «Selecciona el tipo de relación para todos los
+ * TUTORES» y no dejaba avanzar. Se quedó atascado mirando los tutores, que estaban bien.
+ * La condición miraba TODOS los vínculos y el mensaje solo nombraba uno de los dos casos.
+ *
+ * Se mide donde la familia lo ve: se rellenan todos los vínculos tutor→hijo y se deja el
+ * de hermano↔hermano vacío. A partir de ahí, el aviso NO puede hablar de tutores.
+ */
+async function caminoAvisoDeVinculoSeñalaDondeEs(page, base) {
+  const c = new Camino('aviso-de-vinculo-señala-donde-es')
+  scenario.stage = 'hasta_preguntas'
+
+  if (!await entrarPorElEnlace(c, page, base)) return c
+
+  // Retroceder hasta Vínculos (índice 2), como la familia. Mismo botón y mismo bucle que
+  // `caminoQuitarDeLaSolicitud` — no se inventa navegación nueva.
+  for (let i = 0; i < 8 && (await dondeEstoy(page)) > 2; i++) {
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!atras) break
+    await atras.click()
+    await page.waitForTimeout(250)
+  }
+  if (!c.afirmar('se llega al paso de Vínculos', (await dondeEstoy(page)) === 2,
+    `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+  await desbloquear(page)
+  await page.waitForTimeout(250)
+
+  const pantalla = await page.evaluate(sondaPantalla)
+  c.evidencia.elementos = pantalla.pasos + pantalla.campos
+
+  // Los desplegables salen en orden: primero los tutor→hijo, y los de hermano↔hermano
+  // DESPUÉS (así los pinta `Step3Relations`, en dos bloques). El último es el del par.
+  const selects = await page.$$('.kis-card select.form-select-sm')
+  if (!c.afirmar('el paso pinta el par de hermanos y los vínculos de los tutores', selects.length >= 2,
+    `se pintaron ${selects.length} desplegable(s): con dos alumnos tiene que haber al menos ` +
+    'uno de tutor→hijo y el del par de hermanos, o este caso no se está midiendo')) return c
+
+  /** Elige la PRIMERA opción real (la vacía es la de «sin tipo»). */
+  const elegirTipoEn = async (sel) => {
+    const valores = await sel.$$eval('option', (os) => os.map(o => o.value).filter(Boolean))
+    if (!valores.length) return false
+    await sel.selectOption(valores[0])
+    await page.waitForTimeout(120)
+    return true
+  }
+
+  // Todos los tutor→hijo rellenos; el par de hermanos (el último) se deja VACÍO a propósito.
+  for (let i = 0; i < selects.length - 1; i++) {
+    if (!c.afirmar(`el vínculo tutor→hijo ${i + 1} admite tipo`, await elegirTipoEn(selects[i]),
+      'el desplegable no ofrecía ni una opción del catálogo')) return c
+  }
+  const avisos = async () => (await page.$$eval('.field-error', (ns) => ns.map(n => n.textContent || '')))
+    .join(' · ')
+
+  const conSoloElParVacio = await avisos()
+  // (1) LA AFIRMACIÓN CENTRAL: con los tutores rellenos, el aviso NO puede hablar de tutores.
+  c.afirmar('con los tutores ya puestos, el aviso no manda a mirar a los tutores',
+    !/tutores|guardians/i.test(conSoloElParVacio),
+    `el aviso leído fue "${conSoloElParVacio}": manda a mirar donde ya está resuelto`)
+  // (2) y SÍ nombra el caso real, el de entre alumnos.
+  c.afirmar('el aviso nombra el vínculo entre los alumnos',
+    /alumnos|students/i.test(conSoloElParVacio),
+    `el aviso leído fue "${conSoloElParVacio}": no dice cuál es el vínculo que falta`)
+
+  // (3) y al rellenar el par, el aviso desaparece — la familia puede seguir.
+  await elegirTipoEn(selects[selects.length - 1])
+  const trasRellenarElPar = await avisos()
+  c.afirmar('al declarar el vínculo entre los alumnos el aviso desaparece',
+    !/relaci[oó]n|relationship/i.test(trasRellenarElPar),
+    `el aviso seguía en pantalla: "${trasRellenarElPar}"`)
+
+  return c
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -6021,6 +6098,9 @@ const CAMINOS = [
   { nombre: 'simulador-paso7-varios-planes', fn: caminoSimuladorPaso7VariosPlanes,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
+  // `0º.tricies.octies` (D) — no manda ni una petición: mide lo que la pantalla DICE.
+  { nombre: 'aviso-de-vinculo-señala-donde-es', fn: caminoAvisoDeVinculoSeñalaDondeEs,
+    minLlamadas: 0, minElementos: 11 },
   // DL-E49 §4/§9 — la familia AVISA al tutor que acaba de declarar (pedido por Diego).
   { nombre: 'avisar-al-otro-tutor', fn: caminoAvisarAlOtroTutor, minLlamadas: 1, minElementos: 11 },
   // Cola 18.bis.25 — lo que la familia escribió sigue ahí cuando vuelve.
