@@ -58,6 +58,14 @@ const guardian = (id, first, email) => ({
   emails:          [{ value: email || FIXTURE.emailKnown, is_default: 'TRUE' }],
   nationalities:   [],
   ids:             [],
+  // ①45 — un idioma YA DECLARADO, con la forma EXACTA de la fila que devuelve el
+  // hidratador real (`enr_wizardHydrateCompute_` → `attach('enrPersonLanguages',
+  // 'languages')` adjunta la fila ENTERA, `record_id` incluido). Va aquí a propósito:
+  // sin una fila ya guardada, la afirmación de que lo declarado NO se puede desmarcar
+  // —los satélites del KMS son append-only— se comprobaría en vacío, que es peor que no
+  // comprobarla. El alumno va con `[]` para medir el otro lado: declarar de cero.
+  languages:       [{ record_id: 'lang_g1_es', person_id: id, language_id: 'es',
+                      is_mother_tongue: 'TRUE', is_active: 'TRUE' }],
   address:         { address_line_1: 'Calle Falsa 1', city: 'Las Palmas', country_id: 'ES', zip: '35001' },
 });
 
@@ -71,6 +79,7 @@ const applicant = (id, first) => ({
   emails:          [],
   nationalities:   [],
   ids:             [],
+  languages:       [],   // ①45 — sin declarar: el otro lado del caso (ver `guardian`)
   allergies:       [],
   dietary:         [],
   medical:         [],

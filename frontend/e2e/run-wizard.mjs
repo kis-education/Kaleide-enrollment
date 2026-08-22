@@ -4668,6 +4668,149 @@ async function caminoTelefonoQueSeVeSeGuarda(page, base) {
   }
 }
 
+/**
+ * CAMINO · «los idiomas que habla cada persona» (①45).
+ *
+ * Diego, 2026-08-16: «El wizard debería recoger el idioma o idiomas hablados por la
+ * familia como dato opcional.» Hasta este cambio el paso 2 no lo preguntaba en ninguna
+ * parte: `languages`/`language_id` tenían CERO apariciones en todo `frontend/src`,
+ * mientras el KMS ya escribía (`enr_persistPersons_`) y ya devolvía (`enr_wizardHydrate`)
+ * ese dato — la fontanería entera construida y sin nadie que la usara.
+ *
+ * Las CUATRO cosas que mide, y ninguna sobra:
+ *   (1) se pueden declarar VARIOS idiomas para una persona;
+ *   (2) viajan en el guardado con la forma EXACTA que el escritor del KMS lee
+ *       (`p.languages[].language_id`) — mandar otra cosa se descarta en silencio;
+ *   (3) lo ya declarado vuelve marcado Y NO se puede desmarcar (los satélites del KMS
+ *       son append-only y `enrPersonLanguages` no es una clase que se pueda quitar:
+ *       dejar desmarcar sería quitarlo de la pantalla y que volviera al recargar);
+ *   (4) es OPCIONAL DE VERDAD: la persona que no marca ninguno no impide avanzar.
+ *
+ * ⚠️ Lo que NO cubre: la batería corre contra un backend SIMULADO que nunca ejecuta
+ * `backend/Code.js` ni llama al KMS. Que la fila se escriba de verdad en
+ * `enrPersonLanguages` no lo acredita esto — se acredita leyendo el escritor real.
+ */
+async function caminoIdiomasHablados(page, base) {
+  const c = new Camino('idiomas-hablados')
+  scenario.stage = 'hasta_preguntas'
+
+  let ultimoPersons = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'saveStep' && body.step === 'persons') ultimoPersons = body
+  }
+  page.on('request', espiar)
+  const limpiar = () => page.off('request', espiar)
+
+  // Casilla de un idioma DENTRO de una ficha concreta. Se localiza por posición en el DOM
+  // (`.dynamic-section` es lo que pinta `PersonSection`) + el `data-testid` del idioma —
+  // el mismo utillaje que `caminoTelefonoQueSeVeSeGuarda`, sin inventar selectores.
+  const casilla = async (cual, code) => {
+    const ss = await page.$$('.dynamic-section')
+    if (!ss.length) return null
+    const s = cual === 'ultima' ? ss[ss.length - 1] : ss[0]
+    return await s.$(`[data-testid="idioma-${code}"]`)
+  }
+  const estado = async (cual, code) => {
+    const el = await casilla(cual, code)
+    if (!el) return null
+    return await el.evaluate(n => ({ marcado: n.checked, bloqueado: n.disabled }))
+  }
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(200)
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+
+    // ── ANCLA: si el paso no ofrece el control, las afirmaciones de abajo medirían el
+    //    vacío. Se comprueba primero y se para, nombrándolo.
+    if (!c.afirmar('el paso 2 pregunta qué idiomas habla cada persona',
+      !!(await casilla('primera', 'en')),
+      'no se pintó ninguna casilla de idioma en la primera ficha: el paso no recoge el dato')) return c
+
+    // ── (3) LO YA DECLARADO — el tutor viene del servidor con `es` declarado ────────
+    const yaEs = await estado('primera', 'es')
+    c.afirmar('un idioma YA declarado vuelve marcado', !!(yaEs && yaEs.marcado),
+      `la casilla de «es» del tutor volvió ${JSON.stringify(yaEs)}: lo que la familia ya declaró no se le muestra`)
+    c.afirmar('y NO se puede desmarcar (los satélites del KMS son append-only)',
+      !!(yaEs && yaEs.bloqueado),
+      `la casilla de «es» del tutor volvió ${JSON.stringify(yaEs)}: si se deja desmarcar, la familia lo quita de la pantalla y le vuelve al recargar — el defecto exacto que lib/quitar.js existe para cerrar`)
+
+    // ── (1) VARIOS IDIOMAS en la persona que no tiene ninguno (el último alumno) ────
+    for (const code of ['en', 'fr']) {
+      const el = await casilla('ultima', code)
+      if (!c.afirmar(`el alumno ofrece declarar «${code}»`, !!el,
+        `no se encontró la casilla del idioma ${code} en la última ficha`)) return c
+      await el.click()
+      await page.waitForTimeout(120)
+    }
+    const trasMarcar = await Promise.all(['en', 'fr'].map(x => estado('ultima', x)))
+    c.afirmar('se pueden declarar VARIOS idiomas para la misma persona',
+      trasMarcar.every(e => e && e.marcado),
+      `las casillas quedaron ${JSON.stringify(trasMarcar)}: el control no admite más de uno`)
+
+    // ── (2) VIAJAN en el guardado, con la forma que el KMS lee ─────────────────────
+    ultimoPersons = null
+    const botones = await page.$$(BTN_SIGUIENTE)
+    if (!c.afirmar('el paso deja continuar tras declarar idiomas', botones.length > 0,
+      'no había botón «Continuar» activo: declarar un idioma opcional dejó el paso bloqueado')) return c
+    await botones[0].click()
+    await page.waitForTimeout(LATENCY + 900)
+
+    if (!c.afirmar('el paso se guarda', !!ultimoPersons,
+      'no salió ningún saveStep de personas tras declarar los idiomas')) return c
+    c.evidencia.llamadas += 1
+    const enviadas = Array.isArray(ultimoPersons.payload) ? ultimoPersons.payload : []
+    const delAlumno = enviadas.filter(p => p.person_type_id === 'applicant')
+    const codigos = delAlumno.flatMap(p => (p.languages || []).map(l => l && l.language_id))
+    c.afirmar('los idiomas declarados VIAJAN hacia el servidor',
+      ['en', 'fr'].every(x => codigos.includes(x)),
+      `los idiomas enviados para los alumnos fueron ${JSON.stringify(codigos)}: lo que la familia marcó no llega al expediente`)
+    c.afirmar('y viajan con la forma que el escritor del KMS lee (`language_id`)',
+      delAlumno.every(p => (p.languages || []).every(l => l && typeof l.language_id === 'string' && l.language_id)),
+      `el alumno mandó ${JSON.stringify(delAlumno.map(p => p.languages))}: sin `
+        + '`language_id` el KMS lo descarta en silencio (`if (!l || !l.language_id) return;`)')
+
+    // ── (4) OPCIONAL DE VERDAD — la otra persona no declaró ninguno y se avanzó igual
+    const sinNinguno = enviadas.filter(p => !(p.languages || []).length)
+    c.afirmar('quien no declara ningún idioma no impide avanzar',
+      sinNinguno.length > 0 && (await dondeEstoy(page)) > 1,
+      `personas sin idioma en el envío: ${sinNinguno.length}; el asistente se quedó en el índice ${await dondeEstoy(page)}`)
+
+    // ── LA VUELTA — al volver al paso, lo declarado sigue marcado ──────────────────
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!atras) {
+      c.noCubierta('idiomas-al-volver', 'el paso siguiente no ofrece botón «Atrás»')
+    } else {
+      await atras.click()
+      await page.waitForTimeout(400)
+      await desbloquear(page)
+      await page.waitForTimeout(200)
+      const alVolver = await Promise.all(['en', 'fr'].map(x => estado('ultima', x)))
+      c.afirmar('al volver al paso, los idiomas declarados siguen marcados',
+        alVolver.every(e => e && e.marcado),
+        `las casillas volvieron ${JSON.stringify(alVolver)}: lo que la familia declaró se perdió al navegar`)
+    }
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // COLA 18.bis — EL AVISO DE «NO SE PUDO GUARDAR» DEJA DE MENTIR.
 //
@@ -6207,6 +6350,8 @@ const CAMINOS = [
   { nombre: 'simulador-tras-enviar', fn: caminoSimuladorTrasEnviar,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
+  // `①45` — el paso 2 recoge los idiomas que habla cada persona (opcional, varios).
+  { nombre: 'idiomas-hablados', fn: caminoIdiomasHablados, minLlamadas: 1, minElementos: 11 },
   // `0º.tricies.octies` (D) — no manda ni una petición: mide lo que la pantalla DICE.
   { nombre: 'aviso-de-vinculo-señala-donde-es', fn: caminoAvisoDeVinculoSeñalaDondeEs,
     minLlamadas: 0, minElementos: 11 },
