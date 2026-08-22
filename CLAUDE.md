@@ -2769,6 +2769,77 @@ descartar la fila sin designación. **Quien toque esta cadena, que lo mida.**
 **Manual y ayuda en pantalla: no aplican** — este repositorio no tiene manual de usuario ni ayuda
 dentro de la aplicación; sus únicos textos son los de `frontend/public/locales/`, ya actualizados.
 
+### `0º.septvicies` (2026-08-22) — el paso 3 manda UNA fila por vínculo, y el par de hermanos se sigue viendo
+
+**El KMS se convirtió al modelo de una sola fila el 2026-08-21 (DL-S45, Diego: *«Ok, pues una sola
+fila»*) y el asistente NO.** `handleNext` de `Step3Relations.jsx` empujaba, por cada par de hermanos
+**NUEVO**, la fila **invertida** además de la suya —comentario *«so both children can query their
+siblings»*—, y el escritor del KMS (`enr_upsertRelation_`, `kis-app kms-server/enr/staging.gs`)
+identifica la fila por la terna `(expediente, de quién, a quién)` ⇒ **la invertida caía en OTRA
+clave y nacía como fila NUEVA**. Resultado: **cada vínculo entre hermanos declarado por una familia
+nacía DUPLICADO**, y el KMS lo pintaba como *«Guardado en dos filas por el modelo anterior»* para
+algo creado ese mismo día. Ésa era la incoherencia entre los dos repositorios.
+
+**LO PRIMERO QUE SE MIDIÓ, porque era el riesgo real del tramo:** el empujón sostenía que «los dos
+hermanos puedan consultarse», así que quitarlo podía **hacer desaparecer el vínculo de la pantalla
+del otro hermano**. **Medido contra `origin/main` ANTES de tocar nada — y los dos lectores del
+asistente YA miran los dos extremos:**
+
+| Lector | Qué hace |
+|---|---|
+| `buildInitialRelations` (bloque `aa`) | casa el par con `a===idA&&b===idB` **o** `a===idB&&b===idA` (ídem `from`/`to`) |
+| las tarjetas `aa` que pinta la pantalla | se construyen **por pareja ÚNICA** de alumnos (`for j = i+1`), no por fila |
+
+⇒ **una sola fila, guardada en el sentido que sea, rellena la ÚNICA tarjeta que hay por pareja.**
+No hubo que arreglar ningún lector, y **no se escribió un segundo criterio** de «leer desde los dos
+extremos»: el que ya estaba es el bueno.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ NO se reintroduce el empujón.** Que el vínculo se vea desde los dos lados lo resuelve el
+  LECTOR, no una segunda fila — y el camino `vinculo-hermanos-una-sola-fila` de la batería lo
+  afirma con un vínculo guardado **al revés** a propósito.
+- **⛔ El plegado de `hydrateFromResume` SE QUEDA, y no es inercia.** Su comentario decía *«the
+  backend always inserts 2 rows per relation pair (forward + inverse)»* — **FALSO desde DL-S45**, y
+  corregido en el mismo cambio. Pero hay pares **REALES ya guardados en dos filas** (medido el
+  2026-08-22 con `manual_diagParejasDeVinculos`, solo lectura: **216 parejas con su espejo vivo**,
+  85 filas sueltas o en grupos de 3+, 0 duplicados literales, 0 contradicciones). Esas filas **no se
+  tocan** —son datos del colegio y retirarlas lo decide Diego—, así que la familia que vuelve sigue
+  recibiendo dos filas del mismo par: sin plegarlas, el `savedBaseline` tendría más entradas que las
+  que produce el paso 3 ⇒ **dirty-check positivo permanente y un guardado espurio por navegación**.
+- **`pair_id` ya no manda en ese plegado**: DL-S45 dejó de escribirlo, así que para todo lo creado
+  desde entonces la clave es la de **los dos extremos ORDENADOS**, que colapsa igual los dos
+  sentidos. El `pair_id` se conserva por delante solo para las filas viejas que lo llevan.
+- **El aviso rojo del paso 3 NO se tocó**: ya señalaba la tarjeta concreta desde
+  `0º.tricies.octies (D)` (`missingRelationTypeGa` / `missingRelationTypeAa`, cada uno con su
+  mensaje y su camino de batería, del mismo día). No había nada que hacer ahí.
+- **Ni una línea de `backend/Code.js` ni del KMS.** Los vínculos del asistente no pasan por su
+  servidor: viajan en el `saveStep` del paso y los escribe el KMS.
+
+**Red**: camino NUEVO `vinculo-hermanos-una-sola-fila` (7 afirmaciones, en dos fases: primero el
+LECTOR —el vínculo guardado en el sentido contrario se sigue viendo—, después el ESCRITOR —declarar
+el par manda UNA sola fila—). El doble sirve el vínculo **invertido y sin `pair_id`**, que es como
+lo escribe el KMS hoy; sin eso la fase del lector pasaría en vacío. **Rojo demostrado TRES veces**,
+cada uno nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| devolver el `push` de la inversa | *«se mandaron 2 fila(s) para la MISMA pareja de hermanos […]: el asistente está volviendo a escribir la inversa que DL-S45 derogó»* |
+| que el lector case un solo extremo | *«el desplegable del par de hermanos vale "" (se esperaba "rt_child"): el lector solo casa un extremo…»* |
+| que los pares dejen de ser únicos | *«se pintaron 2 tarjeta(s) para la misma pareja de hermanos»* + caen (6) y (7) |
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni llama al KMS ⇒ afirma lo que manda el navegador y lo que la pantalla pinta,
+**no** que la fila aterrice en `sysPersonRelations`. Y **eso último sigue SIN ACREDITAR por un
+motivo ajeno**: **D97** —quitarle el `Required` a `sysPersonRelations.pair_id`, que desde el
+2026-08-21 rechaza toda escritura de vínculo— **no consta aplicado** (`kis-app
+docs/kms/pendiente-diego.md` §D97 sigue sin marca de resuelto, aunque la ficha de la cola llegó a
+declarar lo contrario; el `Required` de una columna **no se lee** por la API de datos). Lo entregado
+aquí no dependía de eso, pero la persistencia de punta a punta sí.
+
+**Textos, manual y ayuda en pantalla: ninguno toca.** La familia ve exactamente la misma pantalla y
+declara exactamente lo mismo; lo que cambia es cuántas filas salen hacia el expediente.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

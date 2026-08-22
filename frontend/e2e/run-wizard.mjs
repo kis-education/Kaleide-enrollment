@@ -407,7 +407,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -6879,6 +6879,139 @@ async function caminoAvisoDeVinculoSeñalaDondeEs(page, base) {
   return c
 }
 
+/**
+ * Lleva al paso de Vínculos (índice 2) desde donde sea que haya aterrizado, y lo
+ * desbloquea. Mismo bucle y mismo botón que `caminoAvisoDeVinculoSeñalaDondeEs` — no se
+ * inventa navegación nueva.
+ */
+async function irAVinculos(c, page) {
+  for (let i = 0; i < 8 && (await dondeEstoy(page)) > 2; i++) {
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!atras) break
+    await atras.click()
+    await page.waitForTimeout(250)
+  }
+  if (!c.afirmar('se llega al paso de Vínculos', (await dondeEstoy(page)) === 2,
+    `se quedó en el índice ${await dondeEstoy(page)}`)) return false
+  await desbloquear(page)
+  await page.waitForTimeout(250)
+  return true
+}
+
+/**
+ * `0º.septvicies` — UNA DECLARACIÓN, UNA FILA (DL-S45, Diego 2026-08-21).
+ *
+ * Hasta el 2026-08-22 el paso 3 empujaba, por cada par de hermanos NUEVO, **la fila
+ * invertida además de la suya** — el modelo de grafo bidireccional que Diego derogó. El KMS
+ * ya se había convertido (`enr_upsertRelation_` escribe UNA fila, con identidad
+ * `(grupo, a, b)`), así que la invertida caía en otra clave y nacía como fila NUEVA: cada
+ * vínculo entre hermanos declarado desde esta pantalla nacía DUPLICADO.
+ *
+ * Se mide lo observable, y en este orden a propósito:
+ *   FASE A — el LECTOR: un vínculo guardado en el sentido CONTRARIO (una sola fila, como lo
+ *     escribe el KMS) se ve igual en la tarjeta del par. Es la mitad que sostenía el empujón
+ *     («so both children can query their siblings») y la que, si falla, hace DESAPARECER de
+ *     la pantalla un vínculo que la familia ya declaró. Va primero porque es la de más daño.
+ *   FASE B — el ESCRITOR: declarar el par manda UNA sola fila al servidor, no dos.
+ */
+async function caminoVinculoHermanosUnaSolaFila(page, base) {
+  const c = new Camino('vinculo-hermanos-una-sola-fila')
+  const esAlumno = (id) => id === FIXTURE.applicantId || id === FIXTURE.applicant2Id
+
+  try {
+    // ── FASE A · el vínculo guardado AL REVÉS se sigue viendo ───────────────────────
+    scenario.stage = 'hasta_preguntas'
+    scenario.vinculoHermanosInvertido = true
+
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    if (!await irAVinculos(c, page)) return c
+
+    // ANCLA: sin el par de hermanos en pantalla, todo lo de abajo pasaría en vacío.
+    const selectsA = await page.$$('.kis-card select.form-select-sm')
+    if (!c.afirmar('(1) el paso pinta el par de hermanos y los vínculos de los tutores',
+      selectsA.length >= 2,
+      `se pintaron ${selectsA.length} desplegable(s): con dos alumnos tiene que haber al menos ` +
+      'uno de tutor→hijo y el del par de hermanos, o este caso no se está midiendo')) return c
+
+    // UNA sola tarjeta por pareja de hermanos: si el lector no plegara los dos sentidos,
+    // o si el asistente volviera a mandar la invertida, aquí saldrían DOS.
+    const tarjetasDeHermanos = await page.$$eval('.kis-card', (cards) =>
+      cards.filter(el => {
+        const t = (el.textContent || '')
+        return /RobotHijoE2E/.test(t) && /RobotHijoDosE2E/.test(t)
+      }).length)
+    c.afirmar('(2) el par de hermanos se pinta en UNA sola tarjeta',
+      tarjetasDeHermanos === 1,
+      `se pintaron ${tarjetasDeHermanos} tarjeta(s) para la misma pareja de hermanos: ` +
+      'la pantalla estaría enseñando el mismo vínculo dos veces')
+
+    // LA AFIRMACIÓN CENTRAL DE LA FASE: el tipo declarado se ve, aunque la fila esté
+    // guardada como (hijo2 → hijo1) y la tarjeta se pinte como (hijo1 … hijo2).
+    const valorDelPar = await selectsA[selectsA.length - 1].inputValue()
+    c.afirmar('(3) el vínculo entre hermanos guardado en el sentido CONTRARIO se ve igual',
+      valorDelPar === 'rt_child',
+      `el desplegable del par de hermanos vale "${valorDelPar}" (se esperaba "rt_child"): ` +
+      'el lector solo casa un extremo, así que con UNA sola fila el vínculo que la familia ' +
+      'ya declaró desaparece de la pantalla del otro hermano')
+
+    // ── FASE B · declarar el par manda UNA sola fila ────────────────────────────────
+    scenario.vinculoHermanosInvertido = false
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    if (!await irAVinculos(c, page)) return c
+
+    const selectsB = await page.$$('.kis-card select.form-select-sm')
+    if (!c.afirmar('(4) el paso vuelve a ofrecer el par de hermanos sin tipo',
+      selectsB.length >= 2 && !(await selectsB[selectsB.length - 1].inputValue()),
+      `se pintaron ${selectsB.length} desplegable(s) y el último vale ` +
+      `"${selectsB.length ? await selectsB[selectsB.length - 1].inputValue() : ''}": ` +
+      'sin un par VACÍO que declarar, la fase no mide el alta de un vínculo nuevo')) return c
+
+    // Se declaran TODOS los tipos y se marca la custodia de cada alumno: sin eso el paso
+    // no deja continuar (`validationOk`) y no habría guardado que inspeccionar.
+    for (const sel of selectsB) {
+      const valores = await sel.$$eval('option', (os) => os.map(o => o.value).filter(Boolean))
+      if (valores.length) { await sel.selectOption(valores[0]); await page.waitForTimeout(120) }
+    }
+    const casillas = await page.$$('input.form-check-input[id^="custodial_"]')
+    for (const ch of casillas) { if (!(await ch.isChecked())) await ch.check() }
+    await page.waitForTimeout(200)
+
+    const antes = calls.length
+    if (!await continuar(c, page, 3, 'paso 3 → 4 tras declarar los vínculos')) return c
+
+    const t0 = Date.now()
+    const guardadosDeVinculos = () => llamadas('saveStep')
+      .filter(g => (g.payload || {}).step === 'relations')
+    while (!guardadosDeVinculos().length && Date.now() - t0 < LATENCY + 3000) {
+      await page.waitForTimeout(200)
+    }
+    c.evidencia.llamadas = calls.length - antes
+    const guardados = guardadosDeVinculos()
+    if (!c.afirmar('(5) los vínculos declarados se guardan', guardados.length > 0,
+      `ningún saveStep con step="relations" salió en ${Date.now() - t0} ms tras continuar`)) return c
+
+    const filas = (guardados[guardados.length - 1].payload || {}).payload || []
+    const entreHermanos = filas.filter(r =>
+      esAlumno(r.person_id_a || r.from_person_id) && esAlumno(r.person_id_b || r.to_person_id))
+    c.afirmar('(6) declarar el vínculo entre hermanos manda UNA sola fila al servidor',
+      entreHermanos.length === 1,
+      `se mandaron ${entreHermanos.length} fila(s) para la MISMA pareja de hermanos ` +
+      `(${JSON.stringify(entreHermanos.map(r => [r.person_id_a, r.person_id_b]))}): el asistente ` +
+      'está volviendo a escribir la inversa que DL-S45 derogó, y el KMS la guarda como fila NUEVA')
+    c.afirmar('(7) y ninguna de las filas mandadas repite una pareja ya mandada',
+      new Set(filas.map(r => [r.person_id_a || r.from_person_id, r.person_id_b || r.to_person_id]
+        .sort().join('|'))).size === filas.length,
+      `se mandaron ${filas.length} fila(s) para ` +
+      `${new Set(filas.map(r => [r.person_id_a, r.person_id_b].sort().join('|'))).size} pareja(s) distintas`)
+
+    return c
+  } finally {
+    scenario.vinculoHermanosInvertido = false
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -6927,6 +7060,10 @@ const CAMINOS = [
   { nombre: 'idiomas-hablados', fn: caminoIdiomasHablados, minLlamadas: 1, minElementos: 11 },
   { nombre: 'sexo-desde-el-catalogo', fn: caminoSexoDesdeElCatalogo, minLlamadas: 1, minElementos: 11 },
   // `0º.tricies.octies` (D) — no manda ni una petición: mide lo que la pantalla DICE.
+  // `0º.septvicies` — el asistente deja de escribir la fila invertida del par de hermanos
+  // (DL-S45), y el lector del paso 3 la sigue viendo guardada en cualquier sentido.
+  { nombre: 'vinculo-hermanos-una-sola-fila', fn: caminoVinculoHermanosUnaSolaFila,
+    minLlamadas: 1, minElementos: 11 },
   { nombre: 'aviso-de-vinculo-señala-donde-es', fn: caminoAvisoDeVinculoSeñalaDondeEs,
     minLlamadas: 0, minElementos: 11 },
   // DL-E49 §4/§9 — la familia AVISA al tutor que acaba de declarar (pedido por Diego).

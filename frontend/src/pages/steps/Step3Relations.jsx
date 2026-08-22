@@ -155,16 +155,30 @@ export default function Step3Relations({ onNext, onBack, locked, onUnlock, saveP
 
   const handleNext = () => {
     if (relations.length > 0 && !validationOk) return;
-    // For new AA relations, also persist the reverse so both children can query their siblings.
+    // ── UNA DECLARACIÓN, UNA FILA (DL-S45, decisión de Diego 2026-08-21) ─────────────
+    // Aquí se empujaba ADEMÁS la fila INVERTIDA de cada par de hermanos nuevo, con el
+    // motivo escrito «so both children can query their siblings». Eso era el modelo de
+    // grafo bidireccional que Diego DEROGÓ: *«Ok, pues una sola fila»*. El KMS se
+    // convirtió el mismo día —`enr_upsertRelation_` (`kis-app kms-server/enr/staging.gs`)
+    // escribe UNA fila y su identidad es la terna `(grupo, a, b)`, así que la invertida
+    // caía en OTRA clave y nacía como fila NUEVA—; el asistente NO se convirtió, y nadie
+    // lo midió al cerrar aquello. Resultado medido: cada vínculo entre hermanos declarado
+    // desde esta pantalla nacía DUPLICADO, y el KMS lo pintaba como «Guardado en dos
+    // filas por el modelo anterior» para algo creado ese mismo día.
+    //
+    // ⛔ NO se reintroduce. Que el vínculo se vea desde LOS DOS hermanos lo resuelve el
+    // LECTOR, no una segunda fila: `buildInitialRelations` (arriba) casa el par en los
+    // dos sentidos (`a===idA && b===idB` **o** `a===idB && b===idA`, y lo mismo con
+    // `from`/`to`), así que una sola fila —guardada en el sentido que sea— rellena la
+    // ÚNICA tarjeta que esta pantalla pinta por pareja. Medido antes de retirar el
+    // empujón; el camino `vinculo-hermanos-una-sola-fila` de la batería lo afirma.
+    //
     // Strip _kind (UI-only) before saving so baseline comparison stays stable.
     const relationsToSave = [];
     relations.forEach(r => {
       // eslint-disable-next-line no-unused-vars
       const { _kind, _RowNumber, ...rClean } = r;
       relationsToSave.push(rClean);
-      if (_kind === 'aa' && !r.relation_id) {
-        relationsToSave.push({ ...rClean, _uid: `${r.person_id_b}__${r.person_id_a}`, person_id_a: r.person_id_b, person_id_b: r.person_id_a });
-      }
     });
     updateStep('relations', relations);
     // Sort by relation_id so the order matches the baseline seeded in hydrateFromResume

@@ -1190,19 +1190,26 @@ export function WizardProvider({ children }) {
     // The magic link token itself proves email ownership — treat as verified regardless
     // of the email_confirmed DB flag (which may lag or not have been written yet).
     const persons   = data.persons   || [];
-    // The backend always inserts 2 rows per relation pair (forward + inverse).
-    // Step3Relations only knows and produces 1 row per pair, so we must
-    // deduplicate here to keep the savedBaseline in the same shape as what
-    // handleNext sends via onNext. Deduplicate by pair_id, preferring the row
-    // whose from_person_id matches a guardian so the semantic direction is right.
+    // ⚠️ AQUÍ DECÍA «the backend always inserts 2 rows per relation pair (forward +
+    // inverse)» y eso es FALSO desde DL-S45 (2026-08-21): el KMS escribe UNA fila por
+    // vínculo y el sentido se invierte AL PINTAR. Desde `0º.septvicies` (2026-08-22) el
+    // asistente tampoco manda la invertida.
+    //
+    // ⛔ Pero el plegado se QUEDA, y no es inercia: hay pares REALES ya guardados en dos
+    // filas (medido el 2026-08-22 con `manual_diagParejasDeVinculos`: 216 parejas con su
+    // espejo vivo). Esas filas no se tocan —son datos del colegio— así que una familia que
+    // vuelve a su solicitud sigue recibiendo DOS filas del mismo par, y sin plegarlas el
+    // `savedBaseline` tendría más entradas que lo que `Step3Relations` produce ⇒
+    // dirty-check positivo permanente y un guardado espurio en cada navegación.
+    //
+    // `pair_id` YA NO SE ESCRIBE (DL-S45) ⇒ para todo lo creado desde entonces manda el
+    // respaldo: la clave canónica de los dos extremos ORDENADOS, que colapsa igual el
+    // sentido directo y el inverso. Se conserva el `pair_id` por delante solo para las
+    // filas viejas que sí lo llevan.
     const guardianIds = new Set(persons.filter(p => p.person_type_id === 'guardian').map(p => p.person_id));
     const relationsRaw = data.relations || [];
     const relByPair = {};
     relationsRaw.forEach(r => {
-      // pair_id groups forward+inverse rows for the same pair. If pair_id is null
-      // (rows created before pair_id was introduced), fall back to a canonical key
-      // derived from both person IDs sorted — guarantees forward and inverse always
-      // collapse to the same entry regardless of which direction was stored first.
       const key = r.pair_id || [r.from_person_id, r.to_person_id].sort().join('__');
       if (!relByPair[key]) {
         relByPair[key] = r;

@@ -689,6 +689,23 @@ export function createDispatcher(scenario, record) {
         };
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos);
+      // ⭐ `0º.septvicies` — el vínculo entre hermanos GUARDADO EN EL SENTIDO CONTRARIO
+      // (`from` = el hijo 2, `to` = el hijo 1) y en UNA sola fila, que es lo que el KMS
+      // escribe desde DL-S45. Sirve para afirmar que el lector del paso 3 lo encuentra
+      // igual: si `buildInitialRelations` mirase un solo extremo, la tarjeta del par
+      // saldría VACÍA y la familia perdería de vista el vínculo que ya declaró.
+      // SIN `pair_id` a propósito: DL-S45 dejó de escribirlo, así que el plegado de
+      // `hydrateFromResume` tiene que sostenerse en su clave de dos extremos ordenados.
+      if (scenario.vinculoHermanosInvertido) {
+        h.relations = (h.relations || []).concat([{
+          relation_id:           'r-herm-inv',
+          from_person_id:        FIXTURE.applicant2Id,
+          to_person_id:          FIXTURE.applicantId,
+          relation_type_id:      'rt_child',
+          is_custodial:          'FALSE',
+          is_pick_up_authorized: 'FALSE',
+        }]);
+      }
       // ⭐ 0º.vicies.septies — el servidor SÍ manda apoyo educativo. Se pide con la palanca
       // porque, hasta hoy, el KMS NO lo mandaba nunca (medido) y el molde por defecto es el
       // de siempre: sin ella, la hidratación sale byte-idéntica a la de antes.
