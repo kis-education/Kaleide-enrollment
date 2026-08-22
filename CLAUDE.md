@@ -2277,6 +2277,56 @@ primera no cubría (el plan con `modality_id: null`, su rótulo y sus tres afirm
 corrección de la premisa falsa. **La reserva se escribe ANTES de la primera línea de código, no al
 ir a publicar.**
 
+### `0º.tricies.decies` (2026-08-22) — las preguntas del cuestionario se agrupan POR ALUMNO
+
+**Diego, cita literal:** *«tampoco salen agrupadas. Tienes que ir al alimón, mirando a quién le
+corresponden. Lo lógico es que dentro de cada pill, haya un área de agrupación por sujeto»*.
+
+**Medido:** `shared/QbSetRenderer/index.jsx` recorría las **PREGUNTAS** del conjunto y, **dentro de
+cada una**, `applicants.map(...)` ⇒ el orden natural era pregunta×sujeto: con dos hijos salía
+«primera de Jara · primera de Pepito · segunda de Jara…», y el nombre se repetía **en cada línea**.
+Ahora **`agruparPorSujeto_(set)`** reparte los elementos en BLOQUES y quien pinta recorre
+**sujeto → sus preguntas**, con el nombre **una sola vez**.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ LA CLAVE DE LA RESPUESTA NO SE TOCA** (`question_id__personKey`). Es la que guarda y recupera
+  lo que la familia contestó; romperla desvincula todo lo ya respondido.
+- **El bloque ocupa el sitio de su PRIMERA pregunta**, no el final del conjunto. Un conjunto que
+  mezcla preguntas de la solicitud con preguntas de alumno conserva así el orden en que el colegio
+  las declaró; empujar los grupos al final movería preguntas que hoy salen arriba. **Y todas las de
+  una misma audiencia caen en ese bloque** (el mapa `abierto`), aunque en el conjunto no vinieran
+  seguidas — el efecto es que una pregunta de alumno declarada después de una de la solicitud sube
+  al bloque de su audiencia. Con un conjunto homogéneo, que es el caso normal, no hay diferencia.
+- **Una pregunta SIN audiencia se pinta EXACTAMENTE como antes**: no tiene sujeto que agrupar.
+- **⛔ Aquí NO se decide de quién es una pregunta**: lo declara el catálogo
+  (`audience_category_id`) y llega ya resuelto. Solo se AGRUPA lo que llega.
+- **Las condiciones se siguen evaluando POR SUJETO**: una pregunta que no le aplica a un hijo no
+  sale **en su grupo**, y un grupo que se queda sin ninguna **no se pinta** — un encabezado con un
+  nombre y nada debajo confunde más que ayuda.
+- **Con UN solo alumno** el resultado es prácticamente el de antes: un encabezado y sus preguntas.
+
+**⚠️ El componente vive en los DOS repositorios y SOLO se tocó el del asistente, y hay un motivo
+MEDIDO.** La copia del KMS (`kis-app frontend/src/shared/qb-renderer/`) tiene **un solo
+consumidor** —`worlds/admin/qb/QbQuestionEditPage.jsx:885`, la **vista previa** de una pregunta— y
+se le pasa **exactamente UN alumno sintético** (`persons={[{…}]}`, `:888`) ⇒ ahí no hay nada que
+agrupar y el cambio no se vería. Tocarlo además habría arrastrado el muro `e2e:tables`, **ese día
+ROJO en `origin/master` por un cambio ajeno**, sin ganar nada.
+
+**Red**: el recorrido del cuestionario con **DOS alumnos** y un conjunto con audiencia declarada
+(afirmaciones `(d.1)` el nombre una sola vez · `(d.2)` las preguntas de un mismo alumno seguidas ·
+`(d.3)` la respuesta de cada alumno viaja con SU identificador). ⚠️ Con un solo alumno, o con las
+preguntas generales del banco, **la comprobación pasaría en vacío**, que es peor que no tenerla.
+
+⚠️ **ESTA FICHA LA HICIERON DOS MANOS A LA VEZ, y se dice para que no se repita.** La rutina la
+tenía RESERVADA desde las 15:16; Diego se la encargó a mano a la sesión a las 15:52, que marcó la
+reserva como CEDIDA y empujó ese aviso — pero la rutina ya estaba en vuelo y **publicó primero**
+(`e7d21b8`). Se conservó **lo publicado** y se **descartó** el trabajo duplicado de la sesión (un
+`tramosDelConjunto_` que agrupaba solo tramos SEGUIDOS, con su propio camino de batería); de aquella
+vuelta solo sobrevive **esta documentación**, que la publicación no traía. Es el mismo desenlace que
+`0º.tricies.quater`. **La reserva se lee antes de la primera línea de código Y otra vez antes de
+publicar** — y aun así, cuando una mano ya está en vuelo, ceder tarde no evita el trabajo doble.
+
 ### `0º.tricies.octies` (B) (2026-08-22) — un guardado que muere en la cola DEJA DE SER MUDO
 
 **Los guardados del asistente NO escriben: APUNTAN el trabajo.** `enr.wizardSaveStep` y sus
