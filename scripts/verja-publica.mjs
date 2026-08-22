@@ -259,10 +259,13 @@ function comprobarParidadDelCodigo(fuenteLimpia) {
     // un token observado y sin el código de un solo uso se podría colar a un tercero en
     // silencio, y la familia no se enteraría. Pide lo mismo que corregir una letra.
     ['avisarATutor_',            'requireResumeToken_'],
-    // Paso 7 · la forma de pago elegida en la SIMULACIÓN. No compromete a nadie, pero es
-    // una escritura sobre el expediente de la familia y va por la misma puerta que las
-    // demás: un `resume_token` filtrado no debe poder tocarle nada sin acreditar el buzón.
-    ['guardarModalidadPreferida_', 'requireResumeToken_'],
+    // ⭐ 0º.vicies.sexies (2026-08-21) — `guardarModalidadPreferida_` estaba AQUÍ y se
+    // RETIRÓ ENTERO, por decisión de Diego: la presentación de pagos del paso 7 es
+    // meramente informativa, así que la marca de la tarjeta vive solo en el navegador y ya
+    // no hay escritura que gatear. Se quita de la lista porque un obligado que no existe
+    // deja el control MIDIENDO EL AIRE: pasaría en verde sin comprobar nada.
+    // ⛔ NO confundirlo con `applyPaymentModality_` (más abajo, con su gate de firmante):
+    // ésa es la elección EN FIRME del paso 8, es dinero, se firma, y sigue obligada.
     // 2026-08-20 · «sigo aquí» — reinicia el contador de los 10 min de inactividad. Es
     // una escritura sobre la propia marca del código de un solo uso, así que va por la
     // MISMA puerta que todo lo demás: primero el expediente del bearer (KAL-4), luego el

@@ -2353,7 +2353,6 @@ function doPost(e) {
       // Paso 7 · el simulador de cuotas (lectura) y la forma de pago elegida a título
       // ORIENTATIVO (mutación con la puerta completa de ②27). La firme es la del paso 8.
       case 'simularCuotas':           result = simularCuotas_(payload);           break;
-      case 'guardarModalidadPreferida': result = guardarModalidadPreferida_(payload); break;
       case 'requestCorrection':       result = requestCorrection_(payload);       break;
       case 'retirarDelExpediente':    result = retirarDelExpediente_(payload);    break;
       case 'avisarATutor':            result = avisarATutor_(payload);            break;
@@ -8344,16 +8343,15 @@ function applyPaymentModality_(p) {
  *   2. **`v` no casa** (algo escribió — puede ser una alergia, puede ser el
  *      programa) → se pregunta la HUELLA por el camino barato
  *      (`enr.wizardHuellaDeSimulacion`, que NUNCA ensaya una plantilla). Si casa
- *      con la que se guardó, la simulación sigue siendo la misma — se sirve, con
- *      **una sola cosa refrescada**: `preferred_modality_id` (la elección de forma
- *      de pago SÍ pudo cambiar sin tocar la huella, y sería raro que el paso 7
- *      mostrara una elección vieja tras guardarla).
+ *      con la que se guardó, la simulación sigue siendo la misma — se sirve TAL
+ *      CUAL. (Hasta `0º.vicies.sexies` se refrescaba además `preferred_modality_id`;
+ *      ese concepto se retiró entero y ya no hay nada que refrescar.)
  *
  * Solo si no hay caché o la huella no casa se paga el cálculo completo —
  * EXACTAMENTE el mismo que hacía esta función antes de hoy.
  *
  * @param {Object} p — { resume_token }
- * @returns {Object} `data` del KMS — { ok, motivo, simulaciones, preferred_modality_id, huella }
+ * @returns {Object} `data` del KMS — { ok, motivo, simulaciones, huella }
  */
 function simularCuotas_(p) {
   // KAL-4: el expediente sale del token, nunca del cuerpo. El KMS lo re-deriva igual.
@@ -8372,7 +8370,11 @@ function simularCuotas_(p) {
         }
         var chequeo = kmsProxy_('enr.wizardHuellaDeSimulacion', { resume_token: token });
         if (chequeo && chequeo.huella && chequeo.huella === env.huella) {
-          var dataFresca = Object.assign({}, env.data, { preferred_modality_id: chequeo.preferred_modality_id || null });
+          // ⭐ 0º.vicies.sexies — antes se refrescaba aquí `preferred_modality_id`, el único
+          // campo que podía cambiar sin mover la huella. Ese concepto se RETIRÓ ENTERO
+          // (la marca de la forma de pago vive ahora solo en el navegador), así que la foto
+          // cacheada se sirve TAL CUAL: no queda nada que refrescar.
+          var dataFresca = env.data;
           // Se re-archiva con la `v` de ahora para que la PRÓXIMA lectura entre por
           // el nivel 1 (sin ni siquiera preguntar la huella) mientras nada más cambie.
           try {
@@ -8388,36 +8390,6 @@ function simularCuotas_(p) {
   return _wzComputeYCachearSimulacion_(groupId, token);
 }
 
-/**
- * PASO 7 · La forma de pago que la familia ELIGIÓ EN LA SIMULACIÓN — una PREFERENCIA.
- *
- * ⚠️ NO ES UNA ELECCIÓN EN FIRME: no crea suscripción, no reserva nada y no compromete a la
- * familia. Solo queda anotada en su expediente para que el resumen de su solicitud pueda
- * decir qué eligió. La elección firme es la del paso 8 (`applyPaymentModality_`), que es la
- * que se firma.
- *
- * ②27 — es una MUTACIÓN, así que lleva la puerta completa y EN ESTE ORDEN, copiada de
- * `saveNeae_` (el patrón obligatorio): el expediente sale del bearer (KAL-4), se comprueba
- * que la solicitud sigue siendo editable, y se exige el código de un solo uso ANTES del
- * viaje al KMS. La marca es del buzón que OPERA (②24), no siempre la del tutor 1.
- *
- * ESCRITURA ⇒ invalida la caché del grupo (nunca servir algo viejo tras escribir).
- *
- * @param {Object} p — { resume_token, modality_id? }  (vacío = borrar la preferencia)
- * @returns {Object} `data` del KMS — { ok, saved, preferred_modality_id }
- */
-function guardarModalidadPreferida_(p) {
-  const enrollmentGroupId = requireResumeToken_(p);
-  assertGroupEditable_(enrollmentGroupId);
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
-  _wzCacheInvalidate_(p && p.resume_token);
-
-  const modalityId = (p && p.modality_id) ? String(p.modality_id).trim() : '';
-  return kmsProxy_('enr.guardarModalidadPreferida', {
-    resume_token: p.resume_token,
-    modality_id:  modalityId,
-  });
-}
 
 /**
  * La familia PIDE CORREGIR una solicitud que ya envió (cola 18.quater, decisión de

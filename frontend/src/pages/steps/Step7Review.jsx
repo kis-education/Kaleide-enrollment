@@ -4,12 +4,12 @@ import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
 import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import { gasCall, fetchLookups, fetchQuestions, requestCorrection, identidadDelEnlace,
-         simularCuotas, guardarModalidadPreferida } from '../../api';
+         simularCuotas } from '../../api';
 import StepNav from '../../components/StepNav';
 import StepUpReverify from '../../components/StepUpReverify';
-import { isStepUpRequiredError } from './signingCommon';
 import { openDocument } from '../../utils/documentProxy';
 import { translateRelationLabel, translateGender, translateIdType } from '../../utils/enumLabels';
+import { fechaLegible } from '../../utils/fechas'; // 0º.vicies.sexies: EL único formateador
 import { CONSENT_TEXTS } from '../../consentTexts';
 import * as log from '../../logger';
 
@@ -138,13 +138,16 @@ function CorrectionRequest({ resumeToken, t }) {
  * importes salen SIEMPRE del motor del KMS — un segundo sitio que los calculara es
  * exactamente lo que DL-080-A prohíbe.
  */
-function SimulacionDeCuotas({ resumeToken, applicants, t }) {
+function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
   const [sim, setSim]             = useState(null);   // null = cargando
-  // { [template_id]: modality_id } — UNA elección por PLAN, no una sola global (2026-08-21:
-  // un solicitante puede tener varios planes a la vez, cada uno con la suya).
-  const [seleccion, setSeleccion] = useState({});
-  const [guardando, setGuardando] = useState(null); // modality_id en curso
-  const [aviso, setAviso]       = useState('');
+  // ⭐ 0º.vicies.sexies — LA MARCA VIVE SOLO EN EL NAVEGADOR (decisión de Diego, 2026-08-21:
+  // *«la presentación de pagos es meramente informativa… se puede guardar en la memoria del
+  // navegador, pero ya está»*). Es `{ [template_id]: modality_id }` —un solicitante puede
+  // tener varios planes a la vez y cada uno lleva la suya— y la guarda `WizardContext` con
+  // el MISMO mecanismo de sesión que el resto del estado, así que sobrevive a un F5 sin un
+  // solo viaje al servidor. ⛔ La elección EN FIRME es la del paso 8, y ésa no se toca.
+  const { formaDePagoMarcada, setFormaDePagoMarcada } = useWizard();
+  const seleccion = formaDePagoMarcada || {};
 
   useEffect(() => {
     let vivo = true;
@@ -154,15 +157,6 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
         if (!vivo) return;
         const r = (res && typeof res === 'object') ? res : { simulable: false, simulaciones: [] };
         setSim(r);
-        // La preferencia guardada es DEL EXPEDIENTE, no del plan — el servidor solo
-        // recuerda la última forma de pago elegida en CUALQUIER plan (medido y reportado
-        // en el encargo: `preferred_modality_id` sigue siendo un único valor por grupo).
-        // Se siembra en el plan al que esa forma de pago pertenece de verdad, si aparece.
-        if (r.preferred_modality_id) {
-          const dueño = (r.simulaciones || []).find(pl =>
-            (pl.modalidades || []).some(m => m.modality_id === r.preferred_modality_id));
-          if (dueño) setSeleccion({ [dueño.template_id]: r.preferred_modality_id });
-        }
       })
       .catch(e => {
         // Degrada y calla: el resto del paso 7 tiene que funcionar igual.
@@ -179,19 +173,11 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
     } catch (e) { return n.toFixed(2) + ' ' + (currency || 'EUR'); }
   };
 
-  const elegir = (templateId, modalityId) => {
-    if (guardando) return;
-    setAviso('');
-    setSeleccion(prev => ({ ...prev, [templateId]: modalityId })); // optimista, por plan
-    setGuardando(modalityId);
-    guardarModalidadPreferida(resumeToken, modalityId)
-      .catch(e => {
-        log.warn('Step7: guardarModalidadPreferida failed', { message: e && e.message });
-        // Se dice que la ELECCIÓN no quedó anotada — nunca que el envío esté en riesgo.
-        setAviso(isStepUpRequiredError(e) ? t('step7.sim.save_stepup') : t('step7.sim.save_error'));
-      })
-      .finally(() => setGuardando(null));
-  };
+  // Marcar es INSTANTÁNEO y no viaja a ningún sitio: esto compara opciones, no deja
+  // constancia de nada. Antes costaba DOS viajes al KMS (42 s de reloj medidos el
+  // 2026-08-22) para anotar un dato que no leía nadie — y que además no llegaba a
+  // escribirse (`"saved": false`).
+  const elegir = (templateId, modalityId) => setFormaDePagoMarcada(templateId, modalityId);
 
   const nombreDe = (personId) => {
     const a = (applicants || []).find(x => (x.person_id || x._uid) === personId);
@@ -204,7 +190,6 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
       {(plan.modalidades || []).map(m => {
         const seleccionada = seleccion[plan.template_id] != null && m.modality_id === seleccion[plan.template_id];
-        const ocupada      = guardando === m.modality_id;
         const noDisponible = m.available === false;
         return (
           <button
@@ -213,7 +198,7 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
             data-testid="paso7-modalidad"
             data-modality-id={m.modality_id}
             onClick={() => elegir(plan.template_id, m.modality_id)}
-            disabled={noDisponible || !!guardando}
+            disabled={noDisponible}
             aria-pressed={seleccionada}
             style={{
               textAlign: 'left', minWidth: 210, flex: '1 1 210px',
@@ -226,9 +211,6 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
           >
             <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--teal-dk)' }}>
               {m.designation || m.modality_code}
-              {ocupada && <span style={{ marginLeft: 8, fontWeight: 400, fontSize: '0.78rem' }}>
-                {t('step7.sim.saving')}
-              </span>}
             </div>
             {noDisponible ? (
               <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
@@ -244,11 +226,10 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
                 <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 2 }}>
                   {t('step7.sim.total', { amount: money(m.net_cents, m.currency_code) })}
                 </div>
-                {Number(m.discount_cents || 0) > 0 && (
-                  <div style={{ fontSize: '0.8rem', color: '#1a7f37', fontWeight: 600, marginTop: 2 }}>
-                    {t('step7.sim.saving_amount', { amount: money(m.discount_cents, m.currency_code) })}
-                  </div>
-                )}
+                {/* ⛔ 0º.vicies.sexies pieza 5 — FUERA el «te ahorras». Diego: la elección se
+                    explica por su TOTAL y su CALENDARIO, no por un marco de ahorro. El NOMBRE
+                    del descuento aplicado SÍ se queda —es un dato del plan, y así lo enseña
+                    también el simulador del KMS—: lo que se retira es la cifra de ahorro. */}
                 {(m.descuentos || []).length > 0 && (
                   <div style={{ fontSize: '0.76rem', color: 'var(--muted)', marginTop: 2 }}>
                     {(m.descuentos || []).map(d => d.designation || d.policy_code).filter(Boolean).join(' · ')}
@@ -256,7 +237,7 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
                 )}
                 {(m.cuotas || []).length > 0 && (
                   <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 6 }}>
-                    {t('step7.sim.first_due', { date: m.cuotas[0].due_date || '—' })}
+                    {t('step7.sim.first_due', { date: fechaLegible(m.cuotas[0].due_date, lang) || '—' })}
                   </div>
                 )}
               </>
@@ -269,7 +250,7 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
 
   // La forma de pago QUE CUENTA para el total de un plan: la que la familia eligió en
   // ESE plan si la hay, si no la primera DISPONIBLE (nunca una atenuada con `available:false`).
-  const modalidadRepresentativa = (plan) => {
+  const modalidadMarcadaOPrimera = (plan) => {
     const elegidaId = seleccion[plan.template_id];
     if (elegidaId) {
       const m = (plan.modalidades || []).find(x => x.modality_id === elegidaId);
@@ -279,10 +260,57 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
     return disponibles[0] || (plan.modalidades || [])[0] || null;
   };
 
+  // ⭐ 0º.vicies.sexies pieza 3 — EL DESGLOSE, con la MISMA forma que el simulador de
+  // plantillas del KMS (`SubscriptionTemplateDetailPage.jsx`, `simRows`): una fila por
+  // vencimiento con `{ concepto, fecha, importe }`, ordenadas por fecha. Diego: *«Debería
+  // indicar los conceptos desglosados, con sus fechas de pago. Tal y como se hace en el
+  // simulador de plantillas del KMS.»*
+  //
+  // ⛔ AQUÍ NO SE CALCULA DINERO (DL-080-A): `money()` divide entre 100 y formatea, y nada
+  // más. Ni una suma, ni una resta, ni un porcentaje — los importes vienen tal cual del
+  // motor del KMS, que ya los repartió con el mismo repartidor del cobro real.
+  const desgloseDe = (plan) => {
+    const m = modalidadMarcadaOPrimera(plan);
+    return m ? (m.cuotas || []) : [];
+  };
+
+  const tablaDeDesglose = (plan) => {
+    const filas = desgloseDe(plan);
+    if (!filas.length) return null;
+    const m = modalidadMarcadaOPrimera(plan);
+    return (
+      <div data-testid="paso7-desglose" style={{ marginTop: 10 }}>
+        <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--teal-dk)', marginBottom: 4 }}>
+          {t('step7.sim.breakdown_title')}
+        </div>
+        <table style={{ width: '100%', fontSize: '0.8rem', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
+              <th style={{ fontWeight: 600, padding: '2px 6px 2px 0' }}>{t('step7.sim.breakdown_concept')}</th>
+              <th style={{ fontWeight: 600, padding: '2px 6px' }}>{t('step7.sim.breakdown_date')}</th>
+              <th style={{ fontWeight: 600, padding: '2px 0 2px 6px', textAlign: 'right' }}>{t('step7.sim.breakdown_amount')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map((c, i) => (
+              <tr key={i} data-testid="paso7-desglose-fila" style={{ borderTop: '1px solid var(--border)' }}>
+                <td data-testid="paso7-desglose-concepto" style={{ padding: '3px 6px 3px 0' }}>{c.concepto || '—'}</td>
+                <td data-testid="paso7-desglose-fecha" style={{ padding: '3px 6px' }}>{fechaLegible(c.due_date, lang) || '—'}</td>
+                <td style={{ padding: '3px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  {money(c.amount_cents, m && m.currency_code)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   const totalSolicitante = (planes) => {
     let cents = 0; let currency = null; let alguna = false;
     planes.forEach(plan => {
-      const m = modalidadRepresentativa(plan);
+      const m = modalidadMarcadaOPrimera(plan);
       if (m) { cents += Number(m.net_cents || 0); currency = currency || m.currency_code || 'EUR'; alguna = true; }
     });
     return alguna ? { cents, currency: currency || 'EUR' } : null;
@@ -342,6 +370,7 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
                 </div>
               )}
               {tarjetasDelPlan(sol.planes[0])}
+              {tablaDeDesglose(sol.planes[0])}
             </div>
           );
         }
@@ -362,6 +391,7 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
                   {plan.template_designation || t('step7.sim.plan_generic')}
                 </div>
                 {tarjetasDelPlan(plan)}
+                {tablaDeDesglose(plan)}
               </div>
             ))}
             {total && (
@@ -374,13 +404,6 @@ function SimulacionDeCuotas({ resumeToken, applicants, t }) {
         );
       })}
 
-      {aviso && (
-        <div className="alert alert-warning" role="alert"
-             data-testid="paso7-simulador-error"
-             style={{ fontSize: '0.84rem', marginTop: 10, marginBottom: 0 }}>
-          {aviso}
-        </div>
-      )}
     </div>
   );
 }
@@ -1077,7 +1100,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         <>
           {/* Paso 7 · el simulador de cuotas. Va ANTES del botón de enviar y NO lo gatea:
               es un recuadro aparte, sin ningún estado compartido con `handleSubmit`. */}
-          <SimulacionDeCuotas resumeToken={resumeToken} applicants={applicants} t={t} />
+          <SimulacionDeCuotas resumeToken={resumeToken} applicants={applicants} t={t} lang={lang} />
 
           <div className="kis-card mt-3">
             <h3 style={{ color: 'var(--teal-dk)', marginTop: 0, fontSize: '1rem' }}>{t('step7.legal_title')}</h3>

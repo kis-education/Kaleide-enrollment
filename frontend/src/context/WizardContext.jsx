@@ -863,6 +863,32 @@ export function WizardProvider({ children }) {
     saveSession({ recoveryNonce: v });
   }, []);
 
+  // ⭐ 0º.vicies.sexies (Diego, 2026-08-21) — LA FORMA DE PAGO MARCADA EN EL PASO 7 VIVE
+  // SOLO EN EL NAVEGADOR. Cita literal: *«Se supone que la presentación de pagos es
+  // meramente informativa. Ni siquiera va a ir en la hoja de resumen… Se puede guardar en
+  // la memoria del navegador, pero ya está.»* Las tarjetas de «¿Cómo quedarían las cuotas?»
+  // son un VISOR para comparar, no un formulario que deje constancia: la elección EN FIRME
+  // es la del paso 8 (`enr.wizardApplyModality`, sobre la suscripción borrador), que es la
+  // que se aplica y se firma — y ésa NO se toca.
+  //
+  // Es `{ [template_id]: modality_id }`: un solicitante puede tener varios planes a la vez
+  // (cuota + comedor + permanencia) y cada uno lleva la suya.
+  //
+  // Se persiste con el MISMO mecanismo de sesión que el resto del estado del asistente
+  // (`saveSession`, molde verbatim de `recoveryNonce` justo arriba) para que un F5 no borre
+  // la marca. ⚠️ Degrada sin romper: si el navegador no deja escribir (modo privado,
+  // almacenamiento bloqueado), `saveSession` se lo traga y la marca simplemente no
+  // sobrevive al F5 — NUNCA un error delante de la familia. No hay ni un viaje al servidor.
+  const [formaDePagoMarcada, setFormaDePagoMarcadaRaw] = useState(session.formaDePagoMarcada || {});
+  const setFormaDePagoMarcada = useCallback((templateId, modalityId) => {
+    if (!templateId || !modalityId) return;
+    setFormaDePagoMarcadaRaw(prev => {
+      const next = { ...(prev || {}), [templateId]: modalityId };
+      saveSession({ formaDePagoMarcada: next });
+      return next;
+    });
+  }, []);
+
   // Espejos síncronos para `touchActivity` (ver su declaración): un solo sitio los pone
   // al día, para que no puedan divergir de las variables de estado que reflejan.
   useEffect(() => { resumeTokenRef.current = resumeToken; }, [resumeToken]);
@@ -1476,6 +1502,7 @@ export function WizardProvider({ children }) {
       signingForms, updateSigningForm,            // REBUILD-8-11: formularios de firma en memoria
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)
       recoveryNonce, setRecoveryNonce,           // IDENTITY-FROM-LINK: `n` = email_id del enlace
+      formaDePagoMarcada, setFormaDePagoMarcada, // 0º.vicies.sexies: la marca del paso 7, solo en el navegador
       isStepUpFresh, markStepUpFresh, revokeStepUpFresh, touchActivity, // DL-E39 step-up PII-primero + #30 espejo revocable
       stepUpVerifiedUntil,                              // 2026-08-20: hasta cuándo, para el aviso de los dos minutos
       stepUpCierre,                                     // 2026-08-20: QUÉ lo cierra — 'INACTIVIDAD' | 'TECHO'

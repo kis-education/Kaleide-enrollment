@@ -4635,19 +4635,22 @@ async function caminoSimuladorPaso7(page, base) {
     // llega a un buzón que este arnés no lee. No se afloja ninguna de las dos cosas para
     // que la prueba pase; en modo simulado sí se cubren.
     c.noCubierta('simulador-en-pie',
-      'guardar la forma de pago elegida exige el código de un solo uso, que el servidor manda al buzón de la familia y el arnés no lee; en modo simulado sí se cubre')
+      'el desglose y la marca de la tarjeta se comprueban contra el backend simulado; contra el real haría falta un expediente con plantillas declaradas, que el arnés no puede sembrar')
     c.noCubierta('simulador-caido',
       'el escenario hostil (el simulador no responde) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre')
     return c
   }
 
-  let eleccion = null
+  let llamadasAlServidor = []
   let envio = null
   const espiar = (req) => {
     if (!/\/__gas/.test(req.url())) return
     let body = null
     try { body = JSON.parse(req.postData() || '{}') } catch { return }
-    if (body && body.action === 'guardarModalidadPreferida') eleccion = body
+    // ⭐ 0º.vicies.sexies — antes se espiaba `guardarModalidadPreferida`. Ese manejador se
+    // RETIRÓ ENTERO: marcar una forma de pago ya no viaja a ningún sitio. Ahora se cuenta
+    // CUALQUIER llamada al servidor mientras se marca, que es lo que hay que afirmar.
+    llamadasAlServidor.push(body && body.action)
     if (body && body.action === 'submitEnrollmentSession') envio = body
   }
   page.on('request', espiar)
@@ -4703,12 +4706,36 @@ async function caminoSimuladorPaso7(page, base) {
       marcasDeVariosPlanes.length === 0,
       `se encontraron ${marcasDeVariosPlanes.length} marca(s) de varios planes con un único plan aplicable: la pantalla dejó de ser byte-idéntica a la de antes`)
 
+    // ⭐ 0º.vicies.sexies pieza 3 — EL DESGLOSE: cada vencimiento con SU CONCEPTO y una
+    // fecha que se pueda leer. Diego lo pidió con esas palabras y lo que salía era
+    // `2026-09-01` en crudo y sin decir de qué era cada pago.
+    const filas = await page.$$eval('[data-testid="paso7-desglose-fila"]', trs => trs.map(tr => ({
+      concepto: (tr.querySelector('[data-testid="paso7-desglose-concepto"]') || {}).textContent || '',
+      fecha:    (tr.querySelector('[data-testid="paso7-desglose-fecha"]')    || {}).textContent || '',
+    })))
+    c.afirmar('el desglose enseña una fila por vencimiento', filas.length > 0,
+      'no se pintó ni una fila de desglose: la familia sigue sin ver de qué es cada pago')
+    c.afirmar('cada vencimiento dice DE QUÉ es (su concepto)',
+      filas.length > 0 && filas.every(f => f.concepto.trim() && f.concepto.trim() !== '—'),
+      `los conceptos leídos fueron ${JSON.stringify(filas.map(f => f.concepto.trim()))}: sin concepto, el desglose no desglosa nada`)
+    c.afirmar('la fecha se lee, no sale en crudo',
+      filas.length > 0 && filas.every(f => !/^\s*\d{4}-\d{2}-\d{2}\s*$/.test(f.fecha)),
+      `las fechas leídas fueron ${JSON.stringify(filas.map(f => f.fecha.trim()))}: en crudo (2026-09-01) es justo lo que Diego devolvió`)
+
+    // ⭐ 0º.vicies.sexies pieza 1 — MARCAR NO VIAJA. La presentación de pagos es
+    // informativa (decisión de Diego): la marca vive solo en el navegador, así que pulsar
+    // una tarjeta no puede producir NI UNA llamada al servidor.
+    llamadasAlServidor = []
     await page.click('[data-testid="paso7-modalidad"]')
     await page.waitForTimeout(LATENCY + 600)
     c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, 1)
-    c.afirmar('la forma de pago elegida viaja al servidor, identificada',
-      !!(eleccion && eleccion.modality_id === opciones[0].id),
-      `se registró ${JSON.stringify(eleccion && eleccion.modality_id)} y se esperaba ${JSON.stringify(opciones[0].id)}: una elección que no viaja no llega al resumen de la solicitud`)
+    c.afirmar('marcar una forma de pago NO llama al servidor',
+      llamadasAlServidor.length === 0,
+      `se llamó a ${JSON.stringify(llamadasAlServidor)}: marcar es comparar, no dejar constancia`)
+    const marcada = await page.$eval('[data-testid="paso7-modalidad"]',
+      b => b.getAttribute('aria-pressed')).catch(() => null)
+    c.afirmar('la tarjeta pulsada queda marcada al instante', marcada === 'true',
+      `aria-pressed quedó en ${JSON.stringify(marcada)}: la familia pulsa y no ve que haya pasado nada`)
 
     // ── (B) EL SIMULADOR CAÍDO — la familia sigue pudiendo enviar ──────────────
     scenario.simulacionFalla = true
