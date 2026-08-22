@@ -137,8 +137,26 @@ function CorrectionRequest({ resumeToken, t }) {
  * ⛔ AQUÍ NO SE CALCULA DINERO: `money()` divide entre 100 y formatea, y nada más. Los
  * importes salen SIEMPRE del motor del KMS — un segundo sitio que los calculara es
  * exactamente lo que DL-080-A prohíbe.
+ *
+ * ⭐ `③70` (Diego, 2026-08-21) — MODO SOLO LECTURA, para la familia que YA ENVIÓ. Cita
+ * literal: *«si una familia entra en el wizard se va a quedar en el paso 7… A lo mejor lo
+ * que sí puede hacer en esta pantalla es consultar la simulación, ver los distintos planes
+ * o modalidades»*. Con `soloLectura`, el MISMO componente pinta las mismas cifras y el
+ * mismo calendario, pero **sin el desplegable**: las formas de pago se enseñan como texto,
+ * una línea por cada una, para que se puedan comparar. Es un solo componente a propósito —
+ * un segundo que pintara lo mismo divergiría (§"Regla — refactors preservan el código
+ * probado").
+ *
+ * ⛔ Y el motivo por el que en solo lectura NO se ofrece elegir es de HONESTIDAD, no de
+ * seguridad: con la solicitud ya enviada, la elección que cuenta es la del paso 8 (la que
+ * se firma), así que un control que invita a elegir prometería algo que esta pantalla no
+ * puede dar. *(Medido el 2026-08-22 contra `origin/main`: `guardarModalidadPreferida` **no
+ * existe ya** —ni en `backend/Code.js` ni en el frontal, lo retiró `0º.vicies.sexies`— y
+ * marcar una forma de pago **no viaja a ningún sitio**; por tanto NO habría error de
+ * `NOT_EDITABLE` que evitar. La premisa contraria, que llegó escrita en el encargo, era
+ * FALSA.)*
  */
-function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
+function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
   const [sim, setSim]             = useState(null);   // null = cargando
   // ⭐ 0º.vicies.sexies — LA MARCA VIVE SOLO EN EL NAVEGADOR (decisión de Diego, 2026-08-21:
   // *«la presentación de pagos es meramente informativa… se puede guardar en la memoria del
@@ -224,6 +242,37 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
     const modalidades = plan.modalidades || [];
     if (!modalidades.length) return null;
     const m = modalidadMarcadaOPrimera(plan);
+
+    // ⭐ `③70` — SOLO LECTURA (solicitud ya enviada): las formas de pago se enseñan TODAS,
+    // en texto, para que se puedan comparar; ninguna se puede elegir. El calendario que se
+    // ve debajo sigue siendo el de `modalidadMarcadaOPrimera`, que aquí resuelve a la
+    // primera DISPONIBLE (o a la que la familia marcó antes de enviar, si la marca sigue
+    // en la sesión del navegador). Se marca cuál es, para que la tabla no parezca huérfana.
+    if (soloLectura) {
+      return (
+        <div data-testid="paso7-forma-de-pago">
+          {modalidades.map((x, i) => (
+            <div
+              key={x.modality_id || ('sin-modalidad-' + i)}
+              data-testid="paso7-modalidad"
+              data-modality-id={x.modality_id}
+              style={{
+                fontSize: '0.86rem',
+                fontWeight: (m && x.modality_id === m.modality_id) ? 700 : 400,
+              }}
+            >
+              {etiquetaDeModalidad(x)}
+            </div>
+          ))}
+          {m && m.available !== false && (m.descuentos || []).length > 0 && (
+            <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
+              {(m.descuentos || []).map(d => d.designation || d.policy_code).filter(Boolean).join(' · ')}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     const elegibles = modalidades.filter(x => x.available !== false);
     const hayQueElegir = elegibles.length > 1;
     const idCampo = 'paso7-modalidad-' + String(plan.template_id || 'plan');
@@ -450,6 +499,7 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
       <p data-testid="paso7-simulador-aviso"
          style={{ color: 'var(--muted)', fontSize: '0.85rem', marginBottom: 12 }}>
         {t('step7.sim.disclaimer')}
+        {soloLectura && ' ' + t('step7.sim.readonly_note')}
       </p>
 
       {sim === null && (
@@ -1195,6 +1245,15 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
             </ul>
             <CorrectionRequest resumeToken={resumeToken} t={t} />
           </div>
+          {/* ⭐ `③70` — la familia que YA ENVIÓ también puede CONSULTAR la simulación.
+              Hasta hoy este recuadro solo se pintaba en la rama «todavía no enviada», así
+              que quien volvía a entrar se quedaba en el paso 7 con los pasos previos
+              bloqueados y SIN NINGUNA CIFRA. El servidor siempre lo permitió:
+              `simularCuotas_` lleva solo `requireResumeToken_` —ni `assertGroupEditable_`
+              ni código de un solo uso, a propósito, porque es una LECTURA—, así que aquí
+              no hace falta tocar nada del backend. Va en SOLO LECTURA: se ven las cifras y
+              todas las formas de pago, no se elige ninguna. */}
+          <SimulacionDeCuotas resumeToken={resumeToken} applicants={applicants} t={t} lang={lang} soloLectura />
           {/* DL-E38 merge: bottom nav mirrors the top — Back + (state-driven)
               advance-to-signing "Continuar". Same positions as steps 1-6. */}
           <StepNav

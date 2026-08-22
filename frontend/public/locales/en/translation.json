@@ -558,6 +558,7 @@
   "common.cancel": "Cancel",
   "step7.sim.title": "What would the fees look like?",
   "step7.sim.disclaimer": "This is an indicative simulation using today's prices: it commits you to nothing and reserves no place. When the school admits your child you will choose the final payment option, and that one is signed.",
+  "step7.sim.readonly_note": "Your application has already been sent, so this screen is read-only: the payment options are shown so you can compare them, and choosing the final one comes later, once the school admits your child.",
   "step7.sim.loading": "Calculating…",
   "step7.sim.unavailable": "We cannot show you a fee simulation yet. The school will tell you the amounts when it reviews your application.",
   "step7.sim.installments": "{{n}} payment(s) of {{amount}}",

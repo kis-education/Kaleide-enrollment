@@ -149,6 +149,9 @@ const NO_CUBIERTAS_SOLO_REAL = {
   'simulador-paso7-varios-planes': {
     'varios-planes': 'exige declarar en el catálogo real dos plantillas de suscripción aplicables a la vez al mismo solicitante; en modo simulado sí se cubre',
   },
+  'simulador-tras-enviar': {
+    'simulador-tras-enviar': 'exige un expediente YA ENVIADO con plantillas de tarifa declaradas; el arnés no puede sembrarlo contra el sistema de verdad. En modo simulado sí se cubre',
+  },
   'fecha-a-mitad-de-curso': {
     'limite-ilegible': 'el escenario hostil (el servidor devuelve los límites del programa en el formato crudo de AppSheet) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
   },
@@ -5285,6 +5288,108 @@ async function caminoSimuladorPaso7VariosPlanes(page, base) {
 }
 
 /**
+ * simulador-tras-enviar — LA FAMILIA QUE YA ENVIÓ TAMBIÉN PUEDE CONSULTAR SUS CUOTAS (`③70`).
+ *
+ * ── El defecto que cierra ────────────────────────────────────────────────────────────
+ * Diego, 2026-08-21: *«si una familia entra en el wizard se va a quedar en el paso 7, con
+ * todos los pasos previos bloqueados, y con el aviso de que la solicitud está enviada. A lo
+ * mejor lo que sí puede hacer en esta pantalla es consultar la simulación, ver los distintos
+ * planes o modalidades»*. Hasta hoy el recuadro de cuotas se pintaba SOLO en la rama
+ * «todavía no enviada», así que quien volvía a entrar no veía ni una cifra.
+ *
+ * ── Qué afirma, y por qué en ESTE orden ──────────────────────────────────────────────
+ *   (a) que la pantalla es de verdad la de «solicitud enviada» — sin este ancla, las tres
+ *       siguientes podrían pasar sobre la pantalla de antes de enviar y no medirían nada;
+ *   (b) que el recuadro se pinta y enseña LAS CIFRAS (calendario con concepto y fecha);
+ *   (c) que se ven TODAS las formas de pago, para poder compararlas;
+ *   (d) que NO hay control de elegir y que mirar la simulación no manda NI UNA escritura.
+ *
+ * ⚠️ La batería corre contra un backend SIMULADO: `backend/Code.js` no se ejecuta aquí, así
+ * que esto afirma lo que pinta el navegador, no lo que permite el servidor. Que
+ * `simularCuotas_` siga sin exigir `assertGroupEditable_` se midió leyendo el código real.
+ */
+async function caminoSimuladorTrasEnviar(page, base) {
+  const c = new Camino('simulador-tras-enviar')
+  scenario.stage = 'enviada'
+  scenario.simulacionFalla = false
+
+  if (REAL) {
+    c.noCubierta('simulador-tras-enviar',
+      'exige un expediente ya enviado CON plantillas de tarifa declaradas; el arnés no puede sembrarlo contra el sistema de verdad')
+    return c
+  }
+
+  const llamadas = []
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    llamadas.push(body && body.action)
+  }
+  page.on('request', espiar)
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 800)
+
+    // (a) el ancla: esto TIENE que ser la pantalla de «solicitud enviada».
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos + pantalla.tarjetas
+    c.afirmar('sin pantalla de error', !pantalla.errorFatal,
+      'el ErrorBoundary pintó "Something went wrong."')
+    if (!c.afirmar('una solicitud ya enviada aterriza en Revisión (paso 7.º)',
+      pantalla.pasoActivo === 6,
+      `aterrizó en el índice ${pantalla.pasoActivo} (se esperaba 6)`)) return c
+    const avisoEnviada = await page.$('[data-testid="correction-open"]')
+    if (!c.afirmar('la pantalla es la de «solicitud enviada» (ofrece pedir corrección)',
+      !!avisoEnviada,
+      'no se encontró el botón de corregir: esta pantalla no es la de enviada, y las afirmaciones siguientes no medirían nada')) return c
+
+    // (b) el recuadro se pinta, y con cifras.
+    const bloque = await page.$('[data-testid="paso7-simulador"]')
+    if (!c.afirmar('la familia que ya envió VE la simulación de cuotas', !!bloque,
+      'no se pintó [data-testid="paso7-simulador"] con la solicitud enviada: la familia se queda sin ninguna cifra')) return c
+
+    const filas = await page.$$eval('[data-testid="paso7-desglose-fila"]', trs => trs.map(tr => ({
+      concepto: ((tr.querySelector('[data-testid="paso7-desglose-concepto"]') || {}).textContent || '').trim(),
+      fecha:    ((tr.querySelector('[data-testid="paso7-desglose-fecha"]')    || {}).textContent || '').trim(),
+    })))
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, filas.length)
+    c.afirmar('enseña el calendario completo, con concepto y fecha legible',
+      filas.length > 0 &&
+      filas.every(f => f.concepto && f.concepto !== '—') &&
+      filas.every(f => f.fecha && !/^\d{4}-\d{2}-\d{2}$/.test(f.fecha)),
+      `las filas leídas fueron ${JSON.stringify(filas)}: sin ellas la consulta no sirve de nada`)
+
+    // (c) se ven TODAS las formas de pago (el doble sirve dos a propósito).
+    const opciones = await page.$$eval('[data-testid="paso7-modalidad"]', els => els.map(
+      e => (e.textContent || '').trim()))
+    c.afirmar('se ven las DOS formas de pago, para poder compararlas',
+      opciones.length >= 2,
+      `se pintaron ${opciones.length} opción(es): con una sola, «ver los distintos planes o modalidades» no se está comprobando`)
+    c.afirmar('cada forma de pago enseña su importe',
+      opciones.length >= 2 && opciones.every(txt => /\d/.test(txt) && /€|EUR/.test(txt)),
+      `los textos leídos fueron ${JSON.stringify(opciones)}: sin importe esto no es una consulta de tarifas`)
+
+    // (d) NO se puede elegir, y consultar no escribe nada.
+    const selector = await page.$('[data-testid="paso7-modalidad-selector"]')
+    c.afirmar('con la solicitud enviada NO se ofrece elegir la forma de pago',
+      !selector,
+      'se pintó el desplegable de elegir: la elección en firme es la del paso 8, y aquí prometería algo que esta pantalla no puede dar')
+
+    const escrituras = llamadas.filter(a => /^(saveStep|saveResponses|uploadDocument|submitEnrollmentSession|guardarModalidadPreferida|applyPaymentModality|saveBillingInfo|saveNeae|retirarDelExpediente)$/.test(a || ''))
+    c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, 1)
+    c.afirmar('consultar la simulación no manda NI UNA escritura',
+      escrituras.length === 0,
+      `salieron escrituras: ${JSON.stringify(escrituras)} (todas las llamadas: ${JSON.stringify(llamadas)})`)
+
+    return c
+  } finally {
+    page.off('request', espiar)
+  }
+}
+
+/**
  * codigo-sin-congelar — PEDIR EL CÓDIGO DE UN SOLO USO NO CONGELA LA PANTALLA.
  *
  * ── El defecto que cierra, MEDIDO (registro real de Diego, 2026-08-19) ───────────────
@@ -6096,6 +6201,10 @@ const CAMINOS = [
   // comedor) ve los dos, con su nombre y su total sumado. Contra el sistema real se
   // declara NO CUBIERTO: exige declarar dos plantillas aplicables a la vez en el catálogo.
   { nombre: 'simulador-paso7-varios-planes', fn: caminoSimuladorPaso7VariosPlanes,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
+  // `③70` — la familia que YA ENVIÓ consulta sus cuotas en el paso 7: ve las cifras y
+  // todas las formas de pago, y no puede elegir ninguna (la elección en firme es el paso 8).
+  { nombre: 'simulador-tras-enviar', fn: caminoSimuladorTrasEnviar,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'quitar-de-la-solicitud', fn: caminoQuitarDeLaSolicitud, minLlamadas: 1, minElementos: 11 },
   // `0º.tricies.octies` (D) — no manda ni una petición: mide lo que la pantalla DICE.
