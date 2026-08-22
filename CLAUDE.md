@@ -2319,6 +2319,63 @@ seguridad del repositorio, VERDES.
 **Publicado**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
 `main` (CI/Pages).
 
+### `③70` (2026-08-22) — el paso 7 enseña la simulación TAMBIÉN con la solicitud ya enviada
+
+**Decisión de Diego, 2026-08-21, literal:** *«si una familia entra en el wizard se va a quedar en el
+paso 7, con todos los pasos previos bloqueados, y con el aviso de que la solicitud está enviada. A lo
+mejor lo que sí puede hacer en esta pantalla es consultar la simulación, ver los distintos planes o
+modalidades»*.
+
+**Lo medido antes de tocar nada, contra `origin/main`.** El bloque `SimulacionDeCuotas` se pintaba
+**SOLO en la rama «todavía no enviada»** del ternario de `Step7Review.jsx` (`:1176` el ternario,
+`:1211` la llamada — la ficha decía `~1045/~1080`, movidos desde entonces). En cuanto se estampa el
+envío, la familia que vuelve veía el cartel de «solicitud enviada», los pasos previos bloqueados y
+**ninguna cifra**. No fallaba: es que no se renderizaba.
+
+**El servidor SIEMPRE lo permitió ⇒ no se toca `backend/Code.js` ni el KMS.** `simularCuotas_` lleva
+**únicamente** `requireResumeToken_` —ni `assertGroupEditable_` ni código de un solo uso, a propósito,
+porque es una LECTURA— así que sigue contestando con la solicitud enviada. El cambio es de FRONTAL y
+de UNA pantalla.
+
+**Cómo queda.** El MISMO componente, con una bandera `soloLectura`: se ven las mismas cifras y el
+mismo calendario, y las formas de pago se enseñan **todas, en texto, una línea por cada una** (la que
+manda el calendario va en negrita) — **sin desplegable**. Un segundo componente que pintara lo mismo
+divergiría (§"Regla — refactors preservan el código probado"), así que no se escribe.
+
+⚠️ **UNA PREMISA DEL ENCARGO ERA FALSA, y se dice porque cambia el motivo del diseño.** Decía que
+dejar los controles de elegir haría que la familia *«pulsara y se llevara un error `NOT_EDITABLE`»*
+de `guardarModalidadPreferida_`. **Ese manejador NO EXISTE**: medido el 2026-08-22, cero apariciones
+en `backend/Code.js` y cero en el frontal — lo retiró entero `0º.vicies.sexies`, y desde entonces
+**marcar una forma de pago no viaja a ningún sitio** (vive en `formaDePagoMarcada`, del navegador).
+⇒ **no había ningún error que evitar.** Se mantiene igualmente el modo solo lectura, pero por el
+motivo CORRECTO, que sobrevive a la premisa: **honestidad**. Con la solicitud ya enviada, la elección
+que cuenta es la del paso 8 —la que se firma (DL-080-A)—, así que un control que invita a elegir
+prometería algo que esta pantalla no puede dar.
+
+**Lo que NO se toca:** `handleSubmit` (el bloque vive fuera, y un fallo suyo nunca puede impedir
+enviar) · el paso 8 y su elección en firme · el cálculo de dinero (`money()` divide entre 100 y
+formatea; los importes salen del motor del KMS) · el backend, en ninguno de los dos repositorios.
+
+**Texto nuevo**: `step7.sim.readonly_note`, `es` y `en` — dice que la pantalla es de consulta y que
+elegir vendrá después.
+
+**Red**: `npm run e2e:wizard`, camino NUEVO `simulador-tras-enviar` (10 afirmaciones, sobre
+`stage='enviada'`). Lleva un **ancla** deliberada —que la pantalla ofrezca «pedir corrección»— para
+que las tres afirmaciones siguientes no puedan pasar sobre la pantalla de antes de enviar y no medir
+nada. `VEREDICTO: VERDE — 31 de 31`. **Rojo demostrado DOS veces**, cada uno nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| no pintar el recuadro en la rama de enviada | *«la familia que ya envió VE la simulación de cuotas — no se pintó [data-testid="paso7-simulador"] con la solicitud enviada: la familia se queda sin ninguna cifra»* |
+| dejar salir el desplegable en solo lectura | *«con la solicitud enviada NO se ofrece elegir la forma de pago — se pintó el desplegable de elegir…»* |
+
+⚠️ **Lo que la red NO cubre:** la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni llama al KMS, así que afirma lo que pinta el navegador, **no** lo que permite
+el servidor. Que `simularCuotas_` siga sin exigir `assertGroupEditable_` se acredita **leyendo el
+código real**, no con esta batería. Los cuatro controles del repositorio, VERDES.
+
+**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.
