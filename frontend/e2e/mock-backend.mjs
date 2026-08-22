@@ -295,6 +295,34 @@ const QUESTIONS = {
           options: [], conditions: [],
         },
       },
+      // ── 0º.tricies.decies — DOS preguntas DE ALUMNO (`audience_category_id:'participant'`),
+      // y son DOS a propósito. El expediente del robot tiene DOS alumnos, así que:
+      //   · intercalado (lo de antes) → P1·Jara, P1·Pepito, P2·Jara, P2·Pepito
+      //   · agrupado    (lo de ahora) → Jara[P1,P2], Pepito[P1,P2]
+      // Con UNA sola pregunta de alumno las dos secuencias serían IDÉNTICAS (Jara, Pepito) y
+      // la afirmación de agrupación pasaría sin distinguir nada — peor que no tenerla.
+      // Hasta hoy el catálogo del robot era GENERAL entero, así que la batería no podía ver
+      // este defecto en absoluto: no pintaba ni un encabezado de sujeto.
+      {
+        set_id: 'set-e2e-1', question_id: 'q-e2e-3', display_order: 2,
+        question: {
+          question_id: 'q-e2e-3', question_code: 'e2e_alumno_1',
+          response_type_id: 'TEXT', response_type_code: 'TEXT',
+          is_required: false, audience_category_id: 'participant',
+          question_text: 'Cómo le va en clase', help_text: '', placeholder_text: '',
+          options: [], conditions: [],
+        },
+      },
+      {
+        set_id: 'set-e2e-1', question_id: 'q-e2e-4', display_order: 3,
+        question: {
+          question_id: 'q-e2e-4', question_code: 'e2e_alumno_2',
+          response_type_id: 'TEXT', response_type_code: 'TEXT',
+          is_required: false, audience_category_id: 'participant',
+          question_text: 'Qué le gusta hacer', help_text: '', placeholder_text: '',
+          options: [], conditions: [],
+        },
+      },
     ],
   }],
 };

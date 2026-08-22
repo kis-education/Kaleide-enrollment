@@ -153,77 +153,113 @@ export default function QbSetRenderer({
             <h3 style={{ color: 'var(--teal-dk)', fontSize: '1.05rem' }}>{set.designation}</h3>
           )}
 
-          {(set.items || []).map(item => {
-            const q = item.question;
-            if (!q) return null;
-            const isClientQ      = q.audience_category_id === 'client';
-            const isParticipantQ = q.audience_category_id === 'participant';
-
-            if (isParticipantQ) {
-              return applicants.map((a, ai) => {
-                const personKey = a.person_id || a._uid;
-                if (!meetsConditions(q, a, respuestasEfectivas, personKey, condCtx)) return null;
-                const key = `${q.question_id}__${personKey}`;
-                const name = [a.first_name, a.last_name].filter(Boolean).join(' ')
-                  || `${tr('applicant.title', { n: ai + 1 }) || 'Applicant'} ${ai + 1}`;
-                return (
-                  <div key={key} className="mb-4">
-                    <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: 4 }}>
-                      <i className="bi bi-person me-1" />{name}
-                    </p>
-                    <QuestionField
-                      question={q}
-                      value={respuestasEfectivas[key]}
-                      onChange={v => setResponse(key, v)}
-                      readOnly={readOnly}
-                    />
-                  </div>
-                );
-              });
+          {agruparPorSujeto_(set).map((bloque, bi) => {
+            // ── Preguntas DE LA SOLICITUD: se pintan igual que siempre, una por una y
+            // sin encabezado — no tienen sujeto que agrupar (su clave es el expediente).
+            if (bloque.tipo === 'general') {
+              const q = bloque.pregunta;
+              // Conditions (INITIATOR_EMAIL, etc.) se evalúan con la clave de grupo.
+              if (!meetsConditions(q, null, respuestasEfectivas, groupId, condCtx)) return null;
+              const key = `${q.question_id}__${groupId}`;
+              return (
+                <div key={key} className="mb-4">
+                  <QuestionField
+                    question={q}
+                    value={respuestasEfectivas[key]}
+                    onChange={v => setResponse(key, v)}
+                    readOnly={readOnly}
+                  />
+                </div>
+              );
             }
 
-            if (isClientQ) {
-              return guardians.map((g, gi) => {
-                const personKey = g.person_id || g._uid;
-                if (!meetsConditions(q, g, respuestasEfectivas, personKey, condCtx)) return null;
-                const key = `${q.question_id}__${personKey}`;
-                const name = [g.first_name, g.last_name].filter(Boolean).join(' ')
-                  || `${tr('guardian.title', { n: gi + 1 }) || 'Guardian'} ${gi + 1}`;
-                return (
-                  <div key={key} className="mb-4">
-                    <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: 4 }}>
-                      <i className="bi bi-person-fill me-1" />{name}
-                    </p>
-                    <QuestionField
-                      question={q}
-                      value={respuestasEfectivas[key]}
-                      onChange={v => setResponse(key, v)}
-                      readOnly={readOnly}
-                    />
-                  </div>
-                );
-              });
-            }
+            // ── Preguntas CON AUDIENCIA declarada: un área por sujeto, con su nombre UNA
+            // vez y todas sus preguntas debajo (0º.tricies.decies).
+            const esAlumno = bloque.audiencia === 'participant';
+            const sujetos  = esAlumno ? applicants : guardians;
+            const icono    = esAlumno ? 'bi-person' : 'bi-person-fill';
 
-            // General question (no audience filter) — keyed to the group id.
-            // Conditions (INITIATOR_EMAIL, etc.) se evalúan con la clave de grupo.
-            if (!meetsConditions(q, null, respuestasEfectivas, groupId, condCtx)) return null;
-            const key = `${q.question_id}__${groupId}`;
-            return (
-              <div key={key} className="mb-4">
-                <QuestionField
-                  question={q}
-                  value={respuestasEfectivas[key]}
-                  onChange={v => setResponse(key, v)}
-                  readOnly={readOnly}
-                />
-              </div>
-            );
+            return sujetos.map((persona, pi) => {
+              const personKey = persona.person_id || persona._uid;
+              // Las condiciones se siguen evaluando POR SUJETO: una pregunta que no aplica
+              // a este hijo no sale en SU grupo. Si no le queda ninguna, el grupo no se pinta.
+              const suyas = bloque.preguntas.filter(
+                q => meetsConditions(q, persona, respuestasEfectivas, personKey, condCtx));
+              if (!suyas.length) return null;
+              const name = [persona.first_name, persona.last_name].filter(Boolean).join(' ')
+                || (esAlumno
+                  ? `${tr('applicant.title', { n: pi + 1 }) || 'Applicant'} ${pi + 1}`
+                  : `${tr('guardian.title',  { n: pi + 1 }) || 'Guardian'} ${pi + 1}`);
+              return (
+                <div key={`qb-sujeto-${bi}-${personKey}`} className="mb-4"
+                     data-qb-sujeto={personKey}>
+                  <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: 4 }}>
+                    <i className={`bi ${icono} me-1`} />{name}
+                  </p>
+                  {suyas.map(q => {
+                    // ⛔ LA CLAVE NO CAMBIA: es la que guarda y recupera la respuesta.
+                    const key = `${q.question_id}__${personKey}`;
+                    return (
+                      <div key={key} className="mb-3">
+                        <QuestionField
+                          question={q}
+                          value={respuestasEfectivas[key]}
+                          onChange={v => setResponse(key, v)}
+                          readOnly={readOnly}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            });
           })}
         </div>
       ))}
     </>
   );
+}
+
+// ─── 0º.tricies.decies (2026-08-22) · LAS PREGUNTAS SE AGRUPAN POR SUJETO ────────────
+//
+// Diego, 2026-08-22: «tampoco salen agrupadas. Tienes que ir al alimón, mirando a quién le
+// corresponden. Lo lógico es que dentro de cada pill, haya un área de agrupación por sujeto».
+//
+// El recorrido de siempre era pregunta×sujeto (`items.map` por fuera, `applicants.map` por
+// dentro) ⇒ con dos hijos salía: pregunta 1 de Jara · pregunta 1 de Pepito · pregunta 2 de
+// Jara… La familia saltaba de un hijo a otro en CADA línea y tenía que leer el nombre en
+// todas para saber a quién contestaba. Esta función invierte el recorrido: reparte los
+// elementos del conjunto en BLOQUES, y quien pinta recorre sujeto → sus preguntas.
+//
+// ⛔ EL SITIO DEL BLOQUE ES EL DE SU PRIMERA PREGUNTA, no el final del conjunto. Un conjunto
+// que mezcla preguntas de la solicitud con preguntas de alumno conserva así el orden en que
+// el colegio las declaró; empujar los grupos al final movería preguntas que hoy salen arriba.
+// Con un conjunto homogéneo —el caso normal— el resultado es idéntico a cualquier otra regla.
+//
+// ⛔ SOLO agrupa lo que tiene AUDIENCIA declarada (`participant`/`client`). Una pregunta de
+// la solicitud no tiene sujeto: se queda como bloque suelto y se pinta EXACTAMENTE como hoy.
+//
+// ⛔ NO decide de quién es una pregunta: eso lo declara el catálogo (`audience_category_id`) y
+// llega ya resuelto. Aquí solo se AGRUPA lo que llega, conservando el orden de `set.items`
+// (que es el `sequence`/`display_order` del conjunto) dentro de cada sujeto.
+function agruparPorSujeto_(set) {
+  const bloques = [];
+  const abierto = {};   // audiencia → el bloque ya abierto, para que TODAS caigan en él
+  (set.items || []).forEach(item => {
+    const q = item && item.question;
+    if (!q) return;
+    const aud = q.audience_category_id;
+    if (aud !== 'participant' && aud !== 'client') {
+      bloques.push({ tipo: 'general', pregunta: q });
+      return;
+    }
+    if (!abierto[aud]) {
+      abierto[aud] = { tipo: 'audiencia', audiencia: aud, preguntas: [] };
+      bloques.push(abierto[aud]);
+    }
+    abierto[aud].preguntas.push(q);
+  });
+  return bloques;
 }
 
 // Lee el email del iniciador desde la sesión del wizard (sessionStorage

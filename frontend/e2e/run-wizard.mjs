@@ -2694,9 +2694,24 @@ async function conducirPreguntas(c, page) {
   // NO llega al estado del componente; `n_responses > 0` sin llamada ⇒ falla el ENVÍO.
   const ultimoDbg = [...registrosDbg].reverse().find(r => r.includes('[DBG Step5] catalog'))
     || '(el producto no emitió ningún «[DBG Step5] catalog»: no se puede separar estado de envío — mirar que el registro siga vivo en Step5Questions.jsx)'
-  return c.afirmar('paso 5 · preguntas — las respuestas salen desde la pantalla',
+  if (!c.afirmar('paso 5 · preguntas — las respuestas salen desde la pantalla',
     llamadas('saveResponses').length > antes,
-    `se respondieron ${respondidos} controles y NINGÚN saveResponses salió en ${Date.now() - t0} ms: o el paso no reconoce lo tecleado como respuesta, o no lo envía.\n        Último registro del producto → ${ultimoDbg}`)
+    `se respondieron ${respondidos} controles y NINGÚN saveResponses salió en ${Date.now() - t0} ms: o el paso no reconoce lo tecleado como respuesta, o no lo envía.\n        Último registro del producto → ${ultimoDbg}`)) return false
+
+  // ── 0º.tricies.decies · LA CLAVE DE LA RESPUESTA NO CAMBIÓ AL AGRUPAR ────────────────
+  // `Step5Questions.handleNext` parte la clave (`question_id__sujeto`) para componer el
+  // `respondent_id` de cada fila: si al agrupar por sujeto se hubiera tocado esa clave, la
+  // respuesta de un alumno se guardaría contra otro sujeto —o contra el expediente— y la
+  // familia perdería lo que escribió. Se comprueba donde se ve: en lo que SALE.
+  const nuevas = llamadas('saveResponses').slice(antes)
+  const sujetos = new Set()
+  nuevas.forEach(l => ((l.payload && l.payload.responses) || [])
+    .forEach(r => r && r.respondent_id && sujetos.add(r.respondent_id)))
+  return c.afirmar('paso 5 · preguntas — la respuesta de cada alumno viaja con SU identificador',
+    sujetos.has(FIXTURE.applicantId) && sujetos.has(FIXTURE.applicant2Id),
+    `los sujetos que viajaron fueron ${JSON.stringify([...sujetos])}: se esperaban los dos ` +
+    `alumnos (${FIXTURE.applicantId}, ${FIXTURE.applicant2Id}). Si falta alguno, la clave ` +
+    `«question_id__sujeto» dejó de componerse por persona y las respuestas se atribuyen mal`)
 }
 
 /** PASO 6 · Documentos — adjuntar un archivo de verdad y esperar su confirmación. */
@@ -3276,6 +3291,86 @@ async function caminoCuestionarioNoSeApaga(page, base) {
     `se esperaba al menos una caja de una línea Y un área de texto, y salieron ` +
     `cajas=${controles.unaLinea} áreas=${controles.areas}. Todo áreas ⇒ la pantalla sigue ` +
     `eligiendo por el código del tipo y ③51 no tiene efecto; todo cajas ⇒ se perdió la caída.`)
+
+  // ── 0º.tricies.decies (2026-08-22) · LAS PREGUNTAS SE AGRUPAN POR SUJETO ─────────────
+  // Diego: «tampoco salen agrupadas… lo lógico es que dentro de cada pill haya un área de
+  // agrupación por sujeto». El simulado sirve DOS preguntas de alumno y el expediente tiene
+  // DOS alumnos, así que la secuencia observable distingue las dos formas:
+  //   intercalado (lo de antes) → Jara·P1 · Pepito·P1 · Jara·P2 · Pepito·P2  (4 encabezados)
+  //   agrupado    (lo de ahora) → Jara·[P1,P2] · Pepito·[P1,P2]              (2 encabezados)
+  // Se mide sobre el TEXTO en orden de documento, no sobre un atributo: así la afirmación
+  // habla del comportamiento y no de cómo esté marcado el HTML por dentro.
+  const orden = await page.evaluate(() => {
+    const fichas = [];
+    document.querySelectorAll('.kis-card p, .kis-card label.form-label').forEach(el => {
+      if (el.tagName === 'P') {
+        if (el.querySelector('i.bi-person, i.bi-person-fill')) {
+          fichas.push({ t: 'sujeto', v: (el.textContent || '').trim() });
+        }
+        return;
+      }
+      fichas.push({ t: 'pregunta', v: (el.textContent || '').trim() });
+    });
+    return fichas;
+  })
+  const nombres = orden.filter(f => f.t === 'sujeto').map(f => f.v)
+  // ANCLA: sin encabezados de sujeto las tres afirmaciones de abajo pasarían EN VACÍO —
+  // que es exactamente lo que pasaba antes de este cambio, cuando el catálogo del robot
+  // era general entero y la pantalla no pintaba ni un nombre.
+  if (c.afirmar('(d.0) ancla — el paso 5 pinta preguntas CON SUJETO',
+    nombres.length >= 2,
+    `se leyeron ${nombres.length} encabezado(s) de sujeto: sin ellos, agrupar no se puede medir`)) {
+
+    c.afirmar('(d.1) el nombre de cada alumno se pinta UNA sola vez',
+      new Set(nombres).size === nombres.length,
+      `los encabezados en pantalla fueron ${JSON.stringify(nombres)}: un nombre repetido ` +
+      `significa que las preguntas siguen intercaladas y la familia salta de un hijo a otro`)
+
+    // Cada sujeto arrastra TODAS sus preguntas: se cuentan las que van entre su encabezado
+    // y el siguiente. Intercalado da 1 por encabezado; agrupado da las 2 del catálogo.
+    const porSujeto = []
+    orden.forEach(f => {
+      if (f.t === 'sujeto') porSujeto.push({ nombre: f.v, preguntas: [] })
+      else if (porSujeto.length) porSujeto[porSujeto.length - 1].preguntas.push(f.v)
+    })
+    c.afirmar('(d.2) las preguntas de un mismo alumno salen SEGUIDAS, bajo su nombre',
+      porSujeto.length > 0 && porSujeto.every(s => s.preguntas.length === 2),
+      `bajo cada nombre se leyeron ${JSON.stringify(porSujeto.map(s => s.preguntas.length))} ` +
+      `pregunta(s) (se esperaban 2 por alumno): ${JSON.stringify(porSujeto)}`)
+
+    // ── (d.3) LA CLAVE DE LA RESPUESTA NO CAMBIÓ AL AGRUPAR ──────────────────────────
+    // `Step5Questions.handleNext` PARTE la clave (`question_id__sujeto`) para componer el
+    // `respondent_id` de cada fila. Si al agrupar por sujeto se hubiera tocado esa clave,
+    // la respuesta de un alumno se guardaría contra otro sujeto —o contra el expediente—
+    // y la familia perdería lo que escribió. Se comprueba donde se ve: en lo que SALE.
+    const antesDeGuardar = llamadas('saveResponses').length
+    for (const t of await page.$$('[data-qb-sujeto] textarea')) {
+      try { await t.fill('Respuesta del robot para este alumno.') } catch { /* bloqueado */ }
+    }
+    await page.click(BTN_SIGUIENTE)
+    const t0Resp = Date.now()
+    while (llamadas('saveResponses').length === antesDeGuardar && Date.now() - t0Resp < 15000) {
+      await page.waitForTimeout(200)
+    }
+    const sujetosQueViajaron = new Set()
+    llamadas('saveResponses').slice(antesDeGuardar).forEach(l =>
+      ((l.payload && l.payload.responses) || []).forEach(
+        r => r && r.respondent_id && sujetosQueViajaron.add(r.respondent_id)))
+    c.afirmar('(d.3) la respuesta de cada alumno viaja con SU identificador',
+      sujetosQueViajaron.has(FIXTURE.applicantId) && sujetosQueViajaron.has(FIXTURE.applicant2Id),
+      `los sujetos que viajaron fueron ${JSON.stringify([...sujetosQueViajaron])}: se esperaban ` +
+      `los DOS alumnos. Si falta alguno, la clave «question_id__sujeto» dejó de componerse ` +
+      `por persona y las respuestas se atribuyen a quien no es`)
+    // ⛔ Y SE ESPERA A QUE NO QUEDE NADA EN VUELO ANTES DE SEGUIR. La fase (b) tira el
+    // contexto de la página con `about:blank`, y un `fetch` a medias lo ABORTA: la
+    // aplicación registra un «network/fetch error» que NO es suyo sino del robot, y este
+    // recorrido tiene declarado un único error de consola esperado (el del catálogo
+    // caído), así que ese ruido lo tumbaba entero. MEDIDO: sin esta línea el camino salió
+    // ROJO con «network/fetch error» en saveResponses Y en saveStep, con las cuatro
+    // afirmaciones de arriba en VERDE. Es el mismo motivo por el que existen `drenar` y
+    // `esperarSilencioDeRed` en este fichero.
+    await esperarSilencioDeRed(15000, 800)
+  }
 
   // ── Servidor caído + sesión nueva: es como llega una familia cuyo servidor falla.
   scenario.preguntasMode = 'caido'
