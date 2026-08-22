@@ -4758,17 +4758,52 @@ async function caminoSimuladorPaso7(page, base) {
     // ⭐ 0º.vicies.sexies pieza 1 — MARCAR NO VIAJA. La presentación de pagos es
     // informativa (decisión de Diego): la marca vive solo en el navegador, así que pulsar
     // una tarjeta no puede producir NI UNA llamada al servidor.
+    // ⭐ 0º.tricies (Diego, TERCERA pasada) — SELECTOR, NO TARJETAS, y el calendario
+    // ENTERO debajo. Cita literal: *«no quiero tarjetas, quiero un botón o desplegable que
+    // elija entre modalidades y las muestre con todos los conceptos (matrícula, fecha
+    // etc.)»*. Las dos pasadas anteriores se dieron por buenas sin que la pantalla lo
+    // hiciera, así que aquí se comprueba lo que SE VE, no lo que llega.
+    const haySelector = await page.$('[data-testid="paso7-modalidad-selector"]')
+    if (!c.afirmar('la forma de pago se elige con un SELECTOR, no con tarjetas', !!haySelector,
+      'no se encontró [data-testid="paso7-modalidad-selector"]: siguen siendo tarjetas, que es lo que Diego devolvió dos veces')) return c
+
+    // (a) EL CALENDARIO COMPLETO: con una forma de pago de varios vencimientos se tienen
+    // que ver TODAS las filas, cada una con su concepto y su fecha legible — no un resumen.
+    const idsDeModalidad = opciones.map(o => o.id).filter(Boolean)
+    const filasDe = () => page.$$eval('[data-testid="paso7-desglose-fila"]', trs => trs.map(tr => ({
+      concepto: ((tr.querySelector('[data-testid="paso7-desglose-concepto"]') || {}).textContent || '').trim(),
+      fecha:    ((tr.querySelector('[data-testid="paso7-desglose-fecha"]')    || {}).textContent || '').trim(),
+    })))
+    const filasAntes = await filasDe()
+
     llamadasAlServidor = []
-    await page.click('[data-testid="paso7-modalidad"]')
+    await page.selectOption('[data-testid="paso7-modalidad-selector"]', idsDeModalidad[1])
     await page.waitForTimeout(LATENCY + 600)
+    const filasDespues = await filasDe()
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, filasDespues.length)
+
+    c.afirmar('el calendario enseña TODOS los vencimientos, no solo el primero',
+      filasDespues.length > 1,
+      `tras elegir la otra forma de pago se pintaron ${filasDespues.length} fila(s): «Primer pago» a secas es justo lo que Diego devolvió`)
+    c.afirmar('cada vencimiento del calendario dice su concepto y su fecha legible',
+      filasDespues.length > 1 &&
+      filasDespues.every(f => f.concepto && f.concepto !== '—') &&
+      filasDespues.every(f => f.fecha && !/^\d{4}-\d{2}-\d{2}$/.test(f.fecha)),
+      `las filas leídas fueron ${JSON.stringify(filasDespues)}: sin concepto o con la fecha en crudo, el calendario no sirve`)
+
+    // (b) REPINTA AL INSTANTE Y SIN SERVIDOR: todas las formas de pago vienen ya en la
+    // respuesta, así que elegir no puede costar ni una llamada.
     c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, 1)
-    c.afirmar('marcar una forma de pago NO llama al servidor',
+    c.afirmar('cambiar de forma de pago REPINTA el calendario',
+      JSON.stringify(filasDespues) !== JSON.stringify(filasAntes),
+      `el calendario quedó igual (${filasAntes.length} → ${filasDespues.length} filas): la pantalla no obedece al selector`)
+    c.afirmar('cambiar de forma de pago NO llama al servidor',
       llamadasAlServidor.length === 0,
-      `se llamó a ${JSON.stringify(llamadasAlServidor)}: marcar es comparar, no dejar constancia`)
-    const marcada = await page.$eval('[data-testid="paso7-modalidad"]',
-      b => b.getAttribute('aria-pressed')).catch(() => null)
-    c.afirmar('la tarjeta pulsada queda marcada al instante', marcada === 'true',
-      `aria-pressed quedó en ${JSON.stringify(marcada)}: la familia pulsa y no ve que haya pasado nada`)
+      `se llamó a ${JSON.stringify(llamadasAlServidor)}: elegir es comparar, no dejar constancia`)
+    const marcada = await page.$eval('[data-testid="paso7-modalidad-selector"]',
+      el => el.value).catch(() => null)
+    c.afirmar('la forma de pago elegida queda marcada al instante', marcada === idsDeModalidad[1],
+      `el selector quedó en ${JSON.stringify(marcada)} y se eligió ${JSON.stringify(idsDeModalidad[1])}: la familia elige y no ve que haya pasado nada`)
 
     // ── (B) EL SIMULADOR CAÍDO — la familia sigue pudiendo enviar ──────────────
     scenario.simulacionFalla = true
@@ -4863,6 +4898,28 @@ async function caminoSimuladorPaso7VariosPlanes(page, base) {
     c.afirmar('cada plan sigue ofreciendo su propia forma de pago para elegir',
       opciones.length === 2,
       `se pintaron ${opciones.length} opción(es) de forma de pago: se esperaba una por plan`)
+
+    // ⭐ 0º.tricies (c) — UN PLAN SIN SELECTOR TAMBIÉN ENSEÑA SU CALENDARIO. Diego lo pidió
+    // con esas palabras: comedor y ampliación de horario no ofrecen alternativa de pago,
+    // pero la familia tiene que ver igualmente TODOS sus vencimientos con concepto y fecha.
+    const sinSelector = await page.$$('[data-testid="paso7-modalidad-selector"]')
+    c.afirmar('un plan con una sola forma de pago NO pinta desplegable (no hay nada que elegir)',
+      sinSelector.length === 0,
+      `se pintaron ${sinSelector.length} desplegable(s) con una sola forma de pago por plan: un desplegable de una opción no es una elección`)
+
+    const desgloseDelComedor = await page.$$eval('[data-testid="paso7-plan"]', bloques => {
+      const b = bloques.find(x => /Comedor/.test(x.textContent || ''))
+      if (!b) return null
+      return Array.from(b.querySelectorAll('[data-testid="paso7-desglose-fila"]')).map(tr => ({
+        concepto: ((tr.querySelector('[data-testid="paso7-desglose-concepto"]') || {}).textContent || '').trim(),
+        fecha:    ((tr.querySelector('[data-testid="paso7-desglose-fecha"]')    || {}).textContent || '').trim(),
+      }))
+    })
+    c.afirmar('el plan SIN selector enseña igualmente su calendario completo',
+      !!desgloseDelComedor && desgloseDelComedor.length > 1 &&
+      desgloseDelComedor.every(f => f.concepto && f.concepto !== '—') &&
+      desgloseDelComedor.every(f => f.fecha && !/^\d{4}-\d{2}-\d{2}$/.test(f.fecha)),
+      `el desglose del comedor fue ${JSON.stringify(desgloseDelComedor)}: sin selector Diego sigue queriendo ver todos los vencimientos`)
 
     // 3.000,00 € (cuota) + 1.200,00 € (comedor) = 4.200,00 € — la suma, no un solo plan.
     const totalTxt = await page.$eval('[data-testid="paso7-total-solicitante"]',

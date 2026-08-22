@@ -841,9 +841,16 @@ export function createDispatcher(scenario, record) {
             applicant_person_id: FIXTURE.applicantId,
             template_id: 'tpl-comedor-e2e', template_designation: 'Comedor', motivo: null,
             modalidades: [
-              { modality_id: 'mod-comedor-e2e', modality_code: 'ANNUAL', designation: 'Pago anual',
-                installments: 1, cuotas: [{ due_date: '2027-09-01', concepto: 'Comedor mediodía', amount_cents: 120000 }],
-                per_installment_cents: null, gross_cents: 120000, discount_cents: 0,
+              // `0º.tricies` — comedor tiene UNA sola forma de pago (como en el caso real de
+              // Diego: 9 × 95,00 €) pero VARIOS vencimientos: sirve para comprobar que un
+              // plan SIN selector también enseña su calendario entero. 8 × 150,00 € = el
+              // mismo total de 1.200,00 € de antes, para no mover la suma del solicitante.
+              { modality_id: 'mod-comedor-e2e', modality_code: 'MONTHLY', designation: 'Pago mensual',
+                installments: 8,
+                cuotas: Array.from({ length: 8 }, (_, i) => ({
+                  due_date: `2027-${String(9 + (i % 4)).padStart(2, '0')}-0${1 + Math.floor(i / 4)}`,
+                  concepto: 'Comedor mediodía', amount_cents: 15000 })),
+                per_installment_cents: 15000, gross_cents: 120000, discount_cents: 0,
                 net_cents: 120000, currency_code: 'EUR', available: true, descuentos: [] },
             ],
           }],

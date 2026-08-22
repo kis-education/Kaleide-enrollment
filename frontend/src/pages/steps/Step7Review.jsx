@@ -184,69 +184,85 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
     return a ? [a.first_name, a.last_name].filter(Boolean).join(' ').trim() : '';
   };
 
-  // Las tarjetas de forma de pago de UN plan — extraído para reusarlo idéntico en el
-  // camino de un solo plan y en el de varios (ni una línea de JSX distinta entre los dos).
-  const tarjetasDelPlan = (plan) => (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-      {(plan.modalidades || []).map(m => {
-        const seleccionada = seleccion[plan.template_id] != null && m.modality_id === seleccion[plan.template_id];
-        const noDisponible = m.available === false;
-        return (
-          <button
-            key={m.modality_id}
-            type="button"
-            data-testid="paso7-modalidad"
-            data-modality-id={m.modality_id}
-            onClick={() => elegir(plan.template_id, m.modality_id)}
-            disabled={noDisponible}
-            aria-pressed={seleccionada}
-            style={{
-              textAlign: 'left', minWidth: 210, flex: '1 1 210px',
-              border: '2px solid ' + (seleccionada ? 'var(--teal-dk)' : 'var(--border)'),
-              background: seleccionada ? 'rgba(0,161,154,0.06)' : '#fff',
-              borderRadius: 8, padding: '10px 12px',
-              cursor: noDisponible ? 'not-allowed' : 'pointer',
-              opacity: noDisponible ? 0.55 : 1,
-            }}
-          >
-            <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--teal-dk)' }}>
-              {m.designation || m.modality_code}
+  // ⭐ 0º.tricies (Diego, 2026-08-22, TERCERA pasada sobre esta pantalla) — UN SELECTOR,
+  // NO TARJETAS. Cita literal: *«sigue sin dejar elegir la modalidad. Lo que ofrece son dos
+  // tarjetas, pero yo no quiero tarjetas, quiero un botón o desplegable que elija entre
+  // modalidades y las muestre con todos los conceptos (matrícula, fecha etc.)»*.
+  //
+  // Las dos pasadas anteriores dieron por buena la pantalla sin que hiciera esto. Lo que
+  // cambia aquí es SOLO la forma de elegir; el calendario lo pinta `tablaDeDesglose` justo
+  // debajo, y se repinta solo porque la marca vive en el estado del navegador.
+  //
+  // ⛔ Con UNA sola forma de pago NO se pinta desplegable: un desplegable de una opción no
+  // es una elección (mismo criterio que el tipo de documento del paso 6). Se dice cuál es y
+  // se enseña su calendario — que es exactamente lo que pidió Diego para comedor y
+  // ampliación de horario, que no ofrecen alternativa.
+  //
+  // ⛔ AQUÍ NO SE CALCULA DINERO (DL-080-A): `money()` divide entre 100 y formatea.
+  const etiquetaDeModalidad = (x) => {
+    const nombre = x.designation || x.modality_code || '';
+    if (x.available === false) return nombre + ' — ' + t('step7.sim.option_unavailable');
+    const importe = x.per_installment_cents != null
+      ? t('step7.sim.installments', { n: x.installments, amount: money(x.per_installment_cents, x.currency_code) })
+      : t('step7.sim.installments_varied', { n: x.installments });
+    return nombre + ' · ' + importe + ' · ' + t('step7.sim.total', { amount: money(x.net_cents, x.currency_code) });
+  };
+
+  const selectorDelPlan = (plan) => {
+    const modalidades = plan.modalidades || [];
+    if (!modalidades.length) return null;
+    const m = modalidadMarcadaOPrimera(plan);
+    const elegibles = modalidades.filter(x => x.available !== false);
+    const hayQueElegir = elegibles.length > 1;
+    const idCampo = 'paso7-modalidad-' + String(plan.template_id || 'plan');
+    return (
+      <div data-testid="paso7-forma-de-pago">
+        {hayQueElegir ? (
+          <>
+            <label htmlFor={idCampo}
+                   style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: 4 }}>
+              {t('step7.sim.modality_label')}
+            </label>
+            <select
+              id={idCampo}
+              className="form-select form-select-sm"
+              data-testid="paso7-modalidad-selector"
+              style={{ maxWidth: 460 }}
+              value={(m && m.modality_id) || ''}
+              onChange={e => elegir(plan.template_id, e.target.value)}
+            >
+              {modalidades.map(x => (
+                <option
+                  key={x.modality_id}
+                  value={x.modality_id}
+                  data-testid="paso7-modalidad"
+                  data-modality-id={x.modality_id}
+                  disabled={x.available === false}
+                >
+                  {etiquetaDeModalidad(x)}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : (
+          m && (
+            <div data-testid="paso7-modalidad" data-modality-id={m.modality_id}
+                 style={{ fontSize: '0.86rem' }}>
+              {etiquetaDeModalidad(m)}
             </div>
-            {noDisponible ? (
-              <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
-                {t('step7.sim.option_unavailable')}
-              </div>
-            ) : (
-              <>
-                <div style={{ fontSize: '0.84rem', marginTop: 4 }}>
-                  {m.per_installment_cents != null
-                    ? t('step7.sim.installments', { n: m.installments, amount: money(m.per_installment_cents, m.currency_code) })
-                    : t('step7.sim.installments_varied', { n: m.installments })}
-                </div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 2 }}>
-                  {t('step7.sim.total', { amount: money(m.net_cents, m.currency_code) })}
-                </div>
-                {/* ⛔ 0º.vicies.sexies pieza 5 — FUERA el «te ahorras». Diego: la elección se
-                    explica por su TOTAL y su CALENDARIO, no por un marco de ahorro. El NOMBRE
-                    del descuento aplicado SÍ se queda —es un dato del plan, y así lo enseña
-                    también el simulador del KMS—: lo que se retira es la cifra de ahorro. */}
-                {(m.descuentos || []).length > 0 && (
-                  <div style={{ fontSize: '0.76rem', color: 'var(--muted)', marginTop: 2 }}>
-                    {(m.descuentos || []).map(d => d.designation || d.policy_code).filter(Boolean).join(' · ')}
-                  </div>
-                )}
-                {(m.cuotas || []).length > 0 && (
-                  <div style={{ fontSize: '0.74rem', color: 'var(--muted)', marginTop: 6 }}>
-                    {t('step7.sim.first_due', { date: fechaLegible(m.cuotas[0].due_date, lang) || '—' })}
-                  </div>
-                )}
-              </>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
+          )
+        )}
+        {/* ⛔ 0º.vicies.sexies pieza 5 — FUERA el «te ahorras». El NOMBRE del descuento
+            aplicado SÍ se queda (es un dato del plan, y así lo enseña también el simulador
+            del KMS); lo que se retira es la cifra de ahorro. */}
+        {m && m.available !== false && (m.descuentos || []).length > 0 && (
+          <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
+            {(m.descuentos || []).map(d => d.designation || d.policy_code).filter(Boolean).join(' · ')}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // La forma de pago QUE CUENTA para el total de un plan: la que la familia eligió en
   // ESE plan si la hay, si no la primera DISPONIBLE (nunca una atenuada con `available:false`).
@@ -369,7 +385,7 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
                   {nombre}
                 </div>
               )}
-              {tarjetasDelPlan(sol.planes[0])}
+              {selectorDelPlan(sol.planes[0])}
               {tablaDeDesglose(sol.planes[0])}
             </div>
           );
@@ -390,7 +406,7 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang }) {
                      style={{ fontWeight: 600, fontSize: '0.86rem', marginBottom: 6, color: 'var(--muted)' }}>
                   {plan.template_designation || t('step7.sim.plan_generic')}
                 </div>
-                {tarjetasDelPlan(plan)}
+                {selectorDelPlan(plan)}
                 {tablaDeDesglose(plan)}
               </div>
             ))}
