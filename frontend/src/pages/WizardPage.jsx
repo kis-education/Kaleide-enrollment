@@ -48,6 +48,9 @@ export default function WizardPage() {
     markStepUpFresh, revokeStepUpFresh, // #30: espejo local revocable (lock proactivo)
     isStepUpFresh, recoveredViaMagicLink,
     otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER
+    // `0º.tricies.nonies`: el hecho «ya se pidió el código» vive en el contexto porque la
+    // verja se remonta (rehidratación) y perdía su estado local.
+    otpEnvioEntrada, marcarOtpEntradaPedido, marcarOtpEntradaFallido,
     recoveredEmail, setRecoveredEmail,
     recoveryNonce, // IDENTITY-FROM-LINK: `n` = email_id del enlace (identidad canónica)
     reviewConfirmed, // input del mapeo central (catalog.stepEditMode)
@@ -611,6 +614,13 @@ const handleNext = async (stepKey, data, extra = null) => {
         }}
         shouldAutoSend={!otpAutoSentForRecovery}
         onAutoSent={markOtpAutoSentForRecovery}
+        /* `0º.tricies.nonies`: la verja se DESMONTA en cuanto arranca la rehidratación y
+           vuelve a montarse al terminar. Sin esto, la segunda instancia olvidaba que el
+           código ya iba de camino y le pedía a la familia que enviara otro — que invalida
+           al primero. El hecho vive en el contexto, no en el componente. */
+        envioPrevio={otpEnvioEntrada}
+        onEnvioPedido={marcarOtpEntradaPedido}
+        onEnvioFallido={marcarOtpEntradaFallido}
       />
     );
   }

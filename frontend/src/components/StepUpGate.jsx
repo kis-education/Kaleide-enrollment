@@ -65,16 +65,53 @@ const REENVIO_ESPERA_S = 45;
  *                   la 1ª recuperación). Default true (retrocompat).
  * @param {Function} [props.onAutoSent]   Callback tras el auto-envío (el padre marca
  *                   la sesión como "ya auto-enviada" para no repetir en reloads).
+ * @param {Object}   [props.envioPrevio]  `0º.tricies.nonies` — `{at, error}` del ÚLTIMO código
+ *                   pedido en esta carga de página, guardado FUERA de este componente porque
+ *                   la verja se REMONTA (ver el bloque de abajo). `at` = instante del envío;
+ *                   `error` = el fallo cuya instancia ya no existe para contarlo.
+ * @param {Function} [props.onEnvioPedido]  Se llama al pedir un código (el padre apunta el
+ *                   instante para que sobreviva al remontaje).
+ * @param {Function} [props.onEnvioFallido] Se llama si esa petición acaba mal, con el texto.
  */
-export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSend = true, onAutoSent }) {
+export default function StepUpGate({
+  onVerified, tokenPayload = {}, shouldAutoSend = true, onAutoSent,
+  envioPrevio = null, onEnvioPedido, onEnvioFallido,
+}) {
   const { t } = useTranslation();
+
+  // ── `0º.tricies.nonies` (2026-08-22) — LA VERJA SE REMONTA, Y ANTES LO OLVIDABA TODO ──────
+  // Al entrar por el enlace, `WizardPage` monta esta verja (que auto-envía el código), y acto
+  // seguido su efecto de rehidratación pone `rehydrating=true` ⇒ el padre devuelve el loader
+  // neutro y ESTA instancia se DESMONTA. Cuando la hidratación vuelve (15-40 s), se monta una
+  // SEGUNDA instancia con todo su estado local a cero: decía «pulsa para recibir tu código»,
+  // con la casilla DESHABILITADA y el botón «Enviar» LIBRE — mientras el primer código ya iba
+  // camino del buzón. La familia no tenía más remedio que pulsar para poder teclear, y ese
+  // segundo envío INVALIDA al primero (el servidor guarda un solo código por buzón).
+  //
+  // Diego (2026-08-22): «Si acceder vía enlace automáticamente envía otp, debe informar de
+  // ello.» ⇒ se conserva el auto-envío (quitarlo añadiría a TODA familia el minuto y pico que
+  // tarda el envío, y ese envío ya está en marcha mientras rehidrata) y se hace que la verja
+  // RECUERDE: el hecho vive en `WizardContext` y entra aquí por `envioPrevio`.
+  // ⛔ La marca CADUCA con el propio código. El servidor lo guarda 10 min (`cache.put(codeKey,
+  // code, 600)`), así que pasados esos 10 min decirle a la familia «introduce el código que te
+  // hemos enviado» sería mentira — el que tiene ya no vale. Sin este límite, la verja que
+  // reaparece tras 10 min de inactividad heredaría un «enviado» viejo en vez de pedirle que
+  // pulse (req. c). Fuera de la vigencia, comportamiento EXACTO de antes de este cambio.
+  const MARCA_VIGENCIA_MS = 10 * 60 * 1000;
+  const vigente      = (ts) => !!ts && (Date.now() - ts) < MARCA_VIGENCIA_MS;
+  const yaPedidoAt   = vigente(envioPrevio && envioPrevio.at) ? envioPrevio.at : null;
+  const falloPrevio  = vigente(envioPrevio && envioPrevio.errorAt) ? (envioPrevio.error || '') : '';
+  const restanteDe   = (at) => (at ? Math.max(0, REENVIO_ESPERA_S - Math.floor((Date.now() - at) / 1000)) : 0);
+
   const [verifying, setVerifying] = useState(false);
-  const [codeSent,  setCodeSent]  = useState(false);
+  const [codeSent,  setCodeSent]  = useState(!!yaPedidoAt);
   const [code,      setCode]      = useState('');
-  const [err,       setErr]       = useState('');
-  const [info,      setInfo]      = useState('');
-  // Segundos que faltan para poder volver a pedir el código. Cuenta atrás visible.
-  const [espera,    setEspera]    = useState(0);
+  const [err,       setErr]       = useState(falloPrevio);
+  const [info,      setInfo]      = useState(yaPedidoAt ? t('stepup.code_sent') : '');
+  // Segundos que faltan para poder volver a pedir el código. Cuenta atrás visible. Arranca
+  // donde la dejó la instancia anterior: si no, el remontaje regalaba un botón libre y con él
+  // el segundo código que pisa al primero.
+  const [espera,    setEspera]    = useState(restanteDe(yaPedidoAt));
   // Evita doble envío en el StrictMode double-mount de dev y en re-renders.
   const autoSentRef = useRef(false);
   const esperaRef   = useRef(null);
@@ -82,9 +119,12 @@ export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSe
   const pararEspera = () => {
     if (esperaRef.current) { clearInterval(esperaRef.current); esperaRef.current = null; }
   };
-  const arrancarEspera = () => {
+  // `segundos` permite REANUDAR la cuenta atrás donde la dejó la instancia anterior tras el
+  // remontaje; sin argumento arranca entera, como siempre.
+  const arrancarEspera = (segundos = REENVIO_ESPERA_S) => {
     pararEspera();
-    setEspera(REENVIO_ESPERA_S);
+    if (segundos <= 0) { setEspera(0); return; }
+    setEspera(segundos);
     esperaRef.current = setInterval(() => {
       setEspera(s => {
         if (s <= 1) { pararEspera(); return 0; }
@@ -94,6 +134,29 @@ export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSe
   };
   // Al desmontar (la verja se cierra en cuanto se entra) no queda ningún temporizador vivo.
   useEffect(() => pararEspera, []);
+
+  // ── `0º.tricies.nonies` — UN FALLO QUE LLEGA TARDE TAMBIÉN SE PINTA ────────────────────
+  // El caso que faltaba: el auto-envío lo dispara la instancia 1, la petición tarda, y para
+  // cuando el servidor rechaza, esa instancia YA está desmontada por la rehidratación. Su
+  // `.catch` sigue corriendo (el cierre sobrevive) pero sus `setErr`/`setEspera` no pintan
+  // nada — y la instancia 2, montada con «te hemos enviado un código», se quedaba diciendo
+  // una mentira, con el botón en su espera, ante un código que NUNCA salió.
+  // Por eso el fallo viaja por el contexto y esta instancia lo adopta cuando llega.
+  const falloAplicadoRef = useRef(null);
+  const errorAtActual = (envioPrevio && envioPrevio.errorAt) || null;
+  useEffect(() => {
+    if (!errorAtActual || falloAplicadoRef.current === errorAtActual) return;
+    falloAplicadoRef.current = errorAtActual;
+    if (!vigente(errorAtActual)) return;
+    setInfo('');
+    setErr((envioPrevio && envioPrevio.error) || t('stepup.err_generic'));
+    // Sin código en vuelo no hay a quién esperar: se puede volver a pedir ya.
+    pararEspera();
+    setEspera(0);
+    // ⛔ Lo tecleado y la casilla NO se tocan: la familia puede tener en la mano un código
+    // válido de un envío anterior, y quitárselo por el fallo del último la deja fuera.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [errorAtActual]);
 
   const errorMessage = (e) => {
     const codeOrMsg = e?.code || e?.message || '';
@@ -120,6 +183,9 @@ export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSe
     setCodeSent(true);
     setInfo(t('stepup.code_sent'));
     arrancarEspera();
+    // `0º.tricies.nonies`: el hecho sale del componente ANTES del viaje, para que un remontaje
+    // a mitad de la petición encuentre la verja ya en «enviado» y con su cuenta atrás corriendo.
+    if (onEnvioPedido) onEnvioPedido();
     // NO mandamos email — el backend lo deriva del token (server-side, KAL-4).
     gasCall('sendVerificationCode', { stepup: true, ...tokenPayload })
       .then(() => { log.info('StepUpGate: código de entrada solicitado'); })
@@ -135,6 +201,11 @@ export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSe
         // Y sin código en vuelo no hay a quién esperar: se puede reintentar ya.
         pararEspera();
         setEspera(0);
+        // `0º.tricies.nonies`: el fallo lo provoca una instancia que puede estar ya
+        // DESMONTADA (el remontaje de arriba) — sin sacarlo del componente, sus `setErr` y
+        // `setEspera` se pierden y la familia se queda con un «te lo hemos enviado» falso y
+        // el botón bloqueado 45 s por un código que nunca salió.
+        if (onEnvioFallido) onEnvioFallido(errorMessage(e));
       });
   };
 
@@ -145,6 +216,11 @@ export default function StepUpGate({ onVerified, tokenPayload = {}, shouldAutoSe
   useEffect(() => {
     if (autoSentRef.current) return;
     autoSentRef.current = true;
+    // `0º.tricies.nonies`: esta instancia puede ser la SEGUNDA (el remontaje). Si ya se pidió
+    // un código, se reanuda su cuenta atrás en vez de ofrecer el botón libre. No se re-envía
+    // nada: solo se recupera lo que la instancia anterior sabía.
+    const restante = restanteDe(yaPedidoAt);
+    if (restante > 0) arrancarEspera(restante);
     if (shouldAutoSend) {
       sendCode({ manual: false });
       if (onAutoSent) onAutoSent();

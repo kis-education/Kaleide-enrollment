@@ -765,6 +765,32 @@ export function WizardProvider({ children }) {
     saveSession({ otpAutoSentForRecovery: true });
   }, []);
 
+  // ── `0º.tricies.nonies` (2026-08-22) — QUE EL CÓDIGO YA SALIÓ SOBREVIVE AL REMONTAJE ──
+  // La verja (`StepUpGate`) se MONTA, auto-envía el código… y se DESMONTA un instante después,
+  // porque `WizardPage` arranca su rehidratación (`needsHydration`) y `rehydrating` la tapa con
+  // el loader neutro. Al volver, la segunda instancia nacía con su estado local a cero: «pulsa
+  // para recibir tu código», casilla DESHABILITADA y botón «Enviar» LIBRE — con un código ya
+  // volando al buzón de la familia. Tenía que pulsar para poder teclear, y ese segundo envío
+  // PISA al primero en la caché del servidor (`cache.put(codeKey, …)`), así que el código que
+  // ya había recibido dejaba de valer. Ése es el «da error» que describió Diego.
+  //
+  // El hecho «se pidió un código a las HH:MM» vive AQUÍ, fuera de la verja, para que sobreviva
+  // al remontaje. Es estado de REACT, NUNCA sessionStorage, y la distinción es deliberada:
+  // una RECARGA debe volver a la pantalla de «pulsa para enviar» (req. c de 2026-06-07 y la
+  // fase A de `ventana-por-inactividad`), y eso solo se cumple si esto se pierde al recargar.
+  // `otpAutoSentForRecovery` (arriba) responde a OTRA pregunta —«¿ya auto-enviamos una vez en
+  // esta sesión recuperada?»— y por eso SÍ persiste; no se fusionan.
+  const [otpEnvioEntrada, setOtpEnvioEntrada] = useState({ at: null, error: null, errorAt: null });
+  const marcarOtpEntradaPedido = useCallback(() => {
+    setOtpEnvioEntrada({ at: Date.now(), error: null, errorAt: null });
+  }, []);
+  // El fallo también tiene que sobrevivir: quien lo provoca es la instancia que se desmonta, y
+  // su `setErr` local moría con ella ⇒ la familia se quedaba sin enterarse de que su código no
+  // salió. Al fallar se BORRA la marca de «pedido» para que el botón se libere en el acto.
+  const marcarOtpEntradaFallido = useCallback((mensaje) => {
+    setOtpEnvioEntrada({ at: null, error: mensaje || '', errorAt: Date.now() });
+  }, []);
+
   // Tick reactivo: fuerza re-render periódico para que el gate de entrada vuelva
   // a aparecer cuando expira la frescura por inactividad (isStepUpFresh() es una
   // función pura que lee Date.now(), pero sin un cambio de estado React no se
@@ -1016,6 +1042,7 @@ export function WizardProvider({ children }) {
     setLastActivityAt(Date.now());
     setRecoveredViaMagicLinkRaw(false);
     setOtpAutoSentForRecoveryRaw(false);
+    setOtpEnvioEntrada({ at: null, error: null, errorAt: null });
     setSigningFormsRaw({}); // REBUILD-8-11: el input de firma muere con la sesión
     // WIZARD-PERF-CACHE-SKELETON: el catálogo cacheado de preguntas NUNCA debe
     // sobrevivir al ciclo de auth — purgar al limpiar sesión (logout/clear/expiry).
@@ -1575,6 +1602,8 @@ export function WizardProvider({ children }) {
       refrescoEnVuelo, refrescoUltimoFallo,             // 0º.tricies.quater: el «sigo aquí» acusa recibo
       recoveredViaMagicLink, setRecoveredViaMagicLink, // DL-E39 gate de entrada
       otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER: auto-send solo 1ª recuperación
+      // `0º.tricies.nonies`: que el código ya salió (o falló) sobrevive al remontaje de la verja
+      otpEnvioEntrada, marcarOtpEntradaPedido, marcarOtpEntradaFallido,
       needsHydration: !!(enrollmentGroupId && !stepData.email.verified),
     }}>
       {children}
