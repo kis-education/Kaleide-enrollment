@@ -2929,10 +2929,15 @@ que el asistente ya haya contestado ⇒ **no llega a la familia**. Y no lo cubre
 trabajo. Es `kms-server/enr/*`, **reservado por otra mano en este mismo turno**, así que **no se
 toca**: queda anotado en la ficha. Tras este arreglo el camino legítimo ya no produce descartes.
 
-**⚠️ Y sigue SIN ACREDITAR de punta a punta, por un motivo ajeno:** **D97 no consta aplicado**
-(`kis-app docs/kms/pendiente-diego.md` §D97) ⇒ mientras `sysPersonRelations.pair_id` siga siendo
-obligatorio, AppSheet rechaza toda escritura de vínculo y un descarte silencioso y un rechazo no se
-distinguen. Lo entregado aquí no dependía de eso; la persistencia real, sí.
+**✅ Y de paso se cerró una contradicción que costaba trabajo: D97 SÍ ESTÁ APLICADO.** Se iba a
+escribir aquí *«no consta aplicado»* —lo que decían tres fichas de la cola— y al medirlo resultó que
+el repositorio **ya tenía la prueba**: al cerrar `0º.tricies.duodecies` se registró que **Diego quitó
+el «obligatorio» de `pair_id` y un trabajo de guardado de vínculos llegó a `Done` a las 17:39**, cosa
+imposible si AppSheet siguiera rechazando la escritura entera. Lo que faltaba era **la marca en
+`kis-app docs/kms/pendiente-diego.md` §D97**, puesta en el mismo cambio. ⚠️ **Y se dice cómo se
+sabe:** el `Required` de una columna **no se lee** por la API de datos, así que esto se acredita por
+la **consecuencia observable** (una escritura que antes se rechazaba y ahora aterriza), nunca mirando
+el esquema. ⇒ **la persistencia de los vínculos ya no está bloqueada.**
 
 **Red**: camino NUEVO `editar-vinculo-guardado` (6 afirmaciones). Usa la familia de **UN SOLO
 tutor** a propósito — es el único molde del simulado cuya hidratación trae los vínculos de todos
