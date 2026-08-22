@@ -2277,6 +2277,69 @@ primera no cubría (el plan con `modality_id: null`, su rótulo y sus tres afirm
 corrección de la premisa falsa. **La reserva se escribe ANTES de la primera línea de código, no al
 ir a publicar.**
 
+### `0º.tricies.octies` (B) (2026-08-22) — un guardado que muere en la cola DEJA DE SER MUDO
+
+**Los guardados del asistente NO escriben: APUNTAN el trabajo.** `enr.wizardSaveStep` y sus
+hermanas contestan `{ok:true, queued:true}` y quien escribe es el trabajador de la cola del KMS,
+minutos después. Si ese trabajo muere, **el rechazo ocurre cuando la respuesta ya se dio** ⇒ no hay
+a quién decírselo ahí, y hasta hoy no se lo decía nadie: la pantalla se quedaba con «Esta sección
+está guardada y bloqueada», la familia avanzaba, rellenaba salud, contestaba el cuestionario — y el
+hijo que acababa de dar de alta no existía. **Es peor que ②24.sexies**, donde el asistente al menos
+puede contarlo en el momento.
+
+**Medido el 2026-08-22 contra datos reales:** Diego dio de alta un segundo alumno y el trabajo
+`ENR_PERSIST_PERSONS` murió tras 5 intentos con `AppSheet Add on enrPersons failed (HTTP 400):
+Column 'gender' doesn't support value: 'Prefer-not-to-say'` — el catálogo del producto y la columna
+de AppSheet declaran cosas distintas. **Esa causa es de Diego** (`pendiente-diego.md` D92); lo que
+esta pieza cierra es que **se vea**, sea cual sea el motivo.
+
+**Se PREGUNTA en el pulso que YA va y viene** —no se abre un viaje nuevo—:
+`enr.wizardEstadoDeLaAdmision` gana `guardados_sin_aterrizar`, que lee `sys_JobQueue` acotada por el
+`dedupe_key` `<grupo>:<paso>` que **todo** trabajo del asistente ya lleva (`enr_enqueuePersist_`), y
+el grupo sale del `resume_token` (KAL-4), nunca del cuerpo.
+
+**Lo que hay que retener al tocar esto:**
+
+- **La regla es «lo ÚLTIMO que se sabe de ese paso», no «alguna vez falló».** Por cada `dedupe_key`
+  se mira la fila más reciente y solo se avisa si ésa está en `Failed`. Sin eso el aviso sería
+  **PERMANENTE**: la fila fallida se queda en la cola para siempre (el dedupe solo colapsa
+  `Queued`/`Processing`), así que un fallo de ayer ya arreglado seguiría encendido y la familia
+  aprendería a ignorarlo. Con la regla **se apaga solo** en cuanto el paso vuelve a guardarse bien,
+  sin tocar ni una fila.
+- **⛔ Solo viajan CÓDIGOS DE PASO, jamás `error_msg`.** El motivo literal de AppSheet nombra la
+  columna y el valor rechazados: es diagnóstico para quien opera el colegio, no algo que se cruce al
+  navegador de una familia. Quien lo necesite lo lee con `manual_diagPorQueFallaronLosTrabajos`.
+- **El KMS AVISA al morir el trabajo**, reusando `enr_notifyWizardLiveState_` (que bumpa la versión
+  del grupo, el mecanismo que ya gobierna el pulso). Sin ese aviso la respuesta cacheada del pulso
+  taparía el fallo **hasta la siguiente escritura, que puede no llegar nunca**. ⛔ **NO toca la cola
+  como mecanismo**: va DESPUÉS de la marca terminal, no cambia ni los reintentos ni el estado, y es
+  best-effort. Del payload sale **un** campo: el identificador del expediente.
+- **«No se pudo mirar» NO es «todo está guardado»**, y son campos distintos
+  (`guardados_no_consultables`). Un KMS que aún no manda el campo, o caído, se lee como «no se pudo
+  mirar» y **conserva** lo que ya se sabía: apagar el aviso porque la consulta falló sería volver a
+  afirmar sin saber, que es el defecto entero por otra puerta.
+- **NO ofrece «Reintentar»** —el asistente no sabe por qué murió y volver a mandar lo mismo puede
+  morir igual— **y no se puede cerrar**: mientras el dato no esté guardado, el aviso es la verdad.
+  Lo que sirve es abrir ese paso y guardarlo otra vez.
+- **DEGRADA, no falla cerrado**: si la cola no se puede leer, el pulso sigue contestando la situación
+  del expediente, que es su trabajo.
+
+**Textos nuevos**: `guardado_no_llego.*` (título, cuerpo y los ocho nombres de paso), es y en.
+
+**Red**: el camino `guardado-muerto-se-dice` de la batería (5 afirmaciones). **Rojo demostrado
+CUATRO veces**: el aviso que nunca se pinta · el aviso que no nombra el paso · el «no se pudo mirar»
+tratado como «todo guardado» · el aviso que no se apaga nunca.
+
+⚠️ **LA MITAD DEL SERVIDOR NO TIENE RED, Y ESTÁ DEMOSTRADO — no supuesto.** Se rompió a propósito el
+paso del campo en `getAdmissionState_` y **la batería salió VERDE**: corre contra un backend simulado
+que **nunca ejecuta `backend/Code.js`** ni el KMS. Se midió aparte con un arnés efímero (fuera de los
+dos repositorios, no commiteado) que extrae del fuente `enr_guardadosQueNoLlegaron_`,
+`enr_pasoDelTrabajo_`, `sys_jobQueue_markFailed_` y `_pulsoDeLaAdmision_` y los ejecuta con dobles:
+**15 afirmaciones verdes** y **SIETE roturas rojas** (volver a «alguna vez falló» · disfrazar la cola
+ilegible de «todo guardado» · quitar el cinturón del prefijo · retirar el aviso al asistente ·
+arrastrar el payload en el aviso · dar por bueno un KMS sin el campo · y el renombrado, que sale
+**«MEDICIÓN CIEGA»**, no verde). **Quien toque esta cadena, que lo mida.**
+
 ### `0º.tricies.quater` (2026-08-22) — «Sigo aquí» ya avisa de que el clic surtió efecto
 
 **Diego, 2026-08-22, cita literal:** *«Si le doy al botón de "sigo aquí" no hace nada. El contador

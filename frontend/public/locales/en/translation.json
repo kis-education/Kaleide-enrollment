@@ -579,5 +579,19 @@
   "step7.sim.option_unavailable": "Not available for this case.",
   "step7.sim.plan_generic": "Other item",
   "step7.sim.total_solicitante": "Total: {{amount}}",
-  "stepup.aviso_techo": "For security, your session will close in {{reloj}}. We will ask for the code from your email again to continue; nothing you have written is lost."
+  "stepup.aviso_techo": "For security, your session will close in {{reloj}}. We will ask for the code from your email again to continue; nothing you have written is lost.",
+  "guardado_no_llego": {
+    "titulo": "Some of your information was not saved",
+    "cuerpo": "Not saved: {{pasos}}. Go back to that screen, check what you entered and save it again. This notice disappears on its own once it saves correctly.",
+    "paso": {
+      "PERSONAS": "the people (students and guardians)",
+      "VINCULOS": "the relationships between the people",
+      "SALUD": "the health information",
+      "NEAE": "the support needs",
+      "RESPUESTAS": "the questionnaire answers",
+      "SOLICITUD": "the application details",
+      "DOCUMENTOS": "the documents",
+      "ENVIO": "the application submission"
+    }
+  }
 }

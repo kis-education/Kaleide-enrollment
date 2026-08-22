@@ -668,7 +668,15 @@ export function createDispatcher(scenario, record) {
     getAdmissionState: (p) => {
       const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos);
       const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
-      return { ok: true, ...(h.admission || { state_code: null }),
+      // 0º.tricies.octies (B) — los pasos cuyo ÚLTIMO guardado murió en la cola del KMS.
+      // Copia declarada del contrato real (`enr_guardadosQueNoLlegaron_`): CÓDIGOS de paso,
+      // nunca el motivo del rechazo. `guardadosNoConsultables` simula el «no se pudo mirar»,
+      // que NO es lo mismo que «no hay ninguno» — y ésa es la distinción que se afirma.
+      const guardados = scenario.guardadosSinAterrizar
+        ? { guardados_sin_aterrizar: scenario.guardadosSinAterrizar,
+            guardados_no_consultables: !!scenario.guardadosNoConsultables }
+        : {};
+      return { ok: true, ...(h.admission || { state_code: null }), ...guardados,
                ...(conVentana ? { step_up_fresh: conVentana.fresh, step_up_restante_s: conVentana.restante_s,
                                   step_up_cierre: conVentana.cierre } : {}) };
     },
@@ -680,7 +688,12 @@ export function createDispatcher(scenario, record) {
       if (!s) return { ok: false, error: { code: 'STEPUP_REQUIRED', message: 'Step-up re-verification required' } };
       return { ok: true, step_up_fresh: true, step_up_restante_s: s, step_up_cierre: leerMarca(p).cierre };
     },
-    getLiveStateVersion: () => ({ ok: true, version: 1 }),
+    // El pulso solo pide el DETALLE cuando esta version SUBE (`WizardPage.jsx`), que es el
+    // mecanismo real: el KMS la bumpa por `enr_notifyWizardLiveState_`. Desde
+    // 0º.tricies.octies (B) eso incluye la muerte de un guardado — sin ese aviso la familia
+    // no se enteraria hasta la siguiente escritura, que puede no llegar nunca. `scenario.
+    // liveVersion` deja que el recorrido simule ese bump.
+    getLiveStateVersion: () => ({ ok: true, version: Number(scenario.liveVersion) || 1 }),
     abandonSession:      () => ({ ok: true, abandoned: true }),
     // Cola 18.quater — la familia pide corregir. `correccionMode` decide qué contesta
     // el KMS: 'ok' (marca completada) o 'no_declarada' (el colegio aún no la declaró).

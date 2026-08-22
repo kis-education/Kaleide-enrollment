@@ -4027,6 +4027,94 @@ async function caminoGuardadoApuntadoSeVigila(page, base) {
 }
 
 /**
+ * 0º.tricies.octies (B) — UN GUARDADO QUE MURIÓ EN LA COLA DEJA DE SER MUDO.
+ *
+ * El defecto medido el 2026-08-22: Diego dio de alta un segundo alumno, la pantalla dijo
+ * «Esta sección está guardada y bloqueada», avanzó — y al recargar el alumno no estaba. Los
+ * guardados del asistente NO escriben: apuntan el trabajo y contestan que sí, así que cuando
+ * el trabajo muere minutos después el rechazo llega cuando la respuesta ya se dio y no hay a
+ * quién decírselo ahí. El pulso, que ya va y viene, es quien puede traerlo.
+ *
+ * Las tres afirmaciones son las tres mitades del asunto: que SE VEA, que NOMBRE el paso (un
+ * aviso que no dice cuál manda a la familia a revisar seis pantallas), y que se APAGUE SOLO
+ * cuando el paso vuelve a guardarse bien — sin eso el aviso sería permanente y la familia
+ * aprendería a ignorarlo. La cuarta es la degradación honesta: «no se pudo mirar» NO es
+ * «todo está guardado», que es exactamente la confusión que este trabajo viene a cerrar.
+ */
+async function caminoGuardadoMuertoSeDice(page, base) {
+  const c = new Camino('guardado-muerto-se-dice')
+  scenario.stage = 'hasta_preguntas'
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    c.evidencia.llamadas = calls.length
+    if (REAL) {
+      c.noCubierta('guardado-muerto',
+        'exige que un trabajo de la cola del KMS muera de verdad; provocarlo contra el sistema real dejaría el expediente a medias')
+      return c
+    }
+
+    const sonda = () => {
+      const el = document.querySelector('[data-testid="aviso-guardado-no-llego"]')
+      return { visible: !!el, texto: el ? el.innerText : '' }
+    }
+
+    // ── (0) sin fallos, ni un aviso ────────────────────────────────────────────────
+    await latirLaVentana(page)
+    await page.waitForTimeout(LATENCY + 1200)
+    if (!c.afirmar('(0) sin guardados muertos NO se asusta a nadie',
+      !(await page.evaluate(sonda)).visible,
+      'salió el aviso con todos los guardados aterrizados: asustar por nada es tan malo como callarse')) return c
+
+    // ── (1) y (2) un guardado muerto SE VE y NOMBRA el paso ────────────────────────
+    // El KMS bumpa la versión del grupo al morir un guardado (`sys_jobQueue_markFailed_`);
+    // sin ese bump el pulso NO pide el detalle y la familia no se entera. Se simula igual.
+    scenario.guardadosSinAterrizar = ['PERSONAS']
+    scenario.liveVersion = 2
+    await latirLaVentana(page)
+    let visto = false
+    try {
+      await page.waitForSelector('[data-testid="aviso-guardado-no-llego"]', { timeout: LATENCY + 8000 })
+      visto = true
+    } catch { /* lo dice el afirmar */ }
+    if (!c.afirmar('(1) un guardado que murió en la cola SE VE', visto,
+      'la pantalla siguió muda: la familia se va creyendo que lo que tecleó quedó guardado, que es el defecto entero')) return c
+
+    const conAviso = await page.evaluate(sonda)
+    c.afirmar('(2) el aviso NOMBRA el paso que no se guardó',
+      /personas|people/i.test(conAviso.texto),
+      `el aviso dice «${conAviso.texto}»: sin nombrar el paso, la familia tiene que revisar seis pantallas para encontrar qué falta`)
+
+    // ── (3) «no se pudo mirar» NO apaga el aviso ───────────────────────────────────
+    scenario.guardadosSinAterrizar = []
+    scenario.guardadosNoConsultables = true
+    scenario.liveVersion = 3
+    await latirLaVentana(page)
+    await page.waitForTimeout(LATENCY + 1500)
+    c.afirmar('(3) un «no se pudo mirar» NO se convierte en «todo está guardado»',
+      (await page.evaluate(sonda)).visible,
+      'el aviso se apagó porque la consulta falló: volver a afirmar que todo está guardado sin saberlo es EL defecto que esto cierra, ahora por otra puerta')
+
+    // ── (4) y se apaga solo cuando el paso vuelve a guardarse bien ─────────────────
+    scenario.guardadosNoConsultables = false
+    scenario.liveVersion = 4
+    await latirLaVentana(page)
+    await page.waitForTimeout(LATENCY + 1500)
+    c.afirmar('(4) el aviso se apaga SOLO cuando el paso vuelve a guardarse bien',
+      !(await page.evaluate(sonda)).visible,
+      'el aviso siguió encendido con el guardado ya aterrizado: un aviso que no se apaga nunca se aprende a ignorar')
+
+    c.evidencia.llamadas = calls.length
+    return c
+  } finally {
+    scenario.guardadosSinAterrizar = null
+    scenario.guardadosNoConsultables = false
+    scenario.liveVersion = 1
+  }
+}
+
+/**
  * Provoca el latido que YA existe (`WizardPage.jsx`: `setInterval` de 30 s + `onFocus`)
  * sin quedarse medio minuto parado por recorrido. `focus` es el mismo evento que dispara
  * una familia al volver a su pestaña — se recorre el mecanismo real, no un atajo.
@@ -6391,6 +6479,7 @@ const CAMINOS = [
   { nombre: 'telefono-que-se-ve-se-guarda', fn: caminoTelefonoQueSeVeSeGuarda, minLlamadas: 1, minElementos: 11 },
   // Cola 18.bis — el aviso rojo de guardado deja de mentir: se apaga cuando el dato ya
   // está guardado, y la familia puede cerrarlo sin que eso finja que se guardó.
+  { nombre: 'guardado-muerto-se-dice', fn: caminoGuardadoMuertoSeDice, minLlamadas: 1, minElementos: 11 },
   { nombre: 'aviso-guardado-se-apaga',  fn: caminoAvisoGuardadoSeApaga,  minLlamadas: 1, minElementos: 11 },
   { nombre: 'aviso-guardado-se-cierra', fn: caminoAvisoGuardadoSeCierra, minLlamadas: 1, minElementos: 11 },
 ]

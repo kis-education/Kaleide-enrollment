@@ -579,5 +579,19 @@
   "step7.sim.option_unavailable": "No disponible para este caso.",
   "step7.sim.plan_generic": "Otro concepto",
   "step7.sim.total_solicitante": "En total: {{amount}}",
-  "stepup.aviso_techo": "Por seguridad, tu sesión se cerrará en {{reloj}}. Te pediremos otra vez el código de tu correo para seguir; lo que hayas escrito no se pierde."
+  "stepup.aviso_techo": "Por seguridad, tu sesión se cerrará en {{reloj}}. Te pediremos otra vez el código de tu correo para seguir; lo que hayas escrito no se pierde.",
+  "guardado_no_llego": {
+    "titulo": "Hay datos que no llegaron a guardarse",
+    "cuerpo": "No se guardaron: {{pasos}}. Vuelve a esa pantalla, revisa lo que pusiste y guárdalo otra vez. Este aviso desaparece solo en cuanto se guarde bien.",
+    "paso": {
+      "PERSONAS": "las personas (alumnos y tutores)",
+      "VINCULOS": "los vínculos entre las personas",
+      "SALUD": "los datos de salud",
+      "NEAE": "las necesidades de apoyo",
+      "RESPUESTAS": "las respuestas del cuestionario",
+      "SOLICITUD": "los datos de la solicitud",
+      "DOCUMENTOS": "los documentos",
+      "ENVIO": "el envío de la solicitud"
+    }
+  }
 }

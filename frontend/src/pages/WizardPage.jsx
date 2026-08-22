@@ -13,6 +13,7 @@ import WizardProgress from '../components/WizardProgress';
 import StepUpReverify from '../components/StepUpReverify';
 import StepUpGate from '../components/StepUpGate';
 import AvisoDeVentana from '../components/AvisoDeVentana';
+import AvisoGuardadosQueNoLlegaron from '../components/AvisoGuardadosQueNoLlegaron';
 import { Toast, useToast } from '../components/Toast';
 import { pedirConfirmacion } from '../components/ConfirmDialog';
 
@@ -688,6 +689,10 @@ const handleNext = async (stepKey, data, extra = null) => {
           ventana está a punto de caducar, que —al reiniciarla la actividad— significa que
           nadie ha tocado la pantalla en ocho minutos. Ver `AvisoDeVentana`. */}
       <AvisoDeVentana />
+      {/* 0º.tricies.octies (B) — un guardado que el KMS acabo rechazando deja de ser mudo.
+          Va aqui arriba, fuera del paso, porque el fallo llega minutos DESPUES de que la
+          familia haya avanzado: un aviso dentro del paso moriria con el paso desmontado. */}
+      <AvisoGuardadosQueNoLlegaron />
 
       {/* Progress */}
       <WizardProgress currentStep={currentStep} />

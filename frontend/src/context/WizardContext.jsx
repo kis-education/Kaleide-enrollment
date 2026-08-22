@@ -574,6 +574,12 @@ export function WizardProvider({ children }) {
   // discriminator the frontend re-sends so the backend re-resolves the guardian
   // server-side on each call. Only the email is stored; never the token.
   const [admissionState, setAdmissionState] = useState(null);
+  // 0º.tricies.octies (B) — los pasos cuyo ULTIMO guardado murio en la cola del KMS.
+  // `enr.wizardSaveStep` y sus hermanas NO escriben: APUNTAN el trabajo y contestan que si,
+  // asi que la pantalla dice «guardada y bloqueada» y la familia avanza. Si el trabajo muere
+  // despues, el rechazo llega cuando la respuesta ya se dio y NO hay a quien decirselo ahi.
+  // El pulso lo trae; esto lo guarda para que la pantalla pueda decirlo.
+  const [guardadosSinAterrizar, setGuardadosSinAterrizar] = useState([]);
   // Decisión Diego 2026-06-12 (lock EN VIVO): los flags de hitos del hydrate son de
   // la ENTRADA — si el usuario confirma la lectura en ESTA sesión, el bloqueo debe
   // engancharse al instante, sin esperar al re-hydrate ni al drenado del job.
@@ -1515,6 +1521,12 @@ export function WizardProvider({ children }) {
       editable:          data.editable,
     });
     setAdmissionState(adm);
+    // 0º.tricies.octies (B): solo se toca cuando el servidor PUDO mirar. Con `no_consultables`
+    // se conserva lo que ya se sabia — apagar el aviso porque la consulta fallo seria volver a
+    // decirle a la familia que todo esta guardado sin saberlo, que es justo el defecto.
+    if (data.guardados_no_consultables !== true && Array.isArray(data.guardados_sin_aterrizar)) {
+      setGuardadosSinAterrizar(data.guardados_sin_aterrizar);
+    }
     // URGENT-PASS3 BUG A: el pulse ligero ahora trae `editable` (getAdmissionState_) →
     // refleja AD/reopen sin recargar. Si hay estado real, GOBIERNA editable; si no, no
     // tocamos isSubmitted (el pulse ligero no trae submitted_at — el caso pre-submit lo
@@ -1547,6 +1559,7 @@ export function WizardProvider({ children }) {
       hydrateFromResume, refreshAdmissionState, clearSession,
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
+      guardadosSinAterrizar,                    // 0º.tricies.octies (B) — guardados que no llegaron
       reviewConfirmedLocal, setReviewConfirmedLocal, // lock en vivo post-confirm (Diego 2026-06-12)
       reviewConfirmed,                            // input del mapeo central (catalog.stepEditMode)
       docCache, loadDocument, signingMembers, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual

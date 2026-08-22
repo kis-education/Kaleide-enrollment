@@ -3989,7 +3989,10 @@ var _PULSO_MEMO_ = {};
 function _pulsoDeLaAdmision_(resumeToken) {
   var token = resumeToken ? String(resumeToken).trim() : '';
   var fallo = function(motivo) {
-    return { ok: false, expedientes: [], personas: [], situaciones: [], motivo: motivo };
+    // 0º.tricies.octies (B): con el pulso caído NO se afirma «todos tus guardados llegaron».
+    // Lista vacía + «no se pudo mirar» — la diferencia entre las dos es EL defecto que se cierra.
+    return { ok: false, expedientes: [], personas: [], situaciones: [], motivo: motivo,
+             guardados_sin_aterrizar: [], guardados_no_consultables: true };
   };
   if (!token) return fallo('sin resume_token');
   try { assertValidUuid_(token, 'resume_token'); }
@@ -4006,6 +4009,11 @@ function _pulsoDeLaAdmision_(resumeToken) {
         personas:    r.personas,
         situaciones: r.situaciones,
         motivo:      null,
+        // 0º.tricies.octies (B) — los pasos cuyo último guardado murió en la cola. El KMS manda
+        // CÓDIGOS de paso, nunca el motivo literal del rechazo (puede nombrar columna y valor).
+        // Un KMS viejo no manda el campo ⇒ lista vacía y «no consultable», que es la verdad.
+        guardados_sin_aterrizar:   Array.isArray(r.guardados_sin_aterrizar) ? r.guardados_sin_aterrizar : [],
+        guardados_no_consultables: (r.guardados_sin_aterrizar === undefined) || !!r.guardados_no_consultables,
       };
     } else {
       Logger.log('[_pulsoDeLaAdmision_] respuesta incompleta del KMS — se falla cerrado');
@@ -4712,6 +4720,8 @@ function getAdmissionState_(p) {
           // ★ SEC WIZ-SIGNTOKEN: no servir el signing_token pre-step-up.
           signing_context:   _redactSigningTokenIfNotFresh_(admC.signing_context, stepUpFresh),
           editable:          admC.editable,
+          guardados_sin_aterrizar:   Array.isArray(admC.guardados_sin_aterrizar) ? admC.guardados_sin_aterrizar : [],
+          guardados_no_consultables: (admC.guardados_sin_aterrizar === undefined) || !!admC.guardados_no_consultables,
           step_up_fresh:     stepUpFresh,
           step_up_restante_s: stepUpRestanteS,
           step_up_cierre:     stepUpCierre,
@@ -4792,6 +4802,10 @@ function getAdmissionState_(p) {
         signing_available: admission.signing_available,
         signing_context:   admission.signing_context,
         editable:          admission.editable,
+        // Viaja en la cache porque el KMS BUMPA la versión del grupo al morir un guardado
+        // (`sys_jobQueue_markFailed_`) ⇒ una entrada con un aviso caducado ya no se sirve.
+        guardados_sin_aterrizar:   pulso.guardados_sin_aterrizar,
+        guardados_no_consultables: pulso.guardados_no_consultables,
       } }), 1800);
   } catch (eWzWt) { /* best-effort */ }
 
@@ -4806,6 +4820,8 @@ function getAdmissionState_(p) {
     // ★ SEC WIZ-SIGNTOKEN: no servir el signing_token pre-step-up.
     signing_context:   _redactSigningTokenIfNotFresh_(admission.signing_context, stepUpFresh),
     editable:          admission.editable,   // URGENT-PASS3 BUG A: state-driven editabilidad
+    guardados_sin_aterrizar:   pulso.guardados_sin_aterrizar,
+    guardados_no_consultables: pulso.guardados_no_consultables,
     step_up_fresh:     stepUpFresh,
     step_up_restante_s: stepUpRestanteS,
     step_up_cierre:     stepUpCierre,
