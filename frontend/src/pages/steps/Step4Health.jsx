@@ -257,7 +257,11 @@ function ApplicantNeaeSection({ neae, onChange }) {
   };
 
   return (
-    <div className="mt-4 pt-3" style={{ borderTop: '1px dashed var(--border, #dee2e6)' }}>
+    // `data-testid`/`data-person-id`: el bloque de apoyo educativo de UN alumno, para poder
+    // comprobar desde la batería que la declaración de vaciado es POR PERSONA (0º.vicies.nonies)
+    // — tocar el bloque de un hijo no puede declarar el vaciado del otro.
+    <div className="mt-4 pt-3" data-testid="paso4-neae-ficha" data-person-id={neae && neae.person_id}
+         style={{ borderTop: '1px dashed var(--border, #dee2e6)' }}>
       <div className="dynamic-section-title mb-1">{t('neae.section_title')}</div>
       <p className="mb-3" style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{t('neae.intro')}</p>
 
@@ -499,11 +503,21 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
     }
     neaeBaselineRef.current = snapshot;
     const sourceLocale = (i18n.language || '').slice(0, 2) || undefined;
+    // ⭐ 0º.vicies.nonies (decisión de Diego, 2026-08-22, opción (b)) — EL VACIADO SE
+    // DECLARA. El KMS no añade: SUSTITUYE (da de baja el conjunto activo previo e inserta
+    // el nuevo entero), así que una ficha vacía RETIRA lo que hubiera. El servidor ya no
+    // acepta ese vacío a ciegas: solo si viene declarado deliberado.
+    //
+    // ⛔ La marca dice UNA cosa y solo una: **la familia tocó ESTE bloque en esta sesión**
+    // (`neaeTocada`). Nunca va por defecto — si fuera siempre `true`, la protección no
+    // existiría y esto sería un cambio de nada. Y va POR ALUMNO: uno puede venir declarado
+    // y otro no en el mismo envío, y el servidor los resuelve por separado.
     const payload = aEnviar.map(n => ({
-      person_id:     n.person_id,
-      conditions:    n.conditions || [],
-      supports:      n.supports   || [],
-      source_locale: sourceLocale,
+      person_id:          n.person_id,
+      conditions:         n.conditions || [],
+      supports:           n.supports   || [],
+      source_locale:      sourceLocale,
+      vaciado_declarado:  !!(n.person_id && neaeTocada.current.has(n.person_id)),
     }));
     // ②24 — quién está operando: el servidor gatea esta escritura con el código de un
     // solo uso y la marca es DEL BUZÓN que se verificó.

@@ -2938,6 +2938,87 @@ async function caminoSaludDesdeLaPantalla(page, base) {
       c.afirmar('el apoyo educativo que manda el servidor SE VE en la pantalla de salud',
         condiciones.length > 0 && apoyos.length > 0,
         `se pintaron ${condiciones.length} condición(es) y ${apoyos.length} apoyo(s): con cero, la familia ve su bloque VACÍO y al guardar puede dar de baja lo que hay`)
+
+      // ⭐ 0º.vicies.nonies (decisión de Diego, opción (b), 2026-08-22) — EL VACIADO SE
+      // DECLARA, Y ES POR PERSONA. El KMS no añade: SUSTITUYE, así que una ficha vacía retira
+      // lo que hubiera. Se vacía el bloque de UN SOLO hijo y se mira lo que SALE hacia el
+      // servidor: el suyo tiene que ir declarado y el del hermano NO.
+      //
+      // ⚠️ Esta batería NO ejecuta el KMS ni `backend/Code.js` ⇒ aquí se mide lo que manda el
+      // NAVEGADOR. La mitad del servidor (que sin declaración NO se da de baja nada) se midió
+      // aparte, ejecutando `enr_persistNeae_`/`enr_neaeSePuedeVaciar_` reales con dobles.
+      const cuerposDeSalud = []
+      const espiarSalud = (req) => {
+        if (!/\/__gas/.test(req.url())) return
+        let body = null
+        try { body = JSON.parse(req.postData() || '{}') } catch { return }
+        if (body && body.action === 'saveNeae') cuerposDeSalud.push(body)
+      }
+      page.on('request', espiarSalud)
+      try {
+        const fichas = await page.$$eval('[data-testid="paso4-neae-ficha"]',
+          els => els.map(e => e.getAttribute('data-person-id')))
+        if (!c.afirmar('la pantalla enseña el apoyo educativo de MÁS DE UN hijo (si no, «por persona» no se comprueba)',
+          fichas.length >= 2 && fichas[0] && fichas[1] && fichas[0] !== fichas[1],
+          `las fichas de apoyo educativo en pantalla fueron ${JSON.stringify(fichas)}`)) return c
+
+        // Se vacía SOLO el bloque del PRIMER hijo, de una en una: cada aspa re-dibuja el
+        // bloque, así que recorrer una lista tomada de golpe deja la mitad sin pulsar.
+        let quitados = 0
+        for (let k = 0; k < 40; k++) {
+          const hecho = await page.evaluate(() => {
+            const ficha = document.querySelector('[data-testid="paso4-neae-ficha"]')
+            if (!ficha) return false
+            const caja = ficha.querySelector(
+              '[data-testid="paso4-neae-condicion"], [data-testid="paso4-neae-apoyo"]')
+            if (!caja) return false
+            const x = caja.querySelector('button')
+            if (!x) return false
+            x.click()
+            return true
+          })
+          if (!hecho) break
+          quitados++
+          await page.waitForTimeout(120)
+        }
+        await page.waitForTimeout(300)
+        const quedanEnElPrimero = await page.$$eval('[data-testid="paso4-neae-ficha"]',
+          els => els[0] ? els[0].querySelectorAll(
+            '[data-testid="paso4-neae-condicion"], [data-testid="paso4-neae-apoyo"]').length : -1)
+        c.afirmar('la familia puede QUITAR su apoyo educativo y se queda quitado en la pantalla',
+          quitados > 0 && quedanEnElPrimero === 0,
+          `se pulsaron ${quitados} aspa(s) y quedan ${quedanEnElPrimero} en el bloque del primer hijo: si no se puede vaciar a propósito, esta protección habría roto el caso legítimo`)
+
+        cuerposDeSalud.length = 0
+        if (await continuar(c, page, 4, 'salud tras vaciar el bloque de un hijo')) {
+          await page.waitForTimeout(LATENCY + 700)
+        }
+        const enviadas = cuerposDeSalud.flatMap(b => (b.neae || []))
+        c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, cuerposDeSalud.length)
+        const vaciada = enviadas.find(n => n.person_id === fichas[0])
+        const intacta = enviadas.find(n => n.person_id === fichas[1])
+        const resumen = JSON.stringify(enviadas.map(n => ({
+          p: String(n.person_id || '').slice(0, 8), v: n.vaciado_declarado,
+          cond: (n.conditions || []).length, sup: (n.supports || []).length })))
+
+        // (a) VACIAR A PROPÓSITO SIGUE FUNCIONANDO: es lo único que el servidor acepta como
+        // orden de retirar, así que sin la declaración la familia vería volver lo que quitó.
+        c.afirmar('vaciar A PROPÓSITO viaja DECLARADO (es lo único que el servidor acepta)',
+          !!vaciada && vaciada.vaciado_declarado === true &&
+          (vaciada.conditions || []).length === 0 && (vaciada.supports || []).length === 0,
+          `lo enviado fue ${resumen}: sin la declaración el servidor CONSERVA, y la familia que quitó su condición a propósito la vería volver`)
+
+        // (b) EL HERMANO QUE NADIE TOCÓ NO VIENE DECLARADO. Si la marca fuera por defecto, la
+        // protección no existiría: un «Continuar» distraído volvería a poder retirar la
+        // logopedia de un menor.
+        if (!c.afirmar('el hijo cuyo bloque NADIE tocó también viaja (para poder comprobarlo)',
+          !!intacta, `lo enviado fue ${resumen}: sin su ficha, esta comprobación pasaría en vacío`)) return c
+        c.afirmar('el hijo cuyo bloque NADIE tocó NO viene declarado como vaciado',
+          intacta.vaciado_declarado !== true,
+          `lo enviado fue ${resumen}: con la marca puesta por defecto, un «Continuar» distraído volvería a poder retirar la logopedia de un menor`)
+      } finally {
+        page.off('request', espiarSalud)
+      }
     }
   } finally {
     scenario.neaeDelServidor = false
