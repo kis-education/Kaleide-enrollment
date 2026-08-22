@@ -25,6 +25,13 @@ export function preparePersonForUI(person) {
   // ids ausente vs [] — el formulario inicializa []; normalizar para que la siembra
   // del baseline produzca byte a byte la misma forma (fantasma 'ids' del dirty-check).
   if (!Array.isArray(out.ids)) out.ids = [];
+  // ①45 — MISMO motivo, MISMA línea, para los idiomas hablados. `emptyPerson` los
+  // inicializa a [] y `transformPersonForSave` los emite SIEMPRE; una persona que el
+  // servidor devuelve SIN la clave `languages` dejaría el baseline sin ella y la
+  // pantalla con [], y el dirty-check marcaría el paso sucio en cada navegación
+  // (el «fantasma» que documenta la línea de arriba). No se normaliza NADA más de
+  // la fila: se pasa tal cual viene, igual que `nationalities`.
+  if (!Array.isArray(out.languages)) out.languages = [];
   // nationality: prefer existing flat field; fall back to first nationality in array
   if (!out.nationality) {
     const primary = (out.nationalities || [])[0];

@@ -4,6 +4,7 @@ import { useWizard } from '../../context/WizardContext';
 import * as log from '../../logger';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
+import { LANGUAGES, languageLabel } from '../../constants/languages';
 import LockedBanner from '../../components/LockedBanner';
 import StepNav from '../../components/StepNav';
 import { generateUuid } from '../../utils/uuid';
@@ -51,6 +52,11 @@ const emptyPerson = (type) => ({
   nationality:                 '',
   id_type_id:                  '',
   id_number:                   '',
+  // ①45 — idiomas HABLADOS por esta persona. Multi-valor y OPCIONAL: dejarlo vacío
+  // no impide avanzar ni dispara ningún aviso. Cada entrada es {language_id}, la
+  // forma EXACTA que el escritor del KMS lee (`enr_persistPersons_` →
+  // `(p.languages || []).forEach(l => l.language_id)`).
+  languages:                   [],
   emails:                      [],
   phones:                      [],
   previous_schools:            [],
@@ -482,6 +488,39 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
     u('phones', next);
   };
 
+  // ①45 — IDIOMAS HABLADOS. Multi-valor sobre `person.languages`, que es la MISMA forma
+  // que viaja al servidor: aquí no hay campos de pantalla que luego haya que limpiar
+  // (a diferencia de `nationality`/`id_type_id`, que son aplanados de un array de uno).
+  //
+  // ⛔ LO YA DECLARADO NO SE DESMARCA, y no es capricho de pantalla: los satélites de
+  // persona del KMS son APPEND-ONLY —`enr_persistPersons_` escribe con clave por
+  // identidad (persona+idioma) y su propio comentario dice «viva ⇒ no se toca
+  // (append-only)»—, y `enrPersonLanguages` NO es una de las clases que la familia
+  // puede quitar (`enr/retirada.gs` → PERSONA · CORREO · TELEFONO · VINCULO ·
+  // DOCUMENTO; ahí solo aparece como tabla que se ARRASTRA al quitar la persona
+  // entera). Dejar desmarcar un idioma ya guardado sería el defecto exacto que
+  // `lib/quitar.js` existe para cerrar: quitarlo de la pantalla y que vuelva al
+  // recargar. Se enseña marcado y bloqueado — la misma honestidad que el paso 6 con
+  // el tipo de un documento ya subido (`0º.sexdecies`).
+  const yaDeclarado = (code) =>
+    (person.languages || []).some(l => l && l.language_id === code && l.record_id);
+  const hablaIdioma = (code) =>
+    (person.languages || []).some(l => l && l.language_id === code);
+  const toggleLanguage = (code) => {
+    if (yaDeclarado(code)) return;                         // append-only: no se desmarca
+    const actuales = person.languages || [];
+    const next = hablaIdioma(code)
+      ? actuales.filter(l => !(l && l.language_id === code))
+      : [...actuales, { language_id: code }];
+    u('languages', next);
+  };
+  // Los idiomas que la familia ya declaró y que NO están en el catálogo curado (dato
+  // heredado, u otro camino que escribió otro código): se pintan igual, con su código
+  // crudo. Esconder un idioma ya declarado sería mentir sobre lo que hay guardado.
+  const idiomasFueraDelCatalogo = (person.languages || [])
+    .map(l => (l && l.language_id) || '')
+    .filter(c => c && !LANGUAGES.some(l => l.value === c));
+
   const updateSchool = (i, val) => {
     const ps = [...(person.previous_schools || [])];
     ps[i] = val;
@@ -572,6 +611,39 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           <label className="form-label">{t('field.id_number')}</label>
           {/* DL-E39 ENMIENDA (gate de entrada): nº de identidad visible — PII protegida por el gate de entrada. */}
           <input className="form-control" value={person.id_number} onChange={e => u('id_number', e.target.value)} />
+        </div>
+        {/* ①45 — IDIOMAS HABLADOS (opcional, varios). Diego 2026-08-16: «El wizard debería
+            recoger el idioma o idiomas hablados por la familia como dato opcional.»
+            NO es el «idioma preferente» del centro: aquí se pregunta QUÉ habla esta
+            persona, admite varios, y no está acotado a los idiomas en los que el KMS
+            rinde (una familia habla francés aunque el sistema no hable francés). */}
+        <div className="col-12">
+          <label className="form-label">{t('field.languages')}</label>
+          <div className="d-flex flex-wrap gap-2" data-testid={`idiomas-${_pk}`}>
+            {LANGUAGES.map(l => {
+              const marcado  = hablaIdioma(l.value);
+              const bloqueado = yaDeclarado(l.value);
+              return (
+                <div className="form-check form-check-inline me-0" key={l.value}>
+                  <input type="checkbox" className="form-check-input"
+                    id={`lang_${_pk}_${l.value}`}
+                    data-testid={`idioma-${l.value}`}
+                    checked={marcado}
+                    disabled={bloqueado}
+                    onChange={() => toggleLanguage(l.value)} />
+                  <label className="form-check-label small" htmlFor={`lang_${_pk}_${l.value}`}>
+                    {l.label}
+                  </label>
+                </div>
+              );
+            })}
+          </div>
+          {idiomasFueraDelCatalogo.length > 0 && (
+            <div className="form-text">
+              {t('field.languages_other', { list: idiomasFueraDelCatalogo.map(languageLabel).join(', ') })}
+            </div>
+          )}
+          <div className="form-text">{t('field.languages_help')}</div>
         </div>
       </div>
 
@@ -778,6 +850,19 @@ function transformPersonForSave(person, idx, arr) {
     : [];
   delete out.nationality;
   delete out._nat_record_id;
+
+  // ①45 — IDIOMAS: la pantalla ya trabaja sobre la MISMA forma que el servidor lee
+  // (`{language_id}` + los campos de la fila cuando vino del servidor), así que aquí NO
+  // hay nada que aplanar ni que limpiar — al revés que `nationality`/`id_type_id`, que
+  // son campos de pantalla y por eso se borran unas líneas más abajo. Se copia la fila
+  // entera VERBATIM (mismo criterio que `...existingNat` justo arriba): si el idioma no
+  // se tocó, el objeto resultante es idéntico al del baseline y el dirty-check no
+  // dispara guardados de más. Único filtro: una entrada sin `language_id` no se manda —
+  // el escritor del KMS la descartaría igual (`if (!l || !l.language_id) return;`), y
+  // mandarla sería ruido.
+  out.languages = (person.languages || [])
+    .filter(l => l && l.language_id)
+    .map(l => ({ ...l }));
 
   const existingId = (person.ids || [])[0] || {};
   out.ids = (person.id_type_id && person.id_number)

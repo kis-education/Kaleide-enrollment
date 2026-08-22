@@ -2376,6 +2376,89 @@ código real**, no con esta batería. Los cuatro controles del repositorio, VERD
 
 **Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
 
+### `①45` (2026-08-22) — el paso 2 recoge los IDIOMAS QUE HABLA cada persona
+
+**Diego, 2026-08-16, literal:** *«El wizard debería recoger el idioma o idiomas hablados por la
+familia como dato opcional.»* No era una avería —no se perdía nada, no había fuga—: era un dato
+que sencillamente no se preguntaba en ninguna parte. Sube por ser del proceso de admisión.
+
+**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada, porque es lo que hace este
+tramo pequeño: la fontanería estaba ENTERA y sin nadie que la usara.**
+
+| Pieza | Estado medido |
+|---|---|
+| `enrPersonLanguages` (persona × idioma, con `is_mother_tongue`) | existe y está viva |
+| **el KMS ya ESCRIBE** lo que se le mande en `persons[].languages[]` | `enr_persistPersons_`, `kis-app kms-server/enr/wizard-gateway.gs` — clave por identidad (persona+idioma) |
+| **la hidratación ya lo DEVUELVE** | `enr_wizardHydrateCompute_`, `wizard-datalayer.gs` → `attach('enrPersonLanguages','languages')` |
+| la ficha del personal ya lo pinta | `kis-app frontend/…/ApplicationDetailPage.jsx:168` |
+| **el asistente** | `languages` / `language_id` / `is_mother_tongue`: **CERO apariciones en todo `frontend/src`** |
+
+⇒ **no se tocó el KMS, ni una línea.** Lo único que faltaba era preguntarlo.
+
+**⛔ NO es el «idioma preferente» del centro (ficha `①44`), y confundirlos era el fallo a evitar.**
+Aquél responde a *«¿en qué idioma le hablamos?»* y se limita a lo que el centro sabe servir. **Éste
+responde a *«¿qué idiomas habla esta persona?»***: admite VARIOS, es OPCIONAL, y **no** está acotado
+a los idiomas en los que el sistema rinde — una familia habla francés aunque el KMS no hable
+francés. Y es dato **DE CADA PERSONA**, no del grupo: un tutor puede hablar francés y el alumno no.
+
+**Cómo queda la pantalla.** Debajo de nacionalidad y documento, en cada ficha de persona, una fila
+de casillas con el catálogo de idiomas. Marcar no es obligatorio: dejarlo en blanco **no impide
+avanzar ni dispara ningún aviso**.
+
+**⛔ LO YA DECLARADO NO SE PUEDE DESMARCAR, y es lo único no obvio de este tramo.** Los satélites de
+persona del KMS son **append-only** —el propio escritor lo dice: *«viva ⇒ no se toca
+(append-only)»*— y **`enrPersonLanguages` NO es una de las clases que la familia puede quitar**
+(`enr/retirada.gs` declara PERSONA · CORREO · TELEFONO · VINCULO · DOCUMENTO; los idiomas solo
+aparecen ahí como tabla que se ARRASTRA al quitar la persona entera). Dejar desmarcar un idioma ya
+guardado sería exactamente el defecto que `lib/quitar.js` existe para cerrar: **quitarlo de la
+pantalla y que vuelva al recargar**. Por eso vuelve marcado y **bloqueado** — la misma honestidad
+que el paso 6 con el tipo de un documento ya subido (`0º.sexdecies`).
+
+**⛔ LO QUE NO SE RECOGE, y por qué — se MIDIÓ antes de decidirlo, no se omitió.** La columna
+`is_mother_tongue` existe y el escritor la lee (`is_mother_tongue: !!l.is_mother_tongue`), **pero
+NO se pregunta**. Motivo medido: siendo la fila append-only, un dato que la familia marcara mal
+**no se podría corregir nunca** — un control que parece editable y está congelado desde el primer
+guardado promete lo que no puede dar. Al no mandarse, el KMS escribe `false`, que **no es una
+mentira**: quiere decir «la familia no la declaró», que es exactamente lo que pasó. El entregable
+de la ficha era la lista de idiomas hablados, y eso es lo que hay.
+
+**⚠️ Y un LÍMITE HONESTO más, medido:** la ficha del personal enseña el valor **EN CRUDO**
+(`l.language_id` → Diego lee `es`, no `Spanish`), porque `enrPersonLanguages` no trae columna de
+designación como sí trae la nacionalidad (`nationality_designation`). Resolverlo es del lado del
+KMS y **no se tocó**.
+
+**Dónde aterriza el dato:** `enrPersonLanguages`, una fila por persona e idioma, escrita por el KMS
+desde `persons[].languages[]` del guardado del paso 2 — **no se abrió ninguna ruta nueva ni un
+segundo camino de guardado**: el idioma viaja con la persona, en el guardado que ya existía.
+
+**Lo tocado, todo en `frontend/`:** `constants/languages.js` (catálogo curado ISO 639-1, molde de
+`countries.js`, con su nota de por qué no sale de un lookup: **el lookup no sirve idiomas**, medido)
+· `steps/Step2Persons.jsx` (el control, el `emptyPerson` y el paso al guardado, copiando el patrón
+de `nationality`) · `steps/personShape.js` (normalizar `languages` a `[]` — misma línea y mismo
+motivo que `ids`: sin ella el dirty-check marca el paso sucio en cada navegación y dispara guardados
+espurios) · los textos, en **los dos idiomas** (`field.languages`, `field.languages_help`,
+`field.languages_other`).
+
+**Red**: `npm run e2e:wizard`, camino NUEVO `idiomas-hablados` (14 afirmaciones). Lleva un **ancla**
+por delante —que el paso pinte alguna casilla de idioma— para que las demás no puedan pasar en
+vacío, y **el simulado sirve un idioma YA declarado en el tutor y ninguno en el alumno**: sin una
+fila ya guardada, la afirmación del bloqueo se comprobaría sobre nada. `VEREDICTO: VERDE — 32 de 32`.
+**Rojo demostrado TRES veces**, cada uno nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| que lo declarado no viaje en el guardado | *«los idiomas enviados para los alumnos fueron []: lo que la familia marcó no llega al expediente»* (+ cae la vuelta) |
+| quitar el bloqueo de lo ya declarado | *«la casilla de «es» del tutor volvió {"marcado":true,"bloqueado":false}: si se deja desmarcar, la familia lo quita de la pantalla y le vuelve al recargar»* |
+| que el control admita uno solo | *«las casillas quedaron […]: el control no admite más de uno»* + *«los idiomas enviados fueron ["fr"]»* |
+
+⚠️ **Lo que la red NO cubre:** la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni llama al KMS. Afirma lo que manda el navegador y lo que la pantalla pinta —
+**no** que la fila se escriba de verdad en `enrPersonLanguages`. Eso se acredita leyendo el escritor
+real (arriba, con su fichero), no con esta batería. Los cuatro controles del repositorio, VERDES.
+
+**Publicación**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
+`main` (CI/Pages), sin `clasp`.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.
