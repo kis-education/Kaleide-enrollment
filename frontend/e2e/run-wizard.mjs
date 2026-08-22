@@ -5105,6 +5105,13 @@ async function caminoIdiomasHablados(page, base) {
  *       la `designation` del catálogo (nunca el código en crudo);
  *   (4) lo que la familia elige VIAJA en el guardado, en `gender`.
  *
+ * ★ FASE B (2026-08-22) — retirado el RESPALDO escrito a mano, el caso «no llegó el
+ * catálogo» tiene que DECIRSE: con `scenario.catalogoSexoVacio` el doble sirve la lista
+ * vacía (como un KMS que aún no la sirve, o una lectura caída) y se afirma que
+ *   (5) NO se pinta ni una opción — si apareciera alguna, habría vuelto una lista local; y
+ *   (6) la pantalla AVISA al lado del campo. El campo es OPCIONAL, así que sin aviso la
+ *       familia avanza y el dato se pierde para siempre sin que nadie diga nada.
+ *
  * ⚠️ Lo que NO cubre: la batería corre contra un backend SIMULADO que nunca ejecuta
  * `backend/Code.js` ni llama al KMS. Que `enr_wizardFetchLookups` sirva de verdad el
  * catálogo no lo acredita esto — se acredita leyendo el manejador real.
@@ -5200,8 +5207,53 @@ async function caminoSexoDesdeElCatalogo(page, base) {
       generos.includes('ZZ-E2E'),
       `los sexos enviados fueron ${JSON.stringify(generos)}: lo que la familia eligió no llega al expediente`)
 
+    // ── FASE B · SIN CATÁLOGO, LA PANTALLA LO DICE (2026-08-22) ────────────────────
+    // Retirado el respaldo escrito a mano, el caso «no llegó el catálogo» NO puede quedarse
+    // mudo: el campo es OPCIONAL, así que un desplegable vacío dejaría avanzar y el dato se
+    // perdería sin un solo aviso. Se entra de nuevo con el catálogo vacío a propósito.
+    await esperarSilencioDeRed(20000, 400)   // el precalentado en vuelo, no el producto
+    scenario.catalogoSexoVacio = true
+    // ⛔ SESIÓN LIMPIA DE VERDAD, y no es ceremonia: la caché de MÓDULO de `api.js`
+    // (`_lookupsCache`) vive en el contexto de JavaScript de la página y SOBREVIVE a un
+    // cambio de hash, así que sin tirar el contexto la FASE B mediría el catálogo de la
+    // FASE A y pasaría en vacío. Medido: salía ROJA diciendo «ha vuelto una lista escrita
+    // a mano» cuando lo que volvía era la caché del propio robot.
+    await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+    await page.goto('about:blank')
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('(B) se vuelve al paso de Personas con el catálogo vacío',
+      (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(500)
+
+    // ── ANCLA: sin desplegable, las dos afirmaciones de abajo medirían el vacío.
+    const sel2 = await selector()
+    if (!c.afirmar('(B) el paso 2 sigue ofreciendo el campo del sexo', !!sel2,
+      'no se pintó ningún select[data-testid^="sexo-"]: sin el campo, lo de abajo no mide nada')) return c
+
+    const opciones2 = await sel2.$$eval('option', els =>
+      els.map(o => ({ value: o.value, texto: (o.textContent || '').trim() })))
+    const conValor2 = opciones2.filter(o => o.value)
+    c.afirmar('(B) sin catálogo NO se pinta ninguna opción escrita a mano',
+      conValor2.length === 0,
+      `se pintaron ${JSON.stringify(conValor2.map(o => o.value))} sin catálogo del servidor: ha vuelto una lista escrita a mano en el asistente`)
+
+    const aviso = await page.$('[data-testid^="sexo-no-disponible-"]')
+    const textoAviso = aviso ? ((await aviso.textContent()) || '').trim() : null
+    c.afirmar('(B) la pantalla AVISA de que las opciones no se pudieron cargar',
+      !!textoAviso && textoAviso.length > 10,
+      `el aviso leído fue ${JSON.stringify(textoAviso)}: con un desplegable vacío y sin aviso, la familia avanza y el dato se pierde sin que nadie diga nada`)
+
     return c
   } finally {
+    scenario.catalogoSexoVacio = false
     limpiar()
   }
 }

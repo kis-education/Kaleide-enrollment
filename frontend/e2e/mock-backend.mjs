@@ -136,7 +136,15 @@ function lookupsSegunEscenario_(scenario) {
         period_ends_on:   LOOKUPS.programs[0].period_ends_on,
       }])
     : LOOKUPS.programs;
-  if (modo !== 'appsheet' && modo !== 'ilegible') return { ...LOOKUPS, programs: programas };
+  // 2026-08-22 — el catálogo de sexo NO llega (KMS que aún no lo sirve, o lectura caída).
+  // Desde que se retiró el respaldo escrito a mano, ése es el caso que la pantalla tiene que
+  // DECIR en vez de quedarse con un desplegable vacío y mudo. Va con su motivo, como el real.
+  const sexo = (scenario && scenario.catalogoSexoVacio)
+    ? { genderValues: [], genderValuesReason: 'CATALOGO_VACIO' }
+    : {};
+  if (modo !== 'appsheet' && modo !== 'ilegible') {
+    return { ...LOOKUPS, programs: programas, ...sexo };
+  }
   const convertir = modo === 'appsheet'
     ? aFormatoAppSheet_
     // 'ilegible' — un valor que NINGÚN lector de fechas puede interpretar. No es un caso
@@ -151,6 +159,7 @@ function lookupsSegunEscenario_(scenario) {
       period_starts_on: convertir(p.period_starts_on),
       period_ends_on:   convertir(p.period_ends_on),
     })),
+    ...sexo,
   };
 }
 

@@ -229,6 +229,7 @@
   "field.zip": "Código postal",
   "field.address": "Domicilio",
   "field.gender": "Género",
+  "field.gender_unavailable": "No se han podido cargar las opciones de género. Puedes continuar sin rellenarlo y completarlo más adelante.",
   "field.mother_tongue": "Lengua materna",
   "field.school_year": "Curso escolar",
   "field.program": "Programa de admisión",

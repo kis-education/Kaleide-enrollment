@@ -229,6 +229,7 @@
   "field.zip": "Postcode",
   "field.address": "Address",
   "field.gender": "Gender",
+  "field.gender_unavailable": "The gender options could not be loaded. You can continue without filling it in and complete it later.",
   "field.mother_tongue": "Mother tongue",
   "field.school_year": "School year",
   "field.program": "Admission programme",

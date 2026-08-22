@@ -18,32 +18,6 @@ import { translateGender } from '../../utils/enumLabels';
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
 
-// `0º.tricies.duodecies` · DL-E51 — ⚠️ ESTO ES EL **RESPALDO**, NO EL MODELO.
-//
-// EL MODELO es el catálogo Capa 2 del KMS (`config/person-gender-values.html`), que llega
-// en las mismas listas que ya sirven alergias, dietas y tipos de documento
-// (`genderValues`, `enr_wizardFetchLookups`). Un valor nuevo se declara AHÍ, en una línea,
-// y aparece solo — que es exactamente lo que este tramo vino a hacer verdad.
-//
-// Esta lista existe SOLO para la ventana de despliegue: el frontal se publica al empujar a
-// `main` (CI/Pages) y el KMS se publica aparte, así que hay un rato en que este asistente
-// habla con un KMS que todavía no sirve `genderValues`. Sin respaldo, en ese rato el
-// desplegable se queda con el «Seleccionar…» y NINGUNA familia puede declarar el sexo —
-// medido: el campo es OPCIONAL (nada en `handleNext` lo exige), así que no bloquea el paso,
-// pero el dato se pierde para siempre en quien pase por ahí. Los cuatro valores de abajo son
-// EXACTAMENTE los que el catálogo declara hoy.
-//
-// ⛔ CUÁNDO SE RETIRA: en cuanto el KMS que sirve `genderValues` esté publicado y se
-// compruebe que la lista llega. A partir de ahí este bloque es código muerto que solo se
-// alcanza si la lectura de catálogos se cae, y lo vestigial se elimina en cuanto se detecta.
-// Anotado en `kis-app/docs/kms/loop-backlog.md`, ficha `0º.tricies.duodecies`.
-const SEXO_RESPALDO_ = [
-  { code: 'Male',              designation: 'Masculino',           label_key: 'gender.Male' },
-  { code: 'Female',            designation: 'Femenino',            label_key: 'gender.Female' },
-  { code: 'Non-binary',        designation: 'No binario',          label_key: 'gender.Non-binary' },
-  { code: 'Prefer-not-to-say', designation: 'Prefiero no decirlo', label_key: 'gender.Prefer-not-to-say' },
-];
-
 // CLI 8 (DL-E39 ENMIENDA 3): versión del texto de atestación de tutor único. Se
 // registra junto al acto (attestant + timestamp) para trazabilidad legal; bumpea si
 // cambia el texto de la atestación.
@@ -468,7 +442,7 @@ function AvisarTutorBoton({ person, avisar }) {
   );
 }
 
-function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar, valoresDeSexo = [] }) {
+function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar, valoresDeSexo = [], sexoNoDisponible = false }) {
   const { t } = useTranslation();
   // UX-2: resaltado por-campo. `inv(field)` consulta si está marcado inválido; editar un
   // campo lo limpia (vía onFieldEdit, subido al estado del padre).
@@ -607,14 +581,27 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           <label className="form-label">{t('field.gender')}</label>
           {/* `0º.tricies.duodecies` · DL-E51 — las opciones salen del CATÁLOGO que manda el
               servidor (`genderValues`); aquí no se escribe ni un código. La etiqueta la
-              resuelve el único sitio que decide eso: `translateGender`. */}
+              resuelve el único sitio que decide eso: `translateGender`.
+              ⛔ NO se reintroduce una lista escrita a mano «por si acaso»: fue el RESPALDO
+              que este tramo retiró (2026-08-22), y su condición de retirada —que el KMS que
+              sirve `genderValues` esté publicado— se cumplió en `@1471`. Si el catálogo no
+              llega, la pantalla lo DICE (abajo) en vez de quedarse muda. */}
           <select className="form-select" data-testid={`sexo-${_pk}`}
-            value={person.gender} onChange={e => u('gender', e.target.value)}>
+            value={person.gender} onChange={e => u('gender', e.target.value)}
+            disabled={sexoNoDisponible}>
             <option value="">{t('placeholder.select')}</option>
             {valoresDeSexo.map(v => (
               <option key={v.code} value={v.code}>{translateGender(v.code, t, v)}</option>
             ))}
           </select>
+          {/* El campo es OPCIONAL (nada en `handleNext` lo exige), así que un desplegable
+              vacío NO bloquearía el paso — y ése era justo el peligro: la familia avanzaba y
+              el dato se perdía sin que nadie dijera nada. Falla NOMBRANDO. */}
+          {sexoNoDisponible && (
+            <div className="form-text text-danger" data-testid={`sexo-no-disponible-${_pk}`}>
+              {t('field.gender_unavailable')}
+            </div>
+          )}
         </div>
         <div className="col-md-3">
           <label className="form-label">{t('field.nationality')}</label>
@@ -978,22 +965,37 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   // documento (`genderValues`, `enr_wizardFetchLookups`). NO se abre ninguna llamada nueva.
   // Mismo molde que `Step6Documents` con `recTypesInterestedParty` — el precedente probado.
   //
-  // Arranca con el RESPALDO (ver `SEXO_RESPALDO_`, y su condición de retirada) y lo
-  // SUSTITUYE en cuanto llega la lista del servidor. Ningún fallo de lectura se propaga:
-  // una lectura que no llega deja la pantalla exactamente como estaba.
-  const [valoresDeSexo, setValoresDeSexo] = useState(SEXO_RESPALDO_);
+  // ⛔ NO HAY RESPALDO ESCRITO A MANO, y su retirada (2026-08-22) es deliberada. Hubo una
+  // lista de cuatro valores aquí dentro, declarada como RESPALDO para la ventana de
+  // despliegue, con su condición de retirada escrita: «en cuanto el KMS que sirve
+  // `genderValues` esté publicado y se compruebe que la lista llega». Se cumplió en `@1471`,
+  // y lo vestigial se elimina en cuanto se detecta. Una segunda lista aquí es exactamente la
+  // divergencia que este tramo vino a cerrar: se reintroduce y el catálogo deja de mandar.
+  //
+  // ⚠️ Sin respaldo, el caso «no llegó el catálogo» NO PUEDE QUEDARSE MUDO: el campo es
+  // OPCIONAL (nada en `handleNext` lo exige), así que un desplegable vacío dejaría avanzar y
+  // el dato se perdería para siempre en quien pase por ahí, sin un solo aviso. Por eso hay
+  // TRES situaciones, no dos: cargando (aún no se sabe) · con catálogo · sin catálogo, que
+  // se DICE en pantalla al lado del campo.
+  const [valoresDeSexo, setValoresDeSexo] = useState([]);
+  const [sexoNoDisponible, setSexoNoDisponible] = useState(false);
   useEffect(() => {
     fetchLookups(i18n.language)
       .then(data => {
-        const vs = (data && data.genderValues) || [];
+        const vs = ((data && data.genderValues) || []).filter(v => v && v.code);
         log.info('Step2: valores de sexo del catálogo', {
           count: vs.length, motivo: (data && data.genderValuesReason) || null,
         });
-        // Lista vacía ⇒ NO se pisa el respaldo: un catálogo ilegible o sin declarar no
-        // puede dejar a la familia sin poder contestar. El servidor ya dice su motivo.
-        if (vs.length) setValoresDeSexo(vs.filter(v => v && v.code));
+        setValoresDeSexo(vs);
+        // Lista vacía = catálogo ilegible, sin declarar, o un KMS que aún no lo sirve. El
+        // servidor ya dice su motivo (`genderValuesReason`) en el registro; a la familia se
+        // le dice, en llano, que las opciones no se pudieron cargar y que puede seguir.
+        setSexoNoDisponible(vs.length === 0);
       })
-      .catch(err => log.error('Step2: fetchLookups failed', { message: err.message }));
+      .catch(err => {
+        log.error('Step2: fetchLookups failed', { message: err.message });
+        setSexoNoDisponible(true);
+      });
   }, [i18n.language]);
 
   // DL-E39 ENMIENDA (gate de entrada): el enmascarado per-campo (DOB/DNI/dirección)
@@ -1427,6 +1429,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               invalidFields={invalidFields}
               onFieldEdit={clearInvalidField}
               valoresDeSexo={valoresDeSexo}
+              sexoNoDisponible={sexoNoDisponible}
             />
           );
         })}
@@ -1485,6 +1488,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               invalidFields={invalidFields}
               onFieldEdit={clearInvalidField}
               valoresDeSexo={valoresDeSexo}
+              sexoNoDisponible={sexoNoDisponible}
             />
           );
         })}
