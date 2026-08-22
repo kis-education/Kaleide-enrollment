@@ -2952,6 +2952,195 @@ aquí no dependía de eso, pero la persistencia de punta a punta sí.
 **Textos, manual y ayuda en pantalla: ninguno toca.** La familia ve exactamente la misma pantalla y
 declara exactamente lo mismo; lo que cambia es cuántas filas salen hacia el expediente.
 
+### `0º.tricies.quindecies` (2026-08-22) — las cuotas dejan de recalcularse cuando no ha cambiado nada, y el paso 6 dejaba de estar sucio para siempre
+
+**Diego, 2026-08-22, cita literal:** *«Las cuotas se siguen recalculando aunque no cambie
+absolutamente nada. Si navego hacia atrás desde el paso 7, vuelven a calcularse
+innecesariamente»*. Cada recálculo son **~89 s** de espera para la familia.
+
+**LO PRIMERO FUE INSTRUMENTAR, y de los cuatro candidatos que traía la ficha sobrevivieron
+dos — encadenados. Los números, todos medidos el 2026-08-22:**
+
+| Qué se midió | Antes | Después |
+|---|---|---|
+| llamadas a `simularCuotas` en un 7→6→7 **sin tocar nada** (batería) | **2** | **1** |
+| guardados encolados en ese mismo recorrido | **1** (`saveStep:documents`) | **0** |
+| viajes al KMS del recorrido real, lado servidor (arnés) | motor **1** · huella **1** | motor **1** · huella **0** |
+| ¿la huella es estable entre llamadas? | **SÍ** — el candidato (b) queda DESCARTADO |
+
+**Candidato (c)/(d) — CIERTO: el paso 7 se DESMONTA.** `WizardPage` pinta **un solo paso**
+(`STEP_COMPONENTS[currentStep]`), así que pulsar «Atrás» destruye `SimulacionDeCuotas` con su
+`useState`, y al regresar su efecto vuelve a disparar `simularCuotas`. El servidor **sí sabe
+no recalcular** —su caché de dos niveles acierta, medido aparte— pero la familia paga igual el
+viaje entero a Apps Script (decenas de segundos) y ve el recuadro volver a «cargando». **Eso es
+lo que él describe.**
+
+**Candidato (a) — CIERTO, y es LA CAUSA DE FONDO: el paso 6 salía SUCIO en cada pasada.** El
+KMS hidrata **cada documento con SEIS campos** —`file_id`, `rec_type_code`, `file_name`,
+`description`, `created_at`, `owner_person_ids` (`enr_wizardHydrateCompute_`,
+`kis-app kms-server/enr/wizard-datalayer.gs`)— y `uploadedDocs()` de `Step6Documents` producía
+**TRES** ⇒ `isStepDirty('documents', …)` daba positivo **siempre** y se encolaba un `saveStep`
+que la familia no pidió.
+
+⚠️ **Y ese guardado NO es inofensivo aunque el servidor no escriba nada** (`saveStep_`
+case `'documents'` es un **no-op declarado** — los documentos los guarda `uploadDocument_`):
+**bumpa la versión del grupo** (`_wzCacheInvalidate_`) ⇒ tira de golpe las cachés de
+**hidratación, admisión, miembros y la de la simulación**, así que el paso 7 se cae al nivel 2
+y vuelve a pagar. Y pasa por `assertStepUpFresh_`, así que **puede saltarle a la familia un
+`STEPUP_REQUIRED` por un guardado que nunca pidió**. Es exactamente la clase de defecto que ya
+documentan P89, `①45` y `0º.duodetricies` — la tercera vez que aparece en este repositorio.
+
+**Candidato (b) — FALSO: la huella es estable.** Se ejecutaron las funciones reales con dobles
+y la huella no se mueve entre llamadas; el nivel 2 acierta y **re-archiva** con la versión de
+ahora, así que la siguiente lectura vuelve al nivel 1. Lo único que la haría inestable es que
+cambie de verdad lo que el centro declaró o el sujeto de un solicitante — que es su trabajo.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ LA FORMA DE UN DOCUMENTO SALE DE UN SOLO SITIO**: `frontend/src/pages/steps/documentShape.js`,
+  hermano declarado de `personShape.js`. La usan **los dos lados** —el baseline de
+  `hydrateFromResume` y `uploadedDocs()` de `Step6Documents`—; dos definiciones divergirían y el
+  defecto volvería.
+- **⛔ Se proyecta SOLO el baseline, nunca `stepData.documents`**: `seedRows()` LEE de ahí
+  `rec_type_code` y `owner_person_ids` para enseñar de vuelta qué es cada archivo y de quién es
+  (`0º.sexdecies`). Por eso los dos campos **entran** en la forma en vez de recortarse — y de
+  paso se cierra una regresión que estaba viva: `persist()` (el «Atrás» del paso 6) los borraba
+  de `stepData`, así que volver al paso apagaba esas dos líneas de la pantalla.
+- **`created_at` se descarta a propósito**: la pantalla no lo produce ni lo usa, así que en el
+  baseline sería un campo fantasma que el envío nunca tendría.
+- **⛔ La memoria de la simulación NO es una caché con plazo**: es un `useRef` de `WizardContext`
+  que **muere con la pestaña** (jamás `sessionStorage`) y **se olvida sola** en tres momentos —
+  al encolar **CUALQUIER** guardado (**al ENCOLAR**, no al aterrizar: entre que sale y vuelve, el
+  paso 7 podría remontarse y servirse una foto de antes), al **subir la versión del grupo** (otro
+  tutor, o un trabajo del KMS que aterriza) y al **rehidratar**. **No se alargó ningún plazo**,
+  que la ficha lo prohíbe.
+- **⛔ Solo se memoriza lo que trae `huella`** — el **MISMO** criterio con el que el servidor
+  decide si su caché sirve (medido: sin huella, la suya no se puede usar). Una segunda lista de
+  códigos aquí divergiría de la del servidor. Un fallo (`NO_SE_PUDO_SIMULAR`, o el `catch` del
+  transporte) no trae huella ⇒ no se memoriza y el regreso reintenta.
+- **⛔ Ni la matemática ni el motor se tocan** (DL-080-A): `money()` sigue dividiendo entre 100 y
+  formateando, y los importes siguen saliendo enteros del KMS.
+
+**Y el doble de la batería pasa a reflejar el contrato real**, porque sin eso la red medía otra
+cosa: ahora `simularCuotas` devuelve `huella` (como el KMS) y la hidratación devuelve los seis
+campos del documento con la clave **`file_name`** — antes mandaba **`filename`**, una clave que
+el KMS **no usa**.
+
+**Red**: camino NUEVO `simulador-no-recalcula-al-navegar` (8 afirmaciones), con un **ancla** por
+delante —que el paso 7 pinte su simulador— para que las dos afirmaciones que importan no puedan
+pasar en vacío. `VEREDICTO: VERDE — 38 de 38`. **Rojo demostrado TRES veces**, cada uno
+nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| quitar la lectura del memo en `Step7Review` | *«se pidió 1 vez/veces más al regresar al paso 7 (total 2)»* |
+| dejar el baseline de documentos SIN normalizar | *«se encolaron 1 guardado(s) de documentos sin que la familia tocara el paso»* + vuelve la segunda llamada |
+| y además quitar el olvido al encolar | el guardado espurio sigue saliendo **y la simulación memorizada se sirve por encima de la escritura** (1 llamada) — la afirmación del guardado lo caza |
+
+⚠️ **Lo que la red NO cubre, y está DEMOSTRADO, no supuesto:** la batería corre contra un backend
+**simulado** que **nunca ejecuta `backend/Code.js`** ni el KMS. La caché de dos niveles del
+servidor se midió **aparte**, con un arnés efímero (fuera del repositorio, no commiteado) que
+extrae del fuente REAL `simularCuotas_`, `_wzComputeYCachearSimulacion_`, `_warmSimularCuotasPhase_`,
+`_wzCacheKey_`, `_wzCacheGetChunked_`/`_wzCachePutChunked_`, `_getLiveStateVersion_` y
+`_wzCacheInvalidate_` y los ejecuta con dobles de `CacheService` y del proxy al KMS: **9
+afirmaciones verdes** y **CUATRO rojos demostrados** (anular el nivel 1 · anular el nivel 2 ·
+quitar el re-archivo tras un acierto de nivel 2 · y el renombrado, que sale **«MEDICIÓN CIEGA»**,
+no verde). **Y la medición se corrigió a sí misma**: en su primera versión decía que la caché
+**nunca** acertaba, y era **falso** — al arnés le faltaba una constante de módulo
+(`_WZ_CACHE_KIND_V2_`), así que `_wzCacheKey_` lanzaba y el `catch` de `simularCuotas_` lo
+disfrazaba de «no había caché». Se descubrió instrumentando ese `catch`. **Quien toque esta cadena,
+que lo mida.**
+
+**Lo que queda ANOTADO y NO se hizo, con su motivo:** el camino barato del servidor —
+`enr_wizardHuellaDeSimulacion` (`kis-app kms-server/enr/wizard-gateway.gs`)— **no enciende el memo
+de lecturas** que su gemelo caro sí enciende (`enr_simularCuotasDelGrupo_`, con
+`db_readMemoEnable_`), aunque recorre un **subconjunto estricto** de ese mismo cierre ya auditado
+como lectura pura. Encenderlo lo abarataría, pero **el beneficio no se puede medir desde aquí** (hay
+que ejecutar contra AppSheet) y es KMS, que se publica aparte. Queda en la cola con su fichero y su
+función.
+
+### `0º.duodetricies` (2026-08-22) — editar un vínculo YA GUARDADO dejaba de escribirse EN SILENCIO
+
+**Un dato que la familia creía guardado y no lo estaba, sin ningún aviso que mirar.** Salió al
+medir `0º.septvicies`, no de un encargo.
+
+**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
+
+| Pieza | Qué dice |
+|---|---|
+| el ÚNICO escritor | `enr_persistRelations_` (`kis-app kms-server/enr/wizard-gateway.gs:3473`): `if (!r \|\| !r.person_id_a \|\| !r.person_id_b) return;` |
+| la hidratación del KMS | proyecta `guardian_person_id`/`applicant_person_id` **ENCIMA** de `from_person_id`/`to_person_id` (`enr/wizard-datalayer.gs:351`) — **ninguno de esos cuatro nombres es el que el escritor mira** |
+| el paso 3, rama de vínculo NUEVO | **SÍ** pone `person_id_a`/`person_id_b` (`Step3Relations.jsx:55`, `:73`) ⇒ los nuevos sí se guardaban |
+| el paso 3, rama de vínculo YA GUARDADO | `{ ...found }` — hereda lo que trajo la hidratación, **sin los dos identificadores** |
+
+⇒ la familia corregía «madre» por «tutora legal», o marcaba la custodia, le daba a continuar,
+**la pantalla no protestaba** y el cambio **no se escribía nunca**.
+
+**⚠️ NO es lo mismo que D97** (el `pair_id` obligatorio), que **rechaza la escritura entera y SÍ
+se ve** en pantalla. Éste **falla hacia el SILENCIO**, que es peor: no hay aviso rojo que mirar.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ SE REPONE EN UN SOLO SITIO, y no es el que parece.** Va en el normalizador de la
+  hidratación (`WizardContext.jsx`, `hydrateFromResume`), **el que ya existe para sembrar el
+  expediente con la MISMA forma que produce el paso 3** (el mismo bloque que normaliza los
+  booleanos y las personas, con su porqué escrito al lado). Desde ahí lo heredan **el
+  `savedBaseline`, `stepData` y el envío**, los tres a la vez.
+- **⛔ Reponerlos AL ENVIAR habría sido el error**: el `savedBaseline` se siembra de la
+  hidratación, así que el envío tendría dos campos MÁS que la referencia ⇒ **dirty-check positivo
+  permanente y un guardado espurio por sesión** — la clase de defecto que ese mismo comentario
+  lleva documentada desde P89. Y hacerlo en los dos lados serían **dos criterios sobre el mismo
+  dato**, que es lo que la regla del código-de-oro prohíbe.
+- **⛔ EL ORDEN ES PARTE DEL DATO: `a` = `from`, `b` = `to`, derivado de la PROPIA fila** y nunca
+  de las personas del bucle que la encontró. El escritor identifica la fila por la terna
+  `(expediente, a, b)` (`enr_upsertRelation_`), así que invertir los extremos **no actualiza: crea
+  una fila NUEVA** — justo el duplicado que DL-S45 vino a cerrar. Importa de verdad en el par
+  hermano↔hermano, que se casa en los dos sentidos.
+- **⛔ La guarda del servidor NO se toca.** Descartar una fila sin sujetos es una comprobación de
+  pertenencia legítima (KAL-4). Lo que estaba mal era **quién manda el dato**, no que se
+  comprobara. Sin ningún extremo reconocible la fila sale como entró y se descarta igual que hoy:
+  **no se inventa un identificador**.
+
+**⚠️ LO QUE ESTA VUELTA NO CIERRA, y su motivo:** que el descarte **se DIGA**. Medido: el trabajo
+sí lo cuenta y lo devuelve (`relations_discarded`, `enr_persistRelations_:3553`) y lo registra
+(`:3533`), pero eso vive en **la respuesta del trabajo de la cola**, que ocurre minutos después de
+que el asistente ya haya contestado ⇒ **no llega a la familia**. Y no lo cubre el aviso de
+`0º.tricies.octies (B)`, que solo mira los trabajos en `Failed`: un descarte **no** hace fallar el
+trabajo. Es `kms-server/enr/*`, **reservado por otra mano en este mismo turno**, así que **no se
+toca**: queda anotado en la ficha. Tras este arreglo el camino legítimo ya no produce descartes.
+
+**✅ Y de paso se cerró una contradicción que costaba trabajo: D97 SÍ ESTÁ APLICADO.** Se iba a
+escribir aquí *«no consta aplicado»* —lo que decían tres fichas de la cola— y al medirlo resultó que
+el repositorio **ya tenía la prueba**: al cerrar `0º.tricies.duodecies` se registró que **Diego quitó
+el «obligatorio» de `pair_id` y un trabajo de guardado de vínculos llegó a `Done` a las 17:39**, cosa
+imposible si AppSheet siguiera rechazando la escritura entera. Lo que faltaba era **la marca en
+`kis-app docs/kms/pendiente-diego.md` §D97**, puesta en el mismo cambio. ⚠️ **Y se dice cómo se
+sabe:** el `Required` de una columna **no se lee** por la API de datos, así que esto se acredita por
+la **consecuencia observable** (una escritura que antes se rechazaba y ahora aterriza), nunca mirando
+el esquema. ⇒ **la persistencia de los vínculos ya no está bloqueada.**
+
+**Red**: camino NUEVO `editar-vinculo-guardado` (6 afirmaciones). Usa la familia de **UN SOLO
+tutor** a propósito — es el único molde del simulado cuya hidratación trae los vínculos de todos
+los hijos con tipo y custodia ya puestos; con dos tutores el recorte de DL-E49 §2 deja al segundo
+hijo sin custodia y **el camino moriría en la validación del paso, sin medir nada** (pasó al primer
+intento, y por eso se dice). `VEREDICTO: VERDE — 37 de 37`. **Rojo demostrado DOS veces**, cada uno
+nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| quitar la reposición (el código de ayer) | *«la fila del vínculo editado salió como {…"from_person_id":…,"to_person_id":…,"relation_type_id":"rt_father"…}: sin los DOS identificadores, `enr_persistRelations_` la descarta EN SILENCIO»* — y la afirmación (6) **sigue verde**, que es lo que prueba que la edición SÍ llega al envío y solo le faltan los identificadores |
+| invertir los extremos (`a`=`to`, `b`=`from`) | *«la fila salió con a=bbbb… / b=aaaa… sobre from=aaaa… / to=bbbb…: invertir los extremos hace que el KMS cree una fila NUEVA en vez de actualizar la suya»* |
+
+⚠️ **Lo que la red NO cubre:** la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS ⇒ afirma **qué manda el navegador**, no que la fila aterrice en
+`sysPersonRelations`. El contrato del escritor se acredita **leyendo su código real** (arriba, con
+fichero y línea), no con esta batería.
+
+**Publicación**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Sale por CI/Pages al
+empujar a `main`, sin `clasp`. **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve
+exactamente la misma pantalla y hace exactamente lo mismo; lo que cambia es que ahora su corrección
+llega entera al expediente.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

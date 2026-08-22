@@ -146,6 +146,9 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'simulador-en-pie': 'guardar la forma de pago elegida exige el código de un solo uso, que el servidor manda al buzón de la familia y este arnés no lee buzones; en modo simulado sí se cubre',
     'simulador-caido': 'el escenario hostil (el simulador no responde) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
   },
+  'simulador-no-recalcula-al-navegar': {
+    'no-recalcula-al-navegar': 'exige un expediente con plantillas de tarifa declaradas y contar las llamadas del navegador; contra el sistema real el arnés no puede sembrarlo',
+  },
   'simulador-paso7-varios-planes': {
     'varios-planes': 'exige declarar en el catálogo real dos plantillas de suscripción aplicables a la vez al mismo solicitante; en modo simulado sí se cubre',
   },
@@ -5714,6 +5717,96 @@ async function caminoSimuladorPaso7(page, base) {
 }
 
 /**
+ * simulador-no-recalcula-al-navegar — LA MEDICIÓN de `0º.tricies.quindecies`
+ * (Diego, 2026-08-22: *«Las cuotas se siguen recalculando aunque no cambie absolutamente
+ * nada. Si navego hacia atrás desde el paso 7, vuelven a calcularse innecesariamente»*).
+ *
+ * Cuenta las llamadas a `simularCuotas` que salen del navegador al recorrer 7 → 6 → 7 SIN
+ * TOCAR NADA. Cada recálculo del lado del servidor son ~89 s de espera para la familia, así
+ * que una llamada de más no es cosmética.
+ *
+ * ⚠️ Esto mide LO QUE PIDE EL NAVEGADOR, no lo que el servidor recalcula: la batería corre
+ * contra un backend simulado que NUNCA ejecuta `backend/Code.js`. La caché de dos niveles
+ * (`simularCuotas_`) se mide aparte.
+ */
+async function caminoSimuladorNoRecalculaAlNavegar(page, base) {
+  const c = new Camino('simulador-no-recalcula-al-navegar')
+  scenario.stage = 'lista_para_enviar'
+  scenario.simulacionFalla = false
+
+  if (REAL) {
+    c.noCubierta('no-recalcula-al-navegar',
+      'exige un expediente con plantillas de tarifa declaradas y contar las llamadas del navegador; contra el sistema real el arnés no puede sembrarlo')
+    return c
+  }
+
+  let simulaciones = 0
+  const acciones = []
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'simularCuotas') simulaciones++
+    acciones.push(body && body.action === 'saveStep' ? ('saveStep:' + body.step) : (body && body.action))
+  }
+  page.on('request', espiar)
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) < 6; i++) {
+      if (!await continuar(c, page, (await dondeEstoy(page)) + 1, 'hacia Revisión')) break
+    }
+    if (!c.afirmar('se llega a Revisión', (await dondeEstoy(page)) === 6,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(LATENCY + 800)
+
+    const bloque = await page.$('[data-testid="paso7-simulador"]')
+    if (!c.afirmar('el paso 7 enseña la simulación (ancla)', !!bloque,
+      'no se pintó el simulador: sin él esta medición pasaría en vacío')) return c
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, 2)
+
+    const trasLaPrimera = simulaciones
+    c.afirmar('llegar al paso 7 pide la simulación UNA sola vez', trasLaPrimera === 1,
+      `se pidieron ${trasLaPrimera} simulaciones al montar el paso 7`)
+
+    // ── Volver atrás y regresar, SIN TOCAR NADA ──────────────────────────────────────
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!atras) { c.noCubierta('volver-y-regresar', 'el paso 7 no ofrece botón «Atrás»'); return c }
+    await atras.click()
+    await page.waitForTimeout(400)
+    c.afirmar('«Atrás» lleva al paso 6', (await dondeEstoy(page)) === 5,
+      `tras pulsar «Atrás» el stepper marca el índice ${await dondeEstoy(page)}`)
+
+    if (!await continuar(c, page, 6, 'de vuelta a Revisión')) return c
+    await page.waitForTimeout(LATENCY + 800)
+
+    const trasElRegreso = simulaciones
+    c.notas.push(`MEDIDO — simularCuotas: ${trasLaPrimera} al llegar · ${trasElRegreso} tras 7→6→7`)
+    c.notas.push(`MEDIDO — acciones del navegador en todo el recorrido: ${JSON.stringify(acciones)}`)
+    c.afirmar('volver atrás y regresar NO vuelve a pedir la simulación',
+      trasElRegreso === trasLaPrimera,
+      `se pidió ${trasElRegreso - trasLaPrimera} vez/veces más al regresar al paso 7 (total ${trasElRegreso}): ` +
+      `cada una son ~89 s de espera para la familia, y no había cambiado nada`)
+
+    // ── Y LA CAUSA DE FONDO: pasar por el paso 6 sin tocarlo NO puede guardar nada ──────
+    // Un `saveStep` de documentos que la familia no pidió es peor que un viaje de más: el
+    // servidor bumpa la versión del grupo y TIRA la caché de la simulación (además de las
+    // de hidratación, admisión y miembros), así que el paso 7 vuelve a pagar. Y pasa por el
+    // código de un solo uso, así que puede saltarle `STEPUP_REQUIRED` por un guardado que
+    // nunca pidió.
+    const guardadosDeDocumentos = acciones.filter(a => a === 'saveStep:documents')
+    c.afirmar('pasar por el paso 6 SIN TOCAR NADA no encola ningún guardado',
+      guardadosDeDocumentos.length === 0,
+      `se encolaron ${guardadosDeDocumentos.length} guardado(s) de documentos sin que la familia tocara el paso: ` +
+      `eso tira la caché de la simulación y le vuelve a cobrar el cálculo`)
+    return c
+  } finally {
+    page.off('request', espiar)
+  }
+}
+
+/**
  * simulador-paso7-varios-planes — UN NIÑO PUEDE TENER VARIOS PLANES A LA VEZ
  * (`0º.quaterdecies`, 2026-08-21).
  *
@@ -7151,6 +7244,106 @@ async function caminoVinculoHermanosUnaSolaFila(page, base) {
   }
 }
 
+/**
+ * `0º.duodetricies` — EDITAR UN VÍNCULO YA GUARDADO LLEGA AL SERVIDOR CON SUS DOS EXTREMOS.
+ *
+ * El ÚNICO escritor descarta EN SILENCIO todo vínculo que no traiga `person_id_a` y
+ * `person_id_b` (`enr_persistRelations_`, `kis-app kms-server/enr/wizard-gateway.gs`), y la
+ * hidratación del KMS **no manda esos dos nombres**: proyecta `guardian_person_id` /
+ * `applicant_person_id` encima de `from_person_id` / `to_person_id`. Resultado medido el
+ * 2026-08-22: la familia corregía «madre» por «tutora legal» o marcaba la custodia de un
+ * vínculo YA GUARDADO, la pantalla no protestaba, y **el cambio no se escribía nunca**.
+ *
+ * ⚠️ Esto NO es lo mismo que D97 (el `pair_id` obligatorio), que RECHAZA la escritura entera
+ * y SÍ se ve en pantalla. Éste falla hacia el SILENCIO, que es peor: no hay aviso que mirar.
+ *
+ * Se mide lo observable desde el navegador: qué filas salen en el `saveStep` del paso 3
+ * después de tocar un vínculo que vino de la hidratación. Lo que el KMS haga con ellas la
+ * batería no lo ve —corre contra el backend simulado—, y por eso la afirmación se queda
+ * exactamente en el contrato del escritor: los dos identificadores, y en su orden.
+ */
+async function caminoEditarVinculoGuardado(page, base) {
+  const c = new Camino('editar-vinculo-guardado')
+
+  try {
+  // Etapa con vínculos YA guardados en el expediente. Se usa la familia de UN SOLO tutor a
+  // propósito: es el único molde del simulado cuya hidratación trae los vínculos de TODOS
+  // los hijos, con su tipo y su custodia ya puestos. Con dos tutores, el recorte de
+  // DL-E49 §2 esconde el vínculo del otro y el segundo hijo se queda sin custodia ⇒ el paso
+  // no deja continuar y el camino moriría ANTES de la afirmación, sin medir nada.
+  scenario.stage = 'hasta_preguntas'
+  scenario.tutorUnico = true
+
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  const pantalla = await page.evaluate(sondaPantalla)
+  c.evidencia.elementos = pantalla.pasos + pantalla.campos
+  if (!await irAVinculos(c, page)) return c
+
+  // ANCLA: sin un vínculo YA guardado y con su tipo puesto, todo lo de abajo mediría el
+  // alta de uno nuevo — que es justo el caso que SÍ funcionaba.
+  const selects = await page.$$('.kis-card select.form-select-sm')
+  const tipoPrevio = selects.length ? await selects[0].inputValue() : ''
+  if (!c.afirmar('(1) el paso trae un vínculo YA guardado, con su tipo declarado',
+    selects.length >= 1 && !!tipoPrevio,
+    `se pintaron ${selects.length} desplegable(s) y el primero vale "${tipoPrevio}": ` +
+    'sin un vínculo que venga de la hidratación, este caso no se está midiendo')) return c
+
+  // Se cambia el tipo a OTRO distinto del que vino guardado: es la edición que hoy se pierde.
+  const opciones = await selects[0].$$eval('option', (os) => os.map(o => o.value).filter(Boolean))
+  const tipoNuevo = opciones.find(v => v !== tipoPrevio)
+  if (!c.afirmar('(2) el catálogo ofrece otro tipo al que cambiar',
+    !!tipoNuevo,
+    `las opciones eran ${JSON.stringify(opciones)} y el valor guardado "${tipoPrevio}": ` +
+    'con una sola opción no hay edición que medir')) return c
+  await selects[0].selectOption(tipoNuevo)
+  await page.waitForTimeout(200)
+
+  const antes = calls.length
+  if (!await continuar(c, page, 3, 'paso 3 → 4 tras cambiar el tipo de un vínculo guardado')) return c
+
+  const t0 = Date.now()
+  const guardadosDeVinculos = () => llamadas('saveStep')
+    .filter(g => (g.payload || {}).step === 'relations')
+  while (!guardadosDeVinculos().length && Date.now() - t0 < LATENCY + 3000) {
+    await page.waitForTimeout(200)
+  }
+  c.evidencia.llamadas = calls.length - antes
+  const guardados = guardadosDeVinculos()
+  if (!c.afirmar('(3) tocar un vínculo guardado dispara su guardado', guardados.length > 0,
+    `ningún saveStep con step="relations" salió en ${Date.now() - t0} ms tras continuar: ` +
+    'la edición no llega ni a salir del navegador')) return c
+
+  const filas = (guardados[guardados.length - 1].payload || {}).payload || []
+  const editada = filas.find(r => (r.relation_type_id || '') === tipoNuevo)
+
+  // LA AFIRMACIÓN CENTRAL: sin los dos extremos, el escritor la tira sin decir nada.
+  c.afirmar('(4) la fila editada viaja con `person_id_a` y `person_id_b`',
+    !!(editada && editada.person_id_a && editada.person_id_b),
+    `la fila del vínculo editado salió como ${JSON.stringify(editada || null)}: ` +
+    'sin los DOS identificadores, `enr_persistRelations_` la descarta EN SILENCIO y la ' +
+    'corrección de la familia no se guarda nunca')
+
+  // El ORDEN es parte del dato: el escritor identifica la fila por la terna
+  // `(expediente, a, b)`, así que invertirla no actualiza — crea una fila NUEVA.
+  c.afirmar('(5) y los extremos conservan el orden con el que están guardados',
+    !!(editada && (!editada.from_person_id || editada.person_id_a === editada.from_person_id) &&
+                  (!editada.to_person_id   || editada.person_id_b === editada.to_person_id)),
+    `la fila salió con a=${editada && editada.person_id_a} / b=${editada && editada.person_id_b} ` +
+    `sobre from=${editada && editada.from_person_id} / to=${editada && editada.to_person_id}: ` +
+    'invertir los extremos hace que el KMS cree una fila NUEVA en vez de actualizar la suya')
+
+  // Y el cambio que la familia hizo es el que sale, no el que había.
+  c.afirmar('(6) el tipo que sale es el que la familia acaba de elegir',
+    !!(editada && editada.relation_type_id === tipoNuevo),
+    `se esperaba relation_type_id="${tipoNuevo}" y las filas mandadas fueron ` +
+    JSON.stringify(filas.map(r => r.relation_type_id)))
+
+  return c
+  } finally {
+    scenario.tutorUnico = false
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -7188,6 +7381,8 @@ const CAMINOS = [
   // `0º.quaterdecies` — un solicitante con VARIOS planes aplicables a la vez (cuota +
   // comedor) ve los dos, con su nombre y su total sumado. Contra el sistema real se
   // declara NO CUBIERTO: exige declarar dos plantillas aplicables a la vez en el catálogo.
+  { nombre: 'simulador-no-recalcula-al-navegar', fn: caminoSimuladorNoRecalculaAlNavegar,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'simulador-paso7-varios-planes', fn: caminoSimuladorPaso7VariosPlanes,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   // `③70` — la familia que YA ENVIÓ consulta sus cuotas en el paso 7: ve las cifras y
@@ -7202,6 +7397,10 @@ const CAMINOS = [
   // `0º.septvicies` — el asistente deja de escribir la fila invertida del par de hermanos
   // (DL-S45), y el lector del paso 3 la sigue viendo guardada en cualquier sentido.
   { nombre: 'vinculo-hermanos-una-sola-fila', fn: caminoVinculoHermanosUnaSolaFila,
+    minLlamadas: 1, minElementos: 11 },
+  // `0º.duodetricies` — editar un vínculo YA guardado llega al servidor con sus dos extremos
+  // (sin ellos, el escritor lo descarta EN SILENCIO y la corrección se pierde).
+  { nombre: 'editar-vinculo-guardado', fn: caminoEditarVinculoGuardado,
     minLlamadas: 1, minElementos: 11 },
   { nombre: 'aviso-de-vinculo-señala-donde-es', fn: caminoAvisoDeVinculoSeñalaDondeEs,
     minLlamadas: 0, minElementos: 11 },

@@ -8,6 +8,7 @@ import StepNav from '../../components/StepNav';
 import StepUpReverify from '../../components/StepUpReverify';
 import * as log from '../../logger';
 import { confirmarYQuitar } from '../../lib/quitar';
+import { formaDeDocumentosDelPaso_ } from './documentShape';  // 0º.tricies.quindecies: forma canónica de un documento (un solo sitio)
 
 // WIZARD-DOCS (2026-06-13): adjuntador GENÉRICO opcional.
 // Diego: "Hay una serie de casos tasados para subir archivos (DNI, etc.) pero no
@@ -632,12 +633,15 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
   // ya no se PIERDE: mientras sube, vive en el contexto (`subidasEnVuelo`), y al terminar
   // entra en `stepData.documents` por `registrarDocumentoSubido` aunque este paso ya no esté
   // montado. La marca de subida viaja con ella para poder casar la fila al volver.
-  const uploadedDocs = () => rows
-    .filter(r => r.file_id)
-    .map(r => ({
-      file_id: r.file_id, file_name: r.file_name || '', description: (r.description || '').trim(),
-      ...(r.upload_token ? { upload_token: r.upload_token } : {}),
-    }));
+  // ⭐ `0º.tricies.quindecies` — LA FORMA SALE DE UN SOLO SITIO (`documentShape.js`), el
+  // mismo que siembra el baseline en `WizardContext`. Antes esta proyección se quedaba con
+  // TRES campos mientras la hidratación traía SEIS ⇒ el paso 6 salía SUCIO en cada pasada y
+  // encolaba un `saveStep` que nadie pidió (y que, aunque el servidor no escriba nada, tira
+  // la caché de la simulación del paso 7 y vuelve a cobrarle a la familia el cálculo). Y de
+  // paso `rec_type_code`/`owner_person_ids` dejan de perderse al pulsar «Atrás»: `persist()`
+  // escribe ESTO en `stepData.documents`, que es de donde `seedRows()` los lee para poder
+  // enseñar de vuelta qué es cada archivo y de quién es (`0º.sexdecies`).
+  const uploadedDocs = () => formaDeDocumentosDelPaso_(rows);
 
   const handleDescriptionChange = (rowId, value) => {
     setRows(prev => prev.map(r => r.id === rowId ? { ...r, description: value } : r));
