@@ -129,7 +129,7 @@ export function requestCorrection(resumeToken, note) {
  * El expediente lo deriva el servidor del `resume_token` (KAL-4).
  *
  * @param {string} resumeToken
- * @returns {Promise<{simulable:boolean, motivo:?string, simulaciones:Array, preferred_modality_id:?string}>}
+ * @returns {Promise<{simulable:boolean, motivo:?string, simulaciones:Array}>}
  */
 export function simularCuotas(resumeToken) {
   return gasCall('simularCuotas', { resume_token: resumeToken });
