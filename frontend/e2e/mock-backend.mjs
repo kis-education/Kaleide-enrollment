@@ -74,6 +74,13 @@ const applicant = (id, first) => ({
   allergies:       [],
   dietary:         [],
   medical:         [],
+  // ⭐ 0º.vicies.septies (2026-08-22) — el APOYO EDUCATIVO, con los DOS nombres que el
+  // asistente lee (`WizardContext`: `p.neae` = condiciones · `p.neae_support` = apoyos).
+  // El KMS no los mandaba NUNCA (medido: cero apariciones de `neae` en
+  // `enr/wizard-datalayer.gs`), así que el simulado tampoco podía; ahora los proyecta el
+  // hidratador real y este molde es su copia declarada.
+  neae:            [],
+  neae_support:    [],
   address:         { address_line_1: 'Calle Falsa 1', city: 'Las Palmas', country_id: 'ES', zip: '35001' },
 });
 
@@ -610,6 +617,17 @@ export function createDispatcher(scenario, record) {
         };
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos);
+      // ⭐ 0º.vicies.septies — el servidor SÍ manda apoyo educativo. Se pide con la palanca
+      // porque, hasta hoy, el KMS NO lo mandaba nunca (medido) y el molde por defecto es el
+      // de siempre: sin ella, la hidratación sale byte-idéntica a la de antes.
+      if (scenario.neaeDelServidor) {
+        (h.persons || []).forEach(pe => {
+          if (pe && pe.person_type_id === 'applicant') {
+            pe.neae = [{ category_code: 'SLD', diagnosis_status: 'DIAGNOSED', observations: '' }];
+            pe.neae_support = [{ support_type: 'LOGOPEDIA', provider_scope: 'PRIOR_SCHOOL', observations: '' }];
+          }
+        });
+      }
       const conVentana = scenario.ventanaViva
         ? { step_up_fresh: true, step_up_restante_s: leerMarca(p).restante_s, step_up_cierre: leerMarca(p).cierre }
         : {};

@@ -278,7 +278,8 @@ function ApplicantNeaeSection({ neae, onChange }) {
         {conditions.length > 0 && (
           <div className="mt-2 d-flex flex-column gap-2">
             {conditions.map((c, i) => (
-              <div key={c.category_code || i} className="p-2 rounded" style={{ background: 'var(--teal-lt)' }}>
+              <div key={c.category_code || i} data-testid="paso4-neae-condicion"
+                   className="p-2 rounded" style={{ background: 'var(--teal-lt)' }}>
                 <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
                   <span className="fw-semibold" style={{ color: 'var(--teal-dk)' }}>{t('neae.cat.' + c.category_code)}</span>
                   <button onClick={() => removeCondition(i)}
@@ -334,7 +335,7 @@ function ApplicantNeaeSection({ neae, onChange }) {
         {supports.length > 0 && (
           <div className="d-flex flex-column gap-2">
             {supports.map((s, i) => (
-              <div key={i} className="d-flex align-items-center gap-2 flex-wrap">
+              <div key={i} data-testid="paso4-neae-apoyo" className="d-flex align-items-center gap-2 flex-wrap">
                 <span className="badge d-flex align-items-center gap-1 flex-shrink-0"
                   style={{ background: 'var(--teal-lt)', color: 'var(--teal-dk)', padding: '5px 10px', borderRadius: 20 }}>
                   {t('neae.sup.' + s.support_type)} · {t('neae.scope.' + (s.provider_scope || 'PRIOR_SCHOOL'))}
@@ -470,9 +471,35 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
     updateStep('neae', neaeData);
     const snapshot = JSON.stringify(neaeData);
     if (!resumeToken || snapshot === neaeBaselineRef.current) return;
+
+    // ⛔ 0º.vicies.septies (2026-08-22) — UNA PANTALLA QUE NUNCA CARGÓ NO PUEDE PASAR POR UN
+    // VACIADO DELIBERADO. El escritor del KMS es «whole-set supersede»: por persona y por eje
+    // da de baja el conjunto activo previo e inserta el nuevo. Con el conjunto VACÍO eso da de
+    // baja lo anterior y no inserta nada ⇒ **el apoyo educativo de un menor desaparece**.
+    //
+    // Y el guarda de arriba NO lo evitaba, que es justo lo que había que averiguar: la
+    // referencia arranca en `"[]"` (`stepData.neae` está vacío antes de hidratar) mientras que
+    // la pantalla ya vale `[{person_id, conditions:[], supports:[]}]` — son textos DISTINTOS,
+    // así que el guarda dejaba pasar el guardado del conjunto vacío.
+    //
+    // ⚠️ VACIAR A PROPÓSITO ES LEGÍTIMO (retirar una condición que ya no aplica) y sigue
+    // funcionando: quien vacía TOCA su bloque, y `neaeTocada` lo registra. Lo que se descarta
+    // es SOLO la ficha que está vacía **y que la familia no ha tocado en esta pantalla** —
+    // que es exactamente «no llegó a cargar», nunca «lo quité yo».
+    const seEnvia = (n) => {
+      const pid = n && n.person_id;
+      const tieneContenido = !!((n.conditions || []).length || (n.supports || []).length);
+      return tieneContenido || (pid && neaeTocada.current.has(pid));
+    };
+    const aEnviar = neaeData.filter(seEnvia);
+    if (!aEnviar.length) {
+      // Nada que decir de nadie: no se llama. Guardar aquí sería dar de baja lo que hay.
+      log.info('Step4: saveNeae omitido — ninguna ficha con contenido ni tocada por la familia');
+      return;
+    }
     neaeBaselineRef.current = snapshot;
     const sourceLocale = (i18n.language || '').slice(0, 2) || undefined;
-    const payload = neaeData.map(n => ({
+    const payload = aEnviar.map(n => ({
       person_id:     n.person_id,
       conditions:    n.conditions || [],
       supports:      n.supports   || [],

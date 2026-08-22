@@ -2909,6 +2909,39 @@ async function caminoSaludDesdeLaPantalla(page, base) {
     `se quedó en el índice ${donde}`)) return c
   await desbloquear(page)
   await conducirSalud(c, page)
+
+  // ⭐ 0º.vicies.septies (2026-08-22) — EL APOYO EDUCATIVO SE RECUPERA.
+  // Es dato de SALUD de un menor. Hasta hoy el KMS no lo mandaba NUNCA en la hidratación
+  // (medido: cero apariciones de `neae` en `enr/wizard-datalayer.gs`), así que la pantalla
+  // salía vacía por mucho que su re-sembrado —que SÍ existe— funcionara. Se entra de nuevo
+  // con el servidor mandándolo y se comprueba en la pantalla.
+  scenario.neaeDelServidor = true
+  try {
+    if (await entrarPorElEnlace(c, page, base)) {
+      for (let i = 0; i < 6 && (await dondeEstoy(page)) > 3; i++) {
+        const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+        if (!atras) break
+        await atras.click()
+        await page.waitForTimeout(250)
+      }
+      await desbloquear(page)
+      await page.waitForTimeout(LATENCY + 600)
+      const condiciones = await page.$$('[data-testid="paso4-neae-condicion"]')
+      const apoyos      = await page.$$('[data-testid="paso4-neae-apoyo"]')
+      // ⚠️ LO QUE ESTA AFIRMACIÓN PRUEBA, DICHO CON PRECISIÓN: que el apoyo educativo VIAJA
+      // en la hidratación y la pantalla lo pinta — que es EXACTAMENTE el defecto medido (el
+      // KMS no lo mandaba nunca). **NO prueba el re-sembrado tardío**: se comprobó rompiendo
+      // el `useEffect` a propósito y esta afirmación siguió VERDE, porque al volver a entrar
+      // la pantalla se monta con la hidratación ya servida y el inicializador del estado la
+      // recoge sin necesidad del efecto. Se dice aquí para que nadie la cuente como lo que
+      // no es.
+      c.afirmar('el apoyo educativo que manda el servidor SE VE en la pantalla de salud',
+        condiciones.length > 0 && apoyos.length > 0,
+        `se pintaron ${condiciones.length} condición(es) y ${apoyos.length} apoyo(s): con cero, la familia ve su bloque VACÍO y al guardar puede dar de baja lo que hay`)
+    }
+  } finally {
+    scenario.neaeDelServidor = false
+  }
   return c
 }
 
