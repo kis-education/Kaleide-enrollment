@@ -407,7 +407,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -3307,7 +3307,16 @@ async function caminoCuestionarioNoSeApaga(page, base) {
   // habla del comportamiento y no de cómo esté marcado el HTML por dentro.
   const orden = await page.evaluate(() => {
     const fichas = [];
-    document.querySelectorAll('.kis-card p, .kis-card label.form-label').forEach(el => {
+    // `0º.tricies.sexdecies`: con VARIOS sujetos el encabezado es la PASTILLA; con uno
+    // solo sigue siendo la línea gris de siempre. Se aceptan las dos formas, porque lo
+    // que esta sonda mide es el ORDEN de lo que se lee, no cómo esté marcado el HTML.
+    document.querySelectorAll(
+      '.kis-card [data-testid="sujeto-separador"], .kis-card p, .kis-card label.form-label'
+    ).forEach(el => {
+      if (el.getAttribute('data-testid') === 'sujeto-separador') {
+        fichas.push({ t: 'sujeto', v: (el.textContent || '').trim() });
+        return;
+      }
       if (el.tagName === 'P') {
         if (el.querySelector('i.bi-person, i.bi-person-fill')) {
           fichas.push({ t: 'sujeto', v: (el.textContent || '').trim() });
@@ -3342,6 +3351,43 @@ async function caminoCuestionarioNoSeApaga(page, base) {
       porSujeto.length > 0 && porSujeto.every(s => s.preguntas.length === 2),
       `bajo cada nombre se leyeron ${JSON.stringify(porSujeto.map(s => s.preguntas.length))} ` +
       `pregunta(s) (se esperaban 2 por alumno): ${JSON.stringify(porSujeto)}`)
+
+    // ── 0º.tricies.sexdecies (2026-08-22) · SE VE DÓNDE ACABA UN HERMANO Y EMPIEZA EL
+    // OTRO. Diego: «es difícil visualmente separar un hermano del otro. La letra es muy
+    // pequeña, no hay un elemento (un pill) que claramente separe visualmente lo que
+    // corresponde a cada hermano». Agrupar (d.*) ya estaba; lo que faltaba era VERLO.
+    // Se mide lo que el navegador PINTA de verdad (estilo calculado), no la clase CSS:
+    // una clase que no exista en `theme.css` el navegador la ignora EN SILENCIO.
+    const separadores = await page.evaluate(() => {
+      const out = [];
+      document.querySelectorAll('[data-qb-sujeto]').forEach(bloque => {
+        const cab = bloque.querySelector('[data-testid="sujeto-separador"]');
+        const eb = getComputedStyle(bloque);
+        const ec = cab ? getComputedStyle(cab) : null;
+        out.push({
+          nombre:   cab ? (cab.textContent || '').trim() : null,
+          bordeIzq: parseFloat(eb.borderLeftWidth) || 0,
+          fondo:    ec ? ec.backgroundColor : null,
+          tamano:   ec ? parseFloat(ec.fontSize) : 0,
+          peso:     ec ? Number(ec.fontWeight) || 0 : 0,
+        });
+      });
+      return out;
+    })
+    const transparente = (c) => !c || c === 'transparent' || /rgba\(0, 0, 0, 0\)/.test(c)
+
+    c.afirmar('(e.1) el nombre de cada alumno se pinta como una PASTILLA, no como un texto suelto',
+      separadores.length >= 2 &&
+      separadores.every(s => s.nombre && !transparente(s.fondo) && s.tamano >= 15 && s.peso >= 700),
+      `los separadores leídos fueron ${JSON.stringify(separadores)}: se esperaba, en cada alumno, ` +
+      `un elemento con nombre, fondo propio, letra de al menos 15px y peso 700. Sin eso vuelve ` +
+      `el texto gris de 0.8rem que Diego no podía distinguir a media pantalla`)
+
+    c.afirmar('(e.2) lo que corresponde a cada alumno queda ENCERRADO en su propia área',
+      separadores.length >= 2 && separadores.every(s => s.bordeIzq >= 2),
+      `los bordes de agrupación leídos fueron ${JSON.stringify(separadores.map(s => s.bordeIzq))}: ` +
+      `sin un elemento que delimite el bloque, las preguntas de los dos hermanos siguen ` +
+      `corriendo seguidas y solo las separa una línea de texto`)
 
     // ── (d.3) LA CLAVE DE LA RESPUESTA NO CAMBIÓ AL AGRUPAR ──────────────────────────
     // `Step5Questions.handleNext` PARTE la clave (`question_id__sujeto`) para componer el
@@ -3410,6 +3456,44 @@ async function caminoCuestionarioNoSeApaga(page, base) {
     vista.preguntas >= 1 && !vista.avisoCaido,
     `tras reintentar: preguntas=${vista.preguntas} aviso=${vista.avisoCaido}. ` +
     'Éste es el corazón del defecto: un vacío cacheado apagaba el paso durante 30 minutos')
+
+  // ── (e.3) CON UN SOLO ALUMNO EL SEPARADOR NO ESTORBA (0º.tricies.sexdecies) ─────────
+  // Sin nada que separar, una pastilla grande es ruido: la pantalla vuelve a la línea de
+  // siempre. Se mide con una familia de UN solo hijo — con la de dos, esta comprobación
+  // pasaría en vacío, que es peor que no tenerla.
+  scenario.unSoloAlumno = true
+  try {
+    // ⛔ SE ESPERA A QUE NO QUEDE NADA EN VUELO ANTES DE TIRAR LA PÁGINA. `about:blank`
+    // ABORTA cualquier `fetch` a medias y la aplicación registra un «network/fetch error»
+    // que NO es suyo sino del robot; este recorrido declara UN solo error de consola
+    // esperado (el del catálogo caído), así que ese ruido lo tumbaba ENTERO — y de forma
+    // INTERMITENTE, que es peor. Medido el 2026-08-22: el rojo era «gasCall warmBundle:
+    // network/fetch error». Mismo motivo que el drenado de (d.3).
+    await esperarSilencioDeRed(15000, 800)
+    await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+    await page.goto('about:blank')
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    if (!await irAPreguntas(c, page)) return c
+    await page.waitForTimeout(LATENCY + 900)
+    const solo = await page.evaluate(() => ({
+      bloques:      document.querySelectorAll('[data-qb-sujeto]').length,
+      pastillas:    document.querySelectorAll('[data-testid="sujeto-separador"]').length,
+      lineaDeSiempre: !!document.querySelector('.kis-card p i.bi-person, .kis-card p i.bi-person-fill'),
+    }))
+    if (c.afirmar('(e.3.0) ancla — con un solo alumno el paso 5 sigue pintando su bloque de sujeto',
+      solo.bloques === 1,
+      `se pintaron ${solo.bloques} bloque(s) de sujeto con un solo alumno: sin ninguno, lo de abajo pasaría en vacío`)) {
+      c.afirmar('(e.3) con UN SOLO alumno no se pinta la pastilla: se conserva la línea de siempre',
+        solo.pastillas === 0 && solo.lineaDeSiempre,
+        `pastillas=${solo.pastillas} · línea de siempre=${solo.lineaDeSiempre}: con un solo hijo no hay ` +
+        `nada que separar, así que el separador con peso sobra — y el nombre no puede desaparecer`)
+    }
+    // Y también al SALIR: el recorrido siguiente navega, y una petición de éste a medias
+    // se abortaría y contaría como error de consola de un camino que ya terminó.
+    await esperarSilencioDeRed(15000, 800)
+  } finally {
+    scenario.unSoloAlumno = false
+  }
   return c
 }
 
@@ -5534,6 +5618,61 @@ async function caminoSimuladorPaso7(page, base) {
       el => el.value).catch(() => null)
     c.afirmar('la forma de pago elegida queda marcada al instante', marcada === idsDeModalidad[1],
       `el selector quedó en ${JSON.stringify(marcada)} y se eligió ${JSON.stringify(idsDeModalidad[1])}: la familia elige y no ve que haya pasado nada`)
+
+    // ⭐ `0º.tricies.sexdecies` (2026-08-22) — con UN SOLO solicitante tampoco se pinta el
+    // separador por alumno: no hay nada que separar y el plan ya se nombra a sí mismo.
+    const separadorConUno = await page.$$('[data-testid="sujeto-separador"]')
+    c.afirmar('con un solo solicitante NO se pinta el separador por alumno',
+      separadorConUno.length === 0,
+      `se pintaron ${separadorConUno.length} separador(es) de alumno con un único solicitante: sobra ruido en pantalla`)
+
+    // ── (C) DOS HERMANOS: SE VE DÓNDE ACABA UNO Y EMPIEZA EL OTRO (0º.tricies.sexdecies)
+    // Diego: «es difícil visualmente separar un hermano del otro. La letra es muy pequeña,
+    // no hay un elemento (un pill) que claramente separe visualmente lo que corresponde a
+    // cada hermano» — y lo dijo de las DOS pantallas, el cuestionario y las cuotas. El
+    // simulado sirve un presupuesto por CADA hermano solo con esta palanca; con la familia
+    // de siempre (un solo solicitante con planes) esto pasaría EN VACÍO.
+    scenario.dosSolicitantes = true
+    try {
+      if (!await irARevision('con dos hermanos')) return c
+      await desbloquear(page)
+      await page.waitForTimeout(LATENCY + 700)
+      const hermanos = await page.evaluate(() => {
+        const out = []
+        document.querySelectorAll('[data-testid="sujeto-separador"]').forEach(cab => {
+          const bloque = cab.parentElement
+          const ec = getComputedStyle(cab)
+          const eb = bloque ? getComputedStyle(bloque) : null
+          out.push({
+            nombre:   (cab.textContent || '').trim(),
+            fondo:    ec.backgroundColor,
+            tamano:   parseFloat(ec.fontSize) || 0,
+            peso:     Number(ec.fontWeight) || 0,
+            bordeIzq: eb ? (parseFloat(eb.borderLeftWidth) || 0) : 0,
+          })
+        })
+        return out
+      })
+      const transp = (v) => !v || v === 'transparent' || /rgba\(0, 0, 0, 0\)/.test(v)
+      if (c.afirmar('(C.0) ancla — con dos hermanos la pantalla pinta un separador por cada uno',
+        hermanos.length === 2,
+        `se pintaron ${hermanos.length} separador(es) de alumno con DOS presupuestos: sin ellos, lo de abajo pasaría en vacío`)) {
+        c.afirmar('(C.1) el nombre de cada hermano se pinta como una PASTILLA legible',
+          hermanos.every(h => h.nombre && !transp(h.fondo) && h.tamano >= 15 && h.peso >= 700),
+          `los separadores leídos fueron ${JSON.stringify(hermanos)}: se esperaba nombre, fondo propio, ` +
+          `letra de al menos 15px y peso 700 — el mismo tratamiento que en el cuestionario`)
+        c.afirmar('(C.2) las cuotas de cada hermano quedan ENCERRADAS en su propia área',
+          hermanos.every(h => h.bordeIzq >= 2),
+          `los bordes de agrupación fueron ${JSON.stringify(hermanos.map(h => h.bordeIzq))}: sin un ` +
+          `elemento que delimite el bloque, los dos presupuestos corren seguidos`)
+        c.afirmar('(C.3) cada hermano se anuncia con SU nombre, no con un identificador',
+          new Set(hermanos.map(h => h.nombre)).size === 2 &&
+          hermanos.every(h => !/^[0-9a-f-]{8,}$/i.test(h.nombre)),
+          `los nombres leídos fueron ${JSON.stringify(hermanos.map(h => h.nombre))}`)
+      }
+    } finally {
+      scenario.dosSolicitantes = false
+    }
 
     // ── (B) EL SIMULADOR CAÍDO — la familia sigue pudiendo enviar ──────────────
     scenario.simulacionFalla = true

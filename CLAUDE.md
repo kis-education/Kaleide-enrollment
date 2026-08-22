@@ -2327,6 +2327,79 @@ vuelta solo sobrevive **esta documentación**, que la publicación no traía. Es
 `0º.tricies.quater`. **La reserva se lee antes de la primera línea de código Y otra vez antes de
 publicar** — y aun así, cuando una mano ya está en vuelo, ceder tarde no evita el trabajo doble.
 
+### `0º.tricies.sexdecies` (2026-08-22) — se VE dónde acaba un hermano y empieza el otro
+
+**Diego, 2026-08-22, cita literal:** *«es difícil visualmente separar un hermano del otro. La letra
+es muy pequeña, no hay un elemento (un pill) que claramente separe visualmente lo que corresponde a
+cada hermano»*. Pasa en **DOS sitios**: el cuestionario del paso 5 y la simulación de cuotas del
+paso 7.
+
+**Lo medido contra `origin/main` ANTES de tocar nada — las dos premisas de la ficha eran CIERTAS:**
+
+| Pantalla | Cómo se anunciaba el sujeto |
+|---|---|
+| cuestionario (`shared/QbSetRenderer/index.jsx:196`) | `<p>` **gris de 0.8rem** con un iconito |
+| cuotas (`Step7Review.jsx:526` y `:539`) | `<div>` en **negrita de 0.9rem**, sin icono |
+
+⇒ ninguno de los dos **ENCERRABA** nada, y **no se parecían entre sí**. Agrupar por alumno ya lo
+había hecho `0º.tricies.decies`; lo que faltaba era **verlo**.
+
+**UN SOLO SITIO decide cómo se ve un separador de sujeto** — `frontend/src/shared/CabeceraDeSujeto.jsx`
+con las clases `.sujeto-bloque` / `.sujeto-pastilla` de `theme.css`, consumido por **las dos**
+pantallas. Una pastilla teal (fondo, borde, esquinas redondeadas, 0.95rem/700, con su icono) sobre un
+área con borde izquierdo que encierra lo de ese hermano. **PROHIBIDO copiar el aspecto a mano en una
+tercera pantalla**: dos copias divergen, y eso es exactamente lo que acababa de pasar entre estas dos.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ NO se tocó la clave de la respuesta** (`question_id__personKey`), ni **qué** se pinta, ni de
+  quién es cada pregunta (lo declara el catálogo con `audience_category_id` y llega ya resuelto).
+  **Solo CÓMO se ve.** Y en el simulador, `money()` sigue dividiendo entre 100 y formateando: aquí no
+  se calcula dinero.
+- **⛔ CON UN SOLO SUJETO NO APARECE LA PASTILLA, y cada pantalla degrada a lo que YA tenía**: el
+  cuestionario vuelve a su línea gris de siempre (mismo elemento y mismo estilo en línea, byte-idéntico)
+  y el simulador **sigue sin pintar nada** (allí `nombre` ya era `''` con un solo solicitante, y su
+  llamante no monta el componente). Sin nada que separar, un separador grande es ruido.
+- **El cuestionario decide `destacado` DESPUÉS de evaluar las condiciones**: un sujeto al que no le
+  queda ninguna pregunta **no cuenta**. Por eso el render arma primero la lista de piezas EN ORDEN y
+  pinta después — el orden de salida es exactamente el de antes.
+- **⚠️ El componente del cuestionario vive en los DOS repositorios y SOLO se tocó el del asistente.**
+  La copia del KMS (`kis-app frontend/src/shared/qb-renderer/`) tiene un único consumidor —la vista
+  previa de una pregunta— al que se le pasa **UN alumno sintético**: ahí no hay nada que agrupar y el
+  cambio no se vería.
+
+**Textos: ninguno nuevo y ninguno cambiado.** El separador solo enseña el nombre de la persona.
+
+**Red**: `npm run e2e:wizard` **VEREDICTO: VERDE — 36 de 36**, y los cuatro controles del repositorio
+VERDES. Cinco afirmaciones nuevas en `cuestionario-no-se-apaga` —`(e.1)` la pastilla es legible (fondo
+propio, ≥15px, peso 700, medido sobre el **estilo calculado**, no sobre la clase: una clase que no
+exista en `theme.css` el navegador la ignora en silencio) · `(e.2)` el bloque tiene borde que lo
+encierra · `(e.3.0)` ancla + `(e.3)` con un solo alumno no hay pastilla— y cuatro en `simulador-paso7`
+—`(C.0)` ancla · `(C.1)` pastilla · `(C.2)` área · `(C.3)` nombre y no identificador—, más *«con un
+solo solicitante NO se pinta el separador»*. ⚠️ **El doble sirve DOS presupuestos**
+(`scenario.dosSolicitantes`) y **una familia de UN SOLO hijo** (`scenario.unSoloAlumno`) **a
+propósito**: sin esas dos palancas, la mitad de las afirmaciones pasaría **EN VACÍO**.
+
+**Rojo demostrado TRES veces**, cada una nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| devolver la línea gris de siempre (ignorar `destacado`) | *«los separadores leídos fueron [{"nombre":null,…}]: se esperaba, en cada alumno, un elemento con nombre, fondo propio, letra de al menos 15px y peso 700»* |
+| dejar la pastilla también con un solo alumno | *«pastillas=1 · línea de siempre=false: con un solo hijo no hay nada que separar»* |
+| quitar el borde del área en `theme.css` | *«los bordes de agrupación fueron [0,0]: sin un elemento que delimite el bloque, los dos presupuestos corren seguidos»* + el mismo rojo en el cuestionario |
+
+⚠️ **Y DOS cosas del ROBOT, no del producto.** (1) El recorrido del cuestionario salió **ROJO
+intermitente** por un «network/fetch error» de `warmBundle` **del propio robot** al tirar la página
+con una petición en vuelo — el patrón ya documentado en `0º.tricies.nonies`; se cerró **drenando la
+red antes de navegar Y al salir del recorrido**. (2) Hubo **UN rojo suelto de
+`ventana-por-inactividad`** cuyo mensaje no se llegó a capturar: **no se reprodujo en cuatro corridas
+completas posteriores con el cambio ni en dos sin él**, y ese recorrido está declarado sensible al
+reloj. **Queda anotado, no resuelto.**
+
+⚠️ **Lo que la red NO cubre:** la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS — afirma lo que pinta el navegador, que aquí es exactamente lo que la
+ficha pedía. **Publicación**: solo `frontend/`, al empujar a `main` (CI/Pages), sin `clasp`.
+
 ### `0º.tricies.octies` (B) (2026-08-22) — un guardado que muere en la cola DEJA DE SER MUDO
 
 **Los guardados del asistente NO escriben: APUNTAN el trabajo.** `enr.wizardSaveStep` y sus

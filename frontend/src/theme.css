@@ -650,3 +650,41 @@ body {
     margin: 0 2px;
   }
 }
+
+/* ── 0º.tricies.sexdecies (2026-08-22) · DÓNDE ACABA UN HERMANO Y EMPIEZA EL OTRO ──────
+   Diego: «es difícil visualmente separar un hermano del otro. La letra es muy pequeña, no
+   hay un elemento (un pill) que claramente separe visualmente lo que corresponde a cada
+   hermano». Se usa en los DOS sitios que agrupan por persona —el cuestionario del paso 5 y
+   la simulación de cuotas del paso 7— a través del ÚNICO componente que los pinta,
+   `shared/CabeceraDeSujeto.jsx`. No se copia el aspecto a mano en ninguna pantalla. */
+.sujeto-bloque {
+  border-left: 3px solid var(--teal);
+  border-radius: 0 10px 10px 0;
+  background: #fafcfc;
+  padding: 14px 16px 4px;
+  margin: 0 0 22px;
+}
+.sujeto-pastilla {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--teal-lt);
+  color: var(--teal-dk);
+  border: 1px solid #a9dcd9;
+  border-radius: 999px;
+  padding: 5px 15px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0 0 14px;
+}
+
+@media (max-width: 575px) {
+  .sujeto-bloque {
+    padding: 12px 12px 2px;
+  }
+  .sujeto-pastilla {
+    font-size: 0.9rem;
+    padding: 4px 12px;
+  }
+}

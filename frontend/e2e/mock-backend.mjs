@@ -391,7 +391,7 @@ function recortarPorTutorE2E_(data, viewerN) {
  *   (que es lo que hace aterrizar en Documentos); con lista, el paso queda por visitado y
  *   el aterrizaje se va a Revisión, igual que en el sistema real.
  */
-export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos) {
+export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -437,7 +437,12 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
     // NO se guardaba nada: el alta de vínculos no se ejercitaba jamás. La familia del
     // robot contra el sistema real son 2 tutores y 2 hijos; el banco tiene que serlo
     // también o mide otro caso.
-    applicant(FIXTURE.applicant2Id, 'RobotHijoDosE2E'),
+    // `0º.tricies.sexdecies` (2026-08-22) — con UN SOLO alumno la pantalla NO debe pintar
+    // el separador con peso: sin nada que separar es ruido. Se pide EXPLÍCITAMENTE con
+    // `scenario.unSoloAlumno`; sin la palanca, DOS alumnos como siempre. Los vínculos de
+    // la familia de dos tutores (`r1`/`r2`) NO nombran al segundo hijo, así que quitarlo
+    // no deja ningún vínculo colgando.
+    ...(unSoloAlumno ? [] : [applicant(FIXTURE.applicant2Id, 'RobotHijoDosE2E')]),
   ];
   // Con UN SOLO tutor, el vínculo que falta es el suyo con el segundo hijo: si se dejaran
   // los dos vínculos de la familia de dos tutores, uno apuntaría a un tutor que ya no está
@@ -688,7 +693,7 @@ export function createDispatcher(scenario, record) {
           pii_gated:      true,
         };
       }
-      const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos);
+      const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno);
       // ⭐ `0º.septvicies` — el vínculo entre hermanos GUARDADO EN EL SENTIDO CONTRARIO
       // (`from` = el hijo 2, `to` = el hijo 1) y en UNA sola fila, que es lo que el KMS
       // escribe desde DL-S45. Sirve para afirmar que el lector del paso 3 lo encuentra
@@ -727,7 +732,7 @@ export function createDispatcher(scenario, record) {
     // `ventana-por-inactividad` lo AFIRMA haciendo latir el pulso y comprobando que el
     // tiempo restante sigue bajando.
     getAdmissionState: (p) => {
-      const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos);
+      const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno);
       const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
       // 0º.tricies.octies (B) — los pasos cuyo ÚLTIMO guardado murió en la cola del KMS.
       // Copia declarada del contrato real (`enr_guardadosQueNoLlegaron_`): CÓDIGOS de paso,
@@ -941,6 +946,38 @@ export function createDispatcher(scenario, record) {
       // simularía un fallo de TRANSPORTE, que es otra cosa y otro camino.
       if (scenario.simulacionFalla) {
         return { ok: true, simulable: false, motivo: 'NO_SE_PUDO_SIMULAR', simulaciones: [] };
+      }
+      // `0º.tricies.sexdecies` (2026-08-22) — DOS HERMANOS, cada uno con SU presupuesto.
+      // Sin esta palanca el simulado sirve planes de UN SOLO solicitante, así que la
+      // comprobación del separador por alumno pasaría EN VACÍO (con un solo hijo no hay
+      // nada que separar y la pantalla, a propósito, no pinta ningún nombre).
+      if (scenario.dosSolicitantes) {
+        const planDe = (personId, sufijo) => ({
+          applicant_person_id: personId,
+          template_id: 'tpl-' + sufijo, template_designation: 'Cuota escolar', motivo: null,
+          modalidades: [
+            { modality_id: 'mod-anual-' + sufijo, modality_code: 'ANNUAL', designation: 'Pago anual',
+              installments: 1,
+              cuotas: [{ due_date: '2027-09-01', concepto: 'Cuota escolar', amount_cents: 300000 }],
+              per_installment_cents: null, gross_cents: 300000, discount_cents: 0,
+              net_cents: 300000, currency_code: 'EUR', available: true, descuentos: [] },
+            { modality_id: 'mod-mensual-' + sufijo, modality_code: 'MONTHLY', designation: 'Pago mensual',
+              installments: 2,
+              cuotas: [
+                { due_date: '2027-09-01', concepto: 'Cuota escolar', amount_cents: 150000 },
+                { due_date: '2027-10-01', concepto: 'Cuota escolar', amount_cents: 150000 },
+              ],
+              per_installment_cents: 150000, gross_cents: 300000, discount_cents: 0,
+              net_cents: 300000, currency_code: 'EUR', available: true, descuentos: [] },
+          ],
+        });
+        return {
+          ok: true, simulable: true, motivo: null,
+          simulaciones: [
+            planDe(FIXTURE.applicantId, 'uno'),
+            planDe(FIXTURE.applicant2Id, 'dos'),
+          ],
+        };
       }
       // `0º.quaterdecies` (2026-08-21) — UN NIÑO PUEDE TENER VARIOS PLANES A LA VEZ: cada
       // plantilla aplicable llega como SU PROPIA fila de `simulaciones`, con el MISMO

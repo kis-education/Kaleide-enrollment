@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { meetsConditions } from './conditions';
+import CabeceraDeSujeto from '../CabeceraDeSujeto';
 import * as log from '../../logger';
 
 /**
@@ -153,52 +154,71 @@ export default function QbSetRenderer({
             <h3 style={{ color: 'var(--teal-dk)', fontSize: '1.05rem' }}>{set.designation}</h3>
           )}
 
-          {agruparPorSujeto_(set).map((bloque, bi) => {
-            // ── Preguntas DE LA SOLICITUD: se pintan igual que siempre, una por una y
-            // sin encabezado — no tienen sujeto que agrupar (su clave es el expediente).
-            if (bloque.tipo === 'general') {
-              const q = bloque.pregunta;
-              // Conditions (INITIATOR_EMAIL, etc.) se evalúan con la clave de grupo.
-              if (!meetsConditions(q, null, respuestasEfectivas, groupId, condCtx)) return null;
-              const key = `${q.question_id}__${groupId}`;
-              return (
-                <div key={key} className="mb-4">
-                  <QuestionField
-                    question={q}
-                    value={respuestasEfectivas[key]}
-                    onChange={v => setResponse(key, v)}
-                    readOnly={readOnly}
-                  />
-                </div>
-              );
-            }
+          {(() => {
+            // ── 0º.tricies.sexdecies (2026-08-22) · PRIMERO SE DECIDE QUÉ SE PINTA, DESPUÉS
+            // CÓMO. El separador con peso solo aparece cuando hay MÁS DE UN SUJETO en este
+            // conjunto — con uno solo no hay nada que separar y la pastilla sería ruido. Para
+            // saberlo hay que haber evaluado ya las condiciones (un sujeto al que no le queda
+            // ninguna pregunta NO cuenta), así que se arma primero la lista de piezas EN ORDEN
+            // y se pinta después. El orden de salida es exactamente el de antes.
+            const piezas = [];
+            agruparPorSujeto_(set).forEach((bloque, bi) => {
+              // Preguntas DE LA SOLICITUD: igual que siempre, una por una y sin encabezado —
+              // no tienen sujeto que agrupar (su clave es el expediente).
+              if (bloque.tipo === 'general') {
+                const q = bloque.pregunta;
+                // Conditions (INITIATOR_EMAIL, etc.) se evalúan con la clave de grupo.
+                if (!meetsConditions(q, null, respuestasEfectivas, groupId, condCtx)) return;
+                piezas.push({ tipo: 'general', q, key: `${q.question_id}__${groupId}` });
+                return;
+              }
 
-            // ── Preguntas CON AUDIENCIA declarada: un área por sujeto, con su nombre UNA
-            // vez y todas sus preguntas debajo (0º.tricies.decies).
-            const esAlumno = bloque.audiencia === 'participant';
-            const sujetos  = esAlumno ? applicants : guardians;
-            const icono    = esAlumno ? 'bi-person' : 'bi-person-fill';
+              // Preguntas CON AUDIENCIA declarada: un área por sujeto, con su nombre UNA vez
+              // y todas sus preguntas debajo (0º.tricies.decies).
+              const esAlumno = bloque.audiencia === 'participant';
+              const sujetos  = esAlumno ? applicants : guardians;
+              sujetos.forEach((persona, pi) => {
+                const personKey = persona.person_id || persona._uid;
+                // Las condiciones se siguen evaluando POR SUJETO: una pregunta que no aplica
+                // a este hijo no sale en SU grupo. Si no le queda ninguna, no se pinta.
+                const suyas = bloque.preguntas.filter(
+                  q => meetsConditions(q, persona, respuestasEfectivas, personKey, condCtx));
+                if (!suyas.length) return;
+                const name = [persona.first_name, persona.last_name].filter(Boolean).join(' ')
+                  || (esAlumno
+                    ? `${tr('applicant.title', { n: pi + 1 }) || 'Applicant'} ${pi + 1}`
+                    : `${tr('guardian.title',  { n: pi + 1 }) || 'Guardian'} ${pi + 1}`);
+                piezas.push({
+                  tipo: 'sujeto', bi, personKey, suyas, name,
+                  icono: esAlumno ? 'bi-person' : 'bi-person-fill',
+                });
+              });
+            });
 
-            return sujetos.map((persona, pi) => {
-              const personKey = persona.person_id || persona._uid;
-              // Las condiciones se siguen evaluando POR SUJETO: una pregunta que no aplica
-              // a este hijo no sale en SU grupo. Si no le queda ninguna, el grupo no se pinta.
-              const suyas = bloque.preguntas.filter(
-                q => meetsConditions(q, persona, respuestasEfectivas, personKey, condCtx));
-              if (!suyas.length) return null;
-              const name = [persona.first_name, persona.last_name].filter(Boolean).join(' ')
-                || (esAlumno
-                  ? `${tr('applicant.title', { n: pi + 1 }) || 'Applicant'} ${pi + 1}`
-                  : `${tr('guardian.title',  { n: pi + 1 }) || 'Guardian'} ${pi + 1}`);
+            const variosSujetos = piezas.filter(p => p.tipo === 'sujeto').length > 1;
+
+            return piezas.map(pieza => {
+              if (pieza.tipo === 'general') {
+                return (
+                  <div key={pieza.key} className="mb-4">
+                    <QuestionField
+                      question={pieza.q}
+                      value={respuestasEfectivas[pieza.key]}
+                      onChange={v => setResponse(pieza.key, v)}
+                      readOnly={readOnly}
+                    />
+                  </div>
+                );
+              }
               return (
-                <div key={`qb-sujeto-${bi}-${personKey}`} className="mb-4"
-                     data-qb-sujeto={personKey}>
-                  <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: 4 }}>
-                    <i className={`bi ${icono} me-1`} />{name}
-                  </p>
-                  {suyas.map(q => {
+                <div key={`qb-sujeto-${pieza.bi}-${pieza.personKey}`}
+                     className={variosSujetos ? 'sujeto-bloque' : 'mb-4'}
+                     data-qb-sujeto={pieza.personKey}>
+                  <CabeceraDeSujeto nombre={pieza.name} icono={pieza.icono}
+                                    destacado={variosSujetos} />
+                  {pieza.suyas.map(q => {
                     // ⛔ LA CLAVE NO CAMBIA: es la que guarda y recupera la respuesta.
-                    const key = `${q.question_id}__${personKey}`;
+                    const key = `${q.question_id}__${pieza.personKey}`;
                     return (
                       <div key={key} className="mb-3">
                         <QuestionField
@@ -213,7 +233,7 @@ export default function QbSetRenderer({
                 </div>
               );
             });
-          })}
+          })()}
         </div>
       ))}
     </>

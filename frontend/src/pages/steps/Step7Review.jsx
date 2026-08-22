@@ -6,6 +6,8 @@ import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del ca
 import { gasCall, fetchLookups, fetchQuestions, requestCorrection, identidadDelEnlace,
          simularCuotas } from '../../api';
 import StepNav from '../../components/StepNav';
+// 0º.tricies.sexdecies — el separador por sujeto es el MISMO que el del cuestionario.
+import CabeceraDeSujeto from '../../shared/CabeceraDeSujeto';
 import StepUpReverify from '../../components/StepUpReverify';
 import { openDocument } from '../../utils/documentProxy';
 import { translateRelationLabel, translateGender, translateIdType } from '../../utils/enumLabels';
@@ -521,12 +523,13 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
         // pudiera tener varios planes a la vez: ni envoltorio de plan, ni total sumado.
         if (sol.planes.length === 1) {
           return (
-            <div key={sol.applicant_person_id} style={{ marginBottom: 18 }}>
-              {nombre && (
-                <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8 }}>
-                  {nombre}
-                </div>
-              )}
+            <div key={sol.applicant_person_id}
+                 className={nombre ? 'sujeto-bloque' : undefined}
+                 style={nombre ? undefined : { marginBottom: 18 }}>
+              {/* 0º.tricies.sexdecies — el MISMO separador que el cuestionario. Con UN solo
+                  solicitante `nombre` es '' ⇒ ni pastilla ni área: la pantalla queda como
+                  estaba (allí no hay nada que separar y el plan ya se nombra a sí mismo). */}
+              <CabeceraDeSujeto nombre={nombre} destacado />
               {selectorDelPlan(sol.planes[0])}
               {tablaDeDesglose(sol.planes[0])}
             </div>
@@ -535,12 +538,10 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
 
         const total = totalSolicitante(sol.planes);
         return (
-          <div key={sol.applicant_person_id} data-testid="paso7-solicitante" style={{ marginBottom: 24 }}>
-            {nombre && (
-              <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8 }}>
-                {nombre}
-              </div>
-            )}
+          <div key={sol.applicant_person_id} data-testid="paso7-solicitante"
+               className={nombre ? 'sujeto-bloque' : undefined}
+               style={nombre ? undefined : { marginBottom: 24 }}>
+            <CabeceraDeSujeto nombre={nombre} destacado />
             {sol.planes.map(plan => (
               <div key={plan.template_id} data-testid="paso7-plan" data-template-id={plan.template_id}
                    style={{ marginBottom: 14 }}>
