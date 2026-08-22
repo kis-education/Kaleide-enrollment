@@ -251,6 +251,11 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'el-fallo-sustituye-al-aviso':  'exige que el servidor RECHACE la petición del código; no se provoca contra datos reales. En modo simulado sí se cubre, con `scenario.codigoFalla`.',
     'reenviar-limitado-por-reloj':  'misma razón que las tres primeras',
   },
+  'codigo-al-entrar-por-enlace': {
+    'un-solo-codigo-al-entrar':        'exige forzar la verja del código (dejar caducar la gracia del enlace) y contar los envíos a un buzón que este arnés no lee; en modo simulado sí se cubre, con `scenario.piiGated`',
+    'la-pantalla-dice-que-ya-se-envio': 'misma razón',
+    'el-fallo-del-autoenvio-llega':    'exige que el servidor RECHACE la petición del código; no se provoca contra datos reales. En modo simulado sí se cubre, con `scenario.codigoFalla`.',
+  },
 }
 if (REAL) {
   for (const [camino, entradas] of Object.entries(NO_CUBIERTAS_SOLO_REAL)) {
@@ -5854,19 +5859,15 @@ async function caminoSimuladorTrasEnviar(page, base) {
  * carrera de milisegundos, este camino pide al servidor de la batería que ESE viaje tarde
  * mucho más que los demás (`scenario.codigoDemoraMs`) — que es justo lo que pasa de verdad.
  *
- * ── Se conduce el BOTÓN, no el envío automático. MEDIDO el 2026-08-20 ────────────────
+ * ── Se conduce el BOTÓN, no el envío automático ──────────────────────────────────────
  * Al entrar por el enlace, el gate se monta, auto-envía el código… y **se vuelve a montar**
  * (`WizardPage` pone `rehydrating` a true al re-hidratar ⇒ `mustPassEntryGate` cae y el gate
- * desaparece un instante). La segunda instancia nace ya con `shouldAutoSend=false` — porque
- * la primera marcó la sesión — así que la familia se encuentra «Pulsa para recibir tu
- * código» con **un código ya en vuelo**. Se comprobó: 1 sola petición y la pantalla en
- * estado «sin enviar» desde el primer milisegundo observable.
- *   · Eso es un DEFECTO del producto, anterior a este cambio y ajeno a él (la familia gasta
- *     una segunda petición de su cupo sin necesidad). Queda ANOTADO aquí; no se arregla en
- *     este cambio, que es de otra cosa.
- *   · Y por eso este camino mide el gesto que la familia SÍ hace en esa pantalla: **pulsar
- *     el botón**. El invariante que se afirma es el mismo, y no depende de una carrera de
- *     montajes que hoy se pierde.
+ * desaparece un instante). Este camino mide el gesto que la familia hace CON EL BOTÓN, así
+ * que entra dos veces y parte de una verja que no auto-envía (ver `abrirLaVerja`).
+ *   · El defecto que ese remontaje causaba —la segunda instancia olvidaba el envío y ofrecía
+ *     «Pulsa para recibir tu código» con un código ya en vuelo— se CERRÓ el 2026-08-22
+ *     (`0º.tricies.nonies`), y quien lo vigila es el camino `codigo-al-entrar-por-enlace`.
+ *     Aquí ya no se anota como pendiente.
  *
  * ⚠️ Esto cubre LA PANTALLA. El `backend/Code.js` no se ejecuta en esta batería (el backend
  * es simulado): lo que el servidor del asistente hace con la petición no está aquí.
@@ -5954,18 +5955,43 @@ async function caminoCodigoSinCongelar(page, base) {
   }
 
   /**
-   * Abre la verja de cero y deja la pantalla QUIETA: espera a que el envío automático
-   * (el que se pierde en el remontaje) haya ido y vuelto, para que lo que se mida después
-   * sea la petición del BOTÓN y no la suya.
+   * Igual, pero espera a que NO quede NINGUNA petición en vuelo, de cualquier acción.
+   *
+   * Hace falta entre las DOS entradas de `abrirLaVerja`: el precalentado (`warmSession`) sale
+   * al montar la verja y el segundo `goto` lo ABORTA, lo que la aplicación registra como
+   * «network/fetch error» — un error que NO es suyo sino del robot, y que el arnés cuenta como
+   * fallo del camino. Medido el 2026-08-22: exactamente dos, uno por entrada.
+   */
+  const drenarTodo = async () => {
+    const total = (bolsa) => Object.values(bolsa).reduce((n, l) => n + l.length, 0)
+    const t0 = Date.now()
+    const techo = LATENCY + Number(scenario.codigoDemoraMs || 0) + 12000
+    while (total(vueltas) < total(salidas) && Date.now() - t0 < techo) await page.waitForTimeout(120)
+    await page.waitForTimeout(300)
+  }
+
+  /**
+   * Abre la verja de cero y deja la pantalla QUIETA: espera a que el envío automático haya ido
+   * y vuelto, para que lo que se mida después sea la petición del BOTÓN y no la suya.
+   *
+   * ⚠️ Desde `0º.tricies.nonies` el auto-envío de la PRIMERA entrada deja su espera corta
+   * corriendo (antes se perdía en el remontaje y el botón quedaba libre por accidente — ése era
+   * el defecto). Este recorrido mide el GESTO de la familia, así que entra una SEGUNDA vez: la
+   * sesión ya no auto-envía (`otpAutoSentForRecovery` persiste) y la verja parte de cero, con
+   * su botón disponible. Quien mide el auto-envío es `codigo-al-entrar-por-enlace`.
    */
   const abrirLaVerja = async (etiqueta) => {
     await drenar()
-    await page.goto(`${base}/?verja=${etiqueta}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
-      { waitUntil: 'domcontentloaded', timeout: 30000 })
-    const hay = await page.waitForSelector('input[autocomplete="one-time-code"]', { timeout: LATENCY * 3 + 15000 })
-      .then(() => true).catch(() => false)
-    if (!hay) return false
-    await drenar()
+    const ir = async (sufijo) => {
+      await page.goto(`${base}/?verja=${etiqueta}${sufijo}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+        { waitUntil: 'domcontentloaded', timeout: 30000 })
+      return await page.waitForSelector('input[autocomplete="one-time-code"]', { timeout: LATENCY * 3 + 15000 })
+        .then(() => true).catch(() => false)
+    }
+    if (!await ir('')) return false
+    await drenarTodo()
+    if (!await ir('bis')) return false
+    await drenarTodo()
     return true
   }
 
@@ -6143,6 +6169,219 @@ async function caminoCodigoSinCongelar(page, base) {
 }
 
 /**
+ * codigo-al-entrar-por-enlace — ENTRAR POR EL ENLACE MANDA UN SOLO CÓDIGO, Y LA PANTALLA LO DICE.
+ *
+ * ── El defecto que cierra (Diego, 2026-08-22) ────────────────────────────────────────
+ * *«Cuando se carga el wizard desde un enlace, automáticamente envía un OTP y eso da error,
+ * porque la pantalla de carga permite enviar otro. No tiene sentido.»*
+ *
+ * ── La causa, MEDIDA — y NO era ninguno de los dos candidatos de la ficha ────────────
+ * La verja se **REMONTA**: `WizardPage` la pinta, ésta auto-envía el código, y acto seguido su
+ * efecto de rehidratación (`needsHydration`, cierto porque la hidratación con el candado puesto
+ * vuelve sin `email.verified`) pone `rehydrating=true` ⇒ el padre devuelve el loader neutro y la
+ * verja DESAPARECE. Al volver (15-40 s), la SEGUNDA instancia nacía con su estado local a cero:
+ * «pulsa para recibir tu código», casilla DESHABILITADA y botón «Enviar» LIBRE — con el primer
+ * código ya volando. La familia no tenía más remedio que pulsar para poder teclear, y ese
+ * segundo envío PISA al primero en la caché del servidor (`cache.put(codeKey, code, 600)`,
+ * `backend/Code.js`) ⇒ el código que ya le había llegado deja de valer.
+ *   · NO era «el auto-envío falla» (candidato 1): el envío sale bien.
+ *   · NO era «`autoSentRef` se reinicia y auto-envía otra vez» (candidato 2): `shouldAutoSend`
+ *     ya es falso en la segunda instancia, porque `otpAutoSentForRecovery` persiste. Lo que se
+ *     perdía no era el freno del envío, era la MEMORIA de que ya se había enviado.
+ *
+ * ── Qué se afirma aquí ───────────────────────────────────────────────────────────────
+ * (1) entrar por el enlace gasta UN solo código · (2) la pantalla DICE que ya se envió ·
+ * (3) la casilla está lista para teclearlo · (4) «reenviar» está en su espera corta, así que no
+ * se invita a quemar otro · (5) y con eso se entra. Y la otra mitad: (6) si ese auto-envío FALLA,
+ * el error llega a la familia aunque lo provoque una instancia ya desmontada, y (7) no la deja
+ * sin salida.
+ *
+ * ⚠️ Esto cubre LA PANTALLA. `backend/Code.js` no se ejecuta en esta batería (backend simulado).
+ */
+async function caminoCodigoAlEntrarPorEnlace(page, base) {
+  const c = new Camino('codigo-al-entrar-por-enlace')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    // Contra el sistema de verdad la verja solo se abre dejando caducar la gracia del enlace, y
+    // el código llega a un buzón que este arnés no lee. No se afloja la verja para que pase.
+    c.noCubierta('un-solo-codigo-al-entrar', 'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('la-pantalla-dice-que-ya-se-envio', 'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('el-fallo-del-autoenvio-llega', 'ver NO_CUBIERTAS_SOLO_REAL')
+    return c
+  }
+
+  const peticiones = []
+  const enVuelo = { n: 0 }
+  const alPedir = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    enVuelo.n++
+    try { const a = JSON.parse(req.postData() || '{}').action; if (a) peticiones.push(a) } catch { /* cuerpo raro */ }
+  }
+  const alVolver = (req) => { if (/\/__gas/.test(req.url())) enVuelo.n-- }
+  page.on('request', alPedir)
+  page.on('requestfinished', alVolver)
+  page.on('requestfailed', alVolver)
+  const cuantas = (a) => peticiones.filter(x => x === a).length
+
+  /**
+   * Espera a que no quede NADA en vuelo antes de navegar. Irse de la página con un `fetch` a
+   * medias lo ABORTA y la aplicación registra un «network/fetch error» que NO es suyo sino del
+   * robot — y el arnés lo cuenta como fallo del camino (mismo motivo que `esperarSilencioDeRed`).
+   */
+  const drenar = async () => {
+    const t0 = Date.now()
+    const techo = LATENCY + Number(scenario.codigoDemoraMs || 0) + 16000
+    // No basta «cero en vuelo AHORA»: `ResumePage` dispara el precalentado (`warmBundle`) con
+    // un `setTimeout` de 4 s tras hidratar. Se exige un tramo de QUIETUD que lo cubra.
+    let desde = null
+    for (;;) {
+      if (enVuelo.n > 0) desde = null
+      else if (desde == null) desde = Date.now()
+      else if (Date.now() - desde >= 4600) break
+      if (Date.now() - t0 > techo) break
+      await page.waitForTimeout(120)
+    }
+    await page.waitForTimeout(300)
+  }
+
+  const limpiar = () => {
+    page.off('request', alPedir)
+    page.off('requestfinished', alVolver)
+    page.off('requestfailed', alVolver)
+    scenario.piiGated = false
+    scenario.otpSuperado = false
+    scenario.codigoFalla = null
+    scenario.codigoDemoraMs = 0
+  }
+
+  /** Lo que la familia VE en la verja y lo que puede hacer, en un solo tiro. */
+  const verja = () => page.evaluate(() => {
+    const casilla  = document.querySelector('input[autocomplete="one-time-code"]')
+    const reenviar = document.querySelector('[data-testid="stepup-reenviar"]')
+    const aviso    = document.querySelector('[data-testid="stepup-enviado"]')
+    const error    = document.querySelector('[data-testid="stepup-error"]')
+    return {
+      hayVerja:          !!casilla,
+      casillaLista:      !!(casilla && !casilla.disabled),
+      aviso:             aviso ? (aviso.innerText || '').trim() : null,
+      error:             error ? (error.innerText || '').trim() : null,
+      reenviarBloqueado: !!(reenviar && reenviar.disabled),
+      reenviarTexto:     reenviar ? (reenviar.textContent || '').trim() : null,
+    }
+  })
+
+  /**
+   * Entra por el enlace y espera a que la pantalla se ASIENTE: la verja aparece, DESAPARECE
+   * mientras rehidrata y vuelve. Mirar antes de eso mediría la instancia que va a morir, que es
+   * justo el error de método que este recorrido existe para no cometer.
+   */
+  const entrarYAsentar = async (etiqueta) => {
+    await drenar()
+    await page.goto(`${base}/?codigo=${etiqueta}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const hay = await page.waitForSelector('input[autocomplete="one-time-code"]', { timeout: LATENCY * 3 + 15000 })
+      .then(() => true).catch(() => false)
+    if (!hay) return false
+    // La rehidratación tapa la verja con el loader neutro y la vuelve a pintar. Se espera a que
+    // el asistente deje de pedir cosas y la pantalla quede quieta.
+    await page.waitForTimeout(LATENCY * 2 + 2500)
+    return await page.$('input[autocomplete="one-time-code"]') !== null
+  }
+
+  try {
+    scenario.piiGated = true
+    scenario.otpSuperado = false
+    // El viaje del código tarda MUCHO más que la latencia normal — como en la vida real. Así el
+    // remontaje ocurre con la petición todavía en vuelo, que es el caso que rompía.
+    scenario.codigoDemoraMs = 3000
+
+    // ══ FASE A · entrar por el enlace: UN código, y la pantalla lo dice ═══════════════
+    if (!c.afirmar('con la verja puesta, el asistente pide el código antes de enseñar nada',
+      await entrarYAsentar('a'),
+      'nunca apareció la casilla del código: la secuencia que este recorrido mide no llegó a darse')) return c
+
+    const foto = await verja()
+    c.evidencia.elementos = 1
+    c.evidencia.llamadas  = peticiones.length
+
+    c.afirmar('(1) entrar por el enlace gasta UN SOLO código',
+      cuantas('sendVerificationCode') === 1,
+      `salieron ${cuantas('sendVerificationCode')} peticiones de código al entrar: la verja se remonta y la segunda instancia olvida que el primero ya iba de camino, así que la familia gasta otro de su cupo y el que le llegó al buzón deja de valer`)
+
+    c.afirmar('(2) la pantalla DICE que el código ya se envió',
+      !!foto.aviso,
+      `tras asentarse, la verja no muestra el aviso de «te hemos enviado un código» (aviso: ${JSON.stringify(foto.aviso)}): con un código ya en vuelo, invita a pedir otro`)
+
+    c.afirmar('(3) la casilla está lista para teclear el código que va a llegar',
+      foto.casillaLista,
+      'la casilla del código está DESHABILITADA con un código ya enviado: la familia se ve obligada a pulsar «Enviar» solo para poder escribir, y ese segundo envío invalida el primero')
+
+    c.afirmar('(4) «reenviar» está en su espera corta, no ofreciendo otro código de inmediato',
+      foto.reenviarBloqueado && /\d/.test(foto.reenviarTexto || ''),
+      foto.reenviarBloqueado
+        ? `el botón está bloqueado pero no dice cuánto falta («${foto.reenviarTexto}»)`
+        : `el botón quedó libre («${foto.reenviarTexto}») justo después del auto-envío: se está invitando a la familia a quemar un segundo código`)
+
+    // ⚠️ NO se teclea a ciegas: con la casilla deshabilitada `page.fill` LANZA, y el runner
+    // descarta el camino entero sustituyéndolo por «el recorrido se rompió» — perdiendo las
+    // cuatro afirmaciones de arriba, que son las que nombran el defecto. Se comprueba antes.
+    const tecleado = foto.casillaLista
+      ? await page.fill('input[autocomplete="one-time-code"]', '123456').then(() => true).catch(() => false)
+      : false
+    if (tecleado) {
+      await page.evaluate(() => {
+        const b = [...document.querySelectorAll('button.btn-primary-kis')].find(x => !x.disabled)
+        if (b) b.click()
+      })
+    }
+    c.afirmar('(5) con ese código se entra en la solicitud',
+      tecleado && await page.waitForFunction(() => !!document.querySelector('.wizard-step'),
+        null, { timeout: LATENCY * 4 + 20000 }).then(() => true).catch(() => false),
+      tecleado
+        ? 'el asistente no llegó a pintar los pasos tras teclear el código del auto-envío'
+        : 'no se pudo ni teclear el código: la casilla sigue deshabilitada tras el auto-envío, así que la familia está obligada a pedir otro')
+
+    // ══ FASE B · si ese auto-envío FALLA, la familia se entera ════════════════════════
+    // El rechazo se PROVOCA a propósito: que quede registrado en consola es lo correcto.
+    c.esperarErrorConsola(/gasCall sendVerificationCode: server returned ok=false/,
+      'el servidor rechaza el auto-envío a propósito, para comprobar que la familia se entera')
+    c.esperarErrorConsola(/StepUpGate: sendVerificationCode failed/,
+      'la pantalla registra el rechazo provocado antes de explicárselo a la familia')
+
+    // Sesión NUEVA: sin esto `otpAutoSentForRecovery` (sessionStorage) impide el auto-envío y
+    // esta fase mediría el botón, no el auto-envío — que es lo que se quiere medir.
+    await page.evaluate(() => { try { sessionStorage.clear() } catch { /* sandbox */ } })
+    scenario.otpSuperado = false
+    scenario.codigoFalla = 'RATE_LIMITED'
+    const antes = cuantas('sendVerificationCode')
+    if (!c.afirmar('la verja vuelve a abrirse con el servidor a punto de rechazar',
+      await entrarYAsentar('b'), 'la casilla del código no volvió a aparecer')) return c
+
+    const trasFallo = await verja()
+    c.afirmar('(6) el fallo del auto-envío LLEGA a la familia, aunque lo provoque una pantalla que ya no existe',
+      !!trasFallo.error && /demasiados c[oó]digos|requested too many/i.test(trasFallo.error),
+      `la verja muestra error=${JSON.stringify(trasFallo.error)}: el rechazo lo dispara la instancia que se desmonta al rehidratar, así que si no sale del componente la familia se queda esperando un código que nunca salió`)
+
+    c.afirmar('(6.bis) y NO se le sigue diciendo que se lo hemos enviado',
+      trasFallo.aviso == null,
+      `sigue en pantalla «${trasFallo.aviso}» junto al error: la familia lee dos cosas que se contradicen`)
+
+    // Ni un fetch a medias al salir: el camino siguiente no puede heredar un error de red que
+    // provocó el robot al irse de la página.
+    await drenar()
+
+    c.afirmar('(7) un auto-envío fallido NO cierra el camino de entrar',
+      trasFallo.casillaLista && !trasFallo.reenviarBloqueado && cuantas('sendVerificationCode') === antes + 1,
+      `casilla ${trasFallo.casillaLista ? 'lista' : 'DESHABILITADA'}, «reenviar» ${trasFallo.reenviarBloqueado ? 'BLOQUEADO' : 'libre'}, peticiones ${cuantas('sendVerificationCode') - antes} (se esperaba 1): tras un fallo la familia tiene que poder pedir otro sin esperar`)
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
+/**
  * ventana-por-inactividad — el contador de los 10 minutos se reinicia con la actividad
  * REAL de la familia, el aviso sale dos minutos antes, y una RECARGA vuelve a pedir código.
  *
@@ -6218,27 +6457,54 @@ async function caminoVentanaPorInactividad(page, base) {
   /**
    * Irse de la página con un `fetch` a medias lo ABORTA, y la aplicación registra un
    * «network/fetch error» que NO es suyo sino del robot (mismo motivo que
-   * `esperarSilencioDeRed`). Este recorrido navega CINCO veces, así que se espera a que
+   * `esperarSilencioDeRed`). Este recorrido navega SIETE veces, así que se espera a que
    * no quede nada en vuelo antes de cada salto.
+   *
+   * ⚠️ No basta con «cero en vuelo AHORA»: `ResumePage` dispara el precalentado
+   * (`warmBundle`) con un `setTimeout` de 4 s DESPUÉS de hidratar, así que puede no haber
+   * salido todavía cuando se mira. Por eso se exige un tramo de QUIETUD que lo cubra —
+   * medido el 2026-08-22: al dejar `0º.tricies.nonies` la casilla lista al primer intento,
+   * el recorrido se aceleró, alcanzó el siguiente salto antes de esos 4 s y apareció un
+   * «network/fetch error» de `warmBundle` que NO es del producto.
    */
-  const drenar = async (techo = 12000) => {
+  // La quietud larga solo hace falta ANTES DE NAVEGAR (`drenar(techo, QUIETUD_MS)`); dentro
+  // del recorrido no se abandona la página, así que ahí sigue bastando «nada en vuelo».
+  const QUIETUD_MS = 4600
+  const drenar = async (techo = 20000, quietud = 300) => {
     const t0 = Date.now()
-    while (enVuelo.n > 0 && Date.now() - t0 < techo) await page.waitForTimeout(120)
-    await page.waitForTimeout(300)
+    for (;;) {
+      let desde = null
+      for (;;) {
+        if (enVuelo.n > 0) desde = null
+        else if (desde == null) desde = Date.now()
+        else if (Date.now() - desde >= quietud) break
+        if (Date.now() - t0 > techo) return
+        await page.waitForTimeout(120)
+      }
+      // Margen final Y RECONFIRMACIÓN: con la ventana comprimida (`scenario.ventanaMs`) el
+      // asistente puede bloquearse EN MITAD de esta espera, montar la verja y disparar su
+      // precalentado justo después de la última mirada. Sin volver a comprobar, el `goto`
+      // siguiente lo abortaría — medido el 2026-08-22 con una sonda: se perdía en el pase «c».
+      await page.waitForTimeout(300)
+      if (enVuelo.n === 0 || Date.now() - t0 > techo) return
+    }
   }
 
   /** Entra: abre la verja, pide el código, lo teclea y espera a que se pinte el asistente. */
   const entrarConElCodigo = async (etiqueta) => {
-    await drenar()
+    await drenar(16000, QUIETUD_MS)
     await page.goto(`${base}/?ventana=${etiqueta}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
       { waitUntil: 'domcontentloaded', timeout: 30000 })
     const hayVerja = await page.waitForSelector('input[autocomplete="one-time-code"]', { timeout: LATENCY * 3 + 15000 })
       .then(() => true).catch(() => false)
     if (!hayVerja) return false
-    // La verja se REMONTA en la entrada (el envío automático de la primera recuperación se
-    // pierde en ese remontaje — está documentado en `codigo-sin-congelar`). Si se teclea
+    // La verja se REMONTA en la entrada (la rehidratación la tapa un instante). Si se teclea
     // antes de que se asiente, se teclea en la instancia que va a desaparecer. Se deja
     // reposar y, si la casilla sigue bloqueada, se pide el código y se reintenta.
+    // ⚠️ Desde `0º.tricies.nonies` el auto-envío YA NO se pierde en ese remontaje: la primera
+    // entrada deja la casilla lista y el bucle sale al primer intento. El bucle se conserva
+    // para las entradas SIGUIENTES de este recorrido, donde la sesión ya no auto-envía
+    // (`otpAutoSentForRecovery`) y hay que pulsar el botón como haría la familia.
     await drenar()
     for (let intento = 0; intento < 4; intento++) {
       const lista = await page.$eval('input[autocomplete="one-time-code"]', el => !el.disabled).catch(() => false)
@@ -6292,7 +6558,7 @@ async function caminoVentanaPorInactividad(page, base) {
     if (!c.afirmar('la familia entra con una ventana larga por delante', await entrarConElCodigo('a'),
       'el asistente no se pintó en el primer pase')) return c
     const huellaAntes = huellaVista
-    await drenar()
+    await drenar(16000, QUIETUD_MS)   // recargar también ABORTA lo que esté en vuelo
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 })
     // Mientras el asistente re-hidrata pinta su armazón VACÍO a propósito (el loader de
     // WIZARD-GATE-ORDER), así que mirar en ese instante mediría la pantalla equivocada: se
@@ -6526,6 +6792,10 @@ async function caminoVentanaPorInactividad(page, base) {
         'llegó a modo TECHO y el contador a cero, pero el asistente se quedó abierto: la pantalla prometía un bloqueo que no ejecutaba')
     }
 
+    // El camino termina con el asistente BLOQUEADO, o sea con la verja recién montada y su
+    // precalentado (`warmSession`) en vuelo. Cerrar el contexto ahí lo ABORTA y la aplicación
+    // registra un «network/fetch error» que NO es suyo sino del robot. Se espera al silencio.
+    await drenar(16000, QUIETUD_MS)
     return c
   } finally {
     limpiar()
@@ -6677,6 +6947,10 @@ const CAMINOS = [
   // Contra el sistema real se declara NO CUBIERTO (no se fuerza la verja ni se lee el buzón),
   // así que allí no se le exige evidencia.
   { nombre: 'codigo-sin-congelar', fn: caminoCodigoSinCongelar,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
+  // `0º.tricies.nonies` — entrar por el enlace manda UN código y la pantalla lo dice; la verja
+  // se remonta al rehidratar y ya no olvida que ese código va de camino.
+  { nombre: 'codigo-al-entrar-por-enlace', fn: caminoCodigoAlEntrarPorEnlace,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   // 2026-08-20 — la ventana de los 10 min es de INACTIVIDAD: la actividad la reinicia,
   // el aviso sale dos minutos antes y una RECARGA vuelve a pedir el código.
