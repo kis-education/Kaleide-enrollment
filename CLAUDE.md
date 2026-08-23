@@ -3305,6 +3305,79 @@ empujar a `main`, sin `clasp`. **Textos, manual y ayuda en pantalla: ninguno toc
 exactamente la misma pantalla y hace exactamente lo mismo; lo que cambia es que ahora su corrección
 llega entera al expediente.
 
+### `①27` pieza 9 · DL-R19 (2026-08-23) — la foto se comprime EN EL NAVEGADOR antes de subirla, y lo INMUTABLE no se toca
+
+**NO es una avería: el documento se subía bien. Es peso y espera en el camino más lento del
+asistente** — 96 s por 90 KB, medido en `0º.quindecies`; una foto de móvil de 4 MB viaja además
+como **~5,3 MB** de texto, porque lo que sube es el base64 (un tercio más).
+
+**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
+
+| Pieza | Estado medido |
+|---|---|
+| `Step6Documents.jsx` | mandaba el archivo **tal cual** (`fileToBase64` → `gasCall('uploadDocument')`); tope de 10 MB y **cero compresión** en los dos frontales |
+| `rec_resolveInterestedPartyType_` (KMS) | proyectaba **solo `{code, designation}`** ⇒ el navegador **no podía saber** si el tipo elegido es inmutable |
+| `recTypes_T.is_immutable` | **existe** — lo escriben `rec_upsertRecType` y las 13 plantillas de fábrica (`CUSTODY_ORDER`, `ACCIDENT_REPORT`… en `true`; `APPLICATION_DOCUMENTATION` en `false`) |
+
+⇒ sin ese dato, DL-R19 **no era aplicable**: comprimir sin él habría recomprimido un documento con
+valor probatorio, que es justo lo que la decisión prohíbe.
+
+**⛔ UN SOLO SITIO decide si un archivo se recomprime y cómo**: `frontend/src/lib/comprimirImagen.js`.
+Si mañana hay un segundo adjuntador, **llama aquí**; no se escribe una segunda regla. Sus cuatro
+barandillas están en la cabecera del módulo y ninguna es de estilo:
+
+1. **Solo con un `is_immutable === false` EXPLÍCITO se comprime.** Tres estados —sí · no · **no
+   consta**— y la ausencia se trata como **inmutable**.
+2. **Techo de 2400 px y calidad 0,85**: es la barandilla del OCR de DL-R19/DL-R18 escrita en
+   números, no prudencia genérica.
+3. **Solo JPEG y WebP, re-codificados EN SÍ MISMOS.** PDF no; **PNG tampoco** — pasarlo a JPEG
+   cambiaría extensión y tipo (dejarían de decir la verdad) y emborrona el texto de una captura.
+   Por eso `mimeType`/`filename` de la subida salen ya del archivo **que se sube**.
+4. **Nunca peor que el original**: sin ahorro real (≥80 %), sin poder descodificar (un HEIC), o ante
+   cualquier fallo ⇒ **se sube tal cual**. Esto no puede impedir que una familia suba su documento.
+
+**Quién es el tipo, con 1 y con 2+:** con dos o más lo eligió la familia (`row.rec_type_code`); con
+**uno** lo asigna el servidor y **es ése** (la pantalla no pregunta, DL-R16) ⇒ el navegador lo sabe
+en los dos casos. Con **ninguno** no hay tipo y no se comprime.
+
+**⛔ Lo que NO se toca:** el tope de 10 MB sigue mirando el archivo **que eligió la familia**, no el
+comprimido — subir el techo efectivo sería otro cambio, con su decisión. Y `assertStepUpFresh_`, la
+marca de idempotencia y KAL-4 siguen exactamente igual.
+
+**Red**: camino NUEVO `imagen-se-comprime-al-subir` (8 afirmaciones, con **ancla** por delante — sin
+un tipo corriente Y uno inmutable en el desplegable, las demás pasarían en vacío; por eso el simulado
+sirve **tres** tipos y el tercero es `CUSTODY_ORDER`, inmutable en el catálogo real).
+⛔ **El JPEG se fabrica DENTRO del navegador con un lienzo, no con un `Buffer` de Node**: unos bytes
+inventados no son descodificables ⇒ `comprimirImagen` devolvería el original por
+«no-se-pudo-descodificar» y la comprobación pasaría en vacío, que es peor que no tenerla.
+
+**Rojo demostrado DOS veces**, cada una nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| quitar la guarda de inmutabilidad (comprimirlo todo) | *«un tipo INMUTABLE se sube tal cual, sin recomprimir — se eligió una foto de 855813 bytes y viajaron 560343: un documento con valor probatorio recomprimido deja de ser el que se firmó (DL-R19)»* |
+| que `comprimirImagen` devuelva siempre el original | *«la foto viaja COMPRIMIDA cuando el tipo no es inmutable — … y viajaron 855813: sin compresión, la familia paga el camino más lento del asistente con el archivo entero»* |
+
+⚠️ **DOS lecciones del ROBOT, no del producto, que costaron ocho diagnósticos y se dejan escritas.**
+(1) **Un panel YA SUBIDO pierde su campo de archivo** —la zona de arrastre se sustituye por el bloque
+de «Subido»—, así que el recorrido toma **siempre el ÚLTIMO** campo de archivo de la página, nunca el
+primero. (2) **Elegir el tipo en el segundo panel no llega a React si la lista se está repintando**
+tras la subida anterior: se espera a que el número de paneles se ASIENTE y se reintenta el
+`selectOption` comprobando que el valor sobrevive a un repintado. Y la espera del segundo envío se
+hace **por la LLAMADA** (`uploadDocument`), con presupuesto de 60 s: el archivo inmutable viaja
+ENTERO a propósito, así que tarda más que el comprimido.
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS ⇒ afirma **lo que manda el navegador**, no que el KMS guarde los bytes
+comprimidos. La proyección de `is_immutable` se acredita **leyendo el código real** del KMS.
+
+**Publicación — los dos órdenes son seguros, y se midió:** asistente primero ⇒ `is_immutable` llega
+`undefined` y **no se comprime nada** (comportamiento de ayer); KMS primero ⇒ nada cambia hasta que
+el asistente lo consuma.
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla y
+hace exactamente lo mismo; lo que cambia es cuánto pesa lo que sube.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

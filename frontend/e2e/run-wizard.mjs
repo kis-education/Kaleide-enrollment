@@ -2880,6 +2880,198 @@ async function conducirRevisionContractual(c, page) {
 }
 
 /**
+ * ①27 pieza 9 · DL-R19 — LA IMAGEN SE COMPRIME EN EL NAVEGADOR, Y LO INMUTABLE NO.
+ *
+ * Dos afirmaciones que fallan por motivos DISTINTOS, y por eso van separadas:
+ *   · una foto de un tipo corriente viaja con MENOS bytes de los que la familia eligió;
+ *   · la misma foto, declarada de un tipo INMUTABLE, viaja BYTE A BYTE como estaba.
+ *
+ * ⛔ **LA FOTO SE FABRICA EN EL NAVEGADOR, no con un `Buffer` de Node, y no es capricho**:
+ * comprimir exige que el navegador sepa DESCODIFICAR la imagen. Unos bytes inventados no
+ * son un JPEG legible ⇒ `comprimirImagen` devolvería el original por «no-se-pudo-descodificar»
+ * y la afirmación pasaría **en vacío**, que es peor que no tenerla. Se dibuja un patrón suave
+ * y grande, se codifica a JPEG de alta calidad, y ESO es lo que se le da al selector.
+ *
+ * ⚠️ **Lo que este camino NO cubre**: que el KMS guarde los bytes comprimidos. La batería
+ * corre contra un backend simulado que **nunca ejecuta `backend/Code.js`** ni el KMS — aquí
+ * se afirma lo que MANDA el navegador, que es donde vive la decisión de DL-R19.
+ */
+async function caminoImagenSeComprime(page, base) {
+  const c = new Camino('imagen-se-comprime-al-subir')
+  scenario.stage = 'hasta_preguntas'   // aterriza directamente en Documentos (5)
+
+  if (!await entrarPorElEnlace(c, page, base)) return c
+
+  const pantalla = await page.evaluate(sondaPantalla)
+  if (REAL && pantalla.pasoActivo !== 5) {
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    c.noCubierta('compresion-desde-la-pantalla',
+      `el expediente aterriza en el índice ${pantalla.pasoActivo} y el robot aún no conduce los pasos 2-5 para llegar a Documentos`)
+    return c
+  }
+  if (!c.afirmar('aterriza en el paso de Documentos', pantalla.pasoActivo === 5,
+    `aterrizó en el índice ${pantalla.pasoActivo}, no en 5`)) return c
+
+  // ⛔ EL JPEG SE DIBUJA EN EL NAVEGADOR, pero se ENTREGA con `setInputFiles` — que es la vía
+  // que este robot ya usa y la que sabe alcanzar un selector de archivo OCULTO (el del paso 6
+  // lo está: `style={{display:'none'}}`). Fijar `input.files` a mano desde la página NO vale:
+  // se probó y el `querySelectorAll` no alcanzaba ese campo, y el rojo que salía era del robot,
+  // no del producto.
+  let fotoBytes = null, fotoBuffer = null
+  const dibujarFoto = async () => {
+    if (fotoBuffer) return
+    const b64 = await page.evaluate(async () => {
+      const lienzo = document.createElement('canvas')
+      lienzo.width = 3000; lienzo.height = 2100
+      const ctx = lienzo.getContext('2d')
+      const img = ctx.createImageData(lienzo.width, lienzo.height)
+      for (let y = 0; y < lienzo.height; y++) {
+        for (let x = 0; x < lienzo.width; x++) {
+          const p = (y * lienzo.width + x) * 4
+          // Patrón suave (se codifica bien) + un grano fino que impide que el JPEG lo reduzca
+          // a nada: sin grano el original ya sería diminuto, no habría nada que ahorrar, y la
+          // comparación de abajo pasaría EN VACÍO.
+          img.data[p]     = 128 + 100 * Math.sin(x / 40) + ((x * y) % 17)
+          img.data[p + 1] = 128 + 100 * Math.sin(y / 55) + ((x + y) % 23)
+          img.data[p + 2] = 128 + 100 * Math.sin((x + y) / 70) + ((x * 3 + y) % 13)
+          img.data[p + 3] = 255
+        }
+      }
+      ctx.putImageData(img, 0, 0)
+      const blob = await new Promise(r => lienzo.toBlob(r, 'image/jpeg', 0.85))
+      return await new Promise(r => {
+        const fr = new FileReader()
+        fr.onload = () => r(String(fr.result).split(',')[1])
+        fr.readAsDataURL(blob)
+      })
+    })
+    fotoBuffer = Buffer.from(b64, 'base64')
+    fotoBytes  = fotoBuffer.length
+  }
+  // ⛔ SIEMPRE EL ÚLTIMO campo de archivo, nunca el del panel N. Un panel con la subida ya
+  // terminada SUSTITUYE su zona de soltar por el aviso de éxito ⇒ su campo desaparece del
+  // documento, y contar por panel deja de casar. Medido: por eso el primer intento salió rojo
+  // con «no hay campo de archivo en el panel 1» — un rojo del ROBOT, no del producto.
+  const elegirFoto = async () => {
+    await dibujarFoto()
+    const entradas = await page.$$('.doc-attachment input[type="file"]')
+    if (!entradas.length) throw new Error('no quedó ningún campo de archivo donde elegir la foto')
+    await entradas[entradas.length - 1].setInputFiles({
+      name: 'foto-familia-e2e.jpg', mimeType: 'image/jpeg', buffer: fotoBuffer,
+    })
+    return fotoBytes
+  }
+
+  const bytesDeLaSubida = (llamada) => {
+    const b64 = (llamada && llamada.payload && llamada.payload.base64) || ''
+    return Math.floor(b64.length * 3 / 4)   // base64 → bytes, con el margen del relleno
+  }
+
+  const abrirPanel = async (indice) => {
+    const añadir = await page.$('.add-btn')
+    if (!añadir) return false
+    await añadir.click()
+    await page.waitForFunction(
+      n => document.querySelectorAll('.doc-attachment').length >= n, indice + 1, { timeout: 10000 })
+    // ⛔ Y SE ESPERA A QUE LA LISTA SE ASIENTE. Tras una subida con éxito la pantalla vuelve a
+    // sembrar sus filas con lo que trae el expediente, así que los paneles siguen apareciendo
+    // un rato. Actuar en mitad de ese repintado deja el gesto sobre un nodo que React ya ha
+    // sustituido: el desplegable «cambia» y nadie recibe el cambio. Medido — era esto.
+    let previo = -1
+    for (let i = 0; i < 12; i++) {
+      const ahora = await page.evaluate(() => document.querySelectorAll('.doc-attachment').length)
+      if (ahora === previo) break
+      previo = ahora
+      await page.waitForTimeout(400)
+    }
+    return true
+  }
+
+  // Elige el tipo y COMPRUEBA QUE PRENDIÓ tras un repintado. La comprobación no es de adorno:
+  // el desplegable está gobernado por el estado de la pantalla, así que si React no recibió el
+  // gesto, el valor vuelve solo al de partida en cuanto algo repinta — y el rojo saldría más
+  // adelante, como «no salió la subida», mandando a buscar el defecto donde no está.
+  const elegirTipo = async (valor) => {
+    for (let intento = 0; intento < 5; intento++) {
+      await page.locator('.doc-attachment .doc-type').last().selectOption(valor)
+      await page.waitForTimeout(500)
+      const ok = await page.evaluate(v => {
+        const ss = document.querySelectorAll('.doc-attachment .doc-type')
+        return !!ss.length && ss[ss.length - 1].value === v
+      }, valor)
+      if (ok) return true
+    }
+    return false
+  }
+
+  // ── ANCLA: sin los tres tipos en el desplegable, todo lo de abajo mediría el aire ──────
+  if (!await abrirPanel(0)) { c.fallos.push('el paso de Documentos no ofrece el botón de añadir archivo'); return c }
+  const opciones = await page.$$eval('.doc-attachment .doc-type option', os => os.map(o => o.value).filter(Boolean))
+  c.evidencia.elementos = opciones.length
+  if (!c.afirmar('el catálogo ofrece un tipo corriente Y uno inmutable',
+    opciones.includes('APPLICATION_DOCUMENTATION') && opciones.includes('CUSTODY_ORDER'),
+    `las opciones fueron: ${opciones.join(' · ') || '(ninguna)'} — sin las dos, las afirmaciones de abajo pasarían en vacío`)) return c
+
+  // ── (1) TIPO CORRIENTE (`is_immutable:false`) ⇒ viaja comprimida ───────────────────────
+  if (!c.afirmar('el tipo corriente queda elegido en el primer panel',
+    await elegirTipo('APPLICATION_DOCUMENTATION'),
+    'la eleccion del tipo no prendio: la pantalla no dispara la subida sin respuesta (18.bis.35)')) return c
+  const bytesOriginal = await elegirFoto()
+  try { await page.waitForSelector('.doc-attachment .upload-status.success', { timeout: LATENCY + 20000 }) }
+  catch { /* se reporta abajo por la ausencia de llamada */ }
+
+  const subidas1 = llamadas('uploadDocument')
+  c.evidencia.llamadas = subidas1.length
+  if (!c.afirmar('la foto llega al servidor', subidas1.length >= 1,
+    'no salió ninguna llamada uploadDocument al elegir la foto')) return c
+
+  const bytesEnviados = bytesDeLaSubida(subidas1[subidas1.length - 1])
+  c.afirmar('la foto viaja COMPRIMIDA cuando el tipo no es inmutable',
+    bytesEnviados > 0 && bytesEnviados < bytesOriginal * 0.8,
+    `se eligió una foto de ${bytesOriginal} bytes y viajaron ${bytesEnviados}: sin compresión, la familia paga el camino más lento del asistente con el archivo entero`)
+  c.afirmar('el nombre y el tipo del archivo NO cambian al comprimir',
+    (subidas1[subidas1.length - 1].payload || {}).filename === 'foto-familia-e2e.jpg' &&
+    (subidas1[subidas1.length - 1].payload || {}).mimeType === 'image/jpeg',
+    `llegaron filename=${(subidas1[subidas1.length - 1].payload || {}).filename} y mimeType=${(subidas1[subidas1.length - 1].payload || {}).mimeType}: la extensión dejaría de decir la verdad`)
+
+  // ── (2) TIPO INMUTABLE ⇒ byte a byte como estaba (DL-R19) ─────────────────────────────
+  if (!await abrirPanel(1)) { c.fallos.push('no se pudo abrir un segundo panel de archivo'); return c }
+  // ⛔ Se elige con un LOCALIZADOR que se vuelve a resolver, no con un puntero capturado antes:
+  // añadir el panel repinta la lista y un puntero de hace un instante puede quedar apuntando a un
+  // nodo que ya no está en la pantalla — la elección «funciona» sin que nadie la reciba.
+  if (!c.afirmar('el tipo INMUTABLE queda elegido en el segundo panel',
+    await elegirTipo('CUSTODY_ORDER'),
+    `los desplegables de tipo valen ${JSON.stringify(await page.$$eval('.doc-attachment .doc-type', ss => ss.map(s => s.value)))}: sin la eleccion, la pantalla no dispara la subida y el rojo de abajo seria del robot`)) return c
+  const antesDeSoltar = await page.evaluate(() => ({
+    paneles: document.querySelectorAll('.doc-attachment').length,
+    tipos: [...document.querySelectorAll('.doc-attachment .doc-type')].map(s => s.value),
+    campos: document.querySelectorAll('.doc-attachment input[type="file"]').length,
+  }))
+  const bytesOriginal2 = await elegirFoto()
+  // ⛔ SE ESPERA A LA LLAMADA, no al aviso de éxito, y con presupuesto largo: el archivo de un
+  // tipo INMUTABLE viaja ENTERO a propósito (es lo que se está comprobando), así que tarda
+  // bastante más que el comprimido de arriba. Medido: con el presupuesto corto el robot leía
+  // «solo salió 1 subida» cuando el panel decía «Subiendo…» — un rojo del ROBOT, no del producto.
+  for (let i = 0; i < 120 && llamadas('uploadDocument').length < 2; i++) await page.waitForTimeout(500)
+
+  const subidas2 = llamadas('uploadDocument')
+  c.evidencia.llamadas = subidas2.length
+  const dicePanel = await page.evaluate(() => {
+    const ps = [...document.querySelectorAll('.doc-attachment')]
+    return ps.map((p, i) => `#${i}[${(p.innerText || '').replace(/\s+/g, ' ').trim().slice(-170)}]`).join(' || ')
+  })
+  if (!c.afirmar('la segunda foto llega al servidor', subidas2.length >= 2,
+    `salieron ${subidas2.length} llamada(s) uploadDocument; se esperaban 2 — antes de soltar la foto: ${JSON.stringify(antesDeSoltar)} — el panel dice: «${dicePanel}»`)) return c
+
+  const bytesInmutable = bytesDeLaSubida(subidas2[subidas2.length - 1])
+  c.afirmar('un tipo INMUTABLE se sube tal cual, sin recomprimir',
+    Math.abs(bytesInmutable - bytesOriginal2) <= 3,
+    `se eligió una foto de ${bytesOriginal2} bytes y viajaron ${bytesInmutable}: un documento con valor probatorio recomprimido deja de ser el que se firmó (DL-R19)`)
+
+  return c
+}
+
+/**
  * EXPEDIENTE COMPLETO — los once pasos, PULSANDO BOTONES (solo modo real).
  *
  * ── Qué cambió el 2026-08-04 (encargo 08) ───────────────────────────────────────────
@@ -7411,6 +7603,8 @@ const CAMINOS = [
   // ①31 — la familia que se incorpora a mitad de curso no puede quedarse encerrada en el paso 1.
   { nombre: 'fecha-a-mitad-de-curso', fn: caminoFechaAMitadDeCurso, minLlamadas: 1, minElementos: 11 },
   { nombre: 'subir-documento',     fn: caminoSubirDocumento,     minLlamadas: 1, minElementos: 1 },
+  // ①27 pieza 9 · DL-R19 — la foto se comprime en el navegador, y lo inmutable NO se toca.
+  { nombre: 'imagen-se-comprime-al-subir', fn: caminoImagenSeComprime, minLlamadas: 1, minElementos: 1 },
   // Solo en real: rellena 2-7, admite el expediente y lee de vuelta los once pasos. Va
   // ANTES del tramo de firma porque es lo que lo destapa (sin `AD` no hay firma que pintar).
   ...(REAL ? [{ nombre: 'expediente-completo', fn: caminoExpedienteCompleto, minLlamadas: 8, minElementos: 11 }] : []),

@@ -9,6 +9,7 @@ import StepUpReverify from '../../components/StepUpReverify';
 import * as log from '../../logger';
 import { confirmarYQuitar } from '../../lib/quitar';
 import { formaDeDocumentosDelPaso_ } from './documentShape';  // 0º.tricies.quindecies: forma canónica de un documento (un solo sitio)
+import { comprimirImagen } from '../../lib/comprimirImagen';  // ①27 pieza 9 · DL-R19: un solo sitio decide si se recomprime
 
 // WIZARD-DOCS (2026-06-13): adjuntador GENÉRICO opcional.
 // Diego: "Hay una serie de casos tasados para subir archivos (DNI, etc.) pero no
@@ -125,6 +126,16 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
   const tipos    = Array.isArray(tiposDeDocumento) ? tiposDeDocumento : [];
   const eligeTipo = tipos.length >= 2;
 
+  // ①27 pieza 9 · DL-R19 — QUÉ TIPO va a llevar ESTE archivo, para saber si es INMUTABLE.
+  // Con dos o más lo eligió la familia; con UNO lo asigna el servidor y es ése (la pantalla
+  // no pregunta, DL-R16) ⇒ el navegador SÍ sabe cuál es en los dos casos. Con NINGUNO no hay
+  // tipo que resolver, y `comprimirImagen` trata la ausencia como inmutable: no comprime.
+  // ⛔ Aquí no se decide nada más: el criterio entero vive en `lib/comprimirImagen.js`.
+  const tipoDeclaradoDeLaFila = () => {
+    if (eligeTipo) return row.rec_type_code ? tipos.find(tp => tp.code === row.rec_type_code) : null;
+    return tipos.length === 1 ? tipos[0] : null;
+  };
+
   // 0º.sexdecies — UNA VEZ SUBIDO, la familia no podía comprobar qué tipo declaró ni de quién
   // dijo que era: los dos desplegables se ocultan al confirmar la subida (a propósito — un
   // archivo ya subido tiene su respuesta escrita en el servidor, no en este formulario), y
@@ -176,14 +187,30 @@ function GenericAttachment({ row, personas, tiposDeDocumento, enrollmentGroupId,
       rec_type_code: row.rec_type_code || '', dueno: row.dueno || '',
     });
     try {
-      const base64 = await fileToBase64(file);
+      // ①27 pieza 9 · DL-R19 — SE COMPRIME AQUÍ, ANTES de codificar y de salir a la red, que
+      // es donde está el ahorro: lo que se sube son los bytes en base64 (un tercio más), por
+      // el camino más lento del asistente (96 s por 90 KB, medido en `0º.quindecies`).
+      // ⛔ NUNCA impide subir: ante cualquier duda devuelve el archivo tal cual.
+      const opt = await comprimirImagen(file, tipoDeclaradoDeLaFila());
+      if (opt.comprimido) {
+        log.info('Step6: imagen comprimida antes de subir', {
+          bytes_antes: opt.bytesAntes, bytes_despues: opt.bytesDespues,
+        });
+      } else if (opt.motivo !== 'formato-no-recomprimible' && opt.motivo !== 'por-debajo-del-suelo') {
+        log.info('Step6: la imagen se sube sin comprimir', { motivo: opt.motivo });
+      }
+      const base64 = await fileToBase64(opt.archivo);
       const data   = await gasCall('uploadDocument', {
         resume_token:        resumeToken, // KAL-4: required for IDOR defense
         enrollment_group_id: enrollmentGroupId,
         application_id:      enrollmentGroupId, // legacy alias
         base64,
-        mimeType:    file.type,
-        filename:    file.name,
+        // DL-R19 — el tipo y el nombre salen del archivo QUE SE SUBE, no del que se eligió.
+        // Hoy son idénticos (solo se re-codifica JPEG→JPEG y WebP→WebP, barandilla 3), y por
+        // eso mismo: si mañana alguien cambiara de formato, esto seguiría diciendo la verdad
+        // en vez de etiquetar mal el archivo en silencio.
+        mimeType:    opt.archivo.type,
+        filename:    opt.archivo.name,
         // WIZARD-DOCS: el usuario describe qué es el archivo (texto libre, opcional).
         description: (row.description || '').trim(),
         // 18.bis.35 · DL-R16 — QUÉ ES el archivo. Describir no es clasificar: la casilla de

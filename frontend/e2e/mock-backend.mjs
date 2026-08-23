@@ -216,9 +216,16 @@ const LOOKUPS = {
   // un banco con un solo tipo dejaría el desplegable sin pintar y la comprobación pasando
   // en vacío — que es peor que no tenerla. Los casos de 0 y de 1 NO están cubiertos por la
   // batería y se declaran como tales en `CLAUDE.md` §18.bis.35.
+  // ①27 pieza 9 · DL-R19 — `is_immutable` VIAJA CON CADA OPCIÓN, y la forma es la del
+  // servidor de verdad (`rec_resolveInterestedPartyType_`, `kis-app kms-server/rec/catalogue.gs`).
+  // Los tres valores son los del catálogo REAL de fábrica (`config/rec-type-templates.html`):
+  // los dos primeros no son inmutables y `CUSTODY_ORDER` sí. **El tercero está a propósito**:
+  // sin un tipo inmutable delante, la afirmación de «lo inmutable no se recomprime» pasaría
+  // EN VACÍO — que es peor que no tenerla.
   recTypesInterestedParty: [
-    { code: 'APPLICATION_DOCUMENTATION', designation: 'Documentación de la solicitud' },
-    { code: 'MEDICAL_RECORD',            designation: 'Informe médico' },
+    { code: 'APPLICATION_DOCUMENTATION', designation: 'Documentación de la solicitud', is_immutable: false },
+    { code: 'MEDICAL_RECORD',            designation: 'Informe médico',                is_immutable: false },
+    { code: 'CUSTODY_ORDER',             designation: 'Medida judicial de custodia',   is_immutable: true  },
   ],
   // ── `0º.tricies.duodecies` · DL-E51 — LOS VALORES QUE ADMITE EL SEXO ─────────────
   // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation, label_key}`, tal cual la
