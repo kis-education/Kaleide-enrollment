@@ -3180,16 +3180,36 @@ function sendMagicLink_(p) {
     // consumirle el cupo a una familia real.
     const groupId = requireResumeToken_(p);
 
-    // Lector PRESERVADO tal cual (era `:2609-2613` en origin/main): la fila del grupo se
-    // lee por su identificador, ahora el que autoriza el token en vez del que llegaba en
-    // el cuerpo. El gate ya bajó esta misma fila para validar el token, pero no la
-    // devuelve; se paga una lectura de más antes que reescribir un gate del que cuelgan
-    // todos los pasos del asistente. El rechazo de expediente abandonado ya lo hace el
-    // gate (mismo mensaje para toda la familia de handlers), así que aquí desaparece.
-    const rows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-      Filter: '"enrollment_group_id" = "' + appsheetEscape_(groupId) + '"'
-    });
-    const grp = rows && rows[0];
+    // ②17 (2026-08-23) — ESTA ERA UNA DE LAS DOS ÚLTIMAS LECTURAS DIRECTAS A AppSheet DEL
+    // CAMINO VIVO. Ahora la fila la da el lector ÚNICO `_expedienteDelToken_` (sexto tramo),
+    // y **CUESTA CERO VIAJES**: `requireResumeToken_`, dos líneas más arriba, acaba de
+    // archivar esta misma fila en la memoria de EJECUCIÓN bajo la clave ESTRICTA.
+    //
+    // ⚠️ EL COMENTARIO QUE VIVÍA AQUÍ ESTABA CADUCADO, y era lo único que sostenía la
+    // lectura: decía que se pagaba «una lectura de más» porque «el gate ya bajó esta misma
+    // fila para validar el token, PERO NO LA DEVUELVE». Eso dejó de ser cierto el
+    // 2026-08-16 (duodécimo tramo) y del todo el 2026-08-19, cuando esa memoria pasó a
+    // indexarse también por TOKEN — que es justo como la pide este lector.
+    //
+    // Los CINCO campos que esta función usa de la fila (`primary_email`, `resume_token`,
+    // `submitted_at`, `enrollment_group_id`, `preferred_language`) están TODOS en la
+    // proyección de `enr.expedienteDelToken` (KMS) — no hubo que ampliarla.
+    //
+    // ⛔ MODO ESTRICTO a propósito (sin `tolerarSesionCerrada`): el gate ya aplicó sus tres
+    // rechazos, y pedir tolerancia aquí serviría —o archivaría— una fila bajo la otra clave.
+    // ⚠️ Va ANTES de renovar el token, como todo lo de esta rama: la renovación lo ROTA.
+    const consultaGrp = _expedienteDelToken_(p.resume_token);
+    if (!consultaGrp.ok) {
+      // Se distinguen los dos fallos, mismo criterio que la puerta: «el KMS CONTESTÓ que el
+      // token no vale» (raro aquí — el gate acaba de validarlo) vs. «no se pudo preguntar».
+      // Confundirlos convertiría un KMS caído en «tu enlace no vale». Esta rama SÍ propaga
+      // sus errores al cliente (WIZ-ENUM regla 4), así que lanzar es lo correcto.
+      if (consultaGrp.rechazo) throw new Error(consultaGrp.rechazo);
+      const errKms = new Error('KMS_UNREACHABLE: ' + (consultaGrp.motivo || 'sin motivo'));
+      errKms.code = 'KMS_UNREACHABLE';
+      throw errKms;
+    }
+    const grp = consultaGrp.fila;
     if (!grp) throw new Error('Enrollment group not found');
     // DL-E38 a1: per-guardian destination — if the family is recovering with a
     // specific guardian email (matched server-side against enrEmails of the
@@ -5463,7 +5483,33 @@ function sendVerificationCode_(p) {
     // respuesta correcta es no darle una forma ambigua, no aflojarlo.
     personaEmail = _identidadDelEnlace_(p, enrollmentGroupId);
     primary_email = personaEmail;
+    // ②17 (2026-08-23) — el respaldo del respaldo pasa por el lector ÚNICO cuando puede.
+    //
+    // CON `resume_token` —el camino que recorren las dos pantallas vivas
+    // (`StepUpGate`/`StepUpReverify`, que mandan lo que arma `signingIdentity_`, el cual
+    // PREFIERE el `resume_token`)— la fila la da `_expedienteDelToken_` y **cuesta CERO
+    // viajes**: `_resolveStepUpGroup_` ya pasó por `requireResumeToken_`, que la dejó en la
+    // memoria de EJECUCIÓN bajo la clave estricta.
+    //
+    // ⛔ SIN `else`, Y NO ES ESTILO: `scripts/verja-publica.mjs` parte este manejador en sus
+    // dos ramas por el PRIMER `} else {` (límite declarado en su cabecera — es un detector
+    // por líneas, no un analizador sintáctico). Un if/else anidado aquí le mueve el corte y
+    // le hace ver la lectura de abajo como si fuera de la rama de alta: se comprobó, y el
+    // control salió ROJO. La respuesta correcta es no darle una forma ambigua, no aflojarlo.
+    if (!primary_email && p && p.resume_token) {
+      const consultaSU = _expedienteDelToken_(p.resume_token);
+      primary_email = (consultaSU.ok && consultaSU.fila && consultaSU.fila.primary_email) || null;
+    }
     if (!primary_email) {
+      // ⛔ LA LECTURA DIRECTA SE QUEDA, y no es pereza — cubre DOS casos que no tienen otra
+      // vía: (a) el camino de `signing_token`, que `signingCommon.js` declara «legacy» y que
+      // se alcanza cuando NO hay token de recuperación — ahí `enr.expedienteDelToken` no
+      // sirve, porque pide precisamente un `resume_token`; y (b) un KMS que no contesta,
+      // donde DEGRADA exactamente como degradaba antes de este cambio. Quitarla dejaría a
+      // esa familia con `BAD_REQUEST` en vez de su código.
+      // ⇒ Por eso ②17 NO se cierra aquí: mientras esta línea exista, la credencial de
+      // AppSheet sigue haciendo falta en el asistente. Moverla exige que el KMS sirva la
+      // cabecera desde un `signing_token`, que es otro tramo y toca el otro repositorio.
       const grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
         Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
       });
