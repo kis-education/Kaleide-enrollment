@@ -471,40 +471,14 @@ function assertUniqueGuardianEmails_(persons) {
   });
 }
 
-/**
- * CLI 8 (DL-E39 ENMIENDA 3 punto 4) — registra (best-effort) la ATESTACIÓN de tutor
- * único como acto declarativo en la fila del grupo `enrEnrollmentGroups`. Es un Edit
- * SEPARADO (solo PK + 4 campos de atestación) para que un silent-reject P72 (si las
- * columnas aún no existen en AppSheet) NO arrastre el save principal de personas —
- * solo se pierde la atestación, logueada (KAL-11 redactado). Destino justificado: la
- * atestación es GROUP-scoped y se captura en Step 2, ANTES de que existan filas
- * enrEnrollments (mismo motivo por el que los consents GDPR se difieren a submit);
- * el wizard es thin client que escribe a enr* (DL-E41). TODO Diego: alta de columnas.
- *
- * @param {string} resumeToken  bearer del grupo — el KMS deriva el group server-side (KAL-4)
- * @param {{attested:boolean, attestant_guardian?:string, attested_at?:string, attestation_version?:string}} att
- */
-function persistSoleGuardianAttestation_(resumeToken, att) {
-  if (!att || att.attested !== true) return;
-  try {
-    // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): la escritura se porta al KMS (único escritor).
-    // KAL-4: el grupo lo deriva el KMS del resume_token, no viaja ningún group_id.
-    // Best-effort preservado: columnas sole_guardian_* quizá no creadas aún (P72) — el
-    // KMS reporta persisted:false sin lanzar; cualquier otro fallo cae a este catch.
-    const res = kmsProxy_('enr.persistSoleGuardianAttestation', {
-      resume_token:        resumeToken,
-      attested:            true,
-      attested_at:         att.attested_at || new Date().toISOString(),
-      attestant_guardian:  att.attestant_guardian || null,
-      attestation_version: att.attestation_version || null,
-    });
-    Logger.log(redact_('[persistSoleGuardianAttestation_] atestación tutor único → KMS persisted=' +
-      (res && res.persisted) + ' attestant=' + (att.attestant_guardian || '?') + ' ver=' + (att.attestation_version || '?')));
-  } catch (e) {
-    // No rompe el flujo (regla "la falta de columna AppSheet NO congela"). Log redactado.
-    Logger.log(redact_('[persistSoleGuardianAttestation_] best-effort fail (KMS proxy): ' + e.message));
-  }
-}
+// ─── LÁPIDA (2026-08-23) — `persistSoleGuardianAttestation_` RETIRADA ───────────────
+// Era un viaje al KMS (`enr.persistSoleGuardianAttestation`) en CADA guardado del paso 2
+// que NO ESCRIBÍA NADA: el manejador ya solo devolvía `{ok:true, persisted:false}`.
+// La declaración de tutor único NO se pierde — viaja al LIBRO DE CONSENTIMIENTOS en el
+// ENVÍO (`Step7Review.jsx` la arma con su texto exacto; `CONSENT_TYPE_MAP` la mapea a
+// `SOLE_GUARDIAN_ATTESTATION`), que es donde DL-E49 §3 decidió que viviera. Y
+// `p.sole_guardian_attestation` SIGUE viajando en el payload del guardado del paso 2 —
+// no se toca. Ver CLAUDE.md §"el viaje del paso 2 que no escribía nada".
 
 /**
  * CLI PHONE-E164 — valida formato E.164 canónico (`+<dialcode><national>`).
@@ -4951,9 +4925,10 @@ function saveStep_(p) {
         // de OTRO tutor. Resuelto del enlace (IDENTITY-FROM-LINK), NUNCA del payload.
         writer_person_id: wizardTutorQueOpera_(p, enrollmentGroupId),
       });
-      // CLI 8: atestación de tutor único — sigue siendo dato del payload (group-scoped).
-      // P1-B: viaja el resume_token (el KMS deriva el grupo, KAL-4), no el group_id.
-      persistSoleGuardianAttestation_(p.resume_token, p.sole_guardian_attestation);
+      // 2026-08-23: aquí había un viaje al KMS por la declaración de tutor único que NO
+      // ESCRIBÍA NADA — retirado. `p.sole_guardian_attestation` SIGUE viajando en este
+      // payload y llega hasta el ENVÍO, que es donde se registra (libro de
+      // consentimientos, DL-E49 §3). Ver la lápida de `persistSoleGuardianAttestation_`.
       break;
     case 'relations':
       extra = kmsProxy_('enr.saveRelations', {

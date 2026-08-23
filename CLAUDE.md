@@ -483,7 +483,8 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - creación de sesión → `enr.wizardCreateSession` (el KMS minta + persiste el `resume_token`; resuelve `source_id` del catálogo Capa 2 + fallback de `program_id`);
   - renovación de token del magic-link → `enr.wizardTouchSession` (token minted server-side; submitted no renueva; fallo P72 → devuelve el token vivo con `renewed:false`);
   - abandono (start-over / report-unsolicited / auto-abandon de sesiones paralelas / cleanup admin) → `enr.wizardAbandonSession` (idempotente; submitted nunca se abandona);
-  - atestación tutor único → `enr.wizardPersistAttestation` (best-effort P72);
+  - *(atestación tutor único → `enr.wizardPersistAttestation` — **RETIRADA el 2026-08-23**, con su
+    ruta y su manejador: no escribía nada. Ver §"el viaje del paso 2 que no escribía nada");*
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
@@ -3380,6 +3381,45 @@ el asistente lo consuma.
 
 **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla y
 hace exactamente lo mismo; lo que cambia es cuánto pesa lo que sube.
+
+### (2026-08-23) — el viaje del paso 2 que no escribía nada: RETIRADO
+
+**En CADA guardado del paso 2 el asistente hacía un viaje al KMS que no guardaba nada.**
+`persistSoleGuardianAttestation_` llamaba a `enr.persistSoleGuardianAttestation`, y ese manejador
+—desde DL-E49 §3 (2026-08-09)— solo exigía el token y devolvía `{ok:true, persisted:false}`. Su
+escritura vestigial (`enrEnrollmentGroups.sole_guardian_*`, **cero lectores**) ya se había quitado
+ese día; lo que quedó vivo fue **la cáscara**, y su propio comentario decía que retirar la llamada
+y la ruta era «una limpieza aparte, anotada en la cola». Ésta es esa limpieza.
+
+**Lo retirado, entero, en los DOS repositorios:** aquí, `persistSoleGuardianAttestation_` y su
+llamada en `saveStep_` (rama `persons`); en el KMS, `enr_wizardPersistAttestation`, su ruta
+`enr.persistSoleGuardianAttestation`, su permiso `'public'`, su alias `enr.wizardPersistAttestation`,
+su entrada en la puerta de llamadas entre proyectos y su paso en el robot (aparcado).
+
+**⛔ LA DECLARACIÓN NO SE PIERDE, y esto se midió ANTES de borrar nada.** Vive en el **libro de
+consentimientos** (`sysConsentsLog`, código `SOLE_GUARDIAN_ATTESTATION`) con su **texto exacto**,
+quién y cuándo — se escribe **al ENVIAR**, porque el libro se ancla al EXPEDIENTE y en el paso 2
+todavía no existe ninguno. El camino vivo es: `Step2Persons.jsx` → `updateStep('sole_guardian_attestation', …)`
+(estado del cliente) → `Step7Review.jsx` la arma en `consents` con su `consent_text_shown` →
+`CONSENT_TYPE_MAP` (`backend/Code.js`) la mapea al código del catálogo → `enr.persistSubmitSideEffects`.
+**Ninguno de esos cuatro eslabones pasaba por el manejador retirado.**
+
+**⛔ `p.sole_guardian_attestation` SIGUE viajando en el payload del guardado del paso 2** — lo que
+cambia es que el servidor del asistente **ya no lo lee**. No se tocó `Step2Persons.jsx`, ni
+`WizardPage.jsx` (que lo mete en `extra`), ni la validación que obliga a marcar la casilla.
+
+**⛔ EL ORDEN DE PUBLICACIÓN NO ES OPCIONAL: el ASISTENTE PRIMERO, el KMS DESPUÉS.** Los dos
+proyectos se publican por separado. Con el asistente publicado deja de llamarse la ruta, y entonces
+retirarla del KMS es inocuo. **Al revés no rompe a ninguna familia** —la llamada iba dentro de un
+`try/catch` best-effort que solo registraba el fallo— pero deja al asistente desplegado gastando un
+viaje que ya devuelve error. Se publica en ese orden y ya está.
+
+⚠️ **NINGUNA RED CUBRE ESTO, y se dice en vez de fingirlo.** La batería (`npm run e2e:wizard`) corre
+contra un backend **simulado** que **nunca ejecuta `backend/Code.js`** ni llama al KMS ⇒ no puede
+salir roja por esto. Lo que sí acredita es lo que importaba: el camino
+`declaraciones-tutor-unico` **sigue verde**, es decir la declaración se marca en el paso 2 y **llega
+al envío** dentro de `consents`. Que la ruta ya no exista en el KMS se acredita con `git grep`, no
+con una prueba.
 
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
