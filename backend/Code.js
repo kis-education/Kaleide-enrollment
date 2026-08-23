@@ -252,7 +252,7 @@ const T = {
 //
 // UN SOLO SITIO lo decide. Antes no lo decidía NADIE en el asistente: cada lectura
 // de `enrPersons` se traía TODA persona que alguna vez estuvo en el expediente,
-// incluidas las que la familia había quitado con `enr.wizardRetirar`. Consecuencias
+// incluidas las que la familia había quitado con `enr.retirarDeLaSolicitud`. Consecuencias
 // medidas el 2026-08-09 sobre datos reales (166 personas): 134 retiradas, 83 tutores
 // retirados sin teléfono vivo, y **57 de 67 expedientes bloqueados** — la puerta del
 // teléfono del envío le exigía un número a gente que ya no está, y tumbaba el envío
@@ -491,7 +491,7 @@ function persistSoleGuardianAttestation_(resumeToken, att) {
     // KAL-4: el grupo lo deriva el KMS del resume_token, no viaja ningún group_id.
     // Best-effort preservado: columnas sole_guardian_* quizá no creadas aún (P72) — el
     // KMS reporta persisted:false sin lanzar; cualquier otro fallo cae a este catch.
-    const res = kmsProxy_('enr.wizardPersistAttestation', {
+    const res = kmsProxy_('enr.persistSoleGuardianAttestation', {
       resume_token:        resumeToken,
       attested:            true,
       attested_at:         att.attested_at || new Date().toISOString(),
@@ -595,7 +595,7 @@ function assertValidSigningToken_(v, fieldName) {
  * la familia ya llevaba activa unos segundos) el id vuelve en <1 ms — pero la memoria de
  * ejecución quedaba VACÍA porque solo la escribe el camino VIVO. Más abajo, en la MISMA
  * petición, `_expedienteDelToken_` volvía a preguntarle al KMS por la MISMA ficha
- * (`enr.wizardExpedienteDelToken`, 12,45 s medidos) SOLO porque su memoria no la
+ * (`enr.expedienteDelToken`, 12,45 s medidos) SOLO porque su memoria no la
  * encontraba — el acierto de aquí no la había dejado. Con la ficha dentro del acierto,
  * ese segundo viaje se ahorra entero.
  *
@@ -2060,7 +2060,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
     }
     if (!data) {
       var tH = Date.now();
-      data = kmsProxy_('enr.wizardHydrate', {
+      data = kmsProxy_('enr.hydrateApplication', {
         resume_token:    token,
         recovered_email: recoveredEmail || null,
         language:        lang || null,
@@ -2634,7 +2634,7 @@ function initEnrollmentSession_(p, opts) {
 
   // ②17 (séptimo tramo): las TRES lecturas de este manejador —los expedientes ya enviados
   // de este correo, los abiertos, y las personas de los candidatos para CONTARLAS— las
-  // sirve el KMS en UNA pregunta (`enr.wizardExpedientesDelCorreo`), proyectadas a los
+  // sirve el KMS en UNA pregunta (`enr.expedientesDelCorreo`), proyectadas a los
   // campos que se usan aquí abajo. La DECISIÓN (puntuar, desempatar, abandonar perdedores)
   // NO se movió: sigue entera en este fichero, verbatim.
   const _expedientes = _expedientesDelCorreo_(normalizedEmail);
@@ -2710,11 +2710,11 @@ function initEnrollmentSession_(p, opts) {
     // re-send to the winner). They'll otherwise resurface on the next init and
     // need to be re-evaluated.
     // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): la escritura se porta al KMS
-    // (enr.wizardAbandonSession). KAL-4: el grupo lo deriva el KMS del resume_token
+    // (enr.abandonApplicationSession). KAL-4: el grupo lo deriva el KMS del resume_token
     // del PROPIO loser (fila ya leída de BD por este init), nunca de un id suelto.
     losers.forEach(loser => {
       try {
-        kmsProxy_('enr.wizardAbandonSession', { resume_token: loser.resume_token });
+        kmsProxy_('enr.abandonApplicationSession', { resume_token: loser.resume_token });
         // KAL-11: redact UUID + email.
         Logger.log(redact_('initEnrollmentSession_: auto-abandoned ' + loser.enrollment_group_id +
                    ' (lower-progress parallel session for ' + normalizedEmail +
@@ -2751,14 +2751,14 @@ function initEnrollmentSession_(p, opts) {
 
   // ── P1-B (WIZARD-DIRECT-WRITE-MIGRATION): creación de sesión → KMS ─────────
   // La creación del grupo + emisión y persistencia del resume_token (CSPRNG) se
-  // porta al KMS (enr.wizardCreateSession, DL-E41 §328 — el wizard deja de mintar/
+  // porta al KMS (enr.createApplicationSession, DL-E41 §328 — el wizard deja de mintar/
   // persistir el token localmente). El KMS resuelve server-side:
   //   - source_id desde el catálogo Capa 2 (mismo resolver probado de
   //     enr_createEnrollment / enr.inviteFamily; sourceCode ya whitelist-validado aquí);
   //   - program_id fallback al programa ADMISSION_SCHOOL activo (no-fatal, null si el
   //     catálogo no está sembrado — mismo comportamiento del lookup histórico local);
   //   - columnas del Add verbatim del escritor dorado (histórico Code.js:2006-2022).
-  const created = kmsProxy_('enr.wizardCreateSession', {
+  const created = kmsProxy_('enr.createApplicationSession', {
     primary_email:      p.primary_email,
     program_id:         p.program_id || null,
     source_code:        sourceCode,
@@ -2893,7 +2893,7 @@ function recognizeFamily_(p, opts) {
   // mundo) y `personalData_S` (el registro de personas del colegio ENTERO). El resto de
   // lo que este fichero lee directamente son tablas de admisión, de firma o de catálogo.
   //
-  // Se las pide al KMS (`enr.wizardReconocerFamilia`), que hace los MISMOS dos filtros
+  // Se las pide al KMS (`enr.reconocerFamilia`), que hace los MISMOS dos filtros
   // —correo → `personal_id`s → personas— y devuelve **solo los tres campos** que la
   // pantalla enseña. La ficha entera de cada persona ya no cruza a este proceso, que es
   // público y anónimo.
@@ -2924,7 +2924,7 @@ function recognizeFamily_(p, opts) {
   // la lectura fallaba (`initEnrollmentSession_` lo envuelve en su propio catch y sigue).
   let personasKms = [];
   try {
-    const resp = kmsProxy_('enr.wizardReconocerFamilia', { email: email });
+    const resp = kmsProxy_('enr.reconocerFamilia', { email: email });
     personasKms = (resp && resp.persons) || [];
   } catch (e) {
     Logger.log('recognizeFamily_: reconocimiento KMS fallido (no fatal): ' + redact_(e.message));
@@ -2957,7 +2957,7 @@ function recognizeFamily_(p, opts) {
  * personas del expediente (la ficha COMPLETA de cada una —MENORES INCLUIDOS: nombre, fecha
  * de nacimiento, documento— solo para saber quién es tutor), sus correos, la fila del `n`
  * del enlace **leída por su clave y sin acotar al expediente**, y hasta dos veces la
- * cabecera. Ahora lo contesta el KMS en UNA pregunta: `enr.wizardTutorQueRecupera`.
+ * cabecera. Ahora lo contesta el KMS en UNA pregunta: `enr.tutorQueRecupera`.
  *
  * ⛔ **NO SE ESCRIBE UN SEGUNDO LECTOR.** Éste es el ayudante único; `resolveGuardianForRecovery_`
  * y `resolveEmailFromLinkParam_` son clientes suyos. El resolvedor de verdad vive en el KMS
@@ -3002,7 +3002,7 @@ function _tutorQueRecupera_(resumeToken, opciones) {
   var clave = token + '|' + (n ? 'n:' + n : 'c:' + correo);
   if (Object.prototype.hasOwnProperty.call(_TUTOR_MEMO_, clave)) return _TUTOR_MEMO_[clave];
 
-  var r = kmsProxy_('enr.wizardTutorQueRecupera',
+  var r = kmsProxy_('enr.tutorQueRecupera',
     n ? { resume_token: token, n: n } : { resume_token: token, correo: correo }) || {};
   var out = {
     correo:   r.correo   || null,
@@ -3251,12 +3251,12 @@ function sendMagicLink_(p) {
     // Renew token + created_at for non-submitted sessions so the new link is
     // always valid for a fresh 7-day window regardless of when the session was
     // originally created. Also invalidates any previously sent magic links.
-    // P1-B: la renovación la hace el KMS (enr.wizardTouchSession) — minta el token
+    // P1-B: la renovación la hace el KMS (enr.renewApplicationSession) — minta el token
     // nuevo server-side (CSPRNG) y lo persiste; si no pudo persistir (P72) devuelve
     // renewed:false con el token vivo (mismo fallback que el batch multi histórico).
     let tokenToSend = grp.resume_token;
     if (!grp.submitted_at) {
-      const touch = kmsProxy_('enr.wizardTouchSession', { resume_token: grp.resume_token });
+      const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: grp.resume_token });
       tokenToSend = (touch && touch.resume_token) || grp.resume_token;
       // ⛔ ②17 (2026-08-19) — AQUÍ SE ROTA EL ENLACE, así que la cabecera que la puerta dejó
       // en la memoria de EJECUCIÓN queda CADUCA: lleva dentro el `resume_token` VIEJO, que a
@@ -3360,7 +3360,7 @@ function sendMagicLink_(p) {
       // cualquiera: los expedientes de ese correo, TODAS las filas de `enrEmails` de
       // ese buzón, y la ficha COMPLETA de cada persona —MENORES INCLUIDOS— de los
       // expedientes que casaran, solo para comprobar que el correo es de un tutor.
-      // Ahora lo sirve `enr.wizardRecuperacionDelCorreo` con los MISMOS filtros,
+      // Ahora lo sirve `enr.recuperacionDelCorreo` con los MISMOS filtros,
       // proyectado a cinco campos por expediente y un identificador opaco por
       // expediente. Lector ÚNICO: `_recuperacionDelCorreo_`.
       //
@@ -3413,7 +3413,7 @@ function sendMagicLink_(p) {
       // their EXISTING resume_token untouched (no created_at reset) — exactly like
       // Path 1 — so recovery into signing reuses the live token.
       // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): las renovaciones (Edits) se portan al KMS
-      // — un enr.wizardTouchSession por grupo NO-submitted (el KMS minta y persiste el
+      // — un enr.renewApplicationSession por grupo NO-submitted (el KMS minta y persiste el
       // token server-side). Si una renovación falla, ese grupo conserva su token
       // original (mismo fallback que el batch histórico). La lectura de enrEmails por
       // grupo sigue en UN batch paralelo (read-only, PERF 2026-06-12 intacta).
@@ -3422,7 +3422,7 @@ function sendMagicLink_(p) {
       sorted.forEach(g => {
         if (g.submitted_at) return; // submitted: send existing token, do not renew
         try {
-          const touch = kmsProxy_('enr.wizardTouchSession', { resume_token: g.resume_token });
+          const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: g.resume_token });
           // ⛔ ②17 (2026-08-19) — misma rotación, mismo olvido que en la rama de arriba.
           _olvidarCabeceraMemo_(g.resume_token, g.enrollment_group_id);
           if (touch && touch.resume_token) _olvidarCabeceraMemo_(touch.resume_token, g.enrollment_group_id);
@@ -3548,9 +3548,9 @@ function abandonSession_(p) {
   if (grp.abandoned_at) return { abandoned: true }; // idempotent
 
   // P1-B (WIZARD-DIRECT-WRITE-MIGRATION): la escritura se porta al KMS
-  // (enr.wizardAbandonSession). KAL-4: el grupo lo deriva el KMS del resume_token.
+  // (enr.abandonApplicationSession). KAL-4: el grupo lo deriva el KMS del resume_token.
   // El KMS re-chequea submitted/abandoned server-side (mismas reglas de arriba).
-  kmsProxy_('enr.wizardAbandonSession', { resume_token: token });
+  kmsProxy_('enr.abandonApplicationSession', { resume_token: token });
 
   return { abandoned: true };
 }
@@ -3619,9 +3619,9 @@ function reportUnsolicited_(p) {
     //     be able to view what they sent).
     if (!group.submitted_at && !group.abandoned_at) {
       try {
-        // P1-B: escritura portada al KMS (enr.wizardAbandonSession). KAL-4: el grupo
+        // P1-B: escritura portada al KMS (enr.abandonApplicationSession). KAL-4: el grupo
         // sale del resume_token (que ES la autorización de este endpoint).
-        kmsProxy_('enr.wizardAbandonSession', { resume_token: token });
+        kmsProxy_('enr.abandonApplicationSession', { resume_token: token });
         // KAL-11: redact UUID.
         Logger.log(redact_('reportUnsolicited_: abandoned ' + group.enrollment_group_id));
       } catch (abandonErr) {
@@ -3667,7 +3667,7 @@ function reportUnsolicited_(p) {
 // aplicación entera. Su JSDoc y el del KMS decían, los dos, que DEBÍAN permanecer idénticos
 // «hasta consolidación P245»; ya habían divergido (éste descartaba a quien la familia había
 // quitado con `is_active` en falso, el del KMS no). Ésta ES esa consolidación: el resolvedor
-// ÚNICO es `enr_resolveGuardianFromEmail_` del KMS, servido por `enr.wizardTutorQueRecupera`,
+// ÚNICO es `enr_resolveGuardianFromEmail_` del KMS, servido por `enr.tutorQueRecupera`,
 // y aquí queda un cliente fino del mismo nombre — vive con el resto de la cadena de identidad,
 // junto a `_tutorQueRecupera_`. PROHIBIDO escribir un segundo lector.
 
@@ -3676,7 +3676,7 @@ function reportUnsolicited_(p) {
 // `enrEmails` por un correo ARBITRARIO y luego `enrEnrollmentGroups` + `enrPersons`
 // —fichas COMPLETAS de menores incluidas— desde este proceso público y anónimo, solo
 // para comprobar el papel de tutor. Esa comprobación es inseparable de la lectura, así
-// que viajó CON ella al KMS (`enr.wizardRecuperacionDelCorreo` → `por_tutor`), y aquí
+// que viajó CON ella al KMS (`enr.recuperacionDelCorreo` → `por_tutor`), y aquí
 // no queda un segundo lector del mismo dato. Su ÚNICO llamante era la rama pública de
 // `sendMagicLink_`, que hoy pide las dos listas por `_recuperacionDelCorreo_`.
 
@@ -3753,7 +3753,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
   // admHints (OPCIONAL) = {situaciones, sessions, signersBySession, resumeToken}.
   //  · `situaciones` — ②17 (decimotercer tramo): el catálogo de situaciones **servido por el
   //    KMS**, YA ACOTADO al colegio y a la máquina de estados DECLARADA del expediente
-  //    (`enr.wizardEstadoDeLaAdmision`). Aquí NO se vuelve a filtrar por colegio ni por tipo:
+  //    (`enr.estadoDeLaAdmision`). Aquí NO se vuelve a filtrar por colegio ni por tipo:
   //    ese filtro es inseparable de la lectura y viajó con ella. **Y con él se fue el literal
   //    `ENR_ADMISSION_SCHOOL`, que DL-E48 prohíbe escribir a mano**: el dominio lo resuelve el
   //    KMS por la cadena `program_id → enrPrograms → enrProgramTypes`. Si el caller no las
@@ -3903,7 +3903,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
 // llave alcanza CUALQUIER tabla. Las tres resoluciones de firma de aquí abajo leían con
 // ella `sysSigningSessions` y `sysSigningSessionSigners` — detrás hay identidades de
 // firmantes y sus `signing_token`. Ahora las filas vienen del KMS
-// (`enr.wizardDatosDeFirma`), que las acota **al expediente del `resume_token`** y no
+// (`enr.datosDeFirma`), que las acota **al expediente del `resume_token`** y no
 // acepta ningún identificador del cuerpo de la petición.
 //
 // ⚠️ NO queda respaldo que vuelva a leer AppSheet a pelo, y es deliberado: dos lectores
@@ -3944,7 +3944,7 @@ function _datosDeFirmaDelExpediente_(resumeToken) {
 
   var out = null;
   try {
-    var r = kmsProxy_('enr.wizardDatosDeFirma', { resume_token: token }) || {};
+    var r = kmsProxy_('enr.datosDeFirma', { resume_token: token }) || {};
     if (Array.isArray(r.sessions)) {
       var porSesion = (r.signers_by_session && typeof r.signers_by_session === 'object')
         ? r.signers_by_session : {};
@@ -4008,7 +4008,7 @@ function _pulsoDeLaAdmision_(resumeToken) {
 
   var out;
   try {
-    var r = kmsProxy_('enr.wizardEstadoDeLaAdmision', { resume_token: token }) || {};
+    var r = kmsProxy_('enr.estadoDeLaAdmision', { resume_token: token }) || {};
     if (Array.isArray(r.expedientes) && Array.isArray(r.personas) && Array.isArray(r.situaciones)) {
       out = {
         ok:          true,
@@ -4064,7 +4064,7 @@ function _ficheroDelExpediente_(resumeToken, fileId) {
   try { assertValidUuid_(token, 'resume_token'); } catch (e) { return { ok: true, fila: null }; }
 
   try {
-    var r = kmsProxy_('enr.wizardFicheroDelExpediente', {
+    var r = kmsProxy_('enr.ficheroDelExpediente', {
       resume_token: token,
       file_id:      fileId,
     }) || {};
@@ -4130,7 +4130,7 @@ function _ficheroDelExpediente_(resumeToken, fileId) {
  * ── ★ 0º.bis (2026-08-20) — `opciones.n` / `opciones.correo`: la IDENTIDAD en la MISMA
  * pregunta ──────────────────────────────────────────────────────────────────────────────
  * Medido en un registro real del asistente (2026-08-19): pedir la cabecera y, después,
- * de quién es el enlace (`_tutorQueRecupera_` → `enr.wizardTutorQueRecupera`) son DOS viajes
+ * de quién es el enlace (`_tutorQueRecupera_` → `enr.tutorQueRecupera`) son DOS viajes
  * de 13-31 s cada uno — y el segundo resuelve la MISMA sesión con el MISMO enlace que el
  * primero ya tenía en la mano. Si el llamante trae UNO de los dos discriminadores (nunca los
  * dos — precedencia `n` > `correo`, la de `effectiveRecoveredEmail_`, forzada aquí para que
@@ -4167,7 +4167,7 @@ function _expedienteDelToken_(resumeToken, opciones) {
     ? opciones.comprobarSubida : null;
 
   // ②17 (2026-08-19) — LA MISMA FICHA SE PEDÍA DOS VECES POR PETICIÓN. Medido en el log
-  // real del asistente desplegado: `hydrateSession` emitía `enr.wizardExpedienteDelToken`
+  // real del asistente desplegado: `hydrateSession` emitía `enr.expedienteDelToken`
   // en t+410 ms (16 s) y otra vez en t+43 s (18 s); ídem `warmBundle` y `warmSession`. La
   // primera es la PUERTA (`requireResumeToken_`), la segunda el punto que necesita la
   // cabecera. Es la MISMA fila, del MISMO token, en la MISMA ejecución.
@@ -4191,7 +4191,7 @@ function _expedienteDelToken_(resumeToken, opciones) {
   if (subida) cuerpo.comprobar_subida = subida;
 
   try {
-    var r = kmsProxy_('enr.wizardExpedienteDelToken', cuerpo) || {};
+    var r = kmsProxy_('enr.expedienteDelToken', cuerpo) || {};
     var fila = r.expediente || null;
     // Solo se guarda el ACIERTO. Un rechazo o una avería NO se memorizan: son baratos de
     // repetir y memorizarlos convertiría un tropiezo puntual en el veredicto de toda la
@@ -4297,7 +4297,7 @@ function _memoSubidaClave_(token, subida) {
  * ②17 (2026-08-19) — OLVIDA la cabecera guardada para un token (las DOS modalidades) y su
  * índice por expediente.
  *
- * ⛔ Existe por la ROTACIÓN del enlace: `sendMagicLink_` llama a `enr.wizardTouchSession`,
+ * ⛔ Existe por la ROTACIÓN del enlace: `sendMagicLink_` llama a `enr.renewApplicationSession`,
  * que minta un `resume_token` NUEVO y deja el viejo sin resolver. La ficha que la puerta
  * dejó en la memoria lleva DENTRO el token VIEJO ⇒ servirla después de rotar sería devolver
  * un enlace muerto. Se olvida en el acto: la memoria nunca es la autoridad, solo un ahorro.
@@ -4317,7 +4317,7 @@ function _olvidarCabeceraMemo_(token, groupId) {
  * ÚNICO lector de lo que `initEnrollmentSession_` hacía con TRES lecturas directas a
  * AppSheet desde este proceso, que es **público y anónimo**: los expedientes ya enviados
  * de ese correo, los abiertos, y las personas de los candidatos —que solo se CUENTAN—.
- * Las sirve `enr.wizardExpedientesDelCorreo` con los MISMOS filtros y proyectadas a los
+ * Las sirve `enr.expedientesDelCorreo` con los MISMOS filtros y proyectadas a los
  * campos que este fichero demuestra usar.
  *
  * ⛔ **FALLA CERRADO — LANZA, no degrada, y es deliberado.** Las dos lecturas de
@@ -4331,7 +4331,7 @@ function _olvidarCabeceraMemo_(token, groupId) {
  * @returns {{enviados:Array, abiertos:Array, personasPorExpediente:Object, recuentoFallido:boolean}}
  */
 function _expedientesDelCorreo_(email) {
-  var r = kmsProxy_('enr.wizardExpedientesDelCorreo', { email: email }) || {};
+  var r = kmsProxy_('enr.expedientesDelCorreo', { email: email }) || {};
   return {
     enviados:              Array.isArray(r.enviados) ? r.enviados : [],
     abiertos:              Array.isArray(r.abiertos) ? r.abiertos : [],
@@ -4350,7 +4350,7 @@ function _expedientesDelCorreo_(email) {
  *     evita mandarle la recuperación al buzón de un menor),
  *   · y el `email_id` de ese buzón en cada uno — el `n` del enlace.
  *
- * Los sirve `enr.wizardRecuperacionDelCorreo` con los MISMOS filtros y proyectados a los
+ * Los sirve `enr.recuperacionDelCorreo` con los MISMOS filtros y proyectados a los
  * cinco campos que este fichero demuestra usar. **Deja de cruzar**: las filas enteras de
  * `enrEmails` de ese buzón, la **ficha COMPLETA de cada persona —MENORES INCLUIDOS— de los
  * expedientes que casen** (que solo servía para comprobar el papel de tutor), y la fila
@@ -4373,7 +4373,7 @@ function _expedientesDelCorreo_(email) {
  *            identificadorFallido:boolean}}
  */
 function _recuperacionDelCorreo_(email) {
-  var r = kmsProxy_('enr.wizardRecuperacionDelCorreo', { email: email }) || {};
+  var r = kmsProxy_('enr.recuperacionDelCorreo', { email: email }) || {};
   return {
     porCorreoPrincipal:    Array.isArray(r.por_correo_principal) ? r.por_correo_principal : [],
     porTutor:              Array.isArray(r.por_tutor) ? r.por_tutor : [],
@@ -4412,7 +4412,7 @@ function _recuperacionDelCorreo_(email) {
  * @private
  */
 function _respondentesAutorizados_(resumeToken) {
-  var r = kmsProxy_('enr.wizardRespondentesAutorizados', { resume_token: resumeToken }) || {};
+  var r = kmsProxy_('enr.respondentesAutorizados', { resume_token: resumeToken }) || {};
   var conjunto = {};
   (Array.isArray(r.ids) ? r.ids : []).forEach(function(id) { if (id) conjunto[String(id)] = true; });
   return conjunto;
@@ -4445,7 +4445,7 @@ function resolveSigningStatus_(groupId, sessionsHint, signersBySessionHint) {
   } catch (e) { return 'NOT_INITIATED'; }
 
   // ②17: `sessionsHint` = filas de `sysSigningSessions` del expediente, servidas por el
-  // KMS (`enr.wizardDatosDeFirma`, mismo filtro `entity_id` de siempre);
+  // KMS (`enr.datosDeFirma`, mismo filtro `entity_id` de siempre);
   // `signersBySessionHint[session_id]` = sus firmantes (mismo filtro `session_id`).
   // SIN filas se degrada EXACTAMENTE como la rama `catch` de antes: 'NOT_INITIATED'.
   if (!Array.isArray(sessionsHint)) {
@@ -4690,7 +4690,7 @@ function getAdmissionState_(p) {
   // Resolverlo cuesta un viaje al KMS de 20-30 s cuando su memoria de 300 s (`idlinkd_`) no
   // acierta, y el pulso late una y otra vez mientras la familia mira la pantalla. Medido en el
   // registro real del 2026-08-20: `getAdmissionState` tardó 31.467 ms diciendo «HIT adm» —el dato
-  // ESTABA guardado— porque antes se habían pagado 29.086 ms en `enr.wizardTutorQueRecupera`.
+  // ESTABA guardado— porque antes se habían pagado 29.086 ms en `enr.tutorQueRecupera`.
   // ⛔ NO es un segundo resolvedor ni una identidad de repuesto: es EL MISMO, llamado solo cuando
   // su valor puede cambiar el resultado (ver `_leerMarcaStepUp_`). Se memoiza en la ejecución para
   // que dos usos dentro de esta misma petición no paguen dos veces.
@@ -4784,8 +4784,8 @@ function getAdmissionState_(p) {
   // `resume_token` (KAL-4): aquí no viaja ningún id ni ningún nombre de tabla.
   //
   // Lo que ya venía del KMS de tramos anteriores y NO se toca: la CABECERA (sexto tramo,
-  // `_expedienteDelToken_`), la IDENTIDAD del tutor (noveno, `enr.wizardTutorQueRecupera`) y
-  // las FILAS DE FIRMA (`enr.wizardDatosDeFirma`, pedidas dentro de `buildAdmissionContext_`
+  // `_expedienteDelToken_`), la IDENTIDAD del tutor (noveno, `enr.tutorQueRecupera`) y
+  // las FILAS DE FIRMA (`enr.datosDeFirma`, pedidas dentro de `buildAdmissionContext_`
   // y solo si el expediente está admitido).
   //
   // ⛔ FALLA CERRADO, y esto CORRIGE el oro: el lote `appsheetRequestBatch_` NUNCA lanzaba,
@@ -4944,7 +4944,7 @@ function saveStep_(p) {
     case 'persons':
       // CLI 8: guard email único por tutor (defensa en profundidad) ANTES de proxear.
       assertUniqueGuardianEmails_(payload);
-      extra = kmsProxy_('enr.wizardSavePersons', {
+      extra = kmsProxy_('enr.savePersons', {
         resume_token: p.resume_token,
         persons:      Array.isArray(payload) ? payload : (payload.persons || []),
         // DL-E49 §2 — defensa en profundidad: el KMS rechaza tocar la fila YA EXISTENTE
@@ -4956,14 +4956,14 @@ function saveStep_(p) {
       persistSoleGuardianAttestation_(p.resume_token, p.sole_guardian_attestation);
       break;
     case 'relations':
-      extra = kmsProxy_('enr.wizardSaveRelations', {
+      extra = kmsProxy_('enr.saveRelations', {
         resume_token: p.resume_token,
         relations:    Array.isArray(payload) ? payload : (payload.relations || []),
         writer_person_id: wizardTutorQueOpera_(p, enrollmentGroupId),
       });
       break;
     case 'health':
-      extra = kmsProxy_('enr.wizardSaveHealth', {
+      extra = kmsProxy_('enr.saveHealth', {
         resume_token: p.resume_token,
         health:       Array.isArray(payload) ? payload : (payload.health || []),
       });
@@ -5107,7 +5107,7 @@ function submitEnrollmentSession_(p) {
   // Aquí había TRES lecturas directas a AppSheet —la cabecera del expediente, las personas
   // y los teléfonos—, hechas desde este proceso, que es público y anónimo, con la
   // credencial de AppSheet de la aplicación entera. Ahora son UNA sola pregunta
-  // (`enr.wizardDatosDelEnvio`), con los MISMOS filtros por expediente y el mismo criterio
+  // (`enr.datosDelEnvio`), con los MISMOS filtros por expediente y el mismo criterio
   // de fila viva, y el nombre de la tabla no viaja en la petición. KAL-4 intacta: el
   // expediente lo re-deriva el KMS del `resume_token`, nunca del cuerpo.
   //
@@ -5118,7 +5118,7 @@ function submitEnrollmentSession_(p) {
   // FALLA CERRADO, igual que antes: `appsheetRequest_` lanzaba siempre, y `kmsProxy_`
   // propaga. Degradar aquí sería peor que el fallo — «no hay nadie» dejaría pasar un envío
   // sin alumno, y «no hay teléfonos» rechazaría a toda familia con un motivo falso.
-  const datosEnvio = kmsProxy_('enr.wizardDatosDelEnvio', { resume_token: p.resume_token });
+  const datosEnvio = kmsProxy_('enr.datosDelEnvio', { resume_token: p.resume_token });
 
   const allPersons = (datosEnvio && datosEnvio.personas) || [];
   const guardians  = allPersons.filter(per => per.person_type_id === 'guardian');
@@ -5143,7 +5143,7 @@ function submitEnrollmentSession_(p) {
   // lista de teléfonos que SIEMPRE venía vacía, así que lanzaba INVALID_PHONE pasara lo
   // que pasara, tuviera la familia teléfono o no. Se arregló leyendo los teléfonos reales
   // del expediente y agrupándolos por persona, y desde ②17 (2026-08-15) esos teléfonos
-  // los sirve el KMS (`enr.wizardDatosDelEnvio`) con el mismo filtro por expediente.
+  // los sirve el KMS (`enr.datosDelEnvio`) con el mismo filtro por expediente.
   //
   // W2 (P259): AppSheet strips the leading '+' from enrPhones.value, so an E.164
   // value '+34609211201' is stored as '34609211201'. Normalise the STORED value
@@ -5181,16 +5181,16 @@ function submitEnrollmentSession_(p) {
   // ── P1-B (WIZARD-DIRECT-WRITE-MIGRATION): materialización enr* del submit → KMS ──
   // requester (primer guardian) + 1 enrEnrollments por aplicante (Add, o Edit→RQ en
   // re-submit de reopen) + dual-write P71 + submitted_at en el grupo — TODO lo persiste
-  // el KMS (enr.wizardPersistSubmitEnrollments → writer único enr_persistSubmit_,
+  // el KMS (enr.persistSubmitEnrollments → writer único enr_persistSubmit_,
   // paridad verbatim con el código histórico de este handler, incluida la resolución
   // del estado RQ fetch-all-then-filter y su fail-fast de configuración). KAL-4: el
   // grupo se re-deriva del resume_token server-side; aplicantes/guardians salen de
   // enrPersons del grupo en el KMS — nada de ids del payload. Síncrono: un fallo
   // propaga (sin éxito falso), coherente con la semántica histórica.
   // Devuelve enrollment_ids con los que este handler construye los consentimientos que
-  // persiste enr.wizardPersistSubmitSideEffects (P1-A). El wizard YA NO fija ni registra el
+  // persiste enr.persistSubmitSideEffects (P1-A). El wizard YA NO fija ni registra el
   // estado (D33 / DL-S115): la ficha nace en su estado de partida y la marca
-  // APPLICATION_FORM_COMPLETED —completada KMS-side por enr.wizardPersistSubmitEnrollments—
+  // APPLICATION_FORM_COMPLETED —completada KMS-side por enr.persistSubmitEnrollments—
   // dispara la transición por el motor, que deja el rastro en sysStateTransitionLog.
 
   // QUIÉN OPERA se resuelve ANTES de escribir nada, y en sus DOS lecturas del mismo
@@ -5210,7 +5210,7 @@ function submitEnrollmentSession_(p) {
   const tutorAtribuible = wizardTutorAtribuible_(p, enrollmentGroupId);
 
   const desiredStartDate = p.desired_start_date || null;
-  const persistRes = kmsProxy_('enr.wizardPersistSubmitEnrollments', {
+  const persistRes = kmsProxy_('enr.persistSubmitEnrollments', {
     resume_token:       p.resume_token,
     desired_start_date: desiredStartDate,
     // DL-E49 §1 — el envío es POR TUTOR: quien envía se resuelve server-side desde su
@@ -5252,7 +5252,7 @@ function submitEnrollmentSession_(p) {
   // (`wizardCodigoDeConsentimiento_`): un solo sitio, y comprobable desde fuera.
 
   // ②29 — SIN FIRMANTE NO SE REGISTRA, Y SE DICE. Se llega aquí con el envío YA
-  // materializado (`enr.wizardPersistSubmitEnrollments`, arriba: expedientes creados y
+  // materializado (`enr.persistSubmitEnrollments`, arriba: expedientes creados y
   // `submitted_at` estampado) ⇒ lanzar dejaría el expediente A MEDIAS y a la familia
   // atascada en `NOT_EDITABLE` al reintentar — el mismo fallo que la regla W1 de esta
   // función documenta y que por eso mueve TODAS las validaciones antes de la primera
@@ -5323,7 +5323,7 @@ function submitEnrollmentSession_(p) {
   // al retirarse el PDF (P262) y los dos correos del envío (2026-08-07).
   //
   // ⚠️ Y no era solo trabajo tirado: esa lectura ocurría DESPUÉS de que el KMS ya hubiera
-  // materializado los expedientes y estampado `submitted_at` (`enr.wizardPersistSubmitEnrollments`,
+  // materializado los expedientes y estampado `submitted_at` (`enr.persistSubmitEnrollments`,
   // más arriba), y NO estaba dentro de ningún `try`. Si AppSheet fallaba —y
   // `appsheetRequest_` lanza siempre, sin degradar—, la familia se quedaba con la
   // solicitud MEDIO ENVIADA y su reintento chocaba contra `NOT_EDITABLE`: exactamente el
@@ -5352,7 +5352,7 @@ function submitEnrollmentSession_(p) {
   // evita duplicar al reintentar). Las hacía ESTE proceso, que es público y anónimo, con la
   // credencial de AppSheet de la aplicación entera — y la segunda corría UNA VEZ POR FICHERO.
   //
-  // Ahora las etiquetas las compone el KMS, en `enr.wizardPersistSubmitSideEffects` (helper
+  // Ahora las etiquetas las compone el KMS, en `enr.persistSubmitSideEffects` (helper
   // `enr_ambitosDelEnvio_`), que ya tiene lo que hace falta: el grupo derivado del
   // `resume_token` por su propia puerta (KAL-4) y los expedientes que él mismo acaba de
   // materializar. El asistente ya NO manda `rec_scopes`: si las mandara, habría DOS
@@ -5376,7 +5376,7 @@ function submitEnrollmentSession_(p) {
   // resume_token (KAL-4) y fuerza school_id server-side. El wizard anónimo ya NO tiene
   // write directo a sys*/rec*. Síncrono (mirror del proxy de documentos): un fallo se
   // propaga (sin éxito falso) — coherente con la semántica síncrona del código original.
-  kmsProxy_('enr.wizardPersistSubmitSideEffects', {
+  kmsProxy_('enr.persistSubmitSideEffects', {
     resume_token:      p.resume_token,
     consents:          consentRows,
   });
@@ -6005,7 +6005,7 @@ function wizardResolverPreguntasDeHidratacion_(data, lang) {
 function fetchLookups_(p) {
   // Thin-client (DL-E41 / WPERF-3): los catálogos del wizard (sin PII) los sirve el
   // KMS — el wizard deja de leer AppSheet directo. kmsProxy_ añade service_token +
-  // Bearer OAuth; el KMS (enr.wizardFetchLookups) los valida y devuelve el mismo shape
+  // Bearer OAuth; el KMS (enr.fetchApplicationLookups) los valida y devuelve el mismo shape
   // { allergies, dietary, medical, relationTypes, programs } de { id, label }.
   //
   // ①31 — las fechas de programa (`period_starts_on` / `period_ends_on`) llegan en ISO
@@ -6024,7 +6024,7 @@ function fetchLookups_(p) {
   // se devuelve lo que conteste el KMS. Sin idioma —o sin versión guardada— la respuesta es
   // exactamente la de siempre: la descripción de la ficha.
   var idioma = (p && p.language) ? String(p.language).trim() : '';
-  return kmsProxy_('enr.wizardFetchLookups', { school_id: SCHOOL_ID, language: idioma || null });
+  return kmsProxy_('enr.fetchApplicationLookups', { school_id: SCHOOL_ID, language: idioma || null });
 }
 
 /**
@@ -6067,7 +6067,7 @@ function fetchLookups_(p) {
 function estadoDeLasPartes_(p) {
   // KAL-4: el grupo SIEMPRE del resume_token, nunca del payload.
   var groupId = requireResumeToken_(p);
-  return kmsProxy_('enr.wizardEstadoDeLasPartes', {
+  return kmsProxy_('enr.estadoDeLasPartes', {
     resume_token: p.resume_token,
     person_id:    wizardTutorQueOpera_(p, groupId),
   });
@@ -6113,7 +6113,7 @@ function estadoDelGuardado_(p) {
     .filter(function (x) { return typeof x === 'string' && x; })
     .slice(0, 10);
   if (!ids.length) return { trabajos: [] };
-  return kmsProxy_('enr.wizardEstadoDelTrabajo', {
+  return kmsProxy_('enr.estadoDelTrabajo', {
     resume_token: p.resume_token,
     job_ids:      ids,
   });
@@ -6283,12 +6283,12 @@ function saveResponses_(p) {
   // su respuesta y se devolvía `{saved: N}` a pelo, así que el asistente afirmaba haber
   // guardado N respuestas que el KMS había descartado; (b) `skipped_already_submitted` no
   // aparecía NI UNA vez en todo este repositorio; y (c) —lo que decide el diseño de este
-  // arreglo— `enr.wizardSaveResponses` **ENCOLA** el trabajo y contesta
+  // arreglo— `enr.saveResponses` **ENCOLA** el trabajo y contesta
   // `{ok:true, queued:true}` (`kis-app kms-server/enr/wizard-gateway.gs:236`), de modo que
   // ese aviso lo produce el trabajador de la cola MUCHO DESPUÉS y **nunca puede llegar en
   // la respuesta**. Recoger el retorno, por sí solo, no habría enterado a nadie.
   //
-  // Por eso se PREGUNTA antes, y se pregunta con lo que YA existe: `enr.wizardEstadoDeLasPartes`
+  // Por eso se PREGUNTA antes, y se pregunta con lo que YA existe: `enr.estadoDeLasPartes`
   // es una lectura SÍNCRONA cuyo propósito declarado es exactamente éste — «¿puede este
   // tutor seguir rellenando?» (`wizard-gateway.gs:736`) — y el asistente ya la consume en la
   // pantalla de confirmación. No se construye mecanismo nuevo: se usa el que estaba puesto.
@@ -6303,7 +6303,7 @@ function saveResponses_(p) {
     throw err;
   }
 
-  const respuestaKms = kmsProxy_('enr.wizardSaveResponses', {
+  const respuestaKms = kmsProxy_('enr.saveResponses', {
     resume_token:           p.resume_token,
     answered_by_person_id:  tutorQueContesta,
     responses:              outResponses,
@@ -6337,7 +6337,7 @@ function saveResponses_(p) {
 /**
  * ②24.sexies · ¿LA PARTE DE ESTE TUTOR YA ESTÁ ENVIADA?
  *
- * Proxy fino a la lectura que YA existe (`enr.wizardEstadoDeLasPartes`, la misma que usa
+ * Proxy fino a la lectura que YA existe (`enr.estadoDeLasPartes`, la misma que usa
  * `estadoDeLasPartes_` para la pantalla de confirmación). El asistente no calcula nada: la
  * regla vive en el KMS, que es donde están los datos.
  *
@@ -6354,7 +6354,7 @@ function saveResponses_(p) {
 function _parteDeEsteTutorYaEnviada_(p, personId) {
   if (!personId) return false;
   try {
-    const estado = kmsProxy_('enr.wizardEstadoDeLasPartes', {
+    const estado = kmsProxy_('enr.estadoDeLasPartes', {
       resume_token: p.resume_token,
       person_id:    personId,
     }) || {};
@@ -6437,7 +6437,7 @@ function _parteDeEsteTutorYaEnviada_(p, personId) {
 /**
  * 18.bis.95 · ¿LA FICHA DEL DOCUMENTO QUEDÓ ESCRITA?
  *
- * A diferencia de los seis guardados que ENCOLAN (18.bis.84), `enr.wizardPersistUpload` es
+ * A diferencia de los seis guardados que ENCOLAN (18.bis.84), `enr.persistUploadedDocument` es
  * SÍNCRONO: escribe `recFiles` y `recScopes` en el acto y **dice cómo le fue** —
  * `{ok:true, file_persisted, scope_persisted, file_id}` (`kis-app kms-server/enr/
  * wizard-gateway.gs:567`, `:586`, `:590`). Hasta hoy el asistente tiraba esa respuesta y
@@ -6462,7 +6462,7 @@ function _parteDeEsteTutorYaEnviada_(p, personId) {
  * que se escribiera, y confirmar sería exactamente el defecto que esto quita. El KMS lo
  * devuelve SIEMPRE en su único camino de éxito (los demás lanzan, y `kmsProxy_` propaga).
  *
- * @param {Object} respuestaKms lo que devolvió `enr.wizardPersistUpload`.
+ * @param {Object} respuestaKms lo que devolvió `enr.persistUploadedDocument`.
  * @returns {?{code: string, message: string}} null si la ficha consta escrita y enganchada.
  * @private
  */
@@ -6639,7 +6639,7 @@ function uploadDocument_(p) {
   //
   // Antes eran dos lecturas de AppSheet desde aquí: (1) ¿el expediente de alumno es de esta
   // familia? (KAL-4, sobre `enrEnrollments`) y (2) ¿este mismo envío ya se había guardado?
-  // (idempotencia, sobre `recFiles`). Las dos las sirve ahora `enr.wizardComprobarSubida`,
+  // (idempotencia, sobre `recFiles`). Las dos las sirve ahora `enr.comprobarSubidaDeDocumento`,
   // con los MISMOS filtros, para que este proceso —público y anónimo— deje de necesitar la
   // credencial de AppSheet de la aplicación entera.
   //
@@ -6663,7 +6663,7 @@ function uploadDocument_(p) {
     ? _SUBIDA_MEMO_[_memoSubidaClave_(p.resume_token, plegableSubida)]
     : null;
   try {
-    const previo = plegada || (kmsProxy_('enr.wizardComprobarSubida', {
+    const previo = plegada || (kmsProxy_('enr.comprobarSubidaDeDocumento', {
       resume_token:             p.resume_token,
       enrollment_id:            enrollmentId || null,
       upload_idempotency_token: idempotencyToken,
@@ -6815,7 +6815,7 @@ function uploadDocument_(p) {
   // expediente (KAL-4) y escribe una fila de `recScopes` por cada una.
   const duenos = _duenosDelDocumento_(p, enrollmentGroupId);
 
-  const persistencia = kmsProxy_('enr.wizardPersistUpload', {
+  const persistencia = kmsProxy_('enr.persistUploadedDocument', {
     resume_token:        p.resume_token,
     rec_file:            recFileRow,
     rec_scope:           recScopeRow,
@@ -7010,7 +7010,7 @@ function getDocument_(p) {
   }
 
   // ── Guard IDOR de lectura: el recFiles debe pertenecer al grupo del token ───
-  // ②17: la fila la sirve el KMS (`enr.wizardFicheroDelExpediente`), con el MISMO filtro
+  // ②17: la fila la sirve el KMS (`enr.ficheroDelExpediente`), con el MISMO filtro
   // —`file_id` + `origin_reference` = el expediente del token— y proyectando solo los
   // cuatro campos que hacen falta para servir los bytes. Así este proceso —público y
   // anónimo— deja de leer `recFiles` con la credencial de AppSheet de la aplicación entera.
@@ -7226,13 +7226,13 @@ function _asegurarVerjaPublica_(recaptchaToken) {
 
 // NOTE: saveRelations_ DELETED 2026-06-26 (P280 dead-code). It had ZERO callers
 // in the wizard — the live relations path moved to the KMS: saveStep_ → case
-// 'relations' → kmsProxy_('enr.wizardSaveRelations', …). The local function was
+// 'relations' → kmsProxy_('enr.saveRelations', …). The local function was
 // self-contained dead code (sysPersonRelations bidirectional insert lived here
 // pre-DL-C migration). History preserved in git.
 
 // NOTE: saveHealth_ DELETED 2026-07-12 (P1-B dead-code). It had ZERO callers —
 // the live health path moved to the KMS: saveStep_ → case 'health' →
-// kmsProxy_('enr.wizardSaveHealth', …) → enr_persistHealth_ (KMS is the single
+// kmsProxy_('enr.saveHealth', …) → enr_persistHealth_ (KMS is the single
 // writer). The local function still wrote DIRECTLY to enrPersonFoodAllergies /
 // enrPersonDietaryRequirements / enrPersonMedicalConditions (last direct enr*
 // health writes in this backend). History preserved in git.
@@ -7292,7 +7292,7 @@ function saveNeae_(p) {
   // 'health' de saveStep_. El wizard YA NO escribe enrPersonNeae/Support directo:
   // proxea al endpoint del KMS, que re-deriva el grupo del resume_token (KAL-4),
   // valida person∈grupo, y persiste append-only (DL-E16). Cero writes locales.
-  const respuestaKms = kmsProxy_('enr.wizardSaveNeae', {
+  const respuestaKms = kmsProxy_('enr.saveNeae', {
     resume_token: p.resume_token,
     neae:         neaeData,
   }) || {};
@@ -7806,7 +7806,7 @@ var DBGT_ = { on: false, t0: 0, ev: [] };
 // seguridad ES la respuesta CONSTANTE (anti-enumeración KAL-10). Para ellos el trace
 // `_dbg` NO se activa NUNCA, aunque el caller lo pida: la LISTA DE EVENTOS delata el
 // camino tomado y reabre justo el oráculo que cierra `_magicLinkConstantAck_`. Medido
-// en producción: un email CON grupo emite `kms_call enr.wizardTouchSession` +
+// en producción: un email CON grupo emite `kms_call enr.renewApplicationSession` +
 // `kms_call sys-public.sendNotification`; uno SIN grupo emite solo los dos Find. Es
 // decir, `{"_dbg":true}` convertía el ack constante en un oráculo de existencia
 // legible por cualquiera desde internet.
@@ -7856,7 +7856,7 @@ function kmsProxy_(action, payload) {
   // la página. Lo que sí recupera es **repetir la petición**.
   //
   // Repetirla era inaceptable —la acción YA se ejecutó cuando el `echo` falla, así que un
-  // reintento de `enr.wizardCreateSession` crearía DOS expedientes y uno de
+  // reintento de `enr.createApplicationSession` crearía DOS expedientes y uno de
   // `sys-public.sendNotification` mandaría DOS correos—, así que primero se arregló el
   // otro lado: el `doPost` del KMS guarda su respuesta bajo el `requestId` y un POST
   // repetido con el MISMO `requestId` **devuelve la guardada sin re-ejecutar nada**
@@ -8353,7 +8353,7 @@ function getSavedBillingSplits_(p) {
 /**
  * DL-080-A (B1) — Step 8: PRESUPUESTO del borrador + previews de modalidad.
  *
- * Proxy fino a `enr.wizardGetSubscriptionBudget`. El KMS deriva el grupo del
+ * Proxy fino a `enr.getSubscriptionBudget`. El KMS deriva el grupo del
  * `resume_token` (KAL-4) y devuelve el presupuesto REAL del/los borrador(es) —
  * partidas, fechas, importes, descuento, reparto — más el preview read-only de cada
  * modalidad activa del catálogo del tenant. LECTURA → NO invalida caché.
@@ -8368,13 +8368,13 @@ function getSubscriptionBudget_(p) {
   // Mismo gate de identidad que las demás LECTURAS del bloque Step 8
   // (getSavedBillingSplits_): el KMS re-valida token/guardián en el proxy.
   const sctx = requireSignerIdentity_(p);
-  return kmsProxy_('enr.wizardGetSubscriptionBudget', sctx.identity);
+  return kmsProxy_('enr.getSubscriptionBudget', sctx.identity);
 }
 
 /**
  * DL-080-A (B1) — Step 8: APLICA la modalidad elegida por la familia al BORRADOR.
  *
- * Proxy a `enr.wizardApplyModality`. El KMS valida server-side (KAL-4) que la
+ * Proxy a `enr.applyPaymentModality`. El KMS valida server-side (KAL-4) que la
  * suscripción pertenece al grupo del token, exige estado BORRADOR (si no →
  * `NOT_EDITABLE`), y re-deriva el plan con el motor (`fin_upsertSubscriptionItem`
  * con `modality_id`). Devuelve el presupuesto YA refrescado — el frontend repinta
@@ -8404,7 +8404,7 @@ function applyPaymentModality_(p) {
   assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: nunca stale tras un write
 
-  return kmsProxy_('enr.wizardApplyModality', Object.assign({}, sctx.identity, {
+  return kmsProxy_('enr.applyPaymentModality', Object.assign({}, sctx.identity, {
     subscription_id: subscriptionId,
     modality_id:     modalityId,
   }));
@@ -8495,7 +8495,7 @@ function simularCuotas_(p) {
  * admisiones y esperar a que alguien del colegio devolviera la solicitud a borrador a
  * mano.
  *
- * Proxy FINO a `enr.wizardRequestCorrection`. El wizard NO decide nada: no mira en qué
+ * Proxy FINO a `enr.requestCorrection`. El wizard NO decide nada: no mira en qué
  * situación está el expediente, no lo reabre, no manda ningún correo. El KMS completa
  * UNA MARCA —el hecho de que la familia lo pidió— y lo que ocurra después lo declara
  * el colegio con sus avisos automáticos.
@@ -8516,7 +8516,7 @@ function requestCorrection_(p) {
   p = p || {};
   requireResumeToken_(p);                    // KAL-4 capa wizard (el KMS re-valida)
   _wzCacheInvalidate_(p.resume_token);       // WIZARD-CACHE: nunca stale tras un write
-  return kmsProxy_('enr.wizardRequestCorrection', {
+  return kmsProxy_('enr.requestCorrection', {
     resume_token: String(p.resume_token),
     note: p.note ? String(p.note).slice(0, 500) : null,
   });
@@ -8530,7 +8530,7 @@ function requestCorrection_(p) {
  * 46 acciones y ninguna borraba. Una familia que metía un tutor por error no podía
  * deshacerlo, y esas personas acababan en el resumen y en el paquete de firma.
  *
- * Proxy FINO a `enr.wizardRetirar`. El wizard NO decide nada: no mira en qué situación está
+ * Proxy FINO a `enr.retirarDeLaSolicitud`. El wizard NO decide nada: no mira en qué situación está
  * el expediente, no elige qué se puede quitar, no borra nada por su cuenta — y **no escribe
  * en ninguna tabla**, que es la regla de este repositorio desde P1-A/P1-B.
  *
@@ -8580,7 +8580,7 @@ function retirarDelExpediente_(p) {
     e.code = 'BAD_REQUEST';
     throw e;
   }
-  return kmsProxy_('enr.wizardRetirar', {
+  return kmsProxy_('enr.retirarDeLaSolicitud', {
     resume_token: String(p.resume_token),
     retirar: lote.map(function (it) {
       return {
@@ -8854,7 +8854,7 @@ function initiateSigningSession_(p) {
 /**
  * DL-A.1 (spec §1) — Hidratación consolidada: UNA llamada devuelve TODO (datos 11 pasos
  * + lookups + qbResponses + contexto de firma + billing + versión liveState). Proxy fino
- * al KMS `enr.wizardHydrate` (DL-E41: el KMS es la fuente de verdad de datos; el wizard
+ * al KMS `enr.hydrateApplication` (DL-E41: el KMS es la fuente de verdad de datos; el wizard
  * transporta identidad y renderiza). KAL-4: el gate `requireResumeToken_` valida el
  * resume_token (grupo server-side); el guardian que recupera se resuelve server-side del
  * `recovered_email` (a1) — en el wizard para el gate, y de nuevo en el KMS.
@@ -8871,7 +8871,7 @@ function initiateSigningSession_(p) {
  * del OTP, sin devolver PII. La idea de Diego ("por qué no está el wizard precargando
  * datos… sólo se pone a hidratar cuando introduzco el otp"): lo que el OTP autoriza es
  * VER la PII, no COCINARLA — la identidad (grupo) ya la da el resume_token. Este endpoint
- * dispara la MISMA ensamblación que hydrateSession_ (proxy enr.wizardHydrate, cuya cache
+ * dispara la MISMA ensamblación que hydrateSession_ (proxy enr.hydrateApplication, cuya cache
  * warm KMS-side se ceba en el write-through de SPEC-WIZ-WARMUP) y DESCARTA el resultado:
  * al cliente solo cruza {ok, warmed}. Tras validar el OTP, hydrateSession sirve warm-hit.
  *
@@ -8909,12 +8909,12 @@ function warmSession_(p) {
   //    respaldo: mismo criterio que §"Las CINCO puertas del asistente" (*«la verja va ANTES del
   //    trabajo caro y del cupo»*). MEDIDO en el registro real de Diego del 2026-08-20: una SEGUNDA
   //    llamada de precalentado gastó 24.200 ms —22.023 de ellos en el viaje
-  //    `enr.wizardExpedienteDelToken` que hace `requireResumeToken_`— para acabar contestando
+  //    `enr.expedienteDelToken` que hace `requireResumeToken_`— para acabar contestando
   //    `RATE_LIMITED`. El freno mira una memoria local y cuesta microsegundos.
   //
   //    SON DOS CAPAS, y la segunda NO SE TOCA. La de abajo (por EXPEDIENTE, `warmrl_<groupId>`)
   //    sigue exactamente donde estaba y con la misma llave, así que el freno NO se afloja aunque el
-  //    enlace ROTE — y rota: `sendMagicLink_` lo renueva por `enr.wizardTouchSession`, con cupo de
+  //    enlace ROTE — y rota: `sendMagicLink_` lo renueva por `enr.renewApplicationSession`, con cupo de
   //    hasta 5 por hora y buzón (`_checkMagicLinkRateLimit_`). La capa nueva va por TOKEN, la llave
   //    que el llamante YA trae sin coste, y solo puede AÑADIR cortes: nunca quitarlos. En el peor
   //    caso (token rotado) el comportamiento es el de siempre — se paga el viaje y frena la capa 2.
@@ -8948,7 +8948,7 @@ function warmSession_(p) {
   // solo el warm KMS — cubre la entrada SIN link fresco (en el caso normal el trigger
   // del envío del magic-link ya lo dejó caliente; warmEntryBundle_ es idempotente:
   // si wz_hyd_<token> ya está, reusa y solo completa lo que falte). La misma llamada
-  // enr.wizardHydrate de antes vive DENTRO del bundle → el warm KMS (L2) se ceba igual.
+  // enr.hydrateApplication de antes vive DENTRO del bundle → el warm KMS (L2) se ceba igual.
   var w = warmEntryBundle_(String(p.resume_token).trim(), effRecoveredEmail || null,
     (p && p.language) ? String(p.language).trim() : null, (p && p.n) || null, groupId);
   if (!w.hydrate) {
@@ -9100,7 +9100,7 @@ function hydrateSession_(p) {
   const groupId = requireResumeToken_(p);  // KAL-4 + TTL 7d + abandoned gate
 
   // DL-B — gracia magic-link + gate PII (espejo EXACTO de resumeSession_:2116-2198).
-  // El endpoint consolidado de DL-A (enr.wizardHydrate) NO conoce el step-up/nonce del
+  // El endpoint consolidado de DL-A (enr.hydrateApplication) NO conoce el step-up/nonce del
   // wizard (viven en SU ScriptCache), así que esas dos semánticas se aplican AQUÍ:
   //  (1) Gracia (IDENTITY-FROM-LINK): anclada al resume_token recién rotado
   //      (mlgrace_<resume_token>), NO al `?n=` (que ahora lleva email_id, identidad). Si
@@ -9219,7 +9219,7 @@ function hydrateSession_(p) {
     } catch (eAw) { data = null; }
   }
   if (!data) {
-    data = kmsProxy_('enr.wizardHydrate', {
+    data = kmsProxy_('enr.hydrateApplication', {
       resume_token:    String(p.resume_token).trim(),
       recovered_email: effRecoveredEmail || null,
       language:        (p && p.language) ? String(p.language).trim() : null,
@@ -9250,7 +9250,7 @@ function hydrateSession_(p) {
   //   (stepUpFresh === true), así que reusar la variable evita una 2ª lectura del cache.
 
   // IMPL-F (regresión DL-C) — normaliza desired_start_date a ISO YYYY-MM-DD + fallback a
-  //   program.period_starts_on. enr.wizardHydrate devolvía la fila del KMS TAL CUAL (sin
+  //   program.period_starts_on. enr.hydrateApplication devolvía la fila del KMS TAL CUAL (sin
   //   normalizeDate_) → la fecha cruzaba en slash ("05/01/2026") y el <input type="date">
   //   del Step 1 quedaba vacío. Verbatim del lector probado resumeSession_:2317,2323-2329,
   //   adaptado: aquí los programas llegan en data.lookups.programs
@@ -9687,9 +9687,9 @@ function adminCleanupOrphanSessions() {
   const failures = [];
   toAbandon.forEach(s => {
     try {
-      // P1-B: escritura portada al KMS (enr.wizardAbandonSession). KAL-4: el grupo lo
+      // P1-B: escritura portada al KMS (enr.abandonApplicationSession). KAL-4: el grupo lo
       // deriva el KMS del resume_token de la PROPIA fila leída (nunca un id suelto).
-      kmsProxy_('enr.wizardAbandonSession', { resume_token: s.resume_token });
+      kmsProxy_('enr.abandonApplicationSession', { resume_token: s.resume_token });
       // KAL-11: redact group_id (UUID) and email before persisting to Stackdriver.
       Logger.log(redact_('abandoned: ' + s.enrollment_group_id + ' email=' + s.primary_email) + ' age_days=' + Math.round((now - new Date(s.created_at)) / 86400000));
       actuallyAbandoned++;
@@ -10960,7 +10960,7 @@ function manual_verifyP211Token(token) {
 // Sus otras dos comprobaciones —un correo de tutor resuelve, uno que no lo es devuelve
 // nada— las cubren hoy `manual_testIdentityFromLink` y `manual_testIdentityReentry`, que
 // además ejercitan el camino VIVO: el resolvedor ÚNICO del KMS por
-// `enr.wizardTutorQueRecupera`. Se retira en vez de reescribirse porque una prueba que
+// `enr.tutorQueRecupera`. Se retira en vez de reescribirse porque una prueba que
 // nunca puede pasar es peor que ninguna (§"CITAR una prueba `manual_*` obliga a COMPROBAR
 // QUE EXISTE").
 
@@ -10987,7 +10987,7 @@ function manual_verifyP211Token(token) {
  *
  * ②17 (noveno tramo, 2026-08-15): la cadena entra por el `resume_token`, no por el
  * identificador del expediente — se lee de la cabecera al arrancar. Y quien resuelve es el
- * KMS (`enr.wizardTutorQueRecupera`), así que esto ejercita el camino VIVO de punta a punta.
+ * KMS (`enr.tutorQueRecupera`), así que esto ejercita el camino VIVO de punta a punta.
  *
  * Ejecutar desde el editor GAS / clasp run; lee PASS/FAIL en Logs. NO envía email
  * (no llama sendMagicLink_); solo lee BD + ejercita los resolvers.
@@ -11100,7 +11100,7 @@ function manual_testIdentityFromLink() {
  *   (e) sin `n` ni recovered_email, en modo DECLARADO (②24.bis) → no se atribuye a nadie.
  *
  * ②17 (noveno tramo, 2026-08-15): la cadena entra por el `resume_token` de la cabecera, y
- * quien resuelve es el KMS (`enr.wizardTutorQueRecupera`) — camino VIVO de punta a punta.
+ * quien resuelve es el KMS (`enr.tutorQueRecupera`) — camino VIVO de punta a punta.
  *
  * Read-only salvo (a) — NO ejecuta sendMagicLink_ (solo localiza el email_id, sin enviar
  * email ni rotar token). Ejecutar vía clasp run / editor GAS; lee PASS/FAIL en Logs.

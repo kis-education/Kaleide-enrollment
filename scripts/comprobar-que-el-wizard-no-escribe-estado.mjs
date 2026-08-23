@@ -59,7 +59,7 @@ export function comprobarWizardNoEscribeEstado(fuente) {
   if (/\brq_state_id\b/.test(cuerpo)) fallos.push('`rq_state_id` reaparece en el envío — el wizard vuelve a resolver el estado de destino')
 
   // 2 — el envío NO manda `state_transitions` al KMS (el motor deja ese rastro solo).
-  if (/state_transitions\s*:/.test(cuerpo)) fallos.push('el envío vuelve a mandar `state_transitions` a wizardPersistSubmitSideEffects')
+  if (/state_transitions\s*:/.test(cuerpo)) fallos.push('el envío vuelve a mandar `state_transitions` a persistSubmitSideEffects')
 
   // 3 — el wizard NO dispara por su cuenta el correo del envío. LLAMADAS, no nombres sueltos.
   const correo = /sendViaKmsNotify_\(\s*'(WIZARD_FAMILY_CONFIRMATION|WIZARD_INTERNAL_NOTIFICATION)'/g

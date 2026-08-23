@@ -3,7 +3,7 @@
  *
  * QUÉ VIGILA, y por qué existe
  * ────────────────────────────
- * La familia puede QUITAR de su solicitud lo que ella misma añadió (`enr.wizardRetirar`,
+ * La familia puede QUITAR de su solicitud lo que ella misma añadió (`enr.retirarDeLaSolicitud`,
  * que estampa `deleted_at`). El KMS descarta a esas personas en todas partes; el asistente
  * NO lo hacía en ninguna. Medido el 2026-08-09 sobre datos reales (166 personas):
  * 134 retiradas · 83 tutores retirados sin teléfono vivo · **57 de 67 expedientes

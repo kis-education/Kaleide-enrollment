@@ -13,7 +13,24 @@ No se construye una red por cambio, ni un gate por clase, ni una auditoría por 
 
 **Regla de evidencia.** Los docs describen **INTENCIÓN, no ESTADO**. ¿Qué hace el código? → el código vivo contra `origin/main` (**nunca el árbol de trabajo**: llegó a estar 13 commits por detrás y devolvía código viejo sin aviso). **¿Qué hay en la base de datos? → una consulta a la tabla, NADA MÁS.** ¿Qué está desplegado? → `clasp deployments`.
 
-**Los dos controles de CI de este repo se CONSERVAN** (`comprobar-escrituras-directas.mjs` y `comprobar-selector-appsheet.mjs`): vigilan invariantes de seguridad y de datos, no patrones de estilo. Ver §"Deployment".
+**Los controles de CI de este repo se CONSERVAN**: vigilan invariantes de seguridad y de datos, no patrones de estilo. Ver §"Deployment".
+
+> ⚠️ **SON OCHO, no dos ni cuatro — MEDIDO el 2026-08-23 contra `.github/workflows/deploy.yml`.** Este párrafo decía *«los **dos** controles de CI de este repo»* y nombraba solo los dos primeros; ocho entradas de este mismo documento dicen *«los **cuatro** controles»*. **Las dos cifras son falsas desde el 2026-08-19**, cuando entraron seis más en el commit `87a2e9d` **sin que ninguna instrucción se actualizara** — ni ésta ni el método (`kis-app/docs/kms/prompts/cli-drenaje-continuo.md`), que también nombraba dos. ⇒ **quien siguiera el método al pie de la letra corría 2 de 8 y creía haber pasado el muro.** El daño está acotado porque la integración continua exige los ocho y **`build` depende de todos** (en ROJO no se publica), así que lo que se pierde es un ciclo rojo, no una publicación mala; pero también hacía que una sesión escribiera *«los cuatro controles VERDES»* como prueba de haber pasado un muro de ocho.
+>
+> **Los OCHO, y qué vigila cada uno** (`node scripts/<nombre>.mjs`, todos ~1 s, sin `npm ci`, sin red y sin navegador):
+>
+> | Control | Qué vigila |
+> |---|---|
+> | `comprobar-escrituras-directas` | que este backend anónimo no escriba (Add/Edit/Delete) a ninguna tabla de AppSheet |
+> | `comprobar-selector-appsheet` | que los filtros emitan `AND()`/`OR()` como FUNCIONES, no infijos que AppSheet descarta en silencio |
+> | `comprobar-personas-quitadas` | que no se cuente a quien la familia ya quitó de su solicitud |
+> | `comprobar-verja-publica` | las cinco puertas anónimas, el código de un solo uso de los 13 manejadores de mutación, y que cada tramo de `②17` siga preguntándole al KMS |
+> | `comprobar-receptor-firmado` | que el receptor del aviso del KMS verifique la firma ANTES de mirar el contenido |
+> | `comprobar-pantalla-del-cliente` | que las banderas de pantalla salgan de UN derivador y no se copien del KMS |
+> | `comprobar-codigos-de-consentimiento` | que ningún consentimiento se registre con un código inventado |
+> | `comprobar-que-el-wizard-no-escribe-estado` | que el asistente no fije el estado ni mande el correo del envío |
+>
+> **Antes de publicar se corren los OCHO**, además de `npm run e2e:wizard`. Y **si añades uno, actualiza esta tabla en el MISMO cambio**: el fallo que esta nota corrige es exactamente que seis entraron sin tocar ninguna instrucción.
 
 ## Máximo 500 líneas por documento vivo (Diego, 2026-08-03)
 
@@ -920,6 +937,64 @@ cuerpo en vez del token · renombrar el compositor → *«MEDICIÓN CIEGA»*. **
 a sí misma dos veces:** la rotura del orden **no se aplicaba** (era la rotura la que era débil, no
 la afirmación) y la del renombrado **reventaba** en vez de declararse ciega. **Quien toque este
 compositor, que lo mida.**
+
+### `③1` tramo (b) (2026-08-23) — el asistente llama a las acciones del KMS por su nombre CANÓNICO
+
+**El KMS renombró sus 32 acciones a lo que HACEN en el dominio el 2026-08-16 (DL-E55), y dejó una
+ventana de alias para que el asistente siguiera funcionando mientras tanto. Esa ventana llevaba una
+semana siendo lo único que sostenía los nombres viejos: el asistente no había migrado.** Ahora sí —
+**97 sustituciones** en `backend/Code.js`, de las cuales **37 son llamadas** (`kmsProxy_`) y **60
+comentarios** que nombraban la acción.
+
+| Antes | Ahora |
+|---|---|
+| `enr.wizardHydrate` | `enr.hydrateApplication` |
+| `enr.wizardSavePersons` · `…SaveHealth` · `…SaveRelations` | `enr.savePersons` · `enr.saveHealth` · `enr.saveRelations` |
+| `enr.wizardTouchSession` · `…AbandonSession` · `…CreateSession` | `enr.renewApplicationSession` · `enr.abandonApplicationSession` · `enr.createApplicationSession` |
+| `enr.wizardComprobarSubida` · `…PersistUpload` | `enr.comprobarSubidaDeDocumento` · `enr.persistUploadedDocument` |
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ NO SE RETIRÓ NI UN ALIAS, y no es pereza: es la barandilla.** Los dos proyectos se publican
+  por separado, así que mientras el paquete VIEJO del asistente siga vivo, un alias retirado deja
+  fuera a familias reales. Retirarlos es el tramo **(b2)** y va **después**, cuando se mida que
+  ninguno aparece ya en el rastro `[alias]`.
+- **⛔ `enr.wizardSaveStep` NO se renombra, y su propio registro dice por qué**: es la única cuyo
+  CONTENIDO habla de pantallas (viaja `step`, y el escritor decide por él) ⇒ se renombra cuando se
+  rediseñe lo que viaja, o se renombraría dos veces. Es el tramo (a), y sigue abierto.
+- **⚠️ Y `enr.wizardHuellaDeSimulacion` se quedó fuera por otro motivo: NO tiene alias.** Nació
+  DESPUÉS del renombrado (`0º.vicies.quinquies`) reusando la convención vieja ⇒ migrarla exige
+  tocar el KMS, no solo este repositorio. **La convención se torció en cuanto nadie la vigilaba**;
+  queda anotado, no arreglado.
+- **Sin cambio de comportamiento y sin tocar el KMS:** la precondición se midió **contra la
+  versión DESPLEGADA `@1479`** —346 ficheros leídos por la API de Apps Script, no el repositorio—:
+  los **32** nombres canónicos existen en `ROUTE_PERMISSIONS` y **los 32 son `public`**. Por eso
+  este cambio **no necesita desplegar el KMS**.
+- **Seguro de dejar COMMITEADO Y SIN PUBLICAR**: los dos nombres funcionan a la vez, así que el
+  asistente desplegado (con los viejos) y el commiteado (con los canónicos) son igual de válidos.
+
+⚠️ **LA BATERÍA NO PUEDE CUBRIR ESTO** — corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. Lo que lo cubre es una comprobación aparte que **cruza el código con la
+versión DESPLEGADA del KMS**: los **44** nombres que el asistente envía existen y son `public` en
+`@1479`. **Rojo demostrado dos veces**: un nombre inventado sale *«NO EXISTE en la versión
+desplegada»*, y volver una llamada a su alias viejo se cuenta y se nombra.
+
+⭐ **Y AL MEDIRLO APARECIÓ UN DEFECTO EN LA PROPIA RED, que es la parte que más valía del tramo.**
+`comprobar-verja-publica` ancla sus comprobaciones en el **nombre literal** de cada acción, así que
+el renombrado la dejó **ROJA con 13 infracciones** — bien hecho: se negó a afirmar lo que ya no
+podía verificar, en vez de pasar en verde y quedarse ciega. Se actualizaron sus **31 anclas** (17 en
+prosa, 12 en expresiones escapadas `enr\.wizard…` que la primera pasada NO tocó, y 2 escritas sin el
+prefijo `enr.`). **Quien renombre una acción tiene que mover las anclas EN EL MISMO CAMBIO.**
+
+⭐⭐ **Y una de esas anclas llevaba PREEXISTENTEMENTE rota, descubierta al exigirle el rojo.** La de
+la hidratación calculaba el cuerpo de `hydrateSession_` (`const vivo = cuerpoDe(…)`) y luego
+**afirmaba sobre el fichero ENTERO** (`.test(fuenteLimpia)`) ⇒ seguía verde mientras **cualquier**
+función del fichero llamara a la hidratación, aunque `hydrateSession_` hubiera dejado de hacerlo.
+Se midió: con la rotura dirigida a `hydrateSession_` (línea 9222) salía **VERDE**. Corregida a
+`.test(vivo)`, **la misma rotura sale ROJA** y una rotura en la OTRA función (`warmEntryBundle_`,
+línea 2063) **sigue sin dar falso rojo**. *(Esto NO lo causó el renombrado: se comprobó que el mismo
+agujero existía con los nombres viejos. Lo destapó exigir el rojo demostrado en vez de conformarse
+con el verde.)*
 
 ### ②17 (2026-08-16) — LA PUERTA: la lectura más llamada del asistente, y la que se hacía DOS VECES en la misma petición
 

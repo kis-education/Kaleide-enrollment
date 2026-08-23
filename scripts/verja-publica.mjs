@@ -432,7 +432,7 @@ function comprobarLosDocumentosDeLaFamilia(fuenteLimpia) {
     {
       fn: 'uploadDocument_',
       tablas: /appsheetRequest_\s*\(\s*T\.ENROLLMENTS|appsheetRequest_\s*\(\s*T\.REC_FILES|appsheetRequest_\s*\(\s*'enrEnrollments'|appsheetRequest_\s*\(\s*'recFiles'/,
-      pregunta: /kmsProxy_\s*\(\s*'enr\.wizardComprobarSubida'/,
+      pregunta: /kmsProxy_\s*\(\s*'enr\.comprobarSubidaDeDocumento'/,
       queEs: 'las dos comprobaciones previas a subir (el expediente de destino y el envío ya guardado)',
     },
     {
@@ -504,8 +504,8 @@ function comprobarLaHidratacionDeEntrada(fuenteLimpia) {
   const vivo = cuerpoDe(fuenteLimpia, 'hydrateSession_')
   if (vivo === null) {
     fallos.push('no se encontró `hydrateSession_` — control CIEGO en la hidratación de entrada')
-  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardHydrate'/.test(fuenteLimpia)) {
-    fallos.push('la hidratación de entrada ya no le pide los datos al KMS (`enr.wizardHydrate`) — ' +
+  } else if (!/kmsProxy_\s*\(\s*'enr\.hydrateApplication'/.test(vivo)) {
+    fallos.push('la hidratación de entrada ya no le pide los datos al KMS (`enr.hydrateApplication`) — ' +
       'o volvió a leer AppSheet por su cuenta, o el camino vivo cambió de nombre')
   }
 
@@ -555,9 +555,9 @@ function comprobarElEnvio(fuenteLimpia) {
     }
   }
 
-  if (!/kmsProxy_\s*\(\s*'enr\.wizardDatosDelEnvio'/.test(cuerpo)) {
+  if (!/kmsProxy_\s*\(\s*'enr\.datosDelEnvio'/.test(cuerpo)) {
     fallos.push('el envío ya no le pide al KMS lo que necesita para validarse ' +
-      '(`enr.wizardDatosDelEnvio`) — o se quitó la comprobación, o volvió a hacerse contra AppSheet')
+      '(`enr.datosDelEnvio`) — o se quitó la comprobación, o volvió a hacerse contra AppSheet')
   }
 
   // La isla muerta: si vuelve, vuelve con ella la lectura que dejaba familias encalladas.
@@ -637,8 +637,8 @@ function comprobarLaEntradaDelExpediente(fuenteLimpia) {
   const ayudante = cuerpoDe(fuenteLimpia, '_expedienteDelToken_')
   if (ayudante === null) {
     fallos.push('no se encontró `_expedienteDelToken_` — control CIEGO: es el lector ÚNICO de la cabecera (②17)')
-  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardExpedienteDelToken'/.test(ayudante)) {
-    fallos.push('`_expedienteDelToken_` ya no le pregunta al KMS (`enr.wizardExpedienteDelToken`) — ' +
+  } else if (!/kmsProxy_\s*\(\s*'enr\.expedienteDelToken'/.test(ayudante)) {
+    fallos.push('`_expedienteDelToken_` ya no le pregunta al KMS (`enr.expedienteDelToken`) — ' +
       'si vuelve a leer AppSheet, el tramo está deshecho')
   }
 
@@ -653,7 +653,7 @@ function comprobarLaEntradaDelExpediente(fuenteLimpia) {
  * correo, los abiertos, y las personas de los candidatos **solo para contarlas**. Cruzaba
  * la fila ENTERA de cada expediente —con `magic_link_token`, un secreto de portador— y la
  * ficha ENTERA de cada persona, incluidos menores. Ahora las sirve el KMS
- * (`enr.wizardExpedientesDelCorreo`) por **UN SOLO ayudante**, `_expedientesDelCorreo_`.
+ * (`enr.expedientesDelCorreo`) por **UN SOLO ayudante**, `_expedientesDelCorreo_`.
  *
  * Se afirman cuatro cosas y DOS son anclas. Las anclas existen porque un control que solo
  * comprueba AUSENCIAS sale verde sobre un manejador vaciado o renombrado: si
@@ -690,7 +690,7 @@ function comprobarLaEntradaDeLaSolicitud(fuenteLimpia) {
     }
     // ANCLA 2: el manejador sigue DECIDIENDO la sesión única. Sin esto, «no lee AppSheet»
     // sería cierto y vacío a la vez — la política se habría escapado a otro sitio.
-    if (!/personCountByGroup/.test(cuerpo) || !/wizardAbandonSession/.test(cuerpo)) {
+    if (!/personCountByGroup/.test(cuerpo) || !/abandonApplicationSession/.test(cuerpo)) {
       fallos.push('`initEnrollmentSession_` ya no decide la sesión única (puntuar por personas ' +
         'y abandonar a los perdedores) — el control estaría afirmando que no lee AppSheet sobre ' +
         'un manejador que ya no hace su trabajo')
@@ -702,9 +702,9 @@ function comprobarLaEntradaDeLaSolicitud(fuenteLimpia) {
   if (ayudante === null) {
     fallos.push('no se encontró `_expedientesDelCorreo_` — control CIEGO: es el lector ÚNICO de ' +
       'los expedientes de un correo (②17)')
-  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardExpedientesDelCorreo'/.test(ayudante)) {
+  } else if (!/kmsProxy_\s*\(\s*'enr\.expedientesDelCorreo'/.test(ayudante)) {
     fallos.push('`_expedientesDelCorreo_` ya no le pregunta al KMS ' +
-      '(`enr.wizardExpedientesDelCorreo`) — si vuelve a leer AppSheet, el tramo está deshecho')
+      '(`enr.expedientesDelCorreo`) — si vuelve a leer AppSheet, el tramo está deshecho')
   }
 
   return fallos
@@ -718,7 +718,7 @@ function comprobarLaEntradaDeLaSolicitud(fuenteLimpia) {
  * expedientes de ese correo, TODAS las filas de `enrEmails` de ese buzón, y la ficha
  * COMPLETA de cada persona —MENORES INCLUIDOS— de los expedientes que casaran, solo para
  * comprobar que el correo es de un tutor. Ahora lo sirve el KMS
- * (`enr.wizardRecuperacionDelCorreo`) por **UN SOLO ayudante**, `_recuperacionDelCorreo_`.
+ * (`enr.recuperacionDelCorreo`) por **UN SOLO ayudante**, `_recuperacionDelCorreo_`.
  *
  * Se afirman SEIS cosas y DOS son anclas. Las anclas existen porque un control que solo
  * comprueba AUSENCIAS sale verde sobre un manejador vaciado o renombrado: si
@@ -777,9 +777,9 @@ function comprobarLaRecuperacionDelEnlace(fuenteLimpia) {
   if (ayudante === null) {
     fallos.push('no se encontró `_recuperacionDelCorreo_` — control CIEGO: es el lector ÚNICO de ' +
       'los expedientes recuperables de un correo (②17)')
-  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardRecuperacionDelCorreo'/.test(ayudante)) {
+  } else if (!/kmsProxy_\s*\(\s*'enr\.recuperacionDelCorreo'/.test(ayudante)) {
     fallos.push('`_recuperacionDelCorreo_` ya no le pregunta al KMS ' +
-      '(`enr.wizardRecuperacionDelCorreo`) — si vuelve a leer AppSheet, el tramo está deshecho')
+      '(`enr.recuperacionDelCorreo`) — si vuelve a leer AppSheet, el tramo está deshecho')
   }
 
   return fallos
@@ -859,8 +859,8 @@ function comprobarLaIdentidadDeQuienRecupera(fuenteLimpia) {
   if (ayudante === null) {
     fallos.push('no se encontró `_tutorQueRecupera_` — control CIEGO: es el ayudante ÚNICO por el ' +
       'que este proceso pregunta de quién es un correo (②17)')
-  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardTutorQueRecupera'/.test(ayudante)) {
-    fallos.push('`_tutorQueRecupera_` ya no le pregunta al KMS (`enr.wizardTutorQueRecupera`) — ' +
+  } else if (!/kmsProxy_\s*\(\s*'enr\.tutorQueRecupera'/.test(ayudante)) {
+    fallos.push('`_tutorQueRecupera_` ya no le pregunta al KMS (`enr.tutorQueRecupera`) — ' +
       'si vuelve a leer AppSheet, el tramo está deshecho y vuelven los DOS resolvedores')
   }
 
@@ -895,7 +895,7 @@ function comprobarLaIdentidadDeQuienRecupera(fuenteLimpia) {
  * QUÉ AFIRMA, sobre el código real:
  *   (a) `saveResponses_` **no lee `enrPersons`** de AppSheet;
  *   (b) **sí** pregunta al KMS por el ayudante ÚNICO (`_respondentesAutorizados_`);
- *   (c) el ayudante existe y pregunta a la entrada declarada (`enr.wizardRespondentesAutorizados`);
+ *   (c) el ayudante existe y pregunta a la entrada declarada (`enr.respondentesAutorizados`);
  *   (d) ANCLAS anti-vacío — `saveResponses_` sigue derivando el expediente del token
  *       (`requireResumeToken_`), sigue exigiendo el código de un solo uso (`assertStepUpFresh_`)
  *       y sigue rechazando con `UNAUTHORIZED` al respondent ajeno. Sin ellas, «ya no lee
@@ -934,9 +934,9 @@ function comprobarLasRespuestas(fuenteLimpia) {
   if (ayudante === null) {
     fallos.push('no se encontró `_respondentesAutorizados_` — control CIEGO: es el ayudante ' +
       'ÚNICO por el que este proceso pregunta quién puede ser sujeto de una respuesta (②17)')
-  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardRespondentesAutorizados'/.test(ayudante)) {
+  } else if (!/kmsProxy_\s*\(\s*'enr\.respondentesAutorizados'/.test(ayudante)) {
     fallos.push('`_respondentesAutorizados_` ya no le pregunta al KMS ' +
-      '(`enr.wizardRespondentesAutorizados`) — si vuelve a leer AppSheet, el tramo está deshecho')
+      '(`enr.respondentesAutorizados`) — si vuelve a leer AppSheet, el tramo está deshecho')
   }
 
   // (d) ANCLAS: las dos puertas y el rechazo siguen en pie.
@@ -974,7 +974,7 @@ function comprobarLasRespuestas(fuenteLimpia) {
  *       dato y divergirían (§"Regla — refactors preservan el código probado");
  *   (c) el ámbito escrito a mano (`enr_admission_school`) no reaparece en el manejador;
  *   (d) ANCLAS anti-vacío — el manejador sigue existiendo, sigue llamando a
- *       `enr.wizardPersistSubmitSideEffects` y sigue mandándole los consentimientos. Sin ellas,
+ *       `enr.persistSubmitSideEffects` y sigue mandándole los consentimientos. Sin ellas,
  *       «ya no lee AppSheet» saldría VERDE sobre un manejador vaciado.
  *
  * QUÉ **NO** AFIRMA: que el KMS componga las etiquetas correctas, ni que su guarda de
@@ -1004,7 +1004,7 @@ function comprobarLasEtiquetasDelEnvio(fuenteLimpia) {
 
   // (b) y no se vuelve a componer aquí lo que compone el KMS.
   if (/rec_scopes\s*:/.test(cuerpo)) {
-    fallos.push('el envío vuelve a mandar `rec_scopes` a `enr.wizardPersistSubmitSideEffects` — ' +
+    fallos.push('el envío vuelve a mandar `rec_scopes` a `enr.persistSubmitSideEffects` — ' +
       'las compone el KMS desde los documentos y expedientes reales del grupo; dos composiciones ' +
       'del mismo dato divergen')
   }
@@ -1016,13 +1016,13 @@ function comprobarLasEtiquetasDelEnvio(fuenteLimpia) {
   }
 
   // (d) ANCLAS: sin ellas el control mediría un manejador vaciado.
-  if (!/kmsProxy_\s*\(\s*'enr\.wizardPersistSubmitSideEffects'/.test(cuerpo)) {
-    fallos.push('el envío ya no llama a `enr.wizardPersistSubmitSideEffects` — el control estaría ' +
+  if (!/kmsProxy_\s*\(\s*'enr\.persistSubmitSideEffects'/.test(cuerpo)) {
+    fallos.push('el envío ya no llama a `enr.persistSubmitSideEffects` — el control estaría ' +
       'afirmando ausencias sobre un manejador que ya no persiste nada')
   }
   // Se ancla en la LLAMADA, no en la palabra suelta: `/consents\s*:/` a secas casaba el `?:`
   // de `Array.isArray(p.consents) ? p.consents : []` y dejaba el ancla inerte (medido).
-  if (!/kmsProxy_\s*\(\s*'enr\.wizardPersistSubmitSideEffects'\s*,\s*\{[^}]*\bconsents\s*:/.test(cuerpo)) {
+  if (!/kmsProxy_\s*\(\s*'enr\.persistSubmitSideEffects'\s*,\s*\{[^}]*\bconsents\s*:/.test(cuerpo)) {
     fallos.push('el envío ya no le manda los consentimientos al KMS — quitar de dónde salen las ' +
       'etiquetas NO puede llevarse por delante el libro de consentimientos')
   }
@@ -1176,8 +1176,8 @@ function comprobarLaPuerta(fuenteLimpia) {
   const magic = cuerpoDe(fuenteLimpia, 'sendMagicLink_')
   if (magic === null) {
     fallos.push('no se encontró `sendMagicLink_` — control CIEGO en la rama que ROTA el token')
-  } else if (/wizardTouchSession/.test(magic) && !/_olvidarCabeceraMemo_\s*\(/.test(magic)) {
-    fallos.push('`sendMagicLink_` ROTA el token (`enr.wizardTouchSession`) y NO olvida la cabecera ' +
+  } else if (/renewApplicationSession/.test(magic) && !/_olvidarCabeceraMemo_\s*\(/.test(magic)) {
+    fallos.push('`sendMagicLink_` ROTA el token (`enr.renewApplicationSession`) y NO olvida la cabecera ' +
       'de la memoria de EJECUCIÓN — la ficha guardada lleva dentro el `resume_token` VIEJO, y ' +
       'servirla después de rotar sería devolver un enlace muerto')
   }
@@ -1246,8 +1246,8 @@ function comprobarElPulsoDeLaAdmision(fuenteLimpia) {
   const ayudante = cuerpoDe(fuenteLimpia, '_pulsoDeLaAdmision_')
   if (ayudante === null) {
     fallos.push('no se encontró `_pulsoDeLaAdmision_` — control CIEGO: es el lector ÚNICO (②17)')
-  } else if (!/kmsProxy_\s*\(\s*'enr\.wizardEstadoDeLaAdmision'/.test(ayudante)) {
-    fallos.push('`_pulsoDeLaAdmision_` ya no pregunta a `enr.wizardEstadoDeLaAdmision` — el ' +
+  } else if (!/kmsProxy_\s*\(\s*'enr\.estadoDeLaAdmision'/.test(ayudante)) {
+    fallos.push('`_pulsoDeLaAdmision_` ya no pregunta a `enr.estadoDeLaAdmision` — el ' +
       'lector único dejó de apuntar a la entrada declarada del KMS')
   }
 
@@ -1443,7 +1443,7 @@ function comprobarLaCarpetaDelArchivo(fuenteLimpia) {
   }
 
   // ★ `0º.quindecies` hallazgo (2) — y la comprobación previa NO puede quedarse sin hacer.
-  // Antes era una llamada aparte a `enr.wizardComprobarSubida`; ahora viaja pegada a la
+  // Antes era una llamada aparte a `enr.comprobarSubidaDeDocumento`; ahora viaja pegada a la
   // puerta, con esa llamada como RESPALDO para un KMS que aún no conozca el campo. Las dos
   // vías tienen que seguir estando: sin la primera se pierde el ahorro, y sin la segunda un
   // KMS viejo dejaría la comprobación de acceso SIN HACER.
@@ -1451,8 +1451,8 @@ function comprobarLaCarpetaDelArchivo(fuenteLimpia) {
     fallos.push('`uploadDocument_` ya no le pide a la puerta la comprobación previa ' +
       '(`comprobarSubida`) — vuelve a pagar un viaje entero al KMS por cada documento')
   }
-  if (!/kmsProxy_\s*\(\s*'enr\.wizardComprobarSubida'/.test(cuerpo)) {
-    fallos.push('`uploadDocument_` se quedó sin el respaldo `enr.wizardComprobarSubida` — ' +
+  if (!/kmsProxy_\s*\(\s*'enr\.comprobarSubidaDeDocumento'/.test(cuerpo)) {
+    fallos.push('`uploadDocument_` se quedó sin el respaldo `enr.comprobarSubidaDeDocumento` — ' +
       'con un KMS que todavía no devuelva `comprobacion_subida`, la comprobación de acceso ' +
       'no se haría y el documento se subiría igual')
   }
