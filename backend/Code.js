@@ -649,7 +649,7 @@ function requireResumeTokenMemo_(payload) {
   return groupId;
 }
 
-function requireResumeToken_(payload) {
+function requireResumeToken_(payload, opciones) {
   _dbgEv_('gate', 'requireResumeToken (live)');
   const token = payload && payload.resume_token;
   assertValidUuid_(token, 'resume_token');
@@ -675,10 +675,17 @@ function requireResumeToken_(payload) {
   const nDiscPuerta = payload && payload.n ? String(payload.n).trim() : '';
   const correoDiscPuerta = (!nDiscPuerta && payload && payload.recovered_email)
     ? String(payload.recovered_email).toLowerCase().trim() : '';
+  // ★ `0º.quindecies` hallazgo (2) (2026-08-23) — mismo motivo y mismo molde que la línea de
+  // arriba, para las DOS comprobaciones previas a subir un documento. **Se declara en el
+  // SEGUNDO ARGUMENTO, no se lee del payload**: así solo la pide `uploadDocument_`, que es
+  // quien la necesita, y ninguna otra acción puede provocarla metiendo una marca en su
+  // cuerpo. Sin `opciones`, cero cambio — ni un campo de más hacia el KMS.
+  const subidaPuerta = (opciones && opciones.comprobarSubida) || null;
   const consulta = _expedienteDelToken_(token, {
     tolerarSesionCerrada: true,
     n: nDiscPuerta || null,
     correo: correoDiscPuerta || null,
+    comprobarSubida: subidaPuerta,
   });
   if (!consulta.ok && !consulta.rechazo) {
     // NO se pudo PREGUNTAR (transporte). Se LANZA —como lanzaba `appsheetRequest_`, que aquí
@@ -4153,6 +4160,11 @@ function _expedienteDelToken_(resumeToken, opciones) {
   var nDisc      = (opciones && opciones.n)      ? String(opciones.n).trim() : '';
   var correoDisc = (opciones && opciones.correo && !nDisc)
     ? String(opciones.correo).toLowerCase().trim() : '';
+  // ★ `0º.quindecies` hallazgo (2) — las DOS comprobaciones previas a subir un documento,
+  // en la MISMA pregunta que la cabecera. Se pide POR SU NOMBRE (el llamante lo declara);
+  // no se adivina de que el cuerpo traiga una marca suelta.
+  var subida = (opciones && opciones.comprobarSubida && typeof opciones.comprobarSubida === 'object')
+    ? opciones.comprobarSubida : null;
 
   // ②17 (2026-08-19) — LA MISMA FICHA SE PEDÍA DOS VECES POR PETICIÓN. Medido en el log
   // real del asistente desplegado: `hydrateSession` emitía `enr.wizardExpedienteDelToken`
@@ -4169,13 +4181,14 @@ function _expedienteDelToken_(resumeToken, opciones) {
   // hace falta ir al KMS igual (la cabecera ya la tenemos, pero la identidad no).
   var clave = _memoCabeceraClave_(token, tolerante);
   var yaResuelta = _memoCabeceraEjecucion_[clave];
-  if (yaResuelta && !nDisc && !correoDisc) {
+  if (yaResuelta && !nDisc && !correoDisc && !subida) {
     return { ok: true, fila: yaResuelta, rechazo: null, motivo: null };
   }
 
   var cuerpo = { resume_token: token };
   if (tolerante) cuerpo.tolerar_sesion_cerrada = true;
   if (nDisc) cuerpo.n = nDisc; else if (correoDisc) cuerpo.correo = correoDisc;
+  if (subida) cuerpo.comprobar_subida = subida;
 
   try {
     var r = kmsProxy_('enr.wizardExpedienteDelToken', cuerpo) || {};
@@ -4195,6 +4208,13 @@ function _expedienteDelToken_(resumeToken, opciones) {
       };
       _TUTOR_MEMO_[token + '|' + (nDisc ? 'n:' + nDisc : 'c:' + correoDisc)] = outIdent;
       if (nDisc && outIdent.correo) _TUTOR_MEMO_[token + '|c:' + outIdent.correo] = outIdent;
+    }
+    // ★ `0º.quindecies` hallazgo (2) — la comprobación de la subida viajó en la MISMA
+    // respuesta: se archiva donde `uploadDocument_` la busca. Se guarda TAMBIÉN el rechazo
+    // (`ok:false`), a diferencia de la cabecera: aquí el «no» ES la respuesta —el expediente
+    // no es de esta familia— y quien la lee tiene que poder distinguirlo de «no pregunté».
+    if (subida && r.comprobacion_subida) {
+      _SUBIDA_MEMO_[_memoSubidaClave_(token, subida)] = r.comprobacion_subida;
     }
     return { ok: true, fila: fila, rechazo: null, motivo: null };
   } catch (e2) {
@@ -4248,6 +4268,29 @@ var _memoCabeceraEjecucion_ = {};
  */
 function _memoCabeceraClave_(token, tolerante) {
   return 'tok:' + String(token || '').trim() + '|' + (tolerante ? 'tolerarSesionCerrada' : 'estricto');
+}
+
+/**
+ * ★ `0º.quindecies` hallazgo (2) (2026-08-23) — memoria de EJECUCIÓN de la comprobación
+ * previa a subir un documento, cuando viajó pegada a la cabecera.
+ *
+ * Igual que su hermana de la cabecera: vive lo que dura ESTA ejecución de Apps Script y ni
+ * un ms más ⇒ NO es caché, no tiene plazo y no puede servir la respuesta de otra petición.
+ *
+ * ⛔ **LA CLAVE LLEVA DENTRO LOS DOS DISCRIMINADORES**, y no es decoración: la respuesta
+ * depende del `enrollment_id` (¿es de esta familia?) Y de la marca del envío (¿ya se
+ * guardó?). Una clave que solo mirara el token le serviría a una subida la respuesta de
+ * otra — que es exactamente el defecto que la idempotencia existe para evitar.
+ * @private
+ */
+var _SUBIDA_MEMO_ = {};
+
+/** @private — la clave de `_SUBIDA_MEMO_`; ver por qué lleva los dos discriminadores. */
+function _memoSubidaClave_(token, subida) {
+  var s = subida || {};
+  return 'sub:' + String(token || '').trim() +
+    '|e:' + String(s.enrollment_id || '') +
+    '|m:' + String(s.upload_idempotency_token || '');
 }
 
 /**
@@ -6539,7 +6582,24 @@ function _tipoDeDocumentoElegido_(p) {
 function uploadDocument_(p) {
   // KAL-4: derive authorised group_id from resume_token; never trust the
   // payload's enrollment_group_id directly. Cross-check inside the helper.
-  const enrollmentGroupId = requireResumeToken_(p);
+  //
+  // ★ `0º.quindecies` hallazgo (2) (2026-08-23) — LOS DOS DISCRIMINADORES DE LA COMPROBACIÓN
+  // PREVIA SE PREPARAN AQUÍ, ANTES DE LA PUERTA, para que viajen pegados a ella. Son cálculo
+  // PURO (leer el cuerpo y, si falta, acuñar una marca): no leen nada y no deciden nada.
+  //
+  // ⛔ NO SE VALIDA LA FORMA AQUÍ, y es deliberado: `assertValidUuid_` sigue donde estaba, más
+  // abajo, para que el orden de los rechazos no cambie ni un ápice (hoy un `resume_token`
+  // malformado se rechaza ANTES que un `enrollment_id` malformado, y así se queda). Lo que se
+  // hace es NO PLEGAR lo que no tiene forma de UUID: si no la tiene, la comprobación se pide
+  // aparte como siempre y el `assertValidUuid_` de abajo la rechaza igual.
+  const idempotencyToken = p.upload_idempotency_token || generateUuid_();
+  const enrollmentId     = p.enrollment_id || null;
+  const _pareceUuid_ = function(v) { return !!v && /^[0-9a-fA-F-]{36}$/.test(String(v)); };
+  const plegableSubida = (!enrollmentId || _pareceUuid_(enrollmentId)) && _pareceUuid_(idempotencyToken)
+    ? { enrollment_id: enrollmentId || null, upload_idempotency_token: idempotencyToken }
+    : null;
+
+  const enrollmentGroupId = requireResumeToken_(p, { comprobarSubida: plegableSubida });
   // CLI 26 (2026-06-01) — reject uploads for submitted/abandoned groups.
   // The `enrollmentId` branch below covers post-submit uploads where a
   // specific enrollment is targeted; if that enrollment exists, the group
@@ -6552,7 +6612,6 @@ function uploadDocument_(p) {
   assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
-  const enrollmentId      = p.enrollment_id || null;
   const { base64, mimeType, filename } = p;
   if (!base64) throw new Error('Missing base64');
   // WIZARD-DOCS (2026-06-13): adjuntador genérico. La familia describe en texto
@@ -6570,9 +6629,10 @@ function uploadDocument_(p) {
   const tipoDeDocumento = _tipoDeDocumentoElegido_(p);
   if (enrollmentId) assertValidUuid_(enrollmentId, 'enrollment_id');
 
-  const idempotencyToken = p.upload_idempotency_token || generateUuid_();
   // KAL-5: idempotency token is server-generated UUID by default; if the
   // frontend supplied one, it must match UUID shape.
+  // (Se acuña arriba, antes de la puerta, para poder plegar la comprobación previa — ver el
+  // bloque `0º.quindecies` del principio. La validación se queda AQUÍ, en su orden de siempre.)
   assertValidUuid_(idempotencyToken, 'upload_idempotency_token');
 
   // ②17 — LAS DOS COMPROBACIONES PREVIAS LAS HACE EL KMS, en una sola pregunta.
@@ -6588,14 +6648,34 @@ function uploadDocument_(p) {
   //     acceso; antes la lectura de AppSheet también lanzaba si se caía).
   //   · sin `enrollment_id`, lo único en juego es la idempotencia ⇒ se sigue subiendo, que
   //     es lo que hacía el `catch (_)` de siempre. Como mucho se repite un documento.
+  //
+  // ★ `0º.quindecies` hallazgo (2) (2026-08-23) — Y AHORA LA RESPUESTA YA ESTÁ AQUÍ, sin un
+  // segundo viaje. La puerta de arriba la trajo pegada a la cabecera (molde DL-E57), porque
+  // `enr.comprobarSubidaDeDocumento` re-resolvía la sesión ENTERA desde cero para contestar
+  // lo que la puerta acababa de contestar. **LA DECISIÓN NO SE MUEVE**: los dos fallos se
+  // siguen pesando exactamente igual, unas líneas más abajo de donde se pesaban.
+  //
+  // ⛔ Si por lo que sea NO viene plegada (el KMS no la mandó, o los discriminadores no tenían
+  // forma de UUID), se pide APARTE como siempre. Nunca se da por buena una comprobación de
+  // acceso que no se ha hecho.
   let yaSubido = null;
+  const plegada = plegableSubida
+    ? _SUBIDA_MEMO_[_memoSubidaClave_(p.resume_token, plegableSubida)]
+    : null;
   try {
-    const previo = kmsProxy_('enr.wizardComprobarSubida', {
+    const previo = plegada || (kmsProxy_('enr.wizardComprobarSubida', {
       resume_token:             p.resume_token,
       enrollment_id:            enrollmentId || null,
       upload_idempotency_token: idempotencyToken,
-    }) || {};
-    yaSubido = previo.ya_subido || null;
+    }) || {});
+    if (previo && previo.ok === false) {
+      // El KMS CONTESTÓ que no. Se re-lanza con su código para que el `catch` de abajo aplique
+      // la MISMA decisión que aplicaba cuando esto era una llamada aparte.
+      const eNo = new Error(previo.error || 'No se pudo comprobar el envío previo');
+      eNo.code = previo.code || '';
+      throw eNo;
+    }
+    yaSubido = (previo && previo.ya_subido) || null;
   } catch (eComprobar) {
     if (enrollmentId) throw eComprobar;   // fail-closed: la comprobación de acceso manda
     Logger.log(redact_('[uploadDocument_] no se pudo comprobar el envío previo — se sube igual: ' +

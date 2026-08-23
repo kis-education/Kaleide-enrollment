@@ -1432,8 +1432,29 @@ function comprobarLaCarpetaDelArchivo(fuenteLimpia) {
 
   // Ancla KAL-4: el expediente sigue saliendo del bearer, no del cuerpo — sin esto el
   // control podría salir verde sobre un manejador que perdió la comprobación de acceso.
-  if (!/requireResumeToken_\s*\(\s*p\s*\)/.test(cuerpo)) {
+  //
+  // ★ `0º.quindecies` hallazgo (2) (2026-08-23) — el gate admite un SEGUNDO argumento con
+  // las comprobaciones que se piden pegadas a la puerta (`{ comprobarSubida }`). Lo que el
+  // ancla afirma es de dónde sale el expediente —del payload `p`, por el gate—, no cuántos
+  // argumentos lleva la llamada; por eso se acepta `(p)` y `(p, …)`, y **se sigue cayendo**
+  // si el primer argumento deja de ser el payload o si el gate desaparece.
+  if (!/requireResumeToken_\s*\(\s*p\s*[,)]/.test(cuerpo)) {
     fallos.push('`uploadDocument_` ya no deriva el expediente del `resume_token` — KAL-4 rota')
+  }
+
+  // ★ `0º.quindecies` hallazgo (2) — y la comprobación previa NO puede quedarse sin hacer.
+  // Antes era una llamada aparte a `enr.wizardComprobarSubida`; ahora viaja pegada a la
+  // puerta, con esa llamada como RESPALDO para un KMS que aún no conozca el campo. Las dos
+  // vías tienen que seguir estando: sin la primera se pierde el ahorro, y sin la segunda un
+  // KMS viejo dejaría la comprobación de acceso SIN HACER.
+  if (!/comprobarSubida\s*:/.test(cuerpo)) {
+    fallos.push('`uploadDocument_` ya no le pide a la puerta la comprobación previa ' +
+      '(`comprobarSubida`) — vuelve a pagar un viaje entero al KMS por cada documento')
+  }
+  if (!/kmsProxy_\s*\(\s*'enr\.wizardComprobarSubida'/.test(cuerpo)) {
+    fallos.push('`uploadDocument_` se quedó sin el respaldo `enr.wizardComprobarSubida` — ' +
+      'con un KMS que todavía no devuelva `comprobacion_subida`, la comprobación de acceso ' +
+      'no se haría y el documento se subiría igual')
   }
 
   return fallos
