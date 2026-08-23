@@ -2031,6 +2031,80 @@ seguir (las funciones llamadas, no este fichero) queda escrito para quien lo ret
 (`prompts/cli-quindecies-lo-que-queda.md`) se elimina en el mismo cambio. **Sin código nuevo esta
 vuelta** ⇒ sin batería, sin muro de publicación, sin turno: no hay nada que desplegar.
 
+### `0º.quindecies` hallazgo (2) (2026-08-23) — subir un documento pasa de DOS viajes al KMS a UNO
+
+**No es una avería: el documento se subía y se guardaba bien. Es espera evitable en el camino más
+lento del asistente** — 96 s por un archivo de 90 KB, con la puerta del expediente abriéndose de
+más. Lo dejó **anotado con fichero y línea** el cierre de `0º.quindecies`, sin construir, porque
+toca los DOS repositorios.
+
+**Lo medido, y confirmado hoy antes de tocar nada:** `uploadDocument_` llamaba a la puerta
+(`requireResumeToken_` → `enr.wizardExpedienteDelToken`) y, unas líneas más abajo, a
+`enr.wizardComprobarSubida` — cuya **primera línea** es `var s = enr_wizardGate_(payload);`, o sea
+**re-resolver la sesión ENTERA desde cero** para contestar lo que la puerta acababa de contestar.
+
+**El molde es el de DL-E57, no uno nuevo.** El KMS saca el recorrido a
+`enr_comprobacionDeSubida_` —copiado **VERBATIM**: mismos filtros, mismo cinturón sobre el
+selector, mismo `UNAUTHORIZED`, mismo `catch` no-fatal de la idempotencia— y lo comparten **la
+ruta pública y la puerta**, exactamente como `enr_resolverIdentidadDeSesion_`. **PROHIBIDO
+escribir un segundo recorrido.**
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ SE PIDE POR SU NOMBRE, en el SEGUNDO ARGUMENTO del gate** —
+  `requireResumeToken_(p, { comprobarSubida: … })`— **y no se lee del payload.** Si se disparara al
+  ver un `upload_idempotency_token` suelto en el cuerpo, **cualquier** acción del asistente podría
+  provocar la búsqueda de idempotencia; así solo la provoca quien la nombra, que es
+  `uploadDocument_`. La diferencia con DL-E57 (que **sí** lee `n`/`recovered_email` del payload) es
+  deliberada: allí el discriminador ya viaja en toda petición legítima; aquí no.
+- **⛔ LA DECISIÓN NO SE MOVIÓ.** Los dos fallos se siguen pesando igual, unas líneas más abajo de
+  donde se pesaban: **fallo cerrado** si había `enrollment_id` (es una comprobación de ACCESO) y
+  **se sigue subiendo** si solo estaba en juego la idempotencia (como mucho se repite un
+  documento). El KMS **no propaga** el rechazo: va en `comprobacion_subida.code`, y la cabecera
+  sigue contestando bien — propagarlo dejaría al asistente sin poder distinguir «tu enlace no vale»
+  de «ese expediente no es tuyo», y la familia leería el mensaje equivocado.
+- **⛔ EL RESPALDO SE QUEDA, y no es cinturón de más: los dos proyectos se publican POR SEPARADO.**
+  Si el KMS todavía no devuelve `comprobacion_subida`, se pide **aparte** como siempre. **Nunca se
+  da por buena una comprobación de acceso que no se ha hecho.** Los dos órdenes de publicación son
+  seguros, medido: asistente primero ⇒ respaldo; KMS primero ⇒ byte-idéntico.
+- **⛔ La clave de la memoria lleva los DOS discriminadores** (`_memoSubidaClave_`: token +
+  expediente + marca). Una clave que solo mirara el token le serviría a una subida la respuesta de
+  otra — que es exactamente el defecto que la idempotencia existe para evitar. Y sigue siendo
+  memoria de **EJECUCIÓN**: muere con la petición, no tiene plazo.
+- **La forma del identificador NO se valida antes**: `assertValidUuid_` se queda donde estaba, en
+  su orden de siempre. Lo que se hace es **no plegar** lo que no tiene forma de UUID — así el orden
+  de los rechazos no cambia ni un ápice (hoy un `resume_token` malformado se rechaza ANTES que un
+  `enrollment_id` malformado, y así se queda).
+
+⚠️ **La batería NO cubre esto** — corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS. Se **midió aparte**, con un arnés efímero fuera de los dos
+repositorios que extrae del fuente REAL `enr_wizardExpedienteDelToken`,
+`enr_comprobacionDeSubida_`, `enr_wizardComprobarSubida`, `requireResumeToken_`,
+`_expedienteDelToken_`, `_memoSubidaClave_` y **`uploadDocument_` entero**, y los ejecuta con
+dobles: **14 afirmaciones verdes**, entre ellas que **la ruta y la puerta dan lo MISMO sobre los
+mismos datos** (un solo recorrido) y que **`uploadDocument_` de punta a punta pasa de 2 viajes a
+1** — la versión anterior se midió aparte contra `git show HEAD:backend/Code.js` y da **2**.
+**CINCO roturas ROJAS demostradas**: propagar el fallo en vez de aislarlo (*«U3 → "Unauthorized:
+resume_token not recognized"»*, el mensaje equivocado a una familia legítima) · adivinar la
+comprobación de una marca suelta del cuerpo · una clave sin discriminadores · tomar el atajo de la
+cabecera aun necesitando la comprobación · y **el renombrado, que sale «MEDICIÓN CIEGA»**, no
+verde. ⚠️ **Y la medición se corrigió a sí misma dos veces**: la rotura de «adivinar» salió
+**VERDE** al primer intento —faltaba la afirmación, no sobraba la rotura— y la del renombrado
+reventaba con una traza en vez de declararse ciega.
+
+**Control**: `scripts/verja-publica.mjs` gana dos afirmaciones —que `uploadDocument_` le pida la
+comprobación a la puerta y que **el respaldo siga estando**— **con rojo demostrado las dos**. Y su
+ancla KAL-4 pasa a aceptar el segundo argumento (`requireResumeToken_(p[,…])`) **sin dejar de caer**
+si el primero deja de ser el payload o si el gate desaparece.
+
+**Publicado**: KMS `@1479` y backend del asistente `@258`, los dos **acreditados leyendo el
+CONTENIDO de la versión desplegada** por la API de Apps Script — no el repositorio. **No toca
+`frontend/src/`** de ninguno de los dos ⇒ ni batería de tablas, ni paquete del CDN, ni bump de
+versión.
+
+**Manual, ayuda en pantalla y textos: ninguno toca** — la familia ve exactamente la misma pantalla
+y hace exactamente lo mismo; lo que cambia es cuánto espera.
+
 ### `0º.septies` (2026-08-21) — el precalentado comprueba su freno ANTES de salir al KMS
 
 **No es una avería: no se pierde ni un dato y no hay fuga. Es tiempo tirado en el camino de entrada
