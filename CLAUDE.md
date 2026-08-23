@@ -962,10 +962,13 @@ comentarios** que nombraban la acción.
 - **⛔ `enr.wizardSaveStep` NO se renombra, y su propio registro dice por qué**: es la única cuyo
   CONTENIDO habla de pantallas (viaja `step`, y el escritor decide por él) ⇒ se renombra cuando se
   rediseñe lo que viaja, o se renombraría dos veces. Es el tramo (a), y sigue abierto.
-- **⚠️ Y `enr.wizardHuellaDeSimulacion` se quedó fuera por otro motivo: NO tiene alias.** Nació
-  DESPUÉS del renombrado (`0º.vicies.quinquies`) reusando la convención vieja ⇒ migrarla exige
-  tocar el KMS, no solo este repositorio. **La convención se torció en cuanto nadie la vigilaba**;
-  queda anotado, no arreglado.
+- **✅ `enr.wizardHuellaDeSimulacion` ya NO se queda fuera — se migró el 2026-08-23.** Se había
+  quedado sin alias porque **nació DESPUÉS del renombrado** (`0º.vicies.quinquies`) reusando la
+  convención vieja: *la convención se torció en cuanto nadie la vigilaba*. Hoy la acción se llama
+  **`enr.huellaDeSimulacion`**, el nombre viejo entra por el registro de alias del KMS
+  (`API_ALIASES`, `_api.gs`) exactamente igual que los otros 32, y este repositorio la llama por su
+  nombre canónico en sus **dos** llamantes (`backend/Code.js:2013` y `:8467`). ⛔ **Su alias tampoco
+  se retira**: eso sigue siendo la (b2), y va cuando se mida que ninguno aparece ya en el rastro.
 - **Sin cambio de comportamiento y sin tocar el KMS:** la precondición se midió **contra la
   versión DESPLEGADA `@1479`** —346 ficheros leídos por la API de Apps Script, no el repositorio—:
   los **32** nombres canónicos existen en `ROUTE_PERMISSIONS` y **los 32 son `public`**. Por eso
@@ -2296,7 +2299,7 @@ solicitante), reúne **qué campos de la ficha del alumno miran esas condiciones
 (operador y valor — para que un centro que cambie un umbral, sin tocar ni un dato de familia,
 también recalcule), y el CONJUNTO de solicitantes declarados, compone un SHA-256. **Si el hash no
 cambia, la simulación de ayer sigue sirviendo. Si cambia, hay que recalcular.** Endpoint nuevo,
-barato de preguntar: `enr.wizardHuellaDeSimulacion` — de paso devuelve `preferred_modality_id`
+barato de preguntar: `enr.huellaDeSimulacion` — de paso devuelve `preferred_modality_id`
 (gratis: la puerta ya carga la fila del grupo), para que servir una simulación cacheada nunca
 enseñe una modalidad de pago que la familia ya cambió.
 

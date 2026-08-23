@@ -2010,7 +2010,7 @@ function _warmSimularCuotasPhase_(it) {
           if (env.v === _getLiveStateVersion_(groupId)) {
             yaCaliente = true;
           } else {
-            var chequeo = kmsProxy_('enr.wizardHuellaDeSimulacion', { resume_token: token });
+            var chequeo = kmsProxy_('enr.huellaDeSimulacion', { resume_token: token });
             yaCaliente = !!(chequeo && chequeo.huella && chequeo.huella === env.huella);
           }
         }
@@ -8438,7 +8438,7 @@ function applyPaymentModality_(p) {
  *      byte-idéntica a la de hoy: se sirve TAL CUAL, sin ni una llamada más.
  *   2. **`v` no casa** (algo escribió — puede ser una alergia, puede ser el
  *      programa) → se pregunta la HUELLA por el camino barato
- *      (`enr.wizardHuellaDeSimulacion`, que NUNCA ensaya una plantilla). Si casa
+ *      (`enr.huellaDeSimulacion`, que NUNCA ensaya una plantilla). Si casa
  *      con la que se guardó, la simulación sigue siendo la misma — se sirve TAL
  *      CUAL. (Hasta `0º.vicies.sexies` se refrescaba además `preferred_modality_id`;
  *      ese concepto se retiró entero y ya no hay nada que refrescar.)
@@ -8464,7 +8464,7 @@ function simularCuotas_(p) {
           Logger.log('[WZCACHE] HIT sim (sin escrituras) token=' + token.slice(0, 8) + '…');
           return env.data;
         }
-        var chequeo = kmsProxy_('enr.wizardHuellaDeSimulacion', { resume_token: token });
+        var chequeo = kmsProxy_('enr.huellaDeSimulacion', { resume_token: token });
         if (chequeo && chequeo.huella && chequeo.huella === env.huella) {
           // ⭐ 0º.vicies.sexies — antes se refrescaba aquí `preferred_modality_id`, el único
           // campo que podía cambiar sin mover la huella. Ese concepto se RETIRÓ ENTERO
