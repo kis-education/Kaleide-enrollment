@@ -3796,12 +3796,46 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
   out.state_code  = chosen.state_code  || null;
   out.state_label = chosen.designation || null; // 'designation' = label canónico (DL-S34)
 
+  // ⭐ 2026-08-24 (D103, campaña E2E) — **LOS HECHOS POR HIJO**. Decisión de Diego (2026-08-23):
+  // *«el asistente habla POR HIJO»*. Hasta hoy esta función emitía UN SOLO Estado —el del hermano
+  // menos avanzado— y con Jara admitida y Pepito en lista de espera la familia **no podía firmar
+  // la matrícula de Jara**.
+  //
+  // ⛔ **El motivo de la regla vieja sigue vivo y NO se pierde**: no decirle «Aprobada» a secas a
+  // una familia cuando solo lo está uno. Por eso `state_code`/`state_label` **se quedan como
+  // estaban** (el menos avanzado) — son el resumen conservador del que sale `editable`, y
+  // cambiarlos habría bloqueado la edición de una familia que todavía puede editar. Lo que habla
+  // por hijo es `por_alumno`, y **cada línea dice de qué hijo habla**, que es la condición que el
+  // encargo pone para que el mensaje mejore en vez de empeorar.
+  //
+  // Espejo declarado del `admission.por_alumno` que emite el hydrate del KMS
+  // (`kms-server/enr/wizard-datalayer.gs`) — mismos campos y mismo significado.
+  out.por_alumno = enrollments.map(function(e) {
+    var st = statesById[e.current_state_id] || null;
+    return {
+      enrollment_id:       e.enrollment_id || null,
+      applicant_person_id: e.applicant_person_id || null,
+      state_code:          st ? (st.state_code || null) : null,
+      state_label:         st ? (st.designation || null) : null,
+    };
+  });
+
+  // El hijo por el que se abre la puerta de la firma: el que YA está admitido, aunque su hermano
+  // siga esperando. `AD` no es un literal nuevo — es el MISMO que este fichero ya comparaba dos
+  // líneas más abajo; lo que cambia es sobre QUÉ se compara: antes el Estado del menos avanzado,
+  // ahora el de cada hijo.
+  var admitido = out.por_alumno.filter(function(a) { return a.state_code === 'AD'; })[0] || null;
+  out.alumno_admitido_id = admitido ? admitido.enrollment_id : null;
+
   // URGENT-PASS3 BUG A: editabilidad state-driven (mismo conjunto que el KMS hydrate
   // wizard-datalayer.gs). Con estado real, locked salvo {DRAFT,IN,NEEDS_MORE_INFO}.
   // Lector ÚNICO de las derivaciones de pantalla (ver derivarPantallaAdmision_).
   out.editable = derivarPantallaAdmision_(out.state_code, out.signing_status, null).editable;
 
-  if (out.state_code === 'AD') {
+  // ⭐ 2026-08-24 — la puerta se abre si **ALGÚN** hijo está admitido, no si lo está el menos
+  // avanzado. Con un solo hijo es exactamente lo de antes (`admitido` existe ⟺ su Estado es
+  // `AD` ⟺ `out.state_code === 'AD'`), así que la familia de un solo alumno no nota nada.
+  if (admitido) {
     // ②17 — las filas de firma las sirve el KMS, NO AppSheet. Si quien llama ya las
     // bajó (el pulso las pide una sola vez), se reusan; si no, se piden aquí con el
     // `resume_token` que ese mismo llamante trae (KAL-4: el KMS deriva el expediente del
@@ -3843,7 +3877,9 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
         admHints.sessions, admHints.signersBySession);
       if (PERF2_.adm) PERF2_.adm.ctx_path2_ms = Date.now() - perfP2;
     }
-    out.signing_available = derivarPantallaAdmision_(out.state_code, out.signing_status, out.signing_context).signing_available;
+    // Se deriva con el Estado DEL HIJO ADMITIDO, no con el del resumen: es de ese contrato del
+    // que hablamos. Con un solo hijo los dos valores coinciden.
+    out.signing_available = derivarPantallaAdmision_(admitido.state_code, out.signing_status, out.signing_context).signing_available;
 
     // P215 opción (a) RESUELTA (CLI AD-SPLIT, decisión Diego 2026-06-07): la
     // identidad de firma se deriva SOLO server-side — Path 1 (Vía 1, recovery link
