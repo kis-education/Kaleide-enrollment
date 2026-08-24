@@ -4485,6 +4485,119 @@ async function caminoGuardadoMuertoSeDice(page, base) {
  * sin quedarse medio minuto parado por recorrido. `focus` es el mismo evento que dispara
  * una familia al volver a su pestaña — se recorre el mecanismo real, no un atajo.
  */
+/**
+ * DL-E63 · `0º.tricies.tervicies` — **lo que cambia el colegio se le DICE a la familia.**
+ *
+ * Diego (2026-08-24): *«siempre que se haga un cambio desde el KMS vinculado a una solicitud,
+ * ese cambio se visualice en el wizard»*. Hasta hoy el latido era **mudo por diseño** y solo
+ * refrescaba el bloque de admisión (su propio comentario lo decía: *«SOLO slice admisión/firma
+ * — nunca datos/nav»*), así que un cambio del colegio no llegaba nunca a la pantalla.
+ *
+ * ⚠️ **Este recorrido mide el lado del CLIENTE.** Que la edición del operador suba la versión
+ * es del KMS y **ninguna batería lo ejecuta** — se midió aparte.
+ */
+const NOMBRE_SOLICITANTE_E2E = 'RobotHijoE2E'
+async function caminoLoQueCambiaElColegioSeDice(page, base) {
+  const c = new Camino('cambio-del-colegio-se-dice')
+  scenario.stage = 'hasta_preguntas'
+  scenario.liveVersion = 1
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    c.evidencia.llamadas = calls.length
+    if (REAL) {
+      c.noCubierta('cambio-del-colegio',
+        'exige que alguien del colegio edite la solicitud desde el KMS; hacerlo contra el sistema real tocaría datos de una familia')
+      return c
+    }
+    // Se retrocede hasta Personas — el paso donde SE VE un dato que el colegio puede corregir.
+    // Mismo utillaje que `caminoIdiomasHablados`, sin inventar navegación.
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(200)
+
+    // ⚠️ El control del nombre NO tiene `name` ni `id` (`Step2Persons.jsx:557` es un
+    // `input.form-control` pelado), así que se localiza **por su valor**: el del solicitante
+    // del molde antes, y el que escribe el colegio después. Buscarlo por un atributo que no
+    // existe fue el primer intento y devolvía `null` — el ancla lo cazó.
+    const hayInputConValor = (v) => page.evaluate((valor) => {
+      const i = [...document.querySelectorAll('input.form-control')].find(x => x.value === valor)
+      return i ? { visible: true, disabled: i.disabled, readOnly: i.readOnly } : { visible: false }
+    }, v)
+    const avisoColegio = () => page.evaluate(() => {
+      const el = document.querySelector('[data-testid="save-indicator-aviso-colegio"]')
+      return { visible: !!el, texto: el ? el.innerText : '' }
+    })
+
+    // ── ANCLA: el paso 2 pinta el nombre del alumno; sin esto, lo demás mediría el aire ──
+    const antes = await hayInputConValor(NOMBRE_SOLICITANTE_E2E)
+    if (!c.afirmar('(0) ANCLA — el paso pinta el nombre del alumno',
+      antes.visible,
+      `no se encontró ningún campo con el valor "${NOMBRE_SOLICITANTE_E2E}": sin un dato en pantalla, «se refresca» no se puede comprobar`)) return c
+
+    // ── (1) sin que suba la versión, NO se refresca ni se avisa ─────────────────────
+    scenario.datoCambiadoPorElColegio = 'ZZ_E2E_CAMBIADO'
+    await latirLaVentana(page)
+    await page.waitForTimeout(LATENCY + 1200)
+    c.afirmar('(1) sin subir la versión NO se toca nada',
+      (await hayInputConValor(NOMBRE_SOLICITANTE_E2E)).visible && !(await avisoColegio()).visible,
+      'la pantalla se refrescó sin que la versión subiera: la hidratación es la lectura MÁS CARA ' +
+      'del asistente y no puede correr en cada latido')
+
+    // ── (2) y (3) sube la versión ⇒ el dato se refresca Y se le DICE ────────────────
+    scenario.liveVersion = 2
+    await latirLaVentana(page)
+    let visto = false
+    try {
+      await page.waitForSelector('[data-testid="save-indicator-aviso-colegio"]', { timeout: LATENCY + 9000 })
+      visto = true
+    } catch { /* lo dice el afirmar */ }
+    c.afirmar('(2) el cambio del colegio SE LE DICE a la familia', visto,
+      'la pantalla siguió muda: el dato cambia debajo de la familia sin que nadie se lo diga, ' +
+      'que es exactamente lo que DL-E63 vino a cerrar')
+
+    const ahora = await hayInputConValor('ZZ_E2E_CAMBIADO')
+    c.afirmar('(3) y el dato cambiado SE VE',
+      ahora.visible,
+      'la pantalla sigue enseñando el nombre viejo aunque el colegio lo cambió a "ZZ_E2E_CAMBIADO": ' +
+      'avisar de un cambio que no se enseña deja a la familia buscándolo')
+
+    // ── (4) el aviso NO bloquea: se sigue rellenando ────────────────────────────────
+    c.afirmar('(4) el aviso NO bloquea nada',
+      ahora.visible && !ahora.disabled && !ahora.readOnly,
+      'el campo quedó bloqueado: DL-E63 dice expresamente que no hay candado ni reserva')
+
+    // ⚠️ **LA GUARDA DEL FOCO NO TIENE COBERTURA AQUÍ, y se dice en vez de fingirla.**
+    // El refresco se aplaza si hay un control de edición enfocado (`WizardPage.jsx`, la rama
+    // `if (tecleando)`), y **este recorrido no puede afirmarlo**: se intentó de las dos formas
+    // y las dos midieron el aire. (1) Con `.focus()` desde el DOM, en headless la página no
+    // está enfocada y `document.activeElement` se queda en `BODY` — la afirmación pasaba
+    // aunque la guarda no existiera. (2) Con la API de Playwright, el `click` **agota los 30 s**:
+    // tras el refresco de mitad de sesión el paso queda cubierto y sus campos no son
+    // interactuables. Lo segundo es además un hallazgo del producto y queda anotado.
+    // ⇒ la guarda se acredita **leyendo el código**, no con esta batería.
+
+    // ── (5) sin datos de nadie en el aviso ──────────────────────────────────────────
+    c.afirmar('(5) el aviso NO enseña datos de nadie',
+      !/ZZ_E2E_CAMBIADO/.test((await avisoColegio()).texto),
+      `el aviso dice «${(await avisoColegio()).texto}»: tiene que decir QUE hubo un cambio, no cuál`)
+
+    c.evidencia.llamadas = calls.length
+    return c
+  } finally {
+    scenario.datoCambiadoPorElColegio = null
+    scenario.liveVersion = 1
+  }
+}
+
 const latirLaVentana = (page) => page.evaluate(() => window.dispatchEvent(new Event('focus')))
 
 /** Radiografía del carril global de guardado (el aviso que gobierna `SaveIndicator`). */
@@ -7680,6 +7793,7 @@ const CAMINOS = [
   { nombre: 'guardado-muerto-se-dice', fn: caminoGuardadoMuertoSeDice, minLlamadas: 1, minElementos: 11 },
   { nombre: 'aviso-guardado-se-apaga',  fn: caminoAvisoGuardadoSeApaga,  minLlamadas: 1, minElementos: 11 },
   { nombre: 'aviso-guardado-se-cierra', fn: caminoAvisoGuardadoSeCierra, minLlamadas: 1, minElementos: 11 },
+  { nombre: 'cambio-del-colegio-se-dice', fn: caminoLoQueCambiaElColegioSeDice, minLlamadas: 1, minElementos: 11 },
 ]
 
 // ── 7 · Runner ───────────────────────────────────────────────────────────────

@@ -594,5 +594,7 @@
       "ENVIO": "el envío de la solicitud"
     }
   },
-  "wizard.debe_reenviar": "Has cambiado datos de tu parte. Vuelve a enviarla para que la escuela la reciba."
+  "wizard.debe_reenviar": "Has cambiado datos de tu parte. Vuelve a enviarla para que la escuela la reciba.",
+  "wizard.aviso_colegio": "El colegio ha actualizado algunos datos de tu solicitud.",
+  "wizard.aviso_colegio_colision": "El colegio ha actualizado algunos datos de tu solicitud mientras editabas. Revisa lo que tenías a medias."
 }

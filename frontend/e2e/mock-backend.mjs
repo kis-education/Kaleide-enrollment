@@ -749,6 +749,14 @@ export function createDispatcher(scenario, record) {
           }
         });
       }
+      // ⭐ DL-E63 — «el colegio cambió un dato». La palanca cambia el NOMBRE del alumno en la
+      // hidratación, que es lo que hace de verdad una corrección hecha desde la ficha del KMS.
+      // Sin la palanca la hidratación sale byte-idéntica a la de siempre.
+      if (scenario.datoCambiadoPorElColegio) {
+        (h.persons || []).forEach(pe => {
+          if (pe && pe.person_type_id === 'applicant') pe.first_name = scenario.datoCambiadoPorElColegio;
+        });
+      }
       const conVentana = scenario.ventanaViva
         ? { step_up_fresh: true, step_up_restante_s: leerMarca(p).restante_s, step_up_cierre: leerMarca(p).cierre }
         : {};

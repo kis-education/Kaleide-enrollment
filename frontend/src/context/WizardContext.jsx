@@ -234,6 +234,18 @@ export function WizardProvider({ children }) {
   // aparte sería una consulta que se aborta al cambiar de pantalla y deja en la consola de la
   // familia un `network/fetch error` que no es suyo — medido: la batería lo cazó (`0º.septies`).
   const [debeReenviar, setDebeReenviar] = useState(false);
+  // ⭐ DL-E63 (2026-08-24) — «el colegio ha actualizado algunos datos de tu solicitud».
+  // Lo enciende el latido de `WizardPage` cuando la versión del expediente sube Y el refresco
+  // trae datos nuevos. `colision` distingue el caso que DL-E63 §3 pide cazar: que el cambio del
+  // colegio llegue mientras la familia tiene algo suyo sin guardar. No bloquea nada.
+  const [avisoDelColegio, setAvisoDelColegio] = useState(null);   // null | {colision:boolean}
+  // ⭐ DL-E63 — cuántas veces se ha hidratado esta sesión. Sube en CADA `hydrateFromResume`.
+  // Sirve de `key` del paso montado: los pasos siembran su estado local UNA vez (`seedRows`),
+  // así que refrescar `stepData` **no bastaba** para que la familia viera el cambio del colegio
+  // — lo cazó la afirmación (3) del recorrido `cambio-del-colegio-se-dice`, en ROJO.
+  // ⛔ Remontar es seguro AQUÍ y solo aquí: el latido no refresca con un campo enfocado ni con
+  // un guardado o una subida en vuelo, así que no puede tirar lo que alguien está escribiendo.
+  const [hidratacionSeq, setHidratacionSeq] = useState(0);
   //
   // 18.bis.85 — `opts.mismoEpisodio` REPONE un aviso que sigue siendo cierto sin contarlo
   // como noticia nueva. Lo necesita el rechazo definitivo (abajo): mientras esté en pie hay
@@ -1218,7 +1230,16 @@ export function WizardProvider({ children }) {
     setStepData(prev => ({ ...prev, [stepKey]: data }));
   }, []);
 
-  const hydrateFromResume = useCallback((data) => {
+  const hydrateFromResume = useCallback((data, opts) => {
+    setHidratacionSeq(n => n + 1);   // DL-E63 — remonta el paso para que el cambio SE VEA
+    // ⭐ DL-E63 — `conservarNavegacion` es lo ÚNICO que distingue el refresco de mitad de
+    // sesión de la hidratación de ENTRADA. Esta función decide, al final, EN QUÉ PASO
+    // aterriza la familia — correcto al entrar, y **destructivo a media sesión**: medido con
+    // el recorrido `cambio-del-colegio-se-dice`, el refresco saltaba a la familia al último
+    // paso verificado y la pantalla quedaba sin un solo campo (`valores: []`). Con la bandera
+    // se aplica **todo el dato** y **no se toca la navegación**.
+    // ⛔ NO es un segundo lector ni un segundo aplicador: es LA MISMA función, con la única
+    // decisión que no vale a media sesión desactivada.
     // Post-DL-E15 shape: { group, enrollments[], persons[], relations[], ... }
     // Legacy shape (transitional): { application, persons[], relations[], ... }
     const group = data.group || data.application;
@@ -1623,11 +1644,11 @@ export function WizardProvider({ children }) {
         setCompletedStepsRaw(new Set(completed));
         saveSession({ completedSteps: [...completed] });
         log.info('[DBG hydrate] landing', { submitted: true, signing: true, sub, target });
-        setCurrentStep(target);
+        if (!(opts && opts.conservarNavegacion)) setCurrentStep(target);
         return;
       }
       log.info('[DBG hydrate] landing', { submitted: true, target: 6 });
-      setCurrentStep(6);
+      if (!(opts && opts.conservarNavegacion)) setCurrentStep(6);
       return;
     }
     const STEP_COUNT = 7; // only wizard steps 0-6 considered for non-submitted resume
@@ -1636,7 +1657,7 @@ export function WizardProvider({ children }) {
       if (!completed.has(i)) { target = i; break; }
     }
     log.info('[DBG hydrate] landing', { submitted: false, target });
-    setCurrentStep(target);
+    if (!(opts && opts.conservarNavegacion)) setCurrentStep(target);
   }, [olvidarSimulacionMemo]);
 
   // ── Flag DERIVADO para el mapeo central (catalog.stepEditMode — decisión Diego
@@ -1710,6 +1731,8 @@ export function WizardProvider({ children }) {
   return (
     <WizardContext.Provider value={{
       debeReenviar, setDebeReenviar,   // DL-E49 §8 — «has cambiado datos: vuelve a enviar»
+      avisoDelColegio, setAvisoDelColegio,   // DL-E63 — «el colegio ha actualizado datos»
+      hidratacionSeq,                        // DL-E63 — key del paso montado
       enrollmentGroupId, setEnrollmentGroupId,
       resumeToken,   setResumeToken,
       currentStep,   setCurrentStep,

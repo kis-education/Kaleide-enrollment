@@ -41,7 +41,7 @@ import { claveDelRechazoDefinitivo } from '../lib/rechazos';
 
 export default function SaveIndicator() {
   const { t } = useTranslation();
-  const { saveState, completedSteps, retryLastSave, saveErrorSeq, saveErrorQue, saveErrorCodigo, debeReenviar } = useWizard();
+  const { saveState, completedSteps, retryLastSave, saveErrorSeq, saveErrorQue, saveErrorCodigo, debeReenviar, avisoDelColegio } = useWizard();
   // Episodio de fallo que el usuario cerró a mano. `null` = no ha cerrado ninguno.
   const [episodioCerrado, setEpisodioCerrado] = useState(null);
 
@@ -52,6 +52,23 @@ export default function SaveIndicator() {
   // **no bloquea nada** (sigue editando) y no ofrece botón: lo que tiene que hacer es volver al
   // paso de revisión y enviar. Se pinta también con la cola en reposo, que es justo cuando el
   // guardado ya entró y el envío ya no vale.
+  // ⭐ DL-E63 (2026-08-24) — el colegio cambió algo de esta solicitud mientras la familia la
+  // tenía abierta, y hay que DECÍRSELO. Reusa este mismo carril (no se abre un componente de
+  // aviso nuevo) y **no bloquea nada**: la familia sigue rellenando. Va por delante del resto
+  // porque es lo último que ha pasado. Sin datos de nadie: dice que hubo un cambio, no cuál.
+  if (avisoDelColegio && saveState !== 'error') {
+    return (
+      <span style={{ ...base, color: '#0a5b8a' }} aria-live="polite" data-testid="save-indicator-aviso-colegio">
+        <i className="bi bi-info-circle" />
+        {avisoDelColegio.colision
+          ? t('wizard.aviso_colegio_colision',
+              'El colegio ha actualizado algunos datos de tu solicitud mientras editabas. Revisa lo que tenías a medias.')
+          : t('wizard.aviso_colegio',
+              'El colegio ha actualizado algunos datos de tu solicitud.')}
+      </span>
+    );
+  }
+
   if (debeReenviar && saveState !== 'error') {
     return (
       <span style={{ ...base, color: '#8a5a00' }} aria-live="polite" data-testid="save-indicator-reenviar">

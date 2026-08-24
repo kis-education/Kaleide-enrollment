@@ -594,5 +594,7 @@
       "ENVIO": "the application submission"
     }
   },
-  "wizard.debe_reenviar": "You have changed data in your part. Send it again so the school receives it."
+  "wizard.debe_reenviar": "You have changed data in your part. Send it again so the school receives it.",
+  "wizard.aviso_colegio": "The school has updated some details of your application.",
+  "wizard.aviso_colegio_colision": "The school updated some details of your application while you were editing. Please check anything you had in progress."
 }

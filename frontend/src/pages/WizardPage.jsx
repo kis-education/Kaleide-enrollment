@@ -33,7 +33,7 @@ export default function WizardPage() {
     enrollmentGroupId, resumeToken,
     currentStep, setCurrentStep,
     stepData, updateStep,
-    hydrateFromResume, refreshAdmissionState, needsHydration,
+    hydrateFromResume, refreshAdmissionState, needsHydration, setAvisoDelColegio, hidratacionSeq,
     clearSession,
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
@@ -165,12 +165,16 @@ export default function WizardPage() {
   // pesada solo cuando algo cambió de verdad.
   // 18.bis.84 — `preguntar` viaja en la MISMA referencia porque el efecto de abajo se monta
   // una sola vez (deps `[]`) y, sin esto, se quedaría con la primera versión de la función.
-  const pulseRef = useRef({ resumeToken: null, enrollmentGroupId: null, effectiveRecoveredEmail: undefined, recoveryNonce: undefined, hasPendingSave: false, liveVersion: 0, preguntar: null });
-  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, recoveryNonce, hasPendingSave, liveVersion, preguntar: preguntarPorLosGuardados };
+  const pulseRef = useRef({ resumeToken: null, enrollmentGroupId: null, effectiveRecoveredEmail: undefined, recoveryNonce: undefined, hasPendingSave: false, liveVersion: 0, preguntar: null, hidratar: null, avisar: null, idioma: undefined });
+  // DL-E63 — `hidratar`/`avisar`/`idioma` viajan por la MISMA referencia y por el MISMO motivo
+  // que `preguntar` (18.bis.84): el efecto de abajo se monta UNA sola vez (deps `[]`), así que
+  // cualquier función capturada en el cierre se quedaría con la versión del primer render y
+  // escribiría sobre un estado viejo.
+  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, recoveryNonce, hasPendingSave, liveVersion, preguntar: preguntarPorLosGuardados, hidratar: hydrateFromResume, avisar: setAvisoDelColegio, idioma: i18n.language };
   const pulseInFlightRef = useRef(false);
   useEffect(() => {
     const tick = () => {
-      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer, preguntar } = pulseRef.current;
+      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer, preguntar, hidratar, avisar, idioma } = pulseRef.current;
       if (!rt || !gid) return;                            // sin sesión → nada que sincronizar
       if (pending) return;                                // save en vuelo → saltar este tick
       // 0º.quindecies (segunda pieza, 2026-08-21) — subir un documento es OTRO canal (directo
@@ -203,6 +207,51 @@ export default function WizardPage() {
               log.info('[DBG pulse] getAdmissionState', { state_code: data && data.state_code, signing_ready: data && data.signing_ready, signing_status: data && data.signing_status, has_ctx: !!(data && data.signing_context) });
               refreshAdmissionState(data);     // SOLO slice admisión/firma — nunca datos/nav
               setLiveVersion(v);               // avanza la baseline (no re-disparar el mismo cambio)
+              // ── DL-E63 · y AHORA los DATOS, no solo el bloque de admisión ──────────────
+              // Hasta hoy el latido era mudo y solo refrescaba admisión/firma (su propio
+              // comentario de arriba lo dice). Con DL-E63, cuando la versión sube hay que
+              // traer también lo que el colegio haya cambiado, y DECÍRSELO a la familia.
+              //
+              // ⛔ **SE REUSA LA HIDRATACIÓN QUE YA EXISTE** (`hydrateFromResume` →
+              // `enr.hydrateApplication`). PROHIBIDO escribir un segundo lector de los datos
+              // de la solicitud: es el anti-patrón que este proyecto ya pagó (regresión DL-C).
+              //
+              // ⛔ **NO SE PISA LO QUE LA FAMILIA ESTÁ ESCRIBIENDO.** El tick ya se salta con
+              // un guardado o una subida en vuelo, y **eso NO basta**: un campo con el foco
+              // puesto y a medio teclear no puede quedar sustituido por el valor del servidor.
+              // Por eso, si hay un control de edición enfocado, **se aplaza el refresco de
+              // datos** (el de admisión SÍ se hace: no toca nada que se pueda teclear) y se
+              // deja la versión SIN avanzar en `datosRefrescadosRef`, para que el siguiente
+              // tick vuelva a intentarlo en cuanto suelte el campo. Nunca se descarta.
+              //
+              // ⭐ **DL-E63 §3 — contra qué se compara «el último», y por qué.** Se compara
+              // contra **la VERSIÓN del expediente contra la que se compuso el dato**, no
+              // contra el orden de llegada ni contra un reloj. El reloj del navegador es el
+              // del dispositivo de la familia y **no es de fiar**; el orden de llegada es
+              // justo lo que produce el defecto (un guardado encolado lleva dentro el valor
+              // de cuando se tecleó y puede aterrizar DESPUÉS de la corrección del colegio).
+              // ⛔ Y esto **NO es un candado**: el guardado de la familia sigue aterrizando y
+              // sigue ganando —la regla de Diego es «gana el último»—. Lo único que se hace
+              // es **detectar** que la versión subió con algo suyo a medias y **avisar**, que
+              // es exactamente lo que DL-E63 §3 pide que el aviso deje de ser decorativo.
+              const hayAlgoSinGuardar = pending || (typeof hasUploadInFlight === 'function' && hasUploadInFlight());
+              const el = typeof document !== 'undefined' ? document.activeElement : null;
+              const tecleando = !!(el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || ''));
+              if (tecleando) {
+                log.info('[DL-E63] el colegio cambió algo, pero hay un campo con el foco: se aplaza el refresco de datos');
+                if (avisar) avisar({ colision: true });
+                return;
+              }
+              // La MISMA llamada que usa la entrada (`hydrateSession` → `enr.hydrateApplication`)
+              // y el MISMO consumidor (`hydrateFromResume`). Ni una lectura nueva.
+              return gasCall('hydrateSession', { resume_token: rt, recovered_email: re || undefined,
+                                                 n: rn || undefined, language: idioma })
+                .then(fresco => {
+                  if (!fresco) return;
+                  if (hidratar) hidratar(fresco, { conservarNavegacion: true });
+                  if (avisar) avisar({ colision: !!hayAlgoSinGuardar });
+                })
+                .catch(errH => log.warn('[DL-E63] no se pudo refrescar los datos', { message: errH && errH.message }));
             });
         })
         .catch(err => log.warn('WizardPage: liveState cheap-poll failed', { message: err.message }))
@@ -916,6 +965,7 @@ const handleNext = async (stepKey, data, extra = null) => {
           </>
         ) : (
         <StepComponent
+          key={`paso-${currentStep}-${hidratacionSeq}`}
           onNext={handleNext}
           onBack={handleBack}
           /* MAPEO CENTRAL de modos (Diego 2026-06-12): EDITABLE | PROTECTED | LOCKED.
