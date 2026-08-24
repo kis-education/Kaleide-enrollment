@@ -142,7 +142,6 @@
   "wizard.saving_in_background": "Guardando…",
   "wizard.save_error": "No se ha podido guardar tu último cambio. Lo que escribiste sigue aquí.",
   "wizard.save_error_step": "No se ha podido guardar «{{paso}}». Lo que escribiste sigue aquí.",
-  "wizard.save_error.parte_ya_enviada": "Tus respuestas del cuestionario NO se han guardado: tu parte de la solicitud ya está enviada y no admite cambios. Si necesitas cambiar algo, escribe a admisiones. Si eres el otro tutor, entra con tu propio enlace.",
   "wizard.save_error.fichas_de_otro_tutor": "Parte de lo que escribiste NO se ha guardado: la ficha de otro tutor solo la puede modificar esa persona, desde su propio enlace. Tus datos sí se han guardado. Si hay que corregir algo de la otra persona, pídeselo a ella o escribe a admisiones.",
   "wizard.dismiss_save_error": "Ocultar este aviso",
   "wizard.retry_save": "Reintentar",
@@ -594,5 +593,6 @@
       "DOCUMENTOS": "los documentos",
       "ENVIO": "el envío de la solicitud"
     }
-  }
+  },
+  "wizard.debe_reenviar": "Has cambiado datos de tu parte. Vuelve a enviarla para que la escuela la reciba."
 }

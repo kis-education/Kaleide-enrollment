@@ -6,7 +6,7 @@
  * escritura, el canal está demostrablemente vivo, así que se vuelve a mandar el guardado
  * que había fallado (`alConfirmarEscritura` en `WizardContext`). Eso es correcto para un
  * fallo de red — y es un viaje condenado a fallar cuando el servidor rechazó por un motivo
- * que no cambia: `PARTE_YA_ENVIADA` (②24.sexies) lo va a rechazar exactamente igual, y la
+ * que no cambia: `FICHAS_DE_OTRO_TUTOR_RECHAZADAS` lo va a rechazar exactamente igual, y la
  * familia se lleva el susto DOS veces, porque el aviso reaparece como episodio nuevo.
  *
  * Ese conocimiento vivía SOLO dentro de `SaveIndicator` (para esconder «Reintentar»), así
@@ -39,10 +39,11 @@
  * a la familia en el carril de guardado.
  */
 export const RECHAZOS_DEFINITIVOS = {
-  // El tutor ya envió SU parte: el KMS descarta sus respuestas del cuestionario
-  // (DL-E49 §6) y reintentar las descartaría otra vez. Antes esto no se veía en ninguna
-  // parte: el asistente decía haber guardado N respuestas que nadie guardó (②24.sexies).
-  PARTE_YA_ENVIADA: 'wizard.save_error.parte_ya_enviada',
+  // ⭐ 2026-08-24 (DL-E49 §8) — AQUÍ VIVÍA `PARTE_YA_ENVIADA`, Y SE RETIRA.
+  // Diego cambió el criterio: el tutor que ya envió **SÍ** sigue rellenando; lo que ocurre es
+  // que su envío se invalida. Nadie emite ya ese código —ni el asistente (retiró su rechazo
+  // previo) ni el KMS (retiró el bloqueo de §6 y con él `skipped_already_submitted`)—, así que
+  // dejarlo aquí sería declarar definitivo un rechazo que no puede llegar.
   // 18.bis.84 — el KMS rechaza que un tutor toque la FICHA YA EXISTENTE de otro tutor
   // (DL-E49 §2). Reintentar la rechazaría igual: el criterio es de quién es la ficha, y
   // eso no cambia por volver a mandarla. Nace con código propio y NO reusando el de
@@ -74,8 +75,6 @@ export const RECHAZOS_DEFINITIVOS = {
  */
 export function codigoDelDescarte(descartes) {
   if (!descartes || typeof descartes !== 'object') return undefined;
-  // El tutor ya había enviado su parte ⇒ el KMS no escribió sus respuestas (DL-E49 §6).
-  if (descartes.skipped_already_submitted === true) return 'PARTE_YA_ENVIADA';
   // Se descartaron fichas de otro tutor (DL-E49 §2). `> 0` y no «existe la clave»: un cero
   // significa que no se descartó ninguna, y avisar de eso sería asustar por nada.
   if (Number(descartes.fichas_de_otro_tutor_rechazadas_n) > 0) return 'FICHAS_DE_OTRO_TUTOR_RECHAZADAS';

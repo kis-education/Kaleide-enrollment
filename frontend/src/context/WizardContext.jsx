@@ -220,6 +220,20 @@ export function WizardProvider({ children }) {
   const [saveErrorSeq, setSaveErrorSeq] = useState(0);
   const [saveErrorQue, setSaveErrorQue] = useState('');
   const [saveErrorCodigo, setSaveErrorCodigo] = useState('');
+  // ⭐ DL-E49 §8 (2026-08-24) — «Has cambiado datos: vuelve a enviar».
+  //
+  // Diego: *«se le puede dar un aviso por pantalla recordándole que al haber hecho un cambio es
+  // preciso que vuelva a enviar la solicitud»*. Va por el carril de guardado que YA existe
+  // (`SaveIndicator`), no por un aviso nuevo ni un modal, y **no bloquea nada**.
+  //
+  // La señal sale de `estadoDeLasPartes`, que es la ÚNICA fuente de «¿este tutor ya envió?» —
+  // la misma que consume la pantalla de confirmación. No se inventa una segunda.
+  //
+  // **No cuesta ni una petición nueva**: lo anuncia el propio trabajo de guardado, por el canal
+  // que ya contestaba «qué hizo este guardado» (`estadoDelGuardado` → `descartes`). Preguntarlo
+  // aparte sería una consulta que se aborta al cambiar de pantalla y deja en la consola de la
+  // familia un `network/fetch error` que no es suyo — medido: la batería lo cazó (`0º.septies`).
+  const [debeReenviar, setDebeReenviar] = useState(false);
   //
   // 18.bis.85 — `opts.mismoEpisodio` REPONE un aviso que sigue siendo cierto sin contarlo
   // como noticia nueva. Lo necesita el rechazo definitivo (abajo): mientras esté en pie hay
@@ -490,7 +504,13 @@ export function WizardProvider({ children }) {
             marcarEstadoDeGuardado_('error', apuntado.que);
             resueltos.add(apuntado.job_id);
           } else if (t && t.estado === 'hecho') {
-            resueltos.add(apuntado.job_id);          // entró entero: nada que decir
+            // ⭐ DL-E49 §8 (2026-08-24) — el trabajo cuenta de sí mismo si INVALIDÓ el envío de
+            // este tutor (porque editó después de enviar). Sale del MISMO canal que ya
+            // contestaba «qué hizo este guardado», así que no cuesta ni una petición nueva —
+            // una consulta aparte se aborta al cambiar de pantalla y deja en la consola de la
+            // familia un `network/fetch error` que no es suyo (`0º.septies`).
+            if (t.descartes && t.descartes.parte_invalidada === true) setDebeReenviar(true);
+            resueltos.add(apuntado.job_id);          // entró entero: nada más que decir
           }
           // 'pendiente' / 'desconocido' → se queda apuntado y se vuelve a preguntar.
         });
@@ -1689,6 +1709,7 @@ export function WizardProvider({ children }) {
 
   return (
     <WizardContext.Provider value={{
+      debeReenviar, setDebeReenviar,   // DL-E49 §8 — «has cambiado datos: vuelve a enviar»
       enrollmentGroupId, setEnrollmentGroupId,
       resumeToken,   setResumeToken,
       currentStep,   setCurrentStep,

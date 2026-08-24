@@ -142,7 +142,6 @@
   "wizard.saving_in_background": "Saving…",
   "wizard.save_error": "We couldn't save your last change. What you typed is still here.",
   "wizard.save_error_step": "We couldn't save “{{paso}}”. What you typed is still here.",
-  "wizard.save_error.parte_ya_enviada": "Your questionnaire answers were NOT saved: your part of the application has already been submitted and cannot be changed. If you need to change something, email admissions. If you are the other guardian, use your own link.",
   "wizard.save_error.fichas_de_otro_tutor": "Part of what you typed was NOT saved: another guardian's details can only be changed by that person, from their own link. Your own details were saved. If something of theirs needs fixing, ask them or email admissions.",
   "wizard.dismiss_save_error": "Hide this notice",
   "wizard.retry_save": "Retry",
@@ -594,5 +593,6 @@
       "DOCUMENTOS": "the documents",
       "ENVIO": "the application submission"
     }
-  }
+  },
+  "wizard.debe_reenviar": "You have changed data in your part. Send it again so the school receives it."
 }

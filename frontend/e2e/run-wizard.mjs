@@ -235,7 +235,7 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'fallo-del-precalentado': 'el fallo del precalentado se pide con `scenario.warmFalla`, una palanca del backend simulado; contra el sistema real no hay forma honesta de tumbarlo a voluntad',
   },
   'respuestas-rechazadas-se-dicen': {
-    'respuestas-rechazadas': 'exige un expediente real con un tutor que YA envió su parte y otro que sigue rellenando; el arnés no puede montar ese estado sin dejar datos a medias. En modo simulado sí se cubre, con la palanca `scenario.respuestasRechazadas`.',
+    'respuestas-rechazadas': 'exige un expediente real con un tutor que YA envió su parte y otro que sigue rellenando; el arnés no puede montar ese estado sin dejar datos a medias. En modo simulado sí se cubre, con la palanca `scenario.trabajoResultado = "invalidado"`.',
   },
   'ventana-por-inactividad': {
     'la-actividad-reinicia-el-contador': 'contra el sistema real la ventana son 10 minutos de RELOJ: comprobarla exigiría tener el robot 20 minutos tocando la pantalla, y el código llega a un buzón que este arnés no lee. En modo simulado sí se cubre, comprimiendo la ventana con `scenario.ventanaMs` (el cliente decide sobre el tiempo restante que le manda el servidor, así que la secuencia observada es la misma).',
@@ -4188,29 +4188,27 @@ async function caminoRespuestasVuelven(page, base) {
 }
 
 /**
- * ②24.sexies · CUANDO EL SERVIDOR DESCARTA LAS RESPUESTAS, LA FAMILIA SE ENTERA.
+ * DL-E49 §8 · EDITAR DESPUÉS DE ENVIAR INVALIDA ESE ENVÍO, Y LA FAMILIA SE ENTERA.
  *
- * El KMS descarta el cuestionario del tutor que YA envió su parte (DL-E49 §6) y hasta hoy
- * el asistente no solo se lo callaba: **devolvía `saved: N`**, o sea afirmaba haber guardado
- * lo que nadie guardó. El tutor escribía sus respuestas, avanzaba, y ni él ni nadie se
- * enteraba jamás de que se habían tirado.
+ * ── Qué cubría antes, y por qué ya no puede ────────────────────────────────────────
+ * Este camino comprobaba el RECHAZO: el KMS descartaba el cuestionario del tutor que ya
+ * había enviado su parte (DL-E49 §6) y el asistente tenía que decirlo. **Diego cambió el
+ * criterio el 2026-08-24**: ese tutor **SÍ** puede seguir editando; lo que ocurre es que
+ * **su envío queda invalidado** hasta que vuelva a enviar. El rechazo se retiró de los dos
+ * lados, así que seguir comprobándolo sería medir un código que ya no puede llegar.
  *
- * Afirma CUATRO cosas, y las cuatro son de lo que la familia ve:
- *   (1) el rechazo aparece en pantalla — el avance es optimista y el paso ya no está
- *       montado, así que un aviso local no valdría: tiene que salir en el carril global;
- *   (2) el texto dice QUÉ ha pasado (sus respuestas NO se han guardado) y POR QUÉ (su parte
- *       ya está enviada) — «no se ha podido guardar» a secas invita a reintentar en balde;
- *   (3) NO se ofrece «Reintentar» — el servidor rechazaría exactamente igual, y un botón
- *       que no puede funcionar es un callejón sin salida (misma doctrina que
- *       `SubmitErrorBanner`, que ya mira el código del rechazo);
- *   (4) 18.bis.85 — y TAMPOCO se reintenta SOLO. La cola re-manda el guardado que falló en
- *       cuanto el servidor acepta cualquier otra escritura (`alConfirmarEscritura`), que es
- *       lo correcto para un corte de red y es un viaje condenado a fallar con éste: el aviso
- *       reaparece como episodio nuevo y la familia se lleva el susto DOS veces. Aquí la
- *       familia sube un documento —una escritura que SÍ entra y NO pasa por la cola— y el
- *       cuestionario rechazado no puede volver a salir hacia el servidor.
- *
- * Roto a propósito antes de darlo por bueno — ver el reporte del cambio.
+ * ── Qué comprueba ahora ────────────────────────────────────────────────────────────
+ * Lo mismo que importaba entonces —que la familia SE ENTERE de lo que le pasa a su
+ * guardado— pero del comportamiento nuevo:
+ *   (1) el guardado del tutor que ya envió **ENTRA**: no hay ningún aviso de error;
+ *   (2) cuando el trabajo cuenta que invalidó su envío, la pantalla **se lo dice**;
+ *   (3) el aviso dice QUÉ tiene que hacer (volver a enviar), no solo que algo pasó;
+ *   (4) **no bloquea nada**: no hay estado de error ni botón de reintentar, porque no hay
+ *       nada que reintentar — lo que tiene que hacer es enviar otra vez;
+ *   (5) el aviso **no cuesta una petición aparte**: sale del canal que ya preguntaba cómo
+ *       acabaron los guardados. Una consulta propia se aborta al cambiar de pantalla y deja
+ *       en la consola de la familia un `network/fetch error` que no es suyo (`0º.septies`) —
+ *       y eso lo cazó esta misma batería cuando se intentó de la otra forma.
  */
 async function caminoRespuestasRechazadasSeDicen(page, base) {
   const c = new Camino('respuestas-rechazadas-se-dicen')
@@ -4229,10 +4227,6 @@ async function caminoRespuestasRechazadasSeDicen(page, base) {
         'exige un expediente real con un tutor que YA envió su parte y otro que sigue rellenando; el arnés no puede montar ese estado sin dejar datos a medias')
       return c
     }
-    // El rechazo se PROVOCA: que quede registrado en consola es lo correcto.
-    c.esperarErrorConsola(/gasCall saveResponses: server returned ok=false/,
-      'el servidor rechaza las respuestas a propósito para comprobar que la familia se entera')
-
     if (!await irAPreguntas(c, page)) return c
     await page.waitForTimeout(LATENCY + 500)
 
@@ -4240,67 +4234,55 @@ async function caminoRespuestasRechazadasSeDicen(page, base) {
     const campo = await page.$('input[type="text"], input:not([type]), textarea')
     if (campo) { await campo.click({ clickCount: 3 }); await campo.type('Respuesta del segundo tutor E2E') }
 
-    scenario.respuestasRechazadas = true
+    // El trabajo entra Y invalida el envío previo de este tutor (DL-E49 §8). NO es un fallo.
+    scenario.trabajoResultado = 'invalidado'
     await page.click(BTN_SIGUIENTE)
+    await page.waitForTimeout(LATENCY + 3000)
+
+    // El aviso llega por el canal que pregunta cómo acabaron los trabajos apuntados, y ese canal
+    // va con el LATIDO de 30 s. Se fuerza el latido con el MISMO evento que lo dispara en la
+    // aplicación real, en vez de tener el robot medio minuto esperando (patrón ya usado en
+    // `ventana-por-inactividad`). Dos veces: la primera puede pillar el trabajo aún «pendiente».
+    await latirLaVentana(page)
+    await page.waitForTimeout(LATENCY + 1500)
+    await latirLaVentana(page)
+
+    const hayError = await page.$('[data-testid="save-indicator-error"]')
+    c.afirmar('(1) el guardado del tutor que YA envió ENTRA — no se le rechaza',
+      !hayError,
+      'salió el aviso de error: el tutor que ya envió vuelve a estar bloqueado, que es justo la regla que Diego derogó el 2026-08-24')
 
     let salio = false
     try {
-      await page.waitForSelector('[data-testid="save-indicator-error"]', { timeout: LATENCY + 8000 })
+      await page.waitForSelector('[data-testid="save-indicator-reenviar"]', { timeout: LATENCY + 8000 })
       salio = true
     } catch { /* lo dice el afirmar */ }
-    if (!c.afirmar('(1) el servidor descarta las respuestas y la pantalla lo DICE', salio,
-      'no apareció ningún aviso: la familia creería que su cuestionario quedó guardado, que es exactamente el defecto ②24.sexies')) return c
+    if (!c.afirmar('(2) la pantalla DICE que su envío quedó invalidado', salio,
+      'la pantalla se quedó muda: la familia creería que su parte sigue enviada cuando ya no lo está, y la escuela nunca recibiría la versión corregida')) return c
 
-    const texto = await page.$eval('[data-testid="save-indicator-error"]',
+    const texto = await page.$eval('[data-testid="save-indicator-reenviar"]',
       el => (el.textContent || '').replace(/\s+/g, ' ').trim())
-    c.afirmar('(2) el aviso dice que NO se guardaron y por qué (la parte ya está enviada)',
-      /no se han guardado|were NOT saved/i.test(texto) && /ya está enviada|already been submitted/i.test(texto),
-      `el aviso dice «${texto}»: sin el motivo, la familia no sabe que reintentar no sirve ni a quién preguntar`)
+    c.afirmar('(3) el aviso dice QUÉ tiene que hacer: volver a enviarla',
+      /vuelve a enviar|send it again/i.test(texto),
+      `el aviso dice «${texto}»: sin decirle que tiene que volver a enviar, la familia no sabe qué hacer`)
 
     const hayReintentar = await page.$('[data-testid="save-error-retry"]')
-    c.afirmar('(3) no se ofrece «Reintentar», que aquí no puede funcionar', !hayReintentar,
-      'el aviso ofrece reintentar un guardado que el servidor va a rechazar igual: un callejón sin salida')
+    c.afirmar('(4) NO se ofrece «Reintentar»: no hay nada que reintentar', !hayReintentar,
+      'se ofrece reintentar un guardado que entró bien: lo que hay que hacer es volver a ENVIAR, no volver a guardar')
 
-    // ── (4) 18.bis.85 · tampoco se reintenta SOLO ─────────────────────────────────
-    // El avance optimista ya dejó a la familia en Documentos (índice 5). Subir un archivo
-    // es una escritura que SÍ entra y que NO pasa por la cola: es exactamente la que
-    // dispara el reintento automático. La palanca del rechazo se deja PUESTA a propósito —
-    // si el cuestionario volviera a salir, volvería a ser rechazado, que es el susto
-    // repetido que esto viene a quitar.
-    const respuestasAntes = llamadas('saveResponses').length
-    if (!c.afirmar('(4.a) la familia acaba en Documentos, donde puede seguir trabajando',
-      (await page.evaluate(sondaPantalla)).pasoActivo === 5,
-      'no aterrizó en Documentos: sin una pantalla donde escribir de verdad, el reintento automático no se puede provocar')) return c
-    // Cada paso aterriza en solo-lectura hasta que la familia pulsa «Editar» (medido: sin
-    // esto el botón de añadir archivo está sin respuesta al ratón, `pointer-events:none`,
-    // y el clic caduca a los 30 s sin decir por qué).
-    await desbloquear(page)
-    if (!await subirUnDocumento(c, page, 'Documento sintético E2E (18.bis.85)')) return c
-    // El reintento, de haberlo, saldría en cuanto la subida se confirma; se le da margen
-    // de sobra para que un verde no sea simple falta de tiempo.
-    await page.waitForTimeout(LATENCY + 2500)
-    const respuestasDespues = llamadas('saveResponses').length
-    c.afirmar('(4) una escritura posterior que SÍ entra no re-dispara el guardado rechazado',
-      respuestasDespues === respuestasAntes,
-      `salieron ${respuestasDespues - respuestasAntes} envío(s) más del cuestionario tras la subida: el servidor los rechaza igual y el aviso reaparece como episodio nuevo — la familia se lleva el susto dos veces (18.bis.85)`)
-
-    // (5) …y no se compra el silencio con una mentira. Quitar el reintento deja al
-    // siguiente guardado que SÍ entra drenando la cola, y ahí es donde asomaba el
-    // «Todos los cambios guardados» con el cuestionario tirado a la basura. El aviso
-    // tiene que seguir en pie y diciendo lo mismo.
-    const estado = await page.evaluate(() => ({
-      rojo: !!document.querySelector('[data-testid="save-indicator-error"]'),
-      guardado: !!document.querySelector('[data-testid="save-indicator-idle"]'),
-      texto: (document.querySelector('[data-testid="save-indicator-error"]')?.textContent || '').replace(/\s+/g, ' ').trim(),
-    }))
-    c.afirmar('(5) tras esa escritura, la pantalla NO dice «Todos los cambios guardados»',
-      !estado.guardado && estado.rojo && /ya está enviada|already been submitted/i.test(estado.texto),
-      `la pantalla quedó ${estado.guardado ? 'diciendo «Todos los cambios guardados»' : estado.rojo ? `con el aviso «${estado.texto}»` : 'muda'}: el cuestionario NO se guardó y nada va a guardarlo, así que decir lo contrario es la mentira que ②24.sexies vino a quitar`)
+    // (5) El aviso NO puede costar una petición aparte. `estadoDeLasPartes` es la consulta
+    // que la primera versión de este arreglo hacía desde el contexto, y que esta misma
+    // batería cazó dejando `network/fetch error` en la consola al abortarse al navegar.
+    const consultasAparte = llamadas('estadoDeLasPartes').length
+    c.afirmar('(5) el aviso sale del canal que YA existía, sin una petición nueva',
+      consultasAparte === 0,
+      `el asistente hizo ${consultasAparte} consulta(s) a estadoDeLasPartes desde el recorrido de edición: se aborta al cambiar de pantalla y deja ruido en la consola de la familia (0º.septies)`)
 
     c.evidencia.llamadas = calls.length
     return c
   } finally {
     scenario.respuestasRechazadas = false
+    scenario.trabajoResultado = 'hecho'
   }
 }
 
@@ -4388,8 +4370,13 @@ async function caminoGuardadoApuntadoSeVigila(page, base) {
       'la pantalla siguió muda (o diciendo «Todos los cambios guardados»): el servidor aceptó el encargo y luego lo tiró, y la familia se iría creyendo que quedó guardado — que es el defecto 18.bis.84 entero')) return c
 
     const trasB = await page.evaluate(sondaCarrilDeGuardado)
+    // 2026-08-24 (DL-E49 §8) — el descarte de prueba era «tu parte ya está enviada», y ese
+    // rechazo se DEROGÓ (el tutor que ya envió sigue editando; su envío se invalida). El fixture
+    // pasó al descarte que SÍ sigue vivo —la ficha de otro tutor—, así que lo que se afirma es lo
+    // mismo (que el aviso diga QUÉ no entró y POR QUÉ) con el texto que ahora puede llegar.
     c.afirmar('(4) el aviso dice que NO se guardaron y por qué',
-      /no se han guardado|were NOT saved/i.test(trasB.texto) && /ya está enviada|already been submitted/i.test(trasB.texto),
+      /no se ha guardado|not been saved|NOT saved/i.test(trasB.texto) &&
+      /otro tutor|another guardian|only be (modified|changed)/i.test(trasB.texto),
       `el aviso dice «${trasB.texto}»: sin el motivo, la familia no sabe que reintentar no sirve ni a quién preguntar`)
     c.afirmar('(5) NO se ofrece «Reintentar», que aquí no puede funcionar',
       !trasB.reintentar,

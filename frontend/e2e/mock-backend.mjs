@@ -868,6 +868,9 @@ export function createDispatcher(scenario, record) {
     //   · 'hecho'       → entró entero (nada que decirle a la familia).
     //   · 'descartado'  → entró, pero el KMS descartó a propósito lo que el tutor escribió
     //                     (DL-E49 §6): reintentar lo descartaría igual.
+    //   · 'invalidado'  → entró, y **de paso invalidó el envío previo de ese tutor** porque
+    //                     editó después de enviar (DL-E49 §8, 2026-08-24). No es un fallo:
+    //                     hay que decirle que vuelva a enviar, sin bloquearle nada.
     //   · 'fallido'     → el trabajo reventó: SÍ tiene sentido reintentarlo.
     //   · 'pendiente'   → sigue en marcha; el asistente no debe decir nada todavía.
     // Se responde SIEMPRE (aunque ningún camino lo pida) para que un latido de 30 s en un
@@ -879,9 +882,15 @@ export function createDispatcher(scenario, record) {
         ok: true,
         trabajos: ids.map(id => ({
           job_id:    id,
-          estado:    modo === 'descartado' ? 'hecho' : modo,
+          estado:    (modo === 'descartado' || modo === 'invalidado') ? 'hecho' : modo,
           motivo:    modo === 'fallido' ? 'el trabajo no pudo completarse (simulado)' : null,
-          descartes: modo === 'descartado' ? { skipped_already_submitted: true } : null,
+          // 2026-08-24 (DL-E49 §8) — el descarte de prueba era `skipped_already_submitted`, y
+          // ese código **ya no lo emite nadie**: el bloqueo del que salía se retiró (el tutor
+          // que ya envió SÍ sigue rellenando; lo que pasa es que su envío se invalida). Se usa
+          // el descarte que SÍ sigue vivo, para que esta comprobación mida algo que puede
+          // ocurrir de verdad en vez de un código imposible.
+          descartes: modo === 'descartado' ? { fichas_de_otro_tutor_rechazadas_n: 1 }
+                   : (modo === 'invalidado' ? { parte_invalidada: true } : null),
         })),
       };
     },

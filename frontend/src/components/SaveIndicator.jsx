@@ -41,11 +41,26 @@ import { claveDelRechazoDefinitivo } from '../lib/rechazos';
 
 export default function SaveIndicator() {
   const { t } = useTranslation();
-  const { saveState, completedSteps, retryLastSave, saveErrorSeq, saveErrorQue, saveErrorCodigo } = useWizard();
+  const { saveState, completedSteps, retryLastSave, saveErrorSeq, saveErrorQue, saveErrorCodigo, debeReenviar } = useWizard();
   // Episodio de fallo que el usuario cerró a mano. `null` = no ha cerrado ninguno.
   const [episodioCerrado, setEpisodioCerrado] = useState(null);
 
   const base = { fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 };
+
+  // ⭐ DL-E49 §8 (2026-08-24) — el tutor que YA había enviado ha cambiado algo: su envío queda
+  // invalidado y hay que decírselo. Va DELANTE del resto porque es lo que tiene que leer ahora;
+  // **no bloquea nada** (sigue editando) y no ofrece botón: lo que tiene que hacer es volver al
+  // paso de revisión y enviar. Se pinta también con la cola en reposo, que es justo cuando el
+  // guardado ya entró y el envío ya no vale.
+  if (debeReenviar && saveState !== 'error') {
+    return (
+      <span style={{ ...base, color: '#8a5a00' }} aria-live="polite" data-testid="save-indicator-reenviar">
+        <i className="bi bi-exclamation-circle" />
+        {t('wizard.debe_reenviar',
+           'Has cambiado datos de tu parte. Vuelve a enviarla para que la escuela la reciba.')}
+      </span>
+    );
+  }
 
   if (saveState === 'saving') {
     return (
