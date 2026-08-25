@@ -410,7 +410,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -743,6 +743,22 @@ function startServer() {
               ? !!out.step_up_fresh : null,
           } })
           return responder(out)
+        }
+        // ★ `0º.tricies.vicies.semel` — FALLO DE TRANSPORTE de verdad, no un `ok:false`.
+        // El defecto que se mide es justamente el que NO deja respuesta que leer: el
+        // `Load failed` del registro real de Diego (41,6 s) mientras el servidor sigue
+        // trabajando. Un `{ok:false}` NO lo reproduce — llega con cuerpo y con código, y
+        // el cliente lo clasificaría por otra rama. Así que se MATA el socket: el `fetch`
+        // del navegador rechaza sin código, que es exactamente lo que pasó.
+        // Es un CONTADOR: falla los N primeros intentos y deja pasar el siguiente, para
+        // poder afirmar que el reintento entra con el MISMO enlace.
+        if (scenario.hidratacionCorta > 0 && payload && payload.action === 'hydrateSession') {
+          scenario.hidratacionCorta -= 1
+          // Se REGISTRA aunque muera: sin esto los intentos cortados son invisibles y no se
+          // podría afirmar que el reintento ocurrió — que es la mitad del arreglo.
+          record({ action: payload.action, payload, cortada: true })
+          try { req.socket.destroy() } catch { /* ya cerrado */ }
+          return
         }
         const out = dispatch(payload)
         // Latencia simulada: sin ella no se puede distinguir un avance optimista
@@ -7688,6 +7704,179 @@ async function caminoEditarVinculoGuardado(page, base) {
   }
 }
 
+
+/**
+ * `0º.tricies.vicies.semel` — «EL ENLACE PUEDE HABER CADUCADO» CUANDO NO HA CADUCADO.
+ *
+ * ── El defecto, MEDIDO el 2026-08-25 sobre el registro real de Diego ────────────────────
+ * Pidió su enlace, tardó DOS MINUTOS en llegarle, lo abrió, y el asistente le dijo *«No
+ * hemos podido cargar tu solicitud. El enlace puede haber caducado — introduce tu correo a
+ * continuación para recibir uno nuevo.»* El enlace se acababa de emitir y duran SIETE DÍAS.
+ * `ResumePage` tenía UN SOLO `catch`: cualquier fallo —red, tiempo agotado, «Load failed»—
+ * acababa en `/?resume_error=1`, que pinta ese cartel. Y el daño no es el texto: es la
+ * SALIDA que ofrece, porque pedir otro enlace ROTA el que la familia tiene en la mano.
+ *
+ * ── Por qué se mata el SOCKET y no se devuelve un `{ok:false}` ─────────────────────────
+ * Porque el fallo que hay que reproducir es el que NO DEJA RESPUESTA QUE LEER. Un
+ * `{ok:false}` llega con cuerpo y con código y el cliente lo clasificaría por otra rama; lo
+ * que Diego vio fue el `fetch` muriendo sin nada («network/fetch error: Load failed»). El
+ * contador `scenario.hidratacionCorta` mata los N primeros intentos y deja pasar el
+ * siguiente — así se puede afirmar TAMBIÉN que el reintento entra con el MISMO enlace.
+ *
+ * ── Las tres clases, una fase cada una ─────────────────────────────────────────────────
+ *  A) no se pudo cargar   → se queda en la página, NO dice «caducado», NO ofrece pedir otro
+ *                           enlace, y reintenta sola antes de rendirse.
+ *  B) el mismo enlace     → el botón «Volver a intentarlo» entra, con el MISMO resume_token.
+ *  C) el enlace no vale   → el servidor lo dice con su código ⇒ AHÍ SÍ va a la portada con
+ *                           su cartel y su casilla, que es la única salida que existe.
+ *  D) error nombrado      → se dice ÉSE, y se deja reintentar.
+ *
+ * ⚠️ LO QUE ESTA BATERÍA NO CUBRE: corre contra un backend SIMULADO que **nunca ejecuta
+ * `backend/Code.js`**. Que los tres rechazos del servidor lleven ya su código de máquina
+ * (`_errorDeEnlace_`) se acredita LEYENDO ese código, no aquí.
+ */
+async function caminoEnlaceNoHaCaducado(page, base) {
+  const c = new Camino('enlace-no-ha-caducado')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    c.noCubierta('el-enlace-no-ha-caducado',
+      'el fallo de transporte se provoca matando el socket del servidor simulado; contra el sistema real no hay forma honesta de tumbar la hidratación a voluntad sin romperle la corrida a los caminos que vienen detrás')
+    return c
+  }
+
+  // Los tres son deliberados: la hidratación muere sin respuesta (A/B) y el servidor
+  // rechaza el enlace por su nombre (C/D). Si alguno NO llega a ocurrir, el camino cae.
+  c.esperarErrorConsola(/gasCall hydrateSession: network\/fetch error/,
+    'escenario deliberado: la hidratación muere en el transporte, como el «Load failed» del registro real')
+  c.esperarErrorConsola(/ResumePage: hydrateSession failed/,
+    'la página registra el fallo con su clase — sin eso no habría con qué diagnosticar')
+  c.esperarErrorConsola(/gasCall hydrateSession: server returned ok=false/,
+    'escenario deliberado: el servidor rechaza el enlace por su nombre (fases C y D)')
+
+  try {
+    // ── A · TRANSPORTE: la hidratación muere sin respuesta, como el «Load failed» real ───
+    calls = []
+    // ⚠️ NO es «tres intentos»: es EL TRANSPORTE CAÍDO. Medido el 2026-08-25 — al matar el
+    // socket, **Chromium reintenta la petición por debajo** (4 peticiones al servidor para 2
+    // intentos de la página), así que un contador por PETICIÓN no dice cuántos intentos hizo
+    // la aplicación. Quien acredita el reintento es lo que la familia VE: el aviso «seguimos
+    // cargando…», que solo se pinta cuando `reintentoAuto > 0`.
+    scenario.hidratacionCorta = 99
+    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+
+    // (5) primero se comprueba que NO se rinde a la primera: la pantalla lo DICE.
+    const dijoQueSigue = await page.waitForFunction(
+      () => /[Ss]eguimos cargando|[Ss]till loading/.test(document.body.textContent || ''),
+      null, { timeout: LATENCY * 4 + 20000 },
+    ).then(() => true).catch(() => false)
+
+    const llegoElFallo = await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="resume-fallo"]'),
+      null, { timeout: LATENCY * 6 + 30000 },
+    ).then(() => true).catch(() => false)
+
+    const pantallaA = await page.evaluate(() => ({
+      hash:   window.location.hash,
+      texto:  (document.body.textContent || '').replace(/\s+/g, ' ').trim(),
+      fallo:  !!document.querySelector('[data-testid="resume-fallo"]'),
+      boton:  !!document.querySelector('[data-testid="resume-reintentar"]'),
+      // La casilla del correo de la PORTADA: si aparece, es que se fue a pedir otro enlace.
+      correo: !!document.querySelector('input[type="email"]'),
+    }))
+    c.evidencia.elementos = (pantallaA.fallo ? 1 : 0) + (pantallaA.boton ? 1 : 0)
+
+    if (!llegoElFallo) {
+      const seFueALaPortada = /resume_error=1/.test(pantallaA.hash)
+      c.fallos.push(`(1) un fallo de TRANSPORTE no puede acabar en «el enlace puede haber caducado» — ${seFueALaPortada ? 'la página SE FUE A LA PORTADA a decir que el enlace puede haber caducado y a pedir otro, con el enlace bueno todavía vivo (es el defecto entero: ha vuelto el `catch` único)' : 'no se pintó la pantalla de fallo'}; el hash quedó en "${pantallaA.hash}", los intentos registrados fueron ${JSON.stringify(calls.map(l => l.action + (l.cortada ? '(cortada)' : '')))} y la pantalla decía: ${pantallaA.texto.slice(0, 160)}`)
+      return c
+    }
+
+    c.afirmar('(1) el fallo de transporte NO manda a la portada a pedir otro enlace',
+      !/resume_error=1/.test(pantallaA.hash),
+      `el hash quedó en "${pantallaA.hash}": se rotaría el token bueno que la familia tiene en la mano`)
+    c.afirmar('(2) la pantalla NO dice que el enlace pueda haber caducado',
+      !/caducad/i.test(pantallaA.texto),
+      `la pantalla decía: ${pantallaA.texto.slice(0, 200)}`)
+    c.afirmar('(3) NO se le ofrece pedir un enlace nuevo',
+      !pantallaA.correo,
+      'apareció la casilla del correo: pedir otro enlace ROTA el que la familia tiene')
+    c.afirmar('(4) se le ofrece reintentar con el MISMO enlace',
+      pantallaA.boton, 'no se pintó el botón «Volver a intentarlo»')
+
+    const intentosA = llamadas('hydrateSession')
+    c.afirmar('(5) la carga no se rinde a la primera: reintenta sola y lo DICE en pantalla',
+      dijoQueSigue,
+      'la pantalla nunca dijo «seguimos cargando»: o no reintentó, o reintentó en silencio')
+    c.afirmar('(5.bis) y el reintento llega de verdad al servidor',
+      intentosA.length >= 2,
+      `se registraron ${intentosA.length} peticiones de hydrateSession (se esperaban al menos 2)`)
+
+    // ── B · EL MISMO ENLACE: el botón entra, sin pedir nada nuevo ────────────────────────
+    calls = []
+    scenario.hidratacionCorta = 0
+    await page.click('[data-testid="resume-reintentar"]')
+    const entro = await page.waitForFunction(() => {
+      const pasos = document.querySelectorAll('.wizard-step')
+      return !!(pasos.length && [...pasos].some(p => p.classList.contains('active')))
+    }, null, { timeout: LATENCY * 4 + 30000 }).then(() => true).catch(() => false)
+
+    const reintentos = llamadas('hydrateSession')
+    c.afirmar('(6) el reintento ENTRA en la solicitud', entro,
+      'tras pulsar «Volver a intentarlo» el wizard no llegó a pintar el stepper')
+    c.afirmar('(7) el reintento va con el MISMO enlace — no se pide uno nuevo',
+      reintentos.length > 0 && reintentos.every(l => (l.payload || {}).resume_token === DATOS.resumeToken),
+      `los tokens reintentados fueron ${JSON.stringify(reintentos.map(l => String((l.payload || {}).resume_token).slice(0, 8)))} y el del enlace es ${String(DATOS.resumeToken).slice(0, 8)}…`)
+    c.afirmar('(8) reintentar NO pide un enlace nuevo por la puerta de atrás',
+      llamadas('sendMagicLink').length === 0,
+      `se registraron ${llamadas('sendMagicLink').length} llamadas a sendMagicLink: eso ROTA el token bueno`)
+
+    // ── C · EL ENLACE NO VALE DE VERDAD: ahí SÍ se le manda a pedir otro ────────────────
+    calls = []
+    scenario.hidratacionRechazada = 'ENLACE_CADUCADO'
+    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const rebote = await page.waitForFunction(
+      () => /resume_error=1/.test(window.location.hash + window.location.search),
+      null, { timeout: LATENCY * 4 + 20000 },
+    ).then(() => true).catch(() => false)
+    const textoC = await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' ').trim())
+    c.afirmar('(9) un enlace que el servidor RECHAZA por su nombre sí lleva a pedir otro',
+      rebote, 'el wizard no rebotó a la portada: la familia se queda sin la única salida que tiene')
+    c.afirmar('(10) y allí se le dice que puede haber caducado, que es la verdad de ese caso',
+      /caducad/i.test(textoC),
+      `la portada decía: ${textoC.slice(0, 200)}`)
+    c.afirmar('(11) el rechazo nombrado NO se reintenta a ciegas',
+      llamadas('hydrateSession').length === 1,
+      `se registraron ${llamadas('hydrateSession').length} intentos: repetir una hidratación que el servidor ya rechazó por su nombre no la va a aceptar la segunda vez`)
+
+    // ── D · ERROR NOMBRADO: se dice ÉSE, y se deja reintentar ───────────────────────────
+    calls = []
+    scenario.hidratacionRechazada = 'KMS_NOT_CONFIGURED'
+    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const hayMotivo = await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="resume-fallo-motivo"]'),
+      null, { timeout: LATENCY * 4 + 20000 },
+    ).then(() => true).catch(() => false)
+    const pantallaD = await page.evaluate(() => ({
+      hash:  window.location.hash,
+      texto: (document.body.textContent || '').replace(/\s+/g, ' ').trim(),
+      boton: !!document.querySelector('[data-testid="resume-reintentar"]'),
+    }))
+    c.afirmar('(12) un error NOMBRADO por el servidor se dice, no se disfraza de «caducado»',
+      hayMotivo && !/caducad/i.test(pantallaD.texto),
+      `motivo pintado: ${hayMotivo} · la pantalla decía: ${pantallaD.texto.slice(0, 200)}`)
+    c.afirmar('(13) y también deja reintentar con el mismo enlace', pantallaD.boton,
+      'no se pintó el botón «Volver a intentarlo»')
+    return c
+  } finally {
+    scenario.hidratacionCorta = 0
+    scenario.hidratacionRechazada = null
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -7699,6 +7888,13 @@ const CAMINOS = [
   { nombre: 'precalentado-fallo-se-registra', fn: caminoPrecalentadoFalloSeRegistra,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'recuperar-aterrizar', fn: caminoRecuperarAterrizar, minLlamadas: 1, minElementos: 11 },
+  // `0º.tricies.vicies.semel` — un fallo de transporte NO puede decir «el enlace puede haber
+  // caducado» ni mandar a la familia a rotar el token que tiene en la mano.
+  // ⚠️ El mínimo de llamadas es 1 A PROPÓSITO: el arnés cuenta las que quedan en `calls` al
+  // TERMINAR, y este camino lo vacía en cada una de sus cuatro fases para poder afirmar sobre
+  // ella. Su evidencia real son sus trece afirmaciones, no un contador.
+  { nombre: 'enlace-no-ha-caducado', fn: caminoEnlaceNoHaCaducado,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'guardar-paso',        fn: caminoGuardarPaso,        minLlamadas: 1, minElementos: 11 },
   // ①31 — la familia que se incorpora a mitad de curso no puede quedarse encerrada en el paso 1.
   { nombre: 'fecha-a-mitad-de-curso', fn: caminoFechaAMitadDeCurso, minLlamadas: 1, minElementos: 11 },

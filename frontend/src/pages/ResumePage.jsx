@@ -3,6 +3,7 @@ import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../api';
 import { useWizard } from '../context/WizardContext';
+import { clasificarFalloDeEntrada, seReintentaSolo } from '../lib/fallosDeEntrada';
 import * as log from '../logger';
 
 /**
@@ -41,6 +42,25 @@ const RESUME_EST_MS = 30000;   // duración media estimada del hydrate (ms)
 const RESUME_TICK_MS = 250;    // refresco de la barra
 const RESUME_ASYMPTOTE = 0.95; // techo del progreso "en curso" (nunca 100% hasta resolver)
 
+// ★ `0º.tricies.vicies.semel` (2026-08-25) — LA CARGA NO SE RINDE A LA PRIMERA.
+//
+// El navegador se rinde antes que el servidor: el registro real del 2026-08-25 enseña un
+// `sendMagicLink` muerto con `network/fetch error: Load failed` a los **41,6 s** — y el correo
+// SALIÓ igual, 2 minutos después. La hidratación pesa más que ese envío, así que cae por lo
+// mismo. Hasta hoy ese parpadeo tiraba a la familia a la portada con un cartel FALSO.
+//
+// ⛔ El reintento NO es un retardo a ciegas ni una política de latencia: solo entra la clase
+// de fallo «no hubo respuesta» (ver `lib/fallosDeEntrada.js`). Un enlace que el servidor
+// RECHAZÓ por su nombre no se reintenta — se dice, y se ofrece la salida que corresponde.
+//
+// ⭐ Y reintentar DESDE ESTA MISMA PÁGINA es además lo que salva la entrada sin código: el
+// intento que murió en el transporte SÍ llegó al servidor (por eso el correo salía), así que
+// consumió la gracia del enlace y dejó la marca de step-up **atada a esta página viva**
+// (`_markStepUpFresh_` con la huella `pv` que acuña `api.js` una vez por carga). Mientras no
+// se recargue, esa marca sigue valiendo ⇒ el reintento entra SIN pedir código. Recargar o
+// volver a abrir el enlace acuña otra huella y ahí sí se pide — eso es de diseño (2026-08-20).
+const RESUME_REINTENTOS_MS = [1500, 4000]; // dos reintentos automáticos, con espera creciente
+
 export default function ResumePage() {
   const { token } = useParams();
   const [searchParams] = useSearchParams();
@@ -51,6 +71,15 @@ export default function ResumePage() {
   // progress ∈ [0,1]; arranca en 0, se acerca asintóticamente a RESUME_ASYMPTOTE
   // mientras corre el hydrate, y salta a 1 al resolver (justo antes de navegar).
   const [progress, setProgress] = useState(0);
+  // ★ `0º.tricies.vicies.semel` — el fallo se queda EN ESTA PÁGINA, con el token en la mano.
+  // Irse a la portada era el defecto de fondo: allí el token ya no existe, así que la única
+  // salida que se podía ofrecer era «pide otro enlace» — que ROTA el bueno.
+  // `fallo` = null mientras carga; `{ clase, mensaje }` cuando ya no se puede seguir.
+  const [fallo, setFallo] = useState(null);
+  // Cuántos reintentos AUTOMÁTICOS se han gastado ya (se enseña en pantalla: «seguimos
+  // cargando»), y el disparador del reintento que pide la familia con el botón.
+  const [reintentoAuto, setReintentoAuto] = useState(0);
+  const [intentoManual, setIntentoManual] = useState(0);
 
   // IDENTITY-FROM-LINK (2026-06-11): `?n=<email_id>` del magic link lleva la IDENTIDAD del
   // guardian (email_id, opaco, sin PII). Se captura aquí (en el hash, antes del scrub KAL-7
@@ -103,56 +132,135 @@ export default function ResumePage() {
     // enlace sobrevive a F5/incógnito y se reenvía en getAdmissionState + actos de firma.
     if (linkN) setRecoveryNonce(linkN);
 
+    // El efecto puede desmontarse (o volver a arrancar con el botón) mientras hay una
+    // hidratación en vuelo: `cancelado` impide que la respuesta tardía pinte encima.
+    let cancelado = false;
+    let reintentoTimer = null;
     const tokenPreview = String(token).slice(0, 8) + '...';
-    log.info('ResumePage: calling hydrateSession', { resume_token_preview: tokenPreview });
-    // DL-B §1 — hidratación CONSOLIDADA (hydrateSession): UNA llamada trae datos 11
-    // pasos + lookups + qbResponses + admission + signing_context + billing_splits +
-    // live_version. IDENTITY-FROM-LINK: `n` (email_id del enlace) resuelve la identidad
-    // del guardian server-side (KAL-4); la gracia OTP-skip se ancla al resume_token. El
-    // recovered_email persistido queda como compat secundario.
-    gasCall('hydrateSession', { resume_token: token, recovered_email: recoveredEmail || undefined, n: linkN || undefined, language: i18n.language })
-      .then(data => {
-        // Post-DL-E15 shape uses `group`; legacy responses still use `application`.
-        const grp = data.group || data.application;
-        log.success('ResumePage: resumeSession succeeded', {
-          enrollment_group_id: grp?.enrollment_group_id || grp?.application_id,
-          submitted_at:        grp?.submitted_at,
-        });
-        hydrateFromResume(data);
-        // SPEC-WIZ-WARMUP-V2.1 (2026-06-12): kick fire-and-forget del precalentado
-        // TAMBIEN al entrar — cubre las entradas sin kick de envio (email de la
-        // Carta, link antiguo, click mas rapido que el minuto muerto): mientras la
-        // familia recorre los pasos, el backend cocina docs/members/hydrate para
-        // el paso 10. Gate KAL-4 + rate-limit (120s/grupo) server-side; best-effort.
-        // Retraso de 4s: con todo ya caliente el kick es casi no-op server-side, pero
-        // su respuesta ocupaba una conexión del navegador compitiendo con las cargas
-        // inmediatas del usuario (log Diego 18:07: getDocument server 1,2s pero 13,7s
-        // percibidos por contención del transporte). Primero el usuario, luego el warm.
-        setTimeout(() => { gasCall('warmBundle', { resume_token: token, n: linkN || undefined }).catch(() => {}); }, 4000);
-        log.info('ResumePage: hydration complete, navigating to /apply');
-        clearInterval(stageTimer);
-        clearInterval(progressTimer);
-        setProgress(1); // TASK-2: snap a 100% al resolver (la única vez que llega al final)
-        navigate('/apply', { replace: true });
-      })
-      .catch(err => {
-        log.error('ResumePage: resumeSession failed', { message: err.message });
-        clearInterval(stageTimer);
-        clearInterval(progressTimer);
-        navigate('/?resume_error=1', { replace: true });
-      });
 
-    return () => { clearInterval(stageTimer); clearInterval(progressTimer); };
-  }, [token]); // eslint-disable-line
+    const parar = () => { clearInterval(stageTimer); clearInterval(progressTimer); if (reintentoTimer) clearTimeout(reintentoTimer); };
+
+    /**
+     * UN intento de hidratación. `nAuto` = cuántos reintentos automáticos se llevan gastados.
+     * ⛔ El token NO cambia entre intentos: se reintenta con el MISMO enlace, nunca se pide
+     * uno nuevo (pedirlo lo ROTA y deja muerto el que la familia tiene en el correo).
+     */
+    const intentar = (nAuto) => {
+      log.info('ResumePage: calling hydrateSession', { resume_token_preview: tokenPreview, reintento: nAuto });
+      // DL-B §1 — hidratación CONSOLIDADA (hydrateSession): UNA llamada trae datos 11
+      // pasos + lookups + qbResponses + admission + signing_context + billing_splits +
+      // live_version. IDENTITY-FROM-LINK: `n` (email_id del enlace) resuelve la identidad
+      // del guardian server-side (KAL-4); la gracia OTP-skip se ancla al resume_token. El
+      // recovered_email persistido queda como compat secundario.
+      gasCall('hydrateSession', { resume_token: token, recovered_email: recoveredEmail || undefined, n: linkN || undefined, language: i18n.language })
+        .then(data => {
+          if (cancelado) return;
+          // Post-DL-E15 shape uses `group`; legacy responses still use `application`.
+          const grp = data.group || data.application;
+          log.success('ResumePage: resumeSession succeeded', {
+            enrollment_group_id: grp?.enrollment_group_id || grp?.application_id,
+            submitted_at:        grp?.submitted_at,
+          });
+          hydrateFromResume(data);
+          // SPEC-WIZ-WARMUP-V2.1 (2026-06-12): kick fire-and-forget del precalentado
+          // TAMBIEN al entrar — cubre las entradas sin kick de envio (email de la
+          // Carta, link antiguo, click mas rapido que el minuto muerto): mientras la
+          // familia recorre los pasos, el backend cocina docs/members/hydrate para
+          // el paso 10. Gate KAL-4 + rate-limit (120s/grupo) server-side; best-effort.
+          // Retraso de 4s: con todo ya caliente el kick es casi no-op server-side, pero
+          // su respuesta ocupaba una conexión del navegador compitiendo con las cargas
+          // inmediatas del usuario (log Diego 18:07: getDocument server 1,2s pero 13,7s
+          // percibidos por contención del transporte). Primero el usuario, luego el warm.
+          setTimeout(() => { gasCall('warmBundle', { resume_token: token, n: linkN || undefined }).catch(() => {}); }, 4000);
+          log.info('ResumePage: hydration complete, navigating to /apply');
+          parar();
+          setProgress(1); // TASK-2: snap a 100% al resolver (la única vez que llega al final)
+          navigate('/apply', { replace: true });
+        })
+        .catch(err => {
+          if (cancelado) return;
+          // ⛔ AQUÍ ESTABA EL DEFECTO: un solo `catch` que mandaba TODO a la portada con
+          // «el enlace puede haber caducado». La clase la decide UN SOLO SITIO
+          // (`lib/fallosDeEntrada.js`), y de ella depende la salida que se ofrece.
+          const clase = clasificarFalloDeEntrada(err);
+          log.error('ResumePage: hydrateSession failed', { message: err.message, code: err.code || null, clase, reintento: nAuto });
+
+          if (seReintentaSolo(clase) && nAuto < RESUME_REINTENTOS_MS.length) {
+            // Todavía queda margen: se REINTENTA con el mismo enlace y se DICE en pantalla.
+            setReintentoAuto(nAuto + 1);
+            reintentoTimer = setTimeout(() => { if (!cancelado) intentar(nAuto + 1); }, RESUME_REINTENTOS_MS[nAuto]);
+            return;
+          }
+
+          parar();
+          if (clase === 'ENLACE_NO_VALE') {
+            // La ÚNICA clase en la que pedir otro enlace es la salida correcta: el que la
+            // familia tiene no la va a llevar a ninguna parte. La portada ya trae el cartel
+            // y la casilla del correo (`landing.resume_error`).
+            navigate('/?resume_error=1', { replace: true });
+            return;
+          }
+          // Las otras dos se quedan AQUÍ, con el token vivo, y ofrecen reintentar.
+          setFallo({ clase, mensaje: (err && err.message) || '' });
+        });
+    };
+
+    intentar(0);
+
+    return () => { cancelado = true; parar(); };
+  }, [token, intentoManual]); // eslint-disable-line
 
   // TASK-2: % entero para la barra + aria. En curso se topa a RESUME_ASYMPTOTE (95%);
   // solo el snap final (progress===1) muestra 100%.
   const pct = Math.round(progress * 100);
 
+  // ★ `0º.tricies.vicies.semel` — LA PANTALLA DEL FALLO, con el enlace todavía en la mano.
+  //
+  // ⛔ AQUÍ NO SE OFRECE PEDIR OTRO ENLACE, y no es un olvido: pedirlo ROTA el token y deja
+  // muerto el que la familia acaba de recibir (2 minutos de espera, medidos) para chocar con
+  // lo mismo. La única clase en la que pedir otro es la salida correcta —el enlace muerto de
+  // verdad— ni siquiera llega hasta aquí: se va a la portada, que ya tiene ese cartel y esa
+  // casilla. Lo que se ofrece aquí es REINTENTAR CON EL MISMO ENLACE.
+  if (fallo) {
+    const esNombrado = fallo.clase === 'ERROR_NOMBRADO';
+    return (
+      <div style={{ textAlign: 'center', paddingTop: 80, padding: '80px 24px 0' }} data-testid="resume-fallo">
+        <div className="kis-card" style={{ maxWidth: 520, margin: '0 auto', textAlign: 'left' }}>
+          <h2 style={{ fontSize: '1.15rem', marginBottom: 12 }}>
+            <i className="bi bi-exclamation-triangle-fill" style={{ color: '#f37021', marginRight: 8 }} />
+            {t(esNombrado ? 'resume.fail.named_title' : 'resume.fail.retry_title')}
+          </h2>
+          <p style={{ color: 'var(--muted)' }} data-testid="resume-fallo-cuerpo">
+            {t(esNombrado ? 'resume.fail.named_body' : 'resume.fail.retry_body')}
+          </p>
+          {esNombrado && fallo.mensaje && (
+            <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }} data-testid="resume-fallo-motivo">{fallo.mensaje}</p>
+          )}
+          <button
+            type="button"
+            className="btn-kis"
+            data-testid="resume-reintentar"
+            onClick={() => {
+              // MISMO enlace, mismo `n`: se vuelve a montar el efecto con el token de la URL
+              // que ya está en el closure. Cero peticiones de enlace nuevo.
+              setFallo(null);
+              setReintentoAuto(0);
+              setProgress(0);
+              setStage(0);
+              setIntentoManual(n => n + 1);
+            }}
+          >{t('resume.fail.retry_btn')}</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ textAlign: 'center', paddingTop: 80 }}>
       <div className="spinner" />
-      <p style={{ color: 'var(--muted)' }} aria-live="polite">{t(RESUME_STAGE_KEYS[stage])}</p>
+      <p style={{ color: 'var(--muted)' }} aria-live="polite">
+        {reintentoAuto > 0 ? t('resume.stage.retrying') : t(RESUME_STAGE_KEYS[stage])}
+      </p>
       {/* Barra de progreso asintótica (TASK-2). Indica avance estimado sin completarse
           en falso; el aria-valuenow refleja el % para lectores de pantalla. */}
       <div

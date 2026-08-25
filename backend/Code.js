@@ -623,6 +623,31 @@ function requireResumeTokenMemo_(payload) {
   return groupId;
 }
 
+/**
+ * `0º.tricies.vicies.semel` (2026-08-25) — UN SOLO SITIO acuña los rechazos de «este enlace
+ * no vale», con su código de máquina.
+ *
+ * ⛔ El código NO afloja nada y NO cambia quién pasa: los tres rechazos son exactamente los
+ * mismos, con el mismo mensaje y en el mismo orden. Lo único que cambia es que `doPost`
+ * puede devolverlos por su rama estructurada (`HTTP 200 + {ok:false, error:{code,message}}`,
+ * la forma canónica de esta casa) en vez de caer al `HTTP 500` con el motivo en una cadena
+ * suelta — que `gasCall` ni llega a leer, porque corta en `if (!res.ok)`.
+ *
+ * ⛔ Y NO se le pone código a `KMS_UNREACHABLE` ni se toca: ése YA lo tiene, y es
+ * deliberadamente OTRA cosa — «no se pudo preguntar» nunca puede leerse como «tu enlace no
+ * vale» (la familia legítima se quedaría fuera por una caída ajena).
+ *
+ * @param {string} mensaje - el mensaje EXACTO de siempre (lo sanea `sanitizeErrorForClient_`)
+ * @param {'ENLACE_NO_VALIDO'|'ENLACE_ABANDONADO'|'ENLACE_CADUCADO'} codigo
+ * @returns {Error & {code: string}}
+ * @private
+ */
+function _errorDeEnlace_(mensaje, codigo) {
+  const err = new Error(mensaje);
+  err.code = codigo;
+  return err;
+}
+
 function requireResumeToken_(payload, opciones) {
   _dbgEv_('gate', 'requireResumeToken (live)');
   const token = payload && payload.resume_token;
@@ -673,7 +698,16 @@ function requireResumeToken_(payload, opciones) {
   if (!group) {
     // `consulta.rechazo` (el KMS dijo que ese token no vale) o fila ausente ⇒ mismo mensaje
     // que daba el `!rows.length` de la lectura directa.
-    throw new Error('Unauthorized: resume_token not recognized');
+    //
+    // ★ `0º.tricies.vicies.semel` (2026-08-25) — LOS TRES RECHAZOS LLEVAN CÓDIGO, y no es
+    // cosmética: sin él, `doPost` cae a su rama sin `err.code` y contesta **HTTP 500** con el
+    // motivo en una cadena suelta; y `gasCall` corta en `if (!res.ok)` ANTES de leer el
+    // cuerpo, así que al navegador le llega literalmente `Network error: 500`. MEDIDO: los
+    // tres «el enlace no vale» eran, en el cliente, INDISTINGUIBLES de un corte de red — que
+    // es justo por lo que `ResumePage` mandaba a la portada a decir «puede haber caducado»
+    // ante CUALQUIER fallo. El mensaje NO cambia (lo mira `sanitizeErrorForClient_`); lo que
+    // se añade es la etiqueta de máquina que el cliente necesita para no mentir.
+    throw _errorDeEnlace_('Unauthorized: resume_token not recognized', 'ENLACE_NO_VALIDO');
   }
 
   // === CLI 81 (S8 / KAL-NEW-7): TTL + abandoned_at gate ──────────────────────
@@ -688,14 +722,14 @@ function requireResumeToken_(payload, opciones) {
   // family can always view / be reopened for what they sent).
   if (group.abandoned_at) {
     Logger.log(redact_('[requireResumeToken_] reject: abandoned group=' + group.enrollment_group_id));
-    throw new Error('Unauthorized: resume_token abandoned');
+    throw _errorDeEnlace_('Unauthorized: resume_token abandoned', 'ENLACE_ABANDONADO');
   }
   if (!group.submitted_at) {
     const RESUME_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
     const createdAt = group.created_at ? new Date(group.created_at).getTime() : 0;
     if (createdAt && (Date.now() - createdAt) > RESUME_TOKEN_TTL_MS) {
       Logger.log(redact_('[requireResumeToken_] reject: expired group=' + group.enrollment_group_id));
-      throw new Error('Unauthorized: resume_token expired (7 days); the family requests a new link from the start page by entering their email (that also resets the 7-day clock)');
+      throw _errorDeEnlace_('Unauthorized: resume_token expired (7 days); the family requests a new link from the start page by entering their email (that also resets the 7-day clock)', 'ENLACE_CADUCADO');
     }
   }
 

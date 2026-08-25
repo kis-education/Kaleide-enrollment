@@ -691,6 +691,13 @@ export function createDispatcher(scenario, record) {
     // `fetchLookups` (ver `lookupsSegunEscenario_`): el frontal siembra su caché con los
     // `lookups` de la hidratación. Por eso el escenario de formato se aplica también aquí.
     hydrateSession: (p) => {
+      // ★ `0º.tricies.vicies.semel` — el servidor DICE que ese enlace no vale, con su código.
+      // Los tres códigos son los que acuña `_errorDeEnlace_` (`backend/Code.js`, un solo
+      // sitio) desde el 2026-08-25; antes llegaban al navegador como `Network error: 500`,
+      // indistinguibles de un corte de red, y ÉSE era el defecto de fondo.
+      if (scenario.hidratacionRechazada) {
+        return { ok: false, error: { code: scenario.hidratacionRechazada, message: 'Unauthorized: resume_token not recognized' } };
+      }
       // ── LA VERJA DE DATOS PERSONALES (DL-E39) ────────────────────────────────
       // Con `scenario.piiGated`, la PRIMERA hidratación llega SIN nada de la familia y
       // marcada `pii_gated:true` — la secuencia REAL de una familia cuyo enlace ya no

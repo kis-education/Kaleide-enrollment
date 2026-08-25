@@ -3490,6 +3490,119 @@ primera rotura **reventaba con una traza** en vez de nombrar el caso.
 **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla; lo
 que cambia es de dónde sale una fila y cuánta superficie pública queda apoyada en la credencial.
 
+
+### `0º.tricies.vicies.semel` (2026-08-25) — «el enlace puede haber caducado» cuando NO ha caducado
+
+**Diego, 2026-08-25:** pidió su enlace, **tardó DOS MINUTOS** en llegarle, lo abrió, y el asistente
+le dijo *«No hemos podido cargar tu solicitud. El enlace puede haber caducado — introduce tu correo
+a continuación para recibir uno nuevo.»* **El enlace se acababa de emitir y duran SIETE DÍAS.**
+
+⛔ **El daño no era el texto: era la SALIDA que ofrecía.** Le decía que pidiera otro enlace ⇒ eso
+**ROTA el token** (el que tiene en la mano deja de valer) y le hace **volver a esperar los dos
+minutos** para chocar con lo mismo. Cada vuelta empeoraba su situación.
+
+**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
+
+| Pieza | Estado medido |
+|---|---|
+| `ResumePage.jsx` | **UN SOLO `catch`** → `navigate('/?resume_error=1')`, sin ni una rama que distinga |
+| `requireResumeToken_` | sus **tres** rechazos —no reconocido · abandonado · caducado— lanzaban un `Error` **SIN `err.code`** |
+| `doPost` | sin `err.code` cae a su rama de **HTTP 500** con el motivo en una cadena suelta |
+| `gasCall` | corta en `if (!res.ok)` **ANTES** de leer el cuerpo ⇒ al navegador le llegaba `Network error: 500` |
+
+⚠️ **Y ASÍ SE DESMONTA UNA PREMISA DEL ENCARGO, que decía «el servidor YA distingue estos casos:
+léelos, no los inventes en el cliente».** El **KMS** sí los distingue; **lo que llegaba al navegador
+no**: los tres «el enlace no vale» eran, en el cliente, **byte a byte indistinguibles de un corte de
+red**. No había nada que leer — había que **darles un código**.
+
+**Lo construido, en tres piezas y ninguna es opcional:**
+
+1. **El servidor los NOMBRA** — `_errorDeEnlace_` (`backend/Code.js`, **un solo sitio**) acuña
+   `ENLACE_NO_VALIDO` · `ENLACE_ABANDONADO` · `ENLACE_CADUCADO`. ⛔ **No afloja nada**: mismos
+   rechazos, mismos mensajes, mismo orden; lo único que cambia es que salen por la rama
+   estructurada (`HTTP 200 + {ok:false, error:{code,message}}`, la forma canónica de esta casa) en
+   vez de por el 500 que el cliente ni parsea.
+2. **UN SOLO SITIO clasifica el fallo** — `frontend/src/lib/fallosDeEntrada.js`, con **tres** clases:
+   *el enlace no vale* (los tres códigos + `BAD_REQUEST`) · *no se pudo cargar* (sin código, o
+   `SIN_RESPUESTA`/`KMS_UNREACHABLE`) · *error nombrado* (cualquier otro código). ⛔ **NO se adivina
+   por el TEXTO del mensaje**: un mensaje se traduce, se sanea y se reescribe; un código no.
+3. **El fallo se queda EN LA PÁGINA, con el enlace vivo** — irse a la portada **era** el defecto de
+   fondo: allí el token ya no existe, así que la única salida que se podía ofrecer era «pide otro».
+   Hoy solo va a la portada la clase que lo merece.
+
+**Lo que ve la familia, caso por caso:**
+
+| Caso | Qué ve | Qué se le ofrece |
+|---|---|---|
+| **no se pudo cargar** | «No hemos podido cargar tu solicitud ahora mismo. **Tu enlace sigue siendo válido: no hace falta que pidas otro.**» | **Volver a intentarlo** con el MISMO enlace. ⛔ **NADA de pedir uno nuevo** |
+| **error nombrado** | el aviso del servidor, tal cual lo mandó | reintentar con el mismo enlace |
+| **el enlace no vale** | la portada, con su cartel de siempre | la casilla del correo para pedir otro — **la única salida que existe ahí** |
+
+**Y la carga YA NO SE RINDE A LA PRIMERA**: dos reintentos automáticos con espera creciente
+(1,5 s · 4 s) **y se dice en pantalla** («Seguimos cargando… lo estamos intentando otra vez»).
+⛔ Solo entra la clase de transporte: repetir una hidratación que el servidor ya rechazó **por su
+nombre** no la va a aceptar la segunda vez.
+
+⭐ **Y ESO ARREGLA TAMBIÉN LA TERCERA PIEZA DE LA FICHA —el segundo clic pedía código— SIN TOCAR LA
+PUERTA DE SEGURIDAD.** El intento que murió en el transporte **SÍ llegó al servidor** (por eso el
+correo salía igual), así que consumió la gracia del enlace y dejó la marca de step-up **atada a esta
+página viva** (`_markStepUpFresh_` con la huella `pv` que `api.js` acuña una vez por carga).
+Mientras no se recargue, esa marca sigue valiendo ⇒ **el reintento entra SIN pedir código**.
+
+⚠️ **LO QUE NO SE HIZO, y su motivo medido: NO se movió CUÁNDO se consume la gracia.**
+
+- **La ficha atribuía el consumo a `getAdmissionState_`, el pulso. Es FALSO**, y se midió: el pulso
+  solo lo llama `WizardPage.jsx`, que **únicamente se monta en `/apply`** — y en el camino de
+  recuperación no se llega ahí hasta que la hidratación tiene éxito. En un primer clic que falla,
+  **el único que consume la gracia es `hydrateSession_`**. El mecanismo que la ficha describe (se
+  gastó en el intento que falló) **es correcto**; el consumidor que nombra, no.
+- **Moverlo exige un ACUSE del cliente** —el servidor no puede saber si la respuesta llegó al
+  navegador—, y eso degrada el «UN SOLO USO» a «un solo uso **o** cualquier uso dentro de los 10
+  minutos» para una entrada que nunca acuse. La ficha lo prohíbe con todas las letras (*«NO se le
+  quita el un solo uso»*), es una **puerta de seguridad**, y **ninguna red de este repositorio
+  ejecuta `backend/Code.js`** para respaldarlo. Se deja escrito, medido, y sin tocar.
+
+**Lo que tarda de verdad, con números (medición ESTRUCTURAL, no en vivo).** La rama pública de
+`sendMagicLink_` encadena, **dentro de la petición que el navegador está esperando**: la verja
+reCAPTCHA (`:3363`) → `enr.recuperacionDelCorreo` (`:3402`) → `enr.renewApplicationSession`
+(`:3453`, **uno por expediente abierto**) → `sys-public.renderNotification` → el envío por Gmail →
+`sys-public.logNotificationSent` (`:3493`). ⇒ **CUATRO viajes al KMS + uno a Gmail + uno a Google,
+en serie**. Con las cifras que este repositorio ya tiene medidas —**12-31 s por viaje al KMS** y
+**40,6 s** el render del texto— eso cae de lleno en los **2 minutos** que Diego cronometró, y **el
+navegador se rinde a los ~40 s**. ⛔ **El arreglo de fondo NO es de esta ficha**: es
+`0º.tricies.vicies.bis` —sacar el envío del camino de la respuesta— y aquí solo se mide.
+
+**Red**: `npm run e2e:wizard`, camino NUEVO `enlace-no-ha-caducado` (13 afirmaciones, cuatro fases:
+transporte caído · el botón entra con el mismo enlace · el enlace muerto SÍ va a la portada · el
+error nombrado se dice). ⚠️ **El fallo de transporte se provoca MATANDO EL SOCKET**, no con un
+`{ok:false}`: lo que hay que reproducir es el fallo que **no deja respuesta que leer**, y un
+`{ok:false}` llega con cuerpo y con código y el cliente lo clasificaría por otra rama.
+
+⚠️ **Y una lección del ROBOT, medida, que costó dos corridas:** al matar el socket, **Chromium
+reintenta la petición por debajo** —cuatro peticiones al servidor para dos intentos de la página—,
+así que **un contador por PETICIÓN no dice cuántos intentos hizo la aplicación**. Quien acredita el
+reintento es lo que la familia VE: el aviso «seguimos cargando…», que solo se pinta cuando de verdad
+hay un reintento en marcha.
+
+**ROJO DEMOSTRADO tres veces**, cada una nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| devolver el `catch` único (todo a la portada) | *«la página SE FUE A LA PORTADA a decir que el enlace puede haber caducado y a pedir otro, con el enlace bueno todavía vivo (es el defecto entero: ha vuelto el `catch` único)»* |
+| que el clasificador ignore el código del servidor | *«(9) … el wizard no rebotó a la portada: la familia se queda sin la única salida que tiene»* + caen (10), (11) y (12) |
+| quitar el reintento automático | *«(5) … la pantalla nunca dijo «seguimos cargando»: o no reintentó, o reintentó en silencio»* |
+
+⚠️ **Lo que la red NO cubre, y se dice con esas palabras:** la batería corre contra un backend
+**simulado** que **nunca ejecuta `backend/Code.js`**. Que los tres rechazos lleven ya su código
+(`_errorDeEnlace_`) se acredita **leyendo ese código**, no aquí — y por eso **el servidor se publica
+ANTES que el frontal**: al revés, durante la ventana entre las dos publicaciones una familia con el
+enlace caducado de verdad se quedaría reintentando sin que nadie le ofrezca pedir otro.
+
+**Textos nuevos** (los DOS idiomas, `frontend/public/locales/{es,en}/translation.json`):
+`resume.stage.retrying` · `resume.fail.retry_title` / `retry_body` / `retry_btn` ·
+`resume.fail.named_title` / `named_body`. El de la portada (`landing.resume_error`) **no se toca**:
+ahí sigue siendo verdad.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.
@@ -3780,7 +3893,7 @@ npm run e2e:wizard          # compila su propio bundle + recorre los 6 caminos
 - **Una ejecución con `E2E_FILTER` NO vale como muro** — la batería lo detecta y devuelve ROJO explícitamente ("ejecución PARCIAL").
 - **En CI ya es obligatorio**: `.github/workflows/deploy.yml` tiene un job `e2e` del que **depende** el job `build` → un push a `main` con la batería roja NO publica.
 
-**Qué cubre** (`frontend/e2e/run-wizard.mjs`, Playwright headless contra el backend simulado de `e2e/mock-backend.mjs`): `alta-nueva` (portada → enlace enviado, UNA sola petición, el cliente NO decide recuperar-vs-crear) · `ack-indistinguible` (email conocido vs desconocido → misma pantalla y misma secuencia de llamadas; y con un servidor que delata, el cliente sigue sin ramificar — el guardarraíl del casi-incidente WIZ-ENUM) · `recuperar-aterrizar` (magic-link → aterriza en el paso donde estaba + token fuera de la barra, KAL-7) · `guardar-paso` (avance optimista ≤200 ms medido EN LA PÁGINA + el `saveStep` lleva el valor nuevo + persiste al volver atrás) · `subir-documento` (bytes reales + confirmación visible) · `tramo-firma` (expediente admitido aterriza en el paso 8 y lo pinta) · `precalentado-sin-ruido` (pedir el enlace dos veces NO deja ni un error en la consola de la familia: el ticket del precalentado es de un solo uso y «no había nada que calentar» no es un fallo) · `precalentado-fallo-se-registra` (y un fallo DE VERDAD sí se registra) · `codigo-sin-congelar` (pedir el código de un solo uso NO congela la verja: el aviso de «enviado» y la casilla salen ANTES de que vuelva la petición, se puede teclear y entrar sin esperarla, «reenviar» se limita por RELOJ y no por el viaje, y un rechazo del servidor SUSTITUYE al aviso optimista sin cerrar el camino de entrar). **Estos dos van separados a propósito:** la declaración de error de consola vale para TODO el camino, así que juntos el segundo se tragaba el error del primero y la red no medía nada — medido rompiéndolo el 2026-08-15.
+**Qué cubre** (`frontend/e2e/run-wizard.mjs`, Playwright headless contra el backend simulado de `e2e/mock-backend.mjs`): `alta-nueva` (portada → enlace enviado, UNA sola petición, el cliente NO decide recuperar-vs-crear) · `ack-indistinguible` (email conocido vs desconocido → misma pantalla y misma secuencia de llamadas; y con un servidor que delata, el cliente sigue sin ramificar — el guardarraíl del casi-incidente WIZ-ENUM) · `recuperar-aterrizar` (magic-link → aterriza en el paso donde estaba + token fuera de la barra, KAL-7) · `enlace-no-ha-caducado` (un fallo de TRANSPORTE en la carga NO dice «el enlace puede haber caducado» ni manda a rotar el token bueno: se queda en la página, reintenta sola y lo dice, y el botón entra con el MISMO enlace — mientras que un enlace que el servidor RECHAZA por su nombre sí lleva a la portada a pedir otro) · `guardar-paso` (avance optimista ≤200 ms medido EN LA PÁGINA + el `saveStep` lleva el valor nuevo + persiste al volver atrás) · `subir-documento` (bytes reales + confirmación visible) · `tramo-firma` (expediente admitido aterriza en el paso 8 y lo pinta) · `precalentado-sin-ruido` (pedir el enlace dos veces NO deja ni un error en la consola de la familia: el ticket del precalentado es de un solo uso y «no había nada que calentar» no es un fallo) · `precalentado-fallo-se-registra` (y un fallo DE VERDAD sí se registra) · `codigo-sin-congelar` (pedir el código de un solo uso NO congela la verja: el aviso de «enviado» y la casilla salen ANTES de que vuelva la petición, se puede teclear y entrar sin esperarla, «reenviar» se limita por RELOJ y no por el viaje, y un rechazo del servidor SUSTITUYE al aviso optimista sin cerrar el camino de entrar). **Estos dos van separados a propósito:** la declaración de error de consola vale para TODO el camino, así que juntos el segundo se tragaba el error del primero y la red no medía nada — medido rompiéndolo el 2026-08-15.
 
 **Qué NO cubre (deliberado y declarado):** el **acto de firmar** no se consuma — es irreversible y su lógica vive en el motor del KMS, no en el wizard. Está declarado en `NO_CUBIERTAS_PERMITIDAS`; el resto de afirmaciones no ejecutadas hacen ROJO. Tampoco cubre el **backend GAS** (`backend/Code.js`) ni el OTP/step-up real: la batería entra con la gracia del magic-link (`step_up_fresh:true`), que es el camino que recorre una familia que acaba de pedir su enlace.
 
