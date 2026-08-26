@@ -38,6 +38,10 @@ export const FIXTURE = {
   guardian1Name:  'RobotUnoE2E',
   guardian2Name:  'RobotDosE2E',
   applicantName:  'RobotHijoE2E',
+  // `0º.tricies.vicies.septies` — el segundo hijo es MENOR de 7 a propósito: es lo que
+  // deja fuera del conjunto `set-e2e-2` (condición `AGE GTE 7`) a uno de los dos hermanos,
+  // que es el caso que Diego fotografió. El primero (2018) los cumple de sobra.
+  applicant2Dob:  '2022-06-01',
   emailKnown:     'familia.conocida.e2e@example.invalid',
   emailKnown2:    'familia.conocida.e2e.t2@example.invalid',
   emailUnknown:   'nadie.desconocido.e2e@example.invalid',
@@ -69,12 +73,17 @@ const guardian = (id, first, email) => ({
   address:         { address_line_1: 'Calle Falsa 1', city: 'Las Palmas', country_id: 'ES', zip: '35001' },
 });
 
-const applicant = (id, first) => ({
+// ⭐ `0º.tricies.vicies.septies` (2026-08-26) — LA FECHA DE NACIMIENTO ES UN PARÁMETRO,
+// y no es un adorno: el defecto que hay que reproducir es un conjunto al que, POR SUS
+// CONDICIONES, solo le entra UNO de los dos hermanos («Voz del aplicante ≥7 años», el de
+// la captura de Diego). Con los dos hijos naciendo el mismo día NINGUNA condición de edad
+// los separa y la comprobación pasaría EN VACÍO, que es peor que no tenerla.
+const applicant = (id, first, dob = '2018-03-03') => ({
   person_id:       id,
   person_type_id:  'applicant',
   first_name:      first,
   last_name:       'PruebaE2E',
-  date_of_birth:   '2018-03-03',
+  date_of_birth:   dob,
   phones:          [],
   emails:          [],
   nationalities:   [],
@@ -355,6 +364,78 @@ const QUESTIONS = {
           options: [], conditions: [],
         },
       },
+      // ── ⛔⛔ `0º.tricies.vicies.decies` — DOS PREGUNTAS DE REDONDELES, DE ALUMNO ────────
+      // Diego, 2026-08-26: «si selecciono una respuesta de la primera pregunta, cuando
+      // selecciono una respuesta de la segunda, se desactiva lo seleccionado en la primera».
+      //
+      // Son de REDONDELES (`SELECT` con ≤5 opciones ⇒ `input[type=radio]`) y son DOS, y las
+      // dos con audiencia de ALUMNO. Las tres cosas hacen falta:
+      //   · con TEXTO no hay grupos de redondeles y el defecto no existe;
+      //   · con UNA sola no se puede comprobar que contestar la segunda no desmarca la
+      //     primera dentro del MISMO hijo;
+      //   · sin audiencia de alumno la pregunta se pinta UNA vez y las dos copias que se
+      //     pisan (una por hijo) no llegan a existir.
+      // Hasta hoy el catálogo del robot era TEXTO entero, así que la batería NO PODÍA ver
+      // este defecto en absoluto: no pintaba ni un redondel.
+      {
+        set_id: 'set-e2e-1', question_id: 'q-e2e-5', display_order: 4,
+        question: {
+          question_id: 'q-e2e-5', question_code: 'e2e_alumno_radio_1',
+          response_type_id: 'SELECT', response_type_code: 'SELECT',
+          is_required: false, audience_category_id: 'participant',
+          question_text: 'Cómo viene al colegio', help_text: '', placeholder_text: '',
+          options: [
+            { option_id: 'o-5-a', option_value: 'andando',  text: 'Andando' },
+            { option_id: 'o-5-b', option_value: 'guagua',   text: 'En guagua' },
+            { option_id: 'o-5-c', option_value: 'coche',    text: 'En coche' },
+          ],
+          conditions: [],
+        },
+      },
+      {
+        set_id: 'set-e2e-1', question_id: 'q-e2e-6', display_order: 5,
+        question: {
+          question_id: 'q-e2e-6', question_code: 'e2e_alumno_radio_2',
+          response_type_id: 'SELECT', response_type_code: 'SELECT',
+          is_required: false, audience_category_id: 'participant',
+          question_text: 'Se queda a comer', help_text: '', placeholder_text: '',
+          options: [
+            { option_id: 'o-6-a', option_value: 'siempre', text: 'Siempre' },
+            { option_id: 'o-6-b', option_value: 'a_veces', text: 'A veces' },
+            { option_id: 'o-6-c', option_value: 'nunca',   text: 'Nunca' },
+          ],
+          conditions: [],
+        },
+      },
+    ],
+  }, {
+    // ── `0º.tricies.vicies.septies` — UN CONJUNTO AL QUE SOLO LE ENTRA UN HERMANO ───────
+    // Diego, con captura: «Jara se ve en pequeñito, pero en los paneles anteriores habíamos
+    // puesto un pill más resaltado». El suyo era «Voz del aplicante (≥7 años)», que por edad
+    // deja fuera al hermano pequeño ⇒ ese conjunto pintaba UN solo sujeto y caía a la línea
+    // gris mientras el de al lado sacaba pastilla. LA MISMA PANTALLA CON DOS ASPECTOS.
+    // ⛔ Sin este segundo conjunto la comprobación pasaría EN VACÍO: con un solo conjunto de
+    // dos sujetos, calcular «¿hay más de uno?» por conjunto y por paso da lo mismo.
+    set_id: 'set-e2e-2',
+    set_code: 'E2E_SOLO_MAYORES',
+    context_id: 'ctx-e2e',
+    designation: 'Voz del aplicante (7 años o más)',
+    description: '',
+    is_active: true,
+    is_default_for_context: false,
+    items: [
+      {
+        set_id: 'set-e2e-2', question_id: 'q-e2e-7', display_order: 0,
+        question: {
+          question_id: 'q-e2e-7', question_code: 'e2e_voz_alumno',
+          response_type_id: 'TEXT', response_type_code: 'TEXT',
+          is_required: false, audience_category_id: 'participant',
+          question_text: 'Qué te gustaría contarnos', help_text: '', placeholder_text: '',
+          options: [],
+          // Shape PLANO, el que emite `qbExpandCondition_` del backend real.
+          conditions: [{ kind: 'AGE', operator: 'GTE', value: 7 }],
+        },
+      },
     ],
   }],
 };
@@ -458,7 +539,7 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
     // `scenario.unSoloAlumno`; sin la palanca, DOS alumnos como siempre. Los vínculos de
     // la familia de dos tutores (`r1`/`r2`) NO nombran al segundo hijo, así que quitarlo
     // no deja ningún vínculo colgando.
-    ...(unSoloAlumno ? [] : [applicant(FIXTURE.applicant2Id, 'RobotHijoDosE2E')]),
+    ...(unSoloAlumno ? [] : [applicant(FIXTURE.applicant2Id, 'RobotHijoDosE2E', FIXTURE.applicant2Dob)]),
   ];
   // Con UN SOLO tutor, el vínculo que falta es el suyo con el segundo hijo: si se dejaran
   // los dos vínculos de la familia de dos tutores, uno apuntaría a un tutor que ya no está

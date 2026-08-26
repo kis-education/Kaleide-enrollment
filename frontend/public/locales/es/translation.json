@@ -571,6 +571,8 @@
   "step7.sim.disclaimer": "Esto es una simulación orientativa con las tarifas de hoy: no compromete a nada y no reserva plaza. Cuando el colegio admita a tu hijo o hija elegirás la forma de pago definitiva, y esa sí se firma.",
   "step7.sim.readonly_note": "Tu solicitud ya está enviada, así que aquí solo puedes consultarla: las formas de pago se muestran para que puedas compararlas, y elegir la definitiva vendrá después, cuando el colegio admita a tu hijo o hija.",
   "step7.sim.loading": "Calculando…",
+  "step7.sim.failed": "No hemos podido calcular las cuotas ahora mismo. No es que no las haya: no nos ha llegado la respuesta.",
+  "step7.sim.retry": "Volver a intentarlo",
   "step7.sim.unavailable": "Todavía no podemos mostrarte una simulación de las cuotas. El colegio te informará de los importes cuando estudie tu solicitud.",
   "step7.sim.installments": "{{n}} pago(s) de {{amount}}",
   "step7.sim.installments_varied": "{{n}} pagos (importes variables)",

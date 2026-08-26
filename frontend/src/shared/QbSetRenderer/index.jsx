@@ -146,56 +146,43 @@ export default function QbSetRenderer({
 
   const tr = typeof t === 'function' ? t : (s => s);
 
+  // ── 0º.tricies.sexdecies (2026-08-22) · PRIMERO SE DECIDE QUÉ SE PINTA, DESPUÉS CÓMO.
+  // El separador con peso solo aparece cuando hay MÁS DE UN SUJETO — con uno solo no hay
+  // nada que separar y la pastilla sería ruido. Para saberlo hay que haber evaluado ya las
+  // condiciones (un sujeto al que no le queda ninguna pregunta NO cuenta), así que se arma
+  // primero la lista de piezas EN ORDEN y se pinta después. El orden de salida es
+  // exactamente el de antes.
+  //
+  // ⭐ 0º.tricies.vicies.septies (2026-08-26) · LA CUENTA ES DEL PASO, NO DEL CONJUNTO.
+  // Diego, con captura: «Jara se ve en pequeñito, pero en los paneles anteriores habíamos
+  // puesto un pill más resaltado». La cuenta se hacía DENTRO de cada conjunto, así que un
+  // conjunto al que por sus condiciones solo le entra UN alumno («Voz del aplicante ≥7
+  // años», que por edad deja fuera al hermano pequeño) caía a la línea gris mientras el de
+  // al lado sacaba pastilla: LA MISMA PANTALLA CON DOS ASPECTOS. Por eso las piezas de
+  // TODOS los conjuntos se calculan antes de pintar ninguno.
+  //
+  // ⛔ SE CUENTAN SUJETOS DISTINTOS, NO BLOQUES. Con dos conjuntos y UN SOLO hijo hay dos
+  // bloques —uno por conjunto— y sigue sin haber nada que separar: contar bloques pondría
+  // pastilla a una familia de un solo hijo, que es justo el caso que la regla protege.
+  const piezasPorConjunto = sets.map(set => piezasDelConjunto_(set, {
+    applicants, guardians, respuestasEfectivas, groupId, condCtx, tr,
+  }));
+  const sujetosDelPaso = new Set();
+  piezasPorConjunto.forEach(piezas => piezas.forEach(p => {
+    if (p.tipo === 'sujeto') sujetosDelPaso.add(p.personKey);
+  }));
+  const variosSujetos = sujetosDelPaso.size > 1;
+
   return (
     <>
-      {sets.map(set => (
+      {sets.map((set, si) => (
         <div key={set.set_id} className="kis-card">
           {set.designation && (
             <h3 style={{ color: 'var(--teal-dk)', fontSize: '1.05rem' }}>{set.designation}</h3>
           )}
 
           {(() => {
-            // ── 0º.tricies.sexdecies (2026-08-22) · PRIMERO SE DECIDE QUÉ SE PINTA, DESPUÉS
-            // CÓMO. El separador con peso solo aparece cuando hay MÁS DE UN SUJETO en este
-            // conjunto — con uno solo no hay nada que separar y la pastilla sería ruido. Para
-            // saberlo hay que haber evaluado ya las condiciones (un sujeto al que no le queda
-            // ninguna pregunta NO cuenta), así que se arma primero la lista de piezas EN ORDEN
-            // y se pinta después. El orden de salida es exactamente el de antes.
-            const piezas = [];
-            agruparPorSujeto_(set).forEach((bloque, bi) => {
-              // Preguntas DE LA SOLICITUD: igual que siempre, una por una y sin encabezado —
-              // no tienen sujeto que agrupar (su clave es el expediente).
-              if (bloque.tipo === 'general') {
-                const q = bloque.pregunta;
-                // Conditions (INITIATOR_EMAIL, etc.) se evalúan con la clave de grupo.
-                if (!meetsConditions(q, null, respuestasEfectivas, groupId, condCtx)) return;
-                piezas.push({ tipo: 'general', q, key: `${q.question_id}__${groupId}` });
-                return;
-              }
-
-              // Preguntas CON AUDIENCIA declarada: un área por sujeto, con su nombre UNA vez
-              // y todas sus preguntas debajo (0º.tricies.decies).
-              const esAlumno = bloque.audiencia === 'participant';
-              const sujetos  = esAlumno ? applicants : guardians;
-              sujetos.forEach((persona, pi) => {
-                const personKey = persona.person_id || persona._uid;
-                // Las condiciones se siguen evaluando POR SUJETO: una pregunta que no aplica
-                // a este hijo no sale en SU grupo. Si no le queda ninguna, no se pinta.
-                const suyas = bloque.preguntas.filter(
-                  q => meetsConditions(q, persona, respuestasEfectivas, personKey, condCtx));
-                if (!suyas.length) return;
-                const name = [persona.first_name, persona.last_name].filter(Boolean).join(' ')
-                  || (esAlumno
-                    ? `${tr('applicant.title', { n: pi + 1 }) || 'Applicant'} ${pi + 1}`
-                    : `${tr('guardian.title',  { n: pi + 1 }) || 'Guardian'} ${pi + 1}`);
-                piezas.push({
-                  tipo: 'sujeto', bi, personKey, suyas, name,
-                  icono: esAlumno ? 'bi-person' : 'bi-person-fill',
-                });
-              });
-            });
-
-            const variosSujetos = piezas.filter(p => p.tipo === 'sujeto').length > 1;
+            const piezas = piezasPorConjunto[si] || [];
 
             return piezas.map(pieza => {
               if (pieza.tipo === 'general') {
@@ -206,6 +193,7 @@ export default function QbSetRenderer({
                       value={respuestasEfectivas[pieza.key]}
                       onChange={v => setResponse(pieza.key, v)}
                       readOnly={readOnly}
+                      respondentKey={groupId}
                     />
                   </div>
                 );
@@ -226,6 +214,7 @@ export default function QbSetRenderer({
                           value={respuestasEfectivas[key]}
                           onChange={v => setResponse(key, v)}
                           readOnly={readOnly}
+                          respondentKey={pieza.personKey}
                         />
                       </div>
                     );
@@ -238,6 +227,52 @@ export default function QbSetRenderer({
       ))}
     </>
   );
+}
+
+// ─── QUÉ PIEZAS PINTA UN CONJUNTO, en orden ──────────────────────────────────────────
+//
+// Salió del cuerpo del componente el 2026-08-26 (`0º.tricies.vicies.septies`) SIN cambiar
+// una línea de lo que decide: hacía falta poder calcular las piezas de TODOS los conjuntos
+// antes de pintar ninguno, para saber cuántos sujetos distintos tiene el PASO. Qué se pinta
+// y en qué orden es exactamente lo de antes.
+//
+// ⛔ NO decide de quién es una pregunta (lo declara el catálogo con `audience_category_id`)
+// ni compone la clave de la respuesta: eso sigue donde estaba, al pintar.
+function piezasDelConjunto_(set, { applicants, guardians, respuestasEfectivas, groupId, condCtx, tr }) {
+  const piezas = [];
+  agruparPorSujeto_(set).forEach((bloque, bi) => {
+    // Preguntas DE LA SOLICITUD: igual que siempre, una por una y sin encabezado —
+    // no tienen sujeto que agrupar (su clave es el expediente).
+    if (bloque.tipo === 'general') {
+      const q = bloque.pregunta;
+      // Conditions (INITIATOR_EMAIL, etc.) se evalúan con la clave de grupo.
+      if (!meetsConditions(q, null, respuestasEfectivas, groupId, condCtx)) return;
+      piezas.push({ tipo: 'general', q, key: `${q.question_id}__${groupId}` });
+      return;
+    }
+
+    // Preguntas CON AUDIENCIA declarada: un área por sujeto, con su nombre UNA vez
+    // y todas sus preguntas debajo (0º.tricies.decies).
+    const esAlumno = bloque.audiencia === 'participant';
+    const sujetos  = esAlumno ? applicants : guardians;
+    sujetos.forEach((persona, pi) => {
+      const personKey = persona.person_id || persona._uid;
+      // Las condiciones se siguen evaluando POR SUJETO: una pregunta que no aplica
+      // a este hijo no sale en SU grupo. Si no le queda ninguna, no se pinta.
+      const suyas = bloque.preguntas.filter(
+        q => meetsConditions(q, persona, respuestasEfectivas, personKey, condCtx));
+      if (!suyas.length) return;
+      const name = [persona.first_name, persona.last_name].filter(Boolean).join(' ')
+        || (esAlumno
+          ? `${tr('applicant.title', { n: pi + 1 }) || 'Applicant'} ${pi + 1}`
+          : `${tr('guardian.title',  { n: pi + 1 }) || 'Guardian'} ${pi + 1}`);
+      piezas.push({
+        tipo: 'sujeto', bi, personKey, suyas, name,
+        icono: esAlumno ? 'bi-person' : 'bi-person-fill',
+      });
+    });
+  });
+  return piezas;
 }
 
 // ─── 0º.tricies.decies (2026-08-22) · LAS PREGUNTAS SE AGRUPAN POR SUJETO ────────────
@@ -330,7 +365,24 @@ function controlDeLaPregunta(question) {
   return 'textarea';
 }
 
-function QuestionField({ question, value, onChange, readOnly }) {
+/**
+ * ⛔⛔ `0º.tricies.vicies.decies` (2026-08-26) · EL GRUPO DE REDONDELES LLEVA A LA PERSONA.
+ *
+ * Diego: «si selecciono una respuesta de la primera pregunta, cuando selecciono una
+ * respuesta de la segunda, se desactiva lo seleccionado en la primera».
+ *
+ * El atributo `name` de un redondel agrupa EN TODO EL DOCUMENTO. Puesto solo por pregunta
+ * (`q_<question_id>`), las dos copias de la MISMA pregunta —una por hijo, desde que se
+ * agrupa por sujeto— eran UN SOLO grupo para el navegador: marcar la de un hijo DESMARCABA
+ * la del otro. Y no se recuperaba solo, que es lo que lo hacía destructivo: el redondel
+ * está gobernado por React (`checked={value === o.option_value}`) y, cuando el navegador
+ * desmarca por su cuenta, React no ve cambio y no lo repone.
+ *
+ * ⛔ `respondentKey` NO es la clave de la respuesta: es de quién es esta copia de la
+ * pregunta. La clave (`${question_id}__${personKey}`) se compone al pintar y NO se toca —
+ * es la que guarda y recupera lo contestado, y tocarla desvincularía todo lo ya respondido.
+ */
+function QuestionField({ question, value, onChange, readOnly, respondentKey }) {
   // ③51 — el CONTROL sale de lo declarado (`ui_widget`), con caída al código del tipo.
   const control = controlDeLaPregunta(question);
 
@@ -370,7 +422,7 @@ function QuestionField({ question, value, onChange, readOnly }) {
             {question.options.map(o => (
               <div key={o.option_id} className="form-check">
                 <input type="radio" className="form-check-input"
-                  name={`q_${question.question_id}`}
+                  name={`q_${question.question_id}__${respondentKey}`}
                   checked={value === o.option_value}
                   onChange={() => onChange(o.option_value)} />
                 <label className="form-check-label">{o.text}</label>

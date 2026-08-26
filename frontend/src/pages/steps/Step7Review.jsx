@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../../context/WizardContext';
@@ -159,7 +159,29 @@ function CorrectionRequest({ resumeToken, t }) {
  * FALSA.)*
  */
 function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
-  const [sim, setSim]             = useState(null);   // null = cargando
+  const [sim, setSim]             = useState(null);   // null = calculando
+  // ⛔⛔ `0º.tricies.vicies.sexies` (2026-08-26) — «NO HAY CUOTAS» Y «NO ME HAN LLEGADO»
+  // NO SON LO MISMO. Es el mismo defecto que el paso 1 arregló ese mismo día, en el paso 7.
+  //
+  // Diego: *«Ahora no carga ninguna cuota en el wizard en el paso 7»*, con este recuadro
+  // diciéndole *«Todavía no podemos mostrarte una simulación de las cuotas. El colegio te
+  // informará de los importes cuando estudie tu solicitud.»* En su propio registro
+  // `simularCuotas` había SALIDO y el navegador la había cortado a los 240.000 ms sin
+  // respuesta: no es que no hubiera cuotas, es que no llegaron — y la pantalla hablaba del
+  // colegio, que no tenía nada que ver.
+  //
+  // La causa era este componente: el `.catch` hacía `setSim({simulable:false})` («degrada y
+  // calla») ⇒ un fallo de TRANSPORTE salía por la MISMA puerta que «este plan no admite
+  // cuotas», que es una respuesta legítima del servidor.
+  //
+  // Desde aquí hay TRES situaciones, no dos: calculando · el servidor contestó (y su
+  // respuesta puede ser legítimamente que no hay cuotas) · no se pudo calcular. La tercera
+  // se DICE y se puede reintentar, nunca se disfraza de la segunda.
+  //
+  // ⚠️ Esto NO hace que las cuotas lleguen — mientras `simularCuotas` tarde más de cuatro
+  // minutos la familia seguirá sin verlas; eso lo cierra `0º.tricies.vicies.quinquies`.
+  // Aquí solo se deja de mentir.
+  const [simNoLlego, setSimNoLlego] = useState(false);
   // ⭐ 0º.vicies.sexies — LA MARCA VIVE SOLO EN EL NAVEGADOR (decisión de Diego, 2026-08-21:
   // *«la presentación de pagos es meramente informativa… se puede guardar en la memoria del
   // navegador, pero ya está»*). Es `{ [template_id]: modality_id }` —un solicitante puede
@@ -182,25 +204,52 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
   // se OLVIDA sola en cuanto se encola CUALQUIER guardado o sube la versión del grupo.
   // ⛔ Aquí NO se decide nada más: ni plazos, ni qué es «lo mismo» — eso lo gobierna el
   // contexto, en un solo sitio.
-  useEffect(() => {
-    let vivo = true;
-    if (!resumeToken) { setSim({ simulable: false, simulaciones: [] }); return undefined; }
-    const memorizada = leerSimulacionMemo && leerSimulacionMemo(resumeToken);
-    if (memorizada) { setSim(memorizada); return undefined; }
+  // `vivo` era una variable del efecto; ahora que la petición también se dispara desde el
+  // botón de reintento hacen falta las dos guardas que aquélla daba: seguir montado, y que
+  // la respuesta que llega sea la de la ÚLTIMA petición (una vieja no puede pisar a la
+  // nueva). Sin esto el reintento podría quedar tapado por la respuesta del intento
+  // anterior.
+  const montado = useRef(true);
+  const peticion = useRef(0);
+  useEffect(() => () => { montado.current = false; }, []);
+
+  const pedirSimulacion = useCallback((forzar) => {
+    setSimNoLlego(false);
+    setSim(null);
+    if (!resumeToken) { setSim({ simulable: false, simulaciones: [] }); return; }
+    if (!forzar) {
+      const memorizada = leerSimulacionMemo && leerSimulacionMemo(resumeToken);
+      if (memorizada) { setSim(memorizada); return; }
+    }
+    const mia = ++peticion.current;
+    const vigente = () => montado.current && mia === peticion.current;
     simularCuotas(resumeToken)
       .then(res => {
-        if (!vivo) return;
-        const r = (res && typeof res === 'object') ? res : { simulable: false, simulaciones: [] };
-        if (guardarSimulacionMemo) guardarSimulacionMemo(resumeToken, r);
-        setSim(r);
+        if (!vigente()) return;
+        // ⛔ Lo que acredita que el servidor CONTESTÓ es que venga una respuesta con forma
+        // de respuesta. Sin ella no hay nada que enseñar: es un fallo de carga, y como tal
+        // se trata — no como un «este plan no admite cuotas», que sí es una respuesta.
+        if (!res || typeof res !== 'object') {
+          setSimNoLlego(true);
+          setSim({ simulable: false, simulaciones: [] });
+          return;
+        }
+        // ⛔ SOLO SE MEMORIZA LO QUE LLEGÓ. Guardar un fallo dejaría el simulador apagado el
+        // resto de la sesión y el botón de reintento no serviría de nada.
+        if (guardarSimulacionMemo) guardarSimulacionMemo(resumeToken, res);
+        setSim(res);
       })
       .catch(e => {
-        // Degrada y calla: el resto del paso 7 tiene que funcionar igual.
+        // El resto del paso 7 tiene que funcionar igual —un simulador caído NO puede
+        // impedir enviar la solicitud— pero ya no se calla: se dice y se puede reintentar.
         log.warn('Step7: simularCuotas failed', { message: e && e.message });
-        if (vivo) setSim({ simulable: false, simulaciones: [] });
+        if (!vigente()) return;
+        setSimNoLlego(true);
+        setSim({ simulable: false, simulaciones: [] });
       });
-    return () => { vivo = false; };
   }, [resumeToken, leerSimulacionMemo, guardarSimulacionMemo]);
+
+  useEffect(() => { pedirSimulacion(false); }, [pedirSimulacion]);
 
   const money = (cents, currency) => {
     const n = Number(cents || 0) / 100;
@@ -526,7 +575,20 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
         </p>
       )}
 
-      {sim !== null && !planesConOpciones.length && (
+      {/* NO SE PUDO CALCULAR — se dice, y se puede volver a intentar con el mismo enlace. */}
+      {sim !== null && simNoLlego && (
+        <div data-testid="paso7-simulador-fallo">
+          <p className="text-danger small mb-1">{t('step7.sim.failed')}</p>
+          <button type="button" className="btn btn-sm btn-outline-secondary"
+                  data-testid="paso7-simulador-reintentar"
+                  onClick={() => pedirSimulacion(true)}>
+            {t('step7.sim.retry')}
+          </button>
+        </div>
+      )}
+
+      {/* EL SERVIDOR CONTESTÓ y no hay cuotas que enseñar — respuesta legítima. */}
+      {sim !== null && !simNoLlego && !planesConOpciones.length && (
         <p data-testid="paso7-simulador-vacio"
            style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 0 }}>
           {t('step7.sim.unavailable')}

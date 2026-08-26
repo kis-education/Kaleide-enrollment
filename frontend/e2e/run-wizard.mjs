@@ -149,6 +149,9 @@ const NO_CUBIERTAS_SOLO_REAL = {
   'simulador-no-recalcula-al-navegar': {
     'no-recalcula-al-navegar': 'exige un expediente con plantillas de tarifa declaradas y contar las llamadas del navegador; contra el sistema real el arnés no puede sembrarlo',
   },
+  'cuotas-no-llegan-no-se-miente': {
+    'cuotas-cortadas': 'el escenario hostil (la simulación se corta sin dejar respuesta) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
+  },
   'simulador-paso7-varios-planes': {
     'varios-planes': 'exige declarar en el catálogo real dos plantillas de suscripción aplicables a la vez al mismo solicitante; en modo simulado sí se cubre',
   },
@@ -413,7 +416,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0 }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -759,6 +762,19 @@ function startServer() {
           scenario.hidratacionCorta -= 1
           // Se REGISTRA aunque muera: sin esto los intentos cortados son invisibles y no se
           // podría afirmar que el reintento ocurrió — que es la mitad del arreglo.
+          record({ action: payload.action, payload, cortada: true })
+          try { req.socket.destroy() } catch { /* ya cerrado */ }
+          return
+        }
+        // ⛔ `0º.tricies.vicies.sexies` — LO MISMO PARA LA SIMULACIÓN DE CUOTAS, y por el
+        // mismo motivo. En el registro real de Diego (2026-08-26) `simularCuotas` salió y
+        // el navegador la CORTÓ a los 240.000 ms sin respuesta: no es que no hubiera
+        // cuotas, es que no llegaron. `scenario.simulacionFalla` NO reproduce eso — ésa
+        // responde `simulable:false`, que es el servidor CONTESTANDO que este plan no
+        // admite cuotas, y es un caso legítimo distinto. También es un CONTADOR, para
+        // poder afirmar que el reintento entra.
+        if (scenario.simulacionCorta > 0 && payload && payload.action === 'simularCuotas') {
+          scenario.simulacionCorta -= 1
           record({ action: payload.action, payload, cortada: true })
           try { req.socket.destroy() } catch { /* ya cerrado */ }
           return
@@ -3591,28 +3607,38 @@ async function caminoCuestionarioNoSeApaga(page, base) {
   //   agrupado    (lo de ahora) → Jara·[P1,P2] · Pepito·[P1,P2]              (2 encabezados)
   // Se mide sobre el TEXTO en orden de documento, no sobre un atributo: así la afirmación
   // habla del comportamiento y no de cómo esté marcado el HTML por dentro.
-  const orden = await page.evaluate(() => {
-    const fichas = [];
-    // `0º.tricies.sexdecies`: con VARIOS sujetos el encabezado es la PASTILLA; con uno
-    // solo sigue siendo la línea gris de siempre. Se aceptan las dos formas, porque lo
-    // que esta sonda mide es el ORDEN de lo que se lee, no cómo esté marcado el HTML.
-    document.querySelectorAll(
-      '.kis-card [data-testid="sujeto-separador"], .kis-card p, .kis-card label.form-label'
-    ).forEach(el => {
-      if (el.getAttribute('data-testid') === 'sujeto-separador') {
-        fichas.push({ t: 'sujeto', v: (el.textContent || '').trim() });
-        return;
-      }
-      if (el.tagName === 'P') {
-        if (el.querySelector('i.bi-person, i.bi-person-fill')) {
+  // ⛔ POR TARJETA, no por página (`0º.tricies.vicies.septies`, 2026-08-26). El catálogo del
+  // robot sirve ahora DOS conjuntos —y cada conjunto es una tarjeta—, así que un mismo hijo
+  // aparece legítimamente una vez en cada uno. Medir sobre la página entera diría que su
+  // nombre «se repite» cuando lo que pasa es que hay dos conjuntos: la afirmación de
+  // agrupación habla de lo que ocurre DENTRO de un conjunto, y así se mide.
+  const tarjetas = await page.evaluate(() => {
+    const out = [];
+    document.querySelectorAll('.kis-card').forEach(card => {
+      const fichas = [];
+      // `0º.tricies.sexdecies`: con VARIOS sujetos el encabezado es la PASTILLA; con uno
+      // solo sigue siendo la línea gris de siempre. Se aceptan las dos formas, porque lo
+      // que esta sonda mide es el ORDEN de lo que se lee, no cómo esté marcado el HTML.
+      card.querySelectorAll(
+        '[data-testid="sujeto-separador"], p, label.form-label'
+      ).forEach(el => {
+        if (el.getAttribute('data-testid') === 'sujeto-separador') {
           fichas.push({ t: 'sujeto', v: (el.textContent || '').trim() });
+          return;
         }
-        return;
-      }
-      fichas.push({ t: 'pregunta', v: (el.textContent || '').trim() });
+        if (el.tagName === 'P') {
+          if (el.querySelector('i.bi-person, i.bi-person-fill')) {
+            fichas.push({ t: 'sujeto', v: (el.textContent || '').trim() });
+          }
+          return;
+        }
+        fichas.push({ t: 'pregunta', v: (el.textContent || '').trim() });
+      });
+      if (fichas.length) out.push(fichas);
     });
-    return fichas;
+    return out;
   })
+  const orden = tarjetas[0] || []
   const nombres = orden.filter(f => f.t === 'sujeto').map(f => f.v)
   // ANCLA: sin encabezados de sujeto las tres afirmaciones de abajo pasarían EN VACÍO —
   // que es exactamente lo que pasaba antes de este cambio, cuando el catálogo del robot
@@ -3621,10 +3647,12 @@ async function caminoCuestionarioNoSeApaga(page, base) {
     nombres.length >= 2,
     `se leyeron ${nombres.length} encabezado(s) de sujeto: sin ellos, agrupar no se puede medir`)) {
 
-    c.afirmar('(d.1) el nombre de cada alumno se pinta UNA sola vez',
-      new Set(nombres).size === nombres.length,
-      `los encabezados en pantalla fueron ${JSON.stringify(nombres)}: un nombre repetido ` +
-      `significa que las preguntas siguen intercaladas y la familia salta de un hijo a otro`)
+    const nombresPorTarjeta = tarjetas.map(f => f.filter(x => x.t === 'sujeto').map(x => x.v))
+    c.afirmar('(d.1) el nombre de cada alumno se pinta UNA sola vez DENTRO de su conjunto',
+      nombresPorTarjeta.every(ns => new Set(ns).size === ns.length),
+      `los encabezados por conjunto fueron ${JSON.stringify(nombresPorTarjeta)}: un nombre ` +
+      `repetido DENTRO de un conjunto significa que las preguntas siguen intercaladas y la ` +
+      `familia salta de un hijo a otro`)
 
     // Cada sujeto arrastra TODAS sus preguntas: se cuentan las que van entre su encabezado
     // y el siguiente. Intercalado da 1 por encabezado; agrupado da las 2 del catálogo.
@@ -3633,10 +3661,13 @@ async function caminoCuestionarioNoSeApaga(page, base) {
       if (f.t === 'sujeto') porSujeto.push({ nombre: f.v, preguntas: [] })
       else if (porSujeto.length) porSujeto[porSujeto.length - 1].preguntas.push(f.v)
     })
+    // CUATRO por alumno desde `0º.tricies.vicies.decies`: las dos de texto de siempre más las
+    // dos de redondeles que se dieron de alta para poder ver el defecto de los grupos.
+    // Intercalado daría 1 por encabezado; agrupado, las 4 del conjunto.
     c.afirmar('(d.2) las preguntas de un mismo alumno salen SEGUIDAS, bajo su nombre',
-      porSujeto.length > 0 && porSujeto.every(s => s.preguntas.length === 2),
+      porSujeto.length > 0 && porSujeto.every(s => s.preguntas.length === 4),
       `bajo cada nombre se leyeron ${JSON.stringify(porSujeto.map(s => s.preguntas.length))} ` +
-      `pregunta(s) (se esperaban 2 por alumno): ${JSON.stringify(porSujeto)}`)
+      `pregunta(s) (se esperaban 4 por alumno): ${JSON.stringify(porSujeto)}`)
 
     // ── 0º.tricies.sexdecies (2026-08-22) · SE VE DÓNDE ACABA UN HERMANO Y EMPIEZA EL
     // OTRO. Diego: «es difícil visualmente separar un hermano del otro. La letra es muy
@@ -3674,6 +3705,121 @@ async function caminoCuestionarioNoSeApaga(page, base) {
       `los bordes de agrupación leídos fueron ${JSON.stringify(separadores.map(s => s.bordeIzq))}: ` +
       `sin un elemento que delimite el bloque, las preguntas de los dos hermanos siguen ` +
       `corriendo seguidas y solo las separa una línea de texto`)
+
+    // ── `0º.tricies.vicies.septies` (2026-08-26) · LA MISMA PANTALLA, UN SOLO ASPECTO ───
+    // Diego, con captura: «Jara se ve en pequeñito, pero en los paneles anteriores habíamos
+    // puesto un pill más resaltado». El conjunto `set-e2e-2` («7 años o más») deja fuera al
+    // hermano pequeño POR SUS CONDICIONES ⇒ solo le entra UN alumno. Cuando «¿hay más de un
+    // sujeto?» se calculaba DENTRO de cada conjunto, ese caía a la línea gris mientras el de
+    // al lado sacaba pastilla. Se comprueba EN EL BLOQUE de ese conjunto, no en el montón:
+    // así el rojo nombra el caso en vez de decir «alguno de los tres no tiene pastilla».
+    const soloUno = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.kis-card')];
+      // La tarjeta con UN solo bloque de sujeto habiendo dos hermanos en la solicitud: ésa
+      // es la del conjunto que por edad deja a uno fuera.
+      const card = cards.filter(x => x.querySelectorAll('[data-qb-sujeto]').length === 1).pop();
+      if (!card) return null;
+      const bloque = card.querySelector('[data-qb-sujeto]');
+      const cab = bloque.querySelector('[data-testid="sujeto-separador"]');
+      const eb = getComputedStyle(bloque);
+      const ec = cab ? getComputedStyle(cab) : null;
+      return {
+        conjunto: (card.querySelector('h3') || {}).textContent || '',
+        nombre:   cab ? (cab.textContent || '').trim() : null,
+        bordeIzq: parseFloat(eb.borderLeftWidth) || 0,
+        fondo:    ec ? ec.backgroundColor : null,
+        tamano:   ec ? parseFloat(ec.fontSize) : 0,
+        peso:     ec ? Number(ec.fontWeight) || 0 : 0,
+      };
+    })
+    if (c.afirmar('(e.2.bis.0) ancla — hay un conjunto al que por sus condiciones solo le entra UN hermano',
+      !!soloUno,
+      'no se encontró ningún conjunto con un solo bloque de sujeto: sin él, la afirmación de abajo pasaría EN VACÍO')) {
+      c.afirmar('(e.2.bis) un conjunto con UN SOLO hermano lleva la MISMA pastilla que los demás',
+        !!soloUno.nombre && !transparente(soloUno.fondo) && soloUno.tamano >= 15 &&
+        soloUno.peso >= 700 && soloUno.bordeIzq >= 2,
+        `el conjunto ${JSON.stringify(soloUno.conjunto)} pintó ${JSON.stringify(soloUno)}: ` +
+        `si la cuenta se hace DENTRO del conjunto, éste cae a la línea gris mientras el de al ` +
+        `lado saca pastilla — y la familia ve la misma pantalla con dos aspectos`)
+    }
+
+    // ── ⛔⛔ `0º.tricies.vicies.decies` (2026-08-26) · LOS REDONDELES NO SE PISAN ─────────
+    // Diego: «si selecciono una respuesta de la primera pregunta, cuando selecciono una
+    // respuesta de la segunda, se desactiva lo seleccionado en la primera».
+    //
+    // El nombre del grupo de redondeles agrupa EN TODO EL DOCUMENTO. Con el nombre puesto
+    // solo por pregunta, las dos copias de la MISMA pregunta —una por hijo, desde que se
+    // agrupa por sujeto— son UN SOLO grupo para el navegador: marcar la de un hijo desmarca
+    // la del otro. Y no se recupera solo: el redondel está gobernado por React, que no ve
+    // el cambio y no lo repone.
+    //
+    // ⚠️ Se mide EL COMPORTAMIENTO (marcar y volver a leer), no el atributo `name`: lo que
+    // rompe a la familia es perder lo que contestó, no cómo se llame el grupo por dentro.
+    const leerRedondeles = () => page.evaluate(() => {
+      const out = [];
+      document.querySelectorAll('[data-qb-sujeto]').forEach(bloque => {
+        const grupos = new Map();
+        bloque.querySelectorAll('input[type=radio]').forEach(r => {
+          if (!grupos.has(r.name)) grupos.set(r.name, []);
+          grupos.get(r.name).push(r.checked);
+        });
+        if (!grupos.size) return;
+        out.push({
+          sujeto: bloque.getAttribute('data-qb-sujeto'),
+          grupos: [...grupos.entries()].map(([name, opts]) => ({
+            name, marcada: opts.findIndex(Boolean),
+          })),
+        });
+      });
+      return out;
+    })
+    const marcar = (b, g, o) => page.evaluate(({ b, g, o }) => {
+      const bloques = [...document.querySelectorAll('[data-qb-sujeto]')]
+        .filter(x => x.querySelector('input[type=radio]'));
+      const bl = bloques[b];
+      if (!bl) return false;
+      const grupos = new Map();
+      bl.querySelectorAll('input[type=radio]').forEach(r => {
+        if (!grupos.has(r.name)) grupos.set(r.name, []);
+        grupos.get(r.name).push(r);
+      });
+      const arr = [...grupos.values()][g];
+      if (!arr || !arr[o]) return false;
+      arr[o].click();
+      return true;
+    }, { b, g, o })
+
+    const antesDeMarcar = await leerRedondeles()
+    if (c.afirmar('(f.0) ancla — los DOS hermanos tienen preguntas de redondeles',
+      antesDeMarcar.length >= 2 && antesDeMarcar.every(x => x.grupos.length >= 2),
+      `los bloques con redondeles fueron ${JSON.stringify(antesDeMarcar)}: hacen falta DOS ` +
+      `alumnos con DOS preguntas de redondeles cada uno, o las afirmaciones de abajo pasan en vacío`)) {
+
+      // (f.1) DENTRO del mismo hijo: contestar la segunda no puede desmarcar la primera.
+      await marcar(0, 0, 0)
+      await page.waitForTimeout(150)
+      await marcar(0, 1, 1)
+      await page.waitForTimeout(250)
+      let ahora = await leerRedondeles()
+      c.afirmar('(f.1) contestar la SEGUNDA pregunta no desmarca la PRIMERA del mismo alumno',
+        ahora[0] && ahora[0].grupos[0].marcada === 0 && ahora[0].grupos[1].marcada === 1,
+        `tras marcar las dos, el primer alumno quedó ${JSON.stringify(ahora[0])}: ` +
+        `«marcada:-1» es una respuesta que la familia dio y la pantalla le borró`)
+
+      // (f.2) Y ENTRE HERMANOS: es la copia de la MISMA pregunta, el caso que rompe.
+      await marcar(1, 0, 2)
+      await page.waitForTimeout(250)
+      ahora = await leerRedondeles()
+      const nombresDeGrupo = ahora.map(x => x.grupos.map(g => g.name))
+      c.afirmar('(f.2) contestar por un hermano NO desmarca lo que se contestó por el otro',
+        ahora[0] && ahora[1] &&
+        ahora[0].grupos[0].marcada === 0 && ahora[0].grupos[1].marcada === 1 &&
+        ahora[1].grupos[0].marcada === 2,
+        `tras contestar por el segundo hermano quedó ${JSON.stringify(ahora)} ` +
+        `(nombres de grupo: ${JSON.stringify(nombresDeGrupo)}): si el nombre del grupo no ` +
+        `lleva a la persona, las dos copias de la misma pregunta son UN SOLO grupo para el ` +
+        `navegador y contestar por un hijo borra lo del otro`)
+    }
 
     // ── (d.3) LA CLAVE DE LA RESPUESTA NO CAMBIÓ AL AGRUPAR ──────────────────────────
     // `Step5Questions.handleNext` PARTE la clave (`question_id__sujeto`) para componer el
@@ -3766,8 +3912,12 @@ async function caminoCuestionarioNoSeApaga(page, base) {
       pastillas:    document.querySelectorAll('[data-testid="sujeto-separador"]').length,
       lineaDeSiempre: !!document.querySelector('.kis-card p i.bi-person, .kis-card p i.bi-person-fill'),
     }))
+    // `0º.tricies.vicies.septies`: con DOS conjuntos en el catálogo, un solo alumno pinta un
+    // bloque POR CONJUNTO (los dos suyos). Lo que se afirma abajo sigue siendo lo mismo: con
+    // UN SOLO hijo en toda la solicitud no hay nada que separar, así que NINGÚN bloque —de
+    // ningún conjunto— lleva pastilla.
     if (c.afirmar('(e.3.0) ancla — con un solo alumno el paso 5 sigue pintando su bloque de sujeto',
-      solo.bloques === 1,
+      solo.bloques >= 1,
       `se pintaron ${solo.bloques} bloque(s) de sujeto con un solo alumno: sin ninguno, lo de abajo pasaría en vacío`)) {
       c.afirmar('(e.3) con UN SOLO alumno no se pinta la pastilla: se conserva la línea de siempre',
         solo.pastillas === 0 && solo.lineaDeSiempre,
@@ -6242,6 +6392,134 @@ async function caminoSimuladorNoRecalculaAlNavegar(page, base) {
 }
 
 /**
+ * ⛔ cuotas-no-llegan-no-se-miente — `0º.tricies.vicies.sexies` (Diego, 2026-08-26).
+ *
+ * Diego: *«Ahora no carga ninguna cuota en el wizard en el paso 7»*, con el recuadro
+ * diciendo *«Todavía no podemos mostrarte una simulación de las cuotas. El colegio te
+ * informará de los importes cuando estudie tu solicitud.»* — y en su propio registro
+ * `simularCuotas` había salido y el navegador la había CORTADO a los 240.000 ms sin
+ * respuesta. **No es que no haya cuotas: es que no llegaron**, y la pantalla hablaba del
+ * colegio.
+ *
+ * El molde es el del paso 1 (`programas-no-se-inventan`): TRES situaciones, no dos —
+ * calculando · el servidor contestó (y puede no haber cuotas, que es legítimo) · no se
+ * pudo calcular, que se DICE y se puede reintentar.
+ *
+ * ⛔ EL FALLO SE PROVOCA MATANDO EL SOCKET, no con un `{ok:false}` ni con
+ * `scenario.simulacionFalla`: lo que hay que reproducir es el fallo que NO DEJA RESPUESTA
+ * QUE LEER. `simulacionFalla` responde `simulable:false`, que es el servidor CONTESTANDO
+ * que ese plan no admite cuotas — el caso legítimo del que hay que distinguirse, y que
+ * sigue midiéndose en `simulador-paso7`.
+ *
+ * ⚠️ Esto NO hace que las cuotas lleguen: mientras `simularCuotas` tarde más de cuatro
+ * minutos, la familia seguirá sin verlas. Eso lo cierra `0º.tricies.vicies.quinquies`.
+ * Aquí solo se deja de mentir.
+ */
+async function caminoCuotasNoLleganNoSeMiente(page, base) {
+  const c = new Camino('cuotas-no-llegan-no-se-miente')
+  scenario.stage = 'lista_para_enviar'
+  scenario.simulacionFalla = false
+
+  if (REAL) {
+    c.noCubierta('cuotas-cortadas',
+      'el escenario hostil (la simulación se corta sin dejar respuesta) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre')
+    return c
+  }
+
+  let pedidas = 0
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'simularCuotas') pedidas++
+  }
+  page.on('request', espiar)
+
+  // El corte deja un «network/fetch error» en la consola de la aplicación. Es CORRECTO que
+  // quede registrado —el defecto era justamente tragárselo—, así que se declara para que
+  // no cuente como ruido, y la batería exige que ocurra de verdad.
+  c.esperarErrorConsola(/gasCall simularCuotas: network\/fetch error/,
+    'la simulación se corta a propósito para comprobar que la familia se entera')
+
+  // ⚠️ SE MATAN TODOS LOS INTENTOS, no solo el primero — y es lo MEDIDO, no una
+  // precaución: al destruir el socket, **Chromium reintenta la petición por debajo**
+  // (mismo hallazgo que `0º.tricies.vicies.semel`). Con el contador a 1, ese reintento
+  // invisible traía las cuotas y la pantalla nunca llegaba a fallar: el camino salía en
+  // verde sin haber medido nada. Se abre a 0 más abajo, para el reintento de VERDAD.
+  scenario.simulacionCorta = 99
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) < 6; i++) {
+      if (!await continuar(c, page, (await dondeEstoy(page)) + 1, 'hacia Revisión')) break
+    }
+    if (!c.afirmar('se llega a Revisión', (await dondeEstoy(page)) === 6,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(LATENCY + 1500)
+
+    const leer = () => page.evaluate(() => {
+      const el = document.querySelector('[data-testid="paso7-simulador"]')
+      return {
+        recuadro:  !!el,
+        texto:     el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '',
+        vacio:     !!document.querySelector('[data-testid="paso7-simulador-vacio"]'),
+        fallo:     !!document.querySelector('[data-testid="paso7-simulador-fallo"]'),
+        reintento: !!document.querySelector('[data-testid="paso7-simulador-reintentar"]'),
+        opciones:  document.querySelectorAll('[data-testid="paso7-modalidad"]').length,
+      }
+    })
+
+    const roto = await leer()
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, roto.recuadro ? 2 : 0)
+    c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, pedidas)
+    // ANCLA: sin el recuadro del simulador, todo lo de abajo pasaría EN VACÍO.
+    if (!c.afirmar('(0) ancla — el paso 7 pinta su recuadro de cuotas',
+      roto.recuadro, 'no se pintó [data-testid="paso7-simulador"]: sin él no hay nada que medir')) return c
+
+    c.afirmar('(1) una simulación que NO LLEGA no se cuenta como «el colegio ya te dirá»',
+      !roto.vacio && !/te informará|will tell you/i.test(roto.texto),
+      `el recuadro decía ${JSON.stringify(roto.texto.slice(0, 200))}: un fallo de transporte ` +
+      `está saliendo por la MISMA puerta que «este plan no admite cuotas», y la pantalla habla ` +
+      `del colegio cuando lo que pasa es que no le llegó la respuesta`)
+
+    c.afirmar('(2) la pantalla DICE que no se pudo calcular',
+      roto.fallo,
+      `no se pintó [data-testid="paso7-simulador-fallo"]; el recuadro decía ` +
+      `${JSON.stringify(roto.texto.slice(0, 200))}`)
+
+    c.afirmar('(3) y ofrece volver a intentarlo',
+      roto.reintento,
+      'no se pintó el botón de reintento: sin él la familia solo puede recargar el asistente entero')
+
+    c.afirmar('(4) con la simulación caída NO se pinta ninguna forma de pago (ni números falsos)',
+      roto.opciones === 0,
+      `se pintaron ${roto.opciones} opción(es) pese a que el servidor no contestó`)
+
+    // ── Y NO SE QUEDA PEGADO: el reintento sale a la red y trae las cuotas ─────────────
+    if (roto.reintento) {
+      const antes = pedidas
+      scenario.simulacionCorta = 0    // el servidor vuelve
+      await page.click('[data-testid="paso7-simulador-reintentar"]')
+      await page.waitForTimeout(LATENCY + 1500)
+      const sano = await leer()
+      c.afirmar('(5) «Volver a intentarlo» vuelve a PREGUNTAR de verdad',
+        pedidas > antes,
+        `se pidieron ${pedidas - antes} simulaciones al reintentar: si el fallo se hubiera ` +
+        `guardado en la memoria de la sesión, el botón no serviría de nada`)
+      c.afirmar('(6) al volver el servidor, las cuotas aparecen y el aviso de fallo se va',
+        sano.opciones >= 1 && !sano.fallo,
+        `tras reintentar: opciones=${sano.opciones} aviso de fallo=${sano.fallo}. ` +
+        `Un fallo memorizado apagaría el simulador el resto de la sesión`)
+    }
+    return c
+  } finally {
+    page.off('request', espiar)
+    scenario.simulacionCorta = 0
+  }
+}
+
+/**
  * simulador-paso7-varios-planes — UN NIÑO PUEDE TENER VARIOS PLANES A LA VEZ
  * (`0º.quaterdecies`, 2026-08-21).
  *
@@ -8226,6 +8504,11 @@ const CAMINOS = [
   // comedor) ve los dos, con su nombre y su total sumado. Contra el sistema real se
   // declara NO CUBIERTO: exige declarar dos plantillas aplicables a la vez en el catálogo.
   { nombre: 'simulador-no-recalcula-al-navegar', fn: caminoSimuladorNoRecalculaAlNavegar,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
+  // `0º.tricies.vicies.sexies` — una simulación que NO LLEGA no puede salir por la misma
+  // puerta que «este plan no admite cuotas»: la primera es un fallo y se dice; la segunda
+  // es una respuesta legítima del colegio.
+  { nombre: 'cuotas-no-llegan-no-se-miente', fn: caminoCuotasNoLleganNoSeMiente,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'simulador-paso7-varios-planes', fn: caminoSimuladorPaso7VariosPlanes,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
