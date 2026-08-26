@@ -718,7 +718,21 @@ export function createDispatcher(scenario, record) {
           },
           enrollments:    [],
           admission:      null,
-          lookups:        lookupsSegunEscenario_(scenario),
+          // ⛔ `lookups: {}` — VACÍO, que es lo que devuelve el contrato REAL
+          // (`backend/Code.js`, rama `if (!stepUpFresh)` de `hydrateSession_`:
+          // `lookups: {}, questions: null`). Aquí se servían los catálogos igualmente, y
+          // eso era una divergencia del SIMULADO respecto del contrato que declara copiar.
+          //
+          // ⚠️ Y se dice lo que NO fue, porque al medirlo la conclusión fácil resultó
+          // FALSA: esta divergencia **no estaba escondiendo** los viajes de más de la
+          // entrada. Se comprobó (2026-08-26) corriendo `un-viaje-al-abrir` contra el
+          // código de ayer CON el simulado divergente: salían los OCHO viajes igual. El
+          // motivo es que `hydrateFromResume` RETORNA en su rama `pii_gated`
+          // (`WizardContext.jsx`) **antes** de llegar a `primeLookups`, así que el cliente
+          // no siembra su caché mande el servidor lo que mande. Se corrige porque un
+          // simulado que miente sobre el contrato es una trampa para el siguiente, no
+          // porque destapara este defecto.
+          lookups:        {},
           questions:      null,
           live_version:   0,
           persons:        [], relations: [], documents: [], responses: [],

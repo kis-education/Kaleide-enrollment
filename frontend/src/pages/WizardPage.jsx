@@ -60,6 +60,22 @@ export default function WizardPage() {
   const [saving,            setSaving]            = useState(false);
   const [sendingMagicLink,  setSendingMagicLink]  = useState(false);
   const [rehydrating,       setRehydrating]       = useState(false);
+
+  // ⛔⛔ `0º.tricies.vicies.quater` (2026-08-26) — ¿VA A SALIR LA VERJA DE DATOS PERSONALES?
+  //
+  // Se calcula AQUÍ ARRIBA, en UN SOLO SITIO, porque lo necesitan TRES sitios: los dos
+  // efectos de montaje (de abajo) y el render (`mustPassEntryGate`, más abajo, que se
+  // deriva de éste). Escribir la condición tres veces es cómo divergen las cosas.
+  //
+  // Es EXACTAMENTE `mustPassEntryGate` **sin** `rehydrating`, y la ausencia es deliberada:
+  // uno de sus consumidores es justo el efecto que PONE `rehydrating` a true, así que
+  // incluirlo lo haría circular. Al montar, `rehydrating` vale `false` (su estado inicial),
+  // de modo que en ese instante las dos condiciones valen LO MISMO — que es el único
+  // instante en el que los efectos de montaje la miran.
+  //
+  // Lo que significa: la familia llegó por su enlace y la ventana del código NO está viva
+  // ⇒ lo siguiente que va a ver es la casilla del código, no su solicitud.
+  const laVerjaVaASalir = recoveredViaMagicLink && !!resumeToken && !isStepUpFresh();
   const [abandoning,        setAbandoning]        = useState(false);
   // DL-E39: si saveStep (PII) devuelve STEPUP_REQUIRED, guardamos la acción
   // pendiente (re-lanzar handleNext con los mismos args) para reintentar tras
@@ -88,7 +104,36 @@ export default function WizardPage() {
   // el invariante del Step 5 (set completo o loader, nunca parcial). Esto desacopla
   // el catálogo del primer paint (parte frontend de SPEC-WIZ-LAZY; la opción (a) de
   // quitar el plegado del hydrate es backend y queda fuera de este carril FE).
-  useEffect(() => { prefetchLookups(i18n.language); prefetchQuestions(i18n.language); }, []); // eslint-disable-line
+  //
+  // ⛔⛔ `0º.tricies.vicies.quater` (2026-08-26) — PERO NO MIENTRAS LA VERJA ESTÉ CERRADA.
+  //
+  // MEDIDO el mismo día (`un-viaje-al-abrir`): éstos eran el CUARTO y el QUINTO de los ocho
+  // viajes de la entrada, y se pagaban **detrás de la verja del código** — o sea, para llenar
+  // los desplegables de unos pasos (vínculos, salud, preguntas) que la familia **todavía no
+  // puede ver**. Con ~60 s por viaje (el reparto medido: 15 s de trabajo, 73 s vistos), eran
+  // dos minutos de cola por delante de la pantalla que sí importa.
+  //
+  // ⛔ Y NO SE PIERDE NADA: los catálogos **vienen dentro de la hidratación** —
+  // `hydrateSession` devuelve `lookups` y `questions`, y `hydrateFromResume` los siembra con
+  // `primeLookups`/`primeQuestions` — así que al abrir la verja ya están en memoria sin
+  // pedirlos. Lo afirma el propio recorrido, aparte del recuento: *«los catálogos llegan CON
+  // esa hidratación, sin pedirlos aparte»*.
+  //
+  // ⛔ EL RESPALDO SE QUEDA, y por eso esto es un APLAZAMIENTO y no una retirada: si algún
+  // día la hidratación no los trajera, la familia se quedaría con los desplegables vacíos.
+  // Se disparan en cuanto el asistente pinta sus pasos de verdad —o sea, con la verja ya
+  // abierta Y la hidratación resuelta—, momento en el que las dos funciones encuentran su
+  // caché sembrada y **no salen a la red**. Se pagan solo si de verdad faltaban.
+  //
+  // ⛔ El orden importa y por eso se espera TAMBIÉN a `rehydrating`: `mustPassEntryGate` se
+  // vuelve falso en cuanto la familia teclea el código (`markStepUpFresh()`), pero la
+  // hidratación que trae los catálogos tarda todavía en volver. Disparar en ese hueco sería
+  // volver a pagar los dos viajes, esta vez compitiendo con la llamada que sí importa.
+  useEffect(() => {
+    if (laVerjaVaASalir || rehydrating) return;
+    prefetchLookups(i18n.language);
+    prefetchQuestions(i18n.language);
+  }, [laVerjaVaASalir, rehydrating, i18n.language]); // eslint-disable-line
 
   // WPERF-1 criterio "eager docs": si el expediente está Aprobado (AD) y la firma está
   // lista para este guardian (no completada), calienta el paquete contractual (members
@@ -266,7 +311,33 @@ export default function WizardPage() {
   // On page reload, enrollmentGroupId is restored from sessionStorage but stepData is empty.
   // Auto-resume from the server to restore full wizard state.
   useEffect(() => {
-    if (needsHydration && resumeToken) {
+    // ⛔⛔ `0º.tricies.vicies.quater` — CON LA VERJA CERRADA, ESTA LLAMADA ES UN VIAJE REGALADO.
+    //
+    // MEDIDO el 2026-08-26 (recorrido `un-viaje-al-abrir`): abrir el asistente costaba OCHO
+    // peticiones, y ÉSTA era la sexta —`hydrateSession` por SEGUNDA vez—. Sin ventana de
+    // código viva, el servidor devuelve la rama cerrada de `hydrateSession_`
+    // (`pii_gated:true`, `persons:[]`, `lookups:{}`) — o sea **EL MISMO esqueleto vacío que
+    // la llamada de `ResumePage` acaba de traer**. Se pagaban ~60 s de viaje (medido en el
+    // registro real de Diego) para recibir lo que ya se tenía.
+    //
+    // ⛔ Y NO SE PIERDE NADA, porque la hidratación de verdad YA EXISTE en el sitio correcto:
+    // el `onVerified` de la verja (más abajo, en el render) hidrata en cuanto la familia
+    // teclea su código — que es el único momento en que el servidor puede mandar sus datos.
+    // Este efecto no la sustituye ni la adelanta: solo dejaba de aportar.
+    //
+    // ⭐ Y de paso se cae un SÉPTIMO viaje: al poner `rehydrating=true`, este efecto
+    // DESMONTABA la verja y la volvía a montar (el remontaje que documenta
+    // `0º.tricies.nonies`), y la instancia nueva disparaba OTRO `warmSession` — que el
+    // servidor rechaza con `RATE_LIMITED` (`warmSession_`: 120 s por token Y por
+    // expediente). Sin remontaje, no hay segundo precalentado que rechazar.
+    //
+    // ⛔ NO SE TOCA NINGUNA PUERTA DE SEGURIDAD: no se adelanta ni un dato de familia (la
+    // respuesta que se deja de pedir venía VACÍA a propósito), la verja se sigue mostrando
+    // igual, y el expediente sigue saliendo del token (KAL-4). Lo único que cambia es que no
+    // se pide dos veces lo mismo.
+    if (needsHydration && resumeToken && laVerjaVaASalir) {
+      log.info('WizardPage: verja cerrada — la rehidratación espera al código (0º.tricies.vicies.quater)');
+    } else if (needsHydration && resumeToken) {
       setRehydrating(true);
       log.info('WizardPage: rehydrating session after reload', { enrollmentGroupId });
       // DL-E38 a1 / P215: re-send the email the family typed (persisted in

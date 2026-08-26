@@ -254,6 +254,9 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'el-fallo-sustituye-al-aviso':  'exige que el servidor RECHACE la petición del código; no se provoca contra datos reales. En modo simulado sí se cubre, con `scenario.codigoFalla`.',
     'reenviar-limitado-por-reloj':  'misma razón que las tres primeras',
   },
+  'un-viaje-al-abrir': {
+    'un-viaje-al-abrir': 'exige forzar la verja de datos personales (dejar caducar la gracia del enlace) para que el asistente se encuentre la respuesta CERRADA, que es la que producía el tropel; contra el sistema real eso pide un buzón que este arnés no lee. En modo simulado sí se cubre, con `scenario.piiGated`.',
+  },
   'codigo-al-entrar-por-enlace': {
     'un-solo-codigo-al-entrar':        'exige forzar la verja del código (dejar caducar la gracia del enlace) y contar los envíos a un buzón que este arnés no lee; en modo simulado sí se cubre, con `scenario.piiGated`',
     'la-pantalla-dice-que-ya-se-envio': 'misma razón',
@@ -7395,6 +7398,225 @@ async function caminoVentanaPorInactividad(page, base) {
 }
 
 /**
+ * `0º.tricies.vicies.quater` — ABRIR EL ASISTENTE CUESTA UN VIAJE, NO OCHO.
+ *
+ * ── Lo que pasó de verdad (Diego, 2026-08-26) ─────────────────────────────────────────
+ * *«Es imposible presentar estos tiempos de carga a un cliente de mi escuela sin recibir
+ * numerosas quejas. Esto es inviable.»* Abandonó sin que la pantalla terminara de cargar.
+ * Medido en su registro: el tiempo **no se va en trabajar, se va en VIAJAR** — la puerta del
+ * expediente hace **4,8 s** de trabajo dentro del KMS y tarda **66 s** en volver; las listas,
+ * **15 s / 73 s**; el pulso, **0,8 s / 45 s**. Y abrir el asistente disparaba **OCHO**
+ * llamadas casi simultáneas, que se encolan unas detrás de otras.
+ *
+ * ── Qué mide este camino, y por qué SE PUEDE medir aquí ───────────────────────────────
+ * Mide **el número de viajes**, que es una decisión del NAVEGADOR: quién dispara qué, y
+ * cuándo. Eso es exactamente lo que la batería sí puede afirmar. Lo que NO mide —y se dice—
+ * son los SEGUNDOS: el servidor simulado responde en milisegundos y nunca ejecuta
+ * `backend/Code.js` ni el KMS.
+ *
+ * ⛔ **Va con la VERJA PUESTA (`piiGated`), y no es un detalle**: con la gracia del enlace
+ * viva el servidor devuelve la solicitud entera —catálogos incluidos— y el asistente no
+ * necesita pedir nada más, así que el tropel **no se produce** y este camino pasaría EN
+ * VACÍO. El caso de Diego es el otro: enlace sin gracia ⇒ primera respuesta cerrada
+ * (`pii_gated:true`, `lookups:{}`, `questions:null`) y **de ahí salían los siete viajes de
+ * más**.
+ *
+ * ⚠️ Y el simulado NO reproducía esa respuesta cerrada: servía los catálogos igualmente. Era
+ * una divergencia SUYA respecto del contrato real (`backend/Code.js`, rama `if (!stepUpFresh)`
+ * de `hydrateSession_`), y era la razón por la que la batería no podía ver el defecto.
+ * Corregida en el mismo cambio.
+ */
+async function caminoUnViajeAlAbrir(page, base) {
+  const c = new Camino('un-viaje-al-abrir')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    // Contra el sistema de verdad la verja solo se abre dejando caducar la gracia del enlace,
+    // y forzar esa caducidad exige un buzón que este arnés no lee. No se afloja para que pase.
+    c.noCubierta('un-viaje-al-abrir', 'ver NO_CUBIERTAS_SOLO_REAL')
+    return c
+  }
+
+  // El contador va sobre las peticiones REALES del navegador, no sobre lo que el arnés
+  // apunta: lo que se afirma es cuántas veces se sale a la red, y eso solo lo sabe la red.
+  const peticiones = []
+  const enVuelo = { n: 0 }
+  // Se apunta CUÁNDO sale cada una y CUÁNDO vuelve la hidratación: eso es lo que permite
+  // afirmar que la llamada que PINTA no compite con nadie, que es la propiedad de fondo
+  // (el tropel no dolía por ser ocho, dolía porque las ocho se encolaban a la vez).
+  const salidas = []
+  let hidratacionVuelveEn = null
+  const t0Camino = Date.now()
+  const alPedir = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    enVuelo.n++
+    try {
+      const a = JSON.parse(req.postData() || '{}').action
+      if (a) { peticiones.push(a); salidas.push({ a, t: Date.now() - t0Camino }) }
+    } catch { /* cuerpo raro */ }
+  }
+  const alVolver = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    enVuelo.n--
+    try {
+      const a = JSON.parse(req.postData() || '{}').action
+      if (a === 'hydrateSession' && hidratacionVuelveEn === null) hidratacionVuelveEn = Date.now() - t0Camino
+    } catch { /* cuerpo raro */ }
+  }
+  page.on('request', alPedir)
+  page.on('requestfinished', alVolver)
+  page.on('requestfailed', alVolver)
+  const limpiar = () => {
+    page.off('request', alPedir)
+    page.off('requestfinished', alVolver)
+    page.off('requestfailed', alVolver)
+  }
+
+  /** Espera a que no quede NADA en vuelo: irse con un `fetch` a medias lo aborta y la
+   *  aplicación registra un «network/fetch error» que es del ROBOT, no suyo. */
+  const drenar = async (techo = 16000, quietud = 400) => {
+    const t0 = Date.now()
+    let ultimo = Date.now()
+    let visto = peticiones.length
+    while (Date.now() - t0 < techo) {
+      if (peticiones.length !== visto) { visto = peticiones.length; ultimo = Date.now() }
+      if (enVuelo.n === 0 && Date.now() - ultimo > quietud) return
+      await page.waitForTimeout(120)
+    }
+  }
+
+  try {
+    scenario.piiGated = true
+    scenario.otpSuperado = false
+
+    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+
+    // El desenlace observable con la verja puesta es la CASILLA DEL CÓDIGO. Se espera a ella
+    // —no a un reloj— para que el recuento se tome sobre la pantalla que la familia ve.
+    const pidioCodigo = await page.waitForSelector('input[autocomplete="one-time-code"]',
+      { timeout: LATENCY * 4 + 20000 }).then(() => true).catch(() => false)
+
+    // ⛔ ANCLA. Sin ella, «se hicieron pocos viajes» saldría VERDE sobre una pantalla que no
+    // llegó a montarse — que es la forma más cara de verde falso.
+    if (!c.afirmar('(0) con la verja puesta, el asistente pide el código',
+      pidioCodigo,
+      'nunca apareció la casilla del código: la secuencia que este recorrido mide no llegó a darse')) return c
+
+    // El precalentado de la entrada sale RETRASADO a propósito (4 s), así que un recuento
+    // tomado antes se dejaría fuera justo una de las llamadas que hay que contar. Se espera a
+    // que la red calle de verdad, con quietud larga.
+    await page.waitForTimeout(5200)
+    await drenar(16000, 1200)
+
+    c.evidencia.elementos = Math.max(1, peticiones.length)
+
+    const cuantas = (a) => peticiones.filter(x => x === a).length
+    const total = peticiones.length
+
+    // ── (1) EL RECUENTO. Es la afirmación de la ficha, dicha en su propio término. ────────
+    // El listón son CUATRO, y las cuatro tienen su motivo escrito — ninguna es un viaje de
+    // datos duplicado:
+    //   1. `hydrateSession`      — LA ÚNICA QUE PINTA: trae la cabecera del expediente.
+    //   2. `sendVerificationCode`— el código que la familia necesita para entrar.
+    //   3. `warmSession`         — cocina la solicitud mientras ella teclea (fuego y olvido).
+    //   4. `warmBundle`          — a los 4 s, y lo único que hace de verdad en este camino es
+    //                              arrancar el precalentado de la simulación del paso 7: su
+    //                              otra mitad choca con el freno de `warmSession_` (120 s por
+    //                              token Y por expediente) y vuelve `RATE_LIMITED`.
+    //
+    // ⚠️ NO SE BAJA A TRES fundiendo 3 y 4, y el motivo está MEDIDO: cada una es la única
+    // que calienta en SU camino — `warmSession` en la RECARGA (donde `ResumePage` no llega a
+    // montarse) y `warmBundle` en la ENTRADA POR EL ENLACE (donde además arranca la fase de
+    // la simulación). Fundirlas es tocar `backend/Code.js` y arriesga DUPLICAR el arranque
+    // de esa fase en el camino del ticket, que ya la mintea por su cuenta. Queda dicho, no
+    // hecho.
+    //
+    // El techo es lo que impide que el tropel vuelva sin que nadie se entere.
+    c.afirmar('(1) abrir el asistente cuesta CUATRO viajes como mucho, no ocho',
+      total <= 4,
+      `salieron ${total} peticiones al abrir: [${peticiones.join(', ')}] — el tropel de la entrada ha vuelto`)
+
+    // ── (1.bis) Y LA PROPIEDAD DE FONDO: la que PINTA no compite con nadie. ───────────────
+    // El tropel no dolía por ser ocho, dolía porque las ocho salían casi a la vez y se
+    // encolaban: con ~60 s de viaje cada una (medido en el registro real de Diego), la
+    // hidratación acababa esperando detrás de precalentados y catálogos. Aquí se afirma lo
+    // único que de verdad le importa a la familia: **mientras la solicitud viene de camino,
+    // no sale ninguna otra petición**. Las tres restantes arrancan DESPUÉS, cuando la
+    // pantalla ya está.
+    const antesDeVolverLaHidratacion = hidratacionVuelveEn === null
+      ? salidas.filter(x => x.a !== 'hydrateSession')
+      : salidas.filter(x => x.a !== 'hydrateSession' && x.t < hidratacionVuelveEn)
+    c.afirmar('(1.bis) la llamada que PINTA no compite con ninguna otra',
+      antesDeVolverLaHidratacion.length === 0,
+      `mientras la solicitud venía de camino salieron ${antesDeVolverLaHidratacion.length} petición(es) más: ` +
+      `[${antesDeVolverLaHidratacion.map(x => `${x.a}@${x.t}ms`).join(', ')}] — se encolan por delante de la pantalla`)
+
+    // ── (2) LA HIDRATACIÓN, UNA VEZ. La segunda era un viaje entero regalado: con la verja
+    //       puesta devuelve EL MISMO esqueleto vacío que el cliente ya tiene. ──────────────
+    c.afirmar('(2) la solicitud se pide UNA sola vez, no dos',
+      cuantas('hydrateSession') === 1,
+      `hydrateSession salió ${cuantas('hydrateSession')} veces: la rehidratación de WizardPage vuelve a pagar el viaje para recibir el MISMO esqueleto cerrado`)
+
+    // ── (3) LOS CATÁLOGOS. Detrás de la verja la familia no ve ni vínculos ni preguntas:
+    //       pedirlos ahí es pagar dos viajes por lo que no se puede enseñar. ───────────────
+    c.afirmar('(3) los catálogos NO se piden mientras la verja está cerrada',
+      cuantas('fetchLookups') === 0 && cuantas('fetchQuestions') === 0,
+      `fetchLookups salió ${cuantas('fetchLookups')} vez/veces y fetchQuestions ${cuantas('fetchQuestions')}: se están pagando los catálogos de unos pasos que la familia todavía no puede ver`)
+
+    // ── (4) EL PULSO. No tiene nada que vigilar mientras no haya pantalla que refrescar. ──
+    c.afirmar('(4) el pulso no late mientras la verja está cerrada',
+      cuantas('getLiveStateVersion') === 0 && cuantas('getAdmissionState') === 0,
+      `el pulso salió ${cuantas('getLiveStateVersion') + cuantas('getAdmissionState')} vez/veces con la verja cerrada`)
+
+    // ── (5) LO QUE NO SE TOCA: el código SIGUE saliendo solo. Quitar viajes no puede
+    //       convertirse en dejar a la familia esperando a pulsar un botón. ────────────────
+    c.afirmar('(5) y el código de un solo uso SIGUE saliendo solo al abrir',
+      cuantas('sendVerificationCode') === 1,
+      `sendVerificationCode salió ${cuantas('sendVerificationCode')} vez/veces: si no sale sola, la familia se queda esperando un código que nadie ha pedido`)
+
+    c.notas.push(`✓ viajes al abrir con la verja puesta: ${total} — `
+      + `[${salidas.map(x => `${x.a}@${x.t}ms`).join(', ')}]`
+      + ` · la solicitud volvió a los ${hidratacionVuelveEn}ms`)
+
+    // ── (6) Y TRAS TECLEAR EL CÓDIGO, LA SOLICITUD LLEGA ENTERA. Es la otra mitad: quitar
+    //       viajes de la entrada no puede dejar a la familia sin sus catálogos después. ───
+    const antesDelCodigo = peticiones.length
+    scenario.otpSuperado = true
+    // Mismos gestos que `entrarConElCodigo` del recorrido de la ventana — no se inventa
+    // navegación nueva: se teclea el código y se pulsa el botón primario de la verja.
+    await page.fill('input[autocomplete="one-time-code"]', '123456')
+    await page.evaluate(() => {
+      const b = [...document.querySelectorAll('button.btn-primary-kis')].find(x => !x.disabled)
+      if (b) b.click()
+    })
+    const abierto = await page.waitForFunction(
+      () => !!document.querySelector('.wizard-step'), null, { timeout: LATENCY * 4 + 20000 })
+      .then(() => true).catch(() => false)
+    await drenar()
+
+    c.afirmar('(6) con el código tecleado, el asistente SÍ abre la solicitud',
+      abierto,
+      `tras teclear el código el asistente no pintó los pasos (peticiones desde entonces: [${peticiones.slice(antesDelCodigo).join(', ')}])`)
+
+    const trasCodigo = peticiones.slice(antesDelCodigo)
+    const pasos = await page.evaluate(() => document.querySelectorAll('.wizard-step').length)
+    c.evidencia.elementos = Math.max(c.evidencia.elementos, pasos)
+    c.afirmar('(7) y los catálogos llegan CON esa hidratación, sin pedirlos aparte',
+      trasCodigo.filter(x => x === 'fetchLookups').length === 0 &&
+      trasCodigo.filter(x => x === 'fetchQuestions').length === 0,
+      `tras abrir la verja se pidieron los catálogos aparte: [${trasCodigo.join(', ')}] — la hidratación ya los trae, así que eso son dos viajes de más`)
+
+    await drenar(16000, 1200)
+    return c
+  } finally {
+    scenario.piiGated = false
+    scenario.otpSuperado = false
+    limpiar()
+  }
+}
+
+/**
  * `0º.tricies.octies` (D) — EL AVISO ROJO DEL PASO 3 MANDA A MIRAR DONDE ES.
  *
  * Lo que pasó de verdad (Diego, 2026-08-22): con los DOS tutores ya puestos y el par de
@@ -7888,6 +8110,11 @@ const CAMINOS = [
   { nombre: 'precalentado-fallo-se-registra', fn: caminoPrecalentadoFalloSeRegistra,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'recuperar-aterrizar', fn: caminoRecuperarAterrizar, minLlamadas: 1, minElementos: 11 },
+  // `0º.tricies.vicies.quater` — abrir el asistente cuesta UN viaje, no ocho.
+  // ⚠️ El mínimo de llamadas es 1 A PROPÓSITO y NO se sube: la evidencia de este camino es
+  // justamente que salgan POCAS. Exigirle un número alto sería premiar el defecto que mide.
+  { nombre: 'un-viaje-al-abrir', fn: caminoUnViajeAlAbrir,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   // `0º.tricies.vicies.semel` — un fallo de transporte NO puede decir «el enlace puede haber
   // caducado» ni mandar a la familia a rotar el token que tiene en la mano.
   // ⚠️ El mínimo de llamadas es 1 A PROPÓSITO: el arnés cuenta las que quedan en `calls` al

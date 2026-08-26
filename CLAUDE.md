@@ -3603,6 +3603,126 @@ enlace caducado de verdad se quedaría reintentando sin que nadie le ofrezca ped
 `resume.fail.named_title` / `named_body`. El de la portada (`landing.resume_error`) **no se toca**:
 ahí sigue siendo verdad.
 
+### `0º.tricies.vicies.quater` (2026-08-26) — abrir el asistente cuesta CUATRO viajes, no ocho
+
+**Diego, 2026-08-26, cita literal:** *«Es imposible presentar estos tiempos de carga a un cliente de
+mi escuela sin recibir numerosas quejas. Esto es inviable.»* Abandonó sin que la pantalla terminara
+de cargar. Y antes: *«llevamos meses tratando de optimizar la carga de una simple web que consulta
+muy pocos datos… seguimos con un sistema que no es usable»*.
+
+**El diagnóstico ya estaba medido (`0º.tricies.vicies.bis`) y cambia dónde hay que mirar: el tiempo
+NO se va en trabajar, se va en VIAJAR.** Cronometrado DENTRO del KMS frente a lo que ve el
+asistente: la puerta del expediente **4,8 s de trabajo / 66,0 s vistos**; las listas **15,0 s /
+73,0 s**; el pulso **0,8 s / 45,2 s**. ⇒ **~60 s por llamada se van en el salto**, no en la consulta.
+Meses de optimización habían estado quitando segundos del lado que ya era rápido.
+
+**⇒ La palanca es el NÚMERO de viajes.** Y abrir el asistente costaba **OCHO**.
+
+**LO PRIMERO FUE MEDIRLO, y el recuento reproduce el registro de Diego EXACTAMENTE** (recorrido
+nuevo `un-viaje-al-abrir`, contando las peticiones REALES del navegador, no lo que apunta el arnés):
+
+| | ANTES (`origin/main`) | DESPUÉS |
+|---|---|---|
+| viajes al abrir | **8** | **4** |
+| la secuencia | `hydrateSession · sendVerificationCode · warmSession · fetchLookups · fetchQuestions · hydrateSession · warmSession · warmBundle` | `hydrateSession · sendVerificationCode · warmSession · warmBundle` |
+| ¿la que PINTA compite? | — | **no**: sale sola y las otras tres arrancan después |
+
+**⛔ LA MEDICIÓN VA CON LA VERJA DEL CÓDIGO PUESTA, y no es un detalle de montaje.** Con la gracia
+del enlace viva el servidor devuelve la solicitud entera —catálogos incluidos— y el asistente no
+pide nada más: **el tropel no se produce y el recorrido pasaría EN VACÍO**. El caso de Diego es el
+otro: enlace sin gracia ⇒ el servidor contesta su rama cerrada (`pii_gated:true`, `persons:[]`,
+`lookups:{}`, `questions:null`) y **de ahí salían los cuatro viajes de más**.
+
+**Lo quitado, y por qué ninguno se echa de menos:**
+
+| Qué | Por qué sobraba |
+|---|---|
+| **la SEGUNDA `hydrateSession`** (`WizardPage`, efecto `needsHydration`) | con la verja cerrada devuelve **el mismo esqueleto vacío** que la primera acaba de traer. La hidratación de verdad ya existe en su sitio: el `onVerified` de la verja, que corre cuando la familia teclea el código — el único momento en que el servidor puede mandar sus datos |
+| **el SEGUNDO `warmSession`** | se caía solo: lo provocaba el remontaje de la verja que causaba esa rehidratación (`0º.tricies.nonies`), y el servidor lo rechazaba con `RATE_LIMITED` (`warmSession_`: 120 s por token Y por expediente). **Un viaje entero para que lo rechacen** |
+| **`fetchLookups` + `fetchQuestions`** | se pagaban **detrás de la verja**, para llenar los desplegables de unos pasos que la familia todavía no puede ver. Y **vienen dentro de la hidratación** (`primeLookups`/`primeQuestions`), así que al abrir la verja ya están en memoria |
+
+**⛔ Los catálogos se APLAZAN, no se retiran.** El respaldo se queda y se dispara **cuando el
+asistente pinta sus pasos de verdad** —verja abierta **Y** hidratación resuelta—: ahí las dos
+funciones encuentran su caché sembrada y **no salen a la red**. Se pagan solo si de verdad faltaban.
+Y se espera también a `rehydrating` a propósito: `mustPassEntryGate` se vuelve falso en cuanto la
+familia teclea el código, pero la hidratación que trae los catálogos tarda todavía en volver —
+disparar en ese hueco sería volver a pagarlos, esta vez compitiendo con la llamada que sí importa.
+
+**⛔ NINGUNA PUERTA DE SEGURIDAD SE TOCA, y se dice campo por campo:** no se adelanta **ni un dato de
+familia** (la respuesta que se deja de pedir venía VACÍA a propósito — el eje `pii_gated` queda
+exactamente igual) · la verja sigue saliendo cuando salía · el código de un solo uso sigue
+enviándose solo al abrir (afirmación (5)) · el expediente sigue derivándose del token (KAL-4) · el
+ack constante de la portada no se roza · y **ni una línea de `backend/Code.js` ni del KMS**.
+
+**⛔ LA CONDICIÓN VIVE EN UN SOLO SITIO**, `laVerjaVaASalir` (`WizardPage.jsx`), porque la miran tres
+consumidores: los dos efectos de montaje y el render. Es `mustPassEntryGate` **sin** `rehydrating`,
+y la ausencia es deliberada: uno de sus consumidores es justo el efecto que PONE `rehydrating` a
+true. Al montar, `rehydrating` vale `false`, así que en ese instante las dos condiciones valen lo
+mismo — el único instante en que los efectos la miran.
+
+**⚠️ POR QUÉ NO SE BAJA A TRES, medido y no estimado.** Los dos precalentados que quedan **no son
+el mismo**: `warmSession` es el único que calienta en la **RECARGA** (donde `ResumePage` no llega a
+montarse) y `warmBundle` el único que arranca la fase de la **simulación del paso 7**
+(`0º.vicies.quinquies`) en la entrada por el enlace. Fundirlos es tocar `backend/Code.js` y
+arriesga **DUPLICAR** ese arranque en el camino del ticket, que ya lo mintea por su cuenta. Y los
+dos son fuego-y-olvido: **no están en el camino que la familia espera**.
+
+**⚠️ Y DOS PREMISAS DEL ENCARGO RESULTARON FALSAS AL MEDIRLAS:**
+
+1. **«el aviso del KMS solo se dispara al FALLAR un trabajo, no al terminar bien»** — **FALSO desde
+   el 2026-08-22**. `kms-server/sys/job-queue.gs:587` dice `sys_avisarAlAsistenteDelGuardado_(job,
+   'SAVE_OK')`, y lo cerró `0º.tricies.duodecies`, que el propio encargo cita como si siguiera
+   abierta. ⇒ **la invalidación por los DOS lados YA ESTÁ ENTERA**: el KMS avisa al guardar bien, al
+   fallar, al cambiar de estado y en los cuatro escritores del asistente; el asistente lo recibe en
+   `notifyLiveStateChange_` y sube la versión del grupo, que descarta toda copia vieja.
+2. **«`fetchLookups`+`fetchQuestions` son catálogos iguales para todo el mundo»** — el propio Diego
+   ya lo había corregido (*«puede hacer sets específicos para familias concretas»*), y **por eso
+   aquí no se guarda ningún cuestionario por idioma**: lo único que se hace es **no pedirlo cuando
+   no se puede enseñar**. Qué conjuntos le tocan a cada familia se sigue resolviendo por familia,
+   siempre.
+
+**⛔ LO QUE NO SE HIZO, con su motivo: la copia SIEMPRE CALIENTE que pidió Diego.** Su dirección
+(*«que el backend del wizard tenga siempre almacenada en caché una copia de esos expedientes… en
+función del token se sirven unos u otros… solo si algo cambia se invalida»*) **está construida a
+medias y lo que falta no se puede medir desde aquí**: el mecanismo de servir-por-token e invalidar
+por los dos lados **ya existe entero** (`wz_hyd_`/`wz_adm_` + `_wzCacheInvalidate_` +
+`notifyLiveStateChange_`, y el aviso del KMS ya cubre el éxito — punto 1 de arriba). Lo que falta es
+**que la copia esté hecha ANTES**, y eso exige un disparador por tiempo instalado en el proyecto de
+Apps Script del asistente ⇒ **subir al Head, que es del TURNO**; y sus tres preguntas —¿cabe un
+expediente troceado × 40 en el almacén compartido? ¿se mantiene caliente siendo *best-effort*?
+¿cuánto cuesta el disparador?— **solo se contestan ejecutando contra el sistema real**. El propio
+encargo pone el listón: *«sin ese antes-y-después no está hecho»*. Construirlo a ciegas lo
+incumpliría.
+
+**Red**: recorrido NUEVO `un-viaje-al-abrir` (9 afirmaciones), con **ancla** por delante — que la
+verja llegue a salir — para que las demás no puedan pasar sobre una pantalla que no se montó.
+**Rojo demostrado CUATRO veces**, cada una nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| devolver la rehidratación detrás de la verja | *«salieron 6 peticiones al abrir: […, hydrateSession, warmSession, warmBundle]»* + *«hydrateSession salió 2 veces: la rehidratación de WizardPage vuelve a pagar el viaje para recibir el MISMO esqueleto cerrado»* |
+| devolver el precalentado ansioso de catálogos | *«fetchLookups salió 1 vez/veces y fetchQuestions 1: se están pagando los catálogos de unos pasos que la familia todavía no puede ver»* |
+| quitar la verja (el recorrido mediría el aire) | *«nunca apareció la casilla del código: la secuencia que este recorrido mide no llegó a darse»* + *«evidencia insuficiente: 0 elementos pintados»* |
+| *(y la comprobación de que el ANTES es real)* | contra `origin/main` el recorrido canta **8 viajes** y cae en tres afirmaciones |
+
+⚠️ **Y LA MEDICIÓN SE CORRIGIÓ A SÍ MISMA.** Se dio por hecho que el simulado escondía el defecto —
+servía catálogos en la respuesta CERRADA, divergiendo del contrato real (`lookups:{}`)— y **era
+falso**: corriendo el recorrido contra el código de ayer CON el simulado divergente salían **los
+ocho viajes igual**, porque `hydrateFromResume` RETORNA en su rama `pii_gated` **antes** de llegar a
+`primeLookups`. La divergencia se corrige igualmente —un simulado que miente sobre el contrato es
+una trampa para el siguiente— pero **no era lo que destapaba nada**, y decirlo al revés habría sido
+venderse un mérito que no existió.
+
+⚠️ **Lo que la red NO cubre, y se dice con esas palabras:** la batería corre contra un backend
+**simulado** que **nunca ejecuta `backend/Code.js`** ni el KMS. Afirma **el número de viajes**, que
+es una decisión del NAVEGADOR y es exactamente lo que esta ficha vino a contar. **NO afirma los
+SEGUNDOS**: el servidor simulado responde en milisegundos. Los segundos de arriba son los medidos
+por Diego y por las sondas del KMS (`0º.tricies.vicies.bis`), no los de este recorrido.
+
+**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
+lo que cambia es cuánto espera para verla.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.
