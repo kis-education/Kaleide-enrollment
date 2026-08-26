@@ -1116,23 +1116,119 @@ function comprobarLaPuerta(fuenteLimpia) {
   // La puerta tiene que RELLENAR esa memoria; si no, `assertGroupEditable_` fallaría cerrado
   // en TODA mutación y el control de arriba seguiría verde.
   const gate = cuerpoDe(fuenteLimpia, 'requireResumeToken_')
-  if (gate !== null) {
-    if (!/_memoCabeceraEjecucion_\s*\[/.test(gate)) {
-      fallos.push('`requireResumeToken_` ya no deja la cabecera en la memoria de EJECUCIÓN — ' +
+  // ★ `0º.tricies.vicies.quinquies` (2026-08-26) — LAS ANCLAS SE MUEVEN, NO SE AFLOJAN.
+  // Los tres rechazos y el trozo que deja la ficha en la memoria + aplica KAL-4 vivían
+  // ESCRITOS dentro de `requireResumeToken_`; ahora viven en `_rechazosDelEnlace_` y
+  // `_puertaConLaCabecera_`, que comparten el camino VIVO y el de la COPIA — precisamente
+  // para que no pueda haber dos criterios. El control salió ROJO al moverlos (bien: se negó
+  // a afirmar lo que ya no podía verificar) y se le enseña dónde miran ahora.
+  const juez = cuerpoDe(fuenteLimpia, '_rechazosDelEnlace_')
+  const puerta = cuerpoDe(fuenteLimpia, '_puertaConLaCabecera_')
+  if (juez === null) {
+    fallos.push('no se encontró `_rechazosDelEnlace_` — control CIEGO: es el juez ÚNICO de los ' +
+      'tres rechazos del enlace, y lo comparten el camino vivo y la copia')
+  } else {
+    if (!/7\s*\*\s*24\s*\*\s*60\s*\*\s*60\s*\*\s*1000|RESUME_TOKEN_TTL_MS/.test(juez)) {
+      fallos.push('`_rechazosDelEnlace_` ya no aplica el TTL de 7 días — mover de dónde sale la ' +
+        'fila NO puede llevarse por delante el rechazo que se hace con ella')
+    }
+    if (!/abandoned_at/.test(juez) || !/not recognized/.test(juez)) {
+      fallos.push('`_rechazosDelEnlace_` ya no aplica los TRES rechazos (no reconocido · ' +
+        'abandonado · caducado) — la copia serviría un enlace que el KMS rechazaría')
+    }
+  }
+  if (puerta === null) {
+    fallos.push('no se encontró `_puertaConLaCabecera_` — control CIEGO: es el trozo que aplica ' +
+      'los rechazos, rellena la memoria de EJECUCIÓN y comprueba KAL-4, y lo recorren LOS DOS ' +
+      'caminos (vivo y copia)')
+  } else {
+    if (!/_rechazosDelEnlace_\s*\(/.test(puerta)) {
+      fallos.push('`_puertaConLaCabecera_` ya no pasa por el juez de los tres rechazos — un enlace ' +
+        'abandonado o caducado abriría la solicitud')
+    }
+    if (!/_memoCabeceraEjecucion_\s*\[/.test(puerta)) {
+      fallos.push('`_puertaConLaCabecera_` ya no deja la cabecera en la memoria de EJECUCIÓN — ' +
         '`assertGroupEditable_` fallaría cerrado en TODA mutación de la familia')
     }
-    // (d) ANCLAS: sin ellas el control mediría un gate vaciado.
+    if (!/_memoCabeceraClave_\s*\(/.test(puerta)) {
+      fallos.push('la puerta deja la cabecera SOLO indexada por expediente — ' +
+        '`_expedienteDelToken_` la pide por TOKEN, así que no la encuentra y vuelve a preguntar')
+    }
+    if (!/does not match resume_token grant/.test(puerta)) {
+      fallos.push('`_puertaConLaCabecera_` ya no tiene el cross-group guard — KAL-4 exige que un ' +
+        '`enrollment_group_id` del cuerpo que no case con el del token se rechace')
+    }
+    if (/payload\.enrollment_group_id\s*\|\|/.test(puerta) &&
+        !/group\.enrollment_group_id/.test(puerta)) {
+      fallos.push('`_puertaConLaCabecera_` derivaría el expediente del CUERPO — KAL-4 exige que ' +
+        'salga de la ficha que resolvió el token')
+    }
+  }
+  if (gate !== null) {
+    // (d) ANCLAS anti-vacío del propio gate: sigue existiendo, sigue validando la forma del
+    // token, y sigue LLEGANDO al trozo que rechaza y rellena la memoria.
     if (!/assertValidUuid_\s*\(/.test(gate)) {
       fallos.push('`requireResumeToken_` ya no valida la FORMA del token (`assertValidUuid_`) — ' +
         'es la capa 1 de KAL-5 y va ANTES de tocar nada')
     }
-    if (!/7\s*\*\s*24\s*\*\s*60\s*\*\s*60\s*\*\s*1000|RESUME_TOKEN_TTL_MS/.test(gate)) {
-      fallos.push('`requireResumeToken_` ya no aplica el TTL de 7 días — mover de dónde sale la ' +
-        'fila NO puede llevarse por delante el rechazo que se hace con ella')
+    if (!/_puertaConLaCabecera_\s*\(/.test(gate)) {
+      fallos.push('`requireResumeToken_` ya no pasa por `_puertaConLaCabecera_` — sin ese trozo ' +
+        'no se aplican los tres rechazos, ni KAL-4, ni se rellena la memoria de EJECUCIÓN')
     }
-    if (!/does not match resume_token grant/.test(gate)) {
-      fallos.push('`requireResumeToken_` ya no tiene el cross-group guard — KAL-4 exige que un ' +
-        '`enrollment_group_id` del cuerpo que no case con el del token se rechace')
+
+    // ── PIEZA 2 (`0º.tricies.vicies.quinquies`): la copia sirve la puerta TAMBIÉN al guardar.
+    // Decisión de Diego, 2026-08-26: «No pasa nada por que un enlace tarde 30 minutos en dejar
+    // de valer, es razonable.» Lo que el control vigila es que ese atajo no se lleve por
+    // delante ninguna de las salvaguardas.
+    if (!/_cabeceraDeLaCopia_\s*\(/.test(gate)) {
+      fallos.push('`requireResumeToken_` ya no consulta la copia de la puerta — toda acción que ' +
+        'escribe vuelve a pagar un viaje al KMS (12-31 s medidos) por la MISMA ficha')
+    }
+    // ⚠️ NO basta con que la palabra salga en el cuerpo (sale más abajo, en `subidaPuerta`):
+    //    se exige que el GUARDIA que hay JUSTO ENCIMA del atajo la nombre. Sin acotarlo, la
+    //    rotura «tomar el atajo también con `comprobarSubida`» salía VERDE — medido.
+    const iAtajo = gate.search(/_cabeceraDeLaCopia_\s*\(/)
+    const guardiaDelAtajo = iAtajo > 0 ? gate.slice(Math.max(0, iAtajo - 400), iAtajo) : ''
+    if (iAtajo > 0 && !/comprobarSubida/.test(guardiaDelAtajo)) {
+      fallos.push('el atajo de la copia ya no se salta con `comprobarSubida` — la copia NO tiene ' +
+        'esa respuesta, así que `uploadDocument_` se quedaría sin la comprobación de ACCESO o ' +
+        'volvería a partirla en dos viajes')
+    }
+    if (!/COPIA_PUERTA_TTL_S_/.test(gate) || !/_claveCopiaPuerta_\s*\(/.test(gate)) {
+      fallos.push('el camino VIVO ya no escribe la copia con su plazo declarado ' +
+        '(`_claveCopiaPuerta_` + `COPIA_PUERTA_TTL_S_`) — o la escribe otro, o el plazo dejó de ' +
+        'estar en un solo sitio')
+    }
+  }
+  // ⛔ La copia solo puede CONSERVAR un «sí» reciente; jamás CREARLO. El lector no escribe.
+  const lectorCopia = cuerpoDe(fuenteLimpia, '_cabeceraDeLaCopia_')
+  if (lectorCopia === null) {
+    fallos.push('no se encontró `_cabeceraDeLaCopia_` — control CIEGO sobre el atajo de la puerta')
+  } else if (/\.put\s*\(/.test(lectorCopia)) {
+    fallos.push('`_cabeceraDeLaCopia_` ESCRIBE en la caché — la copia solo puede conservar un ' +
+      '«sí» que una validación viva ya dio, nunca crearlo')
+  }
+  // ⛔ Y los cambios que el asistente provoca ÉL MISMO se olvidan EN EL ACTO: si no, una sesión
+  // abandonada o ya enviada seguiría pareciendo editable hasta 30 min.
+  const olvido = cuerpoDe(fuenteLimpia, '_olvidarCabeceraMemo_')
+  if (olvido === null) {
+    fallos.push('no se encontró `_olvidarCabeceraMemo_` — control CIEGO sobre el olvido de la copia')
+  } else if (!/_claveCopiaPuerta_\s*\(/.test(olvido) || !/\.remove\s*\(/.test(olvido)) {
+    fallos.push('`_olvidarCabeceraMemo_` olvida solo la memoria de EJECUCIÓN y NO la copia de 30 ' +
+      'min — un enlace rotado seguiría abriendo la solicitud, y una sesión abandonada o ya ' +
+      'enviada seguiría pareciendo editable')
+  }
+  for (const [fn, porque] of [
+    ['abandonSession_',           'la familia acaba de abandonar la sesión'],
+    ['reportUnsolicited_',        'el destinatario acaba de decir «esto no es mío»'],
+    ['submitEnrollmentSession_',  'el KMS acaba de estampar `submitted_at`'],
+  ]) {
+    const cuerpoFn = cuerpoDe(fuenteLimpia, fn)
+    if (cuerpoFn === null) {
+      fallos.push('no se encontró `' + fn + '` — control CIEGO sobre el olvido de la copia')
+    } else if (!/_olvidarCabeceraMemo_\s*\(/.test(cuerpoFn)) {
+      fallos.push('`' + fn + '` no olvida la copia de la puerta, y ' + porque + ' — la ficha ' +
+        'guardada dejaría escribir sobre una solicitud que ya no es editable, hasta 30 min')
     }
   }
 
@@ -1166,10 +1262,8 @@ function comprobarLaPuerta(fuenteLimpia) {
     fallos.push('`_expedienteDelToken_` no consulta la memoria de EJECUCIÓN por su clave — la ' +
       'MISMA ficha del MISMO token se vuelve a pedir al KMS dentro de la MISMA petición')
   }
-  if (gate !== null && !/_memoCabeceraClave_\s*\(/.test(gate)) {
-    fallos.push('`requireResumeToken_` deja la cabecera SOLO indexada por expediente — ' +
-      '`_expedienteDelToken_` la pide por TOKEN, así que no la encuentra y vuelve a preguntar')
-  }
+  // (el índice por TOKEN lo afirma ahora el bloque de `_puertaConLaCabecera_`, arriba: ahí es
+  //  donde vive desde `0º.tricies.vicies.quinquies`, y lo recorren los DOS caminos)
 
   // ⛔ La rama que ROTA el enlace no puede servirse de esa memoria: la ficha guardada lleva
   // dentro el `resume_token` VIEJO, que tras la rotación ya no resuelve.

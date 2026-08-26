@@ -552,75 +552,40 @@ function assertValidSigningToken_(v, fieldName) {
  * @returns {string} canonical enrollment_group_id authorised by the token
  */
 /**
- * Memo de LECTURA del gate KAL-4 (SPEC-WIZ-WARMUP-V2, 2026-06-12 — precedente
- * canónico #65/#67b: memo ScriptCache de identidad TTL 300s SOLO para lecturas).
- * requireResumeToken_ paga una lectura AppSheet (~2,5-5s) por llamada; en los
- * caminos que SIRVEN datos ya autorizados (getDocument_) ese coste dominaba el
- * e2e con el bundle caliente. Cachea token→groupId 300s con el MISMO cross-group
- * guard. NUNCA usar en handlers de mutación (saveStep_, submit…, actos de firma):
- * esos validan SIEMPRE en vivo. Lag aceptado ≤5 min para abandono/expiración/
- * rotación en lecturas (mismo trade-off aprobado del memo de requireSignerIdentity_);
- * el PII-gate de step-up (ventana dura 10 min) sigue evaluándose EN VIVO aparte.
+ * Memo de LECTURA del gate KAL-4 (SPEC-WIZ-WARMUP-V2, 2026-06-12). **Desde
+ * `0º.tricies.vicies.quinquies` (2026-08-26) es un DELEGANTE FINO de `requireResumeToken_`,
+ * que es donde vive ahora la copia de la puerta.**
  *
- * ★ 0º.quindecies (2026-08-21) — el acierto ARCHIVA TAMBIÉN LA FICHA, no solo el id, y
- * la deja en la memoria de EJECUCIÓN (`_memoCabeceraEjecucion_`, clave `estricto` —
- * ②17 duodécimo/2026-08-19 tramos). Medido en el registro real de Diego (2026-08-20):
- * `getAdmissionState_` empieza llamando A ESTA función, y cuando acierta (caso normal:
- * la familia ya llevaba activa unos segundos) el id vuelve en <1 ms — pero la memoria de
- * ejecución quedaba VACÍA porque solo la escribe el camino VIVO. Más abajo, en la MISMA
- * petición, `_expedienteDelToken_` volvía a preguntarle al KMS por la MISMA ficha
- * (`enr.expedienteDelToken`, 12,45 s medidos) SOLO porque su memoria no la
- * encontraba — el acierto de aquí no la había dejado. Con la ficha dentro del acierto,
- * ese segundo viaje se ahorra entero.
+ * ⚠️ **Este bloque describía hasta hoy un mecanismo que ya no está aquí** (una segunda
+ * lectura de `rtmemo_`, su propio guardia de KAL-4 copiado y un TTL de 300 s) y decía con
+ * todas las letras *«NUNCA usar en handlers de mutación… esos validan SIEMPRE en vivo»*.
+ * **Las dos cosas dejaron de ser verdad el 2026-08-26**, por decisión de Diego: *«No pasa
+ * nada por que un enlace tarde 30 minutos en dejar de valer, es razonable.»* Se reescribe
+ * en vez de conservarse al lado — un comentario caducado manda a construir contra el
+ * criterio equivocado.
  *
- * ⛔ SOLO se archiva bajo la clave ESTRICTA, nunca la tolerante — mismo criterio EXACTO
- * que el camino vivo (ver el comentario de `requireResumeToken_` junto a esa escritura):
- * lo que vuelve de aquí YA pasó los tres rechazos de la puerta estricta (si no, habría
- * lanzado), así que archivarlo como estricto no cambia ni un rechazo.
- * ⛔ El TTL y el criterio de invalidación NO cambian: sigue siendo la MISMA entrada
- * `rtmemo_` de 300 s, sin invalidación explícita — el lag aceptado es el de siempre.
- * Un acierto con la forma VIEJA (solo el id, de una entrada sembrada antes de este
- * cambio) se trata como acierto sin ficha — degrada al comportamiento de ayer, nunca
- * revienta.
+ * **Lo que sigue siendo verdad y por eso el nombre se conserva**: sus llamantes son
+ * LECTURAS y no se han tocado. Lo que cambia es que las MUTACIONES aceptan desde hoy el
+ * mismo desfase, así que ya no hay dos puertas — hay una, y está en `requireResumeToken_`.
+ *
+ * @param {Object} payload - request payload (must contain `resume_token`)
+ * @returns {string} canonical enrollment_group_id authorised by the token
  * @private
  */
 function requireResumeTokenMemo_(payload) {
   _dbgEv_('gate', 'requireResumeToken (memo)');
-  const token = payload && payload.resume_token;
-  let cache = null, key = null;
-  try {
-    assertValidUuid_(token, 'resume_token');
-    cache = CacheService.getScriptCache();
-    key = 'rtmemo_' + sha256Hex_(Utilities.newBlob(String(token).trim()).getBytes()).slice(0, 40);
-    const hit = cache.get(key);
-    if (hit) {
-      let hitParsed = null;
-      try { hitParsed = JSON.parse(hit); } catch (eParse) { hitParsed = null; }
-      const hitGid = (hitParsed && hitParsed.gid) ? hitParsed.gid : (hitParsed ? null : hit);
-      if (hitGid) {
-        // Cross-group guard — paridad EXACTA con requireResumeToken_ (KAL-4).
-        const payloadGroupId = payload && (payload.enrollment_group_id || payload.application_id);
-        if (payloadGroupId && payloadGroupId !== hitGid) {
-          throw new Error('Unauthorized: payload enrollment_group_id does not match resume_token grant');
-        }
-        if (hitParsed && hitParsed.fila) {
-          _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)] = hitParsed.fila;
-        }
-        return hitGid;
-      }
-    }
-  } catch (e) {
-    if (e && /Unauthorized/.test(e.message || '')) throw e;
-    // assert/cache falló → camino vivo (degradación limpia)
-  }
-  const groupId = requireResumeToken_(payload);
-  try {
-    if (cache && key) {
-      const filaViva = _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)] || null;
-      cache.put(key, JSON.stringify({ gid: groupId, fila: filaViva }), 300);
-    }
-  } catch (e2) { /* best-effort */ }
-  return groupId;
+  // ★ `0º.tricies.vicies.quinquies` (2026-08-26) — DELEGA. La copia de la puerta se
+  // consulta AHORA DENTRO de `requireResumeToken_`, así que aquí ya no queda nada que
+  // hacer: mantener una segunda lectura de la MISMA entrada, con su propio guardia de
+  // KAL-4 copiado y SIN los tres rechazos, era exactamente el patrón de dos lectores del
+  // mismo dato que divergen — y ya divergían: este camino devolvía el identificador de una
+  // sesión ABANDONADA sin protestar, porque los rechazos vivían solo en el camino vivo.
+  //
+  // Se conserva el NOMBRE (sus llamantes de lectura no se tocan) y con él la distinción que
+  // sigue siendo verdad: quien llama aquí acepta el desfase de la copia; quien llama a
+  // `requireResumeToken_` directo lo acepta también desde hoy, por decisión de Diego
+  // (§`COPIA_PUERTA_TTL_S_`).
+  return requireResumeToken_(payload);
 }
 
 /**
@@ -648,10 +613,151 @@ function _errorDeEnlace_(mensaje, codigo) {
   return err;
 }
 
+/**
+ * `0º.tricies.vicies.quinquies` (2026-08-26) — **UN SOLO SITIO decide si un enlace vale.**
+ *
+ * Los TRES rechazos —no reconocido · abandonado · caducado a los 7 días salvo enviada—
+ * vivían escritos DENTRO de `requireResumeToken_`, en el camino vivo y solo ahí. Desde
+ * que la copia de la puerta puede resolver el enlace sin preguntarle al KMS, hay DOS
+ * caminos que tienen que rechazar exactamente lo mismo ⇒ el criterio se saca aquí y lo
+ * comparten los dos. **PROHIBIDO escribir un segundo juego de rechazos**: dos copias del
+ * mismo criterio divergen (§"Regla — refactors preservan el código probado").
+ *
+ * ⛔ NO AFLOJA NADA Y NO CAMBIA QUIÉN PASA: mismos mensajes, mismos códigos, mismo orden,
+ * mismo TTL de 7 días y misma exención de las enviadas. Es un movimiento de código, no
+ * una decisión nueva. Lo único que cambia es que ahora se puede aplicar sobre una ficha
+ * que vino de la copia.
+ *
+ * @param {Object} group fila del expediente (la proyección de `enr.expedienteDelToken`)
+ * @returns {Error|null} el rechazo que corresponde, o `null` si el enlace vale
+ * @private
+ */
+function _rechazosDelEnlace_(group) {
+  if (!group) {
+    return _errorDeEnlace_('Unauthorized: resume_token not recognized', 'ENLACE_NO_VALIDO');
+  }
+  if (group.abandoned_at) {
+    Logger.log(redact_('[requireResumeToken_] reject: abandoned group=' + group.enrollment_group_id));
+    return _errorDeEnlace_('Unauthorized: resume_token abandoned', 'ENLACE_ABANDONADO');
+  }
+  if (!group.submitted_at) {
+    const RESUME_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+    const createdAt = group.created_at ? new Date(group.created_at).getTime() : 0;
+    if (createdAt && (Date.now() - createdAt) > RESUME_TOKEN_TTL_MS) {
+      Logger.log(redact_('[requireResumeToken_] reject: expired group=' + group.enrollment_group_id));
+      return _errorDeEnlace_('Unauthorized: resume_token expired (7 days); the family requests a new link from the start page by entering their email (that also resets the 7-day clock)', 'ENLACE_CADUCADO');
+    }
+  }
+  return null;
+}
+
+/**
+ * `0º.tricies.vicies.quinquies` (2026-08-26) — el plazo de LA COPIA DE LA PUERTA.
+ *
+ * ★ **DECISIÓN DE DIEGO, 2026-08-26, literal:** *«No pasa nada por que un enlace tarde 30
+ * minutos en dejar de valer, es razonable.»* Antes eran 300 s y la copia solo servía a las
+ * LECTURAS; con esa decisión sirve también a las ESCRITURAS y dura 30 min.
+ *
+ * ⚠️ **LO QUE ESO ACEPTA, ESCRITO PARA QUE NADIE SE SORPRENDA: un enlace ROTADO o REVOCADO
+ * por el lado del COLEGIO puede seguir valiendo hasta 30 minutos.** No es un descuido: es
+ * lo que Diego autorizó a cambio de que la familia no espere un viaje al KMS (12-31 s
+ * medidos) en cada acción que escribe. Lo que el asistente SÍ hace en el acto es olvidar la
+ * copia de los cambios que provoca ÉL MISMO — rotar el enlace, abandonar la sesión, enviar
+ * la solicitud (`_olvidarCabeceraMemo_`).
+ * @private
+ */
+var COPIA_PUERTA_TTL_S_ = 1800;
+
+/**
+ * La clave de la copia de la puerta. Vivía escrita a mano en DOS sitios
+ * (`requireResumeTokenMemo_` y `requireResumeToken_`) con el mismo cálculo copiado; ahora
+ * es una sola. El token es un secreto de portador ⇒ se guarda RESUMIDO, nunca en claro
+ * (KAL-11).
+ * @private
+ */
+function _claveCopiaPuerta_(token) {
+  return 'rtmemo_' + sha256Hex_(Utilities.newBlob(String(token).trim()).getBytes()).slice(0, 40);
+}
+
+/**
+ * Lee la copia de la puerta. Devuelve la FICHA guardada, o `null` si no hay copia utilizable.
+ *
+ * ⛔ **La copia solo puede CONSERVAR un «sí» reciente; jamás CREARLO.** Solo se escribe tras
+ * una validación VIVA que resolvió (ver el final de `requireResumeToken_`), así que un token
+ * que nunca resolvió no tiene entrada y se sigue rechazando en vivo.
+ * ⛔ Una entrada con la forma VIEJA (solo el identificador, sin ficha) se trata como si no
+ * hubiera copia — degrada al camino vivo, nunca revienta.
+ * @private
+ */
+function _cabeceraDeLaCopia_(token) {
+  try {
+    const hit = CacheService.getScriptCache().get(_claveCopiaPuerta_(token));
+    if (!hit) return null;
+    let parsed = null;
+    try { parsed = JSON.parse(hit); } catch (eP) { return null; }
+    const fila = parsed && parsed.fila;
+    if (!fila || !fila.enrollment_group_id) return null;
+    return fila;
+  } catch (e) { return null; }
+}
+
+/**
+ * Lo que la puerta hace con la ficha, venga de la copia o del KMS: aplicar los tres
+ * rechazos, dejarla en la memoria de EJECUCIÓN (para `assertGroupEditable_` y para
+ * `_expedienteDelToken_`) y comprobar el guardia de KAL-4.
+ *
+ * ⛔ **KAL-4 INTACTA**: el expediente sale de la FICHA que el token resolvió, jamás del
+ * cuerpo de la petición; el `enrollment_group_id` del cuerpo solo puede provocar un
+ * rechazo, nunca elegir el expediente.
+ * @private
+ */
+function _puertaConLaCabecera_(payload, token, group) {
+  const rechazo = _rechazosDelEnlace_(group);
+  if (rechazo) throw rechazo;
+  const tokenGroupId = group.enrollment_group_id;
+  _memoCabeceraEjecucion_[tokenGroupId] = group;
+  _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)] = group;
+  const payloadGroupId = payload && (payload.enrollment_group_id || payload.application_id);
+  if (payloadGroupId && payloadGroupId !== tokenGroupId) {
+    throw new Error('Unauthorized: payload enrollment_group_id does not match resume_token grant');
+  }
+  return tokenGroupId;
+}
+
 function requireResumeToken_(payload, opciones) {
   _dbgEv_('gate', 'requireResumeToken (live)');
   const token = payload && payload.resume_token;
   assertValidUuid_(token, 'resume_token');
+
+  // ★ `0º.tricies.vicies.quinquies` PIEZA 2 (2026-08-26) — LA COPIA VA PRIMERO, TAMBIÉN AL
+  // GUARDAR. Hasta hoy toda acción que ESCRIBE pagaba aquí un viaje al KMS en vivo
+  // (`enr.expedienteDelToken`: **12-31 s medidos** en el registro real del asistente
+  // desplegado, con el KMS haciendo su trabajo en 2,6 s ⇒ el resto es el SALTO). Con la
+  // decisión de Diego —«no pasa nada por que un enlace tarde 30 minutos en dejar de valer»—
+  // ese viaje se resuelve de la copia.
+  //
+  // ⛔ LO QUE NO SE AFLOJA, y hay que poder decirlo campo por campo:
+  //   · **KAL-4**: el expediente sale de la ficha que resolvió EL TOKEN, jamás del cuerpo.
+  //   · **Los TRES rechazos siguen aplicándose**, sobre la ficha guardada —que lleva
+  //     `abandoned_at`, `created_at` y `submitted_at`— y por el MISMO juez que el camino
+  //     vivo (`_rechazosDelEnlace_`, un solo sitio).
+  //   · **Un token que NUNCA resolvió se sigue rechazando en vivo**: la copia solo se
+  //     escribe tras una validación viva que resolvió ⇒ conserva un «sí», nunca lo crea.
+  //   · **El código de un solo uso (②27) no se toca**, ni su orden: token → código → trabajo
+  //     caro. Esto ocurre ANTES del código, exactamente donde ocurría la lectura viva.
+  //
+  // ⛔ CON `comprobarSubida` NO SE TOMA EL ATAJO, y no es cautela genérica: esa respuesta
+  // (¿el expediente de alumno es de esta familia? ¿este envío ya se guardó?) la contesta el
+  // KMS y la copia NO la tiene. Tomarla de aquí dejaría a `uploadDocument_` sin la
+  // comprobación de ACCESO, o desharía `0º.quindecies` hallazgo (2) partiéndola en dos
+  // viajes otra vez. Subir un documento sigue exactamente igual que ayer.
+  if (!(opciones && opciones.comprobarSubida)) {
+    const deLaCopia = _cabeceraDeLaCopia_(token);
+    if (deLaCopia) {
+      _dbgEv_('gate', 'requireResumeToken (copia)');
+      return _puertaConLaCabecera_(payload, token, deLaCopia);
+    }
+  }
 
   // ②17 (DUODÉCIMO tramo) — la cabecera la sirve el KMS, por el lector ÚNICO
   // `_expedienteDelToken_`. Esta era la lectura directa a `enrEnrollmentGroups` MÁS LLAMADA
@@ -707,7 +813,7 @@ function requireResumeToken_(payload, opciones) {
     // es justo por lo que `ResumePage` mandaba a la portada a decir «puede haber caducado»
     // ante CUALQUIER fallo. El mensaje NO cambia (lo mira `sanitizeErrorForClient_`); lo que
     // se añade es la etiqueta de máquina que el cliente necesita para no mentir.
-    throw _errorDeEnlace_('Unauthorized: resume_token not recognized', 'ENLACE_NO_VALIDO');
+    throw _rechazosDelEnlace_(null);
   }
 
   // === CLI 81 (S8 / KAL-NEW-7): TTL + abandoned_at gate ──────────────────────
@@ -720,29 +826,18 @@ function requireResumeToken_(payload, opciones) {
   // expires_at column exists — the TTL is derived from created_at (7-day
   // window), and submitted groups are exempt (they must stay accessible so the
   // family can always view / be reopened for what they sent).
-  if (group.abandoned_at) {
-    Logger.log(redact_('[requireResumeToken_] reject: abandoned group=' + group.enrollment_group_id));
-    throw _errorDeEnlace_('Unauthorized: resume_token abandoned', 'ENLACE_ABANDONADO');
-  }
-  if (!group.submitted_at) {
-    const RESUME_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-    const createdAt = group.created_at ? new Date(group.created_at).getTime() : 0;
-    if (createdAt && (Date.now() - createdAt) > RESUME_TOKEN_TTL_MS) {
-      Logger.log(redact_('[requireResumeToken_] reject: expired group=' + group.enrollment_group_id));
-      throw _errorDeEnlace_('Unauthorized: resume_token expired (7 days); the family requests a new link from the start page by entering their email (that also resets the 7-day clock)', 'ENLACE_CADUCADO');
-    }
-  }
+  // ★ `0º.tricies.vicies.quinquies` — los tres rechazos los aplica AHORA el juez ÚNICO
+  // (`_rechazosDelEnlace_`), el mismo que la copia. Mismos mensajes, mismos códigos, mismo
+  // orden, mismo TTL de 7 días y misma exención de las enviadas: es un movimiento de
+  // código, no una decisión nueva.
+  const rechazoVivo = _rechazosDelEnlace_(group);
+  if (rechazoVivo) throw rechazoVivo;
 
-  const tokenGroupId = group.enrollment_group_id;
-  // ②17 (DUODÉCIMO tramo) — memoria de EJECUCIÓN: la fila que la puerta acaba de validar
-  // queda disponible para `assertGroupEditable_`, que era la SEGUNDA lectura de esta MISMA
-  // fila en la MISMA petición. No es caché (muere con la ejecución) y no es un segundo
-  // resolvedor: es esta misma fila, ya autorizada por el token.
-  _memoCabeceraEjecucion_[tokenGroupId] = group;
-  // ②17 (2026-08-19) — MISMA memoria, MISMA escritura, SEGUNDO índice: por TOKEN, que es
-  // como la pide `_expedienteDelToken_`. Sin él, la MISMA ficha se volvía a pedir al KMS
-  // más abajo en la MISMA petición (13-31 s cada vez: `hydrateSession`, `warmBundle`,
-  // `warmSession`).
+  // ②17 (DUODÉCIMO + 2026-08-19) — la ficha que la puerta acaba de validar queda en la
+  // memoria de EJECUCIÓN, indexada por expediente (para `assertGroupEditable_`) y por TOKEN
+  // (para `_expedienteDelToken_`), y se comprueba el guardia de KAL-4. Todo eso lo hace
+  // ahora `_puertaConLaCabecera_`, que es EL MISMO trozo que recorre la copia — para que no
+  // pueda haber dos criterios sobre la misma ficha.
   //
   // ⛔ SE ARCHIVA COMO ESTRICTA, Y ESO HAY QUE PODER DEMOSTRARLO. La fila se pidió en modo
   // tolerante (arriba), pero justo aquí ACABAN de aplicarse los TRES rechazos —token que no
@@ -752,36 +847,18 @@ function requireResumeToken_(payload, opciones) {
   // los tres, una consulta estricta habría devuelto exactamente esto. Por eso, y SOLO por
   // eso, puede archivarse bajo la clave estricta.
   //
-  // ⛔ Si algún día se AFLOJA cualquiera de los tres rechazos de arriba, esta línea deja de
-  // ser cierta y hay que quitarla: pasaría a servirle a un llamante estricto una fila que el
-  // KMS habría rechazado. La modalidad tolerante ya la archivó `_expedienteDelToken_`.
-  _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)] = group;
-  // SPEC-WIZ-WARMUP-V2: poblar el memo de LECTURA (rtmemo_) tras la validación
-  // VIVA — así la primera llamada de lectura posterior (getDocument_) ya tiene el
-  // gate caliente sin pagar otra lectura AppSheet. Best-effort; no cambia la
-  // semántica de validación de NINGÚN caller (esto ES el resultado en vivo).
-  //
-  // ★ 0º.quindecies (2026-08-21) — lleva la FICHA, no solo el id. Este tramo es el
-  // camino VIVO: lo recorre TODO llamante (mutaciones incluidas, vía requireResumeToken_
-  // directo — nunca requireResumeTokenMemo_) cada vez que el acierto de caché de arriba
-  // falla. Si aquí se siguiera guardando solo el id, una mutación (uploadDocument_, que
-  // valida SIEMPRE en vivo, nunca por memo) dejaría la entrada de 300s en la forma VIEJA,
-  // y el pulso que la siga (getAdmissionState_, que SÍ usa el memo) heredaría un acierto
-  // sin ficha — exactamente el caso medido en el registro real de Diego, donde
-  // uploadDocument_ y getAdmissionState_ caían en la MISMA ventana de 90 s. Con la ficha
-  // aquí también, cualquier caller en vivo deja la caché lista para el memo que venga
-  // detrás, sea cual sea el que la escribió primero.
+  // ⛔ Si algún día se AFLOJA cualquiera de los tres rechazos, esta línea deja de ser cierta
+  // y hay que quitarla: pasaría a servirle a un llamante estricto una fila que el KMS
+  // habría rechazado. La modalidad tolerante ya la archivó `_expedienteDelToken_`.
+  const tokenGroupId = _puertaConLaCabecera_(payload, token, group);
+  // LA COPIA DE LA PUERTA se escribe SOLO AQUÍ, en el camino VIVO — nunca desde el atajo.
+  // Es lo que la hace incapaz de crear un «sí»: sin una validación viva que resolviera, no
+  // hay entrada. El plazo lo fija `COPIA_PUERTA_TTL_S_` (30 min, decisión de Diego).
   try {
     CacheService.getScriptCache().put(
-      'rtmemo_' + sha256Hex_(Utilities.newBlob(String(payload.resume_token).trim()).getBytes()).slice(0, 40),
-      JSON.stringify({ gid: tokenGroupId, fila: group }), 300);
+      _claveCopiaPuerta_(token),
+      JSON.stringify({ gid: tokenGroupId, fila: group }), COPIA_PUERTA_TTL_S_);
   } catch (eM) { /* best-effort */ }
-  // Cross-group guard: if payload also provides group_id (legacy alias
-  // `application_id` included), it MUST match the one resolved from token.
-  const payloadGroupId = payload && (payload.enrollment_group_id || payload.application_id);
-  if (payloadGroupId && payloadGroupId !== tokenGroupId) {
-    throw new Error('Unauthorized: payload enrollment_group_id does not match resume_token grant');
-  }
   return tokenGroupId;
 }
 
@@ -2723,6 +2800,9 @@ function initEnrollmentSession_(p, opts) {
     losers.forEach(loser => {
       try {
         kmsProxy_('enr.abandonApplicationSession', { resume_token: loser.resume_token });
+        // ★ `0º.tricies.vicies.quinquies` — la copia de la puerta de ESE token dice «sin
+        // abandonar» y acaba de dejar de ser verdad (§`COPIA_PUERTA_TTL_S_`).
+        _olvidarCabeceraMemo_(loser.resume_token, loser.enrollment_group_id);
         // KAL-11: redact UUID + email.
         Logger.log(redact_('initEnrollmentSession_: auto-abandoned ' + loser.enrollment_group_id +
                    ' (lower-progress parallel session for ' + normalizedEmail +
@@ -3579,6 +3659,10 @@ function abandonSession_(p) {
   // (enr.abandonApplicationSession). KAL-4: el grupo lo deriva el KMS del resume_token.
   // El KMS re-chequea submitted/abandoned server-side (mismas reglas de arriba).
   kmsProxy_('enr.abandonApplicationSession', { resume_token: token });
+  // ★ `0º.tricies.vicies.quinquies` — la ficha guardada dice «sin abandonar», y acaba de
+  // dejar de ser verdad. Se olvida en el acto: sin esto, `assertGroupEditable_` seguiría
+  // dejando escribir sobre la sesión abandonada hasta 30 min (§`COPIA_PUERTA_TTL_S_`).
+  _olvidarCabeceraMemo_(token, grp.enrollment_group_id);
 
   return { abandoned: true };
 }
@@ -3650,6 +3734,8 @@ function reportUnsolicited_(p) {
         // P1-B: escritura portada al KMS (enr.abandonApplicationSession). KAL-4: el grupo
         // sale del resume_token (que ES la autorización de este endpoint).
         kmsProxy_('enr.abandonApplicationSession', { resume_token: token });
+        // ★ `0º.tricies.vicies.quinquies` — ídem (§`COPIA_PUERTA_TTL_S_`).
+        _olvidarCabeceraMemo_(token, group.enrollment_group_id);
         // KAL-11: redact UUID.
         Logger.log(redact_('reportUnsolicited_: abandoned ' + group.enrollment_group_id));
       } catch (abandonErr) {
@@ -4373,6 +4459,19 @@ function _olvidarCabeceraMemo_(token, groupId) {
     delete _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)];
     if (groupId) delete _memoCabeceraEjecucion_[groupId];
   } catch (e) { /* best-effort: olvidar no puede tumbar el envío del enlace */ }
+  // ★ `0º.tricies.vicies.quinquies` (2026-08-26) — Y LA COPIA DE 30 MIN, que es la que de
+  // verdad sobrevive a la petición. Desde que la puerta se resuelve de ella, olvidar solo la
+  // memoria de EJECUCIÓN dejaría vivo el «sí» guardado: un enlace ROTADO seguiría abriendo
+  // la solicitud media hora, y una sesión ABANDONADA o ya ENVIADA seguiría pareciendo
+  // editable a `assertGroupEditable_`, que lee la ficha que la puerta le deja.
+  //
+  // ⛔ Los cambios que el asistente provoca ÉL MISMO —rotar el enlace, abandonar, enviar—
+  // se olvidan EN EL ACTO: son los únicos que puede conocer sin preguntar. Lo que NO cubre,
+  // y está aceptado por Diego, es un cambio hecho por el lado del COLEGIO: eso puede tardar
+  // hasta 30 min en notarse (§`COPIA_PUERTA_TTL_S_`).
+  try {
+    if (token) CacheService.getScriptCache().remove(_claveCopiaPuerta_(token));
+  } catch (e2) { /* best-effort */ }
 }
 
 /**
@@ -5283,6 +5382,11 @@ function submitEnrollmentSession_(p) {
     submitted_by_person_id: tutorQueOpera,
   });
   const enrollmentIds = (persistRes && persistRes.enrollment_ids) || [];
+  // ★ `0º.tricies.vicies.quinquies` — el KMS acaba de estampar `submitted_at`, así que la
+  // ficha guardada (que dice «sin enviar») ya no es verdad. Sin olvidarla,
+  // `assertGroupEditable_` seguiría dejando escribir sobre una solicitud YA ENVIADA hasta
+  // 30 min (§`COPIA_PUERTA_TTL_S_`).
+  _olvidarCabeceraMemo_(p.resume_token, enrollmentGroupId);
   Logger.log('submitEnrollmentSession_: KMS persisted enrollments=' + enrollmentIds.length);
 
   // D33 / DL-S115 — el wizard YA NO fabrica la fila de transición de estado. La transición
@@ -9730,6 +9834,8 @@ function adminCleanupOrphanSessions() {
       // P1-B: escritura portada al KMS (enr.abandonApplicationSession). KAL-4: el grupo lo
       // deriva el KMS del resume_token de la PROPIA fila leída (nunca un id suelto).
       kmsProxy_('enr.abandonApplicationSession', { resume_token: s.resume_token });
+      // ★ `0º.tricies.vicies.quinquies` — ídem (§`COPIA_PUERTA_TTL_S_`).
+      _olvidarCabeceraMemo_(s.resume_token, s.enrollment_group_id);
       // KAL-11: redact group_id (UUID) and email before persisting to Stackdriver.
       Logger.log(redact_('abandoned: ' + s.enrollment_group_id + ' email=' + s.primary_email) + ' age_days=' + Math.round((now - new Date(s.created_at)) / 86400000));
       actuallyAbandoned++;

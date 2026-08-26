@@ -3603,6 +3603,107 @@ enlace caducado de verdad se quedaría reintentando sin que nadie le ofrezca ped
 `resume.fail.named_title` / `named_body`. El de la portada (`landing.resume_error`) **no se toca**:
 ahí sigue siendo verdad.
 
+### `0º.tricies.vicies.quinquies` PIEZA 2 (2026-08-26) — la puerta del enlace se sirve de la copia TAMBIÉN al guardar
+
+**Decisión de Diego, 2026-08-26, literal:** *«No pasa nada por que un enlace tarde 30 minutos en
+dejar de valer, es razonable.»*
+
+**El número que lo motiva, medido contra el `/exec` REAL:** el asistente **sin** tocar el KMS
+responde en **4,0-4,4 s**; con **UNA** llamada al KMS, **32,1 s** y **60,6 s**; y el MISMO trabajo
+**dentro** del KMS cuesta **2,6 s** (la puerta) y **8,6 s** (las listas). ⇒ **entre 20 y 48 s se van
+en el SALTO**, no en trabajar — y la segunda medida salió PEOR que la primera, así que **no es
+arranque en frío**. Toda acción que ESCRIBE pagaba uno de esos saltos en `requireResumeToken_`.
+
+**Lo medido antes de tocar nada** (arnés efímero fuera del repositorio, funciones REALES extraídas
+del fuente + dobles), sobre una secuencia corriente —la familia abre su solicitud y guarda cuatro
+veces, cada guardado en su propia petición—:
+
+| | viajes de la puerta al KMS |
+|---|---|
+| `origin/main` (ayer) | **5** |
+| hoy | **1** |
+
+**Cómo queda.** `requireResumeToken_` consulta **primero** la copia (`rtmemo_`, la que ya existía) y
+solo va al KMS si no la hay. El plazo pasa de **300 s a 1800 s** (`COPIA_PUERTA_TTL_S_`), y con él la
+copia deja de servir solo a las LECTURAS: sirve también a las ESCRITURAS.
+
+**⛔ LO QUE NO SE AFLOJA, campo por campo — y el control lo vigila:**
+
+- **KAL-4 intacta**: el expediente sale de la ficha que resolvió **el token**, jamás del cuerpo; un
+  `enrollment_group_id` del cuerpo que no case se sigue rechazando.
+- **Los TRES rechazos siguen aplicándose** —no reconocido · abandonado · caducado a los 7 días salvo
+  enviada— y **por el MISMO juez** que el camino vivo: `_rechazosDelEnlace_`. Vivían **escritos
+  dentro** de `requireResumeToken_`; con dos caminos que tienen que rechazar lo mismo, dos copias del
+  criterio divergirían (§"Regla — refactors preservan el código probado"), así que hay **una**.
+- **La copia solo CONSERVA un «sí»; jamás lo CREA.** Se escribe **únicamente** en el camino vivo,
+  después de una validación que resolvió ⇒ un token que nunca resolvió no tiene entrada y se sigue
+  rechazando **en vivo**. `_cabeceraDeLaCopia_` **no escribe nada**, y el control lo comprueba.
+- **El código de un solo uso (②27) no se toca**, ni su orden: token → código → trabajo caro. El
+  atajo ocurre **antes** del código, exactamente donde ocurría la lectura viva.
+- **La verja pública (reCAPTCHA) y el ack constante no se rozan.**
+
+**⛔ CON `comprobarSubida` NO SE TOMA EL ATAJO, y no es cautela genérica.** Esa respuesta —¿el
+expediente de alumno es de esta familia? ¿este envío ya se guardó?— la contesta el KMS y **la copia
+no la tiene**: tomarla de aquí dejaría a `uploadDocument_` sin la comprobación de **ACCESO**, o
+desharía `0º.quindecies` hallazgo (2) partiéndola otra vez en dos viajes. **Subir un documento sigue
+exactamente igual que ayer.** ⚠️ Y la comprobación de esto es **por el GUARDIA que hay justo encima
+del atajo**, no por que la palabra salga en el cuerpo: con la versión laxa, la rotura «tomar el atajo
+también con `comprobarSubida`» salía **VERDE** — medido.
+
+**⚠️ LO QUE LA DECISIÓN DE DIEGO ACEPTA, escrito para que nadie se sorprenda: un enlace ROTADO o
+REVOCADO por el lado del COLEGIO puede seguir valiendo hasta 30 minutos.** Lo que el asistente SÍ
+olvida **en el acto** son los cambios que provoca **él mismo** — `_olvidarCabeceraMemo_` borra ahora
+también la copia, y lo llaman **rotar el enlace** (`sendMagicLink_`, ya lo hacía), **abandonar**
+(`abandonSession_`, el auto-abandono de sesiones paralelas, `reportUnsolicited_`, la limpieza de
+huérfanas) y **enviar la solicitud** (`submitEnrollmentSession_`). Sin eso, `assertGroupEditable_`
+—que lee la ficha que la puerta le deja— seguiría dejando escribir sobre una solicitud **ya enviada**
+o **abandonada** durante media hora.
+
+⭐ **Y DE PASO SE CERRÓ UNA DIVERGENCIA QUE YA ESTABA VIVA.** `requireResumeTokenMemo_` era un
+**segundo lector de la MISMA entrada**, con su propio guardia de KAL-4 copiado y **SIN los tres
+rechazos** (vivían solo en el camino vivo) ⇒ **devolvía el identificador de una sesión ABANDONADA sin
+protestar**. Hoy es un **delegante fino** de `requireResumeToken_`: una sola puerta. ⚠️ Su bloque de
+documentación decía con todas las letras *«NUNCA usar en handlers de mutación… esos validan SIEMPRE
+en vivo»* — **caducado desde esta decisión**, y reescrito en vez de conservado al lado.
+
+**Cuánto ocupa:** una entrada son **~370 bytes** (el tope de `CacheService` por entrada es 102.400 ⇒
+margen ×276), y la clave es **por TOKEN**, que es **por solicitud** ⇒ 40 solicitudes ≈ **15 KB**.
+**Qué pasa si la copia NO está:** el camino de hoy se recorre entero — medido.
+
+⚠️ **LA BATERÍA NO PUEDE CUBRIR ESTO, y no se le añadió un camino para aparentarlo**: corre contra un
+backend **simulado** que **nunca ejecuta `backend/Code.js`**, y este cambio es **invisible para el
+navegador** (misma pantalla, mismos textos, mismas llamadas — solo cambia cuánto se espera). Se
+**midió aparte**: **15 afirmaciones verdes** sobre las funciones reales con dobles, y **SEIS roturas
+ROJAS demostradas** — el código de AYER (sale **«MEDICIÓN CIEGA»**) · servir la copia **sin** los tres
+rechazos ni KAL-4 (4 rojas) · tomar el atajo también con `comprobarSubida` · que la copia **cree** un
+«sí» para un token que nunca resolvió · que olvidar deje viva la copia · y el **renombrado**, que sale
+«MEDICIÓN CIEGA» y no verde. **Quien toque esta puerta, que lo mida.**
+
+**Control**: `scripts/verja-publica.mjs` — **las anclas SE MOVIERON, no se aflojaron.** El control
+salió **ROJO con 4 infracciones** en cuanto los tres rechazos y el guardia de KAL-4 dejaron de estar
+escritos dentro de `requireResumeToken_` (bien: se negó a afirmar lo que ya no podía verificar), y
+hoy los busca donde viven —`_rechazosDelEnlace_` y `_puertaConLaCabecera_`—, más seis afirmaciones
+nuevas de la Pieza 2. **Rojo demostrado NUEVE veces**, cada una nombrando su caso; el renombrado del
+juez sale **CIEGO**.
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla y
+hace exactamente lo mismo; lo que cambia es cuánto espera. *(Este repositorio no tiene manual de
+usuario ni ayuda dentro de la aplicación: sus únicos textos son los de `frontend/public/locales/`.)*
+
+⛔ **LA PIEZA 1 NO SE HIZO, Y NO POR FALTA DE TIEMPO — SE PARÓ POR LO QUE EL PROPIO ENCARGO MANDA.**
+El repaso por tiempo que dejaría la copia hecha **antes** de que llegue la familia exige pedirle al
+KMS **la lista de solicitudes vivas UNA VEZ POR PASADA**. **Esa entrada NO EXISTE**, medido contra
+`origin/master` (`kms-server/_api.gs`): las cinco rutas que listan expedientes
+—`enr.listEnrollmentGroups`, `enr.listEnrollments`, `enr.listSolicitudes`, `enr.listApplications`,
+`enr.resumeSession`— piden **`ENR.ENROLLMENT.VIEW` / `ENR.ENROLLMENT.EDIT`**, o sea una persona
+identificada; **ninguna es `'public'`**, y las ~45 que sí lo son van todas **por token** (KAL-4). Y
+hay un **segundo** motivo, también medido: la copia de la hidratación se indexa **por solicitud Y por
+TUTOR** (`_wzCacheKey_('hyd', gidW + '_' + nW)`), así que un repaso necesitaría además el `n` de cada
+tutor; y **la forma de la verja CERRADA ni siquiera se cachea hoy** —`hydrateSession_` RETORNA en su
+rama `pii_gated` **antes** de llegar al bloque de la caché—, de modo que calentarla es **código
+nuevo**, no un disparador. ⇒ **abrir esa ruta es otro encargo y otro turno**, tal y como el encargo
+previene.
+
 ### `0º.tricies.vicies.quater` (2026-08-26) — abrir el asistente cuesta CUATRO viajes, no ocho
 
 **Diego, 2026-08-26, cita literal:** *«Es imposible presentar estos tiempos de carga a un cliente de
