@@ -66,6 +66,23 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
   const fechaGuardada    = onlyDate(guardado.desired_start_date || data.desired_start_date);
 
   const [programs,          setPrograms]          = useState(null); // null = loading
+  // ⛔⛔ 2026-08-26 — «NO HAY PROGRAMAS» Y «NO ME HAN LLEGADO» NO SON LO MISMO.
+  //
+  // Diego, con dos programas declarados y los dos con el plazo ABIERTO (medido ese día con
+  // `manual_diagPlazoDeInscripcion`: «VERDE — 2 de 2»), leyó en esta pantalla *«No hay
+  // programas de admisión disponibles en este momento»*. Era FALSO, y encima dejaba el
+  // botón de continuar gris: la familia no podía hacer NADA y creía que el colegio no
+  // ofrecía plaza.
+  //
+  // La causa era esta pantalla, no el dato: el `.catch` de la carga hacía `setPrograms([])`
+  // ⇒ una lista vacía por un FALLO DE RED se contaba como una respuesta del colegio. Y con
+  // la verja del código todavía cerrada, la hidratación devuelve `lookups: {}` a propósito,
+  // que tampoco es una respuesta: es que aún no la han dado.
+  //
+  // Desde aquí hay TRES situaciones, no dos: cargando · el colegio contestó (y su lista
+  // puede estar legítimamente vacía) · no se pudo cargar. La tercera se DICE y se puede
+  // reintentar, nunca se disfraza de la segunda.
+  const [programasNoCargaron, setProgramasNoCargaron] = useState(false);
   const [selectedProgramId, setSelectedProgramId] = useState(programaGuardado);
   // El modo de incorporación NO se decide con una fecha escrita a mano en el código: se
   // DERIVA de la fecha de inicio que declara el programa (`period_starts_on`, que este
@@ -106,9 +123,23 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
     // (no lo hacen), sino porque la caché de `api.js` va por idioma desde 2026-08-19 — pedir
     // sin idioma caería en la clave 'es' y provocaría una llamada de más a la familia que
     // está leyendo en inglés.
+    cargarProgramas();
+  }, []); // eslint-disable-line
+
+  function cargarProgramas() {
+    setProgramasNoCargaron(false);
+    setPrograms(null);
     fetchLookups(i18n.language)
       .then(lookups => {
-        const progs = lookups.programs || [];
+        // ⛔ `Array.isArray` y no `|| []`: lo que decide si el colegio CONTESTÓ es que venga
+        // una lista, no que venga algo. Sin la clave (la respuesta cerrada trae `{}`) no hay
+        // respuesta que enseñar — se trata como un fallo de carga, que es lo que es.
+        if (!Array.isArray(lookups && lookups.programs)) {
+          setProgramasNoCargaron(true);
+          setPrograms([]);
+          return;
+        }
+        const progs = lookups.programs;
         setPrograms(progs);
         // Auto-select when only one programme is available
         if (!selectedProgramId && progs.length === 1) {
@@ -118,8 +149,8 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
           }
         }
       })
-      .catch(() => setPrograms([]));
-  }, []); // eslint-disable-line
+      .catch(() => { setProgramasNoCargaron(true); setPrograms([]); });
+  }
 
   const handleProgramChange = (programId) => {
     tocado.current.programa = true;
@@ -204,6 +235,12 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
             {programs === null ? (
               <div className="d-flex align-items-center gap-2" style={{ height: 38 }}>
                 <div className="spinner-border spinner-border-sm" role="status" style={{ color: 'var(--teal)' }} />
+              </div>
+            ) : programasNoCargaron ? (
+              <div>
+                <p className="text-danger small mb-1">{t('step1.programs_failed')}</p>
+                <button type="button" className="btn btn-sm btn-outline-secondary"
+                  onClick={cargarProgramas}>{t('step1.programs_retry')}</button>
               </div>
             ) : programs.length === 0 ? (
               <p className="text-muted small mb-0">{t('step1.no_programs')}</p>

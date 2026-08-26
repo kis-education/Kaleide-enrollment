@@ -3723,6 +3723,59 @@ por Diego y por las sondas del KMS (`0º.tricies.vicies.bis`), no los de este re
 **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
 lo que cambia es cuánto espera para verla.
 
+### 2026-08-26 — «No hay programas de admisión» cuando SÍ los hay: el paso 1 confundía «no me han llegado» con «no existen»
+
+**Diego abrió su solicitud y el paso 1 le dijo *«No hay programas de admisión disponibles en este
+momento»*, con el botón de continuar en gris.** Palabras suyas: *«lo que es rotundamente falso»*.
+
+**MEDIDO ANTES DE TOCAR NADA, contra los datos reales** (`manual_diagPlazoDeInscripcion`, solo
+lectura, KMS): **`VERDE — 2 de 2 programas de admisión con el plazo abierto hoy`**
+(`ADMISSIONS_2026/2027` y `RENOVATIONS_2026/2027`, ninguno fuera de plazo, ninguno sin plazo
+declarado). ⇒ **el dato estaba bien y la pantalla mentía.**
+
+**La causa, leída en el código, son DOS y las dos convertían un silencio en una afirmación:**
+
+| Dónde | Qué hacía |
+|---|---|
+| `Step1Email.jsx`, `.catch(() => setPrograms([]))` | un **fallo de red** se contaba como una respuesta del colegio: lista vacía ⇒ «no hay programas» |
+| `api.js`, `primeLookups` | la hidratación con la verja del código cerrada devuelve **`lookups: {}`** a propósito; `{}` es «verdadero» en JavaScript ⇒ se sembraba en la caché como si fuera el catálogo bueno, y `fetchLookups` lo servía **sin ir a la red** |
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ SON TRES SITUACIONES, NO DOS**: *cargando* · *el colegio contestó* (y su lista puede estar
+  legítimamente vacía) · *no se pudo cargar*. La tercera **se dice** y se puede reintentar; **jamás**
+  se disfraza de la segunda.
+- **⛔ `Array.isArray(lookups.programs)`, no `|| []`.** Lo que acredita que el colegio CONTESTÓ es
+  que venga una **lista**, no que venga *algo*. La respuesta cerrada trae `{}` — no es una respuesta.
+- **⛔ Un catálogo VACÍO no se siembra** (`primeLookups` corta con `Object.keys(...).length === 0`).
+  Sembrarlo envenena la caché de ese idioma para toda la pestaña: la pantalla afirma «no hay
+  programas» **sin llegar a preguntar**.
+- **El botón de continuar sigue en gris sin programa, y es correcto**: sin programa no se puede
+  avanzar. Lo que cambia es que la familia entiende que es un problema de carga y tiene **por dónde
+  salir** (reintentar), en vez de creer que el colegio no ofrece plaza.
+- **⛔ NO se toca el filtro de plazo del KMS** (`enr_soloConPlazoAbierto_`, ①28): es correcto y hoy
+  no descarta nada. El defecto era del asistente.
+
+**Textos nuevos** (los dos idiomas): `step1.programs_failed` y `step1.programs_retry`.
+
+**Red**: camino NUEVO `programas-no-se-inventan` (7 afirmaciones, en dos fases: catálogos caídos ·
+reintento con los catálogos sanos), con **ancla** por delante —que el paso 1 pinte su etiqueta de
+programa— para que las demás no puedan pasar en vacío. El escenario `catalogosMode: 'caido'` se
+aplica **en los DOS sitios que sirven catálogos** (la hidratación y `fetchLookups`): aplicado a uno
+solo, la pantalla se sirve del otro y la comprobación mediría el aire.
+
+**Rojo demostrado** devolviendo el código de ayer — tres afirmaciones en rojo, y la primera nombra
+el caso con las palabras de Diego:
+
+> *«la pantalla dijo "no hay programas de admisión" con los catálogos CAÍDOS: eso es una afirmación
+> falsa sobre la configuración del colegio, y deja a la familia sin nada que hacer»*
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS. Afirma lo que la familia LEE. Que los dos programas estén con el
+plazo abierto se acredita con la sonda del KMS citada arriba, no con esta batería.
+
+**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

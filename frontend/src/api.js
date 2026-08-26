@@ -49,6 +49,13 @@ export function prefetchLookups(lang) {
  */
 export function primeLookups(lookups, lang) {
   if (!lookups || typeof lookups !== 'object') return;
+  // ⛔ 2026-08-26 — UN OBJETO VACÍO NO ES UN CATÁLOGO, Y SEMBRARLO ENVENENA LA CACHÉ.
+  // Con la verja del código todavía cerrada la hidratación devuelve `lookups: {}` a
+  // propósito (no ha dado datos aún). `{}` es «verdadero» en JavaScript, así que llegaba
+  // aquí y se guardaba como si fuera la respuesta buena ⇒ `fetchLookups` lo servía SIN ir
+  // a la red y el paso 1 afirmaba que el colegio no tiene programas. Un catálogo vacío no
+  // se siembra: se deja pedir.
+  if (Object.keys(lookups).length === 0) return;
   // ⭐ SE SIEMBRA BAJO EL IDIOMA QUE DE VERDAD VIENE, NO BAJO EL QUE SE PIDIÓ.
   // La hidratación pasa por DOS cachés intermedias (la del KMS y la del propio asistente,
   // ninguna de las dos bajo nuestro control desde aquí), así que la respuesta puede venir

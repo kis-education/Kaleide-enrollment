@@ -42,6 +42,8 @@
   "step1.start_date_title": "¿Cuándo le gustaría que su hijo/a comenzase?",
   "step1.select_program": "Selecciona un programa…",
   "step1.no_programs": "No hay programas de admisión disponibles en este momento.",
+  "step1.programs_failed": "No hemos podido cargar los programas de admisión. Tu solicitud sigue guardada: vuelve a intentarlo.",
+  "step1.programs_retry": "Volver a intentarlo",
   "step2.subtitle": "Añade todos los tutores y los alumnos que deseas matricular.",
   "step2.recognized_title": "Reconocimos tu familia",
   "step2.recognized_body": "Tenemos a las siguientes personas registradas con tu email. Si alguna es el progenitor que inicia esta solicitud, pulsa para pre-rellenar:",

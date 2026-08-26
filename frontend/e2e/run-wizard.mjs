@@ -1675,6 +1675,78 @@ async function caminoProgramaSeRecupera(page, base) {
   }
 }
 
+/**
+ * 2026-08-26 — «NO HAY PROGRAMAS» NO ES LO QUE SE DICE CUANDO NO SE PUDIERON CARGAR.
+ *
+ * Diego abrió su solicitud con DOS programas declarados y los dos con el plazo ABIERTO
+ * (medido ese día con `manual_diagPlazoDeInscripcion`: «VERDE — 2 de 2») y el paso 1 le
+ * dijo *«No hay programas de admisión disponibles en este momento»*, con el botón de
+ * continuar gris. Su reacción, literal: *«lo que es rotundamente falso»*.
+ *
+ * ⛔ ANCLA por delante: si el paso 1 no llega a pintar su etiqueta de programa, este
+ * recorrido no está midiendo nada y sale ROJO en vez de pasar en vacío.
+ */
+async function caminoProgramasNoSeInventan(page, base) {
+  const c = new Camino('programas-no-se-inventan')
+  scenario.stage = 'sin_fecha'          // sin fecha ⇒ aterriza en el paso 1
+  scenario.catalogosMode = 'caido'      // ⇐ los DOS sitios que sirven catálogos
+  // El escenario tira el catálogo A PROPÓSITO, así que la aplicación registra su fallo: eso
+  // es lo correcto (§KAL-11), no un defecto. Lo que se mide es lo que la familia LEE.
+  c.esperarErrorConsola(/gasCall fetchLookups: server returned ok=false/,
+    'el catálogo está caído a propósito en este recorrido')
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 900)
+
+    const textoPaso = await page.evaluate(() => document.body.innerText)
+    if (!c.afirmar('el paso 1 llegó a pintarse (si no, no hay nada que medir)',
+      /Programa de admisi|Admission programme/i.test(textoPaso),
+      'el paso 1 no pintó su etiqueta de programa')) return c
+
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, 1)
+
+    // (1) LA MENTIRA. Es la afirmación que importa.
+    c.afirmar('con los catálogos caídos NO se afirma que el colegio no tenga programas',
+      !/No hay programas de admisi|No admission programmes are available/i.test(textoPaso),
+      'la pantalla dijo «no hay programas de admisión» con los catálogos CAÍDOS: eso es una '
+      + 'afirmación falsa sobre la configuración del colegio, y deja a la familia sin nada que hacer')
+
+    // (2) Y se dice lo que de verdad pasa.
+    c.afirmar('se dice que no se pudieron cargar',
+      /no hemos podido cargar los programas|could not load the admission programmes/i.test(textoPaso),
+      `el texto leído fue ${JSON.stringify(textoPaso.slice(0, 200))}: sin decirlo, la familia no sabe si esperar, reintentar o irse`)
+
+    // (3) Y hay por dónde salir.
+    const hayReintento = await page.$$eval('button', bs => bs
+      .some(x => /volver a intentarlo|try again/i.test(x.textContent || '')))
+    if (!c.afirmar('se ofrece volver a intentarlo', hayReintento,
+      'no se pintó ningún botón de reintentar: la familia se queda encallada sin salida')) return c
+
+    // FASE B — con los catálogos ya sanos, el reintento TRAE los programas de verdad.
+    scenario.catalogosMode = null
+    await page.$$eval('button', bs => {
+      const b = bs.find(x => /volver a intentarlo|try again/i.test(x.textContent || ''))
+      if (b) b.click()
+    })
+    await page.waitForTimeout(LATENCY + 900)
+
+    const opciones = await page.$$eval('select option', os => os.map(o => o.value).filter(Boolean))
+    c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, opciones.length)
+    c.afirmar('al reintentar, el desplegable trae los programas',
+      opciones.length >= 1,
+      `tras reintentar el desplegable trajo ${opciones.length} opción(es): el reintento no sirve de nada`)
+
+    const textoB = await page.evaluate(() => document.body.innerText)
+    c.afirmar('y el aviso de «no se pudieron cargar» desaparece',
+      !/no hemos podido cargar los programas|could not load the admission programmes/i.test(textoB),
+      'el aviso de fallo sigue en pantalla con los programas ya cargados')
+    return c
+  } finally {
+    scenario.catalogosMode = null
+  }
+}
+
 async function caminoGuardarPaso(page, base) {
   const c = new Camino('guardar-paso')
   scenario.stage = 'sin_fecha'   // sin fecha ⇒ aterriza en el paso 1 (índice 0)
@@ -8121,6 +8193,9 @@ const CAMINOS = [
   // TERMINAR, y este camino lo vacía en cada una de sus cuatro fases para poder afirmar sobre
   // ella. Su evidencia real son sus trece afirmaciones, no un contador.
   { nombre: 'enlace-no-ha-caducado', fn: caminoEnlaceNoHaCaducado,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
+  // 2026-08-26 — un fallo de carga NO puede decirse como «el colegio no tiene programas».
+  { nombre: 'programas-no-se-inventan', fn: caminoProgramasNoSeInventan,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'guardar-paso',        fn: caminoGuardarPaso,        minLlamadas: 1, minElementos: 11 },
   // ①31 — la familia que se incorpora a mitad de curso no puede quedarse encerrada en el paso 1.

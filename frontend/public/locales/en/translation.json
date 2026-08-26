@@ -42,6 +42,8 @@
   "step1.start_date_title": "When would you like your child to start?",
   "step1.select_program": "Select a programme…",
   "step1.no_programs": "No admission programmes are available at this time.",
+  "step1.programs_failed": "We could not load the admission programmes. Your application is still saved — please try again.",
+  "step1.programs_retry": "Try again",
   "step2.subtitle": "Add all guardians and the children you wish to enrol.",
   "step2.recognized_title": "We recognised your family",
   "step2.recognized_body": "We have the following people registered with your email. If any is the parent submitting this application, click to pre-fill:",

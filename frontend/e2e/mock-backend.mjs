@@ -781,7 +781,12 @@ export function createDispatcher(scenario, record) {
       const conVentana = scenario.ventanaViva
         ? { step_up_fresh: true, step_up_restante_s: leerMarca(p).restante_s, step_up_cierre: leerMarca(p).cierre }
         : {};
-      return { ok: true, ...h, lookups: lookupsSegunEscenario_(scenario), ...conVentana };
+      // 2026-08-26 — con los catálogos caídos la hidratación devuelve `lookups: {}`, que es
+      // EXACTAMENTE lo que devuelve el KMS con la verja del código cerrada. Va aquí Y en
+      // `fetchLookups` por el mismo motivo escrito arriba: aplicado a uno solo, la pantalla
+      // se sirve del otro y la comprobación pasa EN VACÍO.
+      const _cat = scenario.catalogosMode === 'caido' ? {} : lookupsSegunEscenario_(scenario);
+      return { ok: true, ...h, lookups: _cat, ...conVentana };
     },
     // ⛔ EL PULSO ES UNA LECTURA. No toca la marca ni por asomo: si la extendiera, una
     // pestaña abandonada se quedaría viva sola, que es SEC-STEPUP (#55). El recorrido
@@ -868,7 +873,9 @@ export function createDispatcher(scenario, record) {
     },
 
     // ── Catálogos ────────────────────────────────────────────────────────────
-    fetchLookups:   () => ({ ok: true, ...lookupsSegunEscenario_(scenario) }),
+    fetchLookups:   () => (scenario.catalogosMode === 'caido'
+      ? { ok: false, error: { code: 'E2E_LOOKUPS_DOWN', message: 'catálogo caído (simulado)' } }
+      : { ok: true, ...lookupsSegunEscenario_(scenario) }),
     fetchQuestions: () => (scenario.preguntasMode === 'caido'
       ? { ok: false, error: { code: 'E2E_QUESTIONS_DOWN', message: 'catálogo caído (simulado)' } }
       : { ok: true, ...QUESTIONS }),
