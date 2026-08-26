@@ -3704,6 +3704,81 @@ rama `pii_gated` **antes** de llegar al bloque de la caché—, de modo que cale
 nuevo**, no un disparador. ⇒ **abrir esa ruta es otro encargo y otro turno**, tal y como el encargo
 previene.
 
+### `0º.tricies.vicies.quinquies` PARTE (B) (2026-08-26) — rotar el enlace ya no deja la puerta fría
+
+**Decisión de Diego, 2026-08-26, literal:** *«Sobre el precalentado… que no tire todo lo
+precalentado (en caché) por una rotación de token.»*
+
+⚠️ **LA PREMISA DEL ENCARGO ERA FALSA, Y ES EL HALLAZGO PRINCIPAL DE ESTA VUELTA.** Decía que
+rotar el enlace **BUMPA la versión del grupo** y con ella se caen las cinco copias de esa
+solicitud —hidratación, admisión, miembros, documentos y simulación— **para los dos tutores**,
+porque *«`notifyLiveStateChange_` bumpa igual, así que el aviso del KMS al ESCRIBIR el token
+rotado las tira también»*. **Medido contra el código vivo, eso NO ocurre:**
+
+| Qué se midió | Resultado |
+|---|---|
+| ¿`enr_wizardTouchSession` (KMS, el que rota) avisa o bumpa? | **NO.** No llama a `enr_notifyWizardLiveState_` ni a `enr_bumpLiveStateVersion_` — escribe la fila y devuelve `{resume_token, renewed}` |
+| ¿quién bumpa en el asistente? | **solo dos**: `_wzCacheInvalidate_` y `notifyLiveStateChange_` |
+| los **ONCE** llamantes de `_wzCacheInvalidate_` | **TODOS escriben contenido** (`saveStep_`, `submitEnrollmentSession_`, `saveResponses_`, `uploadDocument_`, `saveNeae_`, `saveBillingInfo_`, `applyPaymentModality_`, `requestCorrection_`, `retirarDelExpediente_`, `submitGdprConsents_`, `confirmReview_`) — **ninguno es una rotación** |
+| ¿`sendMagicLink_` invalida? | **NO**, en ninguna de sus dos ramas |
+
+⇒ **las cinco copias van por `enrollment_group_id` y SOBREVIVEN a la rotación sin que nadie haga
+nada.** El propio código ya lo decía en su cabecera (*«La rotación del token deja de borrar nada»*)
+y era cierto. **La distinción «cambió el CONTENIDO» vs «cambió el ENLACE» que el encargo pedía
+construir YA ESTABA construida** — desde que las claves dejaron de llevar el token (V2.4).
+
+**⇒ LO QUE LA ROTACIÓN SÍ DEJABA FRÍO, Y ES LO QUE SE ARREGLA: la COPIA DE LA PUERTA**, que es la
+única que va **por TOKEN** (`rtmemo_<sha(token)>`, PIEZA 2). Un token recién acuñado no tiene
+historia, así que **la primera acción de la familia tras pedir un enlace limpio volvía a pagar el
+viaje en vivo al KMS** — **12-31 s medidos** (30,9 s en el registro de la PIEZA 2). Justo en el
+momento en que la familia acaba de pedir el enlace y entra.
+
+**Lo construido: `_moverLaCopiaDeLaPuerta_` — la copia se MUEVE al token nuevo, no se pierde.** Se
+llama desde las **DOS** ramas de `sendMagicLink_` (la interna de «guardar y seguir luego» y la
+pública de recuperación por correo), **ANTES** de que `_olvidarCabeceraMemo_` borre la vieja —
+leerla después de borrarla no devolvería nada.
+
+**⛔ Lo que hay que retener al tocar esto, y ninguna es opcional:**
+
+- **CONSERVA, JAMÁS CREA — y por eso NO se fabrica una ficha.** Solo traslada una entrada que **YA
+  existía**, escrita en su día por `requireResumeToken_` (su ÚNICO escritor) tras una validación
+  VIVA que resolvió y pasó los tres rechazos. **Sin copia previa no pasa nada** y el camino de hoy
+  se recorre entero: una copia ausente **nunca** puede dejar a una familia fuera de su solicitud.
+  ⚠️ Esto es lo que impide cubrir la rama pública «mejor»: allí **no hay puerta viva**, y armar la
+  ficha con la lista de `_recuperacionDelCorreo_` sería **crear un «sí»** — además, esa lista trae
+  **cinco** campos y **no incluye `abandoned_at`**, que es justo lo que `_rechazosDelEnlace_` mira.
+- **⛔ NO alarga el techo de 30 min que Diego fijó.** La entrada guarda ahora `exp`, el instante
+  **ABSOLUTO** en que ese «sí» caduca, y el traslado lo **hereda**: encadenar rotaciones no compra
+  ni un segundo. Sin `exp` (entrada escrita antes de este cambio) **no se traslada** — degrada al
+  comportamiento de ayer.
+- **⚠️ `created_at` SE REFRESCA, y es obligatorio.** El KMS lo reescribe al rotar (reinicia el
+  plazo de 7 días); conservar el viejo haría que `_rechazosDelEnlace_` rechazara por **CADUCADO un
+  enlace recién emitido**, dejando fuera a la familia justo después de pedirlo. La ficha trasladada
+  es **fiel a la fila**, no más permisiva.
+- **KAL-4 intacta**: el expediente sale de la ficha que resolvió el token viejo; el `groupId` que
+  recibe la función solo puede provocar que **NO** se traslade, nunca elegir otro expediente.
+- **Los tres rechazos siguen aplicándose** sobre la ficha trasladada, por el juez ÚNICO
+  `_rechazosDelEnlace_` — una sesión **abandonada** sigue rechazándose después de moverla.
+- **El código de un solo uso (②27) y su orden no se tocan**, ni la verja pública, ni el ack
+  constante, ni el bumpeo por escrituras de contenido: **los once siguen invalidando igual**.
+
+⚠️ **NINGUNA BATERÍA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend **simulado** que
+**nunca ejecuta `backend/Code.js`**. Se **midió aparte**, con un arnés efímero fuera del repositorio
+(no commiteado) que extrae del fuente REAL `requireResumeToken_`, `_moverLaCopiaDeLaPuerta_`,
+`_olvidarCabeceraMemo_`, `_cabeceraDeLaCopia_`, `_claveCopiaPuerta_`, `_rechazosDelEnlace_` y
+`_puertaConLaCabecera_` y los ejecuta con dobles de `CacheService`, del reloj y del proxy al KMS:
+**13 afirmaciones verdes**, y el **ANTES/DESPUÉS medido sobre las funciones reales** —contra
+`origin/main`, **1 viaje** al KMS tras rotar; con el cambio, **0**—. **CUATRO roturas ROJAS
+demostradas**: no heredar el `exp` (*«exp=… orig=…»* + el techo deja de cortar) · quitar el guardia
+de KAL-4 · no refrescar `created_at` (*«el enlace recién emitido NO sale caducado»*) · fabricar una
+ficha cuando no hay copia (*«sin copia previa no crea un «sí»»*). ⚠️ **Y la medición se corrigió a
+sí misma**: la afirmación de `created_at` salió **VERDE** con la rotura puesta —era la afirmación la
+que no medía nada (6,9 días + 20 min sigue siendo menos de 7)— y hubo que apretarla a 6,99 días.
+**Quien toque esta puerta, que lo mida.**
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
+lo que cambia es cuánto espera tras pedir un enlace nuevo.
+
 ### `0º.tricies.vicies.quater` (2026-08-26) — abrir el asistente cuesta CUATRO viajes, no ocho
 
 **Diego, 2026-08-26, cita literal:** *«Es imposible presentar estos tiempos de carga a un cliente de
@@ -3876,6 +3951,137 @@ el caso con las palabras de Diego:
 plazo abierto se acredita con la sonda del KMS citada arriba, no con esta batería.
 
 **Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
+
+### `0º.tricies.vicies.decies` · `.septies` · `.sexies` (2026-08-26) — los redondeles que se pisaban, la pastilla que salía a medias y el paso 7 que echaba la culpa al colegio
+
+**Tres defectos de la MISMA pantalla del asistente, arreglados juntos. El primero DESTRUÍA datos de
+la familia; los otros dos mienten sobre lo que pasa.** Diego, el mismo día: *«Ahora mismo funciona
+casi todo»* — el listón era arreglar estos tres **sin romper nada**.
+
+#### 1 · ⛔⛔ SE PERDÍA LO QUE LA FAMILIA CONTESTABA — el grupo de redondeles no llevaba a la persona
+
+> Diego: *«si selecciono una respuesta de la primera pregunta, cuando selecciono una respuesta de la
+> segunda, se desactiva lo seleccionado en la primera. Parece como si considerase que las 4 primeras
+> preguntas son un mismo grupo, en vez de preguntas independientes.»*
+
+**La ficha lo traía identificado LEYENDO, no ejecutando, y por eso lo primero fue REPRODUCIRLO.** El
+atributo `name` de un redondel agrupa **en TODO el documento**, y `QuestionField` lo ponía solo por
+pregunta (`q_<question_id>`, `shared/QbSetRenderer/index.jsx`). Desde `0º.tricies.decies` cada
+pregunta de alumno se pinta **una vez por hijo** ⇒ **las dos copias de la misma pregunta eran UN SOLO
+grupo para el navegador**: marcar la de un hijo desmarcaba la del otro. Y **no se recuperaba solo**,
+que es lo que lo hacía destructivo: el redondel está gobernado por React
+(`checked={value === o.option_value}`), así que cuando el navegador desmarca por su cuenta React no
+ve cambio y no lo repone.
+
+**Reproducido antes de tocar el arreglo**, y el rojo lo dice con los nombres delante:
+
+> *«(f.2) contestar por un hermano NO desmarca lo que se contestó por el otro — … nombres de grupo:
+> `[["q_q-e2e-5","q_q-e2e-6"],["q_q-e2e-5","q_q-e2e-6"]]`»* — los MISMOS dos nombres en los dos hijos.
+
+⚠️ **Y al medirlo apareció que es PEOR de lo que la ficha describía, y también que el enunciado se
+queda corto en un punto.** Lo peor: tras contestar por el segundo hermano, la lectura del navegador
+dejaba **al primero marcado y al segundo SIN marcar** (`marcada:-1`) — pero el valor del segundo
+**sí** estaba guardado en el estado ⇒ la pantalla mentía en las dos direcciones. Lo que se queda
+corto: **dentro de un MISMO hijo, dos preguntas distintas NUNCA se pisaron** (nombres distintos), y
+la afirmación que lo comprueba —(f.1)— **ya salía verde antes del arreglo**. Se conserva igualmente
+como barandilla, pero el defecto es **entre hermanos**, no entre preguntas.
+
+**El arreglo, en una línea: `name={\`q_${question.question_id}__${respondentKey}\`}`.**
+⛔ **`respondentKey` NO es la clave de la respuesta**: es de quién es esta copia de la pregunta. La
+clave (`${question_id}__${personKey}`) se compone al pintar y **NO se toca** — es la que guarda y
+recupera lo contestado, y tocarla desvincularía todo lo ya respondido.
+
+#### 2 · La pastilla del alumno salía en unos bloques y en otros no
+
+> Diego, con captura: *«Jara se ve en pequeñito, pero en los paneles anteriores habíamos puesto un
+> pill más resaltado.»*
+
+**No era una regresión: era la regla de `0º.tricies.sexdecies` funcionando como se escribió, con el
+ALCANCE mal tomado.** `variosSujetos` se calculaba **DENTRO de cada conjunto**, así que un conjunto
+al que por sus condiciones solo le entra un alumno —el de la captura era «Voz del aplicante ≥7
+años», que por edad deja fuera al hermano pequeño— caía a la línea gris mientras el de al lado sacaba
+pastilla. **La misma pantalla con dos aspectos.**
+
+**Ahora se calcula a nivel de PASO**: las piezas de **todos** los conjuntos se computan antes de
+pintar ninguno (`piezasDelConjunto_`, sacada del cuerpo del componente **sin cambiar una línea de lo
+que decide**), y de ahí sale la cuenta.
+
+⛔ **SE CUENTAN SUJETOS DISTINTOS, NO BLOQUES**, y no es un detalle: con dos conjuntos y **un solo
+hijo** hay dos bloques —uno por conjunto— y sigue sin haber nada que separar. Contar bloques le
+pondría pastilla a una familia de un solo hijo, que es justo el caso que la regla protege y que
+**sigue protegido** (afirmación (e.3)).
+
+⛔ **UN SOLO SITIO decide el aspecto** (`shared/CabeceraDeSujeto.jsx` + `.sujeto-pastilla`): no se
+copia el estilo a mano. ⚠️ **El simulador del paso 7 usa el MISMO componente con su propia cuenta,
+que ya es por pantalla: NO SE TOCA.**
+
+#### 3 · El paso 7 decía «el colegio te informará» cuando lo que pasaba es que no llegó
+
+> Diego: *«Ahora no carga ninguna cuota en el wizard en el paso 7»*, con el recuadro diciéndole
+> *«Todavía no podemos mostrarte una simulación de las cuotas. El colegio te informará de los
+> importes cuando estudie tu solicitud.»* — y en su propio registro `simularCuotas` había SALIDO y el
+> navegador la había cortado a los **240.000 ms** sin respuesta.
+
+**No es que no hubiera cuotas: es que no llegaron.** La causa vivía en `Step7Review.jsx`: el `.catch`
+hacía `setSim({simulable:false, simulaciones:[]})` con el comentario *«Degrada y calla»* ⇒ un fallo de
+TRANSPORTE salía por la **misma puerta** que «este plan no admite cuotas», que es una respuesta
+legítima del servidor.
+
+**Mismo molde que el paso 1** (`programas-no-se-inventan`, publicado ese mismo día): **TRES
+situaciones, no dos** — *calculando* · *el servidor contestó* (y su respuesta puede ser legítimamente
+que no hay cuotas) · ***no se pudo calcular*, que se DICE y se puede reintentar**.
+
+- **⛔ Solo se memoriza lo que LLEGÓ.** Guardar un fallo en la memoria de la sesión dejaría el
+  simulador apagado el resto de la sesión y el botón de reintento no serviría de nada.
+- **⛔ NO se toca el motor** (DL-080-A): el asistente no calcula dinero, solo formatea lo que le llega.
+- **⛔ Un simulador caído NO puede impedir enviar la solicitud** — eso no cambia, y lo sigue
+  afirmando la mitad (B) de `simulador-paso7`.
+- El `vivo` del efecto se sustituye por **dos** guardas —seguir montado y ser la ÚLTIMA petición—
+  porque ahora la petición también la dispara el botón: una respuesta vieja no puede pisar a la nueva.
+
+⚠️ **ESTO NO HACE QUE LAS CUOTAS LLEGUEN.** Mientras `simularCuotas` tarde más de cuatro minutos, la
+familia seguirá sin verlas — eso lo cierra `0º.tricies.vicies.quinquies`, no esto. **Aquí solo se
+deja de mentir.**
+
+**Textos nuevos** (los dos idiomas): `step7.sim.failed` y `step7.sim.retry`.
+
+#### La red — y lo que el catálogo del robot NO podía ver hasta hoy
+
+El banco de preguntas del robot era **de TEXTO entero y de UN SOLO conjunto**, así que **no podía ver
+ninguno de los dos primeros defectos**: sin redondeles no hay grupos que pisarse, y con un solo
+conjunto calcular «¿hay más de un sujeto?» por conjunto y por paso da lo mismo. Ahora sirve **dos
+preguntas de redondeles de alumno** y **un segundo conjunto con condición `AGE GTE 7`**, y el segundo
+hijo **nace menor de 7** (`FIXTURE.applicant2Dob`) para que esa condición lo deje fuera de verdad.
+
+| Recorrido | Qué añade |
+|---|---|
+| `cuestionario-no-se-apaga` | (f.0/f.1/f.2) los redondeles · (e.2.bis.0/e.2.bis) la pastilla del conjunto con un solo hermano |
+| `cuotas-no-llegan-no-se-miente` (**NUEVO**) | las seis del paso 7, con reintento incluido |
+
+**ROJO DEMOSTRADO en los tres**, escribiendo la afirmación ANTES del arreglo y comprobando que
+**nombra el caso** (los mensajes literales, arriba en cada apartado).
+
+⛔ **EL FALLO DEL PASO 7 SE PROVOCA MATANDO EL SOCKET** (`scenario.simulacionCorta`), no con un
+`{ok:false}` ni con `scenario.simulacionFalla`: lo que hay que reproducir es el fallo que **no deja
+respuesta que leer**. `simulacionFalla` responde `simulable:false`, que es el servidor CONTESTANDO —
+el caso legítimo del que hay que distinguirse, y que sigue midiéndose en `simulador-paso7`.
+
+⚠️ **Y una lección del ROBOT, medida, que costó una corrida: con el contador a 1 el camino salía
+VERDE sin haber medido nada.** Al destruir el socket, **Chromium reintenta la petición por debajo**
+(el mismo hallazgo de `0º.tricies.vicies.semel`), y ese reintento invisible traía las cuotas. Se
+matan **todos** los intentos y se abre el paso a 0 justo antes del reintento de verdad.
+
+⚠️ **Lo que la red NO cubre, dicho con esas palabras:** la batería corre contra un backend
+**simulado** que **nunca ejecuta `backend/Code.js`** ni el KMS ⇒ afirma **lo que pinta el navegador**,
+que es exactamente donde viven los tres defectos. Ninguno de los tres toca servidor.
+
+⚠️ **El mismo componente vive en el KMS** (`kis-app frontend/src/shared/qb-renderer/`) y **NO se
+tocó**: su único consumidor es la vista previa de una pregunta, a la que se le pasa **UN alumno
+sintético** ⇒ ni las dos copias que se pisan ni el segundo conjunto llegan a existir allí. Mismo
+criterio que `0º.tricies.decies` y `0º.tricies.sexdecies`.
+
+**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), **sin `clasp` y sin
+turno**. Ninguno de los tres toca `backend/Code.js` ni el KMS.
 
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 

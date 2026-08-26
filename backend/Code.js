@@ -854,10 +854,18 @@ function requireResumeToken_(payload, opciones) {
   // LA COPIA DE LA PUERTA se escribe SOLO AQUÍ, en el camino VIVO — nunca desde el atajo.
   // Es lo que la hace incapaz de crear un «sí»: sin una validación viva que resolviera, no
   // hay entrada. El plazo lo fija `COPIA_PUERTA_TTL_S_` (30 min, decisión de Diego).
+  //
+  // ★ `0º.tricies.vicies.quinquies` PARTE (B) — la entrada guarda además `exp`, el instante
+  // ABSOLUTO en que este «sí» deja de valer. No es cosmética: `_moverLaCopiaDeLaPuerta_`
+  // (abajo) traslada la copia al token NUEVO cuando el enlace ROTA, y sin un vencimiento
+  // absoluto cada rotación le regalaría otros 30 min ⇒ encadenando rotaciones se pasaría del
+  // techo que Diego autorizó («no pasa nada por que un enlace tarde 30 minutos en dejar de
+  // valer»). Con `exp`, el traslado hereda lo que le QUEDABA, nunca un plazo nuevo.
   try {
     CacheService.getScriptCache().put(
       _claveCopiaPuerta_(token),
-      JSON.stringify({ gid: tokenGroupId, fila: group }), COPIA_PUERTA_TTL_S_);
+      JSON.stringify({ gid: tokenGroupId, fila: group, exp: Date.now() + (COPIA_PUERTA_TTL_S_ * 1000) }),
+      COPIA_PUERTA_TTL_S_);
   } catch (eM) { /* best-effort */ }
   return tokenGroupId;
 }
@@ -3372,8 +3380,15 @@ function sendMagicLink_(p) {
       // que nadie, ni hoy ni en un camino futuro, sirva de memoria un enlace muerto. Esta
       // rama NUNCA se sirve de la memoria: su gate es `requireResumeToken_` en forma VIVA, y
       // corre ANTES de esta rotación.
+      // ★ PARTE (B) — la copia de la puerta se MUEVE al token nuevo ANTES de olvidar la
+      // vieja (leerla después de borrarla no devolvería nada). Solo se mueve lo que YA
+      // existía: si no hay copia, aquí no pasa nada. Ver `_moverLaCopiaDeLaPuerta_`.
+      const rotado = !!(touch && touch.renewed && touch.resume_token);
+      const movida = rotado ? _moverLaCopiaDeLaPuerta_(p.resume_token, tokenToSend, groupId) : false;
       _olvidarCabeceraMemo_(p.resume_token, groupId);
-      _olvidarCabeceraMemo_(tokenToSend, groupId);
+      // El olvido DEFENSIVO del token nuevo se conserva tal cual cuando no se ha movido
+      // nada; si se movió, borrarlo tiraría justo la copia que acabamos de trasladar.
+      if (!movida) _olvidarCabeceraMemo_(tokenToSend, groupId);
       if (touch && touch.renewed) {
         // KAL-11: redact group_id UUID before persisting to Stackdriver.
         Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
@@ -3532,8 +3547,15 @@ function sendMagicLink_(p) {
         try {
           const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: g.resume_token });
           // ⛔ ②17 (2026-08-19) — misma rotación, mismo olvido que en la rama de arriba.
+          // ★ PARTE (B) — ídem: mover antes de olvidar. Esta rama NO tiene puerta viva, así
+          // que aquí NO se fabrica ninguna ficha: solo se traslada una copia que una puerta
+          // viva escribió antes (y que caduca en su instante absoluto original).
+          const rotadoG = !!(touch && touch.renewed && touch.resume_token);
+          const movidaG = rotadoG
+            ? _moverLaCopiaDeLaPuerta_(g.resume_token, touch.resume_token, g.enrollment_group_id)
+            : false;
           _olvidarCabeceraMemo_(g.resume_token, g.enrollment_group_id);
-          if (touch && touch.resume_token) _olvidarCabeceraMemo_(touch.resume_token, g.enrollment_group_id);
+          if (touch && touch.resume_token && !movidaG) _olvidarCabeceraMemo_(touch.resume_token, g.enrollment_group_id);
           if (touch && touch.renewed && touch.resume_token) {
             newTokens[g.enrollment_group_id] = touch.resume_token;
           } else {
@@ -4472,6 +4494,76 @@ function _olvidarCabeceraMemo_(token, groupId) {
   try {
     if (token) CacheService.getScriptCache().remove(_claveCopiaPuerta_(token));
   } catch (e2) { /* best-effort */ }
+}
+
+/**
+ * ★ `0º.tricies.vicies.quinquies` PARTE (B) (2026-08-26) — MUEVE la copia de la puerta del
+ * token VIEJO al NUEVO cuando el enlace rota. Decisión de Diego, 2026-08-26: *«que no tire
+ * todo lo precalentado (en caché) por una rotación de token»*.
+ *
+ * ⛔ **LO QUE ROTAR EL ENLACE TIRABA DE VERDAD — MEDIDO, y NO es lo que se creía.** El
+ * encargo daba por hecho que la rotación BUMPA la versión del grupo y con ella se caen
+ * hidratación, admisión, miembros, documentos y simulación. **Es FALSO**, y se comprobó
+ * leyendo el código vivo: `enr_wizardTouchSession` (KMS) escribe la fila y **no llama a
+ * `enr_notifyWizardLiveState_` ni a `enr_bumpLiveStateVersion_`**, y los ONCE llamantes de
+ * `_wzCacheInvalidate_` en este fichero son TODOS escritores de contenido — ninguno es una
+ * rotación. Esas cinco copias van por `enrollment_group_id`, así que **sobreviven** a la
+ * rotación sin que nadie haga nada.
+ *
+ * ⇒ Lo ÚNICO que la rotación dejaba frío es **esta copia**, que sí va por TOKEN: un token
+ * recién acuñado no tiene historia, así que la primera acción de la familia tras pedir un
+ * enlace limpio volvía a pagar el viaje en vivo al KMS (**12-31 s medidos**, §PIEZA 2).
+ * Justo cuando la familia acaba de pedir el enlace y entra.
+ *
+ * ⛔ **CONSERVA, JAMÁS CREA — y por eso NO se fabrica una ficha.** Solo traslada una entrada
+ * que YA existe, escrita en su día por una validación VIVA que resolvió y pasó los tres
+ * rechazos (`requireResumeToken_`, único escritor). Si no hay copia del token viejo, aquí no
+ * pasa nada y el camino de hoy se recorre entero: **una copia ausente nunca puede dejar a
+ * una familia fuera de su solicitud**.
+ *
+ * ⛔ **NO alarga el techo de 30 min.** Hereda el `exp` ABSOLUTO de la entrada de origen y
+ * calcula el plazo restante; agotado, no traslada nada. Encadenar rotaciones no compra ni un
+ * segundo de más. Una entrada de forma VIEJA (sin `exp`, escrita antes de este cambio) NO se
+ * traslada — degrada al comportamiento de ayer, nunca revienta.
+ *
+ * ⛔ **KAL-4 intacta.** El expediente sale de la ficha que resolvió el token viejo; el
+ * `groupId` que recibe esta función solo puede provocar que NO se traslade, nunca elegir otro
+ * expediente.
+ *
+ * ⚠️ **`created_at` SE REFRESCA, y es obligatorio.** `enr_wizardTouchSession` reescribe
+ * `created_at` al rotar (reinicia el plazo de 7 días). Conservar el viejo haría que
+ * `_rechazosDelEnlace_` rechazara por CADUCADO un enlace recién emitido — dejando fuera a la
+ * familia justo después de pedirlo. Se refresca al ahora, que es lo que el KMS acaba de
+ * escribir en la fila: la ficha trasladada es fiel a la fila, no más permisiva.
+ *
+ * @param {string} tokenViejo  el token que acaba de morir
+ * @param {string} tokenNuevo  el que el KMS acaba de mintar y persistir (`renewed:true`)
+ * @param {string} groupId     el expediente, ya derivado server-side
+ * @private
+ */
+function _moverLaCopiaDeLaPuerta_(tokenViejo, tokenNuevo, groupId) {
+  try {
+    if (!tokenViejo || !tokenNuevo || !groupId) return false;
+    if (String(tokenViejo).trim() === String(tokenNuevo).trim()) return false;
+    const cache = CacheService.getScriptCache();
+    const crudo = cache.get(_claveCopiaPuerta_(tokenViejo));
+    if (!crudo) return false;                       // sin copia que mover: nada que hacer
+    let entrada = null;
+    try { entrada = JSON.parse(crudo); } catch (eP) { return false; }
+    const fila = entrada && entrada.fila;
+    if (!fila || !fila.enrollment_group_id) return false;            // forma vieja o rota
+    if (fila.enrollment_group_id !== groupId) return false;          // KAL-4: no es la suya
+    if (!entrada.exp) return false;                 // sin vencimiento absoluto: no se traslada
+    const restanteS = Math.floor((Number(entrada.exp) - Date.now()) / 1000);
+    if (!(restanteS > 0)) return false;             // ya agotada: se deja morir
+    const filaNueva = {};
+    Object.keys(fila).forEach(function (k) { filaNueva[k] = fila[k]; });
+    filaNueva.resume_token = String(tokenNuevo).trim();
+    filaNueva.created_at   = new Date().toISOString();
+    cache.put(_claveCopiaPuerta_(tokenNuevo),
+      JSON.stringify({ gid: groupId, fila: filaNueva, exp: entrada.exp }), restanteS);
+    return true;
+  } catch (e) { return false; }   // best-effort: mover no puede tumbar el envío del enlace
 }
 
 /**
