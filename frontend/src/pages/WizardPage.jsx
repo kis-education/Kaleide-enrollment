@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
@@ -156,7 +156,12 @@ export default function WizardPage() {
     );
   };
   useEffect(() => {
-    if (admissionState?.state_code === 'AD'
+    // 2026-08-27: la misma puerta que el avance (el hito), no una comparación aparte — con dos
+    // criterios, el precalentado y el puente se desincronizarían.
+    if ((admissionState?.firma_desbloqueada === true
+         || ((admissionState?.firma_desbloqueada === undefined
+              || admissionState?.firma_desbloqueada === null)
+             && admissionState?.state_code === 'AD'))
         && admissionState?.signing_ready
         && admissionState?.signing_status !== 'COMPLETED'
         && (resumeToken || signingContext?.signing_token)) {
@@ -648,9 +653,41 @@ const handleNext = async (stepKey, data, extra = null) => {
   const _gateStatus  = admissionState?.signing_status || null;
   const _hasCtx      = !!(signingContext && signingContext.signing_token); // SOLO informativo
   const _hasGuardian = !!admissionState?.recovered_guardian_person_id;      // SOLO informativo
+  // ⭐ 2026-08-27 — LA PUERTA SALE DE UN HITO, no de comparar situaciones. `_gateState` era el
+  // Estado del hijo MENOS avanzado, así que **rechazar a un hermano DESBLOQUEABA la firma y
+  // ponerlo en lista de espera la BLOQUEABA** — nadie decidió eso: salía de ordenar por
+  // `display_order`. Hoy el servidor dice si el hito «admisión resuelta» está completo, y quién
+  // lo completa es CONFIGURACIÓN (efecto + guard en la arista), no código.
+  //
+  // ⛔ SEGURO DE PUBLICACIÓN, y es deliberado: los dos proyectos se publican por separado. Si el
+  // campo NO VIENE (servidor del asistente aún sin publicar, o caché de antes de este cambio) se
+  // cae al criterio de ayer, para no cerrarle la puerta a NINGUNA familia durante esa ventana.
+  // Un `false` EXPLÍCITO sí manda: eso es el servidor diciendo «todavía no».
+  // ⭐ 2026-08-27 — de quién habla cada situación. UN SOLO SITIO lo compone, porque lo miran el
+  // rótulo del paso 7 y (cuando llegue el §4) el reparto de matrículas por hijo.
+  // ⛔ NO decide de quién es nada: casa el identificador que manda el servidor con las personas
+  // que el navegador ya tiene. Sin nombre resuelto, etiqueta genérica.
+  const hermanosConSituacion = useMemo(() => {
+    const filas = Array.isArray(admissionState?.por_alumno) ? admissionState.por_alumno : [];
+    const personas = Array.isArray(stepData?.persons?.applicants) ? stepData.persons.applicants : [];
+    return filas.map((a, i) => {
+      const p = personas.find(x => x && (x.person_id === a.applicant_person_id));
+      const nombre = [p?.first_name, p?.last_name].filter(Boolean).join(' ').trim();
+      return {
+        enrollment_id: a.enrollment_id || null,
+        nombre:        nombre || t('submitted.por_hijo.sin_nombre', { n: i + 1 }),
+        situacion:     a.state_label || a.state_code || '',
+      };
+    });
+  }, [admissionState, stepData, t]);
+
+  const _hitoAdmision = admissionState?.firma_desbloqueada;
+  const _puertaAbierta = (_hitoAdmision === undefined || _hitoAdmision === null)
+    ? (_gateState === 'AD')          // ventana de publicación — se retira cuando el backend esté vivo
+    : _hitoAdmision === true;
   const canAdvance =
     currentStep === 6
-    && _gateState === 'AD'
+    && _puertaAbierta
     && _gateReady
     && _gateStatus !== 'COMPLETED';
   // Banner amarillo: ÚNICO aviso de navegación restante — expediente Aprobado pero la
@@ -659,7 +696,7 @@ const handleNext = async (stepKey, data, extra = null) => {
   // del grupo aún no existe, P200/P201). NO depende del contexto del cliente.
   const showYellowBanner =
     currentStep === 6
-    && _gateState === 'AD'
+    && _puertaAbierta
     && !_gateReady
     && _gateStatus !== 'COMPLETED';
   // Banner rojo "confirma tu email": ELIMINADO como BLOQUEADOR de navegación (WIZ-NAV-CANON).
@@ -847,6 +884,27 @@ const handleNext = async (stepKey, data, extra = null) => {
                 ? t('submitted.real_state', { state: admissionState.state_label })
                 : t('submitted.locked.title')}
             </div>
+            {/* ⭐ 2026-08-27 — LA LISTA DE HERMANOS. El rótulo de arriba dice la situación del hijo
+                MENOS avanzado (resumen conservador, `Code.js`), y hasta hoy **nada decía que hubiera
+                otro hijo**: una familia con Jara admitida y Pepito en lista de espera leía «En lista
+                de espera» y no sabía de quién.
+                ⛔ Con UN solo hijo NO se pinta — no hay nada que comparar y sería ruido. Con varios
+                se pinta SIEMPRE, coincidan o no (Diego, 2026-08-27: «Claro, siempre se debe avisar»).
+                El nombre sale de las personas que el asistente YA tiene; si no lo hubiera, la
+                etiqueta genérica — **nunca un identificador en crudo delante de la familia**. */}
+            {hermanosConSituacion.length > 1 && (
+              <div data-testid="paso7-hermanos" style={{ fontWeight: 400, marginTop: 8 }}>
+                <div style={{ fontWeight: 600, marginBottom: 2 }}>{t('submitted.por_hijo.title')}</div>
+                {hermanosConSituacion.map((h, i) => (
+                  <div key={h.enrollment_id || i} data-testid="paso7-hermano"
+                       style={{ display: 'flex', gap: 6 }}>
+                    <span style={{ fontWeight: 600 }}>{h.nombre}</span>
+                    <span>·</span>
+                    <span>{h.situacion}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ fontWeight: 400 }}>
               {/* P-BANNER: cuerpo state-aware (AD→sigue con la firma, IN→falta info,
                   resto→genérico "en revisión"). Fallback i18n al body genérico para
@@ -899,7 +957,10 @@ const handleNext = async (stepKey, data, extra = null) => {
                 mostramos un estado terminal de ÉXITO en lugar del banner mudo. NO
                 toca el modelo de autorización (KAL-4). */}
             {currentStep === 6
-              && admissionState?.state_code === 'AD'
+              && (admissionState?.firma_desbloqueada === true
+                  || ((admissionState?.firma_desbloqueada === undefined
+                       || admissionState?.firma_desbloqueada === null)
+                      && admissionState?.state_code === 'AD'))
               && admissionState?.signing_status === 'COMPLETED' && (
               <div
                 style={{

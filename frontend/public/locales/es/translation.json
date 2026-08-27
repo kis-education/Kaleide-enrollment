@@ -610,5 +610,11 @@
   "wizard.aviso_colegio": "El colegio ha actualizado algunos datos de tu solicitud.",
   "wizard.aviso_colegio_colision": "El colegio ha actualizado algunos datos de tu solicitud mientras editabas. Revisa lo que tenías a medias.",
   "signing.billing.split.amount_pending": "Se actualizará al guardar",
-  "signing.billing.split.incomplete": "Falta por repartir un {{falta}} %. Con el reparto incompleto no se puede continuar: si el otro tutor no aparece, vuelve a entrar con tu enlace."
+  "signing.billing.split.incomplete": "Falta por repartir un {{falta}} %. Con el reparto incompleto no se puede continuar: si el otro tutor no aparece, vuelve a entrar con tu enlace.",
+  "submitted": {
+    "por_hijo": {
+      "title": "Situación de cada hijo:",
+      "sin_nombre": "Alumno {{n}}"
+    }
+  }
 }

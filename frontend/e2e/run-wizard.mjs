@@ -5375,6 +5375,97 @@ async function caminoDeclaracionesTutorUnico(page, base) {
  * ⛔ La afirmación (4) es la que PROTEGE EL ALCANCE de D121 y no es opcional: del otro tutor
  * viajan su nombre y su identificador, y NADA MÁS.
  */
+/**
+ * ⭐ HERMANOS CON ADMISIONES DESIGUALES — el defecto que Diego probó.
+ *
+ * Una solicitud lleva varios hijos y el colegio resuelve cada expediente por separado. Hasta el
+ * 2026-08-27 la puerta 7→8 miraba `state_code`, que es el Estado del hijo **MENOS avanzado**
+ * (`enrStates.sort(display_order)[0]`), así que con Jara `AD` (orden 6) y Pepito `WL` (orden 4) el
+ * resumen salía `WL` y **la familia NO podía firmar la matrícula de Jara** — mientras que si a
+ * Pepito lo RECHAZABAN (`TD`, orden 10) el resumen salía `AD` y sí podía. **Rechazar a un hermano
+ * desbloqueaba la firma y ponerlo en lista de espera la bloqueaba**, y eso no lo decidió nadie.
+ *
+ * Hoy la puerta la abre un HITO que la configuración completa cuando ningún hermano queda a medias.
+ * Este recorrido mide las dos mitades: que con el hito SE AVANZA aunque el resumen sea `WL`, y que
+ * SIN el hito NO se avanza aunque haya un hijo admitido con su firma preparada.
+ */
+async function caminoHermanosDesiguales(page, base) {
+  const c = new Camino('hermanos-desiguales')
+  scenario.stage = 'firma'
+  scenario.hermanosDesiguales = true
+  try {
+    // ── FASE A · con el hito puesto: se avanza aunque el resumen diga «lista de espera» ──
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 900)
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos + pantalla.tarjetas
+
+    // (0) ANCLA — el paso 7 se pintó. Sin esto, lo de abajo mediría el aire.
+    const hayCartel = await page.$('[data-testid="paso7-hermanos"], .wizard-step')
+    if (!c.afirmar('ANCLA · el paso 7 llegó a pintarse', pantalla.pasoActivo >= 6 && !!hayCartel,
+      `pasoActivo=${pantalla.pasoActivo} cartel=${!!hayCartel}: lo que sigue no mediría nada`)) return c
+
+    // (1) EL DEFECTO: Jara AD + Pepito WL ⇒ SE PUEDE avanzar al paso 8.
+    // ⛔ EL SELECTOR ES EL DEL BOTÓN DE AVANZAR, no `BTN_SIGUIENTE` (cualquier `btn-primary-kis`):
+    // el paso 7 con la solicitud enviada pinta OTROS botones primarios, así que el genérico
+    // encontraba uno SIEMPRE y esta afirmación pasaba en vacío. Se descubrió exigiéndole el rojo:
+    // con la puerta devuelta a `_gateState === 'AD'` seguía saliendo VERDE.
+    // ⛔⛔ LO QUE SE MIDE ES EL PASO EN EL QUE ATERRIZA, no que haya un botón. Dos intentos
+    // anteriores midieron el aire y los destapó exigirles el rojo: `BTN_SIGUIENTE` casaba
+    // cualquier botón primario de la pantalla, y `nav-siguiente` existe TAMBIÉN en los pasos de
+    // firma — a los que el asistente aterriza SOLO si la puerta está abierta. El paso activo es
+    // la señal que no se puede fingir: con la puerta cerrada la familia se queda en el 7.
+    const avanzar = pantalla.pasoActivo >= 7
+    c.afirmar('(1) con un hermano admitido y otro en lista de espera, SE ENTRA a la firma',
+      avanzar,
+      `el asistente se quedó en el paso ${pantalla.pasoActivo + 1}: la puerta sigue mirando el `
+      + 'Estado del hijo MENOS avanzado, así que un hermano en lista de espera bloquea la '
+      + 'matrícula del que SÍ está admitido')
+
+    // (3) La lista nombra a los dos, con su situación.
+    const filas = await page.$$eval('[data-testid="paso7-hermano"]',
+      ns => ns.map(n => (n.innerText || '').replace(/\s+/g, ' ').trim()))
+    c.afirmar('(3) la pantalla dice de qué hijo habla cada situación',
+      filas.length === 2
+      && filas.some(x => /RobotHijoE2E|RobotHijoUno/i.test(x) || /Admitida/.test(x))
+      && filas.some(x => /lista de espera/i.test(x)),
+      `las líneas leídas fueron ${JSON.stringify(filas)}: con dos hijos en situaciones distintas, `
+      + 'el rótulo grande dice una sola y la familia no sabe de quién')
+    c.afirmar('(3.bis) y ninguna línea enseña un identificador en crudo',
+      !filas.some(x => /[0-9a-f]{8}-[0-9a-f]{4}/i.test(x)),
+      `las líneas leídas fueron ${JSON.stringify(filas)}`)
+
+    // ── FASE B · SIN el hito: no se avanza, aunque haya un admitido y su firma lista ──
+    await esperarSilencioDeRed(15000, 1200)
+    scenario.sinHitoAdmision = true
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 900)
+    const sinHito = await page.evaluate(sondaPantalla)
+    c.afirmar('(2) SIN el hito «admisión resuelta» NO se entra a la firma, aunque un hijo esté admitido',
+      sinHito.pasoActivo < 7,
+      `se entró al paso ${sinHito.pasoActivo + 1} con el hito sin completar: un hito que no consta `
+      + 'NO es un hito cumplido, y así se firma una matrícula con hermanos todavía sin resolver')
+
+    // ── FASE C · UN SOLO hijo admitido: como siempre, y SIN lista ──
+    await esperarSilencioDeRed(15000, 1200)
+    scenario.sinHitoAdmision = false
+    scenario.hermanosDesiguales = false
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 900)
+    const uno = await page.evaluate(sondaPantalla)
+    const listaUno = await page.$('[data-testid="paso7-hermanos"]')
+    c.afirmar('(4) con UN solo hijo admitido se entra a la firma igual que siempre', uno.pasoActivo >= 7,
+      `con un solo hijo admitido el asistente se quedó en el paso ${uno.pasoActivo + 1}: este cambio `
+      + 'no puede tocar a esa familia')
+    c.afirmar('(4.bis) y con un solo hijo la lista NO se pinta', !listaUno,
+      'se pintó la lista de hermanos con un solo hijo: no hay nada que comparar y es ruido')
+  } finally {
+    scenario.hermanosDesiguales = false
+    scenario.sinHitoAdmision = false
+  }
+  return c
+}
+
 async function caminoLosDosPagadores(page, base) {
   const c = new Camino('los-dos-pagadores')
   scenario.stage = 'firma'
@@ -8785,6 +8876,7 @@ const CAMINOS = [
   { nombre: 'segundo-tutor-envia', fn: caminoSegundoTutorEnvia, minLlamadas: 2, minElementos: 2 },
   // DL-E49 §2 — cada tutor ve LO SUYO y lo de los menores, nunca lo del otro tutor.
   { nombre: 'segundo-tutor-no-ve-al-primero', fn: caminoSegundoTutorNoVeAlPrimero, minLlamadas: 2, minElementos: 2 },
+  { nombre: 'hermanos-desiguales', fn: caminoHermanosDesiguales, minLlamadas: 2, minElementos: 5 },
   { nombre: 'los-dos-pagadores',   fn: caminoLosDosPagadores,    minLlamadas: 2, minElementos: 5 },
   // DL-E49 §3 — las declaraciones de la familia de un solo tutor llegan al libro con su texto.
   { nombre: 'declaraciones-tutor-unico', fn: caminoDeclaracionesTutorUnico, minLlamadas: 1, minElementos: 2 },

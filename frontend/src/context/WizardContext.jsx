@@ -1636,8 +1636,13 @@ export function WizardProvider({ children }) {
       // y el hydrate puede traer el contexto SIN token (se resuelve server-side en
       // cada acto via resume_token+n). Exigirlo aqui re-aterrizaba en el paso 7 con
       // gdpr/review ya completados. Basta contexto presente + estado + hitos.
+      // 2026-08-27: la MISMA puerta que el avance (el hito «admisión resuelta»), con el mismo
+      // respaldo declarado para la ventana de publicación entre backend y frontal.
+      const _puerta = adm && ((adm.firma_desbloqueada === true)
+        || ((adm.firma_desbloqueada === undefined || adm.firma_desbloqueada === null)
+            && adm.state_code === 'AD'));
       const signingInProgress =
-        adm && adm.state_code === 'AD' && adm.signing_ready
+        _puerta && adm.signing_ready
         && adm.signing_status !== 'COMPLETED'
         && adm.signing_context;
       if (signingInProgress && st) {
@@ -1717,6 +1722,13 @@ export function WizardProvider({ children }) {
       signing_status:    data.signing_status,
       signing_context:   data.signing_context,
       editable:          data.editable,
+      // ⭐ 2026-08-27 — LOS HECHOS POR HIJO y la puerta por hito. Esta lista blanca era la
+      // QUINTA proyección que tiraba `por_alumno` (las otras cuatro están en `backend/Code.js`).
+      // ⚠️ `normalizeAdmission_` NO recorta: hace `{ ...admRaw, … }` — el que recortaba era este
+      // objeto literal.
+      // ⛔ Una lista ausente o vacía es «todavía no se sabe», NUNCA «todos resueltos».
+      por_alumno:        Array.isArray(data.por_alumno) ? data.por_alumno : [],
+      firma_desbloqueada: data.firma_desbloqueada === true,
     });
     setAdmissionState(adm);
     // 0º.tricies.octies (B): solo se toca cuando el servidor PUDO mirar. Con `no_consultables`

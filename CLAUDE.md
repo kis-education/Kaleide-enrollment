@@ -4083,6 +4083,126 @@ criterio que `0º.tricies.decies` y `0º.tricies.sexdecies`.
 **Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), **sin `clasp` y sin
 turno**. Ninguno de los tres toca `backend/Code.js` ni el KMS.
 
+### `0º.tricies.novemtricies` §1-§3 (2026-08-27) — el asistente habla POR HIJO, y la firma se desbloquea con un HITO
+
+**Una solicitud lleva varios hijos y el colegio resuelve cada expediente por separado. El asistente
+no sabía hablar de eso — y lo que hacía en su lugar no lo decidió nadie.**
+
+**Lo medido contra `origin/main` ANTES de tocar nada:**
+
+| Hecho | Dónde |
+|---|---|
+| El servidor **SÍ** calculaba los hechos por hijo (`out.por_alumno`) desde el 24-08 | `backend/Code.js:3955` |
+| **Y NUNCA SALÍAN**: los tiraban **CINCO** listas blancas de campos escritas a mano | 4 en `backend/Code.js`, 1 en `WizardContext.jsx` |
+| La puerta 7→8 miraba `state_code`, que es el Estado del hijo **MENOS avanzado** (`sort(display_order)[0]`) | `WizardPage.jsx` ← `Code.js:3936` |
+
+⇒ con Jara `AD` (orden 6) y Pepito `WL` (orden 4) el resumen salía `WL` y **la familia NO podía
+firmar la matrícula de Jara**; si a Pepito lo **rechazaban** (`TD`, orden 10) el resumen salía `AD` y
+**sí** podía. **Rechazar a un hermano DESBLOQUEABA la firma y ponerlo en lista de espera la
+BLOQUEABA.**
+
+**Las CINCO proyecciones, con fichero y línea** (todas llevan ya `por_alumno` + `firma_desbloqueada`):
+
+| # | Sitio | Qué es |
+|---|---|---|
+| 1 | `backend/Code.js:2215` | la proyección del **hydrate** |
+| 2 | `backend/Code.js:5027` | el **pulso**, acierto de caché |
+| 3 | `backend/Code.js:5115` | el **pulso**, escritura de la caché |
+| 4 | `backend/Code.js:5135` | el **pulso**, retorno en vivo |
+| 5 | `frontend/src/context/WizardContext.jsx:1719` | el **camino ligero** del contexto |
+
+⛔ **En la #1 se DESCARTA el `signing_status` por hijo que manda el KMS**, y el porqué está escrito
+al lado: el pulso no sabe producirlo hoy (`resolveSigningStatus_` es de grupo y no acepta acotar a un
+expediente). **Que lo produzcan los dos, o no lo produzca ninguno.**
+
+**⛔ LA PUERTA NO EVALÚA NINGUNA REGLA: PREGUNTA SI UN HITO ESTÁ COMPLETO.** Corrección de Diego
+(2026-08-27): *«nada de eso debe ir por código, sino por configuración de hitos. Debe poderse generar
+por configuración.»*
+
+```
+firma_desbloqueada  ⟺  el hito «admisión resuelta» de ESTA solicitud está COMPLETO
+                    Y  hay al menos UNA sesión de firma para este tutor
+```
+
+El segundo requisito **no es una segunda regla: es un HECHO** — las sesiones se crean solo para los
+hijos admitidos, así que «hay algo que firmar» ⟺ «hay sesión». **`AD`, `TD` y `WL` ya no aparecen
+como criterio** ni en `backend/Code.js` ni en `frontend/src/`; lo único que queda es el respaldo
+declarado de la ventana de publicación (abajo).
+
+**Lo construido en el KMS — lo justo, y es capacidad del lenguaje, no un acomodo:**
+
+1. **`supports_guard: true` en `COMPLETE_MILESTONE`** (`config/sys-action-primitives.html:364`). Es
+   la «segunda aparición» que DL-S90 pide para ampliar el flag.
+2. **La evaluación del guard SUBE al dispatcher compartido** (`sys_guardBloquea_`,
+   `sys/scheduled-rules.gs`). ⚠️ **Sin esto, el flip solo habría sido peor que nada**: la PUERTA
+   (`GUARD_NOT_SUPPORTED`) vivía en el dispatcher y la EVALUACIÓN estaba **copiada dentro** de
+   `sys_dispatch_triggerTransition_` ⇒ el guard se habría **admitido y no evaluado**, y el hito se
+   completaría **SIEMPRE**, con hermanos sin resolver. ⛔ **No se copió dentro de
+   `completeMilestone`**: eso era el acomodo. El evaluador no se tocó — ya era genérico.
+   **Va DESPUÉS de la rama `subjects`** a propósito: el fan-out reentra por el mismo dispatcher una
+   vez por miembro, así que evaluar ahí es evaluar **por miembro**, que es la semántica declarada.
+3. **El hito viaja por el canal que YA existe**, `enr.datosDeFirma` → `admision_resuelta`
+   (`enr_admisionResuelta_`). **Falla CERRADO**: sin hito, o si no se puede leer, `false`.
+
+**⛔ ÚNICO cambio de orden observable, y se dice en vez de esconderlo:** para `TRIGGER_TRANSITION` el
+guard se evaluaba **después** de `MISSING_TARGET_STATE_CODE`; ahora va antes. **No es alcanzable por
+configuración** (`target_state_code` es `required` en el esquema del primitivo, así que una regla así
+no se puede guardar). Los otros dos rechazos previos salen byte-idénticos porque
+`sys_guardBloquea_` **no evalúa si el sujeto no se resuelve**: deja pasar al handler.
+
+**Lo que NO se tocó, y por qué:**
+
+- **`state_code` y `state_label`** — son el resumen conservador del que sale `editable`. Siguen
+  sirviendo para el rótulo y para saber si se puede editar; **lo que dejan de hacer es abrir la firma**.
+- **`derivarPantallaAdmision_`** — medido: `signing_available` es `!!signingContext` y `signing_ready`
+  es `signingStatus !== 'NOT_INITIATED'`; **ninguno mira el Estado que recibe**, así que cambiar sus
+  argumentos no arreglaba nada.
+- **La condición de la regla del correo y el `EXECUTE_HANDLER`** — son D119 y **siguen siendo decisión
+  de Diego**.
+
+**⚠️ LA LECTURA DEL KMS SALE DEL `if (admitido)`, y es obligatorio:** antes se pedía solo con algún
+hijo en `AD`, pero ahora la puerta DEPENDE del hito que trae esa misma lectura ⇒ dejarla dentro sería
+una dependencia circular y la puerta no se abriría nunca. Cuesta una llamada en el caso «enviada pero
+sin resolver»; la amortiguan la memoria de ejecución y la caché del pulso, que ya existían.
+
+**⛔ SEGURO DE PUBLICACIÓN, declarado en el código:** los tres artefactos se publican por separado, así
+que si `firma_desbloqueada` **no viene** el frontal cae al criterio de ayer — para no cerrarle la
+puerta a **ninguna** familia durante esa ventana. Un `false` **explícito** sí manda.
+
+**Textos nuevos** (los dos idiomas): `submitted.por_hijo.title` y `submitted.por_hijo.sin_nombre`.
+
+**Red**: camino NUEVO `hermanos-desiguales` (7 afirmaciones, tres fases), con **ancla** por delante.
+El doble sirve el contrato REAL: con un hermano en lista de espera, `state_code` es **`WL`** — ponerle
+`AD` haría que el recorrido pasara en vacío.
+
+⚠️ **Y DOS afirmaciones MEDÍAN EL AIRE hasta que se les exigió el rojo, que es el hallazgo de método
+de esta vuelta.** La primera versión buscaba `BTN_SIGUIENTE` (`button.btn-primary-kis`), y el paso 7
+con la solicitud enviada pinta **otros** botones primarios ⇒ encontraba uno siempre. La segunda lo
+acotó a `[data-testid="nav-siguiente"]`, y **tampoco valía**: ese botón existe **también** en los pasos
+de firma. Lo que no se puede fingir es **en qué paso aterriza la familia**, y es lo que se mide ahora.
+
+**Rojos demostrados**, cada uno nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| la puerta vuelve a `state_code === 'AD'` | *«el asistente se quedó en el paso 7: la puerta sigue mirando el Estado del hijo MENOS avanzado, así que un hermano en lista de espera bloquea la matrícula del que SÍ está admitido»* |
+| una proyección tira `por_alumno` | *«las líneas leídas fueron []: con dos hijos en situaciones distintas, el rótulo grande dice una sola y la familia no sabe de quién»* |
+| el hito se da por cumplido sin constar | *«se entró al paso 8 con el hito sin completar: un hito que no consta NO es un hito cumplido, y así se firma una matrícula con hermanos todavía sin resolver»* |
+
+⚠️ **Lo que la red NO cubre, con esas palabras:** la batería corre contra un backend **simulado** que
+**nunca ejecuta `backend/Code.js`** ni el KMS. Afirma lo que decide el navegador. **Las cuatro
+proyecciones del backend y la puerta del servidor no las cubre**, y tampoco el guard del KMS: los dos
+se midieron **aparte**, con arneses efímeros fuera de los repositorios que extraen las funciones
+REALES del fuente — 6 afirmaciones la puerta del asistente, 7 el guard del KMS — **demostrados no
+ciegos**: renombrar lo medido sale **«MEDICIÓN CIEGA»**, y con **el flag puesto pero la evaluación sin
+subir** el hito se completaría igual (ROJO).
+
+⛔ **§4 y §5 NO se hicieron en esta vuelta, y se parte por el §4 tal y como el encargo autoriza.**
+Queda sin construir: que la firma se abra para **TODOS** los admitidos en el mismo recorrido (los
+enlaces por sesión, el firmante por hijo, y la trampa del veredicto `COMPLETED` de grupo que **cierra
+el paso a la segunda matrícula**), y que los pasos 9 y 10 pasen a ser **por hijo**. §1-§3 dejan el
+asistente usable y son lo que rompía la prueba de Diego.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

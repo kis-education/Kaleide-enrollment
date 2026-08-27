@@ -2215,6 +2215,19 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
           return {
             state_code:        admSrc.state_code || null,
             state_label:       admSrc.state_label || null,
+            // ⭐ 2026-08-27 — LOS HECHOS POR HIJO llegan al navegador. Se calculaban desde el
+            // 24-08 y los tiraba esta lista blanca de campos, aquí y en las otras cuatro.
+            // ⛔ Se DESCARTA a propósito el `signing_status` por hijo que manda el KMS: el pulso
+            // no sabe producirlo hoy (`resolveSigningStatus_` es de grupo y no acepta acotar a un
+            // expediente), y un campo que existe por un camino y no por el otro es una trampa
+            // para quien lo lea después. Que lo produzcan los dos, o no lo produzca ninguno.
+            por_alumno:        Array.isArray(admSrc.por_alumno) ? admSrc.por_alumno.map(function(a) {
+                                 return { enrollment_id: a.enrollment_id || null,
+                                          applicant_person_id: a.applicant_person_id || null,
+                                          state_code: a.state_code || null,
+                                          state_label: a.state_label || null };
+                               }) : [],
+            firma_desbloqueada: admSrc.firma_desbloqueada === true,
             signing_status:    admSrc.signing_status || null,
             signing_context:   ctx,
             signing_ready:     d.signing_ready,
@@ -3859,7 +3872,7 @@ function reportUnsolicited_(p) {
  *
  * Hasta el 2026-08-03 se calculaban en DOS sitios —aquí y en el KMS— y **YA DIVERGÍAN**, no
  * en teoría: para un expediente admitido cuyo contexto de firma no resuelve, el KMS decía
- * `signing_available: (state === 'AD')` → **true**, y este cliente decía `!!signing_context`
+ * `signing_available` derivado de la situación → **true**, y este cliente decía `!!signing_context`
  * → **false**. Ese campo gobierna el avance 7→8. El propio KMS lo admitía en un comentario:
  * «DEBEN permanecer idénticos a buildAdmissionContext_ del wizard». Dos cosas que «deben
  * permanecer idénticas» a base de buena voluntad acaban divergiendo — y aquí ya lo habían
@@ -3879,7 +3892,7 @@ function derivarPantallaAdmision_(stateCode, signingStatus, signingContext) {
   return {
     // Sin estado real (pre-envío) el borrador es editable; con estado, lo gobierna el estado.
     editable:          stateCode ? !!WIZ_EDITABLE_STATE_CODES_[stateCode] : true,
-    // Hay puente a la firma si HAY contexto de firma resuelto — no por estar en 'AD'.
+    // Hay puente a la firma si HAY contexto de firma resuelto — no por la situación del expediente.
     signing_available: !!signingContext,
     signing_ready:     (signingStatus !== 'NOT_INITIATED'),
   };
@@ -3895,7 +3908,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
   //    KMS por la cadena `program_id → enrPrograms → enrProgramTypes`. Si el caller no las
   //    trae, se piden aquí con `resumeToken` (mismo patrón que las filas de firma).
   //  · `sessions` / `signersBySession` — ②17: filas de firma **servidas por el KMS**. Si el
-  //    caller no las trae, se piden aquí con `resumeToken` (ver el bloque del estado 'AD').
+  //    caller no las trae, se piden aquí con `resumeToken` (ver el bloque de la puerta por hito).
   //    YA NO hay lectura directa de AppSheet para estas dos: sin filas se degrada como
   //    siempre hizo el `catch` (NOT_INITIATED / null).
   admHints = admHints || {};
@@ -3962,38 +3975,52 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
     };
   });
 
-  // El hijo por el que se abre la puerta de la firma: el que YA está admitido, aunque su hermano
-  // siga esperando. `AD` no es un literal nuevo — es el MISMO que este fichero ya comparaba dos
-  // líneas más abajo; lo que cambia es sobre QUÉ se compara: antes el Estado del menos avanzado,
-  // ahora el de cada hijo.
-  var admitido = out.por_alumno.filter(function(a) { return a.state_code === 'AD'; })[0] || null;
-  out.alumno_admitido_id = admitido ? admitido.enrollment_id : null;
+  // ⛔ AQUÍ SE COMPARABA `state_code === 'AD'` PARA DECIDIR SI SE ABRE LA FIRMA. Se retira el
+  // 2026-08-27 por decisión de Diego: *«nada de eso debe ir por código, sino por configuración de
+  // hitos. Debe poderse generar por configuración.»* Ordenar situaciones en el código tenía además
+  // una consecuencia que nadie decidió: **rechazar a un hermano DESBLOQUEABA la firma y ponerlo en
+  // lista de espera la BLOQUEABA**, porque el resumen se quedaba con el hijo menos avanzado por
+  // `display_order` (`TD`=10 > `AD`=6 > `WL`=4).
+  //
+  // Hoy el asistente **no evalúa ninguna regla: pregunta si un hito está completo** — el mismo
+  // patrón que `steps.gdpr_completed`/`steps.review_completed`. Quién lo completa y cuándo es
+  // CONFIGURACIÓN (efecto `SYS_COMPLETE_MILESTONE` con `guard` en la arista que resuelve cada
+  // expediente). El conjunto de situaciones vive en `state_in`, no aquí.
 
   // URGENT-PASS3 BUG A: editabilidad state-driven (mismo conjunto que el KMS hydrate
   // wizard-datalayer.gs). Con estado real, locked salvo {DRAFT,IN,NEEDS_MORE_INFO}.
   // Lector ÚNICO de las derivaciones de pantalla (ver derivarPantallaAdmision_).
   out.editable = derivarPantallaAdmision_(out.state_code, out.signing_status, null).editable;
 
-  // ⭐ 2026-08-24 — la puerta se abre si **ALGÚN** hijo está admitido, no si lo está el menos
-  // avanzado. Con un solo hijo es exactamente lo de antes (`admitido` existe ⟺ su Estado es
-  // `AD` ⟺ `out.state_code === 'AD'`), así que la familia de un solo alumno no nota nada.
-  if (admitido) {
-    // ②17 — las filas de firma las sirve el KMS, NO AppSheet. Si quien llama ya las
-    // bajó (el pulso las pide una sola vez), se reusan; si no, se piden aquí con el
-    // `resume_token` que ese mismo llamante trae (KAL-4: el KMS deriva el expediente del
-    // token, aquí no viaja ningún id). Se pide DENTRO del `if` a propósito: un expediente
-    // que aún no está admitido no tiene sesión de firma que mirar, y era el caso común.
-    if (!Array.isArray(admHints.sessions) && admHints.resumeToken) {
-      var firmaKms = _datosDeFirmaDelExpediente_(admHints.resumeToken);
-      if (firmaKms) {
-        admHints = {
-          situaciones:      admHints.situaciones,
-          resumeToken:      admHints.resumeToken,
-          sessions:         firmaKms.sessions,
-          signersBySession: firmaKms.signersBySession,
-        };
-      }
+  // ⭐ 2026-08-27 — LA PUERTA, y no nombra ni una situación:
+  //     firma_desbloqueada ⟺ el hito «admisión resuelta» de ESTA solicitud está COMPLETO
+  //                       Y  hay al menos UNA sesión de firma para este tutor.
+  // El segundo requisito NO es una segunda regla: es un HECHO. Las sesiones se crean solo para
+  // los hijos admitidos, así que «hay algo que firmar» ⟺ «hay sesión». Nada de contar admitidos.
+  //
+  // ⚠️ LA LECTURA DEL KMS SALE DEL `if`, y es obligatorio: antes se pedía solo cuando algún hijo
+  // estaba en `AD`, pero ahora la puerta DEPENDE de lo que trae esa misma lectura (el hito), así
+  // que dejarla dentro sería una dependencia circular — la puerta nunca se abriría. El coste es
+  // una llamada al KMS en el caso «enviada pero aún sin resolver»; la amortiguan la memoria de
+  // ejecución (`_FIRMA_MEMO_`) y la caché del pulso (`wz_adm_`, 1800 s), que ya existen.
+  if (!Array.isArray(admHints.sessions) && admHints.resumeToken) {
+    var firmaKms = _datosDeFirmaDelExpediente_(admHints.resumeToken);
+    if (firmaKms) {
+      admHints = {
+        situaciones:       admHints.situaciones,
+        resumeToken:       admHints.resumeToken,
+        sessions:          firmaKms.sessions,
+        signersBySession:  firmaKms.signersBySession,
+        admisionResuelta:  firmaKms.admisionResuelta,
+      };
     }
+  }
+  // ⛔ FALLA CERRADO: un hito que no consta NO es un hito cumplido. Y una lista de sesiones
+  // ausente tampoco desbloquea nada — «todavía no se sabe» nunca es «todos resueltos».
+  out.firma_desbloqueada = (admHints.admisionResuelta === true) &&
+                           Array.isArray(admHints.sessions) && admHints.sessions.length > 0;
+
+  if (out.firma_desbloqueada) {
     // Path 1 — guardian resolved from the email the family typed (a1, KAL-4).
     if (guardianPersonId) {
       var perfP1 = Date.now(); // PERF-KMS2
@@ -4019,9 +4046,11 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
         admHints.sessions, admHints.signersBySession);
       if (PERF2_.adm) PERF2_.adm.ctx_path2_ms = Date.now() - perfP2;
     }
-    // Se deriva con el Estado DEL HIJO ADMITIDO, no con el del resumen: es de ese contrato del
-    // que hablamos. Con un solo hijo los dos valores coinciden.
-    out.signing_available = derivarPantallaAdmision_(admitido.state_code, out.signing_status, out.signing_context).signing_available;
+    // ⚠️ `derivarPantallaAdmision_` NO MIRA el Estado que recibe: `signing_available` es
+    // `!!signingContext` y `signing_ready` es `signingStatus !== 'NOT_INITIATED'` — medido. Antes
+    // se le pasaba el Estado del hijo admitido; hoy no hay tal comparación, así que se le pasa el
+    // del resumen. **El valor que sale es el mismo**, y así este fichero deja de nombrar `AD`.
+    out.signing_available = derivarPantallaAdmision_(out.state_code, out.signing_status, out.signing_context).signing_available;
 
     // P215 opción (a) RESUELTA (CLI AD-SPLIT, decisión Diego 2026-06-07): la
     // identidad de firma se deriva SOLO server-side — Path 1 (Vía 1, recovery link
@@ -4120,7 +4149,11 @@ function _datosDeFirmaDelExpediente_(resumeToken) {
     if (Array.isArray(r.sessions)) {
       var porSesion = (r.signers_by_session && typeof r.signers_by_session === 'object')
         ? r.signers_by_session : {};
-      out = { sessions: r.sessions, signersBySession: porSesion };
+      // `admision_resuelta` (2026-08-27): el hito que gobierna el desbloqueo de la firma. Se
+      // normaliza a booleano ESTRICTO — un KMS que aún no lo mande deja `false`, que es fallar
+      // cerrado: un hito que no consta no es un hito cumplido.
+      out = { sessions: r.sessions, signersBySession: porSesion,
+              admisionResuelta: r.admision_resuelta === true };
     } else {
       Logger.log('[_datosDeFirmaDelExpediente_] respuesta sin sesiones — se degrada');
     }
@@ -5012,6 +5045,9 @@ function getAdmissionState_(p) {
           ok:                true,
           state_code:        admC.state_code,
           state_label:       admC.state_label,
+          // ⭐ 2026-08-27 — los hechos POR HIJO y la puerta por hito, también en el pulso.
+          por_alumno:        Array.isArray(admC.por_alumno) ? admC.por_alumno : [],
+          firma_desbloqueada: admC.firma_desbloqueada === true,
           signing_ready:     admC.signing_ready,
           signing_status:    admC.signing_status || null,
           signing_available: admC.signing_available,
@@ -5095,6 +5131,9 @@ function getAdmissionState_(p) {
       JSON.stringify({ v: _getLiveStateVersion_(id), admission: {
         state_code:        admission.state_code,
         state_label:       admission.state_label,
+        // ⭐ 2026-08-27 — los hechos POR HIJO y la puerta por hito, también en el pulso.
+        por_alumno:        Array.isArray(admission.por_alumno) ? admission.por_alumno : [],
+        firma_desbloqueada: admission.firma_desbloqueada === true,
         signing_ready:     admission.signing_ready,
         signing_status:    admission.signing_status || null,
         signing_available: admission.signing_available,
@@ -5112,6 +5151,9 @@ function getAdmissionState_(p) {
     ok:                true,
     state_code:        admission.state_code,
     state_label:       admission.state_label,
+    // ⭐ 2026-08-27 — los hechos POR HIJO y la puerta por hito, también en el pulso.
+    por_alumno:        Array.isArray(admission.por_alumno) ? admission.por_alumno : [],
+    firma_desbloqueada: admission.firma_desbloqueada === true,
     signing_ready:     admission.signing_ready,
     signing_status:    admission.signing_status || null,
     signing_available: admission.signing_available,

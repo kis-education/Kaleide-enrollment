@@ -66,6 +66,7 @@ export default function StepNav({
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', maxWidth: '60%' }}>
           <button
             className="btn-primary-kis"
+            data-testid="nav-siguiente"
             onClick={onNext}
             disabled={nextDisabled}
           >

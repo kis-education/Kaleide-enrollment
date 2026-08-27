@@ -610,5 +610,11 @@
   "wizard.aviso_colegio": "The school has updated some details of your application.",
   "wizard.aviso_colegio_colision": "The school updated some details of your application while you were editing. Please check anything you had in progress.",
   "signing.billing.split.amount_pending": "Will update when you save",
-  "signing.billing.split.incomplete": "{{falta}}% is still unassigned. You cannot continue with an incomplete split: if the other guardian is missing, open your link again."
+  "signing.billing.split.incomplete": "{{falta}}% is still unassigned. You cannot continue with an incomplete split: if the other guardian is missing, open your link again.",
+  "submitted": {
+    "por_hijo": {
+      "title": "Status of each child:",
+      "sin_nombre": "Applicant {{n}}"
+    }
+  }
 }
