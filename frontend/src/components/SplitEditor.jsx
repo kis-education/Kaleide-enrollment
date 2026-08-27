@@ -8,8 +8,38 @@ import { useTranslation } from 'react-i18next';
 // 100 POR CONSTRUCCIÓN. Reutilizado por el caso group-level (default colapsado) y por
 // cada hijo en modo per-participante (CLI 10). `payers`=[{ key, payer_person_id, name,
 // split }]. Controlado: recibe `payers` + `onChange(nextPayers)`.
-export default function SplitEditor({ payers, onChange }) {
+export default function SplitEditor({ payers, onChange, importes, money }) {
   const { t } = useTranslation();
+
+  // ⭐ EL PASO 8 AL DÍA (2026-08-27) — EL IMPORTE AL LADO DEL PORCENTAJE.
+  // Diego veía «60 % / 40 %» y nunca cuánto era eso en euros.
+  //
+  // ⛔ EL IMPORTE LO PROYECTA EL KMS y aquí NO se multiplica nada (DL-080-A): el reparto que
+  // llega ya lo hizo el MISMO repartidor del cobro real, vencimiento a vencimiento.
+  //
+  // ⛔ Y SOLO SE ENSEÑA SI SIGUE SIENDO VERDAD: el importe es el del reparto GUARDADO, así
+  // que en cuanto la familia mueve el deslizador deja de corresponder. Enseñar entonces el
+  // número viejo al lado del porcentaje nuevo sería mentir en un paso que se FIRMA — y
+  // recalcularlo aquí está prohibido. Se dice que se actualizará al guardar.
+  const importeDe = (p) => {
+    if (!importes || !money || !p || !p.payer_person_id) return null;
+    const x = importes[String(p.payer_person_id)];
+    if (!x || x.amount_cents == null) return null;
+    if (x.split_percentage != null && Number(x.split_percentage) !== Number(p.split || 0)) {
+      return { pendiente: true };
+    }
+    return { texto: money(x.amount_cents, x.currency_code) };
+  };
+  const lineaDeImporte = (p, alinear) => {
+    const i = importeDe(p);
+    if (!i) return null;
+    return (
+      <div data-testid="reparto-importe" data-payer={p.payer_person_id}
+           style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--muted)', textAlign: alinear || 'left' }}>
+        {i.pendiente ? t('signing.billing.split.amount_pending') : i.texto}
+      </div>
+    );
+  };
   const two = payers.length === 2;
   const sliderA = two ? (Number(payers[0].split) || 0) : 0;
   const totalSplit = payers.reduce((s, p) => s + (Number(p.split) || 0), 0);
@@ -56,7 +86,8 @@ export default function SplitEditor({ payers, onChange }) {
   if (payers.length === 1) {
     return (
       <div style={{ padding: '12px 14px', background: 'var(--bg)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
-        <span>{payers[0].name}</span><span>100%</span>
+        <span>{payers[0].name}</span>
+        <span style={{ textAlign: 'right' }}>100%{lineaDeImporte(payers[0], 'right')}</span>
       </div>
     );
   }
@@ -70,8 +101,8 @@ export default function SplitEditor({ payers, onChange }) {
           {presetBtn('0 / 100', 0)}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: '0.9rem', marginBottom: 6 }}>
-          <span>{payers[0].name}: {sliderA}%</span>
-          <span>{payers[1].name}: {100 - sliderA}%</span>
+          <span>{payers[0].name}: {sliderA}%{lineaDeImporte(payers[0])}</span>
+          <span style={{ textAlign: 'right' }}>{payers[1].name}: {100 - sliderA}%{lineaDeImporte(payers[1], 'right')}</span>
         </div>
         <input type="range" min="0" max="100" step="1" value={sliderA}
           onChange={e => setSliderValue(e.target.value)} style={{ width: '100%' }}
@@ -85,7 +116,9 @@ export default function SplitEditor({ payers, onChange }) {
       {payers.map(p => (
         <div key={p.key} style={{ marginBottom: 12, padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</span>
+            <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem' }}>
+              {p.name}{lineaDeImporte(p)}
+            </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 110 }}>
               <input type="number" min="0" max="100" className="form-control"
                 style={{ width: 72, textAlign: 'right' }} value={p.split}

@@ -136,6 +136,15 @@ const NO_CUBIERTAS_PERMITIDAS = {
     // señal sobre el wizard (el acto vive server-side).
     'firma-consumada': 'no se firma de verdad: el acto es irreversible y su lógica vive en el motor del KMS, no en el wizard',
   },
+  'paso8-al-dia': {
+    // MEDIDO el 2026-08-27, y es un HALLAZGO, no una carencia del arnés: desde DL-E49 §2 la
+    // hidratación devuelve UN SOLO tutor (el que mira) y `seedPayers` construye las filas
+    // del reparto a partir de esos tutores ⇒ la pantalla NO PUEDE pintar dos pagadores, así
+    // que no hay deslizador que mover y el caso «el importe guardado deja de corresponder al
+    // porcentaje que se está moviendo» no es alcanzable. La barandilla que lo cubre SÍ está
+    // construida (`importeDe` en SplitEditor) y se mide en el reporte, no aquí.
+    'importe-al-mover': 'la pantalla solo puede enseñar UN pagador (DL-E49 §2 recorta la hidratación al tutor que mira, y el reparto se siembra de ahí), así que no hay deslizador que mover: el caso «el importe deja de corresponder» no es alcanzable hoy desde esta pantalla',
+  },
 }
 
 // Añadidos SOLO en modo real: escenarios que el backend simulado puede fabricar y
@@ -3403,6 +3412,118 @@ async function caminoTramoFirma(page, base) {
   // Declarado y justificado en NO_CUBIERTAS_PERMITIDAS.
   c.noCubierta('firma-consumada',
     'no se firma de verdad: el acto es irreversible y su lógica vive en el motor del KMS, no en el wizard')
+  return c
+}
+
+/**
+ * ⭐ EL PASO 8 AL DÍA (2026-08-27) — el paso 8 se quedó DOS pasadas por detrás del 7 siendo
+ * la MISMA pantalla de dinero, y NADIE se enteró porque **no tenía ni una afirmación**: el
+ * doble devolvía `subscriptions: []`. Este camino lo cubre.
+ *
+ * ⛔ ANCLA por delante: sin comprobar que el paso 8 llegó a pintar su presupuesto, las demás
+ * afirmaciones pasarían sobre una pantalla que no se montó.
+ */
+async function caminoPaso8AlDia(page, base) {
+  const c = new Camino('paso8-al-dia')
+  scenario.stage = 'firma'
+  if (!await entrarPorElEnlace(c, page, base)) return c
+  await page.waitForTimeout(LATENCY + 900)
+
+  const pantalla = await page.evaluate(sondaPantalla)
+  c.evidencia.elementos = pantalla.pasos + pantalla.campos + pantalla.tarjetas
+
+  // (0) ANCLA — el presupuesto llegó a pintarse.
+  const desglose = await page.$('[data-testid="paso8-desglose"]')
+  if (!c.afirmar('ANCLA · el paso 8 pinta su presupuesto', !!desglose,
+    'no se pintó [data-testid="paso8-desglose"]: lo que sigue mediría el aire')) return c
+
+  // (1) UN DESPLEGABLE, NO TARJETAS — es lo que Diego mandó quitar en el paso 7.
+  const selector = await page.$('[data-testid="paso8-modalidad-selector"]')
+  const etiquetas = await page.$$eval('[data-testid="paso8-modalidad"]',
+    ns => ns.map(n => n.tagName))
+  c.afirmar('la forma de pago se elige con un DESPLEGABLE, no con tarjetas',
+    !!selector && etiquetas.every(x => x === 'OPTION'),
+    `selector encontrado: ${!!selector}; las opciones eran ${JSON.stringify(etiquetas)}: si son BUTTON, han vuelto las tarjetas`)
+
+  // (2) LAS CINCO COLUMNAS — concepto · fecha · bruto · descuento · a pagar.
+  const cols = await page.$$eval('[data-testid="paso8-desglose"] thead th', ns => ns.length)
+  const desc = await page.$$('[data-testid="paso8-desglose-descuento"]')
+  const neto = await page.$$('[data-testid="paso8-desglose-neto"]')
+  c.afirmar('el calendario enseña el descuento y lo que se paga por cada vencimiento',
+    cols === 5 && desc.length > 0 && neto.length > 0,
+    `columnas=${cols} celdas de descuento=${desc.length} celdas de neto=${neto.length}: con tres columnas el descuento pasa desapercibido, que es lo que Diego dijo del paso 7`)
+
+  // (3) EL SUBTOTAL — el escalón entre las filas y el total.
+  const sub = await page.$('[data-testid="paso8-subtotal-plan"]')
+  const subNeto = await page.$eval('[data-testid="paso8-subtotal-neto"]', n => n.textContent.trim())
+    .catch(() => null)
+  c.afirmar('el plan lleva su SUBTOTAL, con lo que de verdad se paga',
+    !!sub && !!subNeto && /\d/.test(subNeto),
+    `subtotal presente=${!!sub} neto leído=${JSON.stringify(subNeto)}`)
+
+  // (4) EL REPARTO, EN EUROS — no solo «60 % / 40 %».
+  const importes = await page.$$eval('[data-testid="reparto-importe"]',
+    ns => ns.map(n => n.textContent.trim()))
+  // ⚠️ UNA sola fila, y NO es un recorte de la prueba: desde DL-E49 §2 la hidratación
+  // devuelve UN solo tutor (el que mira) y `seedPayers` construye el reparto a partir de
+  // ahí ⇒ el paso 8 solo puede enseñar UNA. Queda dicho en el reporte; aquí se afirma lo
+  // que sí se puede afirmar: que ese tutor ve su importe, y que es una CIFRA.
+  c.afirmar('el tutor ve CUÁNTO le toca pagar, no solo su porcentaje',
+    importes.length >= 1 && importes.every(x => /\d/.test(x)),
+    `importes leídos: ${JSON.stringify(importes)}: con solo el porcentaje, la familia no sabe cuánto es`)
+
+  // (5) Y ESE EURO LO MANDA EL SERVIDOR — no se recalcula al mover el reparto.
+  //     Al cambiar el porcentaje, el importe guardado deja de corresponder ⇒ se dice, no se
+  //     inventa. Es la barandilla de DL-080-A puesta donde se ve.
+  const slider = await page.$('input[type="range"]')
+  if (slider) {
+    await slider.evaluate(n => {
+      const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+      set.call(n, '30'); n.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await page.waitForTimeout(250)
+    const tras = await page.$$eval('[data-testid="reparto-importe"]',
+      ns => ns.map(n => n.textContent.trim()))
+    c.afirmar('al mover el reparto NO se inventa un importe nuevo en la pantalla',
+      tras.some(x => !/\d/.test(x)),
+      `tras mover el deslizador los importes eran ${JSON.stringify(tras)}: si siguen siendo cifras, o se están recalculando en el navegador (DL-080-A) o se está enseñando el número viejo al lado del porcentaje nuevo`)
+  } else {
+    c.noCubierta('importe-al-mover',
+      'la pantalla solo puede enseñar UN pagador (DL-E49 §2 recorta la hidratación al tutor que mira, y el reparto se siembra de ahí), así que no hay deslizador que mover: el caso «el importe deja de corresponder» no es alcanzable hoy desde esta pantalla')
+  }
+  return c
+}
+
+/**
+ * ⭐ EL PASO 8 AL DÍA — LO QUE DIEGO VIO DE VERDAD (medido el 2026-08-27): el presupuesto
+ * devolvía CERO suscripciones porque ningún expediente estaba admitido, y la pantalla NO
+ * DECÍA NADA. Lo leyó como «no me deja elegir la forma de pago».
+ */
+async function caminoPaso8SinNadaQueElegir(page, base) {
+  const c = new Camino('paso8-sin-nada-que-elegir')
+  scenario.stage = 'firma'
+  scenario.sinSuscripcion = 'sin-admitir'
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 900)
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos + pantalla.tarjetas
+
+    // ANCLA — se llegó al paso 8 (si no, no se está midiendo esta pantalla).
+    if (!c.afirmar('ANCLA · se aterriza en el paso 8', pantalla.pasoActivo === 7,
+      `aterrizó en el índice ${pantalla.pasoActivo}`)) return c
+
+    const aviso = await page.$eval('[data-testid="paso8-sin-nada-que-elegir"]', n => n.textContent.trim())
+      .catch(() => null)
+    c.afirmar('sin nada que elegir, la pantalla lo DICE',
+      !!aviso && aviso.length > 20,
+      `el aviso leído fue ${JSON.stringify(aviso)}: en silencio, la familia lee «no me deja elegir la forma de pago» — que es exactamente lo que pasó`)
+    c.afirmar('y no ofrece un desplegable vacío',
+      !(await page.$('[data-testid="paso8-modalidad-selector"]')),
+      'se pintó el desplegable de elegir sin ninguna forma de pago que ofrecer')
+  } finally {
+    scenario.sinSuscripcion = null
+  }
   return c
 }
 
@@ -8485,6 +8606,8 @@ const CAMINOS = [
   // ANTES del tramo de firma porque es lo que lo destapa (sin `AD` no hay firma que pintar).
   ...(REAL ? [{ nombre: 'expediente-completo', fn: caminoExpedienteCompleto, minLlamadas: 8, minElementos: 11 }] : []),
   { nombre: 'tramo-firma',         fn: caminoTramoFirma,         minLlamadas: 1, minElementos: 11 },
+  { nombre: 'paso8-al-dia',        fn: caminoPaso8AlDia,         minLlamadas: 1, minElementos: 5 },
+  { nombre: 'paso8-sin-nada-que-elegir', fn: caminoPaso8SinNadaQueElegir, minLlamadas: 1, minElementos: 5 },
   // Ejercita el paso 4 DESDE LA PANTALLA también en simulado. Nació para contestar, sin
   // gastar una corrida de 35 min, si el `0 de 1` de la salud contra el sistema real era
   // del producto o del conductor. Se queda: era cobertura que faltaba.

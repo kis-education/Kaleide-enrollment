@@ -1,9 +1,13 @@
+import React from 'react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { gasCall } from '../../api';
 import { useWizard } from '../../context/WizardContext';
 import StepShell from '../../components/StepShell';
 import SplitEditor from '../../components/SplitEditor';
+import CabeceraDeSujeto from '../../shared/CabeceraDeSujeto';
+import CalendarioDePagos from '../../shared/CalendarioDePagos';
+import SelectorDeFormaDePago from '../../shared/SelectorDeFormaDePago';
 import { signingIdentity_, isStepUpRequiredError } from './signingCommon';
 import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import * as log from '../../logger';
@@ -26,7 +30,10 @@ import * as log from '../../logger';
  * El KMS deriva grupo+enrollments del token (KAL-4) y mapea hijo → finSubscription.
  */
 export default function Step8Billing({ onAdvance, onBack, signingToken, resumeToken, signerCtx, savedSplits: savedSplitsProp, locked, onUnlock }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  // Mismo criterio que el paso 7 (`Step7Review.jsx`): el idioma con el que `fechaLegible`
+  // escribe las fechas del calendario compartido.
+  const lang = i18n.language?.startsWith('en') ? 'en' : 'es';
   const {
     stepData, enqueueSave, recoveredEmail, recoveryNonce,
     signingForms, updateSigningForm,
@@ -101,6 +108,26 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   const [modalityErr, setModalityErr] = useState('');   // fallo de MONEY → PERSISTENTE
   const [applying, setApplying]     = useState(null);   // modality_id en curso
 
+  // ⭐ EL PASO 8 AL DÍA (2026-08-27) — lo que el KMS dice que le toca pagar a cada tutor,
+  // indexado por el identificador con el que ESTA pantalla nombra sus filas
+  // (`payer_person_id`, el de la solicitud — el KMS ya lo traduce desde el del núcleo).
+  // Se SUMA lo de todas las suscripciones del grupo porque el reparto es del grupo entero.
+  // ⛔ Sumar los importes de varias suscripciones NO es calcular el reparto: cada uno viene
+  // ya repartido del motor; esto solo los junta para enseñarlos en una línea.
+  const importesDelReparto = React.useMemo(() => {
+    const out = {};
+    ((budget && budget.subscriptions) || []).forEach(sub => {
+      (sub.payers || []).forEach(p => {
+        if (!p || !p.payer_person_id || p.amount_cents == null) return;
+        const k = String(p.payer_person_id);
+        if (!out[k]) out[k] = { amount_cents: 0, currency_code: p.currency_code || 'EUR',
+                                split_percentage: p.split_percentage };
+        out[k].amount_cents += Number(p.amount_cents) || 0;
+      });
+    });
+    return out;
+  }, [budget]);
+
   useEffect(() => {
     let alive = true;
     if (!resumeToken && !signingToken) { setBudget({ subscriptions: [], modalities_available: false }); return undefined; }
@@ -159,10 +186,10 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
       return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'EUR' }).format(n);
     } catch (e) { return n.toFixed(2) + ' ' + (currency || 'EUR'); }
   };
-  const dateFmt = (iso) => {
-    if (!iso) return '—';
-    try { return new Date(iso + 'T00:00:00').toLocaleDateString(); } catch (e) { return String(iso); }
-  };
+  // ⚠️ Aquí vivía `dateFmt`, un SEGUNDO formateador de fechas. Se retira (2026-08-27): las
+  // fechas del calendario las escribe ahora `fechaLegible` (`utils/fechas.js`), el ÚNICO
+  // formateador declarado desde `0º.vicies.sexies` y el que usa el paso 7 — o sea que las
+  // dos pantallas de dinero llegaron a escribir las fechas de dos maneras distintas.
 
 
   // Construye el slice sembrado completo desde un reparto guardado normalizado (o
@@ -383,6 +410,24 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
             {budgetErr}
           </div>
         )}
+        {/* ⭐ EL PASO 8 AL DÍA (2026-08-27) — DECIR POR QUÉ NO HAY NADA QUE ELEGIR.
+            MEDIDO ese día: el presupuesto devolvía CERO suscripciones porque NINGÚN
+            expediente había llegado a admitido — y como todo el bloque se pinta dentro del
+            `map`, la pantalla no decía NADA. Diego lo leyó como «no me deja elegir la forma
+            de pago», y no era eso: es que no había nada que elegir todavía.
+            ⛔ Son TRES situaciones y no dos —cargando · todavía no toca · hay opciones—,
+            el mismo criterio del paso 1 y del simulador del paso 7. El MOTIVO lo dice el
+            servidor (`sin_nada_que_elegir`): esta pantalla no puede saber si falta la
+            admisión o si falta el borrador. ⛔ Y no se afloja nada: solo se NOMBRA lo que
+            ya pasaba en silencio. */}
+        {budget && !(budget.subscriptions || []).length && !budgetErr && (
+          <p data-testid="paso8-sin-nada-que-elegir"
+             style={{ color: 'var(--muted)', fontSize: '0.84rem', marginTop: 8 }}>
+            {budget.sin_nada_que_elegir === 'SIN_BORRADOR_DE_MATRICULA'
+              ? t('signing.billing.budget.no_draft_yet')
+              : t('signing.billing.budget.not_admitted_yet')}
+          </p>
+        )}
         {budget && (budget.subscriptions || []).map(sub => (
           <div key={sub.subscription_id} style={{ marginBottom: 24 }}>
             <h3 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '0.98rem', marginBottom: 4 }}>
@@ -392,78 +437,30 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
               {t('signing.billing.budget.subtitle')}
             </p>
 
-            {/* Selector de modalidad — una tarjeta por modalidad activa del tenant. */}
-            {budget.modalities_available && (sub.modality_previews || []).length > 0 ? (
+            {/* ⭐ EL PASO 8 AL DÍA (2026-08-27) — UN DESPLEGABLE, NO TARJETAS.
+                Diego lo mandó quitar en el paso 7 (`0º.tricies`) y esta pantalla —que es la
+                MISMA pantalla de dinero— se quedó dos pasadas por detrás con una tarjeta por
+                modalidad. Ahora las dos usan el MISMO control (`shared/SelectorDeFormaDePago`).
+                ⛔ La diferencia real con el paso 7 se queda AQUÍ, que es donde vive: allí
+                marcar es COMPARAR y no sale del navegador; aquí es la elección EN FIRME, que
+                viaja al borrador (`applyModality`) y se firma. */}
+            {(sub.modality_previews || []).length > 0 && (
               <div style={{ marginBottom: 16 }}>
-                <div style={{ fontWeight: 600, fontSize: '0.88rem', marginBottom: 8 }}>
-                  {t('signing.billing.modality.title')}
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-                  {(sub.modality_previews || []).map(mp => {
-                    const selected = mp.modality_id === sub.applied_modality_id;
-                    const busy = applying === mp.modality_id;
-                    // MONEY: una modalidad NO APLICABLE (su serie cae fuera del periodo
-                    // contratado → plan vacío) NO se ofrece como opción y el backend la
-                    // rechaza. Se muestra atenuada con su motivo, nunca con números falsos.
-                    const unavailable = mp.available === false;
-                    const disabled = locked || !sub.is_draft || !!applying || unavailable;
-                    return (
-                      <button
-                        key={mp.modality_id}
-                        type="button"
-                        onClick={() => applyModality(sub.subscription_id, mp.modality_id)}
-                        disabled={disabled}
-                        aria-pressed={selected}
-                        style={{
-                          textAlign: 'left', minWidth: 210, flex: '1 1 210px',
-                          border: '2px solid ' + (selected ? 'var(--teal-dk)' : 'var(--border)'),
-                          background: selected ? 'rgba(0,161,154,0.06)' : '#fff',
-                          borderRadius: 8, padding: '10px 12px',
-                          cursor: disabled ? 'not-allowed' : 'pointer',
-                          opacity: (disabled && !selected) || unavailable ? 0.55 : 1,
-                        }}
-                      >
-                        <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--teal-dk)' }}>
-                          {mp.designation || mp.modality_code}
-                          {busy && <span style={{ marginLeft: 8, fontWeight: 400, fontSize: '0.78rem' }}>
-                            {t('signing.billing.modality.applying')}
-                          </span>}
-                        </div>
-                        {unavailable && (
-                          <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
-                            {t('signing.billing.modality.unavailable_option')}
-                          </div>
-                        )}
-                        {!unavailable && <div style={{ fontSize: '0.84rem', marginTop: 4 }}>
-                          {mp.per_installment_cents != null
-                            ? t('signing.billing.modality.installments', {
-                                n: mp.installments, amount: money(mp.per_installment_cents, mp.currency_code) })
-                            : t('signing.billing.modality.installments_varied', { n: mp.installments })}
-                        </div>}
-                        {!unavailable && <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 2 }}>
-                          {t('signing.billing.modality.total', { amount: money(mp.total_cents, mp.currency_code) })}
-                        </div>}
-                        {!unavailable && Number(mp.discount_cents || 0) > 0 && (
-                          <div style={{ fontSize: '0.8rem', color: '#1a7f37', fontWeight: 600, marginTop: 2 }}>
-                            {t('signing.billing.modality.saving', { amount: money(mp.discount_cents, mp.currency_code) })}
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-                {!sub.is_draft && (
-                  <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: 8 }}>
-                    {t('signing.billing.modality.locked_hint')}
-                  </div>
-                )}
+                <SelectorDeFormaDePago
+                  modalidades={sub.modality_previews}
+                  elegida={(sub.modality_previews || []).find(x => x.modality_id === sub.applied_modality_id)
+                    || (sub.modality_previews || []).filter(x => x.available !== false)[0]
+                    || (sub.modality_previews || [])[0]
+                    || null}
+                  onElegir={id => applyModality(sub.subscription_id, id)}
+                  money={money}
+                  prefijo="paso8"
+                  idCampo={'paso8-modalidad-' + String(sub.subscription_id)}
+                  deshabilitado={locked || !sub.is_draft || !!applying}
+                  pieDeAviso={!sub.is_draft ? t('signing.billing.modality.locked_hint')
+                    : (applying ? t('signing.billing.modality.applying') : null)}
+                />
               </div>
-            ) : (
-              budget.modalities_available === false && (
-                <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: 12 }}>
-                  {t('signing.billing.modality.unavailable_hint')}
-                </div>
-              )
             )}
 
             {/* Alerta PERSISTENTE de fallo money (no auto-dismiss). */}
@@ -475,36 +472,30 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
               </div>
             )}
 
-            {/* Tabla del presupuesto REAL del borrador (importes del motor). */}
+            {/* ⭐ EL PASO 8 AL DÍA (2026-08-27) — LAS CINCO COLUMNAS Y EL SUBTOTAL.
+                Esta tabla tenía TRES (concepto · fecha · importe), sin descuento y sin
+                subtotal, mientras el paso 7 ya tenía cinco. Es el MISMO componente
+                (`shared/CalendarioDePagos`), así que no pueden volver a separarse.
+                ⛔ AQUÍ NO SE CALCULA DINERO (DL-080-A): las tres cifras de cada fila y las
+                tres del subtotal las proyecta el KMS (`fin_previewSchedule`). El asistente
+                solo formatea. ⛔ Y el desglose del descuento POR VENCIMIENTO depende de que
+                el motor lo reparta por plazo (`0º.tricies.sextricies`): cuando un número
+                llegue `null`, la columna pinta «—» EXACTAMENTE igual que en el paso 7. */}
             {((sub.budget && sub.budget.occurrences) || []).length > 0 ? (
-              <div style={{ overflowX: 'auto' }}>
-                <table className="table table-sm" style={{ fontSize: '0.84rem', marginBottom: 6 }}>
-                  <thead>
-                    <tr>
-                      <th>{t('signing.billing.budget.col_concept')}</th>
-                      <th>{t('signing.billing.budget.col_due')}</th>
-                      <th style={{ textAlign: 'right' }}>{t('signing.billing.budget.col_amount')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sub.budget.occurrences.map((o, i) => (
-                      <tr key={o.subscription_item_id + '_' + o.due_date + '_' + i}>
-                        <td>{o.concept}</td>
-                        <td>{dateFmt(o.due_date)}</td>
-                        <td style={{ textAlign: 'right' }}>{money(o.amount_cents, o.currency_code)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr style={{ fontWeight: 700 }}>
-                      <td colSpan={2}>{t('signing.billing.budget.total')}</td>
-                      <td style={{ textAlign: 'right' }}>
-                        {money(sub.budget.total_cents, sub.budget.currency_code)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
+              <CalendarioDePagos
+                filas={(sub.budget.occurrences || []).map(o => ({
+                  concepto:        o.concept,
+                  due_date:        o.due_date,
+                  amount_cents:    o.amount_cents,
+                  descuento_cents: o.discount_cents,
+                  neto_cents:      o.net_cents,
+                }))}
+                subtotal={sub.budget}
+                moneda={sub.budget.currency_code}
+                money={money}
+                prefijo="paso8"
+                lang={lang}
+              />
             ) : (
               !budgetErr && (
                 <p style={{ color: 'var(--muted)', fontSize: '0.84rem' }}>
@@ -537,15 +528,26 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
             </div>
           )}
 
-          {/* Default COLAPSADO: un único reparto para todos los hijos (group-level). */}
-          {!perChild && <SplitEditor payers={payers} onChange={setPayers} />}
+          {/* ⭐ EL PASO 8 AL DÍA (2026-08-27) — EL REPARTO, EN EUROS.
+              Diego veía «60 % / 40 %» y nunca cuánto era eso, con el presupuesto en la tabla
+              de encima. Ahora cada tutor lleva su importe al lado.
+              ⛔ EL IMPORTE LO PROYECTA EL KMS (`enr_pagadoresConSuImporte_`), que reparte el
+              NETO de CADA vencimiento con el MISMO repartidor del cobro real y lo suma. Aquí
+              NO se multiplica un total por un porcentaje: sería una segunda aritmética del
+              dinero (DL-080-A) y con céntimos sueltos daría otro número. */}
+          {!perChild && (
+            <SplitEditor payers={payers} onChange={setPayers}
+                         importes={importesDelReparto} money={money} />
+          )}
 
           {/* Personalizar por hijo: un reparto por participante. */}
           {perChild && applicants.map(a => (
             <div key={childKey(a)} style={{ marginBottom: 18, paddingBottom: 14, borderBottom: '1px solid var(--border)' }}>
-              <h4 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '0.9rem', marginBottom: 10 }}>
-                {fullNameOf(a) || t('signing.billing.split.child', { n: 1 })}
-              </h4>
+              {/* ⭐ EL PASO 8 AL DÍA (2026-08-27) — la MISMA pastilla que el paso 7
+                  (`0º.tricies.sexdecies`), no un `<h4>` suelto: un solo sitio decide cómo se
+                  ve un separador de hijo. `destacado` porque este bloque solo se pinta con
+                  ≥2 hijos (`canPerChild`), que es justo cuando hay algo que separar. */}
+              <CabeceraDeSujeto nombre={fullNameOf(a) || t('signing.billing.split.child', { n: 1 })} destacado />
               <SplitEditor
                 payers={childSplits[childKey(a)] || []}
                 onChange={(next) => setChildSplit(childKey(a), next)}

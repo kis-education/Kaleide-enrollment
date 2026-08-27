@@ -1225,8 +1225,68 @@ export function createDispatcher(scenario, record) {
       };
     },
     // ── Tramo de firma ───────────────────────────────────────────────────────
-    getSubscriptionBudget:   () => ({ ok: true, subscriptions: [], modalities_available: false }),
-    getSavedBillingSplits:   () => ({ ok: true, payers: [], per_participant: [] }),
+    // ── EL PASO 8 AL DÍA (2026-08-27) — el presupuesto del BORRADOR REAL ──────
+    // Hasta hoy el doble devolvía `subscriptions: []`, así que el paso 8 NO tenía ni una
+    // afirmación: se quedó dos pasadas por detrás del 7 sin que nada avisara.
+    //
+    // ⛔ Sirve DOS modalidades a propósito: con una sola no se pinta desplegable (es la
+    // regla del control compartido) y la comprobación de «elegir» pasaría EN VACÍO.
+    // ⛔ Y la que manda lleva DESCUENTO: sin él no salen las dos columnas ni el subtotal.
+    // ⛔ `scenario.sinSuscripcion` reproduce lo que Diego vio de verdad — el caso medido el
+    // 2026-08-27: ningún expediente admitido ⇒ cero suscripciones ⇒ nada que elegir.
+    getSubscriptionBudget: () => {
+      if (scenario.sinSuscripcion) {
+        return { ok: true, subscriptions: [], modalities_available: false,
+                 sin_nada_que_elegir: scenario.sinSuscripcion === 'sin-borrador'
+                   ? 'SIN_BORRADOR_DE_MATRICULA' : 'TODAVIA_SIN_ADMITIR' };
+      }
+      const venc = (n, bruto, desc) => Array.from({ length: n }, (_, i) => ({
+        subscription_item_id: 'it-e2e-' + i,
+        due_date: `2027-${String(9 + (i % 4)).padStart(2, '0')}-01`,
+        concept: 'Cuota escolar', amount_cents: bruto, discount_cents: desc,
+        net_cents: bruto - desc, currency_code: 'EUR' }));
+      const filas = venc(3, 100000, 5000);
+      return { ok: true, modalities_available: true, sin_nada_que_elegir: null,
+        subscriptions: [{
+          subscription_id: 'sub-e2e-1', enrollment_id: 'enr-e2e-1',
+          state_code: 'DRAFT', is_draft: true,
+          budget: { subscription_id: 'sub-e2e-1', occurrences: filas,
+                    total_cents: 300000, gross_cents: 300000,
+                    discount_cents: 15000, net_cents: 285000, currency_code: 'EUR' },
+          items: [], applied_modality_id: 'mod-anual-e2e',
+          modality_previews: [
+            { modality_id: 'mod-anual-e2e', modality_code: 'ANUAL', designation: 'Anual',
+              installments: 3, per_installment_cents: 95000, total_cents: 300000,
+              gross_cents: 300000, discount_cents: 15000, net_cents: 285000,
+              currency_code: 'EUR', available: true, is_applied: true },
+            { modality_id: 'mod-mens-e2e', modality_code: 'MENSUAL_10', designation: 'Mensual (10 plazos)',
+              installments: 10, per_installment_cents: 30000, total_cents: 300000,
+              gross_cents: 300000, discount_cents: 0, net_cents: 300000,
+              currency_code: 'EUR', available: true, is_applied: false },
+          ],
+          // El reparto YA repartido por el motor.
+          // ⚠️ MEDIDO el 2026-08-27: desde DL-E49 §2 la hidratación devuelve UN SOLO tutor
+          // (el que mira), y `seedPayers` construye las filas del reparto a partir de esos
+          // tutores ⇒ **el paso 8 solo puede enseñar UNA fila de pagador**. Por eso aquí el
+          // tutor que mira va al 100 %: es el único caso COHERENTE con lo que la pantalla
+          // puede pintar hoy. El segundo se deja declarado para que se vea que el motor sí
+          // reparte entre dos — y para que, el día que la pantalla pueda enseñar a los dos,
+          // este doble no haya que reescribirlo.
+          payers: [
+            { billing_party_id: 'bp-1', personal_id: 'core-t1', payer_person_id: FIXTURE.guardian1Id,
+              customer_name: 'Tutor 1', split_percentage: 100, is_primary: true,
+              amount_cents: 285000, currency_code: 'EUR' },
+            { billing_party_id: 'bp-2', personal_id: 'core-t2', payer_person_id: FIXTURE.guardian2Id,
+              customer_name: 'Tutor 2', split_percentage: 0, is_primary: false,
+              amount_cents: 0, currency_code: 'EUR' },
+          ],
+        }] };
+    },
+    getSavedBillingSplits: () => (scenario.sinSuscripcion
+      ? { ok: true, payers: [], per_participant: [] }
+      : { ok: true, per_participant: [],
+          payers: [{ payer_person_id: FIXTURE.guardian1Id, split_percentage: 100, is_primary: true },
+                   { payer_person_id: FIXTURE.guardian2Id, split_percentage: 0, is_primary: false }] }),
     saveBillingInfo:         () => ({ ok: true, saved: true }),
     applyPaymentModality:    () => ({ ok: true, applied: true }),
     submitGdprConsents:      () => ({ ok: true, saved: true }),

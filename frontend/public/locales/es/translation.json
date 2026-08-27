@@ -397,6 +397,8 @@
   "signing.billing.budget.loading": "Calculando tu presupuesto…",
   "signing.billing.budget.load_error": "No hemos podido cargar el presupuesto ahora mismo. Puedes continuar: el colegio te lo hará llegar.",
   "signing.billing.budget.empty": "Todavía no hay pagos previstos para este expediente.",
+  "signing.billing.budget.not_admitted_yet": "Todavía no hay forma de pago que elegir: el colegio aún no ha resuelto tu solicitud. Cuando la admita, aquí verás el presupuesto y podrás elegir cómo pagarlo.",
+  "signing.billing.budget.no_draft_yet": "Tu solicitud ya está admitida, pero todavía no hemos preparado la matrícula. En cuanto esté, aquí podrás elegir la forma de pago.",
   "signing.billing.budget.col_concept": "Concepto",
   "signing.billing.budget.col_due": "Fecha de pago",
   "signing.billing.budget.col_amount": "Importe",
@@ -606,5 +608,6 @@
   },
   "wizard.debe_reenviar": "Has cambiado datos de tu parte. Vuelve a enviarla para que la escuela la reciba.",
   "wizard.aviso_colegio": "El colegio ha actualizado algunos datos de tu solicitud.",
-  "wizard.aviso_colegio_colision": "El colegio ha actualizado algunos datos de tu solicitud mientras editabas. Revisa lo que tenías a medias."
+  "wizard.aviso_colegio_colision": "El colegio ha actualizado algunos datos de tu solicitud mientras editabas. Revisa lo que tenías a medias.",
+  "signing.billing.split.amount_pending": "Se actualizará al guardar"
 }

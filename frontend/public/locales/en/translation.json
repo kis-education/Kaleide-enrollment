@@ -397,6 +397,8 @@
   "signing.billing.budget.loading": "Calculating your quote…",
   "signing.billing.budget.load_error": "We couldn't load the quote right now. You can continue — the school will send it to you.",
   "signing.billing.budget.empty": "There are no scheduled payments for this application yet.",
+  "signing.billing.budget.not_admitted_yet": "There's no payment option to choose yet: the school hasn't decided on your application. Once it's admitted, you'll see the budget here and be able to choose how to pay.",
+  "signing.billing.budget.no_draft_yet": "Your application has been admitted, but we haven't prepared the enrolment yet. As soon as it's ready you'll be able to choose how to pay here.",
   "signing.billing.budget.col_concept": "Item",
   "signing.billing.budget.col_due": "Payment date",
   "signing.billing.budget.col_amount": "Amount",
@@ -606,5 +608,6 @@
   },
   "wizard.debe_reenviar": "You have changed data in your part. Send it again so the school receives it.",
   "wizard.aviso_colegio": "The school has updated some details of your application.",
-  "wizard.aviso_colegio_colision": "The school updated some details of your application while you were editing. Please check anything you had in progress."
+  "wizard.aviso_colegio_colision": "The school updated some details of your application while you were editing. Please check anything you had in progress.",
+  "signing.billing.split.amount_pending": "Will update when you save"
 }

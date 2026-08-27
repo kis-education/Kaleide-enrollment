@@ -8,6 +8,8 @@ import { gasCall, fetchLookups, fetchQuestions, requestCorrection, identidadDelE
 import StepNav from '../../components/StepNav';
 // 0º.tricies.sexdecies — el separador por sujeto es el MISMO que el del cuestionario.
 import CabeceraDeSujeto from '../../shared/CabeceraDeSujeto';
+import CalendarioDePagos from '../../shared/CalendarioDePagos';
+import SelectorDeFormaDePago from '../../shared/SelectorDeFormaDePago';
 import StepUpReverify from '../../components/StepUpReverify';
 import { openDocument } from '../../utils/documentProxy';
 import { translateRelationLabel, translateGender, translateIdType } from '../../utils/enumLabels';
@@ -269,128 +271,26 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
     return a ? [a.first_name, a.last_name].filter(Boolean).join(' ').trim() : '';
   };
 
-  // ⭐ 0º.tricies (Diego, 2026-08-22, TERCERA pasada sobre esta pantalla) — UN SELECTOR,
-  // NO TARJETAS. Cita literal: *«sigue sin dejar elegir la modalidad. Lo que ofrece son dos
-  // tarjetas, pero yo no quiero tarjetas, quiero un botón o desplegable que elija entre
-  // modalidades y las muestre con todos los conceptos (matrícula, fecha etc.)»*.
-  //
-  // Las dos pasadas anteriores dieron por buena la pantalla sin que hiciera esto. Lo que
-  // cambia aquí es SOLO la forma de elegir; el calendario lo pinta `tablaDeDesglose` justo
-  // debajo, y se repinta solo porque la marca vive en el estado del navegador.
-  //
-  // ⛔ Con UNA sola forma de pago NO se pinta desplegable: un desplegable de una opción no
-  // es una elección (mismo criterio que el tipo de documento del paso 6). Se dice cuál es y
-  // se enseña su calendario — que es exactamente lo que pidió Diego para comedor y
-  // ampliación de horario, que no ofrecen alternativa.
-  //
-  // ⛔ AQUÍ NO SE CALCULA DINERO (DL-080-A): `money()` divide entre 100 y formatea.
-  // ⛔ UNA FORMA DE PAGO PUEDE NO TENER NOMBRE, y no es un dato que falte: es el caso de un
-  // plan que NO ADMITE NINGUNA forma de pago (permanencia, ampliación de horario — van por
-  // regla o a mano). El KMS lo devuelve así a propósito: `fin_previewTemplateSchedule`
-  // simula con `candidates = [null]` + aviso `NO_MODALITIES_ADMITTED`, y
-  // `enr_proyectarSimulacionesDelEnsayo_` emite UNA modalidad con
-  // `modality_id`/`modality_code`/`designation` a `null` y su calendario entero.
-  // Sin este trozo, la línea salía empezando por un « · » suelto.
-  const etiquetaDeModalidad = (x) => {
-    const nombre = x.designation || x.modality_code || '';
-    if (x.available === false) {
-      const noDisp = t('step7.sim.option_unavailable');
-      return nombre ? nombre + ' — ' + noDisp : noDisp;
-    }
-    const importe = x.per_installment_cents != null
-      ? t('step7.sim.installments', { n: x.installments, amount: money(x.per_installment_cents, x.currency_code) })
-      : t('step7.sim.installments_varied', { n: x.installments });
-    const total = t('step7.sim.total', { amount: money(x.net_cents, x.currency_code) });
-    const cola = importe + ' · ' + total;
-    return nombre ? nombre + ' · ' + cola : cola;
-  };
-
-  const selectorDelPlan = (plan) => {
-    const modalidades = plan.modalidades || [];
-    if (!modalidades.length) return null;
-    const m = modalidadMarcadaOPrimera(plan);
-
-    // ⭐ `③70` — SOLO LECTURA (solicitud ya enviada): las formas de pago se enseñan TODAS,
-    // en texto, para que se puedan comparar; ninguna se puede elegir. El calendario que se
-    // ve debajo sigue siendo el de `modalidadMarcadaOPrimera`, que aquí resuelve a la
-    // primera DISPONIBLE (o a la que la familia marcó antes de enviar, si la marca sigue
-    // en la sesión del navegador). Se marca cuál es, para que la tabla no parezca huérfana.
-    if (soloLectura) {
-      return (
-        <div data-testid="paso7-forma-de-pago">
-          {modalidades.map((x, i) => (
-            <div
-              key={x.modality_id || ('sin-modalidad-' + i)}
-              data-testid="paso7-modalidad"
-              data-modality-id={x.modality_id}
-              style={{
-                fontSize: '0.86rem',
-                fontWeight: (m && x.modality_id === m.modality_id) ? 700 : 400,
-              }}
-            >
-              {etiquetaDeModalidad(x)}
-            </div>
-          ))}
-          {m && m.available !== false && (m.descuentos || []).length > 0 && (
-            <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
-              {(m.descuentos || []).map(d => d.designation || d.policy_code).filter(Boolean).join(' · ')}
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    const elegibles = modalidades.filter(x => x.available !== false);
-    const hayQueElegir = elegibles.length > 1;
-    const idCampo = 'paso7-modalidad-' + String(plan.template_id || 'plan');
-    return (
-      <div data-testid="paso7-forma-de-pago">
-        {hayQueElegir ? (
-          <>
-            <label htmlFor={idCampo}
-                   style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: 4 }}>
-              {t('step7.sim.modality_label')}
-            </label>
-            <select
-              id={idCampo}
-              className="form-select form-select-sm"
-              data-testid="paso7-modalidad-selector"
-              style={{ maxWidth: 460 }}
-              value={(m && m.modality_id) || ''}
-              onChange={e => elegir(plan.template_id, e.target.value)}
-            >
-              {modalidades.map(x => (
-                <option
-                  key={x.modality_id}
-                  value={x.modality_id}
-                  data-testid="paso7-modalidad"
-                  data-modality-id={x.modality_id}
-                  disabled={x.available === false}
-                >
-                  {etiquetaDeModalidad(x)}
-                </option>
-              ))}
-            </select>
-          </>
-        ) : (
-          m && (
-            <div data-testid="paso7-modalidad" data-modality-id={m.modality_id}
-                 style={{ fontSize: '0.86rem' }}>
-              {etiquetaDeModalidad(m)}
-            </div>
-          )
-        )}
-        {/* ⛔ 0º.vicies.sexies pieza 5 — FUERA el «te ahorras». El NOMBRE del descuento
-            aplicado SÍ se queda (es un dato del plan, y así lo enseña también el simulador
-            del KMS); lo que se retira es la cifra de ahorro. */}
-        {m && m.available !== false && (m.descuentos || []).length > 0 && (
-          <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: 4 }}>
-            {(m.descuentos || []).map(d => d.designation || d.policy_code).filter(Boolean).join(' · ')}
-          </div>
-        )}
-      </div>
-    );
-  };
+  // ⚠️ Aquí vivían `etiquetaDeModalidad` y el cuerpo de `selectorDelPlan`. Se MOVIERON
+  // VERBATIM a `shared/SelectorDeFormaDePago.jsx` para compartirlos con el paso 8
+  // (2026-08-27) — con su porqué entero escrito allí. ⛔ No se dejan aquí también: dos
+  // copias del mismo control es exactamente lo que hizo que el paso 8 se quedara dos
+  // pasadas por detrás.
+  // ⭐ EL PASO 8 AL DÍA (2026-08-27) — el control se COMPARTE con el paso 8
+  // (`shared/SelectorDeFormaDePago.jsx`), copiado VERBATIM de lo que había aquí. El paso 8
+  // seguía con tarjetas porque era un segundo componente que pintaba lo mismo; ahora hay UNO.
+  // Lo que se queda AQUÍ es lo que es de esta pantalla: de dónde salen las modalidades y que
+  // la marca vive SOLO en el navegador (`0º.vicies.sexies`), sin viajar a ningún sitio.
+  const selectorDelPlan = (plan) => (
+    <SelectorDeFormaDePago
+      modalidades={plan.modalidades || []}
+      elegida={modalidadMarcadaOPrimera(plan)}
+      onElegir={soloLectura ? null : (id => elegir(plan.template_id, id))}
+      money={money}
+      prefijo="paso7"
+      idCampo={'paso7-modalidad-' + String(plan.template_id || 'plan')}
+    />
+  );
 
   // La forma de pago QUE CUENTA para el total de un plan: la que la familia eligió en
   // ESE plan si la hay, si no la primera DISPONIBLE (nunca una atenuada con `available:false`).
@@ -418,104 +318,22 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
     return m ? (m.cuotas || []) : [];
   };
 
+  // ⭐ EL PASO 8 AL DÍA (2026-08-27) — la tabla se COMPARTE con el paso 8
+  // (`shared/CalendarioDePagos.jsx`), copiada VERBATIM. Aquí se queda SOLO la adaptación:
+  // qué modalidad manda y de dónde salen sus filas. ⛔ Las dos pantallas siguen bebiendo de
+  // fuentes distintas a propósito (ésta del ENSAYO, el paso 8 del BORRADOR REAL): se igualan
+  // en FORMA, jamás se funden en una sola lectura.
   const tablaDeDesglose = (plan) => {
-    const filas = desgloseDe(plan);
-    if (!filas.length) return null;
     const m = modalidadMarcadaOPrimera(plan);
-    const moneda = m && m.currency_code;
-
-    // ⭐ `0º.tricies.ter` (Diego, 2026-08-22) — LA COLUMNA DE DESCUENTO. Cita literal: *«el
-    // comedor y la permanencia sí aplican el descuento, pero pasa muy desapercibido. No se
-    // indica el importe del descuento por pago anual, faltan totales, subtotales»*. El
-    // calendario enseñaba el BRUTO por fila y el plan su NETO: nueve filas de 95,00 € y un
-    // total de 0,00 €, sin nada en medio.
-    //
-    // ⛔ AQUÍ NO SE CALCULA DINERO (DL-080-A): las tres cifras de cada fila y las tres del
-    // subtotal las PROYECTA el KMS desde el motor. `money()` divide entre 100 y formatea, y
-    // nada más — ni una suma, ni una resta, ni un porcentaje.
-    //
-    // ⛔ Y las dos columnas nuevas SOLO salen cuando este plan tiene descuento: con tres
-    // columnas la tabla se lee en un móvil, con cinco no. Sin descuento, el markup queda
-    // BYTE-IDÉNTICO al de antes de este cambio.
-    const hayDescuento = !!(m && Number(m.discount_cents || 0) > 0);
-    const importe = (v) => (v == null ? '—' : money(v, moneda));
-
     return (
-      <div data-testid="paso7-desglose" style={{ marginTop: 10 }}>
-        <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--teal-dk)', marginBottom: 4 }}>
-          {t('step7.sim.breakdown_title')}
-        </div>
-        <table style={{ width: '100%', fontSize: '0.8rem', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
-              <th style={{ fontWeight: 600, padding: '2px 6px 2px 0' }}>{t('step7.sim.breakdown_concept')}</th>
-              <th style={{ fontWeight: 600, padding: '2px 6px' }}>{t('step7.sim.breakdown_date')}</th>
-              <th style={{ fontWeight: 600, padding: '2px 0 2px 6px', textAlign: 'right' }}>
-                {hayDescuento ? t('step7.sim.breakdown_gross') : t('step7.sim.breakdown_amount')}
-              </th>
-              {hayDescuento && (
-                <>
-                  <th style={{ fontWeight: 600, padding: '2px 0 2px 6px', textAlign: 'right' }}>
-                    {t('step7.sim.breakdown_discount')}
-                  </th>
-                  <th style={{ fontWeight: 600, padding: '2px 0 2px 6px', textAlign: 'right' }}>
-                    {t('step7.sim.breakdown_net')}
-                  </th>
-                </>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {filas.map((c, i) => (
-              <tr key={i} data-testid="paso7-desglose-fila" style={{ borderTop: '1px solid var(--border)' }}>
-                <td data-testid="paso7-desglose-concepto" style={{ padding: '3px 6px 3px 0' }}>{c.concepto || '—'}</td>
-                <td data-testid="paso7-desglose-fecha" style={{ padding: '3px 6px' }}>{fechaLegible(c.due_date, lang) || '—'}</td>
-                <td style={{ padding: '3px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  {money(c.amount_cents, moneda)}
-                </td>
-                {hayDescuento && (
-                  <>
-                    <td data-testid="paso7-desglose-descuento"
-                        style={{ padding: '3px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      {importe(c.descuento_cents)}
-                    </td>
-                    <td data-testid="paso7-desglose-neto"
-                        style={{ padding: '3px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      {importe(c.neto_cents)}
-                    </td>
-                  </>
-                )}
-              </tr>
-            ))}
-          </tbody>
-          {/* EL SUBTOTAL DEL PLAN — las tres cifras que el KMS ya proyectaba y que solo se
-              enseñaba una (el neto). Es el escalón que faltaba entre las filas y el total. */}
-          {m && (
-            <tfoot>
-              <tr data-testid="paso7-subtotal-plan"
-                  style={{ borderTop: '2px solid var(--border)', fontWeight: 700 }}>
-                <td colSpan={2} style={{ padding: '5px 6px 3px 0' }}>{t('step7.sim.subtotal')}</td>
-                <td data-testid="paso7-subtotal-bruto"
-                    style={{ padding: '5px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  {money(m.gross_cents, moneda)}
-                </td>
-                {hayDescuento && (
-                  <>
-                    <td data-testid="paso7-subtotal-descuento"
-                        style={{ padding: '5px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      {money(m.discount_cents, moneda)}
-                    </td>
-                    <td data-testid="paso7-subtotal-neto"
-                        style={{ padding: '5px 0 3px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      {money(m.net_cents, moneda)}
-                    </td>
-                  </>
-                )}
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
+      <CalendarioDePagos
+        filas={desgloseDe(plan)}
+        subtotal={m}
+        moneda={m && m.currency_code}
+        money={money}
+        prefijo="paso7"
+        lang={lang}
+      />
     );
   };
 
