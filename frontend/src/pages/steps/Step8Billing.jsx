@@ -47,6 +47,9 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   const persons = (stepData && stepData.persons) || [];
   const guardians  = persons.filter(p => p.person_type_id === 'guardian');
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
+  // ⛔ D121 — identificador + nombre del OTRO tutor, y NADA MÁS. Se consume EXCLUSIVAMENTE
+  // en el reparto de pagos de abajo. Si esto acaba usándose en otro sitio, es un fallo.
+  const otrosPagadores = (stepData && stepData.otrosPagadores) || [];
 
   const fullNameOf = (g) => [g.first_name, g.middle_name, g.last_name]
     .filter(x => x && String(x).trim()).join(' ').trim();
@@ -61,9 +64,22 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
       if (s && s.payer_person_id != null) savedByPid[String(s.payer_person_id)] = Number(s.split_percentage) || 0;
     });
     const hasSaved = Object.keys(savedByPid).length > 0;
-    if (guardians.length) {
-      const rows = guardians.map((g, i) => {
-        const pid = g.person_id || g._uid;
+    // ⭐ D121 (2026-08-27) — LOS DOS PAGADORES. `guardians` sale de la hidratación, que
+    // recorta al tutor que mira (DL-E49 §2) ⇒ hasta hoy cada tutor SE VEÍA SOLO A SÍ MISMO y
+    // el segundo se quedaba ATASCADO: con el 60 % guardado y una sola fila, el editor le
+    // pintaba «100 %» y la puerta —que exige sumar 100— no le dejaba pasar sin decir por qué.
+    // ⛔ Del otro tutor llegan DOS campos y nada más (`otrosPagadores`, ver el tope en
+    // `enr_wizardOtrosPagadores_` del KMS). Se juntan SOLO aquí, para el reparto.
+    const candidatos = guardians
+      .map((g, i) => ({ pid: g.person_id || g._uid,
+                        nombre: fullNameOf(g) || t('signing.billing.split.guardian_fallback', { n: i + 1 }) }))
+      .concat(otrosPagadores.map((o, i) => ({
+        pid: o && o.person_id,
+        nombre: (o && o.display_name) || t('signing.billing.split.guardian_fallback', { n: guardians.length + i + 1 }),
+      })).filter(x => x.pid));
+    if (candidatos.length) {
+      const rows = candidatos.map((c, i) => {
+        const pid = c.pid;
         const isSigner = guardianPersonId ? pid === guardianPersonId : i === 0;
         const split = hasSaved
           ? (savedByPid[String(pid)] != null ? savedByPid[String(pid)] : 0)
@@ -71,7 +87,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
         return {
           key: 'g_' + (pid || i),
           payer_person_id: pid || (isSigner ? guardianPersonId : null) || null,
-          name: fullNameOf(g) || t('signing.billing.split.guardian_fallback', { n: i + 1 }),
+          name: c.nombre,
           split,
         };
       });
@@ -298,7 +314,9 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
 
   const childKey = (a) => a.person_id || a._uid;
   // Solo ofrecemos "personalizar por hijo" cuando tiene sentido: ≥2 hijos y ≥2 tutores.
-  const canPerChild = applicants.length > 1 && guardians.length > 1;
+  // D121 — se cuentan los pagadores REALES (el que mira + el otro), no solo los visibles:
+  // con el recorte, `guardians.length` es siempre 1 y esta opción no se ofrecía jamás.
+  const canPerChild = applicants.length > 1 && (guardians.length + otrosPagadores.length) > 1;
 
   // VERBATIM — is_primary del reparto = el pagador con mayor %, el primero en empate
   // (el KMS exige exactamente uno por reparto). Solo aplica al payload per-participante.

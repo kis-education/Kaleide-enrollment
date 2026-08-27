@@ -472,6 +472,16 @@ function recortarPorTutorE2E_(data, viewerN) {
     responses: (data.responses || []).filter(r =>
       tipoPorId[r && r.respondent_id] !== 'guardian' || r.respondent_id === viewerId),
     guardians_total_count: guardiansTotalCount,
+    // ⭐ D121 (2026-08-27) — espejo del servidor real (`enr_wizardOtrosPagadores_`): del OTRO
+    // tutor viajan DOS campos, `person_id` y `display_name`, y NADA MÁS. Si este doble
+    // mandara un campo de más, la afirmación que protege el alcance de D121 pasaría en vacío.
+    otros_pagadores: data.persons
+      .filter(p => p.person_type_id === 'guardian' && p.person_id !== viewerId)
+      .map(p => ({
+        person_id: p.person_id,
+        display_name: [p.first_name, p.middle_name, p.last_name]
+          .filter(x => x && String(x).trim()).join(' ').trim(),
+      })),
   };
 }
 
@@ -512,7 +522,7 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
     ...(preguntasMode === 'caido'
       ? { questions_no_disponible: true }
       : { questions: QUESTIONS }),
-    billing_splits: { payers: [], per_participant: [] },
+    billing_splits: { payers: [], per_participant: [] },   // lo sobrescribe el despachador (ver `hydrateSession`)
     live_version:   1,
     admission:      null,
     step_up_fresh:  true,   // gracia del magic-link → sin OTP (backend/Code.js:7124)
@@ -823,6 +833,19 @@ export function createDispatcher(scenario, record) {
         };
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno);
+      // ⚠️ EL DOBLE NO PUEDE CONTRADECIRSE A SÍ MISMO (medido el 2026-08-27): la hidratación
+      // decía SIEMPRE «sin reparto guardado» mientras `getSavedBillingSplits` devolvía 60/40.
+      // En el servidor real las dos salen de la MISMA fuente (`billing_splits` de la
+      // hidratación consolidada), así que un doble incoherente mide otra cosa: el paso 8
+      // sembraba 100/0 y la revalidación NO podía corregirlo, porque su guardia
+      // `seededFromServer` da por hablado al servidor en cuanto la sección llega — aunque
+      // llegue vacía. Ese filo del PRODUCTO queda anotado en la cola; lo que se arregla aquí
+      // es el doble.
+      if (scenario.repartoGuardado60_40) {
+        h.billing_splits = { per_participant: [],
+          payers: [{ payer_person_id: FIXTURE.guardian1Id, split_percentage: 60, is_primary: true },
+                   { payer_person_id: FIXTURE.guardian2Id, split_percentage: 40, is_primary: false }] };
+      }
       // ⭐ `0º.septvicies` — el vínculo entre hermanos GUARDADO EN EL SENTIDO CONTRARIO
       // (`from` = el hijo 2, `to` = el hijo 1) y en UNA sola fila, que es lo que el KMS
       // escribe desde DL-S45. Sirve para afirmar que el lector del paso 3 lo encuentra
@@ -1282,11 +1305,18 @@ export function createDispatcher(scenario, record) {
           ],
         }] };
     },
+    // ⭐ D121 — `scenario.repartoGuardado60_40` reproduce EL CASO REAL: el tutor A guardó
+    // 60/40 y entra el tutor B. Sin la excepción de D121, a B se le monta UNA sola fila con
+    // el 60 %, el editor le pinta «100 %» y la puerta no le deja pasar: ATASCADO.
     getSavedBillingSplits: () => (scenario.sinSuscripcion
       ? { ok: true, payers: [], per_participant: [] }
-      : { ok: true, per_participant: [],
-          payers: [{ payer_person_id: FIXTURE.guardian1Id, split_percentage: 100, is_primary: true },
-                   { payer_person_id: FIXTURE.guardian2Id, split_percentage: 0, is_primary: false }] }),
+      : (scenario.repartoGuardado60_40
+        ? { ok: true, per_participant: [],
+            payers: [{ payer_person_id: FIXTURE.guardian1Id, split_percentage: 60, is_primary: true },
+                     { payer_person_id: FIXTURE.guardian2Id, split_percentage: 40, is_primary: false }] }
+        : { ok: true, per_participant: [],
+            payers: [{ payer_person_id: FIXTURE.guardian1Id, split_percentage: 100, is_primary: true },
+                     { payer_person_id: FIXTURE.guardian2Id, split_percentage: 0, is_primary: false }] })),
     saveBillingInfo:         () => ({ ok: true, saved: true }),
     applyPaymentModality:    () => ({ ok: true, applied: true }),
     submitGdprConsents:      () => ({ ok: true, saved: true }),

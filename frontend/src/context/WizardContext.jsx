@@ -1376,6 +1376,14 @@ export function WizardProvider({ children }) {
       // dirty-check solo dispara con EDICIONES reales. Subsume el normYN parcial
       // previo (que arreglaba esta misma clase solo para booleanos).
       persons: preparePersonsForUI(persons),
+      // ⭐ D121 (2026-08-27) — el NOMBRE del otro tutor, SOLO para el reparto de pagos.
+      // ⛔ Viaja en SU PROPIA clave, FUERA de `persons`, y con DOS campos: `person_id` y
+      // `display_name`. Ni correo, ni teléfono, ni documento, ni fecha de nacimiento, ni
+      // dirección — el tope lo fija D121 y lo aplica el KMS (`enr_wizardOtrosPagadores_`).
+      // ⛔ Está separado A PROPÓSITO: mezclarlo en `persons` haría que el otro tutor
+      // apareciera en el paso 2, en los vínculos y en la salud. Fuera del reparto de pagos,
+      // el otro tutor SIGUE SIN EXISTIR (DL-E49 §2, que no se afloja).
+      otrosPagadores: Array.isArray(data.otros_pagadores) ? data.otros_pagadores : [],
       // ── LOS DOS EXTREMOS, TAMBIÉN EN LO YA GUARDADO (`0º.duodetricies`) ────────────
       // El ÚNICO escritor descarta EN SILENCIO todo vínculo que no traiga `person_id_a`
       // y `person_id_b` (`enr_persistRelations_`, `kis-app kms-server/enr/wizard-gateway.gs`:

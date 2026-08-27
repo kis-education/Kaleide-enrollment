@@ -82,12 +82,32 @@ export default function SplitEditor({ payers, onChange, importes, money }) {
       onClick={() => setSliderValue(a)}>{label}</button>
   );
 
-  // 1 pagador: no hay reparto que ajustar (100%).
+  // 1 pagador: no hay reparto que ajustar.
+  //
+  // ⭐ D121 (2026-08-27) — AQUÍ SE PINTABA «100 %» A PELO, Y ERA MENTIRA. Si el reparto
+  // guardado le daba a esta persona el 60 %, la pantalla decía 100 y la puerta de avance
+  // —que exige que la suma sea 100— la dejaba ATASCADA sin explicar nada, en una pantalla que
+  // se firma. Ahora se enseña **su valor real**, y si no llega a 100 **se dice qué falta**.
+  //
+  // ⛔ La puerta NO se afloja: sigue exigiendo suma 100 y un pagador principal. Lo que cambia
+  // es que la familia SEPA por qué no puede pasar, no que se le deje pasar.
   if (payers.length === 1) {
+    const suyo = Number(payers[0].split) || 0;
+    const falta = Math.round((100 - suyo) * 100) / 100;
     return (
-      <div style={{ padding: '12px 14px', background: 'var(--bg)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
-        <span>{payers[0].name}</span>
-        <span style={{ textAlign: 'right' }}>100%{lineaDeImporte(payers[0], 'right')}</span>
+      <div style={{ padding: '12px 14px', background: 'var(--bg)', borderRadius: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
+          <span>{payers[0].name}</span>
+          <span data-testid="reparto-porcentaje" style={{ textAlign: 'right' }}>
+            {suyo}%{lineaDeImporte(payers[0], 'right')}
+          </span>
+        </div>
+        {Math.abs(falta) > 0.5 && (
+          <div data-testid="reparto-incompleto"
+               style={{ fontSize: '0.78rem', color: 'var(--danger, #b42318)', marginTop: 6 }}>
+            {t('signing.billing.split.incomplete', { falta: falta })}
+          </div>
+        )}
       </div>
     );
   }

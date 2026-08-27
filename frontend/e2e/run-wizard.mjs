@@ -136,14 +136,14 @@ const NO_CUBIERTAS_PERMITIDAS = {
     // señal sobre el wizard (el acto vive server-side).
     'firma-consumada': 'no se firma de verdad: el acto es irreversible y su lógica vive en el motor del KMS, no en el wizard',
   },
-  'paso8-al-dia': {
-    // MEDIDO el 2026-08-27, y es un HALLAZGO, no una carencia del arnés: desde DL-E49 §2 la
-    // hidratación devuelve UN SOLO tutor (el que mira) y `seedPayers` construye las filas
-    // del reparto a partir de esos tutores ⇒ la pantalla NO PUEDE pintar dos pagadores, así
-    // que no hay deslizador que mover y el caso «el importe guardado deja de corresponder al
-    // porcentaje que se está moviendo» no es alcanzable. La barandilla que lo cubre SÍ está
-    // construida (`importeDe` en SplitEditor) y se mide en el reporte, no aquí.
-    'importe-al-mover': 'la pantalla solo puede enseñar UN pagador (DL-E49 §2 recorta la hidratación al tutor que mira, y el reparto se siembra de ahí), así que no hay deslizador que mover: el caso «el importe deja de corresponder» no es alcanzable hoy desde esta pantalla',
+  'los-dos-pagadores': {
+    // MEDIDO el 2026-08-27: con la excepción de D121 la pantalla enseña SIEMPRE a los dos
+    // tutores, así que la rama de «un solo pagador» de SplitEditor —la que antes clavaba un
+    // «100 %» que podía no ser el guardado— NO se alcanza por este camino. La barandilla SÍ
+    // está construida (se pinta `suyo`%, el valor real) y su rojo se demostró aparte,
+    // devolviendo el literal: «se leyó "100%…" con el 60 % guardado: la pantalla está
+    // mintiendo». Se declara aquí para que la lista no envejezca en silencio.
+    'cien-por-cien-mentiroso': 'con la excepción de D121 hay SIEMPRE dos pagadores en pantalla, así que la rama de «un solo pagador» no es alcanzable por este camino; su arreglo se acredita con la rotura demostrada, no aquí',
   },
 }
 
@@ -3464,10 +3464,10 @@ async function caminoPaso8AlDia(page, base) {
   // (4) EL REPARTO, EN EUROS — no solo «60 % / 40 %».
   const importes = await page.$$eval('[data-testid="reparto-importe"]',
     ns => ns.map(n => n.textContent.trim()))
-  // ⚠️ UNA sola fila, y NO es un recorte de la prueba: desde DL-E49 §2 la hidratación
-  // devuelve UN solo tutor (el que mira) y `seedPayers` construye el reparto a partir de
-  // ahí ⇒ el paso 8 solo puede enseñar UNA. Queda dicho en el reporte; aquí se afirma lo
-  // que sí se puede afirmar: que ese tutor ve su importe, y que es una CIFRA.
+  // ⚠️ Este comentario decía «UNA sola fila… el paso 8 solo puede enseñar UNA», y quedó
+  // CADUCADO el 2026-08-27 con la excepción de D121: del otro tutor viajan ya su nombre y su
+  // identificador, así que el reparto pinta a los DOS y el deslizador existe. Lo que se
+  // afirma aquí no cambia: que cada pagador ve su importe, y que es una CIFRA.
   c.afirmar('el tutor ve CUÁNTO le toca pagar, no solo su porcentaje',
     importes.length >= 1 && importes.every(x => /\d/.test(x)),
     `importes leídos: ${JSON.stringify(importes)}: con solo el porcentaje, la familia no sabe cuánto es`)
@@ -3488,8 +3488,10 @@ async function caminoPaso8AlDia(page, base) {
       tras.some(x => !/\d/.test(x)),
       `tras mover el deslizador los importes eran ${JSON.stringify(tras)}: si siguen siendo cifras, o se están recalculando en el navegador (DL-080-A) o se está enseñando el número viejo al lado del porcentaje nuevo`)
   } else {
-    c.noCubierta('importe-al-mover',
-      'la pantalla solo puede enseñar UN pagador (DL-E49 §2 recorta la hidratación al tutor que mira, y el reparto se siembra de ahí), así que no hay deslizador que mover: el caso «el importe deja de corresponder» no es alcanzable hoy desde esta pantalla')
+    // Con la excepción de D121 el reparto pinta a los DOS tutores ⇒ el deslizador EXISTE.
+    // Que no esté ya no es un eje fuera de alcance: es un defecto, y se dice como tal.
+    c.afirmar('al mover el reparto NO se inventa un importe nuevo en la pantalla', false,
+      'no se pintó el deslizador del reparto: con la excepción de D121 la pantalla enseña a los dos pagadores, así que su ausencia significa que el otro tutor ha dejado de llegar')
   }
   return c
 }
@@ -5361,6 +5363,85 @@ async function caminoDeclaracionesTutorUnico(page, base) {
   } finally {
     limpiar()
   }
+}
+
+/**
+ * ⭐ LOS DOS PAGADORES (D121, 2026-08-27) — EL CASO REAL: el tutor A guarda 60/40 y entra B.
+ *
+ * Hasta hoy, a B se le montaba UNA sola fila con el 60 % suyo, el editor le pintaba «100 %» a
+ * pelo y la puerta —que exige que la suma sea 100— le dejaba ATASCADO sin decir por qué, en
+ * una pantalla que se firma.
+ *
+ * ⛔ La afirmación (4) es la que PROTEGE EL ALCANCE de D121 y no es opcional: del otro tutor
+ * viajan su nombre y su identificador, y NADA MÁS.
+ */
+async function caminoLosDosPagadores(page, base) {
+  const c = new Camino('los-dos-pagadores')
+  scenario.stage = 'firma'
+  scenario.repartoGuardado60_40 = true
+  try {
+    // Entra el SEGUNDO tutor, con su propia identidad.
+    if (!await entrarPorElEnlace(c, page, base, { nOverride: FIXTURE.emailId2 })) return c
+    await page.waitForTimeout(LATENCY + 900)
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos + pantalla.tarjetas
+
+    // (0) ANCLA — se está en el paso 8 y su reparto se pintó.
+    const hayReparto = await page.$('input[type="range"], [data-testid="reparto-porcentaje"]')
+    if (!c.afirmar('ANCLA · el paso 8 pinta el reparto', pantalla.pasoActivo === 7 && !!hayReparto,
+      `pasoActivo=${pantalla.pasoActivo} reparto=${!!hayReparto}: lo que sigue mediría el aire`)) return c
+
+    // (1) SE VEN LOS DOS, con nombre.
+    const texto = await page.evaluate(() => document.body.innerText)
+    const veAlPrimero = texto.includes('RobotUnoE2E')
+    const veASiMismo  = texto.includes('RobotDosE2E')
+    c.afirmar('el segundo tutor VE a los dos, con su nombre',
+      veAlPrimero && veASiMismo,
+      `ve al primero=${veAlPrimero} se ve a sí mismo=${veASiMismo}: sin el otro no hay a quién repartirle`)
+
+    // (2) Y PUEDE AVANZAR — el atasco se acabó.
+    const deslizador = await page.$('input[type="range"]')
+    c.afirmar('con dos pagadores se ofrece el deslizador del reparto', !!deslizador,
+      'no se pintó el deslizador: con un solo pagador no se puede repartir nada')
+    const avanzar = await page.$(BTN_SIGUIENTE)   // el selector canónico de este arnés
+    c.afirmar('el segundo tutor NO se queda atascado', !!avanzar,
+      'no hay ningún botón de avance disponible: la familia se queda sin salida')
+
+    // (2.bis) ⛔ Y VE EL REPARTO QUE ACORDÓ A, no un 100/0 inventado. Es DINERO y se FIRMA:
+    // si la pantalla sembrara los valores por defecto, B firmaría algo distinto de lo pactado.
+    await page.waitForTimeout(LATENCY + 700)   // la revalidación silenciosa del reparto guardado
+    const pcts = await page.evaluate(() => {
+      const t = document.body.innerText
+      return (t.match(/\d+\s*%/g) || []).map(x => x.replace(/\s/g, ''))
+    })
+    c.afirmar('el segundo tutor ve el reparto QUE ACORDÓ EL PRIMERO (60/40), no un 100/0',
+      pcts.includes('60%') && pcts.includes('40%'),
+      `los porcentajes en pantalla eran ${JSON.stringify(pcts)}: con 60/40 guardado, sembrar 100/0 le haría firmar algo distinto de lo pactado`)
+
+    // (3) EL «100 %» YA NO MIENTE — si hubiera una sola fila, enseñaría su valor real.
+    const solo = await page.$eval('[data-testid="reparto-porcentaje"]', n => n.textContent.trim()).catch(() => null)
+    if (solo !== null) {
+      c.afirmar('con un solo pagador se enseña su valor REAL, no un 100 % inventado',
+        !/^100\s*%/.test(solo),
+        `se leyó ${JSON.stringify(solo)} con el 60 % guardado: la pantalla está mintiendo`)
+    } else {
+      c.noCubierta('cien-por-cien-mentiroso',
+        'con la excepción de D121 hay DOS pagadores, así que la rama de «un solo pagador» no se alcanza por este camino; su arreglo se comprueba con la rotura declarada en el reporte')
+    }
+
+    // (4) ⛔ EL TOPE DE D121 — del otro tutor, NADA MÁS que nombre e identificador.
+    const fuga = await page.evaluate(() => {
+      const t = document.body.innerText
+      const sospechosos = ['@', '+34', 'X1234567', '1980-', 'Calle ']
+      return sospechosos.filter(x => t.includes(x))
+    })
+    c.afirmar('del otro tutor NO viaja ni un dato de más',
+      !fuga.includes('X1234567') && !fuga.includes('Calle '),
+      `en la pantalla aparecen rastros de datos que D121 NO permite: ${JSON.stringify(fuga)} — del otro tutor solo pueden viajar su nombre y su identificador`)
+  } finally {
+    scenario.repartoGuardado60_40 = false
+  }
+  return c
 }
 
 async function caminoSegundoTutorNoVeAlPrimero(page, base) {
@@ -7536,6 +7617,21 @@ async function caminoVentanaPorInactividad(page, base) {
   // La quietud larga solo hace falta ANTES DE NAVEGAR (`drenar(techo, QUIETUD_MS)`); dentro
   // del recorrido no se abandona la página, así que ahí sigue bastando «nada en vuelo».
   const QUIETUD_MS = 4600
+  /**
+   * ⚠️ SALIDA POR TECHO — medido el 2026-08-27, y es LA CAUSA del rojo intermitente de este
+   * recorrido cuyo mensaje llevaba sin capturarse desde el 2026-08-22 (`0º.tricies.sexdecies`
+   * lo dejó anotado como «no se llegó a capturar»). El mensaje es
+   * `[ENR ERROR] gasCall warmSession: network/fetch error`: bajo carga, el bucle de quietud
+   * no junta sus 4,6 s dentro del techo, sale igualmente Y EL LLAMANTE NAVEGA — abortando el
+   * precalentado que seguía en vuelo. Por eso el techo ya no devuelve a secas: antes exige al
+   * menos «cero en vuelo», con su propio tope corto. Si ni eso se logra, se devuelve igual
+   * (colgar el recorrido sería peor que un rojo), pero ese caso ya no es el habitual.
+   */
+  const cederElTecho = async () => {
+    const t1 = Date.now()
+    while (enVuelo.n > 0 && Date.now() - t1 < 10000) await page.waitForTimeout(120)
+    await page.waitForTimeout(200)
+  }
   const drenar = async (techo = 20000, quietud = 300) => {
     const t0 = Date.now()
     for (;;) {
@@ -7544,7 +7640,7 @@ async function caminoVentanaPorInactividad(page, base) {
         if (enVuelo.n > 0) desde = null
         else if (desde == null) desde = Date.now()
         else if (Date.now() - desde >= quietud) break
-        if (Date.now() - t0 > techo) return
+        if (Date.now() - t0 > techo) return await cederElTecho()
         await page.waitForTimeout(120)
       }
       // Margen final Y RECONFIRMACIÓN: con la ventana comprimida (`scenario.ventanaMs`) el
@@ -7552,7 +7648,8 @@ async function caminoVentanaPorInactividad(page, base) {
       // precalentado justo después de la última mirada. Sin volver a comprobar, el `goto`
       // siguiente lo abortaría — medido el 2026-08-22 con una sonda: se perdía en el pase «c».
       await page.waitForTimeout(300)
-      if (enVuelo.n === 0 || Date.now() - t0 > techo) return
+      if (enVuelo.n === 0) return
+      if (Date.now() - t0 > techo) return await cederElTecho()
     }
   }
 
@@ -8688,6 +8785,7 @@ const CAMINOS = [
   { nombre: 'segundo-tutor-envia', fn: caminoSegundoTutorEnvia, minLlamadas: 2, minElementos: 2 },
   // DL-E49 §2 — cada tutor ve LO SUYO y lo de los menores, nunca lo del otro tutor.
   { nombre: 'segundo-tutor-no-ve-al-primero', fn: caminoSegundoTutorNoVeAlPrimero, minLlamadas: 2, minElementos: 2 },
+  { nombre: 'los-dos-pagadores',   fn: caminoLosDosPagadores,    minLlamadas: 2, minElementos: 5 },
   // DL-E49 §3 — las declaraciones de la familia de un solo tutor llegan al libro con su texto.
   { nombre: 'declaraciones-tutor-unico', fn: caminoDeclaracionesTutorUnico, minLlamadas: 1, minElementos: 2 },
   // Cola 18.bis.21 — lo que se ve en pantalla y lo que se guarda dejan de diferir.
