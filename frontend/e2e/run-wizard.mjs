@@ -425,7 +425,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0 }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0 }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -805,7 +805,13 @@ function startServer() {
         const extra = (payload && payload.action === 'sendVerificationCode')
           ? Number(scenario.codigoDemoraMs || 0)
           : (payload && payload.action === 'uploadDocument')
-          ? Number(scenario.subidaDemoraMs || 0) : 0
+          ? Number(scenario.subidaDemoraMs || 0)
+          // `0º.tricies.quintricies` — `saveStep` puede pedir SU PROPIA demora: es la única
+          // forma de dejar una escritura EN VUELO el tiempo suficiente para comprobar que el
+          // guardado disparado al ocultarse la pantalla ENTRA POR LA COLA y no la adelanta.
+          // Sin eso, la comprobación del orden pasaría en vacío.
+          : (payload && payload.action === 'saveStep')
+          ? Number(scenario.saveStepDemoraMs || 0) : 0
         setTimeout(() => responder(out), LATENCY + extra)
       })
       return
@@ -8758,6 +8764,229 @@ async function caminoEnlaceNoHaCaducado(page, base) {
   }
 }
 
+
+/**
+ * `0º.tricies.quintricies` — LO TECLEADO Y SIN GUARDAR NO PUEDE MORIR CON LA PÁGINA.
+ *
+ * ⛔ EL DEFECTO, MEDIDO contra `origin/main` el 2026-08-29: el asistente **solo encola un
+ * guardado al pulsar Continuar** (`WizardPage.handleNext` → `enqueueSave`). No hay guardado
+ * por campo ni por tiempo, y **nada** dispara al ocultarse la pantalla (0 apariciones de
+ * `visibilitychange`/`pagehide` que hagan salir un guardado). ⇒ todo lo tecleado en un paso
+ * vive SOLO en la memoria del navegador hasta que el tutor avanza, y **iOS descarta la
+ * página** cuando se va a otra app: al volver se recarga desde cero y lo tecleado se perdió,
+ * sin un solo aviso.
+ *
+ * ⛔ LA SALIDA NO ES GUARDAR EN EL NAVEGADOR, ES ENVIAR (KAL-7): los datos pendientes SON
+ * datos personales de la familia, así que persistirlos en `sessionStorage` es exactamente lo
+ * que esa decisión cierra. Se MANDAN antes de que la página muera; nada nuevo se queda aquí.
+ *
+ * La (4) es la mitad que se olvida: un guardado disparado a oscuras puede ser RECHAZADO y no
+ * hay nadie mirando. Un rechazo que se pierde es PEOR que el dato perdido, porque el tutor
+ * cree que guardó.
+ */
+async function caminoLoTecleadoNoMuere(page, base) {
+  const c = new Camino('lo-tecleado-no-muere-con-la-pagina')
+  scenario.stage = 'hasta_preguntas'   // aterriza en Documentos (5) y se retrocede a Personas (1)
+
+  // Espía de guardados de paso: cuántos salen, de qué paso, y qué llevan dentro.
+  const saves = []
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'saveStep') saves.push({ ...body, _t: Date.now() })
+  }
+  page.on('request', espiar)
+  const limpiar = () => page.off('request', espiar)
+
+  // Ocultar/mostrar la pantalla como lo hace iOS al irse a otra app. `visibilityState` es de
+  // solo lectura, así que se sustituye su lector y se emite el evento — que es exactamente
+  // lo que el navegador hace.
+  const ocultar = async () => {
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+      Object.defineProperty(document, 'hidden',          { configurable: true, get: () => true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await page.waitForTimeout(700)
+  }
+  const volver = async () => {
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+      Object.defineProperty(document, 'hidden',          { configurable: true, get: () => false })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await page.waitForTimeout(700)
+  }
+
+  try {
+    // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────
+    // Este recorrido afirma sobre un mecanismo con nombre. Si alguien lo renombra o lo
+    // retira, las afirmaciones de abajo caerían diciendo «no salió ningún guardado» —
+    // cierto, pero sin nombrar que el recorrido ya no sabe qué está mirando. Se comprueba
+    // contra el FUENTE, y si no está, sale CIEGO en vez de rojo-a-secas o de verde.
+    const FUENTES = [
+      ['frontend/src/context/WizardContext.jsx', /registrarBorradorDelPaso/],
+      ['frontend/src/context/WizardContext.jsx', /leerBorradorDelPaso/],
+      ['frontend/src/pages/WizardPage.jsx',      /addEventListener\('visibilitychange'/],
+      ['frontend/src/pages/WizardPage.jsx',      /encolarGuardadoDelPaso/],
+      ['frontend/src/pages/steps/Step2Persons.jsx', /registrarBorradorDelPaso/],
+    ]
+    const ausentes = []
+    for (const [rel, re] of FUENTES) {
+      let txt = ''
+      try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+      if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+    }
+    if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+      ausentes.length === 0,
+      `no se encontró en el fuente: ${ausentes.join(' · ')} — el recorrido NO puede medir lo que ` +
+      `dice medir, así que NO puede salir verde`)) return c
+
+    if (!await entrarPorElEnlace(c, page, base)) return c
+
+    // Retroceder hasta Personas (índice 1), como lo haría la familia.
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('ANCLA · se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(250)
+
+    // ── ANCLA: hay un campo donde teclear. Sin esto las demás medirían el aire.
+    // ⚠️ Los campos del paso NO llevan `type="text"` explícito (`<input className="form-control">`),
+    // y `input[type="text"]` NO casa un input sin ese atributo — medido: devolvía 0 y el ancla
+    // caía sin que faltara nada en la pantalla.
+    const SEL_CAMPO = 'input.form-control:not([type])'
+    const campos = await page.$$(SEL_CAMPO)
+    if (!c.afirmar('ANCLA · el paso admite escritura', campos.length > 0,
+      'no se encontró ni un campo de texto en el paso de Personas')) return c
+
+    // ── (1) Se teclea SIN pulsar Continuar y se oculta la pantalla ⇒ SALE el guardado ──
+    const TECLEADO = 'ZZTecleadoSinGuardar'
+    saves.length = 0
+    await campos[0].click({ clickCount: 3 })
+    await campos[0].type(TECLEADO, { delay: 15 })
+    await page.waitForTimeout(1200)   // ventana: nadie guarda mientras se teclea
+
+    const mientrasTeclea = saves.length
+    c.afirmar('mientras se teclea NO sale ningún guardado (la ventana que se quiere cerrar)',
+      mientrasTeclea === 0,
+      `salieron ${mientrasTeclea} guardado(s) mientras se tecleaba`)
+
+    await ocultar()
+    const traasOcultar = saves.length
+    if (!c.afirmar('(1) al ocultarse la pantalla SALE el guardado de lo tecleado',
+      traasOcultar > mientrasTeclea,
+      `no salió ningún guardado al ocultar la pantalla (${traasOcultar} en total): lo tecleado ` +
+      `vive solo en la memoria del navegador, y si iOS descarta la página se pierde sin aviso`)) return c
+
+    const llevaLoTecleado = saves.some(s =>
+      JSON.stringify(s.payload || {}).includes(TECLEADO))
+    c.afirmar('(1.bis) el guardado lleva LO TECLEADO, no una foto vieja', llevaLoTecleado,
+      `ninguno de los ${saves.length} guardado(s) contenía «${TECLEADO}»`)
+
+    // ── (2) Volver a visible NO repite el mismo guardado ──
+    const antesDeVolver = saves.length
+    await volver()
+    await ocultar()   // ocultar OTRA vez sin tocar nada: el paso ya está limpio
+    await volver()
+    c.afirmar('(2) volver y re-ocultar NO repite el guardado',
+      saves.length === antesDeVolver,
+      `salieron ${saves.length - antesDeVolver} guardado(s) de más al ir y volver: ` +
+      `ocultar y volver varias veces se convierte en una tormenta de guardados`)
+
+    // ── (3) Ocultar con el paso LIMPIO no manda nada ──
+    const antesLimpio = saves.length
+    await ocultar()
+    await volver()
+    c.afirmar('(3) con el paso limpio, ocultar no manda NADA',
+      saves.length === antesLimpio,
+      `salieron ${saves.length - antesLimpio} guardado(s) con el paso ya limpio`)
+
+    // ── (4) Un guardado disparado a oscuras que el servidor RECHAZA se VE al volver ──
+    scenario.saveStepFails = true
+    c.esperarErrorConsola(/saveStep|guardar|E2E_FORCED/i,
+      'el escenario hostil hace que el servidor rechace el guardado disparado a oscuras')
+    const campos2 = await page.$$(SEL_CAMPO)
+    await campos2[0].click({ clickCount: 3 })
+    await campos2[0].type('ZZSegundoIntento', { delay: 15 })
+    await page.waitForTimeout(400)
+    await ocultar()
+    await page.waitForTimeout(1500)
+    await volver()
+    await page.waitForTimeout(1200)
+
+    const avisoVisible = await page.evaluate(() => {
+      const t = (document.body.innerText || '')
+      return /no se pudo guardar|error al guardar|couldn.t save|save failed|reintentar|retry/i.test(t)
+    })
+    c.afirmar('(4) el RECHAZO del guardado disparado a oscuras se VE al volver', avisoVisible,
+      'al volver a la pantalla no hay ni un aviso del guardado rechazado: el tutor cree que guardó')
+    scenario.saveStepFails = false
+
+    // ── (5) El disparo ENTRA POR LA COLA: no adelanta a un guardado ya en vuelo ──
+    // El orden es FIFO A PROPÓSITO (personas→vínculos: el vínculo necesita el identificador
+    // que estampa el de personas). Se deja una escritura deliberadamente lenta en vuelo, se
+    // teclea otra cosa y se oculta: el segundo guardado tiene que llegar DESPUÉS del primero.
+    // ⚠️ El freno tiene que ser MUCHO mayor que las esperas de este propio recorrido: con
+    // 2,5 s el hueco medido era de 2174 ms **con la cola saltada**, o sea que lo producían
+    // mis `waitForTimeout`, no la cola — y la rotura (c) salía VERDE. Con 6 s: en cola ~6,8 s,
+    // saltándola ~1,5 s. Y las esperas de esta fase van al mínimo, sin los ayudantes de 700 ms.
+    scenario.saveStepDemoraMs = 6000
+    saves.length = 0
+    const campos3 = await page.$$(SEL_CAMPO)
+    await campos3[0].click({ clickCount: 3 })
+    await campos3[0].type('ZZPrimeroEnLaCola', { delay: 10 })
+    await page.waitForTimeout(150)
+    const ocultarYa = () => page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+      Object.defineProperty(document, 'hidden',          { configurable: true, get: () => true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    const volverYa = () => page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+      Object.defineProperty(document, 'hidden',          { configurable: true, get: () => false })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await ocultarYa()                    // ← primer guardado, LENTO, queda en vuelo
+    await volverYa()
+    const campos4 = await page.$$(SEL_CAMPO)
+    await campos4[0].click({ clickCount: 3 })
+    await campos4[0].type('ZZSegundoEnLaCola', { delay: 5 })
+    await page.waitForTimeout(100)
+    await ocultarYa()                    // ← segundo, mientras el primero sigue en vuelo
+    await page.waitForTimeout(16000)     // deja drenar los dos (6 s cada uno + latencia)
+    scenario.saveStepDemoraMs = 0
+
+    // ⚠️ Lo que distingue FIFO NO es el ORDEN en que salen —ése se conserva igual aunque los dos
+    // corran en paralelo, y con esa versión la rotura (c) salía VERDE: la afirmación medía el aire—.
+    // Lo que lo distingue es que **la segunda no SALE hasta que la primera ha terminado**. Con la
+    // escritura frenada a 2,5 s, en cola hay ≥2,5 s entre las dos; saltándola, salen casi seguidas.
+    const cuerpos = saves.map(s => JSON.stringify(s.payload || {}))
+    const iPrimero = cuerpos.findIndex(t => t.includes('ZZPrimeroEnLaCola') && !t.includes('ZZSegundoEnLaCola'))
+    const iSegundo = cuerpos.findIndex(t => t.includes('ZZSegundoEnLaCola'))
+    const hueco = (iPrimero !== -1 && iSegundo !== -1) ? (saves[iSegundo]._t - saves[iPrimero]._t) : -1
+    c.afirmar(`(5) el guardado disparado a oscuras ENTRA POR LA COLA, no la adelanta (hueco ${hueco} ms)`,
+      iPrimero !== -1 && iSegundo !== -1 && iPrimero < iSegundo && hueco >= 4000,
+      `orden ${JSON.stringify([iPrimero, iSegundo])} sobre ${saves.length} llamada(s) y ${hueco} ms entre ` +
+      `las dos (se esperan ≥4000, lo que tarda la primera): si el disparo saltara la cola, el orden ` +
+      `personas→vínculos dejaría de estar garantizado`)
+
+    c.evidencia.llamadas = saves.length
+    c.evidencia.elementos = campos.length
+    return c
+  } finally {
+    scenario.saveStepFails = false
+    scenario.saveStepDemoraMs = 0
+    limpiar()
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -8785,6 +9014,8 @@ const CAMINOS = [
   { nombre: 'programas-no-se-inventan', fn: caminoProgramasNoSeInventan,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'guardar-paso',        fn: caminoGuardarPaso,        minLlamadas: 1, minElementos: 11 },
+  { nombre: 'lo-tecleado-no-muere-con-la-pagina', fn: caminoLoTecleadoNoMuere,
+    minLlamadas: 1, minElementos: 1 },
   // ①31 — la familia que se incorpora a mitad de curso no puede quedarse encerrada en el paso 1.
   { nombre: 'fecha-a-mitad-de-curso', fn: caminoFechaAMitadDeCurso, minLlamadas: 1, minElementos: 11 },
   { nombre: 'subir-documento',     fn: caminoSubirDocumento,     minLlamadas: 1, minElementos: 1 },

@@ -396,6 +396,41 @@ export function WizardProvider({ children }) {
   }, []);
   const olvidarSimulacionMemo = useCallback(() => { simulacionMemoRef.current = null; }, []);
 
+  /**
+   * `0º.tricies.quintricies` — EL BORRADOR DEL PASO QUE ESTÁ ABIERTO, para poder MANDARLO
+   * antes de que la página muera.
+   *
+   * ⛔ EL PROBLEMA QUE RESUELVE, y por qué hace falta un registro: lo que el tutor teclea vive
+   * en el ESTADO LOCAL del paso (`Step2Persons`: `const [persons, setPersons]`) y **no llega al
+   * contexto hasta que se pulsa Continuar**. Un oyente en `WizardPage` no puede verlo. Así que
+   * el paso publica **cómo preguntarle** —una función que devuelve lo tecleado AHORA— y el
+   * único oyente la llama cuando hace falta.
+   *
+   * ⛔⛔ **KAL-7 INTACTA: esto vive en un `ref`, en MEMORIA, y nada más.** No se persiste en
+   * `sessionStorage` ni en `localStorage`: lo pendiente SON los datos personales de la familia,
+   * y persistirlos aquí es exactamente lo que esa decisión cierra. La salida no es GUARDAR en
+   * el navegador, es MANDARLOS al servidor, que es donde tienen que estar.
+   *
+   * ⛔ **UN SOLO PASO a la vez** (el asistente pinta uno solo, `STEP_COMPONENTS[currentStep]`):
+   * registrar sustituye al anterior, y al desmontarse se limpia solo. Sin eso, un paso que ya
+   * no está en pantalla podría mandar su borrador viejo encima del que sí lo está.
+   *
+   * **Añadir otro paso cuesta UNA línea** en ese paso — no se toca ni el contexto ni el oyente.
+   */
+  const borradorDelPasoRef = useRef(null);
+  const registrarBorradorDelPaso = useCallback((leer) => {
+    borradorDelPasoRef.current = (typeof leer === 'function') ? leer : null;
+    return () => {
+      if (borradorDelPasoRef.current === leer) borradorDelPasoRef.current = null;
+    };
+  }, []);
+  /** Lo tecleado AHORA en el paso abierto, o `null` si ese paso no publica borrador. */
+  const leerBorradorDelPaso = useCallback(() => {
+    const leer = borradorDelPasoRef.current;
+    if (!leer) return null;
+    try { return leer() || null; } catch { return null; }
+  }, []);
+
   const enqueueSave = useCallback((saveFn, opts) => {
     const independiente = !!(opts && opts.independiente);
     // Nombre EN LLANO de lo que se está guardando (p.ej. «Personas»). Opcional: quien no
@@ -1760,6 +1795,7 @@ export function WizardProvider({ children }) {
       recognition,   setRecognition,
       completedSteps, addCompletedStep, removeCompletedStep,
       isStepDirty, markStepSaved,
+      registrarBorradorDelPaso, leerBorradorDelPaso,   // 0º.tricies.quintricies — lo tecleado y aún sin guardar
       setPendingSave, enqueueSave, awaitPendingSave, hasPendingSave, saveState,
       beginUpload, endUpload, hasUploadInFlight,      // 0º.quindecies — el pulso se aparta mientras sube un documento
       subidasEnVuelo, iniciarSubida, terminarSubida, registrarDocumentoSubido,  // 0º.tricies.quinquies — la subida sobrevive al desmontaje

@@ -38,6 +38,7 @@ export default function WizardPage() {
     completedSteps, addCompletedStep, removeCompletedStep,
     isStepDirty, markStepSaved,
     setPendingSave, enqueueSave, hasPendingSave, saveState,
+    leerBorradorDelPaso,                     // 0º.tricies.quintricies — lo tecleado y aún sin guardar
     hasUploadInFlight,                                             // 0º.quindecies — el pulso se aparta mientras sube un documento
     validationError, setValidationError,                          // UX-1 aviso sticky
     markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
@@ -375,18 +376,23 @@ export default function WizardPage() {
     }
   }, []); // eslint-disable-line
 
-const handleNext = async (stepKey, data, extra = null) => {
-    log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
-    setValidationError('');  // UX-1: limpia el aviso sticky al avanzar de paso
-    markUserTookControl(); // WPERF-1 criterio 4: nav manual → invalida un JUMP de enterSigning pendiente
-
-    // Data-layer pieza 2: el avance YA NO bloquea esperando el save de N-1. El save
-    // se ENCOLA (enqueueSave) y corre en background EN ORDEN FIFO (la cola preserva
-    // persons→relations: el save de relaciones se ejecuta tras el de personas, que
-    // ya estampó el personIdMap). La navegación avanza al instante; el indicador
-    // "Guardando…/Todo guardado/Error" (saveState) cubre el estado. El submit final
-    // (Step7Review) sí espera el drenaje de la cola (awaitPendingSave).
-
+  /**
+   * `0º.tricies.quintricies` — ENCOLAR EL GUARDADO DE UN PASO. **UN SOLO SITIO.**
+   *
+   * Sale VERBATIM del cuerpo de `handleNext` (era su único sitio) para que el disparo al
+   * ocultarse la pantalla use EXACTAMENTE el mismo camino: mismo `enqueueSave`, misma cola FIFO
+   * —que es la que preserva personas→vínculos—, mismo manejo de rechazos, mismo indicador.
+   * ⛔ **PROHIBIDO escribir un segundo guardado**: dos caminos del mismo dato divergen, y aquí la
+   * divergencia se pagaría con el paso de personas de una familia.
+   *
+   * @param {string} stepKey
+   * @param {*} data
+   * @param {Object|null} extra
+   * @param {number} pasoParaLaEtiqueta — de qué paso es el nombre que se le enseña a la familia
+   *        si falla. Al ocultarse la pantalla es el paso ABIERTO, que es el mismo que avanza.
+   * @returns {boolean} si de verdad se encoló algo.
+   */
+  const encolarGuardadoDelPaso = (stepKey, data, extra, pasoParaLaEtiqueta) => {
     const needsSave = !!(enrollmentGroupId && stepKey && isStepDirty(stepKey, data));
     if (!needsSave && enrollmentGroupId && stepKey) {
       log.info(`WizardPage: step "${stepKey}" clean — skipping save`);
@@ -399,7 +405,7 @@ const handleNext = async (stepKey, data, extra = null) => {
       // `que`: el nombre del paso TAL COMO SE LEE en la pantalla, para que el aviso de
       // fallo diga QUÉ no se pudo guardar en vez de «Error al guardar» a secas. Sale del
       // catálogo (labelKey del paso actual), no de un mapeo escrito a mano.
-      const queSeGuarda = t(STEP_CATALOG[currentStep]?.labelKey || '', '');
+      const queSeGuarda = t(STEP_CATALOG[pasoParaLaEtiqueta]?.labelKey || '', '');
       enqueueSave(async () => {
         try {
           // Send both new and legacy keys so backend keeps working during the
@@ -460,6 +466,76 @@ const handleNext = async (stepKey, data, extra = null) => {
     } else {
       log.warn('WizardPage: skipping saveStep', { enrollmentGroupId, stepKey, dirty: needsSave });
     }
+    return needsSave;
+  };
+
+  /**
+   * `0º.tricies.quintricies` — EL ÚNICO OYENTE: al OCULTARSE la pantalla, lo tecleado SALE.
+   *
+   * **El defecto, medido contra `origin/main`:** el asistente solo encolaba un guardado al pulsar
+   * Continuar. No hay guardado por campo ni por tiempo ⇒ lo tecleado vivía SOLO en la memoria del
+   * navegador, y **iOS descarta la página** al irse a otra app: al volver se recarga desde cero y
+   * se había perdido, sin un solo aviso. Rellenar el paso de personas cinco minutos y cambiar de
+   * app podía costar los cinco minutos.
+   *
+   * ⛔ **`visibilitychange`→`hidden` y `pagehide`, NUNCA `beforeunload`/`unload`**: en iOS esos dos
+   * no son fiables y usarlos como única red es no tener red.
+   *
+   * ⛔ **`navigator.sendBeacon` NO sirve, y va escrito para que nadie lo proponga:** no espera
+   * respuesta, así que **un rechazo se perdería** — y el guardado necesita LEER la respuesta (el
+   * identificador del trabajo, los rechazos). Un dato «enviado» que el servidor descartó en
+   * silencio es el mismo defecto con otra cara. Se manda por el camino normal.
+   *
+   * ⛔ **Entra POR LA COLA** (`encolarGuardadoDelPaso` → `enqueueSave`), no la salta: el orden
+   * personas→vínculos es FIFO a propósito, porque el vínculo necesita el identificador que estampa
+   * el de personas.
+   *
+   * ⛔ **NO toca la ventana de inactividad**: ocultar la pantalla NO es actividad y no la extiende
+   * (eso lo vigila `comprobar-verja-publica.mjs`). Aquí solo se manda un guardado, que pasa por su
+   * comprobación como cualquier otro.
+   *
+   * ⚠️ **Y no puede volverse una tormenta**: ocultar y volver varias veces NO dispara N guardados.
+   * Lo impide la huella de lo último mandado — y, en cuanto ese guardado aterriza, `isStepDirty`
+   * ya lo ve limpio por sí solo.
+   */
+  const ultimaDescargaRef = useRef('');
+  useEffect(() => {
+    const mandarLoPendiente = () => {
+      if (document.visibilityState !== 'hidden') return;
+      const borrador = leerBorradorDelPaso();
+      if (!borrador || !borrador.stepKey) return;
+      if (!enrollmentGroupId) return;
+      if (!isStepDirty(borrador.stepKey, borrador.data)) return;
+      // Anti-tormenta: la MISMA huella no se manda dos veces seguidas. No sustituye a
+      // `isStepDirty` —que es quien decide de verdad—: cubre la ventana en que el guardado
+      // ya salió pero todavía no ha aterrizado.
+      const huella = borrador.stepKey + '\u0000' + JSON.stringify(borrador.data ?? null);
+      if (huella === ultimaDescargaRef.current) return;
+      ultimaDescargaRef.current = huella;
+      log.info('WizardPage: la pantalla se oculta — mandando lo tecleado y sin guardar', { stepKey: borrador.stepKey });
+      encolarGuardadoDelPaso(borrador.stepKey, borrador.data, borrador.extra || null, currentStep);
+    };
+    document.addEventListener('visibilitychange', mandarLoPendiente);
+    window.addEventListener('pagehide', mandarLoPendiente);
+    return () => {
+      document.removeEventListener('visibilitychange', mandarLoPendiente);
+      window.removeEventListener('pagehide', mandarLoPendiente);
+    };
+  });   // sin lista de dependencias A PROPÓSITO: el oyente tiene que ver el paso y los datos de AHORA
+
+const handleNext = async (stepKey, data, extra = null) => {
+    log.info(`WizardPage: handleNext step=${currentStep} stepKey=${stepKey}`);
+    setValidationError('');  // UX-1: limpia el aviso sticky al avanzar de paso
+    markUserTookControl(); // WPERF-1 criterio 4: nav manual → invalida un JUMP de enterSigning pendiente
+
+    // Data-layer pieza 2: el avance YA NO bloquea esperando el save de N-1. El save
+    // se ENCOLA (enqueueSave) y corre en background EN ORDEN FIFO (la cola preserva
+    // persons→relations: el save de relaciones se ejecuta tras el de personas, que
+    // ya estampó el personIdMap). La navegación avanza al instante; el indicador
+    // "Guardando…/Todo guardado/Error" (saveState) cubre el estado. El submit final
+    // (Step7Review) sí espera el drenaje de la cola (awaitPendingSave).
+
+    encolarGuardadoDelPaso(stepKey, data, extra, currentStep);
     // Note: setSaving / "Guardando..." indicator is now driven by hasPendingSave
     // from context, not by this local saving flag. Local flag retained but unused
     // (TODO cleanup: remove the local saving state once we confirm no callers).

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWizard } from '../../context/WizardContext';
 import * as log from '../../logger';
@@ -950,6 +950,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const { t, i18n } = useTranslation();
   const {
     stepData, updateStep, recognition,
+    registrarBorradorDelPaso,   // 0º.tricies.quintricies
     touchActivity, setValidationError,
     resumeToken,                       // para avisar al servidor de lo que la familia QUITA
     recoveryNonce, recoveredEmail,     // ②24 — quién está operando (identidad del enlace)
@@ -1014,6 +1015,17 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     log.debug('Step2: init persons with empty defaults');
     return [emptyPerson('guardian'), emptyPerson('applicant')];
   });
+  // `0º.tricies.quintricies` — PUBLICAR LO TECLEADO, para que salga si la página muere.
+  // Lo que el tutor escribe vive AQUÍ (`persons`) y no llega al contexto hasta que se pulsa
+  // Continuar; con esto, el único oyente de `WizardPage` puede preguntarlo cuando la pantalla
+  // se oculta y mandarlo por la MISMA cola. ⛔ No persiste nada: es una función en memoria
+  // (KAL-7). **Añadir otro paso cuesta exactamente estas cuatro líneas.**
+  const personsRef = useRef(persons);
+  personsRef.current = persons;
+  useEffect(() => registrarBorradorDelPaso(
+    () => ({ stepKey: 'persons', data: personsRef.current })
+  ), [registrarBorradorDelPaso]);
+
   const [err, setErr] = useState('');
   // ②27 — cuando el servidor pide el código de un solo uso para QUITAR: guarda el gesto
   // pendiente para repetirlo tras verificar (null | () => void). Copiado del `stepUpRetry`

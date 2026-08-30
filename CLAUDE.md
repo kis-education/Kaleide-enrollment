@@ -2713,6 +2713,79 @@ seguridad del repositorio, VERDES.
 **Publicado**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
 `main` (CI/Pages).
 
+### `0º.tricies.quintricies` (2026-08-29) — lo tecleado y sin guardar ya no muere con la página
+
+**Diego, 2026-08-26, sobre iPhone:** *«si cargo y luego cambio a otra app, se pierde el foco y se
+pierde la conexión de datos»*. **iOS descarta la página** cuando necesita memoria; al volver, se
+recarga desde cero.
+
+**Lo medido contra `origin/main` ANTES de tocar nada, y el defecto se reprodujo:**
+
+| Qué | Resultado |
+|---|---|
+| ¿algo dispara al ocultarse la pantalla? | **NADA** — cero `visibilitychange`/`pagehide` que hagan salir un guardado |
+| ¿dónde se encola un guardado de paso? | **UN solo sitio**: `WizardPage.handleNext` → `enqueueSave`, al pulsar Continuar |
+| ¿guardado por campo o por tiempo? | **no hay** |
+| ¿cuántos guardados salen mientras se teclea? | **CERO** *(afirmación del recorrido nuevo, verde ya antes del arreglo: la ventana es real)* |
+
+⇒ **todo lo tecleado en un paso vivía SOLO en la memoria del navegador hasta avanzar**: rellenar el
+paso de personas cinco minutos y cambiar de app podía costar los cinco minutos.
+
+**⛔ LA SALIDA NO ES GUARDAR EN EL NAVEGADOR, ES ENVIAR — y eso decide todo el diseño.** `KAL-7` lo
+dice con todas las letras: *«NADA de esto se persiste en sessionStorage (cero secretos/PII fuera de
+memoria)»*. Lo pendiente **SON** los datos personales de la familia ⇒ **PROHIBIDO** meterlos en
+`sessionStorage`/`localStorage`. Se **MANDAN** antes de que la página muera; nada nuevo se queda aquí.
+
+**⛔ `navigator.sendBeacon` DESCARTADO, y va escrito para que nadie lo reproponga:** no espera
+respuesta ⇒ **un rechazo se perdería**, y el guardado necesita LEER la respuesta (el identificador
+del trabajo, los rechazos). Un dato «enviado» que el servidor descartó en silencio es el mismo
+defecto con otra cara.
+
+**Las tres piezas, y ninguna es un oyente por pantalla:**
+
+| Pieza | Dónde |
+|---|---|
+| el paso **publica** cómo preguntarle lo tecleado | `registrarBorradorDelPaso` (`WizardContext`), en un `ref` — **memoria y nada más** |
+| **UN SOLO oyente** `visibilitychange`→`hidden` + `pagehide` | `WizardPage` |
+| el guardado sale por **el mismo camino de siempre** | `encolarGuardadoDelPaso`, sacado VERBATIM del cuerpo de `handleNext` |
+
+**⛔ Por qué hace falta que el paso publique:** lo tecleado vive en el estado local del paso
+(`Step2Persons`: `const [persons, setPersons]`) y **no llega al contexto hasta pulsar Continuar** —
+un oyente en `WizardPage` no puede verlo. **Añadir otro paso cuesta CUATRO líneas en ese paso**, sin
+tocar ni el contexto ni el oyente. Hoy lo publica **Personas**, que es el peor caso.
+
+**⛔ Lo que NO se toca:** el ORDEN FIFO de la cola (personas→vínculos: el vínculo necesita el
+identificador que estampa el de personas) — el disparo **entra por la cola, no la salta** · la
+ventana de inactividad (ocultar la pantalla **no es actividad** y no la extiende, lo vigila
+`comprobar-verja-publica.mjs`) · `rechazos.js` sigue siendo el único sitio que decide qué se
+reintenta · KAL-4, el código de un solo uso y la recarga, exactamente igual.
+
+**⚠️ Y no se vuelve una tormenta:** ocultar y volver varias veces no dispara N guardados — lo impide
+la huella de lo último mandado, además de `isStepDirty`, que es quien decide de verdad.
+
+**Red**: camino NUEVO `lo-tecleado-no-muere-con-la-pagina` (11 afirmaciones), con **dos anclas** por
+delante — que se llegue a Personas y que el paso admita escritura — y **una tercera que es nueva en
+esta casa**: una comprobación contra el FUENTE de que el mecanismo medido **existe con su nombre**,
+para que renombrarlo salga **CIEGO** en vez de rojo-a-secas. **CUATRO rojos demostrados**:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| el código de ayer (sin arreglo) | *«(1) … no salió ningún guardado al ocultar la pantalla (0 en total): lo tecleado vive solo en la memoria del navegador…»* |
+| tragarse el rechazo | *«(4) … al volver a la pantalla no hay ni un aviso del guardado rechazado: el tutor cree que guardó»* |
+| saltarse la cola (`independiente: true`) | *«(5) … 423 ms entre las dos (se esperan ≥4000…)»* — con cola: **6810 ms** |
+| renombrar lo medido | *«MEDICIÓN CIEGA · … el recorrido NO puede medir lo que dice medir, así que NO puede salir verde»* |
+
+⚠️ **Y la red se corrigió a sí misma DOS veces, que es el hallazgo de método:** el ancla usaba
+`input[type="text"]`, que **no casa** un `<input className="form-control">` sin ese atributo (devolvía
+0); y la afirmación (5) medía **el orden en que salen** las peticiones — que se conserva igual
+saltándose la cola, así que **la rotura (c) salía VERDE**. Lo que distingue FIFO es que **la segunda
+no sale hasta que la primera termina**, y hubo que frenar la escritura a 6 s porque con 2,5 s el hueco
+lo producían **las esperas del propio recorrido**, no la cola.
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS. Afirma lo que hace el NAVEGADOR — que es donde vive este defecto
+entero. **No se tocó ni una línea de servidor.**
+
 ### `0º.tricies.nonies` (2026-08-22) — entrar por el enlace manda UN código, y la pantalla lo dice
 
 **Diego, 2026-08-22, cita literal:** *«cuando se carga el wizard desde un enlace, automáticamente
