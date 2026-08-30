@@ -864,6 +864,15 @@ export function createDispatcher(scenario, record) {
           payers: [{ payer_person_id: FIXTURE.guardian1Id, split_percentage: 60, is_primary: true },
                    { payer_person_id: FIXTURE.guardian2Id, split_percentage: 40, is_primary: false }] };
       }
+      // `0º.quadragies.ter` — LA SECCIÓN DEL REPARTO DEGRADA A VACÍA. No es un capricho del
+      // doble: la hidratación se arma **best-effort por sección** (`enr_wizardHydrateCompute_`:
+      // *«cualquier tabla/sección que falle degrada a su default … sin lanzar»*), así que una
+      // lectura caída deja `billing_splits` vacío mientras `getSavedBillingSplits` —que es OTRA
+      // llamada— sigue trayendo el 60/40 de verdad. Ése es el caso en que el paso 8 sembraba
+      // 100/0 y ya no se dejaba corregir: el tutor firmaría un reparto que no es el pactado.
+      if (scenario.repartoDegradaEnLaHidratacion) {
+        h.billing_splits = { payers: [], per_participant: [] };
+      }
       // ⭐ `0º.septvicies` — el vínculo entre hermanos GUARDADO EN EL SENTIDO CONTRARIO
       // (`from` = el hijo 2, `to` = el hijo 1) y en UNA sola fila, que es lo que el KMS
       // escribe desde DL-S45. Sirve para afirmar que el lector del paso 3 lo encuentra

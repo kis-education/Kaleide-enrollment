@@ -425,7 +425,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0 }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -8987,6 +8987,91 @@ async function caminoLoTecleadoNoMuere(page, base) {
   }
 }
 
+
+/**
+ * `0º.quadragies.ter` — EL REPARTO NO SE SIEMBRA DE UNA SECCIÓN VACÍA.
+ *
+ * ⛔ ES DINERO Y SE FIRMA. El paso 8 daba por hablado al servidor **en cuanto la sección del
+ * reparto LLEGA** (`seededFromServer: !!src`) — **aunque llegue VACÍA**. Y la hidratación se
+ * arma best-effort por sección: una lectura caída la deja vacía sin lanzar. A partir de ahí:
+ *
+ *   · la lectura de `getSavedBillingSplits` —que SÍ trae el 60/40— **ni se dispara**
+ *     (`if (form && (form.touched || form.seededFromServer)) return undefined`), y
+ *   · aunque se disparase, la revalidación silenciosa se corta con la misma guardia.
+ *
+ * ⇒ el tutor ve **100/0** y **firmaría un reparto distinto del pactado**, sin forma de corregirlo.
+ *
+ * ⚠️ Y eran DOS sitios, no uno: además de la guardia, la lectura trata una sección vacía como
+ * «ya lo tengo» y **retorna sin pedir nada**. Arreglar solo `seededFromServer` no bastaba —
+ * medido: con ese arreglo a medias el deslizador seguía en 100.
+ */
+async function caminoRepartoNoSeSiembraDeVacio(page, base) {
+  const c = new Camino('reparto-no-se-siembra-de-vacio')
+  scenario.stage = 'firma'
+  scenario.repartoGuardado60_40 = true              // lo que de verdad hay guardado
+  scenario.repartoDegradaEnLaHidratacion = true     // …y la sección llega VACÍA
+
+  try {
+    // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────
+    const FUENTES = [
+      ['frontend/src/pages/steps/Step8Billing.jsx', /seededFromServer/],
+      ['frontend/src/pages/steps/Step8Billing.jsx', /traeAlgunReparto_/],
+    ]
+    const ausentes = []
+    for (const [rel, re] of FUENTES) {
+      let txt = ''
+      try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+      if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+    }
+    if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+      ausentes.length === 0,
+      `no se encontró en el fuente: ${ausentes.join(' · ')} — el recorrido NO puede medir lo que ` +
+      `dice medir, así que NO puede salir verde`)) return c
+
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 1400)
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos + pantalla.tarjetas
+
+    // ── ANCLA: el reparto llegó a pintarse. Sin esto lo de abajo mediría el aire.
+    const deslizador = await page.$('input[type="range"]')
+    if (!c.afirmar('ANCLA · el paso 8 pinta el reparto entre los dos tutores', !!deslizador,
+      'no se pintó el deslizador del reparto: lo que sigue mediría el aire')) return c
+
+    // ── (1) El reparto que se enseña es EL GUARDADO, no un 100/0 inventado ──
+    // El deslizador vale el porcentaje del primer pagador: 60 si se corrigió, 100 si se
+    // sembró de la sección vacía y ya no se dejó corregir.
+    const pct = await deslizador.evaluate(n => Number(n.value))
+    c.afirmar('(1) con la sección del reparto VACÍA, se enseña el 60/40 GUARDADO, no 100/0',
+      pct === 60,
+      `el deslizador vale ${pct} (se esperaba 60): la pantalla sembró de una sección vacía y ya no ` +
+      `se deja corregir ⇒ el tutor firmaría un reparto distinto del pactado`)
+
+    // ── (2) Y los porcentajes de LOS DOS pagadores son los guardados ──
+    const splits = await page.$$eval('[data-testid="reparto-importe"]', ns => ns.length)
+    c.afirmar('(2) siguen siendo DOS pagadores', splits >= 2,
+      `se pintaron ${splits} pagador(es): con uno solo el reparto no se puede usar`)
+
+    // ── (3) Y no se toca el caso normal: con la sección llena, se sigue enseñando el guardado ──
+    scenario.repartoDegradaEnLaHidratacion = false
+    await page.goto(base + `/?e2e=ter#/`, { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(300)
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 1400)
+    const d2 = await page.$('input[type="range"]')
+    const pct2 = d2 ? await d2.evaluate(n => Number(n.value)) : -1
+    c.afirmar('(3) con la sección LLENA el comportamiento no cambia (sigue el 60/40)',
+      pct2 === 60,
+      `el deslizador vale ${pct2} (se esperaba 60): el arreglo ha roto el camino normal`)
+
+    return c
+  } finally {
+    scenario.repartoGuardado60_40 = false
+    scenario.repartoDegradaEnLaHidratacion = false
+  }
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -9026,6 +9111,8 @@ const CAMINOS = [
   ...(REAL ? [{ nombre: 'expediente-completo', fn: caminoExpedienteCompleto, minLlamadas: 8, minElementos: 11 }] : []),
   { nombre: 'tramo-firma',         fn: caminoTramoFirma,         minLlamadas: 1, minElementos: 11 },
   { nombre: 'paso8-al-dia',        fn: caminoPaso8AlDia,         minLlamadas: 1, minElementos: 5 },
+  { nombre: 'reparto-no-se-siembra-de-vacio', fn: caminoRepartoNoSeSiembraDeVacio,
+    minLlamadas: 1, minElementos: 5 },
   { nombre: 'paso8-sin-nada-que-elegir', fn: caminoPaso8SinNadaQueElegir, minLlamadas: 1, minElementos: 5 },
   // Ejercita el paso 4 DESDE LA PANTALLA también en simulado. Nació para contestar, sin
   // gastar una corrida de 35 min, si el `0 de 1` de la salud contra el sistema real era

@@ -2713,6 +2713,43 @@ seguridad del repositorio, VERDES.
 **Publicado**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
 `main` (CI/Pages).
 
+### `0º.quadragies.ter` (2026-08-29) — el reparto no se siembra de una sección VACÍA
+
+**⛔ ES DINERO Y SE FIRMA.** El paso 8 daba por hablado al servidor **en cuanto la sección
+`billing_splits` LLEGABA** (`seededFromServer: !!src`) — **aunque llegara vacía**. Y la hidratación
+se arma **best-effort por sección** (`enr_wizardHydrateCompute_`: *«cualquier tabla/sección que falle
+degrada a su default … sin lanzar»*), así que una lectura caída la deja vacía sin que nadie proteste.
+
+⇒ el tutor veía **100/0** con **60/40 guardado**, y **firmaría un reparto distinto del pactado**.
+
+**⚠️ Y ERAN DOS SITIOS, NO UNO — está medido, no razonado.** Además de la guardia, **la lectura
+trataba una sección vacía como «ya lo tengo» y retornaba sin pedir nada** ⇒ el 60/40 que tenía que
+corregir la siembra **no llegaba a existir**. Con solo `seededFromServer` arreglado, el deslizador
+**seguía en 100** (rotura (a), abajo).
+
+**⛔ UN SOLO CRITERIO, consumido por los TRES sitios** — la lectura, la siembra y la revalidación:
+`traeAlgunReparto_(src)`, a nivel de módulo en `Step8Billing.jsx`. Escribirlo tres veces es
+exactamente cómo divergen, y aquí la divergencia se paga con el reparto que una familia firma.
+
+**⛔ Lo que NO se toca:** el asistente **no calcula dinero** (DL-080-A) — el importe lo proyecta el
+KMS y aquí solo se formatea · el IVA, la serie y la numeración, intactos (DL-066-LEAN) · un plan
+firmado sigue sin poder cambiarse sin acuerdo expreso · y **el camino normal es byte-idéntico**
+(afirmación (3): con la sección llena, el comportamiento no cambia).
+
+**Red**: camino NUEVO `reparto-no-se-siembra-de-vacio`, con el escenario que la ficha describe —
+`repartoDegradaEnLaHidratacion` deja la sección vacía mientras `getSavedBillingSplits` sigue trayendo
+el 60/40 real, que es lo que ocurre cuando esa sección degrada—. **TRES rojos demostrados**:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| arreglar **solo** `seededFromServer` | *«(1) … el deslizador vale 100 (se esperaba 60): la pantalla sembró de una sección vacía y ya no se deja corregir ⇒ el tutor firmaría un reparto distinto del pactado»* |
+| volver la guardia a `!!src` | el mismo rojo |
+| renombrar lo medido | *«MEDICIÓN CIEGA · … el recorrido NO puede medir lo que dice medir, así que NO puede salir verde»* |
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS. Afirma lo que pinta el navegador — que es donde vive este defecto. **No
+se tocó ni una línea de servidor.**
+
 ### `0º.tricies.quintricies` (2026-08-29) — lo tecleado y sin guardar ya no muere con la página
 
 **Diego, 2026-08-26, sobre iPhone:** *«si cargo y luego cambio a otra app, se pierde el foco y se

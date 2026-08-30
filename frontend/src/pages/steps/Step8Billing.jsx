@@ -29,6 +29,29 @@ import * as log from '../../logger';
  * CLI 10 (DL-E42 §3/§5): reparto per-PARTICIPANTE opcional (un reparto por hijo).
  * El KMS deriva grupo+enrollments del token (KAL-4) y mapea hijo → finSubscription.
  */
+/**
+ * `0º.quadragies.ter` (2026-08-29) — ¿LA SECCIÓN DEL REPARTO TRAE ALGO?
+ *
+ * ⛔ **ES DINERO Y SE FIRMA.** El paso 8 daba por hablado al servidor en cuanto la sección
+ * `billing_splits` LLEGABA (`seededFromServer: !!src`) — **aunque llegara VACÍA**. Y la
+ * hidratación se arma **best-effort por sección** (`enr_wizardHydrateCompute_`: *«cualquier
+ * tabla/sección que falle degrada a su default … sin lanzar»*), así que una lectura caída la
+ * deja vacía sin que nadie proteste. A partir de ahí el 60/40 REAL —que sí trae
+ * `enr.getSavedBillingSplits`— no podía corregir la siembra, y el tutor **firmaría un reparto
+ * distinto del pactado**.
+ *
+ * ⛔ **UN SOLO CRITERIO, consumido por los TRES sitios** que lo necesitan: la lectura, la
+ * siembra y la revalidación. Escribirlo tres veces es exactamente cómo divergen — y aquí la
+ * divergencia se paga con el reparto que una familia firma.
+ *
+ * ⚠️ **Y eran DOS sitios, no uno** (medido: con solo `seededFromServer` arreglado, el
+ * deslizador seguía en 100). Además de la guardia, **la lectura trataba una sección vacía como
+ * «ya lo tengo» y retornaba sin pedir nada** ⇒ nunca llegaba a existir el 60/40 que corregir.
+ */
+const traeAlgunReparto_ = (src) => !!(src && (
+  ((src.payers || []).length > 0) || ((src.per_participant || []).length > 0)
+));
+
 export default function Step8Billing({ onAdvance, onBack, signingToken, resumeToken, signerCtx, savedSplits: savedSplitsProp, locked, onUnlock }) {
   const { t, i18n } = useTranslation();
   // Mismo criterio que el paso 7 (`Step7Review.jsx`): el idioma con el que `fechaLegible`
@@ -233,7 +256,10 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   useEffect(() => {
     let alive = true;
     if (form && (form.touched || form.seededFromServer)) return undefined; // el input del usuario manda — cero lecturas
-    if (savedSplitsProp && typeof savedSplitsProp === 'object') {
+    // `0º.quadragies.ter` — SOLO si trae ALGO. Con la sección vacía se cae al fetch de abajo,
+    // que es el único que puede traer el reparto de verdad. Antes se retornaba aquí y el 60/40
+    // no llegaba a existir.
+    if (savedSplitsProp && typeof savedSplitsProp === 'object' && traeAlgunReparto_(savedSplitsProp)) {
       setSavedSplits({
         payers:          savedSplitsProp.payers || [],
         per_participant: savedSplitsProp.per_participant || [],
@@ -285,7 +311,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
       applicants: applicants.length,
       payers:     seed.payers.map(p => ({ key: p.key, pid8: log.sid(p.payer_person_id), split: p.split })),
     });
-    updateSigningForm('billing', prev => prev || { ...seed, touched: false, seededFromServer: !!src });
+    updateSigningForm('billing', prev => prev || { ...seed, touched: false, seededFromServer: traeAlgunReparto_(src) });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guardians.length, applicants.length, guardianPersonId, savedSplits, form]);
 
@@ -294,8 +320,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   // re-siembra con el dato del server. Si tocó, su valor manda — el server no lo pisa.
   useEffect(() => {
     if (!savedSplits) return;
-    const hasSaved = (savedSplits.payers || []).length > 0 || (savedSplits.per_participant || []).length > 0;
-    if (!hasSaved) return;
+    if (!traeAlgunReparto_(savedSplits)) return;
     updateSigningForm('billing', f => {
       if (!f || f.touched || f.seededFromServer) return f; // el usuario (o el server) ya manda
       log.info('[DBG billing] revalidación silenciosa — re-siembra desde server');
