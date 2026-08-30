@@ -4744,42 +4744,50 @@ function resolveSigningStatus_(groupId, sessionsHint, signersBySessionHint) {
   var live = sessions.filter(function(s) { return s && !s.deleted_at; });
   if (!live.length) return 'NOT_INITIATED';
 
-  // Prefer a COMPLETED session if one exists; otherwise the most recent live
-  // session (by created_at when available, else just the last one found).
-  var completedSession = live.find(function(s) {
-    return (s.current_state_code || '') === 'COMPLETED';
-  });
-  var session = completedSession || live.slice().sort(function(a, b) {
-    return String(b.created_at || '').localeCompare(String(a.created_at || ''));
-  })[0];
+  // ⛔ `0º.tricies.novemtricies` (2026-08-29) — LA FIRMA DEL GRUPO ESTÁ HECHA CUANDO LO ESTÁN
+  // TODAS SUS SESIONES, no cuando lo está UNA.
+  //
+  // **El defecto que cierra**: aquí se PREFERÍA la sesión `COMPLETED` de entre todas las del
+  // grupo (`live.find(... === 'COMPLETED')`). Desde DL-S105 §10 hay **una sesión POR HIJO**, así
+  // que con la matrícula de Jara ya firmada y la de Pepito abierta el grupo salía `COMPLETED`, y
+  // la puerta del paso 7 exige `signing_status !== 'COMPLETED'` ⇒ **firmar la primera CERRABA el
+  // paso a la segunda**. Decisión de Diego (2026-08-27): *«La firma se debe abrir para todos los
+  // admitidos, en el mismo proceso.»*
+  //
+  // ⛔ Con UNA sola sesión el resultado es **byte-idéntico** al de antes: el mismo criterio por
+  // sesión, aplicado a un solo elemento. Lo único que cambia es cómo se agregan varias.
+  var estadoDeUnaSesion = function(session) {
+    // El código de estado es la señal barata pero puede no estar sembrada — por eso abajo
+    // manda `signed_at`, que es la robusta. Criterio COPIADO VERBATIM del que había.
+    var stateSaysCompleted = (session.current_state_code || '') === 'COMPLETED';
+    var signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
+      ? signersBySessionHint[session.session_id]
+      : null;
+    if (!signers) {
+      // ②17: sin firmantes legibles — MISMA salida que la rama `catch` de antes. Hay sesión
+      // anclada: si el estado dice COMPLETED se le cree, si no, en curso.
+      Logger.log('[resolveSigningStatus_] sin firmantes de la sesión (②17)');
+      return stateSaysCompleted ? 'COMPLETED' : 'IN_PROGRESS';
+    }
+    // Expected signers = not soft-deleted, expected_to_sign not explicitly false
+    // (column may be unseeded → undefined, which we treat as "expected").
+    var expected = signers.filter(function(r) {
+      return r && !r.deleted_at && r.expected_to_sign !== false;
+    });
+    if (!expected.length) {
+      // No expected signers known: trust the state code only.
+      return stateSaysCompleted ? 'COMPLETED' : 'IN_PROGRESS';
+    }
+    var allSigned = expected.every(function(r) { return !!r.signed_at; });
+    if (allSigned || stateSaysCompleted) return 'COMPLETED';
+    return 'IN_PROGRESS';
+  };
 
-  // current_state_code is the cheap signal but may be unseeded — fall through to
-  // the robust signed_at check below before trusting it for COMPLETED.
-  var stateSaysCompleted = (session.current_state_code || '') === 'COMPLETED';
-
-  var signers = (signersBySessionHint && Array.isArray(signersBySessionHint[session.session_id]))
-    ? signersBySessionHint[session.session_id]
-    : null;
-  if (!signers) {
-    // ②17: sin firmantes legibles — MISMA salida que la rama `catch` de antes. Hay sesión
-    // anclada: si el estado dice COMPLETED se le cree, si no, en curso.
-    Logger.log('[resolveSigningStatus_] sin firmantes de la sesión (②17)');
-    return stateSaysCompleted ? 'COMPLETED' : 'IN_PROGRESS';
-  }
-
-  // Expected signers = not soft-deleted, expected_to_sign not explicitly false
-  // (column may be unseeded → undefined, which we treat as "expected").
-  var expected = signers.filter(function(r) {
-    return r && !r.deleted_at && r.expected_to_sign !== false;
-  });
-  if (!expected.length) {
-    // No expected signers known: trust the state code only.
-    return stateSaysCompleted ? 'COMPLETED' : 'IN_PROGRESS';
-  }
-
-  var allSigned = expected.every(function(r) { return !!r.signed_at; });
-  if (allSigned || stateSaysCompleted) return 'COMPLETED';
-  return 'IN_PROGRESS';
+  // Basta UNA sesión sin terminar para que el grupo NO esté terminado. Es el lado seguro:
+  // equivocarse hacia `IN_PROGRESS` deja la puerta abierta a quien ya firmó (que no vuelve a
+  // firmar: sus hitos lo dicen); equivocarse hacia `COMPLETED` deja a un hijo SIN matricular.
+  var todasHechas = live.every(function(s) { return estadoDeUnaSesion(s) === 'COMPLETED'; });
+  return todasHechas ? 'COMPLETED' : 'IN_PROGRESS';
 }
 
 /**
