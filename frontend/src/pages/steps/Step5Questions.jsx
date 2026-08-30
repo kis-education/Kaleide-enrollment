@@ -92,15 +92,37 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
 
   const handleNext = () => {
     // Batch-save all responses
-    const rows = Object.entries(responses).map(([key, val]) => {
+    // ⛔ `0º.tricies.septtricies` §9.4 — AQUÍ EL VACÍO SOLO PUEDE SER UN DEFECTO.
+    // Aquí vivía `respondent_id: respondentId || enrollmentGroupId`, que archivaba la
+    // respuesta A NOMBRE DE LA SOLICITUD cuando la mitad «de quién es» venía vacía —
+    // **una atribución falsa, sin rastro**, y el mecanismo exacto que produjo las 21 filas
+    // mal repartidas que midió el estudio.
+    //
+    // El caso legítimo YA TIENE SU PROPIA CLAVE: una pregunta general se compone como
+    // `question_id__<grupo>` (`QbSetRenderer/index.jsx`), así que en el camino sano la
+    // mitad de la clave **nunca viene vacía**. ⇒ un vacío aquí no es «una pregunta de la
+    // solicitud»: es una clave mal compuesta, y taparla es esconder el defecto.
+    //
+    // ⛔ **NO se pierde la respuesta de la familia**: se descarta ESA fila y se dice; las
+    // demás se guardan igual. Y el SUELO sigue siendo el servidor, que no falla cerrado
+    // (es el suelo de un cliente que puede ir por detrás) — solo lo cuenta.
+    const sinSujeto = [];
+    const rows = Object.entries(responses).reduce((acc, [key, val]) => {
       const [qid, respondentId] = key.split('__');
-      return {
+      if (!respondentId) { sinSujeto.push(key); return acc; }
+      acc.push({
         question_id:   qid,
-        respondent_id: respondentId || enrollmentGroupId,
+        respondent_id: respondentId,
         response_text: Array.isArray(val) ? val.join(',') : String(val ?? ''),
         language:      i18n.language,
-      };
-    });
+      });
+      return acc;
+    }, []);
+    if (sinSujeto.length) {
+      log.error('[Step5Questions] ' + sinSujeto.length + ' respuesta(s) con la clave sin ' +
+                'sujeto — NO se archivan a nombre de la solicitud (0º.tricies.septtricies §9.4)',
+                { claves: sinSujeto.map(k => k.split('__').map(x => log.sid(x)).join('__')) });
+    }
     // §8 AVANCE OPTIMISTA (espejo de Step7Review.submitFactory). A diferencia del resto
     // de pasos, Step5 NO enruta su save por WizardPage.handleNext → tenía su propio
     // `await gasCall('saveResponses')` inline (~21.5s E2E) que BLOQUEABA el avance. Ahora
