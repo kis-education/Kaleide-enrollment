@@ -148,6 +148,7 @@
   "wizard.dismiss_save_error": "Ocultar este aviso",
   "wizard.retry_save": "Reintentar",
   "wizard.saving": "Guardando…",
+  "wizard.all_changes_saved": "Todos los cambios guardados",
   "wizard.sending_magic_link": "Enviándote un enlace mágico por correo para que puedas continuar después…",
   "wizard.save_failed": "No se ha podido guardar tu progreso — comprueba tu conexión.",
   "wizard.submit_failed": "No se ha podido enviar tu solicitud — NO se envió. Por favor, reinténtalo.",

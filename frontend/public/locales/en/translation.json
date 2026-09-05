@@ -148,6 +148,7 @@
   "wizard.dismiss_save_error": "Hide this notice",
   "wizard.retry_save": "Retry",
   "wizard.saving": "Saving…",
+  "wizard.all_changes_saved": "All changes saved",
   "wizard.sending_magic_link": "Sending you a magic link by email so you can continue later…",
   "wizard.save_failed": "Your progress could not be saved — please check your connection.",
   "wizard.submit_failed": "Your application could not be submitted — it was NOT sent. Please retry.",
