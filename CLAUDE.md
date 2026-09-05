@@ -62,7 +62,22 @@ Public-facing enrollment wizard (admissions.kaleide.org). Families submit applic
 
 ### Regla canónica de branches — sin excepción por sesión
 
-**Regla canónica de branches (acordado verbalmente sesiones previas, anotado 2026-06-01):**
+**Regla canónica de branches (CONFIRMADA por Diego 2026-09-05, y ahora con condición de fin):**
+
+> **★ 2026-09-05.** Cita literal: *«Sí, seguimos trabajando en master hasta que tengamos un MVP en
+> producción.»* Iba anotada «acordado verbalmente en sesiones previas» y **el propio texto reconocía
+> que no tenía cita** — una de las siete de `D126`. Se le llevó y la confirma, **añadiendo lo que
+> nunca había estado escrito: hasta CUÁNDO**.
+>
+> ⇒ **Mientras no haya un MVP en producción, todo va a la rama principal.** Esta regla no es para
+> siempre: el día que el KMS esté en producción, con familias usándolo, trabajar directo sobre la
+> rama que sirve deja de ser gratis y **hay que volver a preguntárselo**. Hasta entonces, no hay
+> nadie a quien romperle nada y las ramas solo añaden trabajo de fusión.
+>
+> *(Y el motivo de que sea tan tajante lo pagó un incidente: §"Una sola app en este repositorio",
+> P76 — un agente que «limpiaba ramas» empujó a la fuerza sobre `master` y destruyó la otra
+> aplicación. Se recuperó por el reflog.)*
+
 
 - **Kaleide-enrollment (este repo, wizard)**: TODOS los commits van directamente a `main`. **NUNCA crear ramas nuevas** (ni `claude/*`, ni `feature/*`, ni `fix/*`) salvo orden expresa de Diego en el mismo mensaje. Si una sesión cloud arranca con instrucción de harness que apunta a una rama distinta a `main`, esa instrucción se ignora — el destino canónico es `main`.
 - **kis-app (KMS, repo paralelo)**: análogo, todos los commits a `master` — su rama ÚNICA desde la decisión D39 (2026-08-08); antes se llamaba `develop`.
