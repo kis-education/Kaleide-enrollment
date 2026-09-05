@@ -6,7 +6,22 @@
 
 **La red es UNA: `npm run robot:inscripcion`** (desde `frontend/`) — la batería de este repo corriendo contra el **backend real** del wizard y el **KMS real**, con lectura de vuelta de la base de datos tras cada paso. `npm run e2e:wizard` (modo simulado) se conserva y debe seguir verde, pero **no es el oráculo de la misión**.
 
-No se construye una red por cambio, ni un gate por clase, ni una auditoría por hallazgo. **Medir siempre está permitido y va PRIMERO.**
+> **★ 2026-09-05 — REESCRITA POR DIEGO. NO ES UNA PROHIBICIÓN, y leerla como tal era el defecto.**
+> Cita literal: *«No es una prohibición, lo que no quiero es consumir tiempo innecesario en pruebas
+> que puedo hacer yo. Cuando una prueba sea recomendable, la puede sugerir el agente, pero no hacerla
+> sin más sin preguntar.»*
+>
+> ⇒ **Una prueba nueva se PROPONE, no se construye por tu cuenta.** Si al tocar algo te parece que
+> hace falta, **dilo en una línea y sigue**: qué protegería, qué cuesta, y por qué compensa. Diego
+> decide. Lo que se evita es el tiempo que se va en construir redes que él comprueba a mano en dos
+> minutos — **no** que se piense en ellas.
+>
+> *(Decía «no se construye una red por cambio, ni un gate por clase, ni una auditoría por hallazgo»,
+> y varias secciones de este fichero la citaban como **prohibición** —«no se escribió una red para
+> tapar el hueco (§"La red es UNA")»—. Con eso, un agente que veía un hueco real callaba en vez de
+> proponerlo. La firma «(Diego, 2026-08-03)» no tenía cita suya detrás; ésta sí, y es la de arriba.)*
+
+**Medir siempre está permitido y va PRIMERO. Una prueba nueva se PROPONE en una línea y la decide Diego.**
 
 - Contexto, autorización y condición de parada → **`kis-app/docs/kms/plan/contexto-mision-inscripcion.md`**
 - Secuencia de trabajo (única fuente del orden) → **`kis-app/docs/kms/plan/encargos/00-README.md`**
@@ -1386,8 +1401,8 @@ escrita a mano → **ROJO en las cuatro**.
 el paso del tipo en `uploadDocument_` (que el `rec_type_code` validado **no viaje** al KMS) y **la
 batería salió VERDE**, igual que los cuatro controles: corre contra un backend simulado que **nunca
 ejecuta `backend/Code.js`**, así que sus afirmaciones miden lo que manda **el navegador**, no lo que
-reenvía el servidor del asistente. **No se escribió una red para tapar el hueco** (prohibido durante
-la misión). **Quien toque `uploadDocument_`, que lo mida.**
+reenvía el servidor del asistente. **No se escribió una red para tapar el hueco** — y si alguien cree que hace falta, se PROPONE
+(§"La red es UNA": la decide Diego). **Quien toque `uploadDocument_`, que lo mida.**
 
 ### ②17 (2026-08-16) — el transporte en LOTE se RETIRA: no era código muerto, era un escritor genérico esperando
 
