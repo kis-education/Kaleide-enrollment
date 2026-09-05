@@ -1381,7 +1381,13 @@ export function WizardProvider({ children }) {
     const documents = data.documents || [];
     const hydrated = {
       email: {
-        primary_email:      group.primary_email      || '',
+        // `0º.tricies.vicies.octies` (2026-08-26, Diego) — «Debe ser siempre el email de la
+        // persona que accede, no el email desde el que se inicia la primera solicitud».
+        // `data.recovered_email` es la identidad YA RESUELTA server-side del propio enlace
+        // (`n`), calculada en `hydrateSession_` (backend/Code.js) — nunca del cliente. Sin
+        // discriminador (recarga sin `n`, o el propio tutor 1) el servidor la hace caer al
+        // MISMO `group.primary_email`, así que el `||` de abajo es el único fallback real.
+        primary_email:      data.recovered_email     || group.primary_email      || '',
         verified:           true,
         // group.desired_start_date is ISO (normalizeDate_ applied in resumeSession_).
         // Seeding here lets Step7Review display the date correctly on resume, and

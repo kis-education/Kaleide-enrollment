@@ -9635,8 +9635,15 @@ function hydrateSession_(p) {
     data.group.submitted_at = null;
   }
 
+  // `0º.tricies.vicies.octies` (2026-08-26) — el buzón de QUIEN ACCEDE, no el de quien
+  // creó la solicitud. `effRecoveredEmail` ya se calculaba arriba (para pedirle al KMS
+  // los datos de ESE tutor, DL-E49) pero nunca cruzaba de vuelta al navegador: el cliente
+  // seguía sembrando la pantalla con `group.primary_email` (el email de creación, sea
+  // quien sea el que entra) y por eso un tutor veía el correo del otro. Sin `n` ni
+  // `recovered_email` del cliente, `effectiveRecoveredEmail_` cae al mismo
+  // `group.primary_email` (fallback canónico "tutor 1") — cero cambio en ese caso.
   return Object.assign({}, data, { step_up_fresh: stepUpFresh, step_up_restante_s: stepUpRestanteS,
-                                   step_up_cierre: stepUpCierre });
+                                   step_up_cierre: stepUpCierre, recovered_email: effRecoveredEmail || null });
 }
 
 /**
