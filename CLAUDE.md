@@ -4313,6 +4313,66 @@ enlaces por sesión, el firmante por hijo, y la trampa del veredicto `COMPLETED`
 el paso a la segunda matrícula**), y que los pasos 9 y 10 pasen a ser **por hijo**. §1-§3 dejan el
 asistente usable y son lo que rompía la prueba de Diego.
 
+### `0º.quinquagies` B (2026-09-05) — la copia se descarta POR DATO, no entera
+
+**Diego, 2026-09-05, literal:** *«La caché debe descartarse PARCIALMENTE para cada dato que se
+modifique bien desde el KMS … o bien desde el wizard.»*
+
+**Lo medido contra `origin/main` ANTES de tocar nada:** había **UNA sola versión por solicitud**
+(`livever_<gid>`) y **las CINCO clases la comparaban** (`hyd`, `adm`, `mem`, `doc`, `sim`) ⇒ una
+coma en un teléfono tiraba también la simulación de cuotas, que cuesta **~89 s** de recálculo
+porque compone el motor de facturación real.
+
+**Ahora cada clase lleva su contador** (`livever_<gid>__<clase>`, `_versionDeClase_`), y el motivo
+—que **ya viajaba en el aviso del KMS y solo se registraba en el log**— decide qué se tira, por el
+mapa **ÚNICO** `WZ_CLASES_POR_MOTIVO_`. El mismo mapa lo usan las dos puertas: el aviso del KMS
+(`notifyLiveStateChange_`) y las escrituras del propio asistente (`_wzCacheInvalidate_`, que gana un
+segundo argumento OPCIONAL). Dos mapas divergirían.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ EL GLOBAL SE CONSERVA Y SUBE SIEMPRE.** Es lo que lee el pulso del navegador
+  (`getLiveStateVersion`), que tiene que enterarse de **cualquier** cambio venga de donde venga.
+  Partirlo en cinco lo dejaría ciego. El global dice **«algo cambió»**; los de clase, **«QUÉ»**.
+- **⛔ FALLA DESCARTANDO DE MÁS, y con DOS cinturones independientes**: un motivo que no esté en el
+  mapa cae a las cinco clases (`_wzClasesDelMotivo_`), y **además** el propio `_bumpLiveStateVersion_`
+  vuelve a caer a las cinco si la lista llega vacía. **Medido**: quitando solo uno de los dos, la
+  rotura sale **VERDE** — hace falta quitar los dos para que muerda.
+- **⛔ `sim` SE TIRA CASI SIEMPRE, Y NO ES PEREZA.** La tentación era «un teléfono corregido no
+  mueve el presupuesto», y **es falso como criterio**: qué mira un filtro de aplicabilidad lo
+  DECLARA el centro (`qbConditions_T`, recorrido por `qb_collectFieldPaths_`), así que mañana puede
+  mirar la edad, el vínculo, una respuesta o un dato de salud. Y **lo que hay configurado hoy no es
+  la especificación**. Por eso `sim` solo sobrevive a lo que un filtro **no puede** consultar: los
+  PAPELES. ⇒ **el ahorro real, dicho sin adornar: subir un documento —el paso 6, el más repetido—
+  deja de tirar el presupuesto**; `doc` sobrevive a todo lo demás; `mem` al cuestionario, la salud,
+  los papeles y la facturación; y `adm` a casi todo.
+- **⛔ Los motivos que el KMS ya mandaba** (`STATE:<x>`, `BILLING`, `GDPR`, `REVIEW`, `SIGNING`,
+  `SAVE_OK`, `SAVE_FAILED`, `CHANGE`) **NO están en el mapa a propósito**: siguen tirándolo todo,
+  exactamente como ayer, hasta que se midan uno a uno.
+- **CUATRO manejadores del asistente siguen SIN motivo a propósito**, y cada uno lo dice en su
+  línea: `saveStep_` (escribe la clase que diga `step`, y ese mapa sería una **segunda** declaración
+  de qué escribe cada paso), `submitEnrollmentSession_` (toca casi todas a la vez),
+  `requestCorrection_` y `retirarDelExpediente_` (quita personas, correos, teléfonos, vínculos **y**
+  documentos en el mismo lote).
+- **Las entradas escritas ANTES de este cambio guardan la versión GLOBAL** ⇒ comparadas contra la de
+  su clase (que arranca en 0) **no casan: fallo de caché, nunca dato viejo**. Se recalcula una vez y
+  ya; no hay nada que migrar.
+
+⚠️ **LA BATERÍA NO PUEDE CUBRIR ESTO** — corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`**, y este cambio es invisible para el navegador (misma pantalla, mismas llamadas;
+solo cambia qué se recalcula). **No se le añadió un camino para aparentar cobertura.** Se **midió
+aparte**, con un arnés efímero fuera del repositorio que extrae del fuente REAL
+`_liveVersionKey_`, `_getLiveStateVersion_`, `_bumpLiveStateVersion_`, `_versionDeClase_`,
+`_claseVersionKey_`, `_wzClasesDelMotivo_` y los dos catálogos, y los ejecuta con un `CacheService`
+de mentira: **10 afirmaciones verdes** con el ANTES/DESPUÉS medido —subir un documento tiraba
+`["hyd","adm","mem","doc","sim"]` y ahora tira `["hyd","doc"]`— y **TRES roturas ROJAS demostradas**:
+quitar los **dos** cinturones del motivo desconocido · que el global deje de subir (*«el navegador no
+se entera de que algo cambió»*) · y el **renombrado**, que sale **«MEDICIÓN CIEGA»** y no verde.
+**Quien toque esta cadena, que lo mida.**
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
+lo que cambia es cuánto se recalcula por detrás.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

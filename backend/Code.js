@@ -1466,6 +1466,93 @@ var LIVE_VERSION_TTL_S_ = 21600;  // 6h — máximo del ScriptCache
 
 function _liveVersionKey_(enrollmentGroupId) { return 'livever_' + enrollmentGroupId; }
 
+// ─── `0º.quinquagies` B — el descarte pasa a ser POR DATO, no total ────────────────────
+//
+// Decisión de Diego (2026-09-05): *«La caché debe descartarse PARCIALMENTE para cada dato que
+// se modifique»*. Hasta aquí había **UNA sola versión por solicitud** y **las cinco clases la
+// comparaban**, así que una coma en un teléfono tiraba también la simulación de cuotas — que
+// cuesta ~89 s de recálculo porque compone el motor de facturación real.
+//
+// Ahora cada clase lleva su propio contador. El GLOBAL se conserva **intacto y se sigue
+// bumpando SIEMPRE**: es lo que lee el pulso del navegador (`getLiveStateVersion`), que debe
+// subir ante CUALQUIER cambio — partirlo en cinco dejaría al asistente sin saber que algo se
+// movió. O sea: el global dice «algo cambió», los de clase dicen «QUÉ».
+//
+// ⛔ **LA BARANDILLA QUE NO SE AFLOJA: falla DESCARTANDO DE MÁS.** Un motivo que no esté en el
+// mapa —o que no venga— tira LAS CINCO, que es exactamente lo que pasaba ayer. El descarte
+// parcial es una OPTIMIZACIÓN sobre el total; su modo de fallo tiene que ser recalcular de
+// balde, jamás servir una copia vieja como buena: eso es un dato falso delante de una familia.
+//
+// ⚠️ Las entradas escritas ANTES de este cambio guardan la versión GLOBAL. Comparadas contra
+// la de su clase (que arranca en 0) no casan ⇒ **fallo de caché, nunca dato viejo**: se
+// recalcula una vez y ya. No hace falta migrar nada.
+
+var WZ_CLASES_DE_COPIA_ = ['hyd', 'adm', 'mem', 'doc', 'sim'];
+
+/**
+ * De qué clases de copia se lleva por delante cada motivo. UN SOLO SITIO: el KMS manda el
+ * motivo (`enr_avisarCambioDeDatosDeSolicitud_`, pieza A) y aquí se traduce a qué se tira.
+ *
+ * El criterio de cada fila, MEDIDO sobre lo que cada copia contiene de verdad
+ * (`enr_wizardHydrateCompute_` del KMS y los sitios que archivan aquí):
+ *   · `hyd` es casi un superconjunto — lleva personas, vínculos, documentos, respuestas,
+ *     salud, entrevistas, admisión y el reparto de pagadores ⇒ aparece en casi todas;
+ *   · `adm` es la situación del expediente y el puente a la firma;
+ *   · `mem` son los miembros que ve el recorrido de firma;
+ *   · `doc` va por `file_id` (los ficheros son inmutables) ⇒ solo lo tira lo que toca papeles;
+ *   · `sim` es el presupuesto — y aquí va la parte incómoda, dicha en vez de escondida.
+ *
+ * ⛔ **`sim` SE TIRA CASI SIEMPRE, Y NO ES PEREZA: el espacio de campos del intérprete es
+ * ABIERTO POR DISEÑO.** La tentación era «un teléfono corregido no mueve el presupuesto» — y es
+ * falso como criterio: qué mira una condición de aplicabilidad lo DECLARA el centro
+ * (`qbConditions_T`, recorrido por `qb_collectFieldPaths_`), así que mañana puede mirar la edad,
+ * el vínculo, una respuesta del cuestionario o un dato de salud. **Y lo que hay configurado HOY
+ * no es la especificación** (regla de esta casa, `kis-app/CLAUDE.md`): medir la configuración
+ * actual para decidir qué se puede NO tirar sería exactamente usarla como requisito. Por eso
+ * `sim` solo sobrevive a lo que un filtro **no puede** consultar: los PAPELES.
+ *
+ * ⇒ El ahorro real de esta pieza, dicho sin adornar: subir un documento (el paso 6, el más
+ * repetido) deja de tirar el presupuesto de ~89 s; `doc` sobrevive a todo lo demás; `mem`
+ * sobrevive al cuestionario, la salud, los papeles y la facturación; y `adm` a casi todo.
+ * @private
+ */
+var WZ_CLASES_POR_MOTIVO_ = {
+  SOLICITUD:   ['hyd', 'adm', 'sim'],          // programa y fecha: mueven lo que se aplica
+  PERSONAS:    ['hyd', 'mem', 'sim'],          // una persona puede ser lo que un filtro cuenta
+  VINCULOS:    ['hyd', 'mem', 'sim'],          // el descuento de hermanos ES un filtro de vínculos
+  DOCUMENTOS:  ['hyd', 'doc'],                 // ⭐ lo único que NO puede mover el presupuesto
+  RESPUESTAS:  ['hyd', 'sim'],                 // una condición puede consultar una respuesta
+  SALUD:       ['hyd', 'sim'],                 // y un dato de salud, si el centro lo declara
+  SITUACION:   ['hyd', 'adm', 'mem', 'sim'],   // la situación del expediente y la decisión
+  FIRMA:       ['hyd', 'adm', 'mem'],          // el recorrido de firma no toca la ficha
+  FACTURACION: ['hyd', 'sim'],                 // el reparto de pagadores y la forma de pago
+};
+
+/**
+ * Qué clases tira un motivo. **Lo que no se reconozca las tira TODAS** — el lado seguro.
+ * Los motivos del KMS que ya existían (`STATE:<x>`, `BILLING`, `GDPR`, `REVIEW`, `SIGNING`,
+ * `SAVE_OK`, `SAVE_FAILED`, `CHANGE`) no están en el mapa **a propósito**: hasta que se midan
+ * uno a uno siguen comportándose exactamente como ayer.
+ * @private
+ */
+function _wzClasesDelMotivo_(motivo) {
+  var m = motivo ? String(motivo) : '';
+  return WZ_CLASES_POR_MOTIVO_[m] || WZ_CLASES_DE_COPIA_;
+}
+
+function _claseVersionKey_(enrollmentGroupId, clase) {
+  return 'livever_' + enrollmentGroupId + '__' + clase;
+}
+
+/**
+ * Versión de UNA clase de copia. Es la que guardan y comparan las entradas de caché.
+ * @private
+ */
+function _versionDeClase_(enrollmentGroupId, clase) {
+  var v = CacheService.getScriptCache().get(_claseVersionKey_(enrollmentGroupId, clase));
+  return v ? Number(v) : 0;
+}
+
 /**
  * @param {string} enrollmentGroupId
  * @returns {number} versión actual (0 si no hay marca)
@@ -1482,9 +1569,21 @@ function _getLiveStateVersion_(enrollmentGroupId) {
  * @returns {number} nueva versión
  * @private
  */
-function _bumpLiveStateVersion_(enrollmentGroupId) {
+function _bumpLiveStateVersion_(enrollmentGroupId, clases) {
+  var cache = CacheService.getScriptCache();
+  // El GLOBAL sube SIEMPRE: es lo que lee el pulso del navegador, y tiene que enterarse de
+  // cualquier cambio venga de donde venga. Partirlo sería dejarlo ciego.
   var next = _getLiveStateVersion_(enrollmentGroupId) + 1;
-  CacheService.getScriptCache().put(_liveVersionKey_(enrollmentGroupId), String(next), LIVE_VERSION_TTL_S_);
+  cache.put(_liveVersionKey_(enrollmentGroupId), String(next), LIVE_VERSION_TTL_S_);
+  // Y las clases: las que digan, o TODAS si no lo dicen o lo dicen mal. `0º.quinquagies` B.
+  var lista = (clases && clases.length) ? clases : WZ_CLASES_DE_COPIA_;
+  lista.forEach(function (c) {
+    if (WZ_CLASES_DE_COPIA_.indexOf(c) === -1) return;   // una clase inventada no borra nada
+    try {
+      cache.put(_claseVersionKey_(enrollmentGroupId, c),
+        String(_versionDeClase_(enrollmentGroupId, c) + 1), LIVE_VERSION_TTL_S_);
+    } catch (eC) { /* best-effort: una copia que no se pudo invalidar caduca sola */ }
+  });
   return next;
 }
 
@@ -1908,14 +2007,19 @@ function _wzCacheGetChunked_(cache, key) {
  * aquí — si el KMS regenera el paquete cambian los file_id (clave distinta).
  * @private
  */
-function _wzCacheInvalidate_(resumeToken) {
+function _wzCacheInvalidate_(resumeToken, motivo) {
   // V2.4: las claves ya no llevan token — la invalidación canónica es BUMPAR la
   // live_version del grupo (todas las entradas guardan v y una v vieja es MISS).
   // El gate del writer ya pobló el memo del token → resolver el grupo es ~0ms.
+  //
+  // `0º.quinquagies` B — el `motivo` es OPCIONAL y dice QUÉ escribió este handler, para tirar
+  // solo las copias que ese dato toca. **Sin motivo se tiran las CINCO, igual que ayer**: quien
+  // no lo declare no se rompe, solo no se ahorra. El mapa motivo→clases vive en UN solo sitio
+  // (`WZ_CLASES_POR_MOTIVO_`), el mismo que traduce el aviso del KMS — dos mapas divergirían.
   try {
     if (!resumeToken) return;
     var gid = requireResumeTokenMemo_({ resume_token: String(resumeToken).trim() });
-    if (gid) _bumpLiveStateVersion_(gid);
+    if (gid) _bumpLiveStateVersion_(gid, motivo ? _wzClasesDelMotivo_(motivo) : null);
   } catch (e) { /* best-effort */ }
 }
 
@@ -2011,7 +2115,7 @@ function _warmMembersDocsPhase_(it) {
       out.members = members.length;
       if (members.length) {
         _wzCachePutChunked_(cache, _wzCacheKey_('mem', groupId),
-          JSON.stringify({ v: _getLiveStateVersion_(groupId), data: prep }), 1800);
+          JSON.stringify({ v: _versionDeClase_(groupId, 'mem'), data: prep }), 1800);
         var pendientes = members.map(function(m) { return m && m.file_id; }).filter(Boolean)
           .filter(function(fid) { return !cache.get(_wzCacheKey_('doc', fid) + '_meta'); });
         if (pendientes.length) {
@@ -2057,7 +2161,7 @@ function _wzComputeYCachearSimulacion_(groupId, resumeToken) {
   var data = kmsProxy_('enr.simularCuotas', { resume_token: resumeToken });
   try {
     _wzCachePutChunked_(CacheService.getScriptCache(), _wzCacheKey_('sim', groupId),
-      JSON.stringify({ v: _getLiveStateVersion_(groupId), huella: (data && data.huella) || null, data: data }),
+      JSON.stringify({ v: _versionDeClase_(groupId, 'sim'), huella: (data && data.huella) || null, data: data }),
       1800);
   } catch (eC) { /* best-effort: el cálculo ya se hizo, solo falla guardarlo */ }
   return data;
@@ -2100,7 +2204,7 @@ function _warmSimularCuotasPhase_(it) {
       if (raw) {
         var env = JSON.parse(raw);
         if (env && env.data && env.huella) {
-          if (env.v === _getLiveStateVersion_(groupId)) {
+          if (env.v === _versionDeClase_(groupId, 'sim')) {
             yaCaliente = true;
           } else {
             var chequeo = kmsProxy_('enr.huellaDeSimulacion', { resume_token: token });
@@ -2148,7 +2252,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
     if (cachedRaw) {
       try {
         var envH = JSON.parse(cachedRaw);
-        if (envH && envH.v === _getLiveStateVersion_(gidW)) { data = envH.data; out.hydrate = true; }
+        if (envH && envH.v === _versionDeClase_(gidW, 'hyd')) { data = envH.data; out.hydrate = true; }
       } catch (e) { data = null; }
     }
     if (!data) {
@@ -2159,7 +2263,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
         language:        lang || null,
       }) || {};
       out.hydrate = _wzCachePutChunked_(cache, _wzCacheKey_('hyd', gidW + '_' + nW),
-        JSON.stringify({ v: _getLiveStateVersion_(gidW), data: data }), 1800);
+        JSON.stringify({ v: _versionDeClase_(gidW, 'hyd'), data: data }), 1800);
       Logger.log('[WZCACHE] warm hyd token=' + tPrev + ' cached=' + out.hydrate + ' ms=' + (Date.now() - tH));
     }
 
@@ -2196,7 +2300,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
     if (data && data.admission && groupId) {
       var admSrc = data.admission;
       var admEntry = {
-        v: _getLiveStateVersion_(groupId),
+        v: _versionDeClase_(groupId, 'adm'),
         n: String(nParam || ''),
         admission: (function () {
           // DL-E41 ★ ACOTACIÓN — del KMS se toman los HECHOS (fase, etiqueta de la fase,
@@ -2255,7 +2359,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
         // jamas toca cache (P222).
         if (prep && members.length && groupId) {
           _wzCachePutChunked_(cache, _wzCacheKey_('mem', gidW),
-            JSON.stringify({ v: _getLiveStateVersion_(gidW), data: prep }), 1800);
+            JSON.stringify({ v: _versionDeClase_(gidW, 'mem'), data: prep }), 1800);
         }
       } catch (eM) {
         Logger.log(redact_('[WZCACHE] warm members FALLÓ token=' + tPrev + ' — ' + (eM && eM.message)));
@@ -5043,7 +5147,7 @@ function getAdmissionState_(p) {
       // dos tutores comparten clave. La entrada guarda el `n` con el que se cocino;
       // si el caller trae otro `n` (otro guardian) -> MISS al camino vivo (que
       // re-resuelve la identidad real). Mismo patron en wz_mem.
-      if (wzEntry && wzEntry.admission && wzEntry.v === _getLiveStateVersion_(id)) {
+      if (wzEntry && wzEntry.admission && wzEntry.v === _versionDeClase_(id, 'adm')) {
         const admC = wzEntry.admission;
         Logger.log('[WZCACHE] HIT adm token=' + String(p.resume_token).slice(0, 8) +
                    '… ms=' + (Date.now() - perfT0));
@@ -5136,7 +5240,7 @@ function getAdmissionState_(p) {
   try {
     _wzCachePutChunked_(CacheService.getScriptCache(),
       _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n, p && p.recovered_email)),
-      JSON.stringify({ v: _getLiveStateVersion_(id), admission: {
+      JSON.stringify({ v: _versionDeClase_(id, 'adm'), admission: {
         state_code:        admission.state_code,
         state_label:       admission.state_label,
         // ⭐ 2026-08-27 — los hechos POR HIJO y la puerta por hito, también en el pulso.
@@ -5206,6 +5310,9 @@ function saveStep_(p) {
   // helper from a legacy flow; no current frontend caller invokes it, and the
   // canonical state-machine API lives in KMS — so gating it too is correct.
   assertGroupEditable_(enrollmentGroupId);
+  // `0º.quinquagies` B — SIN motivo A PROPÓSITO: escribe LA CLASE QUE DIGA `step`, y declarar ese mapa aquí sería una segunda
+  // declaración de qué escribe cada paso —la primera vive en el escritor del KMS— que un día
+  // diría otra cosa. Sin motivo se tiran las cinco: exactamente lo de ayer.
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
   // ── DL-E39 step-up gate (PII-primero) ──────────────────────────────────────
@@ -5343,6 +5450,8 @@ function submitEnrollmentSession_(p) {
   // pueda re-verificar donde sí hay pantalla para hacerlo; esto es el suelo del servidor.
   assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
 
+  // `0º.quinquagies` B — SIN motivo A PROPÓSITO: materializa los expedientes, estampa el envío y engancha los papeles: toca casi
+  // todas las clases a la vez. Tirarlas todas no es un descuido, es lo correcto.
   _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
 
   // ── UN CONSENTIMIENTO QUE NADIE DIO NO SE REGISTRA (2026-08-04) ──────────────────────
@@ -6554,7 +6663,7 @@ function saveResponses_(p) {
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   // ②24: y la marca tiene que ser DEL BUZÓN que opera, no de cualquiera del expediente.
   assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
-  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
+  _wzCacheInvalidate_(p && p.resume_token, 'RESPUESTAS'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const { respondent_id, respondent_type_category_id, responses } = p;
   if (!responses || !responses.length) return { saved: 0 };
@@ -6896,7 +7005,7 @@ function uploadDocument_(p) {
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
   assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
-  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
+  _wzCacheInvalidate_(p && p.resume_token, 'DOCUMENTOS'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const { base64, mimeType, filename } = p;
   if (!base64) throw new Error('Missing base64');
@@ -7564,7 +7673,7 @@ function saveNeae_(p) {
   // buzón. KAL-4: enrollmentGroupId derivado del token, nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
   assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
-  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: no servir stale tras un write del grupo
+  _wzCacheInvalidate_(p && p.resume_token, 'SALUD'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   const neaeData = Array.isArray(p && p.neae) ? p.neae
                  : (p && p.neae && Array.isArray(p.neae.neae) ? p.neae.neae : []);
@@ -8580,7 +8689,7 @@ function saveBillingInfo_(p) {
   // resolver (dos lectores del mismo dato divergen; y aquí además costaría lecturas).
   assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
-  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
+  _wzCacheInvalidate_(p && p.resume_token, 'FACTURACION'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   return kmsProxy_('enr.saveBillingInfoQueued', Object.assign({}, sctx.identity, {
     // Canonical multi-payer reparto entre tutores (GUARDIAN only — sin facturación
@@ -8688,7 +8797,7 @@ function applyPaymentModality_(p) {
   // `saveBillingInfo_`: el buzón ya lo resolvió `requireSignerIdentity_` y se REUSA (dos
   // lectores del mismo dato divergen, y aquí además costaría lecturas).
   assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
-  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: nunca stale tras un write
+  _wzCacheInvalidate_(p && p.resume_token, 'FACTURACION'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   return kmsProxy_('enr.applyPaymentModality', Object.assign({}, sctx.identity, {
     subscription_id: subscriptionId,
@@ -8745,7 +8854,7 @@ function simularCuotas_(p) {
     if (raw) {
       var env = JSON.parse(raw);
       if (env && env.data && env.huella) {
-        var liveNow = _getLiveStateVersion_(groupId);
+        var liveNow = _versionDeClase_(groupId, 'sim');
         if (env.v === liveNow) {
           Logger.log('[WZCACHE] HIT sim (sin escrituras) token=' + token.slice(0, 8) + '…');
           return env.data;
@@ -8801,6 +8910,8 @@ function simularCuotas_(p) {
 function requestCorrection_(p) {
   p = p || {};
   requireResumeToken_(p);                    // KAL-4 capa wizard (el KMS re-valida)
+  // `0º.quinquagies` B — SIN motivo A PROPÓSITO: completa una marca del expediente; qué copias mueve depende de lo que el colegio
+  // pida corregir. Sin medirlo, se tiran las cinco.
   _wzCacheInvalidate_(p.resume_token);       // WIZARD-CACHE: nunca stale tras un write
   return kmsProxy_('enr.requestCorrection', {
     resume_token: String(p.resume_token),
@@ -8857,6 +8968,8 @@ function retirarDelExpediente_(p) {
   // (kis-app kms-server/enr/retirada.gs) que la pantalla enseña tal cual. Un `throw`
   // NOT_EDITABLE por delante cambiaría ese mensaje por el genérico «no se pudo» — sería
   // paridad de forma pagada con una peor respuesta a la familia.
+  // `0º.quinquagies` B — SIN motivo A PROPÓSITO: quita personas, correos, teléfonos, vínculos Y documentos en el MISMO lote: el
+  // motivo no es uno solo. Se tiran las cinco.
   _wzCacheInvalidate_(p.resume_token);       // WIZARD-CACHE: nunca stale tras un write
   var lote = Array.isArray(p.retirar) ? p.retirar : [];
   // Tope defensivo: quitar es un acto de la familia sobre su propia pantalla, no un lote
@@ -8951,7 +9064,7 @@ function submitGdprConsents_(p) {
     throw new Error('consents must be a non-empty array');
   }
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
-  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
+  _wzCacheInvalidate_(p && p.resume_token, 'FIRMA'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   // GATE-B modo conservador: pasamos el array consents[] tal cual sin
   // estructura per-guardian adicional. El handler KMS lo persiste como un
@@ -8984,7 +9097,7 @@ function confirmReview_(p) {
   // ②24: y a nombre del buzón que opera.
   assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
-  _wzCacheInvalidate_(p && p.resume_token); // WIZARD-CACHE: NUNCA servir stale tras un write del grupo
+  _wzCacheInvalidate_(p && p.resume_token, 'FIRMA'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   // DL-E44 §2 (2026-06-12): reenviar accepted[] al KMS — antes se descartaba aquí
   // (solo viajaba la identidad) y el KMS no podía persistir las aceptaciones por
@@ -9079,7 +9192,7 @@ function initiateSigningSession_(p) {
       const wzMemRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzMemKey);
       if (wzMemRaw) {
         const memEntry = JSON.parse(wzMemRaw);
-        if (memEntry && memEntry.data && memEntry.v === _getLiveStateVersion_(sctx.enrollment_group_id)) {
+        if (memEntry && memEntry.data && memEntry.v === _versionDeClase_(sctx.enrollment_group_id, 'mem')) {
           Logger.log('[WZCACHE] HIT mem token=' + String(p.resume_token).slice(0, 8) + '...');
         _dbgEv_('cache', 'HIT mem');
           return (p._perf === true)
@@ -9099,7 +9212,7 @@ function initiateSigningSession_(p) {
         const awaitedMem = _wzAwaitWarm_('wzck_mem_' + sctx.enrollment_group_id, wzMemKey, 40000);
         if (awaitedMem) {
           const memE2 = JSON.parse(awaitedMem);
-          if (memE2 && memE2.data && memE2.v === _getLiveStateVersion_(sctx.enrollment_group_id)) {
+          if (memE2 && memE2.data && memE2.v === _versionDeClase_(sctx.enrollment_group_id, 'mem')) {
             Logger.log('[WZCACHE] HIT mem (single-flight) token=' + String(p.resume_token).slice(0, 8) + '...');
             return (p._perf === true)
               ? Object.assign({}, memE2.data, { _perf: { cache_hit: true, single_flight: true, t_total_ms: Date.now() - perfT0 } })
@@ -9121,7 +9234,7 @@ function initiateSigningSession_(p) {
     try {
       _wzCachePutChunked_(CacheService.getScriptCache(),
         _wzCacheKey_('mem', sctx.enrollment_group_id),
-        JSON.stringify({ v: _getLiveStateVersion_(sctx.enrollment_group_id), data: data }), 1800);
+        JSON.stringify({ v: _versionDeClase_(sctx.enrollment_group_id, 'mem'), data: data }), 1800);
     } catch (eWzWtM) { /* best-effort */ }
   }
   // PERF-KMS2: `_perf` SOLO en la LECTURA create_only (el ACTO real jamás se toca — P222)
@@ -9478,7 +9591,7 @@ function hydrateSession_(p) {
     const wzHydRaw = _wzCacheGetChunked_(wzHydCache, wzHydKey);
     if (wzHydRaw) {
       const envH = JSON.parse(wzHydRaw);
-      data = (envH && envH.v === _getLiveStateVersion_(groupId)) ? envH.data : null;
+      data = (envH && envH.v === _versionDeClase_(groupId, 'hyd')) ? envH.data : null;
       // V2.4.1 (regresión cazada por el _dbg de Diego 17:33 — "resume_token not
       // recognized" intermitente): el payload cacheado por GRUPO puede haberse
       // cocinado en una sesión con token YA ROTADO y lo lleva EMBEBIDO en la fila
@@ -9498,7 +9611,7 @@ function hydrateSession_(p) {
       const awaited = _wzAwaitWarm_('wzck_hyd_' + groupId + '_' + _wzN_(p && p.n, p && p.recovered_email), wzHydKey, 60000);
       if (awaited) {
         const envH2 = JSON.parse(awaited);
-        data = (envH2 && envH2.v === _getLiveStateVersion_(groupId)) ? envH2.data : null;
+        data = (envH2 && envH2.v === _versionDeClase_(groupId, 'hyd')) ? envH2.data : null;
         if (data && data.group) data.group.resume_token = String(p.resume_token).trim(); // V2.4.1 (ver arriba)
         if (data) Logger.log('[WZCACHE] HIT hyd (single-flight) token=' + String(p.resume_token).slice(0, 8) + '…');
       }
@@ -9511,7 +9624,7 @@ function hydrateSession_(p) {
       language:        (p && p.language) ? String(p.language).trim() : null,
     }) || {};
     try { _wzCachePutChunked_(wzHydCache, wzHydKey,
-      JSON.stringify({ v: _getLiveStateVersion_(groupId), data: data }), 1800); } catch (eWzWt) { /* best-effort */ }
+      JSON.stringify({ v: _versionDeClase_(groupId, 'hyd'), data: data }), 1800); } catch (eWzWt) { /* best-effort */ }
   }
 
   // DL-C-A (g): el KMS pliega el catálogo de preguntas (raw qb) en el hydrate. Lo
@@ -9695,8 +9808,11 @@ function notifyLiveStateChange_(p) {
   if (!v.ok) return { ok: false, reason: 'UNAUTHORIZED' };
   const groupId = v.event.enrollment_group_id;
   try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
-  const version = _bumpLiveStateVersion_(groupId);
-  Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (v.event.reason || '?') + ' -> v' + version));
+  // `0º.quinquagies` B — el motivo YA VIAJABA y solo se registraba en el log. Ahora DECIDE
+  // qué copias se tiran. Lo que no esté en el mapa las tira todas, igual que ayer.
+  const clases = _wzClasesDelMotivo_(v.event.reason);
+  const version = _bumpLiveStateVersion_(groupId, clases);
+  Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (v.event.reason || '?') + ' clases=' + clases.join(',') + ' -> v' + version));
   return { ok: true, bumped: true, version: version };
 }
 
