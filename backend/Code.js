@@ -3011,6 +3011,13 @@ function initEnrollmentSession_(p, opts) {
   // insertado arriba, así que el throw solo evita el aviso, no corrompe la sesión.
   try {
     sendViaKmsNotify_('WIZARD_SESSION_STARTED', ADMISSIONS_EMAIL, {
+      // EL AVISO DICE DE QUE SOLICITUD HABLA (2026-09-05). Sin estos dos, el KMS renderiza
+      // con `entity_id: null` y un marcador declarado contra una tabla no tiene a que
+      // anclarse => saldria en blanco. El camino ya existe y es generico: el KMS arma su
+      // contexto de render como `Object.assign({subject, entity_type, entity_id}, payload)`,
+      // asi que lo que declara el que manda el aviso MANDA sobre lo que el KMS adivine.
+      entity_type:   'ENROLLMENT_GROUP',
+      entity_id:     enrollmentGroupId,
       enrollment_id: enrollmentGroupId,
       primary_email: p.primary_email,
       started_at:    formatTimestamp_(now),
@@ -3892,6 +3899,9 @@ function reportUnsolicited_(p) {
       ? '<li><strong>Note:</strong> session was already submitted; NOT abandoned (preserves family access to submitted record).</li>'
       : '<li><strong>Session abandoned:</strong> yes</li>';
     sendViaKmsNotify_('WIZARD_UNSOLICITED_REPORTED', ADMISSIONS_EMAIL, {
+      // EL AVISO DICE DE QUE SOLICITUD HABLA — ver el gemelo de `initEnrollmentSession_`.
+      entity_type:         'ENROLLMENT_GROUP',
+      entity_id:           group.enrollment_group_id || '',
       enrollment_id:       group.enrollment_group_id || '',
       reporter_email:      email,
       created_at:          group.created_at || '',
