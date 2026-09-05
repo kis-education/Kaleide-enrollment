@@ -4403,38 +4403,34 @@ un permiso **RESTRINGIDO** que la cuenta no pueda conceder — deja la autorizac
 `kis-app/CLAUDE.md` §"RESTRICCIÓN DE DISEÑO — el KMS solo autoriza scopes SENSIBLES"). Un permiso
 **sensible** se pide de forma incremental y **no** envenena la concesión.
 
-`backend/appsscript.json` declara **cinco** y un servicio avanzado:
+`backend/appsscript.json` declara **TRES**, y ningún servicio avanzado:
 
 | Permiso | Nivel | Para qué, y quién lo usa |
 |---|---|---|
 | `script.external_request` | no sensible | `UrlFetchApp` — todo el tráfico saliente: AppSheet y el proxy al KMS (`kmsProxy_`) |
-| `gmail.send` | **sensible** | mandar el correo **con el alias del colegio**: `sendAsAlias_` → `Gmail.Users.Messages.send` |
-| `script.send_mail` | **sensible** | el **repliegue** de `sendAsAlias_`: si el alias falla, `MailApp.sendEmail` manda igual desde la cuenta que publica, para que la familia reciba su correo |
 | `drive` (Drive **COMPLETO**) | restringido | los documentos que sube la familia: `getOrCreateDriveFolder_` + `folder.createFile` y la lectura de vuelta `DriveApp.getFileById` |
 | `script.scriptapp` | sensible | `ScriptApp.getService().getUrl()`, `getOAuthToken()` (el bearer que abre la puerta del KMS) y los disparadores del proyecto |
 
-Servicio avanzado: `{ "userSymbol": "Gmail", "serviceId": "gmail", "version": "v1" }` — es lo que
-permite mandar el mensaje crudo RFC822 con **solo** `gmail.send`, sin escalar al permiso de Settings
-que `GmailApp.sendEmail` con alias sí pediría.
+**★★ ERAN CINCO hasta el 2026-09-05 (D123): salieron `gmail.send`, `script.send_mail` y el servicio
+avanzado `Gmail`.** Este proyecto **ya no manda ningún correo** —se lo pide al KMS, que lo manda en
+nombre de la cuenta licenciada del centro— así que su transporte de correo, y con él sus dos
+permisos, sobraban. Lo vestigial se elimina en cuanto se detecta. Detalle en §"Email sending".
 
-**★ El asistente SÍ manda correo, y desde el 2026-08-19 es el único que lo manda (①51).** Lo que
-**NO** hace es escribir el texto: las plantillas, el idioma, los marcadores y la identidad de correo
-del colegio siguen viviendo en el KMS, que se los sirve ya renderizados
-(`sys-public.renderNotification`) y recibe después el parte de lo que pasó
-(`sys-public.logNotificationSent`). Cambió **quién ejecuta el envío**, no quién decide qué se manda.
-Detalle en §"Email sending".
+**⚠️ Y AL REPUBLICAR, GOOGLE LE PEDIRÁ A DIEGO REAUTORIZAR**: cambian los permisos del proyecto.
+Concederlo es un clic, pero **hay que comprobar después que subir un documento sigue funcionando** —
+el permiso de Drive **NO se ha tocado** y sigue siendo el mismo de siempre, pero la reautorización
+es el momento en que un permiso mal concedido se notaría.
 
-**Por qué el envío está AQUÍ y no en el KMS**, en una línea: `MailApp` —lo único que el KMS puede
-usar— **no admite remitente**, así que su correo sale siempre desde la cuenta que lo publicó; y
-poner `gmail.send` en el manifiesto del KMS se lo tragarían **todas** las familias. Aquí no se lo
-traga nadie más que Diego.
+**⛔ Y NO SE REINTRODUCE `gmail.send` «para una cosita»**: si un correo tiene que salir del buzón del
+colegio, el sitio es el KMS (allí el permiso sale de la cuenta licenciada, que lo concedió UNA vez
+el titular, y **no** del manifiesto que consiente cada familia).
 
 Compruébalo antes de afirmar nada, contra `origin/main` y **nunca** contra el árbol de trabajo:
 
 ```bash
-git show origin/main:backend/appsscript.json                                  # los cinco permisos
-git show origin/main:backend/Code.js | grep -nE "Gmail\.Users|MailApp\."     # el ÚNICO transporte: sendAsAlias_
-git show origin/main:backend/Code.js | grep -cE "^[^*/]*GmailApp\."           # 0 — GmailApp no se usa (escalaría permisos)
+git show origin/main:backend/appsscript.json                                  # los tres permisos
+git show origin/main:backend/Code.js | grep -cE "Gmail\.Users|MailApp\."     # 0 — este proyecto NO envía
+git show origin/main:backend/Code.js | grep -cE "^[^*/]*GmailApp\."           # 0 — GmailApp tampoco
 ```
 
 **El de Drive es el ANCHO a propósito, y bajarlo a `drive.file` NO se puede acreditar desde el
@@ -4735,47 +4731,49 @@ Windows Schannel: añade `--ssl-no-revoke` a curl si la red corporativa bloquea 
 
 ## Email sending
 
-> **★ EL TEXTO LO PONE EL KMS; EL ENVÍO LO EJECUTA EL ASISTENTE (2026-08-19, ①51 opción A).**
-> El motor de plantillas, el idioma, los marcadores y la identidad de correo del colegio **siguen
-> en el KMS** y no vuelven aquí (eso lo retiró DL-S69 §6). Lo que volvió es el **transporte**:
-> `sendAsAlias_`, con `gmail.send` (permiso **sensible**) y el alias `admissions@kaleide.org`,
-> **porque `MailApp` —lo único que el KMS puede usar— no admite remitente** y su correo salía desde
-> la cuenta que publicó el KMS (`developer@kaleide.org`, que es lo que Diego recibía). El texto
-> histórico de abajo (el `GmailApp` local con plantillas propias) sigue SUPERSEDIDO: aquí no se
-> construye ni una línea de correo.
+> **★★ ESTE PROYECTO NO ENVÍA NINGÚN CORREO — D123, 2026-09-05.** Decisión de Diego, literal:
+> *«El wizard no hace envíos. El wizard solo y exclusivamente se comunica como un control remoto del
+> KMS y es el KMS el que hace los envíos de email.»* Ni el texto ni el envío son suyos: le PIDE al
+> KMS que lo mande, por `sys-public.sendNotification` y `sys-public.sendAuthCode`, y ya está.
+>
+> **QUÉ CAMBIÓ RESPECTO A ①51 (2026-08-19), porque el motivo importa.** Entre esa fecha y hoy este
+> proyecto SÍ enviaba, con `sendAsAlias_` y `gmail.send`, **porque `MailApp` —lo único que el KMS
+> podía usar— no admite remitente** y su correo salía desde la cuenta que lo publicó
+> (`developer@kaleide.org`, que es lo que Diego recibía; el defecto que D45 cerró). **Ese motivo ya
+> no existe:** el KMS manda por la **API de Gmail en nombre de la CUENTA LICENCIADA** del centro
+> (DL-S110), desde el buzón que el centro DECLARA, con cascada **plantilla → módulo → centro →
+> la propia cuenta licenciada** (`sys_remitenteDeCorreo_`, `kis-app kms-server/sys/senders.gs`).
+>
+> ⇒ **RETIRADOS de este proyecto**: `sendAsAlias_`, `_kmsRenderizarYEnviar_`, el permiso
+> `gmail.send`, el permiso `script.send_mail` y el servicio avanzado `Gmail`. ⛔ **No se
+> reintroducen**: si un correo tiene que salir del buzón del colegio, el sitio es el KMS. El texto
+> histórico de abajo (el `GmailApp` local con plantillas propias) sigue SUPERSEDIDO igualmente.
 
 ### Lo que el wizard manda HOY — la lista, y cómo se comprueba (medido 2026-08-08)
 
-**Son cuatro avisos + el código de un solo uso, y ninguno es la confirmación a la familia:** `WIZARD_MAGIC_LINK` y `WIZARD_MAGIC_LINK_MULTI` (a la familia, el enlace para volver a su solicitud) · `WIZARD_SESSION_STARTED` y `WIZARD_UNSOLICITED_REPORTED` (a admisiones, internos) · `WIZARD_OTP` (el código de un solo uso, por `sendViaKmsAuthCode_`). **La confirmación de «solicitud recibida» y los avisos del expediente NO los manda el wizard: los gobierna el motor de avisos del KMS a partir de los hitos** (los dos correos del envío se retiraron del wizard el 2026-08-07 y hoy cuelgan de la entrada en RQ).
+**Los pide el asistente; los MANDA el KMS (D123).** Son cuatro avisos + el código de un solo uso, y
+ninguno es la confirmación a la familia: `WIZARD_MAGIC_LINK` y `WIZARD_MAGIC_LINK_MULTI` (a la familia, el enlace para volver a su solicitud) · `WIZARD_SESSION_STARTED` y `WIZARD_UNSOLICITED_REPORTED` (a admisiones, internos) · `WIZARD_OTP` (el código de un solo uso, por `sendViaKmsAuthCode_`). **La confirmación de «solicitud recibida» y los avisos del expediente NO los manda el wizard: los gobierna el motor de avisos del KMS a partir de los hitos** (los dos correos del envío se retiraron del wizard el 2026-08-07 y hoy cuelgan de la entrada en RQ).
 
 **Un nombre de plantilla dentro de un comentario NO es un envío.** Antes de afirmar que el wizard manda algo, cuenta los llamadores contra `origin/main` — nunca contra el árbol de trabajo: `git show origin/main:backend/Code.js | grep -oE "sendViaKmsNotify_\('[A-Z_]+'" | sort -u`. Un `@param` obsoleto que nombraba `WIZARD_FAMILY_CONFIRMATION` (cero llamadores) hizo que **tres agentes distintos, en dos días**, le afirmaran a Diego que el wizard manda esa confirmación; tuvo que desmentirlo tres veces y estuvo a punto de frenar un despliegue.
 
 ---
 
-Los emails del wizard los **renderiza el KMS y los envía este proyecto** (①51). El recorrido es
-siempre el mismo y vive en **UN solo sitio**, `_kmsRenderizarYEnviar_`:
+Los emails del wizard los **renderiza Y los envía el KMS** (D123). Este proyecto **firma la petición
+y nada más**, y eso vive en **UN solo sitio**, `_kmsPideQueEnvie_`: una llamada, a
+`sys-public.sendNotification` o a `sys-public.sendAuthCode`.
 
-1. **pedir el texto** — `sys-public.renderNotification` devuelve asunto y cuerpo ya renderizados,
-   en el idioma que toque, saneados de marcadores sin resolver (clase #34), más el **nombre visible**
-   y la **dirección de respuesta** que el colegio declaró. **No escribe nada.**
-2. **enviar** — `sendAsAlias_`: mensaje RFC822 crudo por `Gmail.Users.Messages.send` desde
-   `admissions@kaleide.org`; si el alias falla por lo que sea, **repliegue a `MailApp`** para que el
-   correo llegue igual; si fallan los dos, `EMAIL_SEND_FAILED` (nunca un `{ok:true}` sobre un correo
-   que no salió).
-3. **dar el parte** — `sys-public.logNotificationSent` escribe en `sysNotificationLog` **la misma
-   fila de siempre**, con el resultado REAL y el texto exacto. Son dos llamadas porque el resultado
-   solo se conoce **después** de enviar. El cuerpo no vuelve a cruzar la red: el KMS lo guardó bajo
-   el `correlation_id`. Si el parte falla, **el recorrido de la familia no se rompe** —el correo ya
-   salió— pero se registra en claro que *«el aviso SÍ salió, pero no queda constancia de qué se
-   mandó»*.
+**VOLVIÓ A SER UNA SOLA LLAMADA.** Durante ①51 eran DOS —renderizar y, DESPUÉS de enviar, dar el
+parte— porque el resultado del envío solo se conocía aquí; **un parte que se perdía dejaba un correo
+sin constancia**. Hoy el registro en `sysNotificationLog` lo escribe quien envía, que es donde no
+puede perderse, y el texto no cruza la red dos veces.
 
-**El código de un solo uso (`WIZARD_OTP`) NO da parte, y es deliberado** (P253): el KMS **rechaza**
-registrarlo —la ruta del parte solo admite las plantillas transaccionales— y tampoco guarda su
-texto. No añadir su registro «por coherencia».
+**El código de un solo uso (`WIZARD_OTP`) va por OTRA RUTA, y la diferencia NO es opcional**
+(P253): `sys-public.sendAuthCode` **no escribe en `sysNotificationLog`**, mientras que
+`sys-public.sendNotification` sí. Además, la ruta del registro sigue sin admitir esa plantilla ⇒
+P253 es estructura, no una nota al margen. **No añadir su registro «por coherencia».**
 
-**Los tres puntos donde falla cerrado:** sin `NOTIFY_HMAC_SECRET` → `NOTIFY_NOT_CONFIGURED`; sin
-texto del KMS → `EMAIL_RENDER_FAILED` (**no se inventa un cuerpo**); sin plantilla sembrada, el KMS
-lanza en vez de devolver un cuerpo vacío.
+**Los dos puntos donde falla cerrado:** sin `NOTIFY_HMAC_SECRET` → `NOTIFY_NOT_CONFIGURED`; si el
+KMS no acepta el envío → `EMAIL_SEND_FAILED`, **nunca un `{ok:true}` sobre un correo que no salió**.
 
 Contrato de firma y proxy (sin cambios desde P213/P214):
 
@@ -4785,11 +4783,15 @@ Contrato de firma y proxy (sin cambios desde P213/P214):
   `notify-public.gs`. Antes ese cálculo estaba **copiado** en las dos funciones de envío; dos copias
   del mismo cálculo divergen.
 - `sendViaKmsNotify_` y `sendViaKmsAuthCode_` **conservan su nombre y su firma**: los nueve puntos de
-  llamada del fichero no se tocaron. Por dentro delegan en `_kmsRenderizarYEnviar_`.
+  llamada del fichero no se han tocado en ninguna de las dos vueltas. Por dentro delegan en
+  `_kmsPideQueEnvie_`.
 - La **generación, cache y cupo del código** de un solo uso siguen aquí (lógica de auth); lo que pasa
-  por el KMS es el texto, nunca la decisión.
-- **`sys-public.sendNotification` y `sys-public.sendAuthCode` siguen existiendo en el KMS** y son las
-  que usa TODO lo demás (el motor de avisos por hitos). Este proyecto ya no las llama.
+  por el KMS es el texto **y el envío**, nunca la decisión de emitir el código.
+- **`sys-public.sendNotification` y `sys-public.sendAuthCode` son a las que este proyecto vuelve a
+  llamar** — las mismas que usa TODO lo demás (el motor de avisos por hitos). ⚠️ Y
+  `sys-public.renderNotification` / `sys-public.logNotificationSent` **siguen existiendo en el KMS**
+  aunque este proyecto ya no las use: son públicas y otro consumidor podría necesitarlas; retirarlas
+  es otra decisión, con su propia medición.
 
 **Pre-requisito de Diego (una vez):** generar `NOTIFY_HMAC_SECRET` y copiarlo a las Script Properties de AMBOS GAS (wizard + KMS). El contenido/plantilla de cada email vive en el catálogo del KMS (`sysNotificationTemplates_T` + `locales/`), no en el wizard.
 

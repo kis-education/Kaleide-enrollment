@@ -5853,13 +5853,14 @@ function submitEnrollmentSession_(p) {
  *
  * @param {Object} p - { enrollment_group_id?|application_id?, primary_email }
  */
-// ★ 2026-08-19 (①51) — este comentario decía que «el wizard envía CERO emails localmente»
-// y ya NO es cierto: `sendAsAlias_` está RESTAURADA y es el único transporte de correo de
-// este proyecto. Lo que sí sigue siendo cierto, y es la mitad que importa: **el RENDER vive
-// en el KMS** — plantillas, idioma, marcadores e identidad de correo. Aquí no hay ni una
-// plantilla ni una línea de HTML de correo. Se envía desde aquí porque `MailApp` no admite
-// remitente y porque este proyecto es el único de los dos cuyos permisos consiente
-// exclusivamente quien publica. Todo el camino está en `_kmsRenderizarYEnviar_`.
+// ★ 2026-09-05 (D123) — ESTE PROYECTO NO ENVÍA NINGÚN CORREO. Ni el texto ni el envío son
+// suyos: le PIDE al KMS que lo mande (`_kmsPideQueEnvie_`). Decisión de Diego: *«El wizard
+// no hace envíos. El wizard solo y exclusivamente se comunica como un control remoto del KMS
+// y es el KMS el que hace los envíos de email.»* El motivo por el que entre el 2026-08-19 y
+// hoy sí enviaba —`MailApp` no admite remitente, así que el correo del KMS salía desde la
+// cuenta que lo publicó— ya no existe: el KMS manda por la API de Gmail en nombre de la
+// CUENTA LICENCIADA del centro, desde el buzón que el centro declara. Aquí no queda ni una
+// plantilla, ni una línea de HTML de correo, ni el permiso `gmail.send`.
 
 function sendVerificationCode_(p) {
   let enrollmentGroupId;
@@ -7711,9 +7712,11 @@ function saveNeae_(p) {
 // staff-internas que lo usaban (sesión iniciada + magic-link no solicitado) pasaron al
 // motor único del KMS vía sendViaKmsNotify_ (plantillas kis-tpl-wizard-session-started /
 // kis-tpl-wizard-unsolicited-reported), y NO vuelven: aquí no se construye texto de correo.
-// ★ 2026-08-19 (①51): lo que sí volvió es el TRANSPORTE — `sendAsAlias_`, para que el correo
-// salga con el alias del colegio en vez de con la cuenta que publicó el KMS. Esta línea
-// decía «el wizard ya NO envía email localmente» y era la que quedaba desfasada.
+// ★ 2026-09-05 (D123): el TRANSPORTE se ha ido otra vez, y esta vez para quedarse fuera.
+// `sendAsAlias_` está RETIRADA y `gmail.send` ya no está en el manifiesto: el correo del
+// colegio lo manda el KMS desde el buzón que el centro declara, en nombre de su cuenta
+// licenciada. Aquí no se envía ni se construye texto de correo. (Entre el 2026-08-19 y hoy
+// esta línea decía lo contrario, porque durante esa ventana era verdad.)
 
 // NOTA (WIZARD-TERMINAL P3, 2026-06-25; ACTUALIZADA 2026-08-08): sendMagicLinkEmail_,
 // sendMagicLinkMultiEmail_ y sendFamilyConfirmationEmail_ FUERON ELIMINADAS. El bloque GDPR /
@@ -8353,87 +8356,24 @@ function _kmsNotifyHex_(bytes) {
 }
 
 /**
- * Envía HTML desde el alias admissions@ por el servicio avanzado de Gmail (RFC822 crudo).
- * Usa SOLO el permiso `gmail.send` — evita la escalada al permiso de Settings que
- * `GmailApp.sendEmail` dispara al mandar desde un alias que no es el primario.
- * La línea en blanco que separa cabeceras y cuerpo es explícita (no filtrada) para que
- * Gmail localice el cuerpo correctamente.
+ * ⛔ AQUÍ VIVÍA `sendAsAlias_` — RETIRADA el 2026-09-05 (D123).
  *
- * ★ RESTAURADA 2026-08-19 (①51 opción A). Es el MISMO código que funcionó hasta `9544b50`
- * (2026-06-26), recuperado de git y copiado VERBATIM — no se rediseña lo que ya estaba
- * probado (§"Regla — refactors preservan el código probado"). Lo ÚNICO que cambia respecto
- * a entonces es de dónde salen el asunto y el cuerpo: ya no los construye el asistente,
- * se los pide al KMS (`sys-public.renderNotification`), y el nombre visible con la dirección
- * de respuesta vienen en esa misma respuesta.
+ * Mandaba el correo del colegio desde este proyecto, por el servicio avanzado de Gmail y con
+ * el permiso `gmail.send`. Decisión de Diego, literal: *«El wizard no hace envíos. El wizard
+ * solo y exclusivamente se comunica como un control remoto del KMS y es el KMS el que hace
+ * los envíos de email.»*
  *
- * POR QUÉ AQUÍ Y NO EN EL KMS: este proyecto es `executeAs: USER_DEPLOYING` ⇒ **el único
- * que consiente sus permisos es quien publica**. El KMS es `USER_ACCESSING` + `ANYONE` ⇒
- * ahí lo consentiría cada familia y cada profesor que entra, y subiría el listón de
- * verificación de la aplicación. `gmail.send` es un permiso **SENSIBLE** («Send email on
- * your behalf»), no restringido: el apagón del 2026-06-25 lo causaron permisos
- * RESTRINGIDOS, que un no-owner no puede consentir ⇒ concesión PARCIAL. Eso aquí no aplica.
+ * Su MONTAJE del mensaje —cabeceras, asunto en RFC 2047, cuerpo en base64, RFC822 web-safe—
+ * era código probado en producción y ERA la especificación: está **copiado** en
+ * `sys_correoRfc822_` del KMS (`kms-server/sys/senders.gs`). Lo que no se pudo copiar es el
+ * TRANSPORTE, y por un motivo que conviene retener: el servicio avanzado `Gmail` va con los
+ * permisos de QUIEN EJECUTA, y el KMS es `USER_ACCESSING` + `ANYONE` ⇒ `gmail.send` en su
+ * manifiesto lo consentiría cada familia y cada profesor. Allí el permiso sale de la CUENTA
+ * LICENCIADA del centro (DL-S110), que lo concedió UNA vez el titular.
  *
- * @param {string} toEmail
- * @param {string} subject
- * @param {string} htmlBody
- * @param {string} [replyTo]
- * @param {string} [fromName]  nombre visible; si falta, el del centro por defecto.
+ * ⛔ NO SE REINTRODUCE. Si un correo tiene que salir del buzón del colegio, el sitio es el
+ * KMS. La historia está en git.
  */
-function sendAsAlias_(toEmail, subject, htmlBody, replyTo, fromName) {
-  // DBG-TRACE: duración del envío de email (Gmail alias / fallback MailApp).
-  var _dbgM0 = Date.now();
-  _dbgEv_('mail_send', 'start');
-  var nombreVisible = fromName || FROM_NAME;
-  // KAL-NEW-13 (2026-06-06): robust delivery. The OTP step-up (DL-E39) surfaced
-  // that a single un-caught failure inside the Gmail Advanced Service (alias not
-  // configured as "Send mail as", advanced service disabled, transient Gmail
-  // error) made the *whole* email silently fail to arrive — the family clicks
-  // "send code" and nothing reaches the inbox. We now: (1) try the canonical
-  // admissions@ alias send, (2) on ANY failure fall back to MailApp.sendEmail
-  // from the deployer account so the message STILL gets delivered, and (3) log
-  // the outcome (redacted, KAL-11) so the path is observable in Stackdriver.
-  // Throw only if BOTH paths fail, so the dispatcher returns a clear error
-  // instead of a happy { ok:true } over a message that never left.
-  try {
-    const encodedBody = Utilities.base64Encode(htmlBody, Utilities.Charset.UTF_8);
-    const headers = [
-      'From: ' + nombreVisible + ' <' + ADMISSIONS_EMAIL + '>',
-      'To: ' + toEmail,
-      ...(replyTo ? ['Reply-To: ' + replyTo] : []),
-      'Subject: =?UTF-8?B?' + Utilities.base64Encode(subject, Utilities.Charset.UTF_8) + '?=',
-      'MIME-Version: 1.0',
-      'Content-Type: text/html; charset=UTF-8',
-      'Content-Transfer-Encoding: base64',
-    ];
-    const raw = Utilities.base64EncodeWebSafe(
-      headers.join('\r\n') + '\r\n\r\n' + encodedBody
-    ).replace(/=+$/, '');
-    Gmail.Users.Messages.send({ raw: raw }, 'me');
-    _dbgEv_('mail_sent', 'alias ' + (Date.now() - _dbgM0) + 'ms');
-    Logger.log(redact_('[sendAsAlias_] sent via alias to=' + toEmail + ' subject=' + subject));
-    return 'ALIAS';
-  } catch (aliasErr) {
-    Logger.log(redact_('[sendAsAlias_] alias send FAILED (' + (aliasErr && aliasErr.message) +
-      ') — falling back to MailApp deployer account for to=' + toEmail));
-    try {
-      MailApp.sendEmail({
-        to: toEmail,
-        subject: subject,
-        htmlBody: htmlBody,
-        name: nombreVisible,
-        ...(replyTo ? { replyTo: replyTo } : {}),
-      });
-      Logger.log(redact_('[sendAsAlias_] sent via MailApp fallback to=' + toEmail));
-      return 'REPLIEGUE';
-    } catch (fallbackErr) {
-      Logger.log(redact_('[sendAsAlias_] BOTH alias and MailApp send failed for to=' + toEmail +
-        ' — alias:' + (aliasErr && aliasErr.message) + ' fallback:' + (fallbackErr && fallbackErr.message)));
-      const err = new Error('Email could not be delivered (alias + fallback both failed)');
-      err.code = 'EMAIL_SEND_FAILED';
-      throw err;
-    }
-  }
-}
 
 /**
  * @private Firma y llama a una de las rutas de correo del KMS. UN solo sitio arma el
@@ -8475,94 +8415,62 @@ function _kmsCorreoFirmado_(accion, templateCode, recipient, context, extra) {
 }
 
 /**
- * @private EL ÚNICO camino por el que sale un correo de este proyecto: pide el texto al
- * KMS, lo envía con el alias del colegio, y —salvo el código de un solo uso— le devuelve al
- * KMS el parte de lo que pasó para que quede constancia de qué se le mandó a esa familia.
+ * @private EL ÚNICO camino por el que este proyecto pide un correo: **se lo pide al KMS, que
+ * es quien lo manda** (D123, 2026-09-05).
  *
- * Son DOS llamadas porque **el resultado solo se conoce después de enviar**: una fila que
- * dijera «enviado» antes de enviar sería mentira. El texto NO vuelve a cruzar la red en la
- * segunda — el KMS lo guarda bajo el `correlation_id`, así que el rastro es exactamente lo
- * que él renderizó.
+ * Entre el 2026-08-19 y el 2026-09-05 aquí se hacían TRES cosas —pedir el texto, mandarlo con
+ * el alias, y devolverle el parte al KMS— porque `MailApp` no admite remitente y el correo del
+ * KMS salía desde la cuenta que lo publicó (`developer@`), el defecto que D45 cerró. Eso ya
+ * NO hace falta: el KMS manda por la API de Gmail **en nombre de la cuenta licenciada** del
+ * centro y desde el buzón que el centro declara. ⇒ vuelve a ser UNA sola llamada, y el
+ * registro en `sysNotificationLog` vuelve a escribirlo quien envía, que es lo correcto: aquí
+ * el parte se daba DESPUÉS, y un parte que se pierde deja un correo sin constancia.
  *
- * Si el PARTE falla, el recorrido de la familia NO se rompe (el correo ya salió) pero se
- * registra en claro que **el aviso SÍ salió y no queda constancia de qué se mandó** — misma
- * redacción que usa el KMS para ese mismo daño (P72).
+ * ⛔ ESTE PROYECTO NO VUELVE A ENVIAR. *«El wizard no hace envíos. El wizard solo y
+ * exclusivamente se comunica como un control remoto del KMS»* (Diego, 2026-09-05).
  *
+ * P253 INTACTO: el código de un solo uso va por `sys-public.sendAuthCode`, que **no** escribe
+ * en `sysNotificationLog` — y la ruta del registro sigue sin admitir esa plantilla.
+ *
+ * @param {string} accion       'sys-public.sendNotification' | 'sys-public.sendAuthCode'
  * @param {string} templateCode
  * @param {string} recipient
  * @param {Object} context
- * @returns {{ sent: boolean, correlation_id: ?string, logged?: boolean, via?: string }}
+ * @returns {{ sent: boolean, correlation_id: ?string }}
  */
-function _kmsRenderizarYEnviar_(templateCode, recipient, context) {
-  var r = _kmsCorreoFirmado_('sys-public.renderNotification', templateCode, recipient, context);
-  if (!r || !r.rendered) {
-    var eR = new Error('El KMS no devolvió el texto de la plantilla ' + templateCode);
-    eR.code = 'EMAIL_RENDER_FAILED';
-    throw eR;
+function _kmsPideQueEnvie_(accion, templateCode, recipient, context) {
+  var r = _kmsCorreoFirmado_(accion, templateCode, recipient, context || {});
+  // Fail-closed: un `{ok:true}` sobre un correo que el KMS no aceptó sería peor que el fallo.
+  if (!r || r.sent === false) {
+    var e = new Error('El KMS no aceptó el envío de ' + templateCode
+      + (r && r.failed ? ' — ' + r.failed : ''));
+    e.code = 'EMAIL_SEND_FAILED';
+    throw e;
   }
-
-  var via = null, errorEnvio = null;
-  try {
-    via = sendAsAlias_(recipient, r.subject, r.body, r.reply_to, r.sender_name);
-  } catch (envErr) {
-    errorEnvio = (envErr && envErr.message) || String(envErr);
-  }
-
-  // El código de un solo uso NO se registra (P253): el KMS ni siquiera acepta su parte.
-  if (!r.loggable || !r.correlation_id) {
-    if (errorEnvio) throw withEmailSendCode_(errorEnvio);
-    return { sent: true, correlation_id: null, via: via };
-  }
-
-  var logged = false;
-  try {
-    var res = _kmsCorreoFirmado_('sys-public.logNotificationSent', templateCode, recipient, context, {
-      correlation_id: r.correlation_id,
-      outcome:        errorEnvio ? 'FAILED' : 'SENT',
-      error:          errorEnvio || null,
-    });
-    logged = !!(res && res.logged);
-  } catch (logErr) {
-    Logger.log(redact_('[_kmsRenderizarYEnviar_] el aviso SÍ salió, pero no queda constancia de ' +
-      'qué se mandó (falló el parte al KMS): ' + ((logErr && logErr.message) || logErr)));
-  }
-  if (!logged && !errorEnvio) {
-    Logger.log(redact_('[_kmsRenderizarYEnviar_] el aviso SÍ salió, pero no queda constancia de ' +
-      'qué se mandó (el KMS no pudo escribir el registro) — template=' + templateCode));
-  }
-
-  if (errorEnvio) throw withEmailSendCode_(errorEnvio);
-  return { sent: true, correlation_id: r.correlation_id, logged: logged, via: via };
-}
-
-/** @private Error de envío ya registrado, con su código canónico. */
-function withEmailSendCode_(mensaje) {
-  var e = new Error(mensaje);
-  e.code = 'EMAIL_SEND_FAILED';
-  return e;
+  return r;
 }
 
 /**
- * Envía una plantilla transaccional. **El TEXTO lo pone el KMS; el ENVÍO lo ejecuta este
- * proyecto** (①51 opción A, 2026-08-19): pide el texto ya renderizado y en el idioma que
- * toque a `sys-public.renderNotification`, lo manda con el alias del colegio
- * (`sendAsAlias_`, permiso **sensible** `gmail.send`) y devuelve el parte a
- * `sys-public.logNotificationSent` para que quede constancia de qué se mandó. Todo eso vive
- * en `_kmsRenderizarYEnviar_` — aquí no hay lógica, para que los siete puntos de llamada no
- * se enteren del cambio.
+ * Pide al KMS que envíe una plantilla transaccional. **El texto Y el envío son suyos**
+ * (D123, 2026-09-05): este proyecto firma la petición y ya está. No renderiza, no monta el
+ * mensaje, no toca Gmail.
  *
- * POR QUÉ SALE DE AQUÍ: `MailApp` (lo único que el KMS puede usar) **no admite remitente**,
- * así que su correo sale siempre desde la cuenta que lo publicó. Este proyecto es
- * `executeAs: USER_DEPLOYING` ⇒ el único que consiente sus permisos es quien publica; el KMS
- * es `USER_ACCESSING` + `ANYONE` ⇒ allí el permiso de correo se lo tragaría cada familia.
- * **Lo que NO se mueve es el texto**: plantillas, idioma, marcadores e identidad de correo
- * siguen siendo del KMS, y este proyecto NO vuelve a tener plantillas propias ni HTML inline
- * (eso lo retiró DL-S69 §6 y no vuelve).
+ * QUÉ CAMBIÓ RESPECTO A ①51 (2026-08-19), porque el motivo importa: entonces este proyecto
+ * mandaba el correo porque `MailApp` —lo único que el KMS podía usar— **no admite
+ * remitente**, así que el correo del colegio salía desde la cuenta que publicó el KMS
+ * (`developer@`), el defecto que D45 cerró. Hoy el KMS manda por la **API de Gmail en nombre
+ * de la CUENTA LICENCIADA** del centro (DL-S110), desde el buzón que el centro DECLARA, con
+ * cascada plantilla → módulo → centro. ⇒ ese motivo desapareció, y con él el permiso
+ * `gmail.send` de este manifiesto.
+ *
+ * Y VUELVE A SER UNA SOLA LLAMADA. Durante ①51 eran dos —renderizar y, después de enviar,
+ * dar el parte— porque el resultado solo se conocía aquí; un parte que se perdía dejaba un
+ * correo sin constancia. Ahora el registro en `sysNotificationLog` lo escribe quien envía,
+ * que es donde no puede perderse.
  *
  * Fail-closed: sin NOTIFY_HMAC_SECRET en Script Properties → throw NOTIFY_NOT_CONFIGURED;
- * sin texto del KMS → EMAIL_RENDER_FAILED (**no se inventa un cuerpo**); si fallan el alias
- * Y su repliegue → EMAIL_SEND_FAILED, nunca un `{ok:true}` sobre un correo que no salió.
- * KAL-11: NO loguea el context (PII) en claro.
+ * si el KMS no acepta el envío → EMAIL_SEND_FAILED, nunca un `{ok:true}` sobre un correo que
+ * no salió. KAL-11: NO loguea el context (PII) en claro.
  *
  * LO QUE ESTE FICHERO MANDA DE VERDAD (medido el 2026-08-08 contra origin/main con
  * `grep -oE "sendViaKmsNotify_\('[A-Z_]+'" backend/Code.js | sort -u` — son CUATRO):
@@ -8592,17 +8500,16 @@ function withEmailSendCode_(mensaje) {
  */
 function sendViaKmsNotify_(templateCode, recipient, context) {
   Logger.log(redact_('[sendViaKmsNotify_] template=' + templateCode + ' to=' + recipient));
-  return _kmsRenderizarYEnviar_(templateCode, recipient, context || {});
+  return _kmsPideQueEnvie_('sys-public.sendNotification', templateCode, recipient, context || {});
 }
 
 /**
- * Envía el código de un solo uso. Mismo camino que `sendViaKmsNotify_` —el KMS renderiza,
- * este proyecto envía con el alias— con UNA diferencia que NO es opcional: **el código NO se
- * registra** (P253). El KMS ni siquiera acepta su parte de entrega: la ruta del registro solo
- * admite las plantillas transaccionales, así que `WIZARD_OTP` rebota con BAD_REQUEST. Eso
- * convierte P253 en estructura en vez de una nota al margen — y el texto del código tampoco
- * se guarda a la espera del parte. La generación / cache / cupo del código siguen aquí
- * (lógica de auth); solo el texto y el envío pasan por el otro lado.
+ * Pide al KMS que mande el código de un solo uso. Mismo camino que `sendViaKmsNotify_` —el
+ * KMS renderiza Y envía (D123)— pero por **OTRA RUTA**, y la diferencia NO es opcional:
+ * `sys-public.sendAuthCode` **no escribe en `sysNotificationLog`** (P253), mientras que
+ * `sys-public.sendNotification` sí. Además, la ruta del registro sigue sin admitir
+ * `WIZARD_OTP`, así que P253 es estructura y no una nota al margen. La generación / cache /
+ * cupo del código siguen aquí (lógica de auth); el texto y el envío son del KMS.
  *
  * @param {string} recipient  email destino (primary_email del grupo).
  * @param {Object} context    { OTP_CODE, LANG }.
@@ -8611,7 +8518,7 @@ function sendViaKmsNotify_(templateCode, recipient, context) {
 function sendViaKmsAuthCode_(recipient, context) {
   // KAL-11: NO loguear el OTP_CODE. Solo el destinatario redactado.
   Logger.log(redact_('[sendViaKmsAuthCode_] OTP to=' + recipient));
-  return _kmsRenderizarYEnviar_('WIZARD_OTP', recipient, context || {});
+  return _kmsPideQueEnvie_('sys-public.sendAuthCode', 'WIZARD_OTP', recipient, context || {});
 }
 
 /**
