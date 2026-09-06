@@ -916,11 +916,19 @@ function transformPersonForSave(person, idx, arr) {
   }
 
   // Same normalization for emails: remove UI-added email_address alias and _uid.
+  // ★ 18.bis.21 — MANDA LO DE LA PANTALLA, mismo arreglo que los teléfonos de arriba.
+  // Aquí ponía `if (!rest.value && email_address)`: en un correo que ya venía del
+  // servidor, `rest.value` trae el correo VIEJO, así que corregirlo en la pantalla
+  // NUNCA llegaba al servidor — se guardaba el de antes y la familia veía el nuevo.
+  // `email_address` es siempre la verdad de la pantalla (`preparePersonForUI` lo
+  // siembra desde `value`), así que cuando hay correo, ese gana. Vacío NO se
+  // propaga: dejar el campo en blanco no es la forma de quitar un correo — para eso
+  // está «quitar de la solicitud», que sí avisa al servidor.
   if (Array.isArray(out.emails)) {
     out.emails = out.emails.map(e => {
       // eslint-disable-next-line no-unused-vars
       const { email_address, _uid, ...rest } = e;
-      if (!rest.value && email_address) rest.value = email_address;
+      if (email_address) rest.value = email_address;
       return rest;
     });
   }
