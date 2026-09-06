@@ -3424,6 +3424,45 @@ async function caminoTramoFirma(page, base) {
     pantalla.tarjetas >= 1 && pantalla.largoTexto > 200,
     `tarjetas=${pantalla.tarjetas} largo del texto=${pantalla.largoTexto}: el paso quedó en blanco`)
 
+  // ⭐ `0º.tricies.novemtricies` §UX (2026-09-06) — con UN SOLO hijo admitido no hay
+  // ambigüedad: el banner de la firma nombra a ESE hijo, sin lista.
+  const nombreUnico = await page.$eval('[data-testid="firma-hermano-unico"]',
+    n => (n.innerText || '').trim()).catch(() => null)
+  c.afirmar('con un solo hijo admitido, el banner de la firma dice de quién es la matrícula',
+    !!nombreUnico && /RobotHijoE2E/i.test(nombreUnico),
+    `el banner leído fue ${JSON.stringify(nombreUnico)}: la familia entra a firmar sin saber de `
+    + 'qué hijo es la matrícula')
+  const listaConUno = await page.$('[data-testid="firma-hermanos-lista"]')
+  c.afirmar('y con un solo hijo NO se pinta la lista de varios',
+    !listaConUno, 'se pintó la lista de varios hijos con uno solo admitido: no hay nada que listar')
+
+  // ── FASE con DOS hijos ADMITIDOS a la vez ── el banner pasa a la LISTA, con los dos
+  // nombres, y explica que el asistente los lleva de uno a otro (respuesta directa a la
+  // pregunta de Diego, 2026-08-26: «¿debe seguir los dos enlaces?»).
+  try {
+    await esperarSilencioDeRed(15000, 1200)
+    scenario.dosHermanosAdmitidos = true
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 800)
+    const pantallaDos = await page.evaluate(sondaPantalla)
+    c.afirmar('ANCLA · con dos hijos admitidos, el asistente sigue aterrizando en la firma',
+      pantallaDos.pasoActivo === 7,
+      `aterrizó en el índice ${pantallaDos.pasoActivo} (se esperaba 7): lo que sigue no mediría nada`)
+
+    const nombresLista = await page.$$eval('[data-testid="firma-hermano-item"]',
+      ns => ns.map(n => (n.innerText || '').trim()))
+    c.afirmar('con DOS hijos admitidos, el banner lista a los dos por su nombre',
+      nombresLista.length === 2 && nombresLista.some(x => /RobotHijoE2E/i.test(x))
+      && nombresLista.some(x => /RobotHijoDosE2E/i.test(x)),
+      `los nombres leídos fueron ${JSON.stringify(nombresLista)}: con dos matrículas por firmar, `
+      + 'la familia tiene que saber de quiénes son')
+    const soloUnoConDos = await page.$('[data-testid="firma-hermano-unico"]')
+    c.afirmar('y con dos hijos NO se ofrece el mensaje de "uno solo"',
+      !soloUnoConDos, 'con dos hijos admitidos se pintó el banner de un solo hijo: es ambiguo')
+  } finally {
+    scenario.dosHermanosAdmitidos = false
+  }
+
   // Declarado y justificado en NO_CUBIERTAS_PERMITIDAS.
   c.noCubierta('firma-consumada',
     'no se firma de verdad: el acto es irreversible y su lógica vive en el motor del KMS, no en el wizard')

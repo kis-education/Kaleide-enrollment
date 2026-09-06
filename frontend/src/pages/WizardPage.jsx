@@ -23,6 +23,8 @@ import { pedirConfirmacion } from '../components/ConfirmDialog';
 // tocar este chasis. STEP_COMPONENTS deriva del catálogo (compat con el viejo array).
 // FIRST_SIGNING_INDEX (primer paso savePolicy:'act') sustituye el 7 hardcodeado.
 import { STEP_CATALOG, STEP_COMPONENTS, FIRST_SIGNING_INDEX, stepEditMode } from './steps/catalog';
+import { hermanosConSituacion as hermanosConSituacionPura } from '../lib/hermanos';
+import SigningChildrenBanner from '../components/SigningChildrenBanner';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
@@ -740,22 +742,16 @@ const handleNext = async (stepKey, data, extra = null) => {
   // cae al criterio de ayer, para no cerrarle la puerta a NINGUNA familia durante esa ventana.
   // Un `false` EXPLÍCITO sí manda: eso es el servidor diciendo «todavía no».
   // ⭐ 2026-08-27 — de quién habla cada situación. UN SOLO SITIO lo compone, porque lo miran el
-  // rótulo del paso 7 y (cuando llegue el §4) el reparto de matrículas por hijo.
+  // rótulo del paso 7 y el banner de la firma (`SigningChildrenBanner`).
   // ⛔ NO decide de quién es nada: casa el identificador que manda el servidor con las personas
   // que el navegador ya tiene. Sin nombre resuelto, etiqueta genérica.
-  const hermanosConSituacion = useMemo(() => {
-    const filas = Array.isArray(admissionState?.por_alumno) ? admissionState.por_alumno : [];
-    const personas = Array.isArray(stepData?.persons?.applicants) ? stepData.persons.applicants : [];
-    return filas.map((a, i) => {
-      const p = personas.find(x => x && (x.person_id === a.applicant_person_id));
-      const nombre = [p?.first_name, p?.last_name].filter(Boolean).join(' ').trim();
-      return {
-        enrollment_id: a.enrollment_id || null,
-        nombre:        nombre || t('submitted.por_hijo.sin_nombre', { n: i + 1 }),
-        situacion:     a.state_label || a.state_code || '',
-      };
-    });
-  }, [admissionState, stepData, t]);
+  // `0º.tricies.novemtricies` §UX (2026-09-06): la lógica se extrajo a `lib/hermanos.js`
+  // (función PURA) para que este componente y `SigningChildrenBanner` NO diverjan — dos lectores
+  // del mismo dato divergen (CLAUDE.md §"Regla — refactors preservan el código probado").
+  const hermanosConSituacion = useMemo(
+    () => hermanosConSituacionPura(admissionState?.por_alumno, stepData?.persons, t),
+    [admissionState, stepData, t]
+  );
 
   const _hitoAdmision = admissionState?.firma_desbloqueada;
   const _puertaAbierta = (_hitoAdmision === undefined || _hitoAdmision === null)
@@ -1172,6 +1168,11 @@ const handleNext = async (stepKey, data, extra = null) => {
             <StepSkeleton rows={6} />
           </>
         ) : (
+        <>
+        {/* `0º.tricies.novemtricies` §UX (2026-09-06) — durante la firma (Steps 8-11), quién es
+            el hijo cuya matrícula se firma. Solo `por_alumno` (fiable); ver la cabecera del
+            componente para lo que NO intenta resolver y por qué. */}
+        {currentStep >= FIRST_SIGNING_INDEX && <SigningChildrenBanner />}
         <StepComponent
           key={`paso-${currentStep}-${hidratacionSeq}`}
           onNext={handleNext}
@@ -1208,6 +1209,7 @@ const handleNext = async (stepKey, data, extra = null) => {
           onAdvanceToSigning={enterSigning}
           canAdvanceToSigning={canAdvance}
         />
+        </>
         )}
       </div>
 

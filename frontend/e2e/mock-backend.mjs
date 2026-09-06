@@ -498,7 +498,7 @@ function recortarPorTutorE2E_(data, viewerN) {
  *   (que es lo que hace aterrizar en Documentos); con lista, el paso queda por visitado y
  *   el aterrizaje se va a Revisión, igual que en el sistema real.
  */
-export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision) {
+export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision, dosHermanosAdmitidos) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -666,15 +666,30 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
       // CONTRATO REAL, y eso es la mitad de la comprobación: el servidor emite `state_code` con el
       // Estado del hijo MENOS avanzado, así que con Jara admitida y Pepito en lista de espera el
       // resumen es **`WL`**, no `AD`. Ponerle `AD` haría que el recorrido pasara EN VACÍO.
+      //
+      // ⭐ `0º.tricies.novemtricies` §UX (2026-09-06) — `scenario.dosHermanosAdmitidos`: los DOS
+      // hijos ADMITIDOS a la vez (el caso que `SigningChildrenBanner` tiene que anunciar con la
+      // lista, no con el nombre único). Es DISTINTO de `hermanosDesiguales` (uno admitido, el
+      // otro no) — con ese, `admitidos.length` sigue siendo 1 y el banner nombra a uno solo.
+      //
+      // ⚠️ `applicant_person_id` usa `FIXTURE.applicantId` (no `FIXTURE.applicant1Id`, que NO
+      // EXISTE en `FIXTURE` — era `undefined` en las dos ramas de abajo, un typo previo). Con
+      // el identificador real el nombre SÍ resuelve contra `persons`; con `undefined` caía
+      // siempre al respaldo genérico y una comprobación de nombre pasaría EN VACÍO.
       state_code:        hermanosDesiguales ? 'WL' : 'AD',
       state_label:       hermanosDesiguales ? 'En lista de espera' : 'Admitida',
       por_alumno:        hermanosDesiguales ? [
-        { enrollment_id: 'enr-e2e-1', applicant_person_id: FIXTURE.applicant1Id,
+        { enrollment_id: 'enr-e2e-1', applicant_person_id: FIXTURE.applicantId,
           state_code: 'AD', state_label: 'Admitida' },
         { enrollment_id: 'enr-e2e-2', applicant_person_id: FIXTURE.applicant2Id,
           state_code: 'WL', state_label: 'En lista de espera' },
+      ] : dosHermanosAdmitidos ? [
+        { enrollment_id: 'enr-e2e-1', applicant_person_id: FIXTURE.applicantId,
+          state_code: 'AD', state_label: 'Admitida' },
+        { enrollment_id: 'enr-e2e-2', applicant_person_id: FIXTURE.applicant2Id,
+          state_code: 'AD', state_label: 'Admitida' },
       ] : [
-        { enrollment_id: 'enr-e2e-1', applicant_person_id: FIXTURE.applicant1Id,
+        { enrollment_id: 'enr-e2e-1', applicant_person_id: FIXTURE.applicantId,
           state_code: 'AD', state_label: 'Admitida' },
       ],
       // El hito «admisión resuelta»: lo completa la configuración cuando NINGÚN hermano queda a
@@ -850,7 +865,7 @@ export function createDispatcher(scenario, record) {
         };
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
-        scenario.hermanosDesiguales, scenario.sinHitoAdmision);
+        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos);
       // ⚠️ EL DOBLE NO PUEDE CONTRADECIRSE A SÍ MISMO (medido el 2026-08-27): la hidratación
       // decía SIEMPRE «sin reparto guardado» mientras `getSavedBillingSplits` devolvía 60/40.
       // En el servidor real las dos salen de la MISMA fuente (`billing_splits` de la
@@ -925,7 +940,7 @@ export function createDispatcher(scenario, record) {
     // tiempo restante sigue bajando.
     getAdmissionState: (p) => {
       const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
-        scenario.hermanosDesiguales, scenario.sinHitoAdmision);
+        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos);
       const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
       // 0º.tricies.octies (B) — los pasos cuyo ÚLTIMO guardado murió en la cola del KMS.
       // Copia declarada del contrato real (`enr_guardadosQueNoLlegaron_`): CÓDIGOS de paso,
