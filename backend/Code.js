@@ -8625,7 +8625,7 @@ function _kmsRenderGdprBlock_(isFirstApp) {
  * @returns {string} HTML.
  */
 function _kmsRenderResumeLinksBlock_(resumeTokens, nEmailIds, lang) {
-  var isEn = lang === 'en';
+  var isEn = String(lang || '').toLowerCase().startsWith('en');
   return (resumeTokens || []).map(function(token, idx) {
     var nEmailId = (nEmailIds && nEmailIds[idx]) || null;
     var url = RESUME_BASE_URL + token + (nEmailId ? '?n=' + nEmailId : '');
