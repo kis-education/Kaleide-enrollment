@@ -1035,7 +1035,9 @@ export function createDispatcher(scenario, record) {
     // MISMO orden en que se preguntaron. `scenario.trabajoResultado` dice qué contesta:
     //   · 'hecho'       → entró entero (nada que decirle a la familia).
     //   · 'descartado'  → entró, pero el KMS descartó a propósito lo que el tutor escribió
-    //                     (DL-E49 §6): reintentar lo descartaría igual.
+    //                     (DL-E49 §6): reintentar lo descartaría igual. `scenario.descarteTipo`
+    //                     elige CUÁL de los descartes conocidos se simula (0º.duodetricies,
+    //                     ficha de la cola) — por defecto el de siempre (ficha de otro tutor).
     //   · 'invalidado'  → entró, y **de paso invalidó el envío previo de ese tutor** porque
     //                     editó después de enviar (DL-E49 §8, 2026-08-24). No es un fallo:
     //                     hay que decirle que vuelva a enviar, sin bloquearle nada.
@@ -1046,18 +1048,26 @@ export function createDispatcher(scenario, record) {
     estadoDelGuardado: (p) => {
       const ids = Array.isArray(p && p.job_ids) ? p.job_ids : [];
       const modo = scenario.trabajoResultado || 'hecho';
+      // `0º.duodetricies` — los CINCO descartes que el KMS ya envía y que
+      // `codigoDelDescarte` (frontend/src/lib/rechazos.js) tiene que reconocer, además del
+      // de siempre. Cada uno es el objeto TAL CUAL lo manda `enr_persistNeae_`/
+      // `enr_persistResponses_` — no una forma inventada para el test.
+      const DESCARTES_POR_TIPO = {
+        ficha_de_otro_tutor:      { fichas_de_otro_tutor_rechazadas_n: 1 },
+        quien_puede_contestar:    { rechazadas_por_quien_puede_contestar: 1 },
+        formato_no_declarado:     { rechazadas_por_formato_no_declarado: 1 },
+        neae_vaciado_no_declarado:{ neae_vaciado_no_declarado: 1 },
+        sin_contexto:             { skipped_no_context: true },
+        sin_iniciador:            { skipped_no_initiator: true },
+      };
+      const tipo = scenario.descarteTipo || 'ficha_de_otro_tutor';
       return {
         ok: true,
         trabajos: ids.map(id => ({
           job_id:    id,
           estado:    (modo === 'descartado' || modo === 'invalidado') ? 'hecho' : modo,
           motivo:    modo === 'fallido' ? 'el trabajo no pudo completarse (simulado)' : null,
-          // 2026-08-24 (DL-E49 §8) — el descarte de prueba era `skipped_already_submitted`, y
-          // ese código **ya no lo emite nadie**: el bloqueo del que salía se retiró (el tutor
-          // que ya envió SÍ sigue rellenando; lo que pasa es que su envío se invalida). Se usa
-          // el descarte que SÍ sigue vivo, para que esta comprobación mida algo que puede
-          // ocurrir de verdad en vez de un código imposible.
-          descartes: modo === 'descartado' ? { fichas_de_otro_tutor_rechazadas_n: 1 }
+          descartes: modo === 'descartado' ? (DESCARTES_POR_TIPO[tipo] || DESCARTES_POR_TIPO.ficha_de_otro_tutor)
                    : (modo === 'invalidado' ? { parte_invalidada: true } : null),
         })),
       };

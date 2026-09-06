@@ -425,7 +425,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0 }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -4768,6 +4768,89 @@ async function caminoGuardadoApuntadoSeVigila(page, base) {
     return c
   } finally {
     scenario.trabajoResultado = null
+  }
+}
+
+/**
+ * `0º.duodetricies` (ficha de la cola, 2026-09-06) — LOS CINCO DESCARTES QUE EL KMS YA
+ * MANDA, Y QUE EL ASISTENTE TRATABA COMO ÉXITO SILENCIOSO.
+ *
+ * ── El defecto ──────────────────────────────────────────────────────────────────────
+ * `codigoDelDescarte` (`frontend/src/lib/rechazos.js`) solo reconocía UNO de los seis
+ * descartes que el KMS ya envía (`fichas_de_otro_tutor_rechazadas_n`). Los otros cinco
+ * —③51/DL-Q10 (formato no declarado), DL-E49 §2 (quien puede contestar), `0º.vicies.nonies`
+ * (NEAE con vaciado no declarado) y las dos formas en que `enr_persistResponses_` descarta
+ * el LOTE ENTERO por falta de configuración del tenant (`skipped_no_context`) o de un
+ * iniciador resoluble (`skipped_no_initiator`)— devolvían `undefined`, y el guardado
+ * apuntado que los trae vuelve con `estado:'hecho'` — así que `WizardContext` los daba
+ * por buenos y el carril de guardado se apagaba: la familia creía que su cuestionario
+ * había entrado ENTERO cuando el KMS acababa de descartarlo, en parte o en su totalidad.
+ *
+ * ── Por qué CADA UNO se comprueba por separado ──────────────────────────────────────
+ * `codigoDelDescarte` los mira en orden y devuelve el PRIMERO que casa: un arreglo que
+ * solo cubriera el primero de los cinco dejaría a los otros cuatro exactamente en el
+ * mismo silencio que hoy. Se repite la MISMA secuencia (preguntas → contestar → guardar
+ * → forzar el latido) una vez por descarte, con el texto exacto que le corresponde.
+ */
+async function caminoDescartesDelCuestionarioSeDicen(page, base) {
+  const c = new Camino('descartes-del-cuestionario-se-dicen')
+  scenario.stage = 'hasta_preguntas'
+
+  const CASOS = [
+    { tipo: 'quien_puede_contestar', letra: 'a',
+      snippet: /autorizada a hacerlo|authorised to answer/i },
+    { tipo: 'formato_no_declarado', letra: 'b',
+      snippet: /no está bien configurado|isn't set up correctly/i },
+    { tipo: 'neae_vaciado_no_declarado', letra: 'c',
+      snippet: /no se han borrado|were NOT cleared/i },
+    { tipo: 'sin_contexto', letra: 'd',
+      snippet: /falta una configuración del colegio|missing a setting needed/i },
+    { tipo: 'sin_iniciador', letra: 'e',
+      snippet: /no se ha podido identificar quién|couldn't identify who/i },
+  ]
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+    c.evidencia.llamadas = calls.length
+    if (REAL) {
+      // Contra el sistema real haría falta forzar al KMS a descartar por cinco motivos
+      // distintos (config de tenant ausente, formato no declarado, etc.) sin dejar el
+      // expediente en un estado imposible de deshacer. No se afloja nada: se declara
+      // descubierto y se dice por qué, igual que sus hermanos de la misma familia.
+      c.noCubierta('descartes-del-cuestionario',
+        'exige que el KMS descarte por cinco motivos distintos de configuración/autorización; el arnés no puede provocarlos sin dejar datos de tenant a medias')
+      return c
+    }
+
+    for (const caso of CASOS) {
+      scenario.trabajoResultado = 'descartado'
+      scenario.descarteTipo = caso.tipo
+      if (!await irAPreguntas(c, page)) return c
+      await page.waitForTimeout(LATENCY + 500)
+      const campo = await page.$('input[type="text"], input:not([type]), textarea')
+      if (campo) { await campo.click({ clickCount: 3 }); await campo.type(`Respuesta E2E (${caso.tipo})`) }
+      await page.click(BTN_SIGUIENTE)
+      await page.waitForTimeout(LATENCY + 2500)
+      await latirLaVentana(page)
+      await page.waitForTimeout(LATENCY + 1500)
+      await latirLaVentana(page)
+
+      const tras = await page.evaluate(sondaCarrilDeGuardado)
+      if (!c.afirmar(`(${caso.letra}.1) «${caso.tipo}» se DICE, con su texto propio`,
+        tras.rojo && caso.snippet.test(tras.texto),
+        `el aviso quedó «${tras.texto || '(nada)'}»: sin el texto propio de este descarte, la familia lo lee como que todo se guardó`)) return c
+      c.afirmar(`(${caso.letra}.2) «${caso.tipo}» NO ofrece «Reintentar»`,
+        !tras.reintentar,
+        'se ofrece reintentar un descarte que el servidor va a repetir exactamente igual: un callejón sin salida')
+    }
+
+    c.evidencia.llamadas = calls.length
+    return c
+  } finally {
+    scenario.trabajoResultado = null
+    scenario.descarteTipo = null
   }
 }
 
@@ -9409,6 +9492,10 @@ const CAMINOS = [
   // 18.bis.84 — «apuntado» no es «guardado»: el asistente vuelve a preguntar cómo acabó el
   // trabajo que el KMS dejó apuntado, y lo dice cuando acaba mal o descarta lo escrito.
   { nombre: 'guardado-apuntado-se-vigila', fn: caminoGuardadoApuntadoSeVigila, minLlamadas: 1, minElementos: 11 },
+  // `0º.duodetricies` (ficha de la cola) — los cinco descartes que el KMS ya envía y que
+  // `codigoDelDescarte` no reconocía: cada uno se dice, con su texto, y sin «Reintentar».
+  { nombre: 'descartes-del-cuestionario-se-dicen', fn: caminoDescartesDelCuestionarioSeDicen,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   // Lo que la familia SUBIÓ sigue ahí cuando vuelve (síntoma de Diego, 2026-08-09).
   // Contra el sistema real el recorrido se declara NO CUBIERTO y sale sin tocar la
   // pantalla (el código de un solo uso llega a un buzón que el arnés no lee), así que

@@ -50,6 +50,21 @@ export const RECHAZOS_DEFINITIVOS = {
   // arriba porque su texto habla del cuestionario, y aquí sería una explicación falsa:
   // la familia buscaría en el paso equivocado.
   FICHAS_DE_OTRO_TUTOR_RECHAZADAS: 'wizard.save_error.fichas_de_otro_tutor',
+  // `0º.duodetricies` (ficha de la cola, 2026-09-06) — el KMS ya manda estos cinco descartes
+  // y el asistente los trataba como éxito silencioso (`estado==='hecho'` sin rechazo). Los
+  // cinco son definitivos: reenviar el mismo cuestionario/paso los reproduce igual, porque
+  // el motivo no depende de CUÁNTAS veces se manda sino de QUÉ se manda o de cómo está
+  // configurado el tenant — ninguno de los dos cambia por reintentar.
+  //
+  // Las tres primeras son per-respuesta (③51/DL-Q10, DL-E49 §2, 0º.vicies.nonies); las dos
+  // últimas descartan el LOTE ENTERO por falta de configuración/datos resolubles del tenant
+  // (`enr_persistResponses_`, `skipped_no_context`/`skipped_no_initiator`) — ninguna la puede
+  // arreglar la familia, así que el texto no le pide nada, solo dice que escriba a admisiones.
+  RESPUESTAS_RECHAZADAS_POR_QUIEN_CONTESTA: 'wizard.save_error.rechazadas_por_quien_contesta',
+  RESPUESTAS_RECHAZADAS_POR_FORMATO_NO_DECLARADO: 'wizard.save_error.formato_no_declarado',
+  NEAE_VACIADO_NO_DECLARADO: 'wizard.save_error.neae_vaciado_no_declarado',
+  RESPUESTAS_SIN_CONTEXTO_DE_TENANT: 'wizard.save_error.sin_contexto_de_tenant',
+  RESPUESTAS_SIN_INICIADOR_RESOLUBLE: 'wizard.save_error.sin_iniciador_resoluble',
 };
 
 /**
@@ -78,6 +93,15 @@ export function codigoDelDescarte(descartes) {
   // Se descartaron fichas de otro tutor (DL-E49 §2). `> 0` y no «existe la clave»: un cero
   // significa que no se descartó ninguna, y avisar de eso sería asustar por nada.
   if (Number(descartes.fichas_de_otro_tutor_rechazadas_n) > 0) return 'FICHAS_DE_OTRO_TUTOR_RECHAZADAS';
+  // `0º.duodetricies` — los cinco descartes que el KMS ya envía. Todos `> 0`/`=== true`, nunca
+  // «existe la clave»: un cero o un `false` es que no se descartó nada, y avisar sería asustar
+  // por nada. El orden no importa (son mutuamente excluyentes en la práctica, y aunque no lo
+  // fueran, cualquiera de ellos ya merece el mismo tratamiento: no reintentar y decirlo).
+  if (Number(descartes.rechazadas_por_quien_puede_contestar) > 0) return 'RESPUESTAS_RECHAZADAS_POR_QUIEN_CONTESTA';
+  if (Number(descartes.rechazadas_por_formato_no_declarado) > 0) return 'RESPUESTAS_RECHAZADAS_POR_FORMATO_NO_DECLARADO';
+  if (Number(descartes.neae_vaciado_no_declarado) > 0) return 'NEAE_VACIADO_NO_DECLARADO';
+  if (descartes.skipped_no_context === true) return 'RESPUESTAS_SIN_CONTEXTO_DE_TENANT';
+  if (descartes.skipped_no_initiator === true) return 'RESPUESTAS_SIN_INICIADOR_RESOLUBLE';
   return undefined;
 }
 

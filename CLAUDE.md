@@ -3449,6 +3449,70 @@ empujar a `main`, sin `clasp`. **Textos, manual y ayuda en pantalla: ninguno toc
 exactamente la misma pantalla y hace exactamente lo mismo; lo que cambia es que ahora su corrección
 llega entera al expediente.
 
+### `0º.duodetricies` (2026-09-06) — CINCO descartes que el KMS ya enviaba se trataban como éxito silencioso
+
+⚠️ **Mismo identificador que la ficha de arriba, dos entradas distintas** — venía así en la cola
+(§"Cómo se lee" de `kis-app/docs/kms/loop-backlog.md`: ocho identificadores están usados por DOS
+entradas y se distinguen por su título, no se renumeran.
+
+**El defecto: `codigoDelDescarte` (`frontend/src/lib/rechazos.js`) solo reconocía UNO de los SEIS
+descartes que el KMS ya envía.** El KMS apunta el trabajo del cuestionario/NEAE y contesta después
+con `estado:'hecho'` **aunque haya descartado a propósito** parte de lo que la familia escribió —o
+el lote entero—, sin que eso sea un fallo desde su punto de vista (hizo justo lo que su regla
+manda). El único que se traducía a un aviso era `fichas_de_otro_tutor_rechazadas_n` (DL-E49 §2,
+18.bis.84); los otros cinco devolvían `undefined` y el carril de guardado se apagaba como si todo
+hubiera entrado — la familia creía que su cuestionario se había guardado ENTERO cuando el KMS
+acababa de descartar parte de él, o el lote completo.
+
+**Los cinco, todos ya emitidos por el KMS y sin ninguna ruta nueva que abrir:**
+
+| Campo del descarte | De dónde sale | Alcance |
+|---|---|---|
+| `rechazadas_por_quien_puede_contestar` | `enr_persistResponses_` (DL-E49 §2) | per-respuesta |
+| `rechazadas_por_formato_no_declarado` | `enr_persistResponses_` (③51/DL-Q10) | per-respuesta |
+| `neae_vaciado_no_declarado` | `enr_persistNeae_` (`0º.vicies.nonies`) | per-persona |
+| `skipped_no_context` | `enr_persistResponses_` — falta `qbContexts` de `'ENROLLMENT'` | LOTE entero |
+| `skipped_no_initiator` | `enr_persistResponses_` — sin tutor iniciador resoluble | LOTE entero |
+
+**Lo que hay que retener al tocar esto:**
+
+- **Los cinco se añaden en `RECHAZOS_DEFINITIVOS`, UN SOLO SITIO** (`lib/rechazos.js`) — ni
+  `WizardContext.jsx` ni `SaveIndicator.jsx` se tocan: los dos ya preguntan a este fichero, que es
+  exactamente la herramienta que 18.bis.85 dejó construida para esto.
+- **Los cinco son DEFINITIVOS, no reintentables**: los tres per-respuesta dependen de QUIÉN
+  contesta o de CÓMO está declarado el tipo de pregunta — reenviar lo mismo lo rechaza igual. Los
+  dos de lote entero son de CONFIGURACIÓN del tenant — la familia no los puede arreglar, y
+  reintentar tampoco.
+- **Los textos de los dos de lote NO le piden nada a la familia** (`sin_contexto_de_tenant`,
+  `sin_iniciador_resoluble`): solo dicen que escriba a admisiones, porque no es un dato que ella
+  pueda corregir.
+- **`codigoDelDescarte` sigue devolviendo `undefined` ante lo no declarado**, así que un descarte
+  futuro que el KMS invente sigue tratándose como éxito hasta que alguien lo añada aquí — el fallo
+  hacia el lado seguro no cambia.
+
+**Red**: camino NUEVO `descartes-del-cuestionario-se-dicen` (batería del asistente), con **DIEZ
+afirmaciones** — dos por descarte (el texto propio sale · no se ofrece «Reintentar»). El doble del
+`estadoDelGuardado` gana `scenario.descarteTipo` para elegir cuál de los seis descartes conocidos
+simula, con el objeto TAL CUAL lo manda el KMS (no una forma inventada para el test).
+
+⚠️ **Y la red se corrigió a sí misma antes de darse por buena**: la primera versión de la
+afirmación `(b.1)` («formato_no_declarado») esperaba «no está bien **configurada**» y el propio
+texto que se acababa de escribir decía «no está bien **configurado**» (concuerda con «el tipo»,
+no con «la pregunta») — rojo real, del test, no del producto. Corregida la concordancia del
+regex, verde. `npm run e2e:wizard` **VEREDICTO: VERDE — 51 de 51**. Los ocho controles de
+seguridad del repositorio, VERDES.
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS. Afirma que el asistente **traduce correctamente** un descarte que
+el KMS ya manda — no que el KMS siga mandando esa forma exacta mañana; eso se acredita leyendo su
+código (arriba, con fichero y función).
+
+**Publicación**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Sale por CI/Pages al
+empujar a `main`, sin `clasp`. **Textos, manual y ayuda en pantalla: SÍ toca** — cinco textos
+nuevos, en `es` y `en` (`wizard.save_error.rechazadas_por_quien_contesta`,
+`.formato_no_declarado`, `.neae_vaciado_no_declarado`, `.sin_contexto_de_tenant`,
+`.sin_iniciador_resoluble`). No hay manual de usuario ni ayuda en pantalla en este repositorio.
+
 ### `①27` pieza 9 · DL-R19 (2026-08-23) — la foto se comprime EN EL NAVEGADOR antes de subirla, y lo INMUTABLE no se toca
 
 **NO es una avería: el documento se subía bien. Es peso y espera en el camino más lento del
