@@ -28,6 +28,18 @@
  *
  * Cuando Stage-2 sirva un catálogo de idiomas por tenant, ESTA lista es lo que se
  * sustituye — igual que se hará con `countries.js`.
+ *
+ * ── LISTA PROVISIONAL (`①83`, 2026-09-06) — RE-MEDIDO Y CORREGIDO ────────────────
+ * Diego pidió que ningún catálogo del asistente viva escrito a mano aquí dentro.
+ * Al medir de nuevo (2026-09-06) resultó que el KMS **YA tiene** un catálogo con
+ * estos 49 códigos — `kis-app kms-server/config/iso-languages.html` —, pero
+ * declarado EN LA DIRECCIÓN CONTRARIA: su propia cabecera dice *«FUENTE ÚNICA: la
+ * constante LANGUAGES del wizard… el wizard sigue siendo la fuente del catálogo
+ * en Stage-1»*, o sea que HOY es una copia de ESTA lista, no al revés. Wirear el
+ * asistente para que la lea desde ahí es de las tareas más baratas de `①83`
+ * TRAMO C: los códigos ya coinciden 1:1, así que ninguna familia con un idioma
+ * ya declarado pierde nada. Lo que falta lo decide `docs/kms/pendiente-diego.md`
+ * **D132**. Esta lista se retira cuando ese tramo se construya — no antes.
  */
 export const LANGUAGES = [
   { value: 'ar', label: 'Arabic' },

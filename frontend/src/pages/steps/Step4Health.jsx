@@ -9,6 +9,22 @@ import * as log from '../../logger';
 // ── NEAE enums (fixed catalogues; design kis-app neae-module-2026-07-12.md) ──
 // El staging siempre escribe provenance=FAMILY_DECLARED server-side. Q4
 // (willing_to_share_reports) retirada por decisión de Diego 2026-07-12.
+//
+// ── LISTAS PROVISIONALES (`①83`, 2026-09-06) — RE-MEDIDO Y CORREGIDO ─────────────
+// Diego pidió que ningún catálogo del asistente viva escrito a mano aquí dentro.
+// Al medir de nuevo (2026-09-06) resultó que DOS de estas cuatro listas YA TIENEN
+// su catálogo en el KMS, con los MISMOS códigos: `NEAE_CATEGORIES` en
+// `kis-app kms-server/config/neae-categories.html` y `NEAE_SUPPORTS` en
+// `…/config/neae-support-types.html` (los dos, Capa 2, ya sirven `{code, label}`
+// por el mecanismo `descriptor-enum-injected-config` — hoy solo al panel de
+// personal, gateado a SYS.CONFIG.EDIT; wirearlos aquí es copiar el molde de
+// `genderValues`, `0º.tricies.duodecies`). `NEAE_DIAGNOSIS` es un CICLO
+// (`sysStates_T`: SUSPECTED→IN_EVALUATION→DIAGNOSED), un mecanismo distinto —
+// más trabajo, no una lista plana. `NEAE_SCOPES` (2 valores) NO tiene catálogo
+// en ninguna parte todavía: es la más barata de dar de alta si se decide hacerlo.
+// Nada de esto se pierde al wirearlo: los códigos ya coinciden. Lo que falta lo
+// decide `docs/kms/pendiente-diego.md` **D132**. Estas listas se retiran cuando
+// ese tramo se construya — no antes.
 const NEAE_CATEGORIES = ['ASD', 'GIFTED', 'ADHD', 'SLD', 'DEVELOPMENTAL_DELAY', 'SENSORY', 'MOTOR', 'LANGUAGE', 'OTHER'];
 const NEAE_DIAGNOSIS  = ['NONE', 'SUSPECTED', 'IN_EVALUATION', 'DIAGNOSED'];
 const NEAE_SUPPORTS   = ['PT', 'AL', 'LOGOPEDIA', 'OT', 'PSYCHOPEDAGOGICAL', 'TALENT', 'EXTERNAL_PSYCH', 'OTHER'];
