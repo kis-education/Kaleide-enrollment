@@ -4403,6 +4403,72 @@ se entera de que algo cambió»*) · y el **renombrado**, que sale **«MEDICIÓN
 **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
 lo que cambia es cuánto se recalcula por detrás.
 
+### `0º.tricies.quattuortricies` (2026-09-06) — el iPhone no se lleva la sesión por delante
+
+**Irse a otra app en iPhone aborta las peticiones en vuelo, y el asistente lo pintaba como un fallo
+suyo.** La mayor parte del daño YA estaba cerrada por otras fichas: lo tecleado y sin guardar ya se
+manda al ocultarse la pantalla (`0º.tricies.quintricies`) y un corte de transporte ya no dice «tu
+enlace puede haber caducado» (`0º.tricies.vicies.semel`, con su propio reintento de 3 intentos en
+`ResumePage`). **Lo que faltaba, específicamente, era el eje del KMS**: puertear el patrón
+`IOS-BACKGROUND-SESSION` de `kis-app frontend/src/lib/gas.js` — detectar que una petición murió
+mientras la pantalla estaba en segundo plano, y REINTENTAR al volver, sin que la familia tenga que
+pulsar nada.
+
+**Lo construido, en `frontend/src/api.js` — deliberadamente distinto del KMS, no una copia
+verbatim.** El KMS **nunca reintenta la operación fallida** — solo decide si dispara una sonda de
+sesión, porque su modo de fallo es «la sesión caducó» y una mutación que aterrizó pero perdió su
+respuesta no se puede repetir sin riesgo de duplicarla. Aquí el modo de fallo es otro (una pantalla
+de «no se pudo cargar»), así que la adaptación es: **SOLO se reintentan LECTURAS idempotentes**
+(`hydrateSession`, `getAdmissionState`, `simularCuotas`, `getLiveStateVersion` — lista explícita en
+`LECTURAS_REINTENTABLES_AL_VOLVER`; lo que no está en la lista, simplemente no se reintenta, nunca
+al revés), **UNA vez**, y **NUNCA una escritura**: `gasCall` distingue el contexto de fondo
+(`isBackgroundContext_`: oculta ahora, o lo estuvo, o dentro de una gracia de 4 s tras volver —
+`visibilitychange` **y** `focus`, porque algunos webviews de iOS entregan uno sin el otro) y, si el
+fallo es de TRANSPORTE (`err.transporte`, el socket se cerró bajo los pies — nunca el tope propio de
+240 s ni un HTTP de error, que son el servidor SÍ contestando) y la acción es de la lista, espera a
+que la pantalla vuelva a primer plano y repite **la misma llamada, una vez**.
+
+**Lo que NO se tocó, y es la mitad del valor:** la ventana de inactividad (estos listeners NUNCA
+llaman a `touchActivity`/`refrescarVentanaDeInactividad_` — no comparten ni una línea con ese
+mecanismo) · el tope propio de 240 s (`SIN_RESPUESTA`, que sigue siendo su propio camino, nunca se
+confunde con el corte de fondo) · KAL-4, el código de un solo uso y ningún gate de seguridad · y
+**la cola de guardado de pasos**, que sigue sin ningún reintento automático — una escritura que
+muere en el transporte se queda `error` y espera al botón «Reintentar» o al éxito de otra escritura,
+exactamente como antes.
+
+**Lo que este cambio NO arregla, y hay que decirlo:** una **recarga** sigue pidiendo el código de un
+solo uso siempre — la huella de página viva vive solo en memoria de JavaScript, por diseño
+(`0º` de la ventana de inactividad, 2026-08-20), y solo Diego puede reabrir esa puerta.
+
+**Red**: `npm run e2e:wizard`, camino NUEVO `el-iphone-no-se-lleva-la-sesion` (8 afirmaciones, dos
+fases). Fase A: una lectura (`hydrateSession`) muere en el transporte mientras la pantalla está
+OCULTA (99 kills, no 3 — Chromium reintenta la petición por debajo del socket destruido y un
+presupuesto pequeño se agota en ~1,5 intentos lógicos en vez de agotar los tres reales de
+`ResumePage`) ⇒ nunca se pinta el fallo, y al volver a primer plano la sesión se abre sola, sin
+pedir código. Fase B: una escritura (`saveStep`) muere de la misma forma (30 kills, no 1 — mismo
+motivo: con presupuesto 1 el reintento transparente del navegador puede tener éxito él solo y
+`gasCall` nunca ve el rechazo) ⇒ NO se repite al volver a primer plano.
+
+**Rojo demostrado CUATRO veces**, cada una nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| quitar el reintento de fondo (`gasCall` pasa directo a `_gasCallUnaVez`) | *«la pantalla no llegó a abrir la sesión tras volver a primer plano»* + no se pudo retroceder hasta Personas — sin el reintento de la lectura, `ResumePage` agota sus tres intentos propios (killed) y nada dispara uno nuevo al volver |
+| añadir `saveStep` a la lista de reintentables | *«salieron 1 saveStep de más al volver a primer plano: una escritura re-disparada por un cambio de visibilidad puede duplicar en el servidor lo que ya recibió»* |
+| — (barandilla de la ventana de inactividad) | `node scripts/comprobar-verja-publica.mjs` sigue **VERDE**: los nuevos listeners no comparten ni una línea con `touchActivity`/`refrescarVentanaDeInactividad_`, y ese control vigila `backend/Code.js`, no `frontend/src/api.js` — no hay código nuevo que pueda hacerlo caer |
+| renombrar `isBackgroundContext_` | *«MEDICIÓN CIEGA · no se encontró en el fuente: frontend/src/api.js :: isBackgroundContext_»* |
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS — afirma lo que hace el NAVEGADOR, que es donde vive este mecanismo
+entero (es puramente de cliente). No se tocó ni una línea de servidor, en ningún repositorio.
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
+lo que cambia es que una petición que iOS abortó al cambiar de app se resuelve sola al volver, en
+vez de enseñar un fallo que no era suyo.
+
+**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp` y sin
+turno.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

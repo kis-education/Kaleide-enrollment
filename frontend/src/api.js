@@ -654,6 +654,84 @@ export function refrescarVentana(resumeToken, identidad) {
   });
 }
 
+// ── IOS-BACKGROUND-SESSION (2026-09-06) ──────────────────────────────────────────────
+// En iPhone, irse a otra app (o bloquear la pantalla) puede abortar una petición en
+// vuelo A MITAD — Safari/WebKit cierra los sockets en background. El asistente lo
+// pintaba como «no se pudo cargar tu solicitud», exactamente igual que un enlace
+// caducado, cuando el enlace seguía siendo bueno y la familia solo había cambiado de
+// app un momento. Puerto del mismo bloque que ya usa el KMS (`kis-app frontend/src/lib/gas.js`,
+// bloque IOS-BACKGROUND-SESSION): detecta el contexto de fondo/reanudación y, SOLO
+// para lecturas idempotentes conocidas, espera a que la pestaña vuelva a primer plano
+// y reintenta UNA vez antes de rendirse.
+//
+// ⛔ NUNCA para escrituras (`ACCIONES_QUE_ESCRIBEN` de arriba, o cualquier acción no
+// listada en `LECTURAS_REINTENTABLES_AL_VOLVER`): reintentar una escritura a ciegas
+// puede duplicar trabajo. La lista es explícita — nada se infiere de "no es una
+// escritura conocida".
+const RESUME_GRACE_MS = 4000;
+let _hiddenSince = null;
+let _resumeGraceUntil = 0;
+
+function isPageHidden_() {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+function inResumeGrace_() {
+  return Date.now() < _resumeGraceUntil;
+}
+
+/** Verdadero si la petición puede haberse cocido en background/justo al volver. */
+function isBackgroundContext_() {
+  return isPageHidden_() || _hiddenSince !== null || inResumeGrace_();
+}
+
+function onVisibleAgain_() {
+  _hiddenSince = null;
+  _resumeGraceUntil = Date.now() + RESUME_GRACE_MS;
+}
+
+function onVisibilityChange_() {
+  if (isPageHidden_()) {
+    _hiddenSince = Date.now();
+  } else {
+    onVisibleAgain_();
+  }
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', onVisibilityChange_);
+  // Algunos webviews de iOS entregan `focus` sin un `visibilitychange` emparejado.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', onVisibleAgain_);
+  }
+}
+
+/** Espera a que la pestaña vuelva a primer plano, o resuelve al momento si ya lo está. */
+function esperarAQueVuelvaLaPagina_(topeMs) {
+  if (!isPageHidden_()) return Promise.resolve();
+  return new Promise((resolve) => {
+    let resuelto = false;
+    const listo = () => {
+      if (resuelto) return;
+      resuelto = true;
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVis);
+      clearTimeout(temporizador);
+      resolve();
+    };
+    const onVis = () => { if (!isPageHidden_()) listo(); };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVis);
+    const temporizador = setTimeout(listo, topeMs);
+  });
+}
+
+// Lecturas idempotentes que el asistente dispara repetidamente mientras la familia
+// mira la pantalla — pedirlas dos veces no tiene coste ni efecto secundario.
+// LÍMITE HONESTO: lista explícita. Una lectura nueva que no se añada aquí simplemente
+// no se reintenta — falla hacia el lado seguro (no reintentar), nunca al revés.
+const LECTURAS_REINTENTABLES_AL_VOLVER = new Set([
+  'hydrateSession', 'getAdmissionState', 'simularCuotas', 'getLiveStateVersion',
+]);
+
 /**
  * Calls the GAS backend with the given action and payload.
  * @param {string} action
@@ -661,6 +739,23 @@ export function refrescarVentana(resumeToken, identidad) {
  * @returns {Promise<Object>} Parsed response (ok: true guaranteed, or throws)
  */
 export async function gasCall(action, payload = {}) {
+  const enContextoDeFondo = isBackgroundContext_();
+  try {
+    return await _gasCallUnaVez(action, payload);
+  } catch (err) {
+    const puedeReintentar = err && err.transporte
+      && enContextoDeFondo
+      && LECTURAS_REINTENTABLES_AL_VOLVER.has(action);
+    if (!puedeReintentar) throw err;
+    log.warn(`gasCall ${action}: fallo de transporte en contexto de fondo — se espera y se reintenta UNA vez`, {
+      action, hidden: isPageHidden_(),
+    });
+    await esperarAQueVuelvaLaPagina_(30000);
+    return _gasCallUnaVez(action, payload);
+  }
+}
+
+async function _gasCallUnaVez(action, payload = {}) {
   if (!GAS_ENDPOINT) {
     log.error('gasCall: VITE_GAS_ENDPOINT is not configured');
     throw new Error('VITE_GAS_ENDPOINT is not configured.');
@@ -706,12 +801,21 @@ export async function gasCall(action, payload = {}) {
   } catch (fetchErr) {
     const abortada = fetchErr && (fetchErr.name === 'AbortError' || /abort/i.test(fetchErr.message || ''));
     if (abortada) {
+      // NO se marca `transporte`: es NUESTRO propio tope de 240 s, un servidor que de
+      // verdad no contesta. «No confundir los dos silencios» (encargo IOS-BACKGROUND-
+      // SESSION) — mezclarlo con el corte de segundo plano dejaría reintentando en
+      // background un fallo que ya tiene su propio camino (`SIN_RESPUESTA` → la cola
+      // marca error y ofrece «Reintentar»).
       log.error(`gasCall ${action}: sin respuesta en ${TOPE_MS} ms — se corta`, { action });
       const e = new Error(`El servidor no respondió a "${action}". Vuelve a intentarlo.`);
       e.code = 'SIN_RESPUESTA';
       throw e;
     }
+    // IOS-BACKGROUND-SESSION: éste SÍ es el corte real — un `fetch` que rechaza sin
+    // llegar a haber respuesta (el socket se cerró bajo los pies), justo lo que produce
+    // irse a otra app en iPhone a mitad de la llamada.
     log.error(`gasCall ${action}: network/fetch error`, { message: fetchErr.message });
+    if (fetchErr) fetchErr.transporte = true;
     throw fetchErr;
   } finally {
     if (corte) clearTimeout(corte);
@@ -721,6 +825,8 @@ export async function gasCall(action, payload = {}) {
   log.info(`← HTTP ${res.status} (${elapsed}ms) for ${action}`);
 
   if (!res.ok) {
+    // Tampoco se marca `transporte`: si `fetch` resolvió, el servidor SÍ contestó (con un
+    // estado de error), que no es lo que provoca un cambio de app en iPhone.
     log.error(`gasCall ${action}: HTTP ${res.status}`, { status: res.status, statusText: res.statusText });
     throw new Error('Network error: ' + res.status);
   }

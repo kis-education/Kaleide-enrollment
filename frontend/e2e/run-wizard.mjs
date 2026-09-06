@@ -425,7 +425,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0 }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -784,6 +784,15 @@ function startServer() {
         // poder afirmar que el reintento entra.
         if (scenario.simulacionCorta > 0 && payload && payload.action === 'simularCuotas') {
           scenario.simulacionCorta -= 1
+          record({ action: payload.action, payload, cortada: true })
+          try { req.socket.destroy() } catch { /* ya cerrado */ }
+          return
+        }
+        // `0º.tricies.quattuortricies` — el mismo corte, para una ESCRITURA
+        // (`saveStep`). Es justamente el caso que `gasCall` NUNCA puede reintentar por su
+        // cuenta al volver a primer plano: reintentar una escritura a ciegas la duplicaría.
+        if (scenario.escrituraCorta > 0 && payload && payload.action === 'saveStep') {
+          scenario.escrituraCorta -= 1
           record({ action: payload.action, payload, cortada: true })
           try { req.socket.destroy() } catch { /* ya cerrado */ }
           return
@@ -8989,6 +8998,232 @@ async function caminoLoTecleadoNoMuere(page, base) {
 
 
 /**
+ * `0º.tricies.quattuortricies` — EL IPHONE NO SE LLEVA LA SESIÓN POR DELANTE.
+ *
+ * En iPhone, irse a otra app aborta las peticiones en vuelo — Safari/WebKit cierra los
+ * sockets en segundo plano. Antes, ese corte se pintaba EXACTAMENTE igual que un enlace
+ * caducado: la familia volvía a su solicitud y se encontraba un cartel de fallo por un
+ * momento de fondo que ella no eligió.
+ *
+ * ⛔ Puerto del bloque `IOS-BACKGROUND-SESSION` del KMS (`kis-app frontend/src/lib/gas.js`),
+ * adaptado al contrato de este asistente: aquí NO hay overlay de «sesión caducada» que
+ * suprimir — lo que hay es una pantalla de carga. Por eso el asistente no se limita a
+ * VERIFICAR con una sonda: REINTENTA la lectura perdida, una vez, en cuanto vuelve a
+ * primer plano — y JAMÁS una escritura, que es justo lo que la Fase B de este camino caza.
+ *
+ * Fase A · una LECTURA (`hydrateSession`) muere en el transporte mientras la pantalla está
+ * oculta ⇒ no se pinta ningún fallo, y al volver a primer plano la sesión se abre SOLA.
+ * Fase B · una ESCRITURA (`saveStep`) muere de la misma forma ⇒ NO se repite al volver: el
+ * asistente no re-dispara mutaciones por un cambio de visibilidad, nunca.
+ */
+async function caminoElIphoneNoSeLlevaLaSesion(page, base) {
+  const c = new Camino('el-iphone-no-se-lleva-la-sesion')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    c.noCubierta('el-iphone-no-se-lleva-la-sesion',
+      'el fallo de transporte se provoca matando el socket del servidor simulado; contra el sistema real no hay forma honesta de tumbar una llamada a voluntad sin romperle la corrida a los caminos que vienen detrás')
+    return c
+  }
+
+  // Escenario DELIBERADO: se matan hasta TRES sockets de `hydrateSession` (Fase A) y uno
+  // de `saveStep` (Fase B) — cada uno deja su «network/fetch error» en la consola, que es
+  // justo el síntoma real («Load failed» mientras la familia está en otra app). No es un
+  // defecto que esconder: es la prueba de que el escenario disparó de verdad.
+  c.esperarErrorConsola(/gasCall (hydrateSession|saveStep): network\/fetch error/,
+    'escenario deliberado: el socket se destruye a propósito, como el corte real de iOS al cambiar de app')
+
+  // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────
+  // Si alguien renombra o retira el mecanismo, las afirmaciones de abajo caerían diciendo
+  // «no se pintó ningún fallo» / «no se repitió el guardado» — ciertas, pero sin nombrar que
+  // el recorrido ya no sabe qué está mirando. Se comprueba contra el FUENTE: si no está, sale
+  // CIEGO en vez de rojo-a-secas o de verde.
+  const FUENTES = [
+    ['frontend/src/api.js', /isBackgroundContext_/],
+    ['frontend/src/api.js', /LECTURAS_REINTENTABLES_AL_VOLVER/],
+    ['frontend/src/api.js', /esperarAQueVuelvaLaPagina_/],
+    ['frontend/src/api.js', /_gasCallUnaVez/],
+  ]
+  const ausentes = []
+  for (const [rel, re] of FUENTES) {
+    let txt = ''
+    try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+    if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+  }
+  if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+    ausentes.length === 0,
+    `no se encontró en el fuente: ${ausentes.join(' · ')} — el recorrido NO puede medir lo que ` +
+    `dice medir, así que NO puede salir verde`)) return c
+
+  // ── FASE A · una LECTURA muere en el transporte ESTANDO LA PANTALLA OCULTA ────────────
+  // Arranca OCULTA desde ANTES de cargar — como si la familia hubiera abierto su enlace con
+  // el asistente ya en segundo plano. `page.addInitScript` corre en el documento nuevo antes
+  // de que se ejecute ni una línea de la aplicación.
+  // ⚠️ SON TRES, no uno — a propósito. `ResumePage` YA tiene su propio reintento
+  // automático (`0º.tricies.vicies.semel`, `RESUME_REINTENTOS_MS = [1500, 4000]`): un
+  // corte AISLADO se lo traga él solo, visibilidad aparte, y no distinguiría «con
+  // arreglo» de «sin él». Lo que SÍ distingue es un corte que agote SUS TRES intentos
+  // (inicial + 2 reintentos, ~5,5 s) — eso es justo lo que la pantalla pintaría en
+  // segundo plano SI no hubiera nadie absorbiendo el fallo antes de que le llegue.
+  await page.addInitScript(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+    Object.defineProperty(document, 'hidden',          { configurable: true, get: () => true })
+    // Vigía de «¿llegó a aparecer el cartel de fallo EN ALGÚN MOMENTO?» — un solo
+    // vistazo al final no basta: podría pintarse y desaparecer entre dos lecturas.
+    window.__ZZfalloVisto = false
+    const vigilar = () => { if (document.querySelector('[data-testid="resume-fallo"]')) window.__ZZfalloVisto = true }
+    try { new MutationObserver(vigilar).observe(document.documentElement, { childList: true, subtree: true }) } catch { /* no debería fallar */ }
+  })
+
+  // 99, no 3: Chromium reintenta la petición por debajo del socket destruido (medido en
+  // `enlace-no-ha-caducado` — «cuatro peticiones al servidor para dos intentos de la
+  // página»), así que un presupuesto pequeño se agota en ~1,5 intentos LÓGICOS, no en los
+  // tres completos que `ResumePage` necesita agotar para que la ausencia del arreglo se
+  // note. 99 (el mismo valor que usa `caminoEnlaceNoHaCaducado` por el mismo motivo)
+  // garantiza que los tres intentos de `ResumePage` mueren de verdad si nadie los absorbe.
+  scenario.hidratacionCorta = 99
+  await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+    { waitUntil: 'domcontentloaded', timeout: 30000 })
+
+  // ~8 s > el ciclo entero de `ResumePage` (1,5 + 4 = 5,5 s de esperas programadas, los
+  // reintentos matados no pagan latencia). Si nadie absorbiera el fallo, a estas alturas
+  // `ResumePage` ya habría agotado sus TRES intentos y pintado el cartel — estando la
+  // pestaña todavía oculta.
+  await page.waitForTimeout(8000)
+
+  const mientrasOculta = await page.evaluate(() => ({
+    falloAhora: !!document.querySelector('[data-testid="resume-fallo"]'),
+    falloAlgunaVez: !!window.__ZZfalloVisto,
+    texto: (document.body.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+  }))
+  if (!c.afirmar('(1) mientras la pantalla está OCULTA, un fallo de transporte NUNCA se pinta',
+    !mientrasOculta.falloAlgunaVez,
+    `se pintó el cartel de fallo con la pestaña todavía oculta — un momento en segundo plano ` +
+    `que la familia ni ve se le presenta como «no se pudo cargar tu solicitud»: ${mientrasOculta.texto}`)) return c
+
+  // El presupuesto de matar peticiones era para PROBAR el fondo, no para seguir matando el
+  // reintento del PRIMER PLANO: se suelta ANTES de volver a visible, para que —con el
+  // arreglo puesto— el reintento que dispara `gasCall` al recuperar el foco pueda tener
+  // éxito. Sin este reset, un valor alto (99) mataría también ESE reintento y (2) fallaría
+  // por un motivo ajeno al que se quiere medir.
+  scenario.hidratacionCorta = 0
+
+  // ── Vuelve a primer plano: la lectura se reintenta SOLA, sin que nadie pulse nada ──────
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+    Object.defineProperty(document, 'hidden',          { configurable: true, get: () => false })
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+  })
+
+  const entroSola = await page.waitForFunction(() => {
+    const pasos = document.querySelectorAll('.wizard-step')
+    return !!(pasos.length && [...pasos].some(p => p.classList.contains('active')))
+  }, null, { timeout: LATENCY * 4 + 20000 }).then(() => true).catch(() => false)
+
+  const trasVolver = await page.evaluate(() => ({
+    falloAhora: !!document.querySelector('[data-testid="resume-fallo"]'),
+    falloAlgunaVez: !!window.__ZZfalloVisto,
+  }))
+
+  c.afirmar('(2) al volver a primer plano, la sesión se abre SOLA — sin pedir código ni pulsar nada',
+    entroSola,
+    `la pantalla no llegó a abrir la sesión tras volver a primer plano (esperados ${LATENCY * 4 + 20000} ms): ` +
+    `el corte de fondo debería resolverse solo, sin que nadie tenga que pulsar «reintentar»`)
+  c.afirmar('(3) en NINGÚN momento del recorrido se llegó a pintar el fallo',
+    !trasVolver.falloAlgunaVez,
+    'el cartel de «no se pudo cargar» apareció en algún momento del recorrido (antes o después de volver)')
+
+  // ── FASE B · una ESCRITURA muere de la misma forma ⇒ NUNCA se repite sola ─────────────
+  const saves = []
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'saveStep') saves.push({ ...body, _t: Date.now() })
+  }
+  page.on('request', espiar)
+
+  try {
+    scenario.hidratacionCorta = 0
+    if (!c.afirmar('ANCLA (B) · se llega al paso de Personas para poder teclear',
+      await (async () => {
+        for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+          const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+          if (!atras) return false
+          await atras.click()
+          await page.waitForTimeout(250)
+        }
+        return (await dondeEstoy(page)) === 1
+      })(),
+      `no se pudo retroceder hasta Personas — se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(250)
+
+    const SEL_CAMPO = 'input.form-control:not([type])'
+    const campos = await page.$$(SEL_CAMPO)
+    if (!c.afirmar('ANCLA (B) · el paso admite escritura', campos.length > 0,
+      'no se encontró ni un campo de texto en el paso de Personas')) return c
+
+    // 30, no 1: una sola escritura es UN fetch lógico, pero Chromium reintenta por debajo
+    // del socket destruido (mismo hallazgo que en Fase A) — con presupuesto 1 el reintento
+    // transparente del navegador puede tener éxito él solo y `gasCall` nunca ve el rechazo,
+    // dejando esta afirmación pasando en vacío sea cual sea el código. Demostrado: al medir
+    // esto, un `saveStep` añadido por error a la lista de reintentables pasaba desapercibido
+    // con presupuesto 1 y solo se cazó subiéndolo.
+    scenario.escrituraCorta = 30
+    saves.length = 0
+    await campos[0].click({ clickCount: 3 })
+    await campos[0].type('ZZFallaEnBackground', { delay: 15 })
+
+    // Ocultar la pantalla — el mismo gesto de iOS al cambiar de app — dispara el guardado
+    // (`0º.tricies.quintricies`) y esta vez su socket se destruye a propósito.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+      Object.defineProperty(document, 'hidden',          { configurable: true, get: () => true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    // Ventana generosa a propósito: deja asentarse cualquier reintento de TRANSPORTE que el
+    // propio navegador haga por su cuenta bajo el socket destruido (medido en otro camino:
+    // «Chromium reintenta la petición por debajo»), para no confundirlo con un reintento de
+    // ESTA aplicación cuando se mida la ventana siguiente.
+    await page.waitForTimeout(4000)
+    const trasMorir = saves.length
+    if (!c.afirmar('(4) la escritura sale y muere en el transporte estando oculta (escenario preparado)',
+      trasMorir >= 1,
+      'no se registró ningún intento de saveStep: el escenario que se quería preparar no llegó a disparar')) return c
+
+    // ── Vuelve a primer plano ─────────────────────────────────────────────────────────
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+      Object.defineProperty(document, 'hidden',          { configurable: true, get: () => false })
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    // Si `gasCall` reintentara la escritura al volver, lo haría casi al instante — el
+    // listener que espera la visibilidad resuelve en el mismo evento. 3 s de sobra para
+    // cazarlo; nada legítimo repite sola una escritura fallida (solo un clic en «Reintentar»
+    // o el éxito de OTRA escritura la reponen).
+    await page.waitForTimeout(3000)
+
+    c.afirmar('(5) volver a primer plano NO repite la escritura — jamás se re-dispara una mutación',
+      saves.length === trasMorir,
+      `salieron ${saves.length - trasMorir} saveStep de más al volver a primer plano: una escritura ` +
+      `re-disparada por un cambio de visibilidad puede duplicar en el servidor lo que ya recibió`)
+
+    c.evidencia.llamadas = saves.length
+    c.evidencia.elementos = campos.length
+  } finally {
+    page.off('request', espiar)
+    scenario.escrituraCorta = 0
+    scenario.hidratacionCorta = 0
+  }
+
+  return c
+}
+
+
+/**
  * `0º.quadragies.ter` — EL REPARTO NO SE SIEMBRA DE UNA SECCIÓN VACÍA.
  *
  * ⛔ ES DINERO Y SE FIRMA. El paso 8 daba por hablado al servidor **en cuanto la sección del
@@ -9094,6 +9329,11 @@ const CAMINOS = [
   // TERMINAR, y este camino lo vacía en cada una de sus cuatro fases para poder afirmar sobre
   // ella. Su evidencia real son sus trece afirmaciones, no un contador.
   { nombre: 'enlace-no-ha-caducado', fn: caminoEnlaceNoHaCaducado,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
+  // `0º.tricies.quattuortricies` — en iPhone, irse a otra app aborta las peticiones en
+  // vuelo: una LECTURA se reintenta sola al volver (sin pintar fallo mientras tanto) y
+  // una ESCRITURA jamás se re-dispara por un cambio de visibilidad.
+  { nombre: 'el-iphone-no-se-lleva-la-sesion', fn: caminoElIphoneNoSeLlevaLaSesion,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   // 2026-08-26 — un fallo de carga NO puede decirse como «el colegio no tiene programas».
   { nombre: 'programas-no-se-inventan', fn: caminoProgramasNoSeInventan,
