@@ -2723,6 +2723,61 @@ function _checkMagicLinkRateLimitIp_(ip) {
   cache.put(countKey, String(count + 1), 3600); // 1h TTL
 }
 
+/**
+ * ②54 (2026-09-06) — cupo para `resolveSigningToken_`, acción pública SIN verja ni cupo hasta
+ * hoy (medido contra `origin/main`: gastaba un viaje al KMS por llamada, sin ningún freno).
+ *
+ * La llave es el TOKEN mismo, resumido (mismo molde que `_warmRateLimitTokenKey_`) — KAL-11:
+ * un secreto de portador no se guarda en claro en ninguna caché. Un token ajeno no agota el
+ * cupo del legítimo, y viceversa.
+ *
+ * Cap 30/hora: de sobra para el recorrido normal de firma (varias pantallas, alguna recarga)
+ * y bajo para un sondeo automatizado de tokens.
+ *
+ * @param {string} token - signing_token, ya validado en FORMA (assertValidSigningToken_).
+ */
+function _checkSigningTokenRateLimit_(token) {
+  if (!token) return;
+  const cache = CacheService.getScriptCache();
+  const key = 'signrl_' + sha256Hex_(Utilities.newBlob(String(token).trim()).getBytes()).slice(0, 40);
+  const count = parseInt(cache.get(key) || '0', 10);
+  if (count >= 30) {
+    const err = new Error('Too many signing-token resolutions; try again in 1 hour');
+    err.code = 'RATE_LIMITED';
+    throw err;
+  }
+  cache.put(key, String(count + 1), 3600);
+}
+
+/**
+ * ②54 (2026-09-06) — cupo para los catálogos públicos del asistente (`fetchQuestions_` /
+ * `fetchLookups_`), acciones públicas SIN verja ni cupo hasta hoy.
+ *
+ * La llave es colegio+idioma — el único discriminador que la propia petición trae ANTES de
+ * que exista ningún expediente (el paso 1 todavía no tiene `resume_token`). `SCHOOL_ID` es
+ * una constante de un solo tenant, así que en la práctica la llave es solo el idioma.
+ *
+ * ⚠️ LÍMITE HONESTO: compartir la llave entre TODAS las familias que pidan el mismo catálogo
+ * en el mismo idioma es una limitación conocida — no hay otro dato en el que apoyarse en este
+ * punto del recorrido. Por eso el cap es generoso (corta una inundación automatizada, no el
+ * tráfico real de un solo colegio).
+ *
+ * @param {string} accion - 'preguntas' | 'lookups', para namespacear el contador.
+ * @param {string} idioma - idioma solicitado, o '' si no viaja.
+ */
+function _checkPublicCatalogRateLimit_(accion, idioma) {
+  const cache = CacheService.getScriptCache();
+  const key = 'catrl_' + accion + '_' + SCHOOL_ID + '_' +
+    (String(idioma || '').trim().toLowerCase() || '-');
+  const count = parseInt(cache.get(key) || '0', 10);
+  if (count >= 300) {
+    const err = new Error('Too many catalog requests; try again in 1 hour');
+    err.code = 'RATE_LIMITED';
+    throw err;
+  }
+  cache.put(key, String(count + 1), 3600);
+}
+
 // ─── Action handlers ──────────────────────────────────────────────────────────
 
 /**
@@ -6166,6 +6221,9 @@ function fetchQuestions_(p) {
 
   const lang = p.language || 'es';
 
+  // ②54 (2026-09-06) — acción pública SIN verja ni cupo hasta hoy. Antes del trabajo caro.
+  _checkPublicCatalogRateLimit_('preguntas', lang);
+
   // ── Q05-S5 (DL-Q05): proxy thin a KMS qb-public.resolveSetForConsumer ────
   // El motor reusable vive en kis-app/kms-server/qb/qb-core.gs y se expone
   // via doPost del KMS bajo `qb-public.resolveSetForConsumer` con auth por
@@ -6481,6 +6539,10 @@ function fetchLookups_(p) {
   // se devuelve lo que conteste el KMS. Sin idioma —o sin versión guardada— la respuesta es
   // exactamente la de siempre: la descripción de la ficha.
   var idioma = (p && p.language) ? String(p.language).trim() : '';
+
+  // ②54 (2026-09-06) — acción pública SIN verja ni cupo hasta hoy. Antes del trabajo caro.
+  _checkPublicCatalogRateLimit_('lookups', idioma);
+
   return kmsProxy_('enr.fetchApplicationLookups', { school_id: SCHOOL_ID, language: idioma || null });
 }
 
@@ -8115,6 +8177,10 @@ function resolveSigningToken_(p) {
     Logger.log('[resolveSigningToken_] token format invalid');
     return { valid: false, reason: 'INVALID' };
   }
+
+  // ②54 (2026-09-06) — el cupo va DESPUÉS de validar la forma (no gastar cache en basura)
+  // y ANTES del viaje caro al KMS (mismo criterio que "Las CINCO puertas del asistente").
+  _checkSigningTokenRateLimit_(token);
 
   const r = _resolucionDelTokenDeFirma_(token);
   if (!r.ok) {
