@@ -32,6 +32,11 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
   const [highlightEdit, setHighlightEdit] = useState(false);
 
   const persons = stepData.persons || [];
+  // `0º.tricies.septtricies` (la primera) — DL-E49 §2: lo que declara un tutor solo lo
+  // ve él. Con un solo tutor vivo el aviso no dice nada útil (no hay "el otro" del que
+  // hablar) — mismo criterio que un desplegable de una sola opción (DL-R16): se avisa
+  // solo cuando la distinción es real.
+  const tutoresVivosN = persons.filter(p => p && p.person_type_id === 'guardian').length;
 
   useEffect(() => {
     // WIZARD-UX: shared module cache in api.js (keyed by language). Solo cacheamos
@@ -173,6 +178,11 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
       <div className="mb-2">
         <h2 style={{ color: 'var(--teal-dk)', fontWeight: 800 }}>{t('step.questions')}</h2>
         <p style={{ color: 'var(--muted)' }}>{t('step5.subtitle')}</p>
+        {tutoresVivosN > 1 && (
+          <p style={{ color: 'var(--muted)', fontSize: '.9rem' }} data-e2e="aviso-privacidad-tutores">
+            {t('step5.privacy_note')}
+          </p>
+        )}
       </div>
 
       <StepNav position="top" onBack={handleBack} onNext={nextHandler} savePending={savePending} nextDisabled={avanceBloqueado} />

@@ -111,6 +111,7 @@
   "relType.father": "Father",
   "relType.other": "Other",
   "step5.subtitle": "Please answer the following questions.",
+  "step5.privacy_note": "What you answer here is visible only to you: the other guardian cannot see your answers.",
   "step5.no_questions": "No questions found for this context.",
   "step5.catalog_failed": "We couldn't load the questionnaire. It isn't that there are no questions: it didn't reach us. Please try again — don't continue yet, or it would be saved blank.",
   "step5.catalog_retry": "Try again",

@@ -111,6 +111,7 @@
   "relType.father": "Padre",
   "relType.other": "Otro/a",
   "step5.subtitle": "Por favor, responde las siguientes preguntas.",
+  "step5.privacy_note": "Lo que tú contestes aquí solo lo verás tú: el otro tutor no ve tus respuestas.",
   "step5.no_questions": "No se encontraron preguntas para este contexto.",
   "step5.catalog_failed": "No hemos podido cargar el cuestionario. No es que no haya preguntas: no nos ha llegado. Vuelve a intentarlo — no continúes todavía, o se guardaría en blanco.",
   "step5.catalog_retry": "Volver a intentarlo",
