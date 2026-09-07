@@ -5770,7 +5770,12 @@ function submitEnrollmentSession_(p) {
         consent_type:           codigo,
         consent_use:            null,
         consented:              c.accepted,
-        consent_text_shown:     c.consent_text_shown || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
+        // B7/②52 (2026-09-07): `c.consent_text_shown` es lo que el CLIENTE dice haberle
+        // enseñado a quien consintió; sin cota, un valor arbitrariamente largo se escribe tal
+        // cual en el libro APPEND-ONLY de consentimientos. El respaldo del servidor
+        // (`CONSENT_TEXTS`) sigue intacto; solo se acota lo que llega del cliente.
+        consent_text_shown:     (c.consent_text_shown ? String(c.consent_text_shown).slice(0, 4000) : null)
+                                   || (CONSENT_TEXTS[c.type] && CONSENT_TEXTS[c.type][lang]) || null,
         consent_text_version:   'v1',
         language:               lang,
         signed_method:          'WIZARD_CLICK_AND_SIGN',
@@ -6037,6 +6042,11 @@ function sendVerificationCode_(p) {
     enrollmentGroupId = p.enrollment_group_id || p.application_id;
     primary_email     = p.primary_email;
     if (!enrollmentGroupId || !primary_email) throw new Error('Missing enrollment_group_id or primary_email');
+    // B6/②52 (2026-09-07): sin esto, `enrollmentGroupId` entraba sin validar la forma en la
+    // clave de caché del código de un solo uso (`codeKey`, más abajo) — una colisión de clave
+    // dejaría a una familia con "demasiados intentos" durante 10 min, renovable. Solo esta
+    // rama (alta): la de step-up ya deriva el grupo del bearer (KAL-4), nunca del payload.
+    assertValidUuid_(enrollmentGroupId, 'enrollment_group_id');
   }
 
   // Rate-limit antes de generar/enviar (throw RATE_LIMITED).
@@ -7080,8 +7090,14 @@ function uploadDocument_(p) {
   assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
   _wzCacheInvalidate_(p && p.resume_token, 'DOCUMENTOS'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
-  const { base64, mimeType, filename } = p;
+  const { base64, mimeType } = p;
   if (!base64) throw new Error('Missing base64');
+  // B8/②52 (2026-09-07): `filename` viajaba tal cual del cliente hasta `Utilities.newBlob(...)`
+  // y `recFiles.file_name`/`original_filename` — sin cota ni filtro de saltos de línea, a
+  // diferencia de `description` (dos líneas más abajo), que ya se sanea. Mismo molde: sin
+  // CR/LF/TAB (KAL-11, no contaminar logs) y con tope de longitud.
+  let filename = (typeof p.filename === 'string') ? p.filename : '';
+  filename = filename.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) || null;
   // WIZARD-DOCS (2026-06-13): adjuntador genérico. La familia describe en texto
   // libre qué es cada archivo ("informe médico", "documento personal"…). No hay
   // tipos tasados obligatorios. KAL-5: sanitizamos el texto (tope 200 chars,
