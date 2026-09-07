@@ -349,8 +349,22 @@ function comprobarLasEntradasDeAdmisiones(fuenteLimpia) {
   // 1 · crear una solicitud (rama WEB_PUBLIC).
   const init = cuerpoDe(fuenteLimpia, 'initEnrollmentSession_')
   if (init === null) fallos.push('no se encontró `initEnrollmentSession_` — control CIEGO en esa entrada')
-  else if (!/_asegurarVerjaPublica_|_verjaPublicaVeredicto_/.test(init)) {
-    fallos.push('`initEnrollmentSession_` no pasa por la verja')
+  else {
+    const iVerja = init.search(/_asegurarVerjaPublica_\s*\(|_verjaPublicaVeredicto_\s*\(/)
+    if (iVerja < 0) {
+      fallos.push('`initEnrollmentSession_` no pasa por la verja')
+    } else {
+      // ②53: sus tres hermanas (recognizeFamily_, sendMagicLink_, sendVerificationCode_)
+      // ya comprueban que la verja va ANTES del trabajo caro; a ésta —la primera y la
+      // que motivó el control— solo se le comprobaba que la LLAMARA, no la posición.
+      // Sin esto, un cambio que mueva la verja detrás del primer viaje a AppSheet/KMS
+      // reabriría el oráculo por tiempo de ②2 en la puerta que crea solicitudes, y este
+      // control seguiría verde.
+      const iCaro = init.search(/kmsProxy_\s*\(|appsheetRequest_\s*\(|appsheetRequestBatch_\s*\(/)
+      if (iCaro >= 0 && iCaro < iVerja) {
+        fallos.push('en `initEnrollmentSession_` el trabajo caro (KMS/AppSheet) ocurre ANTES de la verja — el tiempo vuelve a delatar si el correo existe')
+      }
+    }
   }
 
   // 2 · reconocer a la familia (llamada pública, no la interna).
