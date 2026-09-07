@@ -24,6 +24,19 @@
  * la MISMA línea, cierre `}` en columna 0). NO es un analizador sintáctico. Una escritura
  * camuflada en `eval()` o en `this['appsheet'+'Request_']` seguiría siendo invisible; para
  * eso hace falta un parser de verdad.
+ *
+ * ②53 (2026-09-07) — LA TABLA Y LA ACCIÓN SE MIRAN SOBRE LA LLAMADA ENTERA, NO SOBRE LA
+ * LÍNEA. `RE_ESCRITURA`/`RE_LLAMADA` operaban `.test(linea)`/`.exec(linea)` — una llamada
+ * `appsheetRequest_(` cuya tabla y acción cayeran en una línea POSTERIOR a la apertura era
+ * invisible a las DOS a la vez (ni «escritura literal» ni «acción no demostrable» casaban,
+ * que son justo las dos redes que se suponían complementarias). 0 casos reales medidos
+ * contra `backend/Code.js` — es un hueco del CONTROL, no una vulnerabilidad explotada.
+ * `extraerLlamadaAppsheetRequest_` escanea, con balance de paréntesis y consciente de
+ * comillas, desde el `appsheetRequest_(` de la línea hasta su paréntesis de cierre —
+ * pueda o no cruzar líneas— y ESO es lo que se compara contra `RE_ESCRITURA`/`RE_LLAMADA`.
+ * `RE_LOTE_ESCR`/`RE_LOTE_SPEC` (los specs de lote) y el chequeo de `APPSHEET_BASE_URL` NO
+ * se tocan: el transporte en lote está retirado (0 llamantes) y su forma nunca se dio
+ * partida en la práctica.
  */
 
 function stripJsComments(src) {
@@ -98,6 +111,41 @@ function stripJsComments(src) {
 export { stripJsComments as despojarComentarios }
 
 /**
+ * A partir del índice EXACTO del `(` de apertura de una llamada `appsheetRequest_(`, escanea
+ * carácter a carácter (consciente de comillas simples/dobles/backtick, con escape) hasta su
+ * paréntesis de CIERRE — que puede caer en una línea posterior — y devuelve el texto de la
+ * llamada completa (paréntesis incluidos), con los saltos de línea reales preservados para que
+ * las expresiones `\s*`/`\s*?` existentes sigan casando a través de ellas.
+ *
+ * Devuelve `null` si no cierra dentro del tope de seguridad (llamada sospechosamente larga o
+ * malformada) — en ese caso el llamante cae a mirar solo la línea, como hacía siempre.
+ *
+ * @param {string} texto  fuente YA sin comentarios (`stripJsComments`)
+ * @param {number} idxParen  índice del `(` de apertura, sobre `texto`
+ * @returns {string|null}
+ */
+function extraerLlamadaAppsheetRequest_(texto, idxParen) {
+  const TOPE = 4000
+  let profundidad = 0
+  let quote = null
+  for (let i = idxParen; i < texto.length && i - idxParen < TOPE; i++) {
+    const c = texto[i]
+    if (quote) {
+      if (c === '\\') { i += 1; continue }
+      if (c === quote) quote = null
+      continue
+    }
+    if (c === '"' || c === "'" || c === '`') { quote = c; continue }
+    if (c === '(') profundidad += 1
+    else if (c === ')') {
+      profundidad -= 1
+      if (profundidad === 0) return texto.slice(idxParen, i + 1)
+    }
+  }
+  return null
+}
+
+/**
  * Recorre el fuente del backend del wizard y devuelve las infracciones encontradas.
  *
  * Cubre CUATRO formas, porque las tres primeras son agujeros que ya se midieron de verdad
@@ -141,9 +189,18 @@ export function detectarEscriturasDirectas(fuente, etiqueta = 'backend/Code.js')
   const RE_CIERRE      = /^\}/
   const entrecomillado = (s) => /^['"`]/.test((s || '').trim())
 
+  const lineasArr = texto.split('\n')
+  // Offset absoluto (sobre `texto`) donde empieza cada línea — hace falta para localizar,
+  // desde una línea, el índice real del `(` de apertura y poder escanear hacia adelante.
+  const inicioLineas = []
+  {
+    let offset = 0
+    for (const l of lineasArr) { inicioLineas.push(offset); offset += l.length + 1 }
+  }
+
   const hallazgos = []
   let pila = []
-  texto.split('\n').forEach((linea, i) => {
+  lineasArr.forEach((linea, i) => {
     const md = RE_FN_DECL.exec(linea) || RE_FN_EXPR.exec(linea)
     if (md) {
       if (md[1].length === 0) pila = [md[2]]   // función de nivel superior nueva
@@ -157,10 +214,22 @@ export function detectarEscriturasDirectas(fuente, etiqueta = 'backend/Code.js')
     const exenta = pila.some((n) => EXENTAS.has(n))
     const anota = (motivo) => hallazgos.push({ linea: i + 1, funcion: dentroDe, motivo, texto: `${etiqueta}:${i + 1}` })
 
-    if ((RE_ESCRITURA.test(linea) || RE_LOTE_ESCR.test(linea)) && !exenta) {
+    // ②53 — `ambito` es la llamada COMPLETA (posiblemente multi-línea) que arranca en esta
+    // línea, cuando la hay; si no la hay, o no se pudo cerrar dentro del tope, es la línea
+    // misma. Se comprueba EN ADICIÓN a `linea` (nunca en su lugar): así una llamada partida
+    // se detecta sin dejar de detectar lo que ya se detectaba línea a línea.
+    const posLlamada = linea.indexOf('appsheetRequest_(')
+    let ambito = linea
+    if (posLlamada !== -1) {
+      const idxParen = inicioLineas[i] + posLlamada + 'appsheetRequest_'.length
+      const llamada = extraerLlamadaAppsheetRequest_(texto, idxParen)
+      if (llamada) ambito = linea.slice(0, posLlamada) + 'appsheetRequest_' + llamada
+    }
+
+    if ((RE_ESCRITURA.test(linea) || RE_ESCRITURA.test(ambito) || RE_LOTE_ESCR.test(linea)) && !exenta) {
       anota(`escritura DIRECTA (Add/Edit/Delete) a AppSheet desde el backend anónimo — PROHIBIDO (vector de ataque). Porta la escritura al KMS vía kmsProxy_('enr.wizard…').`)
     }
-    const mc = RE_LLAMADA.exec(linea)
+    const mc = RE_LLAMADA.exec(linea) || RE_LLAMADA.exec(ambito)
     if (mc && !/function\s+appsheetRequest_/.test(linea) && !entrecomillado(mc[2]) && !exenta) {
       anota(`appsheetRequest_ con la ACCIÓN en variable o expresión ('${mc[2].trim().slice(0, 40)}') — PROHIBIDO: una acción no literal hace INDEMOSTRABLE que no sea un Add/Edit/Delete y evade el control. Pásala como literal ('Find') o porta la operación al KMS.`)
     }
