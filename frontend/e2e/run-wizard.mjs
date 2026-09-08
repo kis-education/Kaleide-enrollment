@@ -6164,6 +6164,13 @@ async function caminoIdiomasHablados(page, base) {
       !!(await casilla('primera', 'en')),
       'no se pintó ninguna casilla de idioma en la primera ficha: el paso no recoge el dato')) return c
 
+    // ── `①83` fila IDIOMAS — LAS OPCIONES SALEN DEL CATÁLOGO, no de una lista escrita
+    //    a mano. El doble sirve `ZZ-LANG-E2E`, un código que NO existe en
+    //    `constants/languages.js`: si aparece, la pantalla está leyendo el servidor.
+    c.afirmar('las casillas de idioma salen del catálogo del servidor, no de una lista escrita a mano',
+      !!(await casilla('primera', 'ZZ-LANG-E2E')),
+      'no se pintó ninguna casilla para «ZZ-LANG-E2E» (un código que solo existe en el catálogo del doble): las opciones siguen viniendo de la lista local')
+
     // ── (3) LO YA DECLARADO — el tutor viene del servidor con `es` declarado, y ①82
     //        (Diego: «siempre se debe poder editar el idioma») lo deja SIN bloquear ──
     const yaEs = await estado('primera', 'es')
@@ -6262,10 +6269,64 @@ async function caminoIdiomasHablados(page, base) {
       c.afirmar('al volver al paso, los idiomas declarados siguen marcados',
         alVolver.every(e => e && e.marcado),
         `las casillas volvieron ${JSON.stringify(alVolver)}: lo que la familia declaró se perdió al navegar`)
+
+      // Se avanza de nuevo ANTES de nada más: `Step2Persons` publica su borrador
+      // (`0º.tricies.quintricies`) mientras está montado, y el `atras` de arriba lo deja
+      // montado sobre Personas. Navegar a `about:blank` con él montado dispara el oyente
+      // de página oculta — ajeno a este camino, que mide el catálogo, no ese mecanismo.
+      // Al desmontarse (avanzando) el borrador se limpia solo (comentario en
+      // `registrarBorradorDelPaso`), así que la salida de este camino no lo hereda.
+      const botonesTrasVolver = await page.$$(BTN_SIGUIENTE)
+      if (botonesTrasVolver.length) {
+        await botonesTrasVolver[0].click()
+        await page.waitForTimeout(LATENCY + 500)
+      }
     }
+
+    // ── FASE B · SIN CATÁLOGO, LA PANTALLA LO DICE (`①83` fila IDIOMAS) ────────────
+    // Mismo criterio que `sexo-desde-el-catalogo`: el campo es OPCIONAL, así que un
+    // catálogo que no llega (KMS que aún no lo sirve, o lectura caída) no puede dejar
+    // el control mudo — un desplegable/casillero vacío que avanza sin avisar es cómo
+    // se pierde el dato para siempre.
+    await esperarSilencioDeRed(20000, 400)   // el precalentado en vuelo, no el producto
+    scenario.catalogoIdiomasVacio = true
+    // ⛔ SESIÓN LIMPIA DE VERDAD: la caché de MÓDULO de `api.js` (`_lookupsCache`) vive
+    // en el contexto de JavaScript de la página y SOBREVIVE a un cambio de hash, así
+    // que sin tirar el contexto la FASE B mediría el catálogo de la FASE A.
+    await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+    await page.goto('about:blank')
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras2 = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras2) break
+      await atras2.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('(B) se vuelve al paso de Personas con el catálogo de idiomas vacío',
+      (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(500)
+
+    // ── ANCLA: sin la caja de idiomas, las dos afirmaciones de abajo medirían el vacío.
+    const cajaIdiomas = await page.$(`[data-testid^="idiomas-"]`)
+    if (!c.afirmar('(B) el paso 2 sigue ofreciendo el campo de idiomas', !!cajaIdiomas,
+      'no se pintó ningún [data-testid^="idiomas-"]: sin el campo, lo de abajo no mide nada')) return c
+
+    const casillasSinCatalogo = await cajaIdiomas.$$('input[type="checkbox"]')
+    c.afirmar('(B) sin catálogo NO se pinta ninguna casilla escrita a mano',
+      casillasSinCatalogo.length === 0,
+      `se pintaron ${casillasSinCatalogo.length} casilla(s) sin catálogo del servidor: ha vuelto una lista escrita a mano en el asistente`)
+
+    const avisoIdiomas = await page.$('[data-testid^="idiomas-no-disponible-"]')
+    const textoAvisoIdiomas = avisoIdiomas ? ((await avisoIdiomas.textContent()) || '').trim() : null
+    c.afirmar('(B) la pantalla AVISA de que las opciones de idioma no se pudieron cargar',
+      !!textoAvisoIdiomas && textoAvisoIdiomas.length > 10,
+      `el aviso leído fue ${JSON.stringify(textoAvisoIdiomas)}: con la caja vacía y sin aviso, la familia avanza y el dato se pierde sin que nadie diga nada`)
 
     return c
   } finally {
+    scenario.catalogoIdiomasVacio = false
     limpiar()
   }
 }

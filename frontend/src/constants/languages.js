@@ -1,45 +1,29 @@
 /**
- * Curated ISO 639-1 language list for use in selects.
- * value = language code stored in DB (`enrPersonLanguages.language_id`);
- * label = display name. Sorted alphabetically by label.
+ * Curated ISO 639-1 language list — hoy es SOLO el DICCIONARIO DE RESPALDO para
+ * etiquetar un idioma que la familia ya declaró y que no está en el catálogo del
+ * servidor (dato heredado, u otro código escrito por otro camino). value = language
+ * code (`enrPersonLanguages.language_id`); label = display name.
  *
- * ── Por qué vive aquí y no en un catálogo de AppSheet (①45, 2026-08-22) ──────────
- * Medido contra `origin/master` antes de escribir esta lista: el lookup que el
- * asistente YA pide (`enr_wizardFetchLookups`, `kms-server/enr/wizard-gateway.gs`)
- * devuelve `allergies`/`dietary`/`medical`/`relationTypes`/`programs`/
- * `recTypesInterestedParty` — y NINGÚN catálogo de idiomas. El nombre `'languages'`
- * aparece UNA vez en todo el KMS (`_manual.gs`, dentro de la lista de tablas de un
- * banco de pruebas de latencia) y **no tiene ni un lector vivo**. Por tanto hoy no
- * hay catálogo que leer, y la falta de una tabla NO congela el desarrollo
- * (`kis-app/CLAUDE.md` §"Regla — la falta de columna/tabla AppSheet NO congela el
- * desarrollo"): se construye igual, con la lista aquí.
+ * ── `①83` fila IDIOMAS (2026-09-08) — YA NO ES LA FUENTE DE LAS OPCIONES ─────────
+ * Hasta hoy, `Step2Persons.jsx` pintaba SUS casillas directamente desde `LANGUAGES`
+ * — la lista escrita a mano de aquí abajo — que es justo lo que Diego pidió que
+ * dejara de pasar («no quiero ver ni un solo dato hardcodeado»). El KMS **ya sirve**
+ * el catálogo (`languages`, `enr_wizardFetchLookups` ← `enr_idiomasDelCatalogo_`,
+ * `kis-app kms-server/enr/wizard-gateway.gs`, reusando `sys_idiomasIndice_()`) con
+ * el MISMO molde que sexo/alergias/tipos de vínculo — y hoy ese catálogo coincide
+ * 1:1 con esta lista (medido el 2026-09-06, 49/49 códigos), así que el paso al
+ * catálogo del servidor NO deja sin ver ningún idioma ya declarado.
  *
- * Mismo molde que `countries.js`, y por el mismo motivo: `language_id` es TEXTO
- * LIBRE en Stage-1, así que un código ISO 639-1 encaja hoy sin tocar AppSheet, y el
- * selector de nacionalidad —que está en la MISMA fila del formulario— ya enseña sus
- * etiquetas en inglés. Dos catálogos vecinos con dos idiomas de etiqueta distintos
- * se leen como un error, no como una mejora.
+ * `Step2Persons.jsx` pinta ahora las opciones desde `catalogoDeIdiomas` (el lookup
+ * del servidor, sin escala este fichero). Lo que SIGUE viviendo aquí es
+ * `languageLabel()`, usado por `idiomasFueraDelCatalogo` para no dejar sin etiqueta
+ * a un idioma ya guardado que hoy no esté en la lista que sirve el servidor.
  *
- * ⚠️ LÍMITE HONESTO, medido: la ficha del personal enseña este valor **EN CRUDO**
- * (`kis-app frontend/src/worlds/services/admissions/ApplicationDetailPage.jsx:168`
- * → `l.language_id`), porque `enrPersonLanguages` no trae una columna de
- * designación como sí trae la nacionalidad (`nationality_designation`). O sea: hoy
- * Diego lee `es`, no `Spanish`. Resolver eso es del lado del KMS y NO se toca aquí.
- *
- * Cuando Stage-2 sirva un catálogo de idiomas por tenant, ESTA lista es lo que se
- * sustituye — igual que se hará con `countries.js`.
- *
- * ── LISTA PROVISIONAL (`①83`, 2026-09-06) — RE-MEDIDO Y CORREGIDO ────────────────
- * Diego pidió que ningún catálogo del asistente viva escrito a mano aquí dentro.
- * Al medir de nuevo (2026-09-06) resultó que el KMS **YA tiene** un catálogo con
- * estos 49 códigos — `kis-app kms-server/config/iso-languages.html` —, pero
- * declarado EN LA DIRECCIÓN CONTRARIA: su propia cabecera dice *«FUENTE ÚNICA: la
- * constante LANGUAGES del wizard… el wizard sigue siendo la fuente del catálogo
- * en Stage-1»*, o sea que HOY es una copia de ESTA lista, no al revés. Wirear el
- * asistente para que la lea desde ahí es de las tareas más baratas de `①83`
- * TRAMO C: los códigos ya coinciden 1:1, así que ninguna familia con un idioma
- * ya declarado pierde nada. Lo que falta lo decide `docs/kms/pendiente-diego.md`
- * **D132**. Esta lista se retira cuando ese tramo se construya — no antes.
+ * ⚠️ LÍMITE HONESTO, medido y sin tocar: la ficha del personal sigue enseñando este
+ * valor **EN CRUDO** (`kis-app frontend/src/worlds/services/admissions/
+ * ApplicationDetailPage.jsx:168` → `l.language_id`), porque `enrPersonLanguages` no
+ * trae columna de designación como sí trae la nacionalidad. Resolver eso es del
+ * lado del KMS y NO se toca aquí.
  */
 export const LANGUAGES = [
   { value: 'ar', label: 'Arabic' },

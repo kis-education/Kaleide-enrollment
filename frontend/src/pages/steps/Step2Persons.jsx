@@ -4,7 +4,7 @@ import { useWizard } from '../../context/WizardContext';
 import * as log from '../../logger';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
-import { LANGUAGES, languageLabel } from '../../constants/languages';
+import { languageLabel } from '../../constants/languages';
 import LockedBanner from '../../components/LockedBanner';
 import StepNav from '../../components/StepNav';
 import { generateUuid } from '../../utils/uuid';
@@ -500,7 +500,7 @@ function AbbreviatedGuardianRow({ person, onChange, onRemove, avisar, invalid })
   );
 }
 
-function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar, valoresDeSexo = [], sexoNoDisponible = false }) {
+function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar, valoresDeSexo = [], sexoNoDisponible = false, catalogoDeIdiomas = [], idiomasNoDisponible = false }) {
   const { t } = useTranslation();
   // UX-2: resaltado por-campo. `inv(field)` consulta si está marcado inválido; editar un
   // campo lo limpia (vía onFieldEdit, subido al estado del padre).
@@ -578,12 +578,13 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
       : [...actuales, { language_id: code }];
     u('languages', next);
   };
-  // Los idiomas que la familia ya declaró y que NO están en el catálogo curado (dato
-  // heredado, u otro camino que escribió otro código): se pintan igual, con su código
-  // crudo. Esconder un idioma ya declarado sería mentir sobre lo que hay guardado.
+  // Los idiomas que la familia ya declaró y que NO están en el catálogo que sirve HOY el
+  // servidor (dato heredado, u otro camino que escribió otro código, o un catálogo que
+  // todavía no llegó): se pintan igual, con `languageLabel()` como respaldo de etiqueta.
+  // Esconder un idioma ya declarado sería mentir sobre lo que hay guardado.
   const idiomasFueraDelCatalogo = (person.languages || [])
     .map(l => (l && l.language_id) || '')
-    .filter(c => c && !LANGUAGES.some(l => l.value === c));
+    .filter(c => c && !catalogoDeIdiomas.some(o => o.code === c));
 
   const updateSchool = (i, val) => {
     const ps = [...(person.previous_schools || [])];
@@ -698,21 +699,23 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
             persona, admite varios, y no está acotado a los idiomas en los que el KMS
             rinde (una familia habla francés aunque el sistema no hable francés).
             ①82 — un idioma YA guardado se puede desmarcar igual que los demás; ver
-            `toggleLanguage` arriba para el camino de retirada. */}
+            `toggleLanguage` arriba para el camino de retirada.
+            `①83` fila IDIOMAS — las opciones salen del CATÁLOGO que manda el servidor
+            (`catalogoDeIdiomas`), mismo molde que el sexo unas líneas arriba. */}
         <div className="col-12">
           <label className="form-label">{t('field.languages')}</label>
           <div className="d-flex flex-wrap gap-2" data-testid={`idiomas-${_pk}`}>
-            {LANGUAGES.map(l => {
-              const marcado = hablaIdioma(l.value);
+            {catalogoDeIdiomas.map(o => {
+              const marcado = hablaIdioma(o.code);
               return (
-                <div className="form-check form-check-inline me-0" key={l.value}>
+                <div className="form-check form-check-inline me-0" key={o.code}>
                   <input type="checkbox" className="form-check-input"
-                    id={`lang_${_pk}_${l.value}`}
-                    data-testid={`idioma-${l.value}`}
+                    id={`lang_${_pk}_${o.code}`}
+                    data-testid={`idioma-${o.code}`}
                     checked={marcado}
-                    onChange={() => toggleLanguage(l.value)} />
-                  <label className="form-check-label small" htmlFor={`lang_${_pk}_${l.value}`}>
-                    {l.label}
+                    onChange={() => toggleLanguage(o.code)} />
+                  <label className="form-check-label small" htmlFor={`lang_${_pk}_${o.code}`}>
+                    {o.designation}
                   </label>
                 </div>
               );
@@ -721,6 +724,14 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           {idiomasFueraDelCatalogo.length > 0 && (
             <div className="form-text">
               {t('field.languages_other', { list: idiomasFueraDelCatalogo.map(languageLabel).join(', ') })}
+            </div>
+          )}
+          {/* El campo es OPCIONAL, así que un desplegable vacío NO bloquearía el paso —
+              y ése es justo el peligro: la familia avanza y el dato se pierde sin que
+              nadie diga nada. Falla NOMBRANDO, mismo criterio que `field.gender_unavailable`. */}
+          {idiomasNoDisponible && (
+            <div className="form-text text-danger" data-testid={`idiomas-no-disponible-${_pk}`}>
+              {t('field.languages_unavailable')}
             </div>
           )}
           <div className="form-text">{t('field.languages_help')}</div>
@@ -1056,6 +1067,23 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   // se DICE en pantalla al lado del campo.
   const [valoresDeSexo, setValoresDeSexo] = useState([]);
   const [sexoNoDisponible, setSexoNoDisponible] = useState(false);
+  // `①83` fila IDIOMAS — LOS IDIOMAS QUE PUEDE DECLARAR CADA PERSONA.
+  //
+  // Mismo molde que `valoresDeSexo`, dos filas arriba, y la MISMA llamada a
+  // `fetchLookups`: el KMS ya sirve el catálogo (`languages`, `enr_idiomasDelCatalogo_`)
+  // en la misma lista que sexo/alergias/tipos de vínculo — no se abre una petición nueva.
+  //
+  // ⛔ `constants/languages.js` (`LANGUAGES`) deja de ser la fuente de las opciones y pasa
+  // a ser SOLO el diccionario de respaldo para pintar la etiqueta de un código que la
+  // familia ya declaró y que hoy no está en el catálogo del servidor (heredado, u otro
+  // camino que escribió otro código) — `idiomasFueraDelCatalogo`, más abajo, sigue
+  // necesitando ese respaldo para no ocultar un dato ya guardado.
+  //
+  // ⚠️ Igual que el sexo: sin catálogo el campo NO puede quedarse mudo (es OPCIONAL, nada
+  // en `handleNext` lo exige), así que un fallo se DICE en vez de dejar un control vacío
+  // que la familia no note.
+  const [catalogoDeIdiomas, setCatalogoDeIdiomas] = useState([]);
+  const [idiomasNoDisponible, setIdiomasNoDisponible] = useState(false);
   useEffect(() => {
     fetchLookups(i18n.language)
       .then(data => {
@@ -1068,10 +1096,17 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         // servidor ya dice su motivo (`genderValuesReason`) en el registro; a la familia se
         // le dice, en llano, que las opciones no se pudieron cargar y que puede seguir.
         setSexoNoDisponible(vs.length === 0);
+        const ls = ((data && data.languages) || []).filter(l => l && l.code);
+        log.info('Step2: idiomas del catálogo', {
+          count: ls.length, motivo: (data && data.languagesReason) || null,
+        });
+        setCatalogoDeIdiomas(ls);
+        setIdiomasNoDisponible(ls.length === 0);
       })
       .catch(err => {
         log.error('Step2: fetchLookups failed', { message: err.message });
         setSexoNoDisponible(true);
+        setIdiomasNoDisponible(true);
       });
   }, [i18n.language]);
 
@@ -1570,6 +1605,8 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               onFieldEdit={clearInvalidField}
               valoresDeSexo={valoresDeSexo}
               sexoNoDisponible={sexoNoDisponible}
+              catalogoDeIdiomas={catalogoDeIdiomas}
+              idiomasNoDisponible={idiomasNoDisponible}
             />
           );
         })}
@@ -1701,6 +1738,8 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               onFieldEdit={clearInvalidField}
               valoresDeSexo={valoresDeSexo}
               sexoNoDisponible={sexoNoDisponible}
+              catalogoDeIdiomas={catalogoDeIdiomas}
+              idiomasNoDisponible={idiomasNoDisponible}
             />
           );
         })}

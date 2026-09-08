@@ -238,6 +238,7 @@
   "field.languages": "Idiomas que habla (opcional)",
   "field.languages_help": "Marca todos los que hable. Puedes dejarlo en blanco. Un idioma ya guardado también se puede desmarcar.",
   "field.languages_other": "También declarados: {{list}}",
+  "field.languages_unavailable": "No se han podido cargar las opciones de idioma. Puedes continuar sin rellenarlo y completarlo más adelante.",
   "field.id_type": "Tipo de documento",
   "field.id_number": "Número de documento",
   "field.profession": "Profesión",

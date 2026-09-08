@@ -165,8 +165,13 @@ function lookupsSegunEscenario_(scenario) {
         neaeScopes: [], neaeScopesReason: 'CATALOGO_VACIO',
       }
     : {};
+  // `①83` fila IDIOMAS — el mismo caso que `catalogoSexoVacio`: un KMS que aún no sirve
+  // `languages`, o una lectura caída.
+  const idiomas = (scenario && scenario.catalogoIdiomasVacio)
+    ? { languages: [], languagesReason: 'CATALOGO_VACIO' }
+    : {};
   if (modo !== 'appsheet' && modo !== 'ilegible') {
-    return { ...LOOKUPS, programs: programas, ...sexo, ...neae };
+    return { ...LOOKUPS, programs: programas, ...sexo, ...neae, ...idiomas };
   }
   const convertir = modo === 'appsheet'
     ? aFormatoAppSheet_
@@ -184,6 +189,7 @@ function lookupsSegunEscenario_(scenario) {
     })),
     ...sexo,
     ...neae,
+    ...idiomas,
   };
 }
 
@@ -295,6 +301,22 @@ const LOOKUPS = {
     { code: 'EXTERNAL_CURRENT',  designation: 'Externo actual (E2E)' },
   ],
   neaeScopesReason: null,
+  // ── `①83` fila IDIOMAS (2026-09-08) — LOS IDIOMAS QUE PUEDE DECLARAR CADA PERSONA ──
+  // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation}`, tal cual la arma
+  // `enr_idiomasDelCatalogo_` (`kis-app kms-server/enr/wizard-gateway.gs`, reusando
+  // `sys_idiomasIndice_`) y la sirve `enr_wizardFetchLookups` bajo `languages`.
+  //
+  // `es`/`en`/`fr` tienen que estar (el camino `idiomas-hablados` los usa por su código
+  // literal — `es` es el ya declarado del tutor 1, `en`/`fr` los que marca el alumno) y
+  // se añade `ZZ-LANG-E2E`, fuera de todo catálogo real, para que quede claro que la
+  // pantalla pinta lo que sirve el servidor y no una lista escrita a mano.
+  languages: [
+    { code: 'es', designation: 'Español (E2E)' },
+    { code: 'en', designation: 'Inglés (E2E)' },
+    { code: 'fr', designation: 'Francés (E2E)' },
+    { code: 'ZZ-LANG-E2E', designation: 'Idioma E2E' },
+  ],
+  languagesReason: null,
 };
 
 /**
