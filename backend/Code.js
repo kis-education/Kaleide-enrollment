@@ -2498,6 +2498,10 @@ function doGet(e) {
  * @returns {TextOutput}
  */
 function doPost(e) {
+  // ④31 — cuánto tarda POR DENTRO, del primer instante al último, para poder restarlo
+  // del tiempo de reloj que ve quien llama y separar el peaje del salto (§"El salto del
+  // asistente al KMS…" en loop-backlog.md). Molde: `apiDispatch_` del KMS (`__perf.ms`).
+  const _perfT0_ = Date.now();
   try {
     const payload = JSON.parse(e.postData.contents);
     _dbgStart_(payload); // DBG-TRACE: cronología server-side si _dbg:true
@@ -2601,7 +2605,10 @@ function doPost(e) {
     }
 
     const dbgB = _dbgBlock_();
-    return jsonResponse_(dbgB ? { ok: true, ...result, _dbg: dbgB } : { ok: true, ...result });
+    const __perf = { ms: Date.now() - _perfT0_ };
+    return jsonResponse_(dbgB
+      ? { ok: true, ...result, _dbg: dbgB, __perf: __perf }
+      : { ok: true, ...result, __perf: __perf });
 
   } catch (err) {
     // KAL-11: log full message internally with email/UUID redaction (Stackdriver interno).
