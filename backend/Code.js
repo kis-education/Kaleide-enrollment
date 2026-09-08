@@ -2586,6 +2586,9 @@ function doPost(e) {
       // forget del frontend tras pedir magic link; ticket single-use o KAL-4 directo).
       case 'warmBundle':              result = warmBundle_(payload);              break;
       case 'notifyLiveStateChange':   result = notifyLiveStateChange_(payload);   break;
+      // D118 punto 4 — el KMS empuja la copia YA COMPUTADA (no solo avisa). Mismo gate
+      // firmado que notifyLiveStateChange; lo llama SOLO el KMS.
+      case 'pushWarmHydrate':         result = pushWarmHydrate_(payload);         break;
       case 'getLiveStateVersion':     result = getLiveStateVersion_(payload);     break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
       // getTrackingData, getInterviewForEnrollment, getAdmissionDecisionForEnrollment,
@@ -9820,6 +9823,60 @@ function notifyLiveStateChange_(p) {
   const version = _bumpLiveStateVersion_(groupId, clases);
   Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (v.event.reason || '?') + ' clases=' + clases.join(',') + ' -> v' + version));
   return { ok: true, bumped: true, version: version };
+}
+
+/**
+ * D118 punto 4 (Diego, 2026-09-07) — recibe la copia YA COMPUTADA que el KMS empuja por el
+ * canal firmado (DL-S106; `enr_pushWarmHydrateCopyToWizard_`, `kms-server/enr/wizard-warm.gs`),
+ * y la ESCRIBE en la MISMA caja que lee `warmEntryBundle_`/`hydrateSession_` cuando esa
+ * familia entra por su enlace. NO es un endpoint de usuario: lo llama SOLO el KMS.
+ * Verificación firma→ventana→no-repetición ANTES de mirar el contenido — el MISMO gate
+ * que `notifyLiveStateChange_` (`verifySignedKmsNotice_`), mismo criterio de rechazo en
+ * silencio.
+ *
+ * ⛔ SOLO GUARDA. Quién puede LEER esta copia lo sigue decidiendo su propia puerta —el
+ * código de un solo uso (②27), KAL-4— exactamente igual que hoy: esto no adelanta ni un
+ * dato a nadie que no fuera ya a recibirlo por el camino de siempre.
+ *
+ * ⛔ NUNCA BUMPA LA VERSIÓN DE CLASE — SOLO LA LEE. La versión de clase es POR GRUPO, no
+ * por tutor (`_claseVersionKey_`); bumparla aquí invalidaría de golpe la copia de
+ * CUALQUIER OTRO tutor del mismo expediente que ya estuviera caliente — justo lo
+ * contrario de lo que este empuje viene a conseguir. Se archiva bajo la versión de clase
+ * QUE HAYA AHORA MISMO: si alguien la bumpó un instante antes (otro cambio en vuelo), la
+ * entrada queda tildada vieja y el siguiente que la lea recalcula en vivo — degradación
+ * segura, nunca un dato incorrecto servido.
+ *
+ * ⛔ EL `n` QUE LLEGA ES `email_id` DE `enrEmails`, NUNCA el email en claro ni el
+ * `resume_token`. Se pasa TAL CUAL a `_wzN_` — que devuelve la rama `nTrim` sin
+ * transformarlo— para que la clave coincida BYTE A BYTE con la que calcula
+ * `hydrateSession_`/`warmEntryBundle_` cuando esa misma familia entra por su `?n=`.
+ *
+ * @param {Object} p — { action, event:{enrollment_group_id, n, payload}, nonce, timestamp, signature }
+ * @returns {{ok:boolean, stored?:boolean, reason?:string}}
+ */
+function pushWarmHydrate_(p) {
+  p = p || {};
+  const v = verifySignedKmsNotice_(p, 'pushWarmHydrate');
+  if (!v.ok) return { ok: false, reason: 'UNAUTHORIZED' };
+
+  const groupId = v.event.enrollment_group_id;
+  const n = v.event.n;
+  const payload = v.event.payload;
+  try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
+  if (!n || typeof n !== 'string' || n.length > 200) return { ok: false, reason: 'BAD_REQUEST' };
+  if (!payload || typeof payload !== 'object') return { ok: false, reason: 'BAD_REQUEST' };
+
+  try {
+    const cache = CacheService.getScriptCache();
+    const key = _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, null));
+    const version = _versionDeClase_(groupId, 'hyd');
+    const stored = _wzCachePutChunked_(cache, key, JSON.stringify({ v: version, data: payload }), 1800);
+    Logger.log(redact_('[pushWarmHydrate_] group=' + groupId + ' n=' + String(n).slice(0, 8) + '… v=' + version + ' stored=' + stored));
+    return { ok: true, stored: !!stored };
+  } catch (e) {
+    Logger.log('[pushWarmHydrate_] non-fatal — ' + (e && e.message));
+    return { ok: false, reason: 'STORE_FAILED' };
+  }
 }
 
 /**
