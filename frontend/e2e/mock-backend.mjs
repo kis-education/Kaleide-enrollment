@@ -590,7 +590,7 @@ function recortarPorTutorE2E_(data, viewerN) {
  *   (que es lo que hace aterrizar en Documentos); con lista, el paso queda por visitado y
  *   el aterrizaje se va a Revisión, igual que en el sistema real.
  */
-export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision, dosHermanosAdmitidos) {
+export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision, dosHermanosAdmitidos, sesionFirmaActivaHijo, aterrizarEnGdpr) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -792,10 +792,22 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
       signing_available: true,
       signing_ready:     true,
       signing_status:    'READY',
+      // `0º.tricies.novemtricies` (b), 2026-09-08: `entity_id` es el ancla REAL de la sesión
+      // de firma (DL-S105 §10 = `enrollment_id` del hijo). El doble refleja el CONTRATO REAL
+      // — `sesionFirmaActivaHijo` (1|2) fija a cuál de los dos hijos de `por_alumno` pertenece
+      // ESTA sesión, tal y como lo haría el KMS con dos sesiones vivas; sin la palanca, ningún
+      // recorrido existente cambia (`entity_id` queda `undefined`, byte-idéntico a ayer).
       signing_context: {
-        signer_id:  'signer-e2e-1',
-        session_id: 'sess-e2e-1',
-        steps: { billing_confirmed: false, gdpr_completed: false, review_completed: false, signed: false },
+        signer_id:          'signer-e2e-1',
+        session_id:         'sess-e2e-1',
+        // El CONTRATO real (`resolveGuardianSigningContext_`/`resolveSigningContextFromSession_`)
+        // siempre lleva `guardian_person_id` — es el mismo tutor que `recovered_guardian_person_id`
+        // resuelve unas líneas más arriba. Sin él, `Step9Gdpr.jsx` nunca añade al propio tutor
+        // como sujeto de la matriz de imagen, y esa mitad del contrato quedaría sin ejercitar.
+        guardian_person_id: viewerIdE2E_(viewerN) || FIXTURE.guardian1Id,
+        entity_id:  sesionFirmaActivaHijo === 2 ? 'enr-e2e-2'
+          : sesionFirmaActivaHijo === 1 ? 'enr-e2e-1' : undefined,
+        steps: { billing_confirmed: !!aterrizarEnGdpr, gdpr_completed: false, review_completed: false, signed: false },
       },
     },
   }, viewerN);
@@ -957,7 +969,8 @@ export function createDispatcher(scenario, record) {
         };
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
-        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos);
+        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos,
+        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr);
       // ⚠️ EL DOBLE NO PUEDE CONTRADECIRSE A SÍ MISMO (medido el 2026-08-27): la hidratación
       // decía SIEMPRE «sin reparto guardado» mientras `getSavedBillingSplits` devolvía 60/40.
       // En el servidor real las dos salen de la MISMA fuente (`billing_splits` de la
@@ -1041,7 +1054,8 @@ export function createDispatcher(scenario, record) {
     // tiempo restante sigue bajando.
     getAdmissionState: (p) => {
       const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
-        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos);
+        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos,
+        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr);
       const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
       // 0º.tricies.octies (B) — los pasos cuyo ÚLTIMO guardado murió en la cola del KMS.
       // Copia declarada del contrato real (`enr_guardadosQueNoLlegaron_`): CÓDIGOS de paso,

@@ -3486,6 +3486,83 @@ async function caminoTramoFirma(page, base) {
 }
 
 /**
+ * `0º.tricies.novemtricies` (b), 2026-09-08 — el CLIENTE construía su matriz de
+ * consentimientos de imagen sobre TODOS los solicitantes de la solicitud, no sobre el hijo
+ * de la sesión de firma ACTIVA. Un tutor que encadena la firma de sus dos hijos veía la
+ * misma matriz con los dos nombres en cada pasada, en vez de una pantalla por hijo.
+ *
+ * El servidor ya anclaba cada sesión de firma al EXPEDIENTE del hijo (DL-S105 §10,
+ * `signing_context.entity_id`) y ya mandaba `admission.por_alumno` con ese mismo
+ * `enrollment_id` por hijo — lo que faltaba era casar los dos en `Step9Gdpr.jsx`.
+ *
+ * ⛔ ANCLA por delante en las dos fases: sin comprobar que el paso 9 llegó a pintar antes de
+ * leer sus bloques, las demás afirmaciones pasarían sobre una pantalla que no se montó.
+ */
+async function caminoGdprPorHijo(page, base) {
+  const c = new Camino('gdpr-por-hijo')
+  scenario.stage = 'firma'
+  scenario.dosHermanosAdmitidos = true
+  scenario.aterrizarEnGdpr = true
+  try {
+    // ── FASE 1 · la sesión de firma ancla al PRIMER hijo ──────────────────────────────
+    scenario.sesionFirmaActivaHijo = 1
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 800)
+
+    const pantalla1 = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla1.pasos + pantalla1.campos + pantalla1.tarjetas
+    if (!c.afirmar('ANCLA · con la sesión anclada al primer hijo, aterriza en el paso de consentimientos (9.º)',
+      pantalla1.pasoActivo === 8,
+      `aterrizó en el índice ${pantalla1.pasoActivo} (se esperaba 8): lo que sigue no mediría nada`)) return c
+
+    const bloques1 = await page.$$eval('[data-testid="gdpr-image-subject"]', els => els.map(e => (e.innerText || '').trim()))
+    c.afirmar('con la sesión anclada al PRIMER hijo, la matriz de imagen enseña solo su ficha',
+      bloques1.some(t => /RobotHijoE2E/i.test(t)) && !bloques1.some(t => /RobotHijoDosE2E/i.test(t)),
+      `los bloques leídos fueron ${JSON.stringify(bloques1)}: un tutor que firma la matrícula de un hijo `
+      + 'no debería ver también los derechos de imagen del otro hijo en la misma pasada')
+
+    // ── FASE 2 · la MISMA familia, la sesión ancla ahora al SEGUNDO hijo ──────────────
+    scenario.sesionFirmaActivaHijo = 2
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 800)
+
+    const pantalla2 = await page.evaluate(sondaPantalla)
+    if (!c.afirmar('ANCLA · re-navegando con la sesión anclada al segundo hijo, sigue aterrizando en consentimientos',
+      pantalla2.pasoActivo === 8,
+      `aterrizó en el índice ${pantalla2.pasoActivo} (se esperaba 8): lo que sigue no mediría nada`)) return c
+
+    const bloques2 = await page.$$eval('[data-testid="gdpr-image-subject"]', els => els.map(e => (e.innerText || '').trim()))
+    c.afirmar('al encadenar la firma del SEGUNDO hijo, la matriz cambia de ficha y no repite la del primero',
+      bloques2.some(t => /RobotHijoDosE2E/i.test(t)) && !bloques2.some(t => /RobotHijoE2E/i.test(t) && !/RobotHijoDosE2E/i.test(t)),
+      `los bloques leídos fueron ${JSON.stringify(bloques2)}: encadenar la firma de dos hijos debe cambiar `
+      + 'de pantalla, no repetir la del primero')
+
+    // ── FASE 3 · sin dato de ancla (sesión LEGADA, `entity_id` ausente) — DEGRADA a lo de
+    // siempre: se enseñan LOS DOS hijos, para no ocultarle nunca a un tutor un consentimiento
+    // que de verdad tiene que dar.
+    scenario.sesionFirmaActivaHijo = null
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 800)
+
+    const pantalla3 = await page.evaluate(sondaPantalla)
+    if (!c.afirmar('ANCLA · sin dato de ancla, el tramo de firma sigue aterrizando en consentimientos',
+      pantalla3.pasoActivo === 8,
+      `aterrizó en el índice ${pantalla3.pasoActivo} (se esperaba 8): lo que sigue no mediría nada`)) return c
+
+    const bloques3 = await page.$$eval('[data-testid="gdpr-image-subject"]', els => els.map(e => (e.innerText || '').trim()))
+    c.afirmar('sin poder resolver de qué hijo es la sesión (caso legado), DEGRADA mostrando a los DOS hijos',
+      bloques3.some(t => /RobotHijoE2E/i.test(t) && !/RobotHijoDosE2E/i.test(t)) && bloques3.some(t => /RobotHijoDosE2E/i.test(t)),
+      `los bloques leídos fueron ${JSON.stringify(bloques3)}: sin poder resolver la sesión activa, ocultar a un `
+      + 'hijo del consentimiento sería peor que enseñar de más')
+  } finally {
+    scenario.dosHermanosAdmitidos = false
+    scenario.aterrizarEnGdpr = false
+    scenario.sesionFirmaActivaHijo = null
+  }
+  return c
+}
+
+/**
  * ⭐ EL PASO 8 AL DÍA (2026-08-27) — el paso 8 se quedó DOS pasadas por detrás del 7 siendo
  * la MISMA pantalla de dinero, y NADIE se enteró porque **no tenía ni una afirmación**: el
  * doble devolvía `subscriptions: []`. Este camino lo cubre.
@@ -10133,6 +10210,7 @@ const CAMINOS = [
   // ANTES del tramo de firma porque es lo que lo destapa (sin `AD` no hay firma que pintar).
   ...(REAL ? [{ nombre: 'expediente-completo', fn: caminoExpedienteCompleto, minLlamadas: 8, minElementos: 11 }] : []),
   { nombre: 'tramo-firma',         fn: caminoTramoFirma,         minLlamadas: 1, minElementos: 11 },
+  { nombre: 'gdpr-por-hijo',       fn: caminoGdprPorHijo,        minLlamadas: 1, minElementos: 5 },
   { nombre: 'paso8-al-dia',        fn: caminoPaso8AlDia,         minLlamadas: 1, minElementos: 5 },
   { nombre: 'reparto-no-se-siembra-de-vacio', fn: caminoRepartoNoSeSiembraDeVacio,
     minLlamadas: 1, minElementos: 5 },

@@ -30,7 +30,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   const { t, i18n } = useTranslation();
   const {
     enqueueSave, stepData, recoveredEmail, recoveryNonce,
-    signingForms, updateSigningForm,
+    signingForms, updateSigningForm, admissionState,
   } = useWizard();
   // MAPEO CENTRAL (Diego 2026-06-12): el candado viene de getStepEditMode via
   // props locked/onUnlock — este paso no computa su propio lock.
@@ -39,7 +39,23 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   const fullName_ = (p) => [p.first_name, p.middle_name, p.last_name].filter(x => x && String(x).trim()).join(' ').trim();
   const persons = (stepData && stepData.persons) || [];
   const guardianPersonId = signerCtx?.guardian_person_id || null;
-  const applicants = persons.filter(p => p.person_type_id === 'applicant');
+  const applicantsAll = persons.filter(p => p.person_type_id === 'applicant');
+  // `0º.tricies.novemtricies` (b), 2026-09-08: la matriz de imagen enseñaba a TODOS los
+  // solicitantes de la solicitud en cada pasada de firma — un tutor que encadena la firma
+  // de sus dos hijos veía la misma pantalla dos veces con los dos nombres, en vez de una
+  // pantalla por hijo. La sesión de firma ACTIVA ancla al EXPEDIENTE del hijo (DL-S105 §10,
+  // `signerCtx.entity_id` = `enrollment_id`), y el servidor ya manda ese mismo `enrollment_id`
+  // por hijo en `admissionState.por_alumno` (D103). Se casan los dos para saber de quién es
+  // ESTA sesión. Sin resolver (sesión legada anclada al grupo, o dato ausente) se degrada al
+  // comportamiento de siempre — TODOS los solicitantes — para no ocultarle nunca a un tutor un
+  // consentimiento que de verdad tiene que dar.
+  const porAlumno = Array.isArray(admissionState?.por_alumno) ? admissionState.por_alumno : [];
+  const sesionActivaHijo = signerCtx?.entity_id
+    ? porAlumno.find(a => a && a.enrollment_id === signerCtx.entity_id) || null
+    : null;
+  const applicants = (sesionActivaHijo && sesionActivaHijo.applicant_person_id)
+    ? applicantsAll.filter(a => (a.person_id || a._uid) === sesionActivaHijo.applicant_person_id)
+    : applicantsAll;
   const selfGuardian = persons.find(p => (p.person_id || p._uid) === guardianPersonId) || null;
   // Sujetos de la matriz de imagen: niños del grupo + el propio tutor firmante.
   const imageSubjects = [
@@ -191,7 +207,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
             <h3 style={{ color: 'var(--teal-dk)', fontWeight: 700, fontSize: '1rem', marginBottom: 4 }}>{t('signing.gdpr.image_rights_heading')}</h3>
             <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginBottom: 12 }}>{t('signing.gdpr.image_rights_subtitle')}</p>
             {imageSubjects.map(s => (
-              <div key={s.id} className="border rounded p-2 mb-3" style={{ background: 'var(--bg)' }}>
+              <div key={s.id} data-testid="gdpr-image-subject" className="border rounded p-2 mb-3" style={{ background: 'var(--bg)' }}>
                 <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8, color: 'var(--teal-dk)' }}>
                   <i className={`bi ${s.kind === 'self' ? 'bi-person-badge' : 'bi-person'} me-1`} />{s.name}
                 </div>

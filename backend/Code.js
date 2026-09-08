@@ -2278,6 +2278,11 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
     var signingToken = (sctxH && sctxH._signer_row && sctxH._signer_row.signing_token) || null;
     var sessionId    = (sctxH && sctxH.session_id) || null;
     var signerId     = (sctxH && sctxH.signer_id) || null;
+    // `0º.tricies.novemtricies` (b), 2026-09-08: mismo `entity_id` que
+    // `resolveGuardianSigningContext_`/`resolveSigningContextFromSession_` — el hydrate
+    // del KMS (`sctxH`) es otra forma y hoy no lo trae; el resolvedor local (`sctxW`) sí,
+    // desde este mismo cambio. Sin él, degrada a `null` — el cliente ya sabe tratarlo.
+    var entityId = (sctxH && sctxH.entity_id) || null;
     if (!signingToken && groupId && guardianPid) {
       try {
         var firmaW = _datosDeFirmaDelExpediente_(token);
@@ -2288,6 +2293,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
           signingToken = sctxW.signing_token;
           sessionId    = sctxW.session_id;
           signerId     = sctxW.signer_id;
+          entityId     = sctxW.entity_id || entityId;
         }
       } catch (eS) { /* pre-AD o sin sesión: nada que calentar */ }
     }
@@ -2313,6 +2319,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
             session_id:         sessionId || null,
             guardian_person_id: guardianPid,
             signing_token:      signingToken,
+            entity_id:          entityId || null,
           } : null;
           var d = derivarPantallaAdmision_(admSrc.state_code || null,
                                            admSrc.signing_status || null, ctx);
@@ -5058,6 +5065,15 @@ function resolveSigningContextFromSession_(groupId, persons, sessionsHint, signe
   return {
     signer_id:          chosen.signer_id || null,
     session_id:         session.session_id || null,
+    // `0º.tricies.novemtricies` (b), 2026-09-08: desde DL-S105 §10 la sesión ancla al
+    // EXPEDIENTE DEL HIJO (`sysSigningSessions.entity_id = enrollmentId`), no al grupo.
+    // Sin esto el cliente no podía saber de QUÉ hijo es la sesión activa, y su matriz de
+    // consentimientos de imagen (Step9Gdpr.jsx) enseñaba a TODOS los solicitantes de la
+    // solicitud en cada pasada — un tutor que encadena la firma de sus dos hijos veía la
+    // misma pantalla dos veces. Sesiones legadas (ancladas al grupo) devuelven aquí el
+    // `enrollment_group_id`, que `admissionState.por_alumno` nunca casa como `enrollment_id`
+    // ⇒ el cliente degrada solo, sin tocar nada más.
+    entity_id:          session.entity_id || null,
     guardian_person_id: chosen.signer_person_id || null,
     signing_token:      chosen.signing_token,
   };
@@ -5115,6 +5131,9 @@ function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint,
   return {
     signer_id:          signer.signer_id || null,
     session_id:         session.session_id || null,
+    // `0º.tricies.novemtricies` (b) — ver el comentario gemelo en
+    // `resolveSigningContextFromSession_`, arriba: mismo campo, mismo motivo.
+    entity_id:          session.entity_id || null,
     guardian_person_id: guardianPersonId,
     signing_token:      signer.signing_token,
   };
