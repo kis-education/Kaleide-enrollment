@@ -10,25 +10,23 @@ import * as log from '../../logger';
 // El staging siempre escribe provenance=FAMILY_DECLARED server-side. Q4
 // (willing_to_share_reports) retirada por decisión de Diego 2026-07-12.
 //
-// ── LISTAS PROVISIONALES (`①83`, 2026-09-06) — RE-MEDIDO Y CORREGIDO ─────────────
-// Diego pidió que ningún catálogo del asistente viva escrito a mano aquí dentro.
-// Al medir de nuevo (2026-09-06) resultó que DOS de estas cuatro listas YA TIENEN
-// su catálogo en el KMS, con los MISMOS códigos: `NEAE_CATEGORIES` en
-// `kis-app kms-server/config/neae-categories.html` y `NEAE_SUPPORTS` en
-// `…/config/neae-support-types.html` (los dos, Capa 2, ya sirven `{code, label}`
-// por el mecanismo `descriptor-enum-injected-config` — hoy solo al panel de
-// personal, gateado a SYS.CONFIG.EDIT; wirearlos aquí es copiar el molde de
-// `genderValues`, `0º.tricies.duodecies`). `NEAE_DIAGNOSIS` es un CICLO
-// (`sysStates_T`: SUSPECTED→IN_EVALUATION→DIAGNOSED), un mecanismo distinto —
-// más trabajo, no una lista plana. `NEAE_SCOPES` (2 valores) NO tiene catálogo
-// en ninguna parte todavía: es la más barata de dar de alta si se decide hacerlo.
-// Nada de esto se pierde al wirearlo: los códigos ya coinciden. Lo que falta lo
-// decide `docs/kms/pendiente-diego.md` **D132**. Estas listas se retiran cuando
-// ese tramo se construya — no antes.
-const NEAE_CATEGORIES = ['ASD', 'GIFTED', 'ADHD', 'SLD', 'DEVELOPMENTAL_DELAY', 'SENSORY', 'MOTOR', 'LANGUAGE', 'OTHER'];
+// ── `①83` TRAMO C (2026-09-08) — las TRES listas de arriba SALEN DEL CATÁLOGO ────
+// Diego: «Mira todos los catálogos que están hardcodeados en el wizard y arréglalo
+// de una puta vez. No quiero ver ni un solo dato hardcodeado!!». El KMS ya sirve
+// `neaeCategories`/`neaeSupportTypes`/`neaeScopes` por el MISMO canal que
+// `genderValues` (`enr.wizardFetchLookups` → `enr_catalogoDeOpciones_`, desplegado
+// `@1544`), con la designación YA localizada en el idioma pedido — mismo molde que
+// `0º.tricies.duodecies`, copiado sin rediseñar. Las tres se piden en el `useEffect`
+// de más abajo y se pintan con las TRES situaciones de siempre: cargando (aún no se
+// sabe) · con catálogo · sin catálogo (se DICE al lado del campo, campo opcional ⇒
+// nunca se calla).
+//
+// `NEAE_DIAGNOSIS` NO entra: es un CICLO (`sysStates_T`:
+// SUSPECTED→IN_EVALUATION→DIAGNOSED, design/neae-module-2026-07-12.md §7 decisión 4)
+// sin sembrar todavía — servirlo como lista plana falsearía el mecanismo que el
+// propio diseño le reserva. Sigue aquí, tal cual, hasta que se decida enganchar la
+// máquina de estados (`docs/kms/pendiente-diego.md` D132).
 const NEAE_DIAGNOSIS  = ['NONE', 'SUSPECTED', 'IN_EVALUATION', 'DIAGNOSED'];
-const NEAE_SUPPORTS   = ['PT', 'AL', 'LOGOPEDIA', 'OT', 'PSYCHOPEDAGOGICAL', 'TALENT', 'EXTERNAL_PSYCH', 'OTHER'];
-const NEAE_SCOPES     = ['PRIOR_SCHOOL', 'EXTERNAL_CURRENT'];
 
 // ── RE-SEMBRADO QUE FUSIONA, NUNCA PISA (2026-08-10) ──────────────────────────
 // Molde copiado de `Step6Documents.jsx:258-273` («SOLO AÑADE lo que falta, NUNCA
@@ -97,7 +95,7 @@ function fusionarPorSolicitante(solicitantes, previas, delServidor, tocadas, con
   });
 }
 
-function TagSelect({ options, selected, onChange, placeholder }) {
+function TagSelect({ options, selected, onChange, placeholder, testId }) {
   const [input,   setInput]   = useState('');
   const [focused, setFocused] = useState(false);
   const available    = options.filter(o => !selected.find(s => s.id === o.id));
@@ -108,6 +106,7 @@ function TagSelect({ options, selected, onChange, placeholder }) {
       <div className="input-group input-group-sm">
         <input
           className="form-control"
+          data-testid={testId}
           value={input}
           onChange={e => setInput(e.target.value)}
           onFocus={() => setFocused(true)}
@@ -230,22 +229,46 @@ function ApplicantHealthSection({ applicant, health, onChange, allergiesOpts, di
   );
 }
 
+/** Etiqueta de un código del catálogo: la `designation` que manda el servidor, ya
+ * localizada. Nunca en blanco — sin catálogo delante, cae al propio código (nunca
+ * una etiqueta vacía). Mismo criterio que `translateGender` de `Step2Persons.jsx`. */
+const designacionDe_ = (catalogo, code) => {
+  const fila = (catalogo || []).find(o => o && o.code === code);
+  return (fila && fila.designation) || code;
+};
+
 // NEAE sub-section (Necesidades Específicas de Apoyo Educativo, RGPD Art. 9).
 // Dos ejes: CONDICIÓN (category_code + diagnosis_status + observations) y
 // APOYOS (support_type + provider_scope + observations). Todo opcional; tono
 // sensible. Reutiliza TagSelect/estilos de badge de la sección de salud.
-function ApplicantNeaeSection({ neae, onChange }) {
+//
+// `①83` TRAMO C — las TRES listas (categorías, apoyos, ámbitos) llegan por props
+// desde `Step4Health`, que las pide UNA vez al catálogo del servidor. Aquí no se
+// escribe ni un código: se PINTA lo que llega y se DICE cuando no llega nada.
+function ApplicantNeaeSection({
+  neae, onChange,
+  categorias, categoriasNoDisponible,
+  apoyos, apoyosNoDisponible,
+  ambitos, ambitosNoDisponible,
+}) {
   const { t } = useTranslation();
 
   const conditions = neae.conditions || [];
   const supports   = neae.supports   || [];
 
-  const catOptions = NEAE_CATEGORIES
-    .filter(code => !conditions.find(c => c.category_code === code))
-    .map(code => ({ id: code, label: t('neae.cat.' + code) }));
+  const catOptions = (categorias || [])
+    .filter(o => o && o.code && !conditions.find(c => c.category_code === o.code))
+    .map(o => ({ id: o.code, label: o.designation }));
 
   const [supType,  setSupType]  = useState('');
-  const [supScope, setSupScope] = useState('PRIOR_SCHOOL');
+  const [supScope, setSupScope] = useState('');
+
+  // El ámbito por defecto es la PRIMERA opción del catálogo, en cuanto llega — nunca
+  // un código escrito a mano. Mientras no haya catálogo, se queda vacío y el
+  // desplegable (deshabilitado) no ofrece nada que elegir.
+  useEffect(() => {
+    if (!supScope && (ambitos || []).length) setSupScope(ambitos[0].code);
+  }, [ambitos]); // eslint-disable-line
 
   const setConditions = (next) => onChange({ ...neae, conditions: next });
   const setSupports   = (next) => onChange({ ...neae, supports: next });
@@ -260,10 +283,10 @@ function ApplicantNeaeSection({ neae, onChange }) {
   };
 
   const addSupport = () => {
-    if (!supType) return;
+    if (!supType || !supScope) return;
     setSupports([...supports, { support_type: supType, provider_scope: supScope, is_current: supScope === 'EXTERNAL_CURRENT', observations: '' }]);
     setSupType('');
-    setSupScope('PRIOR_SCHOOL');
+    setSupScope((ambitos && ambitos[0] && ambitos[0].code) || '');
   };
   const removeSupport = (i) => setSupports(supports.filter((_, j) => j !== i));
   const updateSupport = (i, field, val) => {
@@ -285,8 +308,9 @@ function ApplicantNeaeSection({ neae, onChange }) {
       <div className="mb-3">
         <label className="form-label fw-semibold">{t('neae.conditions_label')}</label>
         <TagSelect
+          testId="neae-cat-search"
           options={catOptions}
-          selected={conditions.map(c => ({ id: c.category_code, label: t('neae.cat.' + c.category_code) }))}
+          selected={conditions.map(c => ({ id: c.category_code, label: designacionDe_(categorias, c.category_code) }))}
           onChange={sel => {
             // TagSelect passes the full selected array; only additions are new codes.
             const nextCodes = sel.map(s => s.id);
@@ -295,13 +319,19 @@ function ApplicantNeaeSection({ neae, onChange }) {
           }}
           placeholder={t('neae.search_conditions')}
         />
+        {/* Campo OPCIONAL: sin catálogo la búsqueda no ofrece nada nuevo — se DICE, no se calla. */}
+        {categoriasNoDisponible && (
+          <div className="form-text text-danger" data-testid="neae-cat-no-disponible">
+            {t('neae.categories_unavailable')}
+          </div>
+        )}
         {conditions.length > 0 && (
           <div className="mt-2 d-flex flex-column gap-2">
             {conditions.map((c, i) => (
               <div key={c.category_code || i} data-testid="paso4-neae-condicion"
                    className="p-2 rounded" style={{ background: 'var(--teal-lt)' }}>
                 <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
-                  <span className="fw-semibold" style={{ color: 'var(--teal-dk)' }}>{t('neae.cat.' + c.category_code)}</span>
+                  <span className="fw-semibold" style={{ color: 'var(--teal-dk)' }}>{designacionDe_(categorias, c.category_code)}</span>
                   <button onClick={() => removeCondition(i)}
                     style={{ background: 'none', border: 'none', color: 'var(--teal-dk)', cursor: 'pointer', padding: 0, fontSize: '1rem', lineHeight: 1 }}>
                     &times;
@@ -336,29 +366,37 @@ function ApplicantNeaeSection({ neae, onChange }) {
         <label className="form-label fw-semibold">{t('neae.supports_label')}</label>
         <div className="row g-2 align-items-end mb-2">
           <div className="col-12 col-md-5">
-            <select className="form-select form-select-sm" value={supType} onChange={e => setSupType(e.target.value)}>
+            <select className="form-select form-select-sm" data-testid="neae-support-type-select"
+              value={supType} onChange={e => setSupType(e.target.value)} disabled={apoyosNoDisponible}>
               <option value="">{t('neae.support_type_placeholder')}</option>
-              {NEAE_SUPPORTS.map(s => <option key={s} value={s}>{t('neae.sup.' + s)}</option>)}
+              {(apoyos || []).map(o => <option key={o.code} value={o.code}>{o.designation}</option>)}
             </select>
           </div>
           <div className="col-8 col-md-5">
-            <select className="form-select form-select-sm" value={supScope} onChange={e => setSupScope(e.target.value)}>
-              {NEAE_SCOPES.map(s => <option key={s} value={s}>{t('neae.scope.' + s)}</option>)}
+            <select className="form-select form-select-sm" data-testid="neae-scope-select"
+              value={supScope} onChange={e => setSupScope(e.target.value)} disabled={ambitosNoDisponible}>
+              {(ambitos || []).map(o => <option key={o.code} value={o.code}>{o.designation}</option>)}
             </select>
           </div>
           <div className="col-4 col-md-2">
-            <button type="button" className="btn btn-sm btn-outline-secondary w-100" onClick={addSupport} disabled={!supType}>
+            <button type="button" className="btn btn-sm btn-outline-secondary w-100" onClick={addSupport} disabled={!supType || !supScope}>
               <i className="bi bi-plus-lg" />
             </button>
           </div>
         </div>
+        {/* Campo OPCIONAL: sin catálogo no se puede declarar un apoyo NUEVO — se DICE. */}
+        {(apoyosNoDisponible || ambitosNoDisponible) && (
+          <div className="form-text text-danger mb-2" data-testid="neae-support-no-disponible">
+            {t('neae.supports_unavailable')}
+          </div>
+        )}
         {supports.length > 0 && (
           <div className="d-flex flex-column gap-2">
             {supports.map((s, i) => (
               <div key={i} data-testid="paso4-neae-apoyo" className="d-flex align-items-center gap-2 flex-wrap">
                 <span className="badge d-flex align-items-center gap-1 flex-shrink-0"
                   style={{ background: 'var(--teal-lt)', color: 'var(--teal-dk)', padding: '5px 10px', borderRadius: 20 }}>
-                  {t('neae.sup.' + s.support_type)} · {t('neae.scope.' + (s.provider_scope || 'PRIOR_SCHOOL'))}
+                  {designacionDe_(apoyos, s.support_type)} · {designacionDe_(ambitos, s.provider_scope || 'PRIOR_SCHOOL')}
                   <button onClick={() => removeSupport(i)}
                     style={{ background: 'none', border: 'none', color: 'var(--teal-dk)', cursor: 'pointer', padding: 0, fontSize: '0.8rem', lineHeight: 1 }}>
                     &times;
@@ -462,6 +500,19 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
   const [dietaryOpts,   setDietaryOpts]   = useState([]);
   const [medicalOpts,   setMedicalOpts]   = useState([]);
 
+  // `①83` TRAMO C — los TRES catálogos NEAE, del servidor. Mismo molde que
+  // `genderValues` (`0º.tricies.duodecies`): tres situaciones — cargando (aún vacío
+  // y `NoDisponible=false`) · con catálogo · sin catálogo (`NoDisponible=true`, se
+  // dice al lado del campo, nunca se calla). NEAE es opcional de punta a punta, así
+  // que sin catálogo el peor caso es «no se puede declarar uno nuevo ahora mismo» —
+  // nunca se bloquea el paso.
+  const [categoriasOpts, setCategoriasOpts] = useState([]);
+  const [categoriasNoDisponible, setCategoriasNoDisponible] = useState(false);
+  const [apoyosOpts, setApoyosOpts] = useState([]);
+  const [apoyosNoDisponible, setApoyosNoDisponible] = useState(false);
+  const [ambitosOpts, setAmbitosOpts] = useState([]);
+  const [ambitosNoDisponible, setAmbitosNoDisponible] = useState(false);
+
   useEffect(() => {
     // Idioma en la petición: la caché de catálogos va por idioma (ver `api.js`, 2026-08-19).
     fetchLookups(i18n.language)
@@ -469,9 +520,29 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
         setAllergiesOpts(data.allergies || []);
         setDietaryOpts(data.dietary   || []);
         setMedicalOpts(data.medical   || []);
+
+        const cats = ((data && data.neaeCategories)   || []).filter(v => v && v.code);
+        const sups = ((data && data.neaeSupportTypes) || []).filter(v => v && v.code);
+        const amb  = ((data && data.neaeScopes)        || []).filter(v => v && v.code);
+        log.info('Step4: catálogos NEAE del servidor', {
+          categorias: cats.length, motivoCategorias: (data && data.neaeCategoriesReason) || null,
+          apoyos: sups.length, motivoApoyos: (data && data.neaeSupportTypesReason) || null,
+          ambitos: amb.length, motivoAmbitos: (data && data.neaeScopesReason) || null,
+        });
+        setCategoriasOpts(cats);
+        setCategoriasNoDisponible(cats.length === 0);
+        setApoyosOpts(sups);
+        setApoyosNoDisponible(sups.length === 0);
+        setAmbitosOpts(amb);
+        setAmbitosNoDisponible(amb.length === 0);
       })
-      .catch(() => {});
-  }, []);
+      .catch(err => {
+        log.error('Step4: fetchLookups failed', { message: err && err.message });
+        setCategoriasNoDisponible(true);
+        setApoyosNoDisponible(true);
+        setAmbitosNoDisponible(true);
+      });
+  }, []); // eslint-disable-line
 
   const updateHealth = (i, val) => {
     const pid = idSolicitante(applicants[i]) || (healthData[i] && healthData[i].person_id);
@@ -589,6 +660,9 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
             <ApplicantNeaeSection
               neae={neaeData[i] || { conditions: [], supports: [] }}
               onChange={val => updateNeae(i, val)}
+              categorias={categoriasOpts} categoriasNoDisponible={categoriasNoDisponible}
+              apoyos={apoyosOpts} apoyosNoDisponible={apoyosNoDisponible}
+              ambitos={ambitosOpts} ambitosNoDisponible={ambitosNoDisponible}
             />
           </ApplicantHealthSection>
         ))}

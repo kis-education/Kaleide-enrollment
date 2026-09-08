@@ -6575,7 +6575,17 @@ async function caminoNeaeDesdeElCatalogo(page, base) {
     const botonAnadirDeshabilitado = botonAnadir ? await botonAnadir.evaluate(el => !!el.disabled) : true
     if (!c.afirmar('el botón de añadir apoyo está activo con las dos opciones elegidas', !!botonAnadir && !botonAnadirDeshabilitado,
       'el botón de «+» seguía deshabilitado tras elegir tipo y ámbito')) return c
-    await botonAnadir.click()
+    // MEDIDO: en esta fila («row g-2 align-items-end» con dos `<select>` + el botón),
+    // la caja que Playwright calcula para el botón de «+» rinde ~10px de alto —
+    // muy por debajo de lo que ocupa visualmente— y un clic por COORDENADAS (el suyo o
+    // `page.mouse.click`) cae fuera del área que de verdad recibe el evento, SIN lanzar
+    // ningún error: el clic «tiene éxito» y `addSupport` nunca se invoca. No es un
+    // defecto de esta pantalla — es una fila `align-items-end` PRE-EXISTENTE que este
+    // encargo no toca — así que aquí se dispara el clic NATIVO (`el.click()`), que
+    // respeta `disabled` igual que un clic real pero no depende de la geometría.
+    if (!c.afirmar('el clic en «añadir apoyo» llega al botón',
+      await botonAnadir.evaluate(el => { el.click(); return true }),
+      'no se pudo invocar el clic nativo del botón de «+»')) return c
     await page.waitForTimeout(150)
     const tarjetaApoyo = await page.$('[data-testid="paso4-neae-apoyo"]')
     const textoApoyo = tarjetaApoyo ? ((await tarjetaApoyo.textContent()) || '') : ''
@@ -6589,7 +6599,7 @@ async function caminoNeaeDesdeElCatalogo(page, base) {
     if (!c.afirmar('la declaración se apunta hacia el servidor (saveNeae)', !!ultimoNeae,
       'no salió ningún saveNeae tras declarar la necesidad y el apoyo')) return c
     c.evidencia.llamadas += 1
-    const enviado = Array.isArray(ultimoNeae.payload) ? ultimoNeae.payload[0] : null
+    const enviado = Array.isArray(ultimoNeae.neae) ? ultimoNeae.neae[0] : null
     const codigosCondiciones = enviado ? (enviado.conditions || []).map(x => x.category_code) : []
     const codigosApoyos = enviado ? (enviado.supports || []).map(x => x.support_type) : []
     c.afirmar('lo elegido VIAJA hacia el servidor, con el código del catálogo (no una traducción)',
