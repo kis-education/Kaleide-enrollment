@@ -551,23 +551,28 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
   // que viaja al servidor: aquí no hay campos de pantalla que luego haya que limpiar
   // (a diferencia de `nationality`/`id_type_id`, que son aplanados de un array de uno).
   //
-  // ⛔ LO YA DECLARADO NO SE DESMARCA, y no es capricho de pantalla: los satélites de
-  // persona del KMS son APPEND-ONLY —`enr_persistPersons_` escribe con clave por
-  // identidad (persona+idioma) y su propio comentario dice «viva ⇒ no se toca
-  // (append-only)»—, y `enrPersonLanguages` NO es una de las clases que la familia
-  // puede quitar (`enr/retirada.gs` → PERSONA · CORREO · TELEFONO · VINCULO ·
-  // DOCUMENTO; ahí solo aparece como tabla que se ARRASTRA al quitar la persona
-  // entera). Dejar desmarcar un idioma ya guardado sería el defecto exacto que
-  // `lib/quitar.js` existe para cerrar: quitarlo de la pantalla y que vuelva al
-  // recargar. Se enseña marcado y bloqueado — la misma honestidad que el paso 6 con
-  // el tipo de un documento ya subido (`0º.sexdecies`).
-  const yaDeclarado = (code) =>
-    (person.languages || []).some(l => l && l.language_id === code && l.record_id);
+  // ①82 — un idioma YA GUARDADO (`record_id` presente) SÍ SE PUEDE desmarcar, con el
+  // mismo camino que un correo o un teléfono: se pide confirmación y se avisa al
+  // servidor (`clase: 'IDIOMA'`, `id: record_id`) por `pedirQuitar` — el KMS ya
+  // reconoce esa clase en `enr/retirada.gs` (`kms-server @1544`). Diego, 2026-09-06:
+  // «¿Cómo que no se puede? Siempre se debe poder editar el idioma.» Un idioma marcado
+  // en esta misma sesión, sin `record_id` todavía, se desmarca directo — nunca se
+  // guardó, no hay nada que avisarle al servidor (mismo criterio que `emails`/`phones`).
   const hablaIdioma = (code) =>
     (person.languages || []).some(l => l && l.language_id === code);
   const toggleLanguage = (code) => {
-    if (yaDeclarado(code)) return;                         // append-only: no se desmarca
     const actuales = person.languages || [];
+    const item = actuales.find(l => l && l.language_id === code);
+    if (item && item.record_id) {
+      pedirQuitar({
+        clase: 'IDIOMA',
+        id: item.record_id,
+        pregunta: t('quitar.confirmar_idioma'),
+        quitarDeLaPantalla: () => u('languages', actuales.filter(l => !(l && l.language_id === code))),
+        volverAPonerlo: () => u('languages', actuales),
+      });
+      return;
+    }
     const next = hablaIdioma(code)
       ? actuales.filter(l => !(l && l.language_id === code))
       : [...actuales, { language_id: code }];
@@ -691,20 +696,20 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
             recoger el idioma o idiomas hablados por la familia como dato opcional.»
             NO es el «idioma preferente» del centro: aquí se pregunta QUÉ habla esta
             persona, admite varios, y no está acotado a los idiomas en los que el KMS
-            rinde (una familia habla francés aunque el sistema no hable francés). */}
+            rinde (una familia habla francés aunque el sistema no hable francés).
+            ①82 — un idioma YA guardado se puede desmarcar igual que los demás; ver
+            `toggleLanguage` arriba para el camino de retirada. */}
         <div className="col-12">
           <label className="form-label">{t('field.languages')}</label>
           <div className="d-flex flex-wrap gap-2" data-testid={`idiomas-${_pk}`}>
             {LANGUAGES.map(l => {
-              const marcado  = hablaIdioma(l.value);
-              const bloqueado = yaDeclarado(l.value);
+              const marcado = hablaIdioma(l.value);
               return (
                 <div className="form-check form-check-inline me-0" key={l.value}>
                   <input type="checkbox" className="form-check-input"
                     id={`lang_${_pk}_${l.value}`}
                     data-testid={`idioma-${l.value}`}
                     checked={marcado}
-                    disabled={bloqueado}
                     onChange={() => toggleLanguage(l.value)} />
                   <label className="form-check-label small" htmlFor={`lang_${_pk}_${l.value}`}>
                     {l.label}

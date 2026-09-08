@@ -6086,7 +6086,7 @@ async function caminoTelefonoQueSeVeSeGuarda(page, base) {
 }
 
 /**
- * CAMINO · «los idiomas que habla cada persona» (①45).
+ * CAMINO · «los idiomas que habla cada persona» (①45 + ①82).
  *
  * Diego, 2026-08-16: «El wizard debería recoger el idioma o idiomas hablados por la
  * familia como dato opcional.» Hasta este cambio el paso 2 no lo preguntaba en ninguna
@@ -6094,13 +6094,19 @@ async function caminoTelefonoQueSeVeSeGuarda(page, base) {
  * mientras el KMS ya escribía (`enr_persistPersons_`) y ya devolvía (`enr_wizardHydrate`)
  * ese dato — la fontanería entera construida y sin nadie que la usara.
  *
- * Las CUATRO cosas que mide, y ninguna sobra:
+ * ①82 (2026-09-06) — Diego: «¿Cómo que no se puede? Siempre se debe poder editar el
+ * idioma.» Un idioma ya guardado dejó de estar bloqueado: se desmarca por el MISMO
+ * camino que un correo o un teléfono (`pedirQuitar` → `retirarDelExpediente`, clase
+ * `IDIOMA`), que el KMS ya reconoce (`enr/retirada.gs`, `kms-server @1544`).
+ *
+ * Las SEIS cosas que mide, y ninguna sobra:
  *   (1) se pueden declarar VARIOS idiomas para una persona;
  *   (2) viajan en el guardado con la forma EXACTA que el escritor del KMS lee
  *       (`p.languages[].language_id`) — mandar otra cosa se descarta en silencio;
- *   (3) lo ya declarado vuelve marcado Y NO se puede desmarcar (los satélites del KMS
- *       son append-only y `enrPersonLanguages` no es una clase que se pueda quitar:
- *       dejar desmarcar sería quitarlo de la pantalla y que volviera al recargar);
+ *   (3) lo ya declarado vuelve marcado y la casilla NO está deshabilitada;
+ *   (3.bis) desmarcarlo PREGUNTA antes (mismo cuadro que quitar un correo/teléfono) y,
+ *       al confirmar, avisa al servidor con `clase:'IDIOMA'` + el `record_id` — y la
+ *       casilla queda desmarcada;
  *   (4) es OPCIONAL DE VERDAD: la persona que no marca ninguno no impide avanzar.
  *
  * ⚠️ Lo que NO cubre: la batería corre contra un backend SIMULADO que nunca ejecuta
@@ -6158,13 +6164,46 @@ async function caminoIdiomasHablados(page, base) {
       !!(await casilla('primera', 'en')),
       'no se pintó ninguna casilla de idioma en la primera ficha: el paso no recoge el dato')) return c
 
-    // ── (3) LO YA DECLARADO — el tutor viene del servidor con `es` declarado ────────
+    // ── (3) LO YA DECLARADO — el tutor viene del servidor con `es` declarado, y ①82
+    //        (Diego: «siempre se debe poder editar el idioma») lo deja SIN bloquear ──
     const yaEs = await estado('primera', 'es')
     c.afirmar('un idioma YA declarado vuelve marcado', !!(yaEs && yaEs.marcado),
       `la casilla de «es» del tutor volvió ${JSON.stringify(yaEs)}: lo que la familia ya declaró no se le muestra`)
-    c.afirmar('y NO se puede desmarcar (los satélites del KMS son append-only)',
-      !!(yaEs && yaEs.bloqueado),
-      `la casilla de «es» del tutor volvió ${JSON.stringify(yaEs)}: si se deja desmarcar, la familia lo quita de la pantalla y le vuelve al recargar — el defecto exacto que lib/quitar.js existe para cerrar`)
+    c.afirmar('y la casilla NO está deshabilitada (①82: ya se puede editar)',
+      !!(yaEs && !yaEs.bloqueado),
+      `la casilla de «es» del tutor volvió ${JSON.stringify(yaEs)}: sigue bloqueada — Diego pidió justo lo contrario`)
+
+    // ── (3.bis) DESMARCARLO pregunta, y al confirmar avisa al servidor con IDIOMA ───
+    let retiradaIdioma = null
+    const espiarRetirar = (req) => {
+      if (!/\/__gas/.test(req.url())) return
+      let body = null
+      try { body = JSON.parse(req.postData() || '{}') } catch { return }
+      if (body && body.action === 'retirarDelExpediente') retiradaIdioma = body
+    }
+    page.on('request', espiarRetirar)
+    try {
+      const elEs = await casilla('primera', 'es')
+      if (!c.afirmar('la casilla de «es» ya declarada se puede localizar', !!elEs,
+        'no se encontró la casilla de «es» en la primera ficha')) return c
+      await elEs.click()
+      const cuadroIdioma = await page.waitForSelector('[data-testid="confirm-dialog"]', { timeout: 4000 }).catch(() => null)
+      if (!c.afirmar('desmarcar un idioma ya declarado PREGUNTA antes', !!cuadroIdioma,
+        'no salió el cuadro de confirmación al desmarcar un idioma ya guardado')) return c
+      const aceptar = await page.$('[data-testid="confirm-dialog-accept"]')
+      if (aceptar) await aceptar.click()
+      await page.waitForTimeout(LATENCY + 500)
+      if (retiradaIdioma) c.evidencia.llamadas += 1
+      c.afirmar('al confirmar, se avisa al servidor con la clase IDIOMA que el KMS ya reconoce',
+        !!(retiradaIdioma && Array.isArray(retiradaIdioma.retirar) && retiradaIdioma.retirar[0]
+          && retiradaIdioma.retirar[0].clase === 'IDIOMA' && retiradaIdioma.retirar[0].id),
+        `la petición de retirada fue ${JSON.stringify(retiradaIdioma)}: no llevó clase «IDIOMA» con el identificador de la fila`)
+      const trasDesmarcar = await estado('primera', 'es')
+      c.afirmar('y la casilla queda desmarcada', !(trasDesmarcar && trasDesmarcar.marcado),
+        `la casilla de «es» volvió ${JSON.stringify(trasDesmarcar)}: el servidor confirmó la retirada y la pantalla la sigue mostrando marcada`)
+    } finally {
+      page.off('request', espiarRetirar)
+    }
 
     // ── (1) VARIOS IDIOMAS en la persona que no tiene ninguno (el último alumno) ────
     for (const code of ['en', 'fr']) {
@@ -6402,6 +6441,195 @@ async function caminoSexoDesdeElCatalogo(page, base) {
     return c
   } finally {
     scenario.catalogoSexoVacio = false
+    limpiar()
+  }
+}
+
+/**
+ * CAMINO · «las opciones NEAE salen del catálogo» (`①83` TRAMO C, 2026-09-08).
+ *
+ * `Step4Health.jsx` llevaba TRES listas escritas a mano (categoría, tipo de apoyo,
+ * ámbito del apoyo) que el KMS YA sirve por el mismo canal que `genderValues`. Copia
+ * el molde de `sexo-desde-el-catalogo` — mismas cuatro cosas, en las TRES listas:
+ *   (1) lo que se pinta es EXACTAMENTE lo que sirve el catálogo del servidor;
+ *   (2) la ETIQUETA es la `designation` del servidor, NUNCA la traducción local
+ *       `neae.cat.*`/`neae.sup.*`/`neae.scope.*` (el doble sirve un texto DISTINTO
+ *       a propósito, para un código REAL — `ASD` — y a un código que esa traducción
+ *       local NI CONOCE — `ZZ-NEAE-*-E2E`);
+ *   (3) lo elegido VIAJA hacia el servidor (`saveNeae`), con el código del catálogo;
+ *   (4) sin catálogo (`scenario.catalogoNeaeVacio`) la pantalla lo DICE — el campo es
+ *       OPCIONAL, así que un formulario mudo dejaría avanzar sin que nadie lo note.
+ *
+ * ⚠️ Lo que NO cubre: la batería corre contra un backend SIMULADO que nunca ejecuta
+ * `backend/Code.js` ni llama al KMS. Que `enr_wizardFetchLookups` sirva de verdad los
+ * tres catálogos no lo acredita esto — se acredita leyendo el manejador real.
+ */
+async function caminoNeaeDesdeElCatalogo(page, base) {
+  const c = new Camino('neae-desde-el-catalogo')
+  scenario.stage = 'hasta_preguntas'
+
+  let ultimoNeae = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'saveNeae') ultimoNeae = body
+  }
+  page.on('request', espiar)
+  const limpiar = () => page.off('request', espiar)
+
+  const irASalud = async () => {
+    for (let i = 0; i < 6 && (await dondeEstoy(page)) > 3; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    const donde = await dondeEstoy(page)
+    if (!c.afirmar('se llega al paso de Salud', donde === 3, `se quedó en el índice ${donde}`)) return false
+    await desbloquear(page)
+    await page.waitForTimeout(400)
+    return true
+  }
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    if (!await irASalud()) return c
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+
+    // ── ANCLAS: sin los tres controles, todo lo de abajo mediría el vacío ──────────
+    const buscadorCat = await page.$('[data-testid="neae-cat-search"]')
+    const selApoyo     = await page.$('[data-testid="neae-support-type-select"]')
+    const selAmbito    = await page.$('[data-testid="neae-scope-select"]')
+    if (!c.afirmar('la ficha de salud ofrece el buscador de necesidades NEAE', !!buscadorCat,
+      'no se pintó [data-testid="neae-cat-search"] en la primera ficha')) return c
+    if (!c.afirmar('la ficha de salud ofrece el desplegable de tipo de apoyo NEAE', !!selApoyo,
+      'no se pintó [data-testid="neae-support-type-select"]')) return c
+    if (!c.afirmar('la ficha de salud ofrece el desplegable de ámbito del apoyo NEAE', !!selAmbito,
+      'no se pintó [data-testid="neae-scope-select"]')) return c
+
+    // ── (1) + (2) EL BUSCADOR DE CATEGORÍA: lo que sugiere es lo del catálogo ──────
+    await buscadorCat.click()
+    await buscadorCat.fill('E2E')
+    let sugerencias = []
+    try {
+      await page.waitForSelector('.border.rounded.mt-1 > div', { timeout: 4000 })
+      sugerencias = await page.$$eval('.border.rounded.mt-1 > div', ns => ns.map(n => (n.textContent || '').trim()))
+    } catch { /* se cuenta abajo */ }
+    const esperadasCat = ['TEA (E2E)', 'TDAH (E2E)', 'Necesidad E2E']
+    c.afirmar('las sugerencias de necesidad son las del catálogo del servidor, con su designación',
+      esperadasCat.every(x => sugerencias.includes(x)),
+      `las sugerencias fueron ${JSON.stringify(sugerencias)}, se esperaba (entre otras) ${JSON.stringify(esperadasCat)}`)
+    c.afirmar('un código REAL del catálogo pinta la designación del SERVIDOR, no la traducción local',
+      sugerencias.includes('TEA (E2E)') && !sugerencias.includes('TEA (trastorno del espectro autista)'),
+      `«ASD» se pintó como ${JSON.stringify(sugerencias.filter(s => /TEA/.test(s)))}: si aparece la traducción local, la pantalla ignoró el catálogo`)
+
+    // Elegir «Necesidad E2E» (código `ZZ-NEAE-CAT-E2E`, que la traducción local NI conoce).
+    const necesidadE2E = await page.$$('.border.rounded.mt-1 > div')
+    const opcion = await (async () => {
+      for (const el of necesidadE2E) { if ((await el.textContent() || '').trim() === 'Necesidad E2E') return el }
+      return null
+    })()
+    if (!c.afirmar('la opción sin traducción local se puede elegir', !!opcion,
+      `«Necesidad E2E» no estaba entre las sugerencias (${JSON.stringify(sugerencias)})`)) return c
+    await opcion.click()
+    await page.waitForTimeout(150)
+    const tarjetaCondicion = await page.$('[data-testid="paso4-neae-condicion"]')
+    const textoCondicion = tarjetaCondicion ? ((await tarjetaCondicion.textContent()) || '') : ''
+    c.afirmar('la condición añadida queda puesta EN PANTALLA con la designación del catálogo',
+      textoCondicion.includes('Necesidad E2E'),
+      `la tarjeta de la condición dice ${JSON.stringify(textoCondicion)}: se esperaba «Necesidad E2E»`)
+
+    // ── (1) + (2) EL APOYO: los DOS desplegables son los del catálogo ─────────────
+    const opcionesApoyo = await selApoyo.$$eval('option', els => els.map(o => ({ value: o.value, texto: (o.textContent || '').trim() })))
+    const conValorApoyo = opcionesApoyo.filter(o => o.value)
+    const esperadasApoyo = ['PT', 'LOGOPEDIA', 'ZZ-NEAE-SUP-E2E']
+    c.afirmar('el tipo de apoyo ofrece EXACTAMENTE lo que sirve el catálogo',
+      conValorApoyo.length === esperadasApoyo.length && esperadasApoyo.every(x => conValorApoyo.some(o => o.value === x)),
+      `se pintaron ${JSON.stringify(conValorApoyo.map(o => o.value))}, se esperaba ${JSON.stringify(esperadasApoyo)}`)
+    const logopedia = conValorApoyo.find(o => o.value === 'LOGOPEDIA')
+    c.afirmar('el tipo de apoyo pinta la designación del SERVIDOR, no la traducción local',
+      !!logopedia && logopedia.texto === 'Logopedia (E2E)',
+      `«LOGOPEDIA» se leyó «${logopedia && logopedia.texto}» (se esperaba «Logopedia (E2E)», ` +
+      `la traducción local dice «Logopedia»: si coincidiera, la pantalla estaría ignorando el catálogo)`)
+
+    const opcionesAmbito = await selAmbito.$$eval('option', els => els.map(o => ({ value: o.value, texto: (o.textContent || '').trim() })))
+    const esperadosAmbito = ['PRIOR_SCHOOL', 'EXTERNAL_CURRENT']
+    c.afirmar('el ámbito del apoyo ofrece EXACTAMENTE lo que sirve el catálogo',
+      opcionesAmbito.length === esperadosAmbito.length && esperadosAmbito.every(x => opcionesAmbito.some(o => o.value === x)),
+      `se pintaron ${JSON.stringify(opcionesAmbito.map(o => o.value))}, se esperaba ${JSON.stringify(esperadosAmbito)}`)
+    const externo = opcionesAmbito.find(o => o.value === 'EXTERNAL_CURRENT')
+    c.afirmar('el ámbito del apoyo pinta la designación del SERVIDOR, no la traducción local',
+      !!externo && externo.texto === 'Externo actual (E2E)',
+      `«EXTERNAL_CURRENT» se leyó «${externo && externo.texto}» (se esperaba «Externo actual (E2E)»)`)
+
+    // ── (3) LO ELEGIDO VIAJA — se elige, se declara y se avanza ────────────────────
+    if (!c.afirmar('el tipo de apoyo del catálogo se puede elegir de verdad',
+      conValorApoyo.some(o => o.value === 'ZZ-NEAE-SUP-E2E'),
+      `«ZZ-NEAE-SUP-E2E» no está entre las opciones pintadas (${JSON.stringify(conValorApoyo.map(o => o.value))})`)) return c
+    await selApoyo.selectOption('ZZ-NEAE-SUP-E2E')
+    await selAmbito.selectOption('EXTERNAL_CURRENT')
+    const botonAnadir = await page.$('[data-testid="paso4-neae-ficha"] button.btn-outline-secondary')
+    const botonAnadirDeshabilitado = botonAnadir ? await botonAnadir.evaluate(el => !!el.disabled) : true
+    if (!c.afirmar('el botón de añadir apoyo está activo con las dos opciones elegidas', !!botonAnadir && !botonAnadirDeshabilitado,
+      'el botón de «+» seguía deshabilitado tras elegir tipo y ámbito')) return c
+    await botonAnadir.click()
+    await page.waitForTimeout(150)
+    const tarjetaApoyo = await page.$('[data-testid="paso4-neae-apoyo"]')
+    const textoApoyo = tarjetaApoyo ? ((await tarjetaApoyo.textContent()) || '') : ''
+    c.afirmar('el apoyo añadido queda puesto EN PANTALLA con las DOS designaciones del catálogo',
+      textoApoyo.includes('Apoyo E2E') && textoApoyo.includes('Externo actual (E2E)'),
+      `la tarjeta del apoyo dice ${JSON.stringify(textoApoyo)}: se esperaban «Apoyo E2E» y «Externo actual (E2E)»`)
+
+    ultimoNeae = null
+    if (!await continuar(c, page, 4, 'paso 4 · NEAE — tras declarar del catálogo')) return c
+    await page.waitForTimeout(LATENCY + 400)
+    if (!c.afirmar('la declaración se apunta hacia el servidor (saveNeae)', !!ultimoNeae,
+      'no salió ningún saveNeae tras declarar la necesidad y el apoyo')) return c
+    c.evidencia.llamadas += 1
+    const enviado = Array.isArray(ultimoNeae.payload) ? ultimoNeae.payload[0] : null
+    const codigosCondiciones = enviado ? (enviado.conditions || []).map(x => x.category_code) : []
+    const codigosApoyos = enviado ? (enviado.supports || []).map(x => x.support_type) : []
+    c.afirmar('lo elegido VIAJA hacia el servidor, con el código del catálogo (no una traducción)',
+      codigosCondiciones.includes('ZZ-NEAE-CAT-E2E') && codigosApoyos.includes('ZZ-NEAE-SUP-E2E'),
+      `condiciones enviadas: ${JSON.stringify(codigosCondiciones)} · apoyos enviados: ${JSON.stringify(codigosApoyos)}`)
+
+    // ── (4) SIN CATÁLOGO, LA PANTALLA LO DICE ───────────────────────────────────────
+    await esperarSilencioDeRed(20000, 400)   // el precalentado en vuelo, no el producto
+    scenario.catalogoNeaeVacio = true
+    // Sesión limpia de verdad — la caché de MÓDULO de `api.js` sobrevive a un cambio de
+    // hash (mismo motivo medido en `sexo-desde-el-catalogo`).
+    await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+    await page.goto('about:blank')
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    if (!await irASalud()) return c
+
+    const buscadorCat2 = await page.$('[data-testid="neae-cat-search"]')
+    const selApoyo2 = await page.$('[data-testid="neae-support-type-select"]')
+    const selAmbito2 = await page.$('[data-testid="neae-scope-select"]')
+    if (!c.afirmar('(B) los tres controles siguen ahí sin catálogo (si no, lo de abajo no mide nada)',
+      !!buscadorCat2 && !!selApoyo2 && !!selAmbito2,
+      'algún control de NEAE desapareció con el catálogo vacío')) return c
+
+    c.afirmar('(B) sin catálogo, el desplegable de tipo de apoyo queda DESHABILITADO',
+      await selApoyo2.evaluate(el => !!el.disabled), 'el desplegable de tipo de apoyo seguía activo con el catálogo vacío')
+    c.afirmar('(B) sin catálogo, el desplegable de ámbito queda DESHABILITADO',
+      await selAmbito2.evaluate(el => !!el.disabled), 'el desplegable de ámbito seguía activo con el catálogo vacío')
+
+    const avisoCat = await page.$('[data-testid="neae-cat-no-disponible"]')
+    const avisoApoyo = await page.$('[data-testid="neae-support-no-disponible"]')
+    c.afirmar('(B) la pantalla AVISA de que no se puede declarar una necesidad nueva',
+      !!avisoCat && ((await avisoCat.textContent()) || '').trim().length > 10,
+      'no se pintó ningún aviso junto al buscador de necesidades: con el campo mudo, la familia no sabe que el catálogo no llegó')
+    c.afirmar('(B) la pantalla AVISA de que no se puede declarar un apoyo nuevo',
+      !!avisoApoyo && ((await avisoApoyo.textContent()) || '').trim().length > 10,
+      'no se pintó ningún aviso junto al bloque de apoyos: con el campo mudo, la familia no sabe que el catálogo no llegó')
+
+    return c
+  } finally {
+    scenario.catalogoNeaeVacio = false
     limpiar()
   }
 }
@@ -9696,6 +9924,9 @@ const CAMINOS = [
   // `①45` — el paso 2 recoge los idiomas que habla cada persona (opcional, varios).
   { nombre: 'idiomas-hablados', fn: caminoIdiomasHablados, minLlamadas: 1, minElementos: 11 },
   { nombre: 'sexo-desde-el-catalogo', fn: caminoSexoDesdeElCatalogo, minLlamadas: 1, minElementos: 11 },
+  // `①83` TRAMO C — las tres listas NEAE (categoría, apoyo, ámbito) salen del catálogo
+  // del servidor, igual que el sexo.
+  { nombre: 'neae-desde-el-catalogo', fn: caminoNeaeDesdeElCatalogo, minLlamadas: 1, minElementos: 3 },
   // `0º.tricies.octies` (D) — no manda ni una petición: mide lo que la pantalla DICE.
   // `0º.septvicies` — el asistente deja de escribir la fila invertida del par de hermanos
   // (DL-S45), y el lector del paso 3 la sigue viendo guardada en cualquier sentido.

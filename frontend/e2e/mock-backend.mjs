@@ -62,14 +62,18 @@ const guardian = (id, first, email) => ({
   emails:          [{ value: email || FIXTURE.emailKnown, is_default: 'TRUE' }],
   nationalities:   [],
   ids:             [],
-  // ①45 — un idioma YA DECLARADO, con la forma EXACTA de la fila que devuelve el
+  // ①45/①82 — un idioma YA DECLARADO, con la forma EXACTA de la fila que devuelve el
   // hidratador real (`enr_wizardHydrateCompute_` → `attach('enrPersonLanguages',
   // 'languages')` adjunta la fila ENTERA, `record_id` incluido). Va aquí a propósito:
-  // sin una fila ya guardada, la afirmación de que lo declarado NO se puede desmarcar
-  // —los satélites del KMS son append-only— se comprobaría en vacío, que es peor que no
-  // comprobarla. El alumno va con `[]` para medir el otro lado: declarar de cero.
-  languages:       [{ record_id: 'lang_g1_es', person_id: id, language_id: 'es',
-                      is_mother_tongue: 'TRUE', is_active: 'TRUE' }],
+  // sin una fila ya guardada, la afirmación de que lo declarado se puede DESMARCAR
+  // —①82, el KMS ya reconoce la clase `IDIOMA` en `enr/retirada.gs`— se comprobaría en
+  // vacío, que es peor que no comprobarla. El alumno va con `[]` para medir el otro
+  // lado: declarar de cero. `record_id` lleva forma de UUID (como emite `retirada.gs`)
+  // para que `seGuardoAlgunaVez` (`lib/quitar.js`) lo trate como «ya se guardó de
+  // verdad» y dispare la petición al servidor — con un id sin esa forma la retirada se
+  // resolvería en el navegador sin llegar a medir la llamada.
+  languages:       [{ record_id: 'dddddddd-1111-4111-8111-dddddddddddd', person_id: id,
+                      language_id: 'es', is_mother_tongue: 'TRUE', is_active: 'TRUE' }],
   address:         { address_line_1: 'Calle Falsa 1', city: 'Las Palmas', country_id: 'ES', zip: '35001' },
 });
 
@@ -151,8 +155,18 @@ function lookupsSegunEscenario_(scenario) {
   const sexo = (scenario && scenario.catalogoSexoVacio)
     ? { genderValues: [], genderValuesReason: 'CATALOGO_VACIO' }
     : {};
+  // `①83` TRAMO C — el mismo caso que `catalogoSexoVacio`, para los TRES catálogos
+  // NEAE: un KMS que aún no los sirve, o una lectura caída. Los TRES a la vez, porque
+  // es lo que ocurre de verdad — es la MISMA llamada la que falla.
+  const neae = (scenario && scenario.catalogoNeaeVacio)
+    ? {
+        neaeCategories: [], neaeCategoriesReason: 'CATALOGO_VACIO',
+        neaeSupportTypes: [], neaeSupportTypesReason: 'CATALOGO_VACIO',
+        neaeScopes: [], neaeScopesReason: 'CATALOGO_VACIO',
+      }
+    : {};
   if (modo !== 'appsheet' && modo !== 'ilegible') {
-    return { ...LOOKUPS, programs: programas, ...sexo };
+    return { ...LOOKUPS, programs: programas, ...sexo, ...neae };
   }
   const convertir = modo === 'appsheet'
     ? aFormatoAppSheet_
@@ -169,6 +183,7 @@ function lookupsSegunEscenario_(scenario) {
       period_ends_on:   convertir(p.period_ends_on),
     })),
     ...sexo,
+    ...neae,
   };
 }
 
@@ -252,6 +267,34 @@ const LOOKUPS = {
     { code: 'ZZ-E2E',     designation: 'Valor E2E',  label_key: 'gender.ZZ-E2E' },
   ],
   genderValuesReason: null,
+  // ── `①83` TRAMO C (2026-09-08) — LOS TRES CATÁLOGOS NEAE ─────────────────────────
+  // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation}`, tal cual la arma
+  // `enr_catalogoDeOpciones_` (`kis-app kms-server/enr/wizard-gateway.gs`) — la
+  // `designation` YA viene localizada por el servidor, no hay `label_key` que resolver
+  // aquí (a diferencia de `genderValues`).
+  //
+  // ⚠️ Cada lista lleva un código FUERA del catálogo real y una designación que NO
+  // coincide con la traducción local `neae.cat.*`/`neae.sup.*`/`neae.scope.*`, a
+  // propósito: si la pantalla pintara la traducción local en vez de la designación del
+  // servidor, la comprobación lo cazaría (`ASD` real con un texto distinto al de
+  // `translation.json`, y un código `ZZ-NEAE-*` que esa traducción local ni conoce).
+  neaeCategories: [
+    { code: 'ASD',              designation: 'TEA (E2E)' },
+    { code: 'ADHD',              designation: 'TDAH (E2E)' },
+    { code: 'ZZ-NEAE-CAT-E2E',   designation: 'Necesidad E2E' },
+  ],
+  neaeCategoriesReason: null,
+  neaeSupportTypes: [
+    { code: 'PT',                designation: 'Pedagogía terapéutica (E2E)' },
+    { code: 'LOGOPEDIA',         designation: 'Logopedia (E2E)' },
+    { code: 'ZZ-NEAE-SUP-E2E',   designation: 'Apoyo E2E' },
+  ],
+  neaeSupportTypesReason: null,
+  neaeScopes: [
+    { code: 'PRIOR_SCHOOL',      designation: 'Centro anterior (E2E)' },
+    { code: 'EXTERNAL_CURRENT',  designation: 'Externo actual (E2E)' },
+  ],
+  neaeScopesReason: null,
 };
 
 /**
