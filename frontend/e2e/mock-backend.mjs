@@ -317,6 +317,33 @@ const LOOKUPS = {
     { code: 'ZZ-LANG-E2E', designation: 'Idioma E2E' },
   ],
   languagesReason: null,
+  // ── `①83` TRAMO A (2026-09-08) — DOCUMENTO/TELÉFONO/CORREO: DESPLEGABLE HÍBRIDO ──
+  // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation}`, tal cual la arma
+  // `enr_catalogoDeFilas_` (`kis-app kms-server/enr/wizard-gateway.gs`) — y el `code` es
+  // el `Row ID` OPACO de AppSheet, no un literal legible («ninguna de las tres tablas
+  // declara un código legible y estable»). Por eso los códigos de abajo NO se parecen en
+  // nada a `passport`/`dni`/`nie`/`other` — a propósito: es justo lo que hace que un
+  // valor YA GUARDADO con el literal legado no case con ningún `code` del catálogo, y
+  // por lo que el desplegable HÍBRIDO existe (ver `documento-desde-el-catalogo`).
+  typesOfIDs: [
+    { code: 'kms-row-dni-e2e',      designation: 'DNI (E2E)' },
+    { code: 'kms-row-nie-e2e',      designation: 'NIE (E2E)' },
+    { code: 'kms-row-passport-e2e', designation: 'Pasaporte (E2E)' },
+    { code: 'kms-row-other-e2e',    designation: 'Otro (E2E)' },
+  ],
+  typesOfIDsReason: null,
+  phoneNrTypes: [
+    { code: 'kms-row-mobile-e2e', designation: 'Móvil (E2E)' },
+    { code: 'kms-row-home-e2e',   designation: 'Fijo (E2E)' },
+    { code: 'kms-row-work-e2e',   designation: 'Trabajo (E2E)' },
+  ],
+  phoneNrTypesReason: null,
+  emailTypes: [
+    { code: 'kms-row-personal-e2e',  designation: 'Personal (E2E)' },
+    { code: 'kms-row-work-e2e',      designation: 'Trabajo (E2E)' },
+    { code: 'kms-row-emergency-e2e', designation: 'Emergencia (E2E)' },
+  ],
+  emailTypesReason: null,
 };
 
 /**
@@ -980,6 +1007,15 @@ export function createDispatcher(scenario, record) {
             pe.neae_support = [{ support_type: 'LOGOPEDIA', provider_scope: 'PRIOR_SCHOOL', observations: '' }];
           }
         });
+      }
+      // `①83` TRAMO A — un tutor con `id_type_id` LEGADO (el literal inglés de antes del
+      // catálogo, `passport`/`dni`/`nie`/`other`), que NO casa con ningún `code` del
+      // catálogo Row-ID de arriba. Es el caso exacto que el desplegable HÍBRIDO existe
+      // para cubrir: sin la opción sintética, esa familia vería su documento
+      // «desaparecer» del desplegable (medido en la ficha de `①83`, TRAMO A).
+      if (scenario.idTypeLegado) {
+        const g1 = (h.persons || []).find(pe => pe && pe.person_id === FIXTURE.guardian1Id);
+        if (g1) g1.ids = [{ id_type_id: 'passport', id_number: '12345678A' }];
       }
       // ⭐ DL-E63 — «el colegio cambió un dato». La palanca cambia el NOMBRE del alumno en la
       // hidratación, que es lo que hace de verdad una corrección hecha desde la ficha del KMS.

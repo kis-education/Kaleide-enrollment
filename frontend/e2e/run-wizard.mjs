@@ -6507,6 +6507,183 @@ async function caminoSexoDesdeElCatalogo(page, base) {
 }
 
 /**
+ * CAMINO · «el tipo de documento sale del catálogo, y lo LEGADO no desaparece» (`①83`
+ * TRAMO A, 2026-09-08).
+ *
+ * Copia el molde de `sexo-desde-el-catalogo`, con la diferencia que da sentido a este
+ * tramo: aquí el `code` que sirve el catálogo es un `Row ID` OPACO
+ * (`enr_catalogoDeFilas_`, `kis-app kms-server/enr/wizard-gateway.gs` — «ninguna de las
+ * tres tablas declara un código legible y estable»), así que un valor YA GUARDADO con
+ * el literal legado (`passport`/`dni`/`nie`/`other`) NUNCA casa con ningún `code` del
+ * catálogo. El desplegable HÍBRIDO existe justo para eso: la opción sintética.
+ *
+ * Las CINCO cosas que mide:
+ *   (1) el desplegable pinta las opciones del catálogo servidas por el servidor;
+ *   (2) un valor YA GUARDADO con el literal legado, que no casa con NINGÚN `code` del
+ *       catálogo, se sigue VIENDO — como una opción sintética, con su traducción legada
+ *       (`translateIdType`), NUNCA como un desplegable mudo;
+ *   (3) esa opción sintética sigue MARCADA (es el valor actual de la persona);
+ *   (4) elegir una opción del catálogo de verdad VIAJA hacia el servidor con el `code`
+ *       (Row-ID), no con el literal legado;
+ *   (5) sin catálogo (KMS caído / aún sin servir), el desplegable cae a la lista legada
+ *       COMPLETA — nunca se queda vacío y mudo.
+ *
+ * ⚠️ Lo que NO cubre: la batería corre contra un backend SIMULADO que nunca ejecuta
+ * `backend/Code.js` ni llama al KMS. Que `enr_wizardFetchLookups` sirva de verdad estos
+ * tres catálogos no lo acredita esto — se acredita leyendo el manejador real.
+ */
+async function caminoDocumentoDesdeElCatalogo(page, base) {
+  const c = new Camino('documento-desde-el-catalogo')
+  scenario.stage = 'hasta_preguntas'
+  scenario.idTypeLegado = true
+
+  let ultimoPersons = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'saveStep' && body.step === 'persons') ultimoPersons = body
+  }
+  page.on('request', espiar)
+  const limpiar = () => page.off('request', espiar)
+
+  // El desplegable de la PRIMERA ficha (el tutor con el valor legado, ver el doble).
+  const selector = async () => {
+    const ss = await page.$$('.dynamic-section')
+    if (!ss.length) return null
+    return await ss[0].$('select[data-testid^="id-type-"]')
+  }
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(400)
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+
+    // ── ANCLA: sin desplegable, todo lo de abajo mediría el vacío.
+    const sel = await selector()
+    if (!c.afirmar('el paso 2 ofrece el desplegable del tipo de documento', !!sel,
+      'no se pintó ningún select[data-testid^="id-type-"] en la primera ficha')) return c
+
+    const opciones = await sel.$$eval('option', els =>
+      els.map(o => ({ value: o.value, texto: (o.textContent || '').trim(), marcada: o.selected })))
+    const conValor = opciones.filter(o => o.value)
+
+    // ── (1) EL CATÁLOGO ES LO QUE SIRVE EL SERVIDOR (Row-ID, no el literal legado) ──
+    const esperadosCatalogo = ['kms-row-dni-e2e', 'kms-row-nie-e2e', 'kms-row-passport-e2e', 'kms-row-other-e2e']
+    c.afirmar('las opciones del catálogo son las que sirve el servidor (Row-ID)',
+      esperadosCatalogo.every(x => conValor.some(o => o.value === x)),
+      `se pintaron ${JSON.stringify(conValor.map(o => o.value))}, faltaba alguna de ${JSON.stringify(esperadosCatalogo)}`)
+
+    // ── (2) + (3) LO LEGADO NO DESAPARECE: opción sintética, marcada ────────────────
+    const legada = conValor.find(o => o.value === 'passport')
+    if (!c.afirmar('un valor YA GUARDADO que no casa con el catálogo se sigue viendo (opción sintética)',
+      !!legada,
+      `el valor legado "passport" no aparece entre las opciones (${JSON.stringify(conValor.map(o => o.value))}): la familia vería su documento desaparecer del desplegable`)) return c
+    c.afirmar('la opción sintética lleva la traducción LEGADA, no el código en crudo',
+      legada.texto && legada.texto !== 'passport',
+      `la opción legada se leyó "${legada.texto}"`)
+    c.afirmar('la opción sintética sigue MARCADA (es el valor actual de la persona)',
+      !!legada.marcada,
+      'el valor legado ya guardado no aparece seleccionado: el desplegable no refleja lo que la persona ya tiene')
+
+    // ── (4) ELEGIR UNA OPCIÓN DEL CATÁLOGO VIAJA CON SU `code` (Row-ID) ─────────────
+    // Se comprueba ANTES de intentar elegirlo — `selectOption` sobre una opción que no
+    // existe LANZA y pierde las afirmaciones ya hechas (medido en `sexo-desde-el-catalogo`).
+    if (!c.afirmar('una opción del catálogo se puede elegir de verdad',
+      conValor.some(o => o.value === 'kms-row-dni-e2e'),
+      `«kms-row-dni-e2e» no está entre las opciones pintadas (${JSON.stringify(conValor.map(o => o.value))})`)) return c
+    await sel.selectOption('kms-row-dni-e2e')
+    await page.waitForTimeout(150)
+    // DL-E49 §3 punto 1 — este camino mide el tipo de documento, no la pregunta de
+    // familia monoparental: se contesta para que ella no sea la que frene el avance.
+    await contestarMonoparentalSiHaceFalta(page)
+    ultimoPersons = null
+    const botones = await page.$$(BTN_SIGUIENTE)
+    if (!c.afirmar('el paso deja continuar tras elegir el tipo de documento', botones.length > 0,
+      'no había botón «Continuar» activo tras elegir una opción del catálogo')) return c
+    await botones[0].click()
+    await page.waitForTimeout(LATENCY + 900)
+
+    if (!c.afirmar('el paso se guarda', !!ultimoPersons,
+      'no salió ningún saveStep de personas tras elegir el tipo de documento')) return c
+    c.evidencia.llamadas += 1
+    // `personShape.js` (`preparePersonForUI`/su inverso) mueve `id_type_id` DENTRO de
+    // `ids[0]` y BORRA el campo de nivel superior antes de mandarlo (`out.ids = [...]`;
+    // `delete out.id_type_id`) — así que hay que leerlo de ahí, no del nivel superior.
+    const enviadas = Array.isArray(ultimoPersons.payload) ? ultimoPersons.payload : []
+    const tiposEnviados = enviadas.map(p => p && Array.isArray(p.ids) && p.ids[0] && p.ids[0].id_type_id)
+    c.afirmar('lo elegido VIAJA con el `code` del catálogo (Row-ID), nunca con el literal legado',
+      tiposEnviados.includes('kms-row-dni-e2e') && !tiposEnviados.includes('passport'),
+      `los tipos enviados fueron ${JSON.stringify(tiposEnviados)}`)
+
+    // ── (5) SIN CATÁLOGO, LA LISTA LEGADA COMPLETA — NUNCA VACÍO Y MUDO ─────────────
+    // `catalogosMode: 'caido'` es la MISMA palanca que ya usa `programas-no-se-inventan`
+    // — se aplica en los DOS sitios que sirven catálogos (hidratación + `fetchLookups`),
+    // así que un catálogo caído se ve igual desde cualquiera de los dos caminos.
+    await esperarSilencioDeRed(20000, 400)   // el precalentado en vuelo, no el producto
+    scenario.catalogosMode = 'caido'
+    // El escenario tira el catálogo A PROPÓSITO — no solo el del paso 2: `Step4Health` y
+    // `Step6Documents` piden el MISMO `fetchLookups` y también lo verán caído en esta
+    // sesión. Que registren su fallo es lo correcto (§KAL-11), no un defecto — mismo
+    // criterio que `programas-no-se-inventan`.
+    c.esperarErrorConsola(/gasCall fetchLookups: server returned ok=false/,
+      'el catálogo está caído a propósito en este recorrido')
+    c.esperarErrorConsola(/Step6: fetchLookups failed/,
+      'Step6Documents pide el mismo fetchLookups y también lo ve caído')
+    c.esperarErrorConsola(/Step4: fetchLookups failed/,
+      'Step4Health pide el mismo fetchLookups y también lo ve caído')
+    c.esperarErrorConsola(/Step3: fetchLookups failed/,
+      'Step3Relations pide el mismo fetchLookups y también lo ve caído')
+    c.esperarErrorConsola(/Step2: fetchLookups failed/,
+      'Step2Persons (el propio paso de este camino) pide el mismo fetchLookups y también lo ve caído')
+    // ⛔ SESIÓN LIMPIA DE VERDAD, y no es ceremonia: la caché de MÓDULO de `api.js`
+    // (`_lookupsCache`) sobrevive a un cambio de hash — medido en `sexo-desde-el-catalogo`.
+    await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+    await page.goto('about:blank')
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('(B) se vuelve al paso de Personas con el catálogo caído',
+      (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return c
+    await desbloquear(page)
+    await page.waitForTimeout(500)
+
+    // ── ANCLA: sin desplegable, lo de abajo mediría el vacío.
+    const sel2 = await selector()
+    if (!c.afirmar('(B) el paso 2 sigue ofreciendo el campo del tipo de documento', !!sel2,
+      'no se pintó ningún select[data-testid^="id-type-"] sin catálogo del servidor')) return c
+
+    const opciones2 = await sel2.$$eval('option', els => els.map(o => o.value).filter(Boolean))
+    const legadoCompleto = ['passport', 'dni', 'nie', 'other']
+    c.afirmar('(B) sin catálogo el desplegable cae a la lista LEGADA completa, nunca vacío',
+      legadoCompleto.every(v => opciones2.includes(v)),
+      `se pintaron ${JSON.stringify(opciones2)} sin catálogo del servidor: sin la lista legada de respaldo, la familia se queda sin poder declarar su documento`)
+
+    return c
+  } finally {
+    scenario.idTypeLegado = false
+    scenario.catalogosMode = null
+    limpiar()
+  }
+}
+
+/**
  * CAMINO · «las opciones NEAE salen del catálogo» (`①83` TRAMO C, 2026-09-08).
  *
  * `Step4Health.jsx` llevaba TRES listas escritas a mano (categoría, tipo de apoyo,
@@ -9995,6 +10172,9 @@ const CAMINOS = [
   // `①45` — el paso 2 recoge los idiomas que habla cada persona (opcional, varios).
   { nombre: 'idiomas-hablados', fn: caminoIdiomasHablados, minLlamadas: 1, minElementos: 11 },
   { nombre: 'sexo-desde-el-catalogo', fn: caminoSexoDesdeElCatalogo, minLlamadas: 1, minElementos: 11 },
+  // `①83` TRAMO A — el tipo de documento sale del catálogo (Row-ID), y lo LEGADO
+  // (`passport`/`dni`/`nie`/`other`) no desaparece del desplegable híbrido.
+  { nombre: 'documento-desde-el-catalogo', fn: caminoDocumentoDesdeElCatalogo, minLlamadas: 1, minElementos: 11 },
   // `①83` TRAMO C — las tres listas NEAE (categoría, apoyo, ámbito) salen del catálogo
   // del servidor, igual que el sexo.
   { nombre: 'neae-desde-el-catalogo', fn: caminoNeaeDesdeElCatalogo, minLlamadas: 1, minElementos: 3 },
