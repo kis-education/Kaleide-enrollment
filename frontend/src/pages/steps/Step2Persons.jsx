@@ -350,7 +350,7 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove, catalogoTel = []
   );
 }
 
-function PreviousSchoolRow({ school, onChange, onRemove, birthYear }) {
+function PreviousSchoolRow({ school, onChange, onRemove, birthYear, countries = COUNTRIES }) {
   const { t } = useTranslation();
   const u = (f, v) => onChange({ ...school, [f]: v });
   const currentYear = new Date().getFullYear();
@@ -376,7 +376,7 @@ function PreviousSchoolRow({ school, onChange, onRemove, birthYear }) {
           <select className="form-select form-select-sm" value={school.country_id}
             onChange={e => u('country_id', e.target.value)}>
             <option value="">{t('field.country')}</option>
-            {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+            {countries.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
         </div>
         <div className="col-md-2">
@@ -542,7 +542,7 @@ function AbbreviatedGuardianRow({ person, onChange, onRemove, avisar, invalid })
   );
 }
 
-function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar, valoresDeSexo = [], sexoNoDisponible = false, catalogoDeIdiomas = [], idiomasNoDisponible = false, catalogoDoc = [], catalogoTel = [], catalogoCorreo = [] }) {
+function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar, valoresDeSexo = [], sexoNoDisponible = false, catalogoDeIdiomas = [], idiomasNoDisponible = false, catalogoDoc = [], catalogoTel = [], catalogoCorreo = [], catalogoPaises = COUNTRIES }) {
   const { t } = useTranslation();
   // UX-2: resaltado por-campo. `inv(field)` consulta si está marcado inválido; editar un
   // campo lo limpia (vía onFieldEdit, subido al estado del padre).
@@ -713,7 +713,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           <label className="form-label">{t('field.nationality')}</label>
           <select className="form-select" value={person.nationality} onChange={e => u('nationality', e.target.value)}>
             <option value="">{t('placeholder.select')}</option>
-            {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+            {catalogoPaises.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
         </div>
         <div className="col-md-3">
@@ -893,6 +893,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           <AddressForm
             address={person.address || emptyAddress()}
             onChange={addr => u('address', addr)}
+            countries={catalogoPaises}
           />
         )}
       </div>
@@ -910,6 +911,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
                 {(person.previous_schools || []).map((s, i) => (
                   <PreviousSchoolRow key={s._uid || i} school={s}
                     birthYear={birthYear}
+                    countries={catalogoPaises}
                     onChange={val => updateSchool(i, val)}
                     onRemove={() => removeSchool(i)} />
                 ))}
@@ -1137,6 +1139,24 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const [catalogoDoc, setCatalogoDoc] = useState([]);
   const [catalogoTel, setCatalogoTel] = useState([]);
   const [catalogoCorreo, setCatalogoCorreo] = useState([]);
+  // `①83` fila 1 (países) — a diferencia de los tres catálogos de arriba, `countries` SÍ
+  // declara un código legible y ESTABLE: `iso_alpha2` (medido `manual_diagIsoAlpha2DePaises`,
+  // 2026-09-08 — 250 de 252 filas vivas lo tienen, sin duplicados) y coincide EXACTO con los
+  // 118 valores de `constants/countries.js` (`manual_diagIsoAlpha2ConDialVsAsistente`, mismo
+  // día). Por eso NO hace falta el patrón híbrido de TRAMO A (opción sintética por
+  // divergencia de identificador): el valor persistido (ISO alpha-2) es el MISMO en los dos
+  // catálogos, así que ampliar de 118 a ~250 países no puede dejar huérfano ningún valor ya
+  // guardado. Este catálogo alimenta SOLO nacionalidad, país del colegio anterior y la
+  // dirección (`AddressForm`) — el selector de país del TELÉFONO se queda en `COUNTRIES` a
+  // propósito esta vuelta (ver `PhoneRow`, más abajo): la parte con `phone_dial_code` del
+  // catálogo del servidor ya se midió IDÉNTICA a `COUNTRIES` (118/118), así que ampliarlo no
+  // sumaría ningún país y sí acoplaría la puerta de validación del teléfono a una lectura de
+  // red — coste sin beneficio medido, en la pieza más sensible de esta pantalla.
+  //
+  // Sin catálogo (aún no llegó, o el KMS todavía sirve el paquete de ayer): `paisesEfectivos`
+  // cae a la lista estática de siempre — NUNCA un desplegable vacío.
+  const [catalogoPaises, setCatalogoPaises] = useState([]);
+  const paisesEfectivos = catalogoPaises.length ? catalogoPaises : COUNTRIES;
   useEffect(() => {
     fetchLookups(i18n.language)
       .then(data => {
@@ -1164,6 +1184,16 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         setCatalogoDoc(doc);
         setCatalogoTel(tel);
         setCatalogoCorreo(correo);
+        // `①83` fila 1 — el mapeo {code,designation} → {value,label} es el MISMO que ya
+        // usan nacionalidad/colegio anterior/dirección con `constants/countries.js`, así
+        // que el resto de la pantalla no tiene que distinguir de dónde salió la lista.
+        const paises = ((data && data.countries) || [])
+          .filter(v => v && v.code && v.designation)
+          .map(c => ({ value: c.code, label: c.designation, dial: c.dial || null }));
+        log.info('Step2: catálogo de países', {
+          count: paises.length, motivo: (data && data.countriesReason) || null,
+        });
+        setCatalogoPaises(paises);
       })
       .catch(err => {
         log.error('Step2: fetchLookups failed', { message: err.message });
@@ -1672,6 +1702,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               catalogoDoc={catalogoDoc}
               catalogoTel={catalogoTel}
               catalogoCorreo={catalogoCorreo}
+              catalogoPaises={paisesEfectivos}
             />
           );
         })}
@@ -1808,6 +1839,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               catalogoDoc={catalogoDoc}
               catalogoTel={catalogoTel}
               catalogoCorreo={catalogoCorreo}
+              catalogoPaises={paisesEfectivos}
             />
           );
         })}

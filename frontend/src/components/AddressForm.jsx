@@ -15,8 +15,12 @@ export const emptyAddress = () => ({
  * @param {Object}   address   - Address object with all enrAddresses fields
  * @param {Function} onChange  - Called with updated address object
  * @param {boolean}  disabled  - When true, all fields are read-only
+ * @param {Array<{value:string,label:string}>} [countries] - `①83` fila 1: catálogo de
+ *   países a ofrecer. Por defecto la lista estática `COUNTRIES` (118) — el llamante
+ *   (`Step2Persons`) pasa el catálogo del servidor (250) cuando llegó; sin catálogo
+ *   cae aquí mismo a la lista de siempre, NUNCA un desplegable vacío.
  */
-export default function AddressForm({ address, onChange, disabled = false }) {
+export default function AddressForm({ address, onChange, disabled = false, countries = COUNTRIES }) {
   const { t } = useTranslation();
   const u = (f, v) => onChange({ ...address, [f]: v });
 
@@ -67,7 +71,7 @@ export default function AddressForm({ address, onChange, disabled = false }) {
           onChange={e => u('country_id', e.target.value)}
         >
           <option value="">{t('placeholder.select')}</option>
-          {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+          {countries.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
       </div>
       <div className="col-md-2">
