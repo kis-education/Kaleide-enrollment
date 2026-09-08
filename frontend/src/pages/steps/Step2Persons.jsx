@@ -442,6 +442,64 @@ function AvisarTutorBoton({ person, avisar }) {
   );
 }
 
+/**
+ * DL-E49 §3 punto 2 — la declaración VOLUNTARIA y ABREVIADA de un tutor adicional: SOLO
+ * su correo y, si acaso, su nombre. Sustituye al alta con FICHA COMPLETA que aquí vivía
+ * (documento, fecha de nacimiento, dirección, teléfonos): los datos personales de una
+ * persona los rellena esa persona (§2), no quien la declara.
+ *
+ * Cita literal de Diego (2026-08-09): «Esta parte debe ser voluntaria, y no añadir los
+ * datos completos del tutor, sino los datos abreviados (un email, y si acaso el nombre).»
+ *
+ * ⛔ NO es un `PersonSection`: no pinta documento, fecha de nacimiento, dirección ni
+ * teléfono — a propósito. `handleNext` exime a estas fichas (marcadas
+ * `_declaracionAbreviada`) del nombre y del teléfono obligatorios; el correo SÍ es
+ * obligatorio si la fila existe (sin él no hay a quién avisar ni identificar).
+ *
+ * El botón «Avisar» (DL-E49 §4, ya construido) va pegado aquí — es el mismo momento en
+ * que la familia acaba de escribir el correo.
+ */
+function AbbreviatedGuardianRow({ person, onChange, onRemove, avisar, invalid }) {
+  const { t } = useTranslation();
+  const email = guardianEmail_(person);
+  const setEmail = (v) => {
+    const existing = (person.emails || [])[0] || {};
+    onChange({ ...person, emails: [{ ...existing, email_address: v, is_default: true }] });
+  };
+  const setName = (v) => onChange({ ...person, first_name: v });
+
+  return (
+    <div className="border rounded p-2 mb-2" style={{ background: 'var(--bg)' }} data-testid="tutor-abreviado">
+      <div className="row g-2 align-items-center">
+        <div className="col-md-5">
+          <input
+            type="email"
+            className={'form-control form-control-sm' + (invalid ? ' is-invalid' : '')}
+            aria-invalid={invalid ? 'true' : undefined}
+            data-testid="tutor-abreviado-email"
+            placeholder={t('step2.other_guardians.email_placeholder')}
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+          />
+        </div>
+        <div className="col-md-5">
+          <input
+            className="form-control form-control-sm"
+            data-testid="tutor-abreviado-nombre"
+            placeholder={t('step2.other_guardians.name_placeholder')}
+            value={person.first_name || ''}
+            onChange={e => setName(e.target.value)}
+          />
+        </div>
+        <div className="col-md-2 text-end">
+          <button className="remove-btn" onClick={onRemove}>{t('action.remove')}</button>
+        </div>
+      </div>
+      <AvisarTutorBoton person={person} avisar={avisar} />
+    </div>
+  );
+}
+
 function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar, valoresDeSexo = [], sexoNoDisponible = false }) {
   const { t } = useTranslation();
   // UX-2: resaltado por-campo. `inv(field)` consulta si está marcado inválido; editar un
@@ -890,6 +948,11 @@ function transformPersonForSave(person, idx, arr) {
   delete out._id_record_id;
 
   delete out._sameAddress;
+  // DL-E49 §3 punto 2 — marca SOLO de pantalla: dice si esta ficha nació por la
+  // declaración voluntaria y abreviada de otro tutor (para que `handleNext` no le exija
+  // nombre/teléfono). No aporta nada al servidor, que decide por lo que llega (o no
+  // llega) en cada campo — nunca por esta marca.
+  delete out._declaracionAbreviada;
 
   // Normalize phones to server-canonical shape: remove UI-added alias fields
   // (phone_number, phone_type_id) that preparePersonForUI adds on top of the
@@ -1051,6 +1114,15 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const clearInvalidField = (k) => setInvalidFields(prev => (prev[k] ? (() => { const n = { ...prev }; delete n[k]; return n; })() : prev));
   const pkey = (p) => p.person_id || p._uid;
   const [highlightEdit, setHighlightEdit] = useState(false);
+  // DL-E49 §3 punto 1 — LA PREGUNTA EXPLÍCITA, SIEMPRE VISIBLE y SIN VALOR POR DEFECTO.
+  // Tres estados: `null` (sin contestar, bloquea el avance) · `true` (monoparental) ·
+  // `false` (no). Se persiste en `stepData.familia_monoparental` (leído aquí, escrito en
+  // `handleNext`) para que volver de otro paso no obligue a re-contestar — pero NUNCA se
+  // deduce del conteo de tutores (`totalGuardians`): es un acto explícito de la familia.
+  const [familiaMonoparental, setFamiliaMonoparental] = useState(() => {
+    const v = stepData.familia_monoparental;
+    return typeof v === 'boolean' ? v : null;
+  });
   // CLI 8: atestación de tutor único (familia monoparental / único tutor legal).
   // Persistido en el save vía sole_guardian_attestation; se rehidrata si ya constaba.
   const [soleGuardianAttested, setSoleGuardianAttested] = useState(
@@ -1112,6 +1184,14 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   };
 
   const addPerson = (type) => setPersons([...persons, emptyPerson(type)]);
+
+  // DL-E49 §3 punto 2 — declarar a otro tutor de forma VOLUNTARIA y ABREVIADA (solo
+  // correo y, si acaso, nombre). Sustituye al alta de tutor con ficha completa que aquí
+  // vivía: los datos personales de una persona los rellena esa persona (§2), no quien la
+  // declara. `_declaracionAbreviada` es marca SOLO de pantalla (transformPersonForSave la
+  // quita antes de guardar) que exime a esta ficha del nombre/teléfono obligatorios.
+  const addAbbreviatedGuardian = () =>
+    setPersons([...persons, { ...emptyPerson('guardian'), _declaracionAbreviada: true }]);
 
   /**
    * DL-E49 §4/§9 — AVISAR a un tutor declarado: se le manda SU enlace de la solicitud.
@@ -1220,8 +1300,20 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         ? t('applicant.title', { n })
         : t('guardian.title', { n });
     };
-    // Every person must have first_name + last_name
+    // DL-E49 §3 punto 2 — la declaración abreviada de otro tutor NO exige nombre («el
+    // correo y, si acaso, el nombre»): lo único obligatorio es el correo, sin el cual la
+    // ficha declarada no serviría para identificar ni avisar a nadie.
     for (const p of persons) {
+      if (p._declaracionAbreviada && !guardianEmail_(p)) {
+        markInvalid([`${pkey(p)}:email`]);
+        setErr(t('error.other_guardian_email_required'));
+        return;
+      }
+    }
+    // Every person must have first_name + last_name (salvo la declaración abreviada,
+    // ya comprobada arriba con su propio criterio).
+    for (const p of persons) {
+      if (p._declaracionAbreviada) continue;
       if (!p.first_name?.trim() || !p.last_name?.trim()) {
         const label = etiquetaDe(p);
         // UX-2: marca el/los campo(s) de nombre vacío(s) de ESA persona.
@@ -1254,7 +1346,9 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
           return;
         }
       }
-      if (p.person_type_id === 'guardian') {
+      // DL-E49 §3 punto 2 — la declaración abreviada NO pide teléfono: quien lo rellenará
+      // es el propio tutor declarado, al entrar por su enlace (§5), no quien lo declara.
+      if (p.person_type_id === 'guardian' && !p._declaracionAbreviada) {
         const hasValid = phones.some(ph => telefonoEfectivo_(ph, countryISO).valido);
         if (!hasValid) {
           markInvalid([`${pkey(p)}:phone`]);  // UX-2
@@ -1282,19 +1376,31 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         seen[email] = gi;
       }
     }
-    // CLI 8 (DL-E39 ENMIENDA 3 punto 4): atestación de tutor único. Si solo se declara
-    // 1 tutor, exige confirmar la atestación (familia monoparental / único tutor legal)
-    // antes de avanzar.
-    if (totalGuardians === 1 && !soleGuardianAttested) {
-      markInvalid(['attestation']);  // UX-2: resalta la atestación
-      setErr(t('error.sole_guardian_attestation_required'));
+    // DL-E49 §3 punto 1 — LA PREGUNTA EXPLÍCITA. Cita literal de Diego (2026-08-09): «No
+    // puedes pasar del paso 2 si no declaras bien que eres familia monoparental o bien
+    // añadiendo otros tutores.» Sin contestar, no se avanza — y NO se deduce de cuántos
+    // tutores hay declarados (`totalGuardians`), que es justo lo que había antes y lo que
+    // este punto corrige.
+    if (familiaMonoparental === null) {
+      markInvalid(['familia_monoparental']);
+      setErr(t('error.family_structure_required'));
       return;
     }
-    // DL-E49 §3: la patria potestad se declara aparte y también se exige.
-    if (totalGuardians === 1 && !parentalAuthorityAttested) {
-      markInvalid(['parental_authority']);
-      setErr(t('error.parental_authority_required'));
-      return;
+    // Contestar SÍ es la declaración de familia monoparental: exige las dos atestaciones
+    // (tutor único + patria potestad), exactamente como ya estaba construido
+    // (DL-E39 ENMIENDA 3 · DL-E49 §3). Contestar NO no exige ninguna de las dos — se le
+    // ofrece declarar a los demás tutores de forma voluntaria y abreviada (JSX de abajo).
+    if (familiaMonoparental === true) {
+      if (!soleGuardianAttested) {
+        markInvalid(['attestation']);  // UX-2: resalta la atestación
+        setErr(t('error.sole_guardian_attestation_required'));
+        return;
+      }
+      if (!parentalAuthorityAttested) {
+        markInvalid(['parental_authority']);
+        setErr(t('error.parental_authority_required'));
+        return;
+      }
     }
     setErr('');
     setInvalidFields({});  // UX-2: validación OK → limpia el resaltado
@@ -1326,11 +1432,15 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     const transformed = withE164.map(transformPersonForSave);
     log.info('Step2: onNext persons (transformed)', transformed);
     updateStep('persons', transformed);
-    // CLI 8: si hay exactamente 1 tutor y se atestó, adjunta el acto declarativo al
-    // save (sole_guardian_attestation). attestant = email del tutor único (su credencial
-    // de identidad) o el email de sesión. El backend lo persiste best-effort (group-scoped).
+    // DL-E49 §3 punto 1 — LA RESPUESTA A LA PREGUNTA se persiste (nunca solo en memoria
+    // del componente): sin esto, volver de otro paso remontaría `Step2Persons` con
+    // `familiaMonoparental` a `null` y obligaría a contestar otra vez algo que ya se dijo.
+    updateStep('familia_monoparental', familiaMonoparental);
+    // CLI 8: si contestó SÍ, adjunta el acto declarativo al save (sole_guardian_attestation).
+    // attestant = email del tutor único (su credencial de identidad) o el email de
+    // sesión. El backend lo persiste best-effort (group-scoped).
     let extra = null;
-    if (totalGuardians === 1 && soleGuardianAttested) {
+    if (familiaMonoparental === true) {
       const attestant = guardianEmail_(guardians[0]) || String(primaryEmail || '').trim().toLowerCase() || null;
       extra = {
         sole_guardian_attestation: {
@@ -1431,15 +1541,20 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         <h5 style={{ color: 'var(--teal-dk)', marginTop: 16, marginBottom: 8 }}>
           {t('person.guardians_section')}
         </h5>
+        {/* DL-E49 §3 punto 2 — la ficha COMPLETA solo la rellena quien inicia (el tutor
+            que está delante de la pantalla): el primero de `guardians`. Los datos
+            personales de cualquier OTRO tutor los rellena él mismo (§2), nunca quien lo
+            declara — por eso ya no hay `PersonSection` para `guardianIdx > 0`. */}
         {persons.map((p, i) => {
           if (p.person_type_id !== 'guardian') return null;
           const guardianIdx = guardians.indexOf(p);
+          if (guardianIdx !== 0) return null;
           return (
             <PersonSection
               key={p.person_id || p._uid || i}
               person={p}
               idx={guardianIdx}
-              isFirst={guardianIdx === 0}
+              isFirst
               onChange={val => updatePerson(i, val)}
               onRemove={() => removePerson(i)}
               pedirQuitar={pedirQuitar}
@@ -1453,14 +1568,53 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
             />
           );
         })}
-        <button className="add-btn" onClick={() => addPerson('guardian')}>
-          <i className="bi bi-plus-lg" /> {t('person.add_guardian')}
-        </button>
+
+        {/* DL-E49 §3 punto 1 — LA PREGUNTA EXPLÍCITA, SIEMPRE VISIBLE, sin valor por
+            defecto. Bloquea el avance mientras no se conteste (handleNext la exige antes
+            de cualquiera de las dos ramas de abajo). NO se deduce del conteo de tutores. */}
+        <div className="alert alert-light border mt-3 mb-1 py-2 px-3" style={{ borderLeft: '4px solid var(--teal)' }}>
+          <div className="fw-semibold mb-2" style={{ fontSize: '0.92rem' }}>
+            {t('step2.family_structure.question')}
+          </div>
+          <div className="d-flex gap-4 flex-wrap">
+            <label className="d-flex align-items-center gap-2 mb-0" style={{ cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="familia_monoparental"
+                data-testid="monoparental-si"
+                className={'form-check-input mt-0' + (invalidFields['familia_monoparental'] ? ' is-invalid' : '')}
+                aria-invalid={invalidFields['familia_monoparental'] ? 'true' : undefined}
+                checked={familiaMonoparental === true}
+                onChange={() => {
+                  setFamiliaMonoparental(true);
+                  clearInvalidField('familia_monoparental');
+                  // Contestar SÍ es declarar que NO hay más tutores (§3): si ya se
+                  // había empezado a declarar alguno de forma abreviada, se retira —
+                  // enviarlo junto con la atestación de tutor único sería contradictorio.
+                  setPersons(prev => prev.filter(p => !p._declaracionAbreviada));
+                }}
+              />
+              {t('step2.family_structure.yes')}
+            </label>
+            <label className="d-flex align-items-center gap-2 mb-0" style={{ cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="familia_monoparental"
+                data-testid="monoparental-no"
+                className={'form-check-input mt-0' + (invalidFields['familia_monoparental'] ? ' is-invalid' : '')}
+                aria-invalid={invalidFields['familia_monoparental'] ? 'true' : undefined}
+                checked={familiaMonoparental === false}
+                onChange={() => { setFamiliaMonoparental(false); clearInvalidField('familia_monoparental'); }}
+              />
+              {t('step2.family_structure.no')}
+            </label>
+          </div>
+        </div>
 
         {/* CLI 8 (DL-E39 ENMIENDA 3 punto 4): atestación de tutor único. Aparece solo
-            cuando se declara exactamente 1 tutor; sin marcarla no se avanza. El acto
-            (attestant + timestamp + versión) se registra en el save. */}
-        {totalGuardians === 1 && (
+            cuando la familia CONTESTÓ SÍ a la pregunta de arriba; sin marcarla no se
+            avanza. El acto (attestant + timestamp + versión) se registra en el save. */}
+        {familiaMonoparental === true && (
           <div className="alert alert-warning mt-2 mb-1 py-2 px-3" style={{ fontSize: '0.86rem', borderLeft: '4px solid var(--amber, #f0a500)' }}>
             <label className="d-flex align-items-start gap-2 mb-0" style={{ cursor: 'pointer' }}>
               <input
@@ -1484,6 +1638,39 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               />
               <span>{t('step2.parental_authority.attestation_label')}</span>
             </label>
+          </div>
+        )}
+
+        {/* DL-E49 §3 punto 2 — contestó NO: se ofrece declarar a los demás tutores de
+            forma VOLUNTARIA y ABREVIADA (solo correo y, si acaso, nombre). No declarar a
+            nadie NO bloquea el avance — se avisa que deben contactar con la escuela (§4,
+            ya construido: `enr.addGuardianToApplication`, botón «Añadir tutor y
+            avisarle» en la ficha del KMS). */}
+        {familiaMonoparental === false && (
+          <div className="mt-2 mb-1">
+            <p className="form-text mb-2">{t('step2.other_guardians.intro')}</p>
+            {persons.map((p, i) => {
+              if (p.person_type_id !== 'guardian') return null;
+              if (guardians.indexOf(p) === 0) return null;
+              return (
+                <AbbreviatedGuardianRow
+                  key={p.person_id || p._uid || i}
+                  person={p}
+                  onChange={val => updatePerson(i, val)}
+                  onRemove={() => removePerson(i)}
+                  avisar={avisarATutorDeclarado}
+                  invalid={!!invalidFields[`${pkey(p)}:email`]}
+                />
+              );
+            })}
+            <button className="add-btn" data-testid="anadir-tutor-abreviado" onClick={addAbbreviatedGuardian}>
+              <i className="bi bi-plus-lg" /> {t('step2.other_guardians.add_button')}
+            </button>
+            {Math.max(totalGuardians, guardians.length) <= 1 && (
+              <div className="form-text mt-2" data-testid="aviso-contactar-escuela">
+                {t('step2.other_guardians.contact_school_warning')}
+              </div>
+            )}
           </div>
         )}
 

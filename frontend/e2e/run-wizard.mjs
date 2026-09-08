@@ -2595,6 +2595,22 @@ async function pulsarAñadir(page, texto) {
 }
 
 /**
+ * DL-E49 §3 punto 1 — contesta la pregunta explícita de familia monoparental si está
+ * pintada, y no hace nada si no lo está (pasos ya avanzados, u otra pantalla). Se usa en
+ * los caminos que necesitan avanzar del paso 2 SIN que la pregunta sea lo que miden: sin
+ * contestarla, `handleNext` bloquea el avance del paso entero, y esos caminos medirían
+ * el aire. La respuesta por defecto es «no» — no exige las dos casillas de atestación
+ * que exigiría «sí», y es indiferente para lo que esos caminos afirman.
+ */
+async function contestarMonoparentalSiHaceFalta(page, respuesta = 'no') {
+  const el = await page.$(`[data-testid="monoparental-${respuesta}"]`)
+  if (!el) return false
+  await el.click()
+  await page.waitForTimeout(120)
+  return true
+}
+
+/**
  * PASO 2 · Personas — dos tutores y dos hijos, tecleados en la pantalla.
  *
  * La forma (2+2, apellido con el marcador de la corrida) NO es capricho: es la que las
@@ -4453,41 +4469,43 @@ async function caminoAvisarAlOtroTutor(page, base) {
     if (!c.afirmar('sin un segundo tutor no se ofrece avisar a nadie', antesDeAnadir === 0,
       `había ${antesDeAnadir} botón(es) de avisar con un solo tutor en pantalla: se estaría ofreciendo avisarse a uno mismo`)) return c
 
-    const anadirTutor = await page.$('button.add-btn:has-text("tutor"), button.add-btn:has-text("guardian")')
-    if (!c.afirmar('se puede añadir un segundo tutor', !!anadirTutor,
-      'no se encontró el botón de añadir tutor: sin él no hay a quién avisar')) return c
+    // DL-E49 §3 punto 1 — desde este cambio hay que CONTESTAR la pregunta explícita antes
+    // de que se ofrezca declarar a nadie: sin respuesta, el botón de abajo ni existe.
+    const noMonoparental = await page.$('[data-testid="monoparental-no"]')
+    if (!c.afirmar('se puede contestar que NO es monoparental', !!noMonoparental,
+      'no se encontró el radio «no» de la pregunta de familia monoparental')) return c
+    await noMonoparental.click()
+    await page.waitForTimeout(150)
+
+    // DL-E49 §3 punto 2 — declarar a otro tutor es AHORA la declaración voluntaria y
+    // ABREVIADA (solo correo y, si acaso, nombre): el alta con ficha completa se retiró
+    // porque los datos personales de una persona los rellena esa persona (§2).
+    const anadirTutor = await page.$('[data-testid="anadir-tutor-abreviado"]')
+    if (!c.afirmar('se puede declarar a otro tutor', !!anadirTutor,
+      'no se encontró el botón de declarar otro tutor: sin él no hay a quién avisar')) return c
     await anadirTutor.click()
     await page.waitForTimeout(300)
 
-    // Su correo, tal y como lo hace la familia: la ficha nace SIN ninguno, así que primero
-    // se pulsa «añadir correo» y luego se escribe. Sin correo la pantalla explica que falta
-    // —en vez de ofrecer un botón que solo puede fallar—, y eso también es lo correcto.
-    // ⚠️ Las fichas de ALUMNO también son `.dynamic-section` y van DESPUÉS, así que «la
-    // última» es la de un menor, no la del tutor. Se acota por el rótulo — si no, las tres
-    // afirmaciones siguientes medirían la ficha equivocada y pasarían en vacío.
-    const todas = await page.$$('.dynamic-section')
-    const seccionesTutor = []
-    for (const s of todas) {
-      const rotulo = await s.$eval('.dynamic-section-title', el => el.textContent || '').catch(() => '')
-      if (/Tutor|Guardian/i.test(rotulo)) seccionesTutor.push(s)
-    }
-    if (!c.afirmar('se distingue la ficha del tutor añadido', seccionesTutor.length >= 2,
-      `se encontraron ${seccionesTutor.length} fichas de tutor: el segundo no llegó a pintarse`)) return c
-    const suSeccion = seccionesTutor[seccionesTutor.length - 1]
-    const sinCorreoTodavia = await suSeccion.$$('button.add-btn:has(i.bi-send)')
+    const filaTutor = await page.$('[data-testid="tutor-abreviado"]')
+    if (!c.afirmar('se pinta la fila abreviada del tutor declarado', !!filaTutor,
+      'no se pintó ninguna fila de declaración abreviada tras pulsar el botón')) return c
+    const sinCorreoTodavia = await filaTutor.$$('button.add-btn:has(i.bi-send)')
     c.afirmar('sin correo NO se ofrece avisar', sinCorreoTodavia.length === 0,
       'se ofrecía avisar a un tutor sin correo declarado: el aviso no podría salir a ninguna parte')
 
-    const anadirCorreo = await suSeccion.$('button.add-btn:has(i.bi-plus)')
-    if (!c.afirmar('se le puede añadir un correo', !!anadirCorreo,
-      'no se encontró el botón de añadir correo en la ficha del tutor añadido')) return c
-    await anadirCorreo.click()
-    await page.waitForTimeout(250)
-    const suCorreo = await suSeccion.$('input[type="email"]')
+    // ⛔ La declaración abreviada es SOLO correo (y, si acaso, nombre) — ya no hace falta
+    // pulsar «añadir correo»: el campo está ahí desde que se pinta la fila.
+    const suCorreo = await filaTutor.$('[data-testid="tutor-abreviado-email"]')
     if (!c.afirmar('hay dónde escribir su correo', !!suCorreo,
-      'no apareció el campo de correo tras pulsar añadir')) return c
+      'no apareció el campo de correo en la fila abreviada')) return c
     await suCorreo.fill('juan.tutor2@ejemplo.invalid')
     await page.waitForTimeout(200)
+
+    // Y NO se le pide su ficha completa: sin `PersonSection`, esta fila no puede tener
+    // documento, fecha de nacimiento ni dirección — lo comprueba negando su presencia.
+    c.afirmar('NO se le pide la ficha completa (documento, fecha de nacimiento…)',
+      !(await filaTutor.$('input[type="date"]')) && !(await filaTutor.$('select')),
+      'la fila abreviada pinta campos de la ficha completa: el alta con datos completos no se retiró de verdad')
 
     const botones = await botonesAvisar()
     if (!c.afirmar('el tutor recién añadido tiene botón de avisar', botones.length === 1,
@@ -5439,9 +5457,21 @@ async function caminoDeclaracionesTutorUnico(page, base) {
     await desbloquear(page)
     await page.waitForTimeout(250)
 
-    // Las dos casillas SOLO se pintan con un tutor. Si no están, o el recorte de personas
-    // dejó más de un tutor o la pantalla dejó de pedir las declaraciones: las dos cosas son
-    // el fallo que este camino busca, y por eso se afirma antes de tocar nada.
+    // DL-E49 §3 punto 1 — desde este cambio las dos casillas ya NO se pintan solas con un
+    // tutor: hay que CONTESTAR primero la pregunta explícita («¿es una familia
+    // monoparental?»). Sin este clic las dos casillas de abajo no existirían y el camino
+    // mediría el aire.
+    const siMonoparental = await page.$('[data-testid="monoparental-si"]')
+    if (!c.afirmar('el paso 2 pregunta explícitamente si es familia monoparental',
+      !!siMonoparental,
+      'no se encontró el radio «sí» de la pregunta de familia monoparental')) return c
+    await siMonoparental.click()
+    await page.waitForTimeout(150)
+
+    // Las dos casillas SOLO se pintan tras contestar SÍ. Si no están, o el recorte de
+    // personas dejó más de un tutor visible, o la pantalla dejó de pedir las
+    // declaraciones: las dos cosas son el fallo que este camino busca, y por eso se
+    // afirma antes de tocar nada.
     const casillas = await page.$$('.alert-warning input[type=checkbox]')
     c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, casillas.length)
     if (!c.afirmar('la familia de un solo tutor ve las DOS declaraciones (tutor único + patria potestad)',
@@ -5495,6 +5525,152 @@ async function caminoDeclaracionesTutorUnico(page, base) {
     c.afirmar('las dos declaraciones van como ACEPTADAS',
       decl.length === 2 && decl.every(d => d.accepted === true),
       `se enviaron con accepted=${JSON.stringify(decl.map(d => d.accepted))}`)
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
+/**
+ * DL-E49 §3 punto 1 — LA PREGUNTA EXPLÍCITA BLOQUEA, y punto 2 — LA DECLARACIÓN ABREVIADA
+ * VIAJA CON SOLO CORREO Y NOMBRE (sin ficha completa).
+ *
+ * Cita literal de Diego (2026-08-09), que es LA especificación: *«No puedes pasar del
+ * paso 2 si no declaras bien que eres familia monoparental o bien añadiendo otros
+ * tutores... Si no los metes warning indicando que los otros tutores deben contactar con
+ * la escuela para facilitar el dato de contacto.»*
+ *
+ * Antes de este cambio la atestación de tutor único era una CASILLA que solo aparecía
+ * cuando el número real de tutores era 1 — con dos tutores, la pregunta no se hacía
+ * NUNCA (deducción por conteo, justo lo que DL-E49 §3 prohíbe). Y el «Añadir otro tutor»
+ * pedía la FICHA COMPLETA del segundo tutor (documento, fecha de nacimiento, dirección,
+ * teléfono) — datos que DL-E49 §2 dice que solo rellena su propio dueño.
+ *
+ * Este camino mide las CUATRO cosas que el cambio promete, en la pantalla:
+ *   (1) sin contestar la pregunta, NO se avanza — y el propio wizard dice por qué;
+ *   (2) contestando NO y sin declarar a nadie, SÍ se avanza — con el aviso de que los
+ *       demás tutores deben contactar con la escuela, y la respuesta no se vuelve a
+ *       pedir al volver al paso;
+ *   (3) contestando NO y declarando a un tutor (solo correo, SIN nombre) esa
+ *       declaración viaja en el guardado hacia el servidor;
+ *   (4) esa declaración NO exige apellidos ni teléfono para avanzar — el defecto exacto
+ *       que dejaría vivo el alta con ficha completa si conviviera con la abreviada.
+ */
+async function caminoFamiliaMonoparentalExplicita(page, base) {
+  const c = new Camino('familia-monoparental-explicita')
+  scenario.stage = 'hasta_preguntas'
+  // El aviso de «(2)» solo tiene sentido de medir cuando el TOTAL real de tutores
+  // (servidor) es 1 — con el mock por defecto (dos tutores) el aviso NO debe salir
+  // porque ya hay un segundo tutor real, y esa afirmación pasaría en vacío.
+  scenario.tutorUnico = true
+
+  let ultimoPersons = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'saveStep' && body.step === 'persons') ultimoPersons = body
+  }
+  page.on('request', espiar)
+  const limpiar = () => { page.off('request', espiar); scenario.tutorUnico = false }
+
+  const irAPersonas = async () => {
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar('se llega al paso de Personas', (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return false
+    await desbloquear(page)
+    await page.waitForTimeout(200)
+    return true
+  }
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    if (!await irAPersonas()) return c
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+
+    // ── ANCLA: la pregunta existe, con sus dos opciones ──────────────────────────────
+    if (!c.afirmar('el paso 2 pregunta explícitamente si es familia monoparental',
+      !!(await page.$('[data-testid="monoparental-si"]')) && !!(await page.$('[data-testid="monoparental-no"]')),
+      'no se pintaron los dos radios de la pregunta de familia monoparental')) return c
+
+    // ── (1) SIN CONTESTAR no se avanza ──────────────────────────────────────────────
+    const botones0 = await page.$$(BTN_SIGUIENTE)
+    if (!c.afirmar('hay botón de continuar disponible', botones0.length > 0,
+      'no había botón «Continuar» pulsable')) return c
+    await botones0[0].click()
+    await page.waitForTimeout(250)
+    const queja1 = await quejaDelWizard(page)
+    c.afirmar('sin contestar la pregunta, el paso NO avanza',
+      (await dondeEstoy(page)) === 1,
+      `el asistente avanzó al índice ${await dondeEstoy(page)} sin haber contestado si es familia monoparental`)
+    c.afirmar('y el wizard dice POR QUÉ',
+      /monoparental/i.test(queja1),
+      `el aviso leído fue «${queja1}»: no nombra la pregunta sin contestar`)
+
+    // ── (2) NO + sin declarar a nadie → avanza IGUAL, con el aviso de contactar ──────
+    const noMonoparental = await page.$('[data-testid="monoparental-no"]')
+    if (!c.afirmar('se puede contestar NO', !!noMonoparental, 'no se encontró el radio «no»')) return c
+    await noMonoparental.click()
+    await page.waitForTimeout(150)
+
+    const aviso = await page.$('[data-testid="aviso-contactar-escuela"]')
+    if (!c.afirmar('sin declarar a nadie se avisa de contactar con la escuela', !!aviso,
+      'contestando NO y sin declarar a ningún tutor, no aparece ningún aviso — la familia se queda sin saber qué hacer')) return c
+
+    const botones1 = await page.$$(BTN_SIGUIENTE)
+    if (!c.afirmar('con NO y sin declarar a nadie SÍ se puede continuar', botones1.length > 0,
+      'no había botón «Continuar» pulsable tras contestar NO')) return c
+    await botones1[0].click()
+    await page.waitForTimeout(LATENCY + 900)
+    if (!c.afirmar('el paso avanza', (await dondeEstoy(page)) > 1,
+      `se quedó en el índice ${await dondeEstoy(page)} — el «no tengo sus datos» se convirtió en un callejón sin salida`)) return c
+
+    // ── Se vuelve al paso 2: la respuesta ya dada NO se vuelve a pedir ───────────────
+    if (!await irAPersonas()) return c
+    c.afirmar('la respuesta ya dada NO se vuelve a pedir al volver al paso',
+      await page.$eval('[data-testid="monoparental-no"]', el => el.checked).catch(() => false),
+      'al volver al paso de Personas, el radio «no» no seguía marcado: obligaría a la familia a repetir una respuesta que ya dio')
+
+    // ── (3)+(4) declarar a un tutor SOLO con correo, sin nombre ni teléfono ──────────
+    const anadir = await page.$('[data-testid="anadir-tutor-abreviado"]')
+    if (!c.afirmar('se ofrece declarar a otro tutor', !!anadir,
+      'no se encontró el botón de declarar otro tutor')) return c
+    await anadir.click()
+    await page.waitForTimeout(200)
+    const fila = await page.$('[data-testid="tutor-abreviado"]')
+    if (!c.afirmar('se pinta la fila abreviada', !!fila, 'no se pintó la fila de declaración abreviada')) return c
+    const correo = await fila.$('[data-testid="tutor-abreviado-email"]')
+    await correo.fill('otro.tutor@ejemplo.invalid')
+    await page.waitForTimeout(150)
+
+    ultimoPersons = null
+    const botones2 = await page.$$(BTN_SIGUIENTE)
+    if (!c.afirmar('se puede avanzar con solo el correo del tutor declarado (sin nombre ni teléfono)',
+      botones2.length > 0,
+      'el paso quedó bloqueado exigiendo nombre o teléfono a un tutor declarado solo con su correo')) return c
+    await botones2[0].click()
+    await page.waitForTimeout(LATENCY + 900)
+
+    if (!c.afirmar('el paso se guarda', !!ultimoPersons,
+      'no salió ningún saveStep de personas tras declarar al tutor')) return c
+    c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, 1)
+    const enviados = Array.isArray(ultimoPersons.payload) ? ultimoPersons.payload : []
+    const declarado = enviados.find(p =>
+      (p.emails || []).some(e => (e.email_address || e.value || '') === 'otro.tutor@ejemplo.invalid'))
+    c.afirmar('el tutor declarado viaja hacia el servidor con su correo',
+      !!declarado,
+      `los correos de tutor enviados fueron ${JSON.stringify(enviados.filter(p => p.person_type_id === 'guardian').map(p => (p.emails || []).map(e => e.value || e.email_address)))}`)
+    c.afirmar('sin ficha completa: sin apellidos y sin teléfono',
+      !!declarado && !String(declarado.last_name || '').trim() && !(declarado.phones || []).length,
+      `el tutor declarado viajó con last_name=${JSON.stringify(declarado && declarado.last_name)} y ${declarado && (declarado.phones || []).length} teléfono(s): se le está exigiendo la ficha completa que DL-E49 §3 retira`)
 
     return c
   } finally {
@@ -5835,6 +6011,9 @@ async function caminoTelefonoQueSeVeSeGuarda(page, base) {
     // ── (b) CORREGIDO — se avanza Y el número VIAJA hacia el servidor ───────────────
     if (!c.afirmar('se puede corregir el teléfono del alumno', await escribirTelefonoEn('ultima', '600123456'),
       'no se pudo reescribir el campo de teléfono')) return c
+    // DL-E49 §3 punto 1 — este camino mide el teléfono, no la pregunta de familia
+    // monoparental: se contesta para que no sea ELLA la que frene el segundo intento.
+    await contestarMonoparentalSiHaceFalta(page)
     const tras2 = await intentarContinuar(1)
     if (!c.afirmar('con el teléfono corregido el paso avanza', tras2.avanzo,
       `siguió sin avanzar; el asistente dice: «${tras2.queja}»`)) return c
@@ -6001,6 +6180,9 @@ async function caminoIdiomasHablados(page, base) {
       `las casillas quedaron ${JSON.stringify(trasMarcar)}: el control no admite más de uno`)
 
     // ── (2) VIAJAN en el guardado, con la forma que el KMS lee ─────────────────────
+    // DL-E49 §3 punto 1 — este camino mide los idiomas, no la pregunta de familia
+    // monoparental: se contesta para que ella no sea la que frene el avance.
+    await contestarMonoparentalSiHaceFalta(page)
     ultimoPersons = null
     const botones = await page.$$(BTN_SIGUIENTE)
     if (!c.afirmar('el paso deja continuar tras declarar idiomas', botones.length > 0,
@@ -6154,6 +6336,9 @@ async function caminoSexoDesdeElCatalogo(page, base) {
       `«ZZ-E2E» no está entre las opciones pintadas (${JSON.stringify(conValor.map(o => o.value))}): la pantalla no ofrece lo que el catálogo declara`)) return c
     await sel.selectOption('ZZ-E2E')
     await page.waitForTimeout(150)
+    // DL-E49 §3 punto 1 — este camino mide el sexo, no la pregunta de familia
+    // monoparental: se contesta para que ella no sea la que frene el avance.
+    await contestarMonoparentalSiHaceFalta(page)
     ultimoPersons = null
     const botones = await page.$$(BTN_SIGUIENTE)
     if (!c.afirmar('el paso deja continuar tras elegir el sexo', botones.length > 0,
@@ -9564,6 +9749,7 @@ const CAMINOS = [
   { nombre: 'los-dos-pagadores',   fn: caminoLosDosPagadores,    minLlamadas: 2, minElementos: 5 },
   // DL-E49 §3 — las declaraciones de la familia de un solo tutor llegan al libro con su texto.
   { nombre: 'declaraciones-tutor-unico', fn: caminoDeclaracionesTutorUnico, minLlamadas: 1, minElementos: 2 },
+  { nombre: 'familia-monoparental-explicita', fn: caminoFamiliaMonoparentalExplicita, minLlamadas: 1, minElementos: 2 },
   // Cola 18.bis.21 — lo que se ve en pantalla y lo que se guarda dejan de diferir.
   { nombre: 'telefono-que-se-ve-se-guarda', fn: caminoTelefonoQueSeVeSeGuarda, minLlamadas: 1, minElementos: 11 },
   // Cola 18.bis — el aviso rojo de guardado deja de mentir: se apaga cuando el dato ya
