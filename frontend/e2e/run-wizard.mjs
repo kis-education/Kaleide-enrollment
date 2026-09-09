@@ -9004,11 +9004,15 @@ async function caminoLaSaludNoEsUnFallo(page, base) {
 
   try {
     // ── ANCLA · sin esto las afirmaciones de abajo medirían el aire ─────────────────────
+    // ⚠️ El sufijo `?e2e=` va ANTES del hash a propósito (mismo idioma que `rellenarPortada`):
+    // dos `goto` al MISMO url serían navegación del mismo documento y la fase siguiente
+    // podría no volver a hidratar — es decir, mediría el aire. Fuera del hash,
+    // `useSearchParams` (HashRouter) ni lo ve.
     // Si la pantalla no llega a montarse por CUALQUIER otro motivo, «no dijo Unknown
     // server error» y «no rebotó a la portada» saldrían verdes sin haber medido nada.
     scenario.saludEnVezDeRespuesta = null
     calls = []
-    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+    await page.goto(`${base}/?e2e=${++_cargaPortada}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
       { waitUntil: 'domcontentloaded', timeout: 30000 })
     const anclaOk = await page.waitForFunction(() => {
       const pasos = document.querySelectorAll('.wizard-step')
@@ -9025,7 +9029,7 @@ async function caminoLaSaludNoEsUnFallo(page, base) {
     // `hydrateSession` es la peor de todas: su fallo es el que echaba a la familia.
     calls = []
     scenario.saludEnVezDeRespuesta = { hydrateSession: 1 }
-    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+    await page.goto(`${base}/?e2e=${++_cargaPortada}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
       { waitUntil: 'domcontentloaded', timeout: 30000 })
 
     const entro = await page.waitForFunction(() => {
@@ -9093,7 +9097,7 @@ async function caminoLaSaludNoEsUnFallo(page, base) {
     calls = []
     scenario.saludEnVezDeRespuesta = null
     scenario.statusEnRespuestaLegitima = true
-    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+    await page.goto(`${base}/?e2e=${++_cargaPortada}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
       { waitUntil: 'domcontentloaded', timeout: 30000 })
     const entroC = await page.waitForFunction(() => {
       const pasos = document.querySelectorAll('.wizard-step')
