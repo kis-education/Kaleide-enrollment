@@ -603,6 +603,10 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
   const u = (f, v) => { if (onFieldEdit) onFieldEdit(`${_pk}:${f}`); onChange({ ...person, [f]: v }); };
   const isGuardian  = person.person_type_id === 'guardian';
   const isApplicant = person.person_type_id === 'applicant';
+  // `①87` — el idioma marcado en el desplegable, a la espera de que se pulse «Añadir».
+  // Vive AQUÍ (por instancia de persona), nunca en `person.languages`: es una elección a
+  // medio hacer, no un dato de la solicitud.
+  const [pendingLang, setPendingLang] = useState('');
 
   const handleSameAddress = (checked) => {
     if (checked && firstPersonId) {
@@ -645,12 +649,12 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
   // que viaja al servidor: aquí no hay campos de pantalla que luego haya que limpiar
   // (a diferencia de `nationality`/`id_type_id`, que son aplanados de un array de uno).
   //
-  // ①82 — un idioma YA GUARDADO (`record_id` presente) SÍ SE PUEDE desmarcar, con el
+  // ①82 — un idioma YA GUARDADO (`record_id` presente) SÍ SE PUEDE quitar, con el
   // mismo camino que un correo o un teléfono: se pide confirmación y se avisa al
   // servidor (`clase: 'IDIOMA'`, `id: record_id`) por `pedirQuitar` — el KMS ya
   // reconoce esa clase en `enr/retirada.gs` (`kms-server @1544`). Diego, 2026-09-06:
-  // «¿Cómo que no se puede? Siempre se debe poder editar el idioma.» Un idioma marcado
-  // en esta misma sesión, sin `record_id` todavía, se desmarca directo — nunca se
+  // «¿Cómo que no se puede? Siempre se debe poder editar el idioma.» Un idioma añadido
+  // en esta misma sesión, sin `record_id` todavía, se quita directo — nunca se
   // guardó, no hay nada que avisarle al servidor (mismo criterio que `emails`/`phones`).
   const hablaIdioma = (code) =>
     (person.languages || []).some(l => l && l.language_id === code);
@@ -672,13 +676,9 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
       : [...actuales, { language_id: code }];
     u('languages', next);
   };
-  // Los idiomas que la familia ya declaró y que NO están en el catálogo que sirve HOY el
-  // servidor (dato heredado, u otro camino que escribió otro código, o un catálogo que
-  // todavía no llegó): se pintan igual, con `languageLabel()` como respaldo de etiqueta.
-  // Esconder un idioma ya declarado sería mentir sobre lo que hay guardado.
-  const idiomasFueraDelCatalogo = (person.languages || [])
-    .map(l => (l && l.language_id) || '')
-    .filter(c => c && !catalogoDeIdiomas.some(o => o.code === c));
+  // `①87` — el desplegable de AÑADIR solo ofrece lo que todavía NO está declarado; lo ya
+  // añadido se ve en la lista apilada de abajo, con su propio botón de quitar.
+  const idiomasParaAnadir = catalogoDeIdiomas.filter(o => !hablaIdioma(o.code));
 
   const updateSchool = (i, val) => {
     const ps = [...(person.previous_schools || [])];
@@ -792,34 +792,55 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
             NO es el «idioma preferente» del centro: aquí se pregunta QUÉ habla esta
             persona, admite varios, y no está acotado a los idiomas en los que el KMS
             rinde (una familia habla francés aunque el sistema no hable francés).
-            ①82 — un idioma YA guardado se puede desmarcar igual que los demás; ver
+            ①82 — un idioma YA guardado se puede quitar igual que los demás; ver
             `toggleLanguage` arriba para el camino de retirada.
             `①83` fila IDIOMAS — las opciones salen del CATÁLOGO que manda el servidor
-            (`catalogoDeIdiomas`), mismo molde que el sexo unas líneas arriba. */}
+            (`catalogoDeIdiomas`), mismo molde que el sexo unas líneas arriba.
+            `①87` — Diego, 2026-09-09: «decenas de marcadores… debería ser un desplegable
+            apilable. Selecciono uno de la lista y lo añado.» Se sustituye la rejilla de
+            casillas (una por idioma del catálogo, decenas de filas) por: lo YA declarado
+            en una lista apilada (una fila por idioma, con su botón de quitar — copia el
+            molde de correos/teléfonos de arriba) + un desplegable con SOLO lo que falta
+            por declarar y un botón «Añadir». Un idioma ya declarado que hoy no esté en
+            el catálogo (heredado, u otro camino) sigue viéndose con `languageLabel()`
+            como respaldo de etiqueta — esconderlo mentiría sobre lo que hay guardado. */}
         <div className="col-12">
           <label className="form-label">{t('field.languages')}</label>
-          <div className="d-flex flex-wrap gap-2" data-testid={`idiomas-${_pk}`}>
-            {catalogoDeIdiomas.map(o => {
-              const marcado = hablaIdioma(o.code);
+          <div data-testid={`idiomas-${_pk}`}>
+            {(person.languages || []).filter(l => l && l.language_id).map((l) => {
+              const code = l.language_id;
+              const enCatalogo = catalogoDeIdiomas.find(o => o.code === code);
+              const label = enCatalogo ? enCatalogo.designation : languageLabel(code);
               return (
-                <div className="form-check form-check-inline me-0" key={o.code}>
-                  <input type="checkbox" className="form-check-input"
-                    id={`lang_${_pk}_${o.code}`}
-                    data-testid={`idioma-${o.code}`}
-                    checked={marcado}
-                    onChange={() => toggleLanguage(o.code)} />
-                  <label className="form-check-label small" htmlFor={`lang_${_pk}_${o.code}`}>
-                    {o.designation}
-                  </label>
+                <div key={code} className="border rounded p-2 mb-2 d-flex align-items-center justify-content-between"
+                     style={{ background: 'var(--bg)' }} data-testid={`idioma-fila-${code}`}>
+                  <span className="small">{label}</span>
+                  <button type="button" className="remove-btn" data-testid={`idioma-quitar-${code}`}
+                    onClick={() => toggleLanguage(code)}>&times;</button>
                 </div>
               );
             })}
-          </div>
-          {idiomasFueraDelCatalogo.length > 0 && (
-            <div className="form-text">
-              {t('field.languages_other', { list: idiomasFueraDelCatalogo.map(languageLabel).join(', ') })}
+            <div className="row g-2 align-items-center">
+              <div className="col-auto" style={{ minWidth: 200 }}>
+                <select className="form-select form-select-sm" data-testid={`idioma-select-${_pk}`}
+                  value={pendingLang}
+                  disabled={idiomasNoDisponible || idiomasParaAnadir.length === 0}
+                  onChange={e => setPendingLang(e.target.value)}>
+                  <option value="">{t('placeholder.select')}</option>
+                  {idiomasParaAnadir.map(o => (
+                    <option key={o.code} value={o.code}>{o.designation}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-auto">
+                <button type="button" className="add-btn" data-testid={`idioma-anadir-${_pk}`}
+                  disabled={!pendingLang}
+                  onClick={() => { toggleLanguage(pendingLang); setPendingLang(''); }}>
+                  <i className="bi bi-plus" /> {t('field.languages_add')}
+                </button>
+              </div>
             </div>
-          )}
+          </div>
           {/* El campo es OPCIONAL, así que un desplegable vacío NO bloquearía el paso —
               y ése es justo el peligro: la familia avanza y el dato se pierde sin que
               nadie diga nada. Falla NOMBRANDO, mismo criterio que `field.gender_unavailable`. */}
@@ -1175,8 +1196,8 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   // ⛔ `constants/languages.js` (`LANGUAGES`) deja de ser la fuente de las opciones y pasa
   // a ser SOLO el diccionario de respaldo para pintar la etiqueta de un código que la
   // familia ya declaró y que hoy no está en el catálogo del servidor (heredado, u otro
-  // camino que escribió otro código) — `idiomasFueraDelCatalogo`, más abajo, sigue
-  // necesitando ese respaldo para no ocultar un dato ya guardado.
+  // camino que escribió otro código) — cada fila apilada de idiomas ya declarados,
+  // más abajo, sigue necesitando ese respaldo para no ocultar un dato ya guardado.
   //
   // ⚠️ Igual que el sexo: sin catálogo el campo NO puede quedarse mudo (es OPCIONAL, nada
   // en `handleNext` lo exige), así que un fallo se DICE en vez de dejar un control vacío
