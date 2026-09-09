@@ -6488,6 +6488,11 @@ function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
         // no añadan audience_category_id per pregunta — informativo, no
         // determinante para filtrado).
         audience_category_id: q.audience_category_id || null,
+        // `0º.tricies.septies` (2026-09-09) — a qué `person_type_id` repite, YA RESUELTO
+        // por el catálogo Capa 2 del KMS (`qb_audienceRepeatOverPersonType_`). Passthrough
+        // verbatim: `QbSetRenderer` lo usa con caída al código crudo cuando este campo
+        // todavía no llega (ventana de publicación entre repos).
+        repeat_over_person_type_id: q.repeat_over_person_type_id || null,
         question_text:    q.designation  || '',
         help_text:        q.description  || '',
         placeholder_text: '',
