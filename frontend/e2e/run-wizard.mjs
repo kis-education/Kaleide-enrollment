@@ -9585,10 +9585,29 @@ async function caminoLaSaludNoEsUnFallo(page, base) {
     await page.goto(`${base}/?e2e=${++_cargaPortada}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
       { waitUntil: 'domcontentloaded', timeout: 30000 })
 
+    // ⚠️ EL TROPIEZO SE VIGILA MIENTRAS OCURRE, NO AL FINAL — y esto es lo que de verdad
+    // distingue el arreglo. MEDIDO el 2026-09-09 al exigirle el rojo a este recorrido: sin
+    // el arreglo, la familia TERMINA entrando igual, porque `ResumePage` ya reintenta sola
+    // lo que clasifica como «no se pudo cargar» (`0º.tricies.vicies.semel`). O sea: mirar
+    // solo el final NO discrimina, y este camino habría salido verde con el defecto puesto.
+    //
+    // Lo que SÍ cambia es que la familia VE el tropiezo —«seguimos cargando…»— y paga otro
+    // viaje entero con su espera (91-143 s medidos en el registro de Diego, hasta ~7 min con
+    // los tres intentos). Con el arreglo, `gasCall` se recupera ANTES de que `ResumePage`
+    // llegue a enterarse: no hay tropiezo que ver.
+    let tropiezoVisible = false
+    const vigilante = setInterval(() => {
+      page.evaluate(() => /[Ss]eguimos cargando|[Ss]till loading/.test(document.body.textContent || ''))
+        .then(v => { if (v) tropiezoVisible = true })
+        .catch(() => {})
+    }, 120)
+
     const entro = await page.waitForFunction(() => {
       const pasos = document.querySelectorAll('.wizard-step')
       return !!(pasos.length && [...pasos].some(p => p.classList.contains('active')))
     }, null, { timeout: LATENCY * 6 + 40000 }).then(() => true).catch(() => false)
+
+    clearInterval(vigilante)
 
     const pantallaA = await page.evaluate(() => ({
       hash:  window.location.hash,
@@ -9608,6 +9627,11 @@ async function caminoLaSaludNoEsUnFallo(page, base) {
     c.afirmar('(3) la familia ENTRA en su solicitud — el asistente se recupera solo',
       entro,
       `el asistente no llegó a pintar el stepper; las llamadas fueron ${JSON.stringify(calls.map(l => l.action))} y la pantalla decía: ${pantallaA.texto.slice(0, 160)}`)
+
+    // ── LA AFIRMACIÓN QUE DISCRIMINA ───────────────────────────────────────────────────
+    c.afirmar('(3.bis) y la familia NO llega a ver el tropiezo: se recupera antes de que la pantalla se entere',
+      !tropiezoVisible,
+      'la pantalla llegó a decir «seguimos cargando»: la comprobación de salud se le entregó a `ResumePage` como un fallo, así que la familia ve el tropiezo y paga OTRO viaje entero (91-143 s medidos) por un trabajo que ya estaba hecho')
 
     const hidrataciones = llamadas('hydrateSession')
     c.afirmar('(4) y se recupera REPITIENDO la lectura, que es lo único seguro que puede hacer',
