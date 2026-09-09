@@ -724,12 +724,64 @@ function esperarAQueVuelvaLaPagina_(topeMs) {
   });
 }
 
+// ── LA COMPROBACIÓN DE SALUD DEL PROPIO ASISTENTE NO ES UNA RESPUESTA ─────────────────
+//
+// `①86`, medido con el registro real de Diego (2026-09-09):
+//
+//     [10:31:46] → GAS sendMagicLink
+//     [10:33:17] ← HTTP 200 (90968ms)
+//     [10:33:17] gasCall sendMagicLink: server returned ok=false
+//                full: { "status": "ok", "ts": "2026-09-09T10:33:17.111Z" }
+//     [10:34:03] …el correo LLEGA            ← 46 s DESPUÉS del «falló»
+//
+// `{status, ts}` es lo que devuelve el `doGet` del propio asistente
+// (`backend/Code.js`, ÚNICA aparición). El asistente habla por `doPost`, que SIEMPRE
+// devuelve `{ok:…}` — de ahí que `if (!data.ok)` lo tradujera a «Unknown server error».
+// O sea: el segundo tramo del doble salto de Apps Script degradó a un GET normal de la
+// aplicación web. **Es TRANSPORTE: el trabajo SÍ se hizo** (el correo llegó, y en el
+// registro no hay ni una línea `[SRV …]` pese a que el cliente pide `_dbg`).
+//
+// El reconocimiento se copia VERBATIM del arnés, que lo midió y lo dejó escrito
+// (`frontend/e2e/run-wizard.mjs`, `esComprobacionDeSalud`): **exactamente dos claves,
+// `status` y `ts`**.
+//
+// ⛔ NO SE ENSANCHA («que tenga `status`», «que no tenga `ok`»). Toda respuesta de verdad
+// del asistente trae `ok`, así que este criterio estrecho no puede tragarse una — y uno
+// ancho se comería respuestas legítimas futuras que hoy no existen.
+function esComprobacionDeSalud_(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const claves = Object.keys(data);
+  return claves.length === 2 && claves.includes('status') && claves.includes('ts');
+}
+
 // Lecturas idempotentes que el asistente dispara repetidamente mientras la familia
 // mira la pantalla — pedirlas dos veces no tiene coste ni efecto secundario.
 // LÍMITE HONESTO: lista explícita. Una lectura nueva que no se añada aquí simplemente
 // no se reintenta — falla hacia el lado seguro (no reintentar), nunca al revés.
+//
+// ⛔ LAS ESCRITURAS NO ENTRAN, y el motivo está MEDIDO contra el KMS (2026-09-09), no
+// razonado. Aquí arriba se afirmaba que repetir es seguro «porque las escrituras del KMS
+// usan claves deterministas»: **esa razón no se sostiene**. `sys_enqueueJob_`
+// (`kis-app kms-server/sys/job-queue.gs`) solo colapsa por `dedupe_key` cuando ya hay un
+// trabajo en `Queued` o `Processing`; **un trabajo ya TERMINADO no dedupea**, así que
+// repetir el POST encola OTRO que vuelve a ejecutar al escritor. Y este defecto aparece
+// tras 91-143 s, que es justo cuando el trabajo ya ha terminado. Que cada escritor sea
+// además idempotente por identidad es propiedad SUYA, distinta en cada uno y no
+// acreditada aquí ⇒ `saveStep`, `saveResponses`, `uploadDocument` y `saveNeae` **NO se
+// repiten**. (`CLAUDE.md` §"Un COMENTARIO del código no es criterio normativo".)
+//
+// ⛔ `sendMagicLink` TAMPOCO, y no por duda sino por daño: repetirlo manda OTRO correo y
+// ROTA el token. No hace falta — su ack es constante por anti-enumeración (WIZ-ENUM) y su
+// fallo ya se silencia en la portada; con el carril de transporte deja de registrarse
+// como error, que es todo lo que había que arreglar ahí.
+//
+// `warmSession`/`warmBundle` quedan fuera a propósito: son precalentado best-effort cuyo
+// fallo ya no cuesta nada, así que repetirlos gasta una llamada y no compra nada.
 const LECTURAS_REINTENTABLES_AL_VOLVER = new Set([
   'hydrateSession', 'getAdmissionState', 'simularCuotas', 'getLiveStateVersion',
+  // ①86: lecturas puras cuyo fallo la familia SÍ ve en pantalla (el paso 1 se queda sin
+  // programas, el paso 5 sin cuestionario). Repetir una lectura no tiene efecto.
+  'fetchLookups', 'fetchQuestions',
 ]);
 
 /**
@@ -743,12 +795,16 @@ export async function gasCall(action, payload = {}) {
   try {
     return await _gasCallUnaVez(action, payload);
   } catch (err) {
+    // ①86: la comprobación de salud llega con la familia DELANTE (Diego, 10:33), no al
+    // volver de otra app ⇒ su reintento NO puede exigir contexto de fondo. El resto del
+    // carril de transporte (el socket que muere al cambiar de app en iPhone) se queda
+    // EXACTAMENTE como estaba: sigue pidiendo contexto de fondo.
     const puedeReintentar = err && err.transporte
-      && enContextoDeFondo
+      && (enContextoDeFondo || err.saludDelAsistente)
       && LECTURAS_REINTENTABLES_AL_VOLVER.has(action);
     if (!puedeReintentar) throw err;
-    log.warn(`gasCall ${action}: fallo de transporte en contexto de fondo — se espera y se reintenta UNA vez`, {
-      action, hidden: isPageHidden_(),
+    log.warn(`gasCall ${action}: fallo de transporte — se espera y se reintenta UNA vez`, {
+      action, hidden: isPageHidden_(), salud: !!err.saludDelAsistente,
     });
     await esperarAQueVuelvaLaPagina_(30000);
     return _gasCallUnaVez(action, payload);
@@ -848,6 +904,33 @@ async function _gasCallUnaVez(action, payload = {}) {
         events: (data._dbg.events || []).map(ev => `t+${ev.t}ms ${ev.e}${ev.d ? ' ' + ev.d : ''}`),
       });
     } catch (eDbg) { /* best-effort */ }
+  }
+
+  // ①86 — ¿es esto la COMPROBACIÓN DE SALUD en vez de la respuesta? (ver el bloque
+  // «LA COMPROBACIÓN DE SALUD DEL PROPIO ASISTENTE NO ES UNA RESPUESTA», arriba.)
+  // Va ANTES de `if (!data.ok)`: ese cuerpo no tiene `ok`, así que sin esto sale como
+  // «Unknown server error» — una MENTIRA sobre un trabajo que sí se hizo.
+  if (esComprobacionDeSalud_(data)) {
+    // Lo que se registra es lo que la siguiente vez permitirá MEDIR por qué pasa, que
+    // hoy es HIPÓTESIS y no medida (`①86`: «LO QUE NO SE SABE, y no se inventa»).
+    // `res.url` dice DÓNDE aterrizó el navegador tras seguir el salto: si es el `/exec`
+    // es que el segundo tramo degradó a un GET de la aplicación web (que ejecuta el
+    // `doGet`); si es el `echo`, la hipótesis es otra. No cambia el comportamiento.
+    log.warn(`gasCall ${action}: llegó la comprobación de salud del asistente, no la respuesta — se trata como TRANSPORTE`, {
+      action, aterrizo_en: res.url, siguio_salto: res.redirected, ms: elapsed,
+    });
+    const e = new Error(`No se pudo leer la respuesta de "${action}".`);
+    // Carril de TRANSPORTE, el que ya existe (`err.transporte`). ⛔ NO se inventa un
+    // tercer estado, y ⛔ NO se le pone `code`: `clasificarFalloDeEntrada` (un solo
+    // sitio, `lib/fallosDeEntrada.js`) manda SIN código a «no se pudo cargar» — es
+    // decir, *«tu enlace sigue siendo válido»* y reintentar con el MISMO enlace, en vez
+    // del error nombrado que echaba a la familia a la portada a pedir otro.
+    e.transporte = true;
+    // Marca INTERNA (no viaja a la pantalla): este fallo ocurre con la familia DELANTE,
+    // no solo al volver de otra app, así que su reintento no puede exigir contexto de
+    // fondo. Ver `gasCall`.
+    e.saludDelAsistente = true;
+    throw e;
   }
 
   if (!data.ok) {

@@ -151,6 +151,9 @@ const NO_CUBIERTAS_PERMITIDAS = {
 // el sistema de verdad no. No son un perdón general — cada uno con su motivo, y la
 // comprobación de "declarada pero HOY sí se cubre" sigue viva en ambos modos.
 const NO_CUBIERTAS_SOLO_REAL = {
+  'salud-no-es-un-fallo': {
+    'la-salud-no-es-un-fallo': 'el cuerpo de la comprobación de salud (`{status,ts}`) se inyecta en el servidor simulado; contra el sistema real no hay forma de provocar a voluntad la degradación del segundo tramo del doble salto de Apps Script',
+  },
   'simulador-paso7': {
     'simulador-en-pie': 'guardar la forma de pago elegida exige el código de un solo uso, que el servidor manda al buzón de la familia y este arnés no lee buzones; en modo simulado sí se cubre',
     'simulador-caido': 'el escenario hostil (el simulador no responde) no se puede FORZAR sobre el backend de verdad sin desplegarle un cambio; en modo simulado sí se cubre',
@@ -795,6 +798,26 @@ function startServer() {
           scenario.escrituraCorta -= 1
           record({ action: payload.action, payload, cortada: true })
           try { req.socket.destroy() } catch { /* ya cerrado */ }
+          return
+        }
+        // ── `①86` · LA COMPROBACIÓN DE SALUD EN VEZ DE LA RESPUESTA ────────────────────
+        // Reproduce el defecto EXACTO del registro de Diego (2026-09-09): HTTP 200 con
+        // `{status,ts}` — el cuerpo del `doGet` del propio asistente — en vez de la
+        // respuesta del `doPost`. El segundo tramo del doble salto degradó a un GET
+        // normal de la aplicación web.
+        //
+        // ⚠️ EL TRABAJO SÍ SE HACE: se despacha igual, y solo se sustituye lo que el
+        // navegador LEE. Es lo que pasó de verdad — el correo llegó 46 s después de que
+        // el cliente diera la llamada por fallida. Un doble que no despachara estaría
+        // midiendo otra cosa (un servidor que no hizo nada).
+        //
+        // Es un CONTADOR por acción (`{hydrateSession: 1}`): así se puede afirmar que el
+        // reintento entra y que el SEGUNDO intento sí recibe la respuesta buena.
+        const saludPendiente = scenario.saludEnVezDeRespuesta
+        if (saludPendiente && payload && saludPendiente[payload.action] > 0) {
+          saludPendiente[payload.action] -= 1
+          dispatch(payload)
+          setTimeout(() => responder({ status: 'ok', ts: new Date().toISOString() }), LATENCY)
           return
         }
         const out = dispatch(payload)
@@ -8938,6 +8961,135 @@ async function caminoEditarVinculoGuardado(page, base) {
  * `backend/Code.js`**. Que los tres rechazos del servidor lleven ya su código de máquina
  * (`_errorDeEnlace_`) se acredita LEYENDO ese código, no aquí.
  */
+/**
+ * `①86` — LA COMPROBACIÓN DE SALUD DEL ASISTENTE NO ES UN FALLO DEL SERVIDOR.
+ *
+ * ── El defecto, con el registro real de Diego (2026-09-09) ────────────────────────────
+ *     [10:31:46] → GAS sendMagicLink
+ *     [10:33:17] ← HTTP 200 (90968ms)  full: { "status":"ok", "ts":"…" }
+ *     [10:34:03] …el correo LLEGA          ← 46 s DESPUÉS del «falló»
+ *
+ * `{status,ts}` es el cuerpo del `doGet` del propio asistente: el segundo tramo del doble
+ * salto de Apps Script degradó a un GET normal de la aplicación web. El `doPost` SIEMPRE
+ * devuelve `{ok:…}`, así que `if (!data.ok)` lo traducía a «Unknown server error» — una
+ * MENTIRA sobre un trabajo que sí se hizo. Y en la hidratación era peor: echaba a la
+ * familia a la portada a pedir OTRO enlace, rotando el bueno que tenía en la mano.
+ *
+ * ⚠️ QUÉ NO AFIRMA ESTE CAMINO. El navegador habla con el servidor SIMULADO, que **nunca
+ * ejecuta `backend/Code.js`** ni reproduce el doble salto real de Apps Script. Lo que se
+ * afirma es lo que hace **el NAVEGADOR ante ese cuerpo** — no que el doble salto se
+ * comporte así en producción, que se acredita con el registro de Diego y no con esto.
+ */
+async function caminoLaSaludNoEsUnFallo(page, base) {
+  const c = new Camino('salud-no-es-un-fallo')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    c.noCubierta('la-salud-no-es-un-fallo',
+      'el cuerpo de la comprobación de salud se inyecta en el servidor simulado; contra el sistema real no hay forma de provocar a voluntad la degradación del segundo tramo del doble salto')
+    return c
+  }
+
+  try {
+    // ── ANCLA · sin esto las afirmaciones de abajo medirían el aire ─────────────────────
+    // Si la pantalla no llega a montarse por CUALQUIER otro motivo, «no dijo Unknown
+    // server error» y «no rebotó a la portada» saldrían verdes sin haber medido nada.
+    scenario.saludEnVezDeRespuesta = null
+    calls = []
+    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const anclaOk = await page.waitForFunction(() => {
+      const pasos = document.querySelectorAll('.wizard-step')
+      return !!(pasos.length && [...pasos].some(p => p.classList.contains('active')))
+    }, null, { timeout: LATENCY * 4 + 30000 }).then(() => true).catch(() => false)
+    if (!anclaOk) {
+      c.fallos.push('(0) ANCLA: el asistente no llega a pintarse ni con el servidor sano ⇒ este recorrido NO puede medir lo que dice medir')
+      return c
+    }
+    c.afirmar('(0) ANCLA — con el servidor sano el asistente se pinta', anclaOk,
+      'sin esto, las afirmaciones siguientes pasarían en vacío')
+
+    // ── A · UNA LECTURA recibe la comprobación de salud ─────────────────────────────────
+    // `hydrateSession` es la peor de todas: su fallo es el que echaba a la familia.
+    calls = []
+    scenario.saludEnVezDeRespuesta = { hydrateSession: 1 }
+    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+
+    const entro = await page.waitForFunction(() => {
+      const pasos = document.querySelectorAll('.wizard-step')
+      return !!(pasos.length && [...pasos].some(p => p.classList.contains('active')))
+    }, null, { timeout: LATENCY * 6 + 40000 }).then(() => true).catch(() => false)
+
+    const pantallaA = await page.evaluate(() => ({
+      hash:  window.location.hash,
+      texto: (document.body.textContent || '').replace(/\s+/g, ' ').trim(),
+      fallo: !!document.querySelector('[data-testid="resume-fallo"]'),
+      // La casilla del correo de la PORTADA: si aparece, se fue a pedir otro enlace.
+      correo: !!document.querySelector('input[type="email"]'),
+    }))
+    c.evidencia.elementos = (entro ? 1 : 0) + (pantallaA.fallo ? 1 : 0)
+
+    c.afirmar('(1) NO se le dice a la familia «Unknown server error» por una respuesta que no es del servidor',
+      !/Unknown server error/i.test(pantallaA.texto),
+      `la pantalla decía: ${pantallaA.texto.slice(0, 200)}`)
+    c.afirmar('(2) NO se le echa a la portada a pedir OTRO enlace',
+      !/resume_error=1/.test(pantallaA.hash) && !pantallaA.correo,
+      `el hash quedó en "${pantallaA.hash}"${pantallaA.correo ? ' y apareció la casilla del correo' : ''}: pedir otro enlace ROTA el bueno que la familia tiene en la mano`)
+    c.afirmar('(3) la familia ENTRA en su solicitud — el asistente se recupera solo',
+      entro,
+      `el asistente no llegó a pintar el stepper; las llamadas fueron ${JSON.stringify(calls.map(l => l.action))} y la pantalla decía: ${pantallaA.texto.slice(0, 160)}`)
+
+    const hidrataciones = llamadas('hydrateSession')
+    c.afirmar('(4) y se recupera REPITIENDO la lectura, que es lo único seguro que puede hacer',
+      hidrataciones.length >= 2,
+      `se registraron ${hidrataciones.length} peticiones de hydrateSession (se esperaban al menos 2: la que recibió la salud y la que sí trajo la respuesta)`)
+    c.afirmar('(5) el reintento va con el MISMO enlace — no se pide uno nuevo',
+      hidrataciones.length > 0 && hidrataciones.every(l => (l.payload || {}).resume_token === DATOS.resumeToken),
+      `los tokens fueron ${JSON.stringify(hidrataciones.map(l => String((l.payload || {}).resume_token).slice(0, 8)))}`)
+    c.afirmar('(6) recuperarse NO pide un enlace nuevo por la puerta de atrás',
+      llamadas('sendMagicLink').length === 0,
+      `se registraron ${llamadas('sendMagicLink').length} llamadas a sendMagicLink: eso ROTA el token bueno`)
+
+    // ── B · `sendMagicLink` recibe la comprobación de salud: NO se repite ───────────────
+    // Repetirla manda OTRO correo y ROTA el token. El ack es constante (WIZ-ENUM) y su
+    // fallo ya se silencia: lo único que había que arreglar es que dejara de contarse
+    // como error. Aquí se afirma lo que NO debe pasar.
+    calls = []
+    scenario.saludEnVezDeRespuesta = { sendMagicLink: 1 }
+    await page.goto(`${base}/#/`, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    await page.waitForSelector('input[type="email"]', { timeout: LATENCY * 3 + 20000 })
+    await page.fill('input[type="email"]', DATOS.emailKnown)
+    const consent = await page.$('input[type="checkbox"]')
+    if (consent) await consent.check().catch(() => {})
+    await page.click('button[type="submit"]')
+
+    // Se espera a que la pantalla genérica salga (el envío es «dispara y sigue»), y
+    // ADEMÁS se deja margen de sobra para que un segundo POST llegara a salir si el
+    // arreglo estuviera mal: sin esa espera, «no salió un segundo» sería trivial.
+    await page.waitForFunction(
+      () => /revisa tu correo|check your (e-?mail|inbox)|te hemos enviado|we(?:'| ha)ve sent/i.test(document.body.textContent || ''),
+      null, { timeout: LATENCY * 4 + 25000 },
+    ).catch(() => {})
+    await page.waitForTimeout(LATENCY * 2 + 3000)
+
+    const envios = llamadas('sendMagicLink')
+    c.afirmar('(7) `sendMagicLink` NO se repite: sale UNA sola petición de enlace',
+      envios.length === 1,
+      `salieron ${envios.length} peticiones de enlace: repetirla manda OTRO correo a la familia y ROTA el token que acaba de emitirse`)
+
+    const textoB = await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' ').trim())
+    c.afirmar('(8) y a la familia se le sigue dando la MISMA pantalla genérica, sin error',
+      !/Unknown server error/i.test(textoB),
+      `la portada decía: ${textoB.slice(0, 200)}`)
+  } finally {
+    scenario.saludEnVezDeRespuesta = null
+    scenario.stage = 'hasta_preguntas'
+  }
+
+  return c
+}
+
 async function caminoEnlaceNoHaCaducado(page, base) {
   const c = new Camino('enlace-no-ha-caducado')
   scenario.stage = 'hasta_preguntas'
@@ -9635,6 +9787,10 @@ const CAMINOS = [
   // ⚠️ El mínimo de llamadas es 1 A PROPÓSITO: el arnés cuenta las que quedan en `calls` al
   // TERMINAR, y este camino lo vacía en cada una de sus cuatro fases para poder afirmar sobre
   // ella. Su evidencia real son sus trece afirmaciones, no un contador.
+  // `①86` — el cuerpo de la comprobación de salud del propio asistente (`{status,ts}`)
+  // llega en vez de la respuesta: es TRANSPORTE, no un «no» del servidor.
+  { nombre: 'salud-no-es-un-fallo', fn: caminoLaSaludNoEsUnFallo,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'enlace-no-ha-caducado', fn: caminoEnlaceNoHaCaducado,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   // `0º.tricies.quattuortricies` — en iPhone, irse a otra app aborta las peticiones en
