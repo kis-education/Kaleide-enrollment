@@ -15,6 +15,16 @@ import { COUNTRY_DIAL_CODES } from '../constants/countries';
  * columna AppSheet del código telefónico aún no alimenta el catálogo), el filtro
  * NO se aplica y se cae al validador E.164 puro — nunca rechaza por falta del dato.
  *
+ * ★ `①84` (2026-09-09) — DE DÓNDE SALE ESE SET. La firma NO cambia (sigue siendo el tercer
+ * argumento, inyectable), pero **quien llama ya no deja el defecto**: `Step2Persons` le pasa
+ * el conjunto derivado del catálogo que sirve el KMS (`countries`, las filas que declaran
+ * `phone_dial_code`) en vez de dejar el valor por defecto. Medido ese día contra la tabla
+ * real (`manual_diagIsoAlpha2ConDialVsAsistente`): 250 países con ISO, **118 con prefijo**,
+ * y esos 118 casan EXACTO con `COUNTRY_DIAL_CODES` en los DOS sentidos ⇒ el conjunto que se
+ * acepta no se estrecha ni se ensancha. `COUNTRY_DIAL_CODES` se queda como valor por
+ * defecto porque es el RESPALDO de cuando el catálogo no ha llegado: un conjunto vacío
+ * desactivaría esta puerta EN SILENCIO, que es peor que una lista un día desfasada.
+ *
  * @param {string} rawInput      lo que teclea el usuario (nacional o internacional con +)
  * @param {string} countryISO    ISO 3166-1 alpha-2 del país de la dirección (defaultCountry)
  * @param {Set<string>} [dialCodes] set cerrado de prefijos aceptados (inyectable; por

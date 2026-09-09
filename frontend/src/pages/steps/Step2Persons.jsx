@@ -136,15 +136,59 @@ const emptySchool = () => ({
   language_of_instruction: '',
 });
 
+// ─── `①84` · LOS PAÍSES SON **DOS PREGUNTAS**, NO UNA LISTA CON DOS USOS ──────────
+//
+// El KMS sirve UNA sola lista (`countries`, ~250) y cada fila lleva su `dial` SOLO si el
+// colegio se lo declaró (`phone_dial_code`) — un solo catálogo, dos usos, para que no
+// puedan divergir (`enr_catalogoDePaises_`, `kis-app kms-server/enr/wizard-gateway.gs`).
+// El consumidor es quien decide cuál de las dos preguntas está haciendo:
+//
+//   ¿de qué país eres / dónde vives / dónde estudiaste?  →  la lista ENTERA
+//   ¿de qué país es este teléfono? (⇒ qué prefijo se compone) →  SOLO las que declaran `dial`
+//
+// ⛔ La segunda NO es un recorte de la primera por comodidad: es su DEFINICIÓN. Un país sin
+// prefijo declarado no es una respuesta válida a esa pregunta — el sistema no sabría qué
+// número componer. Por eso DL-E40 (el conjunto CERRADO que valida el teléfono) no se afloja:
+// sigue siendo cerrado, y sigue siendo el que valida; lo único que cambia es de dónde sale.
+//
+// MEDIDO el 2026-09-09 contra la tabla real (`manual_diagIsoAlpha2ConDialVsAsistente`):
+// 250 países con ISO, **118 declaran prefijo**, y esos 118 casan EXACTO —uno a uno, en los
+// dos sentidos— con los 118 de `constants/countries.js`. Por eso pasar la validación del
+// teléfono al catálogo del servidor NO estrecha ni ensancha el conjunto que hoy acepta.
+function paisesConPrefijo_(paises) {
+  const conDial = (paises || []).filter(c => c && c.dial);
+  // Sin ninguno que declare prefijo (catálogo aún sin llegar, o un colegio que no ha
+  // declarado ninguno) se cae a la lista estática — NUNCA a un desplegable vacío ni a un
+  // conjunto cerrado desactivado en silencio. Mismo criterio que el desplegable del tipo
+  // de documento («sin catálogo, la lista legada completa»), y por el mismo motivo: aquí
+  // un hueco no es cosmético — sin país no se puede componer el número, y sin conjunto
+  // cerrado se cuela un prefijo que el colegio no maneja.
+  return conDial.length ? conDial : COUNTRIES;
+}
+
+// El conjunto CERRADO de prefijos (DL-E40) derivado de la MISMA lista. Se memoiza por
+// identidad de la lista: `paisesEfectivos` es una referencia estable (o el estado del
+// catálogo, o la constante), así que el Set se calcula una vez y no en cada tecla.
+const _prefijosPorLista = new WeakMap();
+function prefijosDe_(paises) {
+  const base = paisesConPrefijo_(paises);
+  let s = _prefijosPorLista.get(base);
+  if (!s) {
+    s = new Set(base.map(c => c.dial).filter(Boolean));
+    _prefijosPorLista.set(base, s);
+  }
+  return s;
+}
+
 // D (selector de país): detecta el país de un número legacy SIN '+' por su prefijo de
 // marcación. Elige el `dial` MÁS LARGO que prefije el número (varios países comparten
 // dial, p.ej. '1' US/CA → gana el match de prefijo más largo; con empate, el primero de
-// COUNTRIES). REUTILIZA COUNTRIES (no se crea otra lista). Devuelve ISO alpha-2 o ''.
-function detectCountryByDial(rawInput) {
+// la lista). REUTILIZA la lista efectiva (no se crea otra). Devuelve ISO alpha-2 o ''.
+function detectCountryByDial(rawInput, paises = COUNTRIES) {
   const digits = (rawInput || '').replace(/\D/g, '');
   if (!digits) return '';
   let best = '', bestLen = 0;
-  for (const c of COUNTRIES) {
+  for (const c of paisesConPrefijo_(paises)) {
     if (c.dial && digits.startsWith(c.dial) && c.dial.length > bestLen) {
       best = c.value; bestLen = c.dial.length;
     }
@@ -159,22 +203,25 @@ function detectCountryByDial(rawInput) {
 // 11-díg internacional sin '+' (p.ej. 34609211201 con país ES) → si el número empieza por el
 // dial del país y el nacional falla, reintenta como +<numerocompleto>; (4) sin país → cae al
 // country de la dirección (comportamiento previo). El valor persistido sigue siendo res.e164.
-function resolvePhoneValidation(rawInput, phoneCountry, countryISO) {
+function resolvePhoneValidation(rawInput, phoneCountry, countryISO, paises = COUNTRIES) {
   const raw = (rawInput || '').trim();
-  if (!raw) return validatePhone(raw, phoneCountry || countryISO || '');
-  if (raw.startsWith('+')) return validatePhone(raw, '');           // internacional explícito
+  // `①84` — el conjunto CERRADO de DL-E40 sale de la MISMA lista que el desplegable, así
+  // que lo que se puede elegir y lo que se acepta no pueden divergir nunca.
+  const prefijos = prefijosDe_(paises);
+  if (!raw) return validatePhone(raw, phoneCountry || countryISO || '', prefijos);
+  if (raw.startsWith('+')) return validatePhone(raw, '', prefijos);  // internacional explícito
   if (phoneCountry) {
-    const res = validatePhone(raw, phoneCountry);                   // nacional con el país elegido
+    const res = validatePhone(raw, phoneCountry, prefijos);         // nacional con el país elegido
     if (res.valid) return res;
-    const dial = COUNTRIES.find(c => c.value === phoneCountry)?.dial;
+    const dial = paisesConPrefijo_(paises).find(c => c.value === phoneCountry)?.dial;
     const digits = raw.replace(/\D/g, '');
     if (dial && digits.startsWith(dial)) {                          // legacy internacional sin '+'
-      const intl = validatePhone('+' + digits, '');
+      const intl = validatePhone('+' + digits, '', prefijos);
       if (intl.valid) return intl;
     }
     return res;                                                     // ya pasamos country → no needCountry muerto
   }
-  return validatePhone(raw, countryISO || '');                      // sin país elegido: country de la dirección
+  return validatePhone(raw, countryISO || '', prefijos);            // sin país elegido: country de la dirección
 }
 
 // ─── Lo que se VE en pantalla y lo que se GUARDA no pueden diferir (cola 18.bis.21) ───
@@ -187,13 +234,13 @@ function resolvePhoneValidation(rawInput, phoneCountry, countryISO) {
 // Estos dos ayudantes son EL ÚNICO sitio que contesta «¿qué teléfono hay aquí?». El control
 // eleva lo tecleado a `_escrito`/`_pais` (campos SOLO de pantalla — `transformPersonForSave`
 // los quita antes de guardar), y todo lo demás pregunta por aquí. NO se reparte la lógica.
-function evaluarTelefonoEscrito(escrito, pais, countryISO) {
+function evaluarTelefonoEscrito(escrito, pais, countryISO, paises = COUNTRIES) {
   const national = String(escrito || '').trim();
-  const selDial  = COUNTRIES.find(c => c.value === pais)?.dial || '';
+  const selDial  = paisesConPrefijo_(paises).find(c => c.value === pais)?.dial || '';
   const candidate = national
     ? (selDial ? '+' + selDial + national.replace(/\D/g, '') : national)
     : '';
-  return { national, candidate, res: resolvePhoneValidation(candidate, pais, countryISO) };
+  return { national, candidate, res: resolvePhoneValidation(candidate, pais, countryISO, paises) };
 }
 
 /**
@@ -202,15 +249,15 @@ function evaluarTelefonoEscrito(escrito, pais, countryISO) {
  * crudo de la validación para poder decir el MOTIVO exacto (falta el país / prefijo no
  * admitido / número inválido) en vez de un «no es válido» a secas.
  */
-function telefonoEfectivo_(ph, countryISO) {
+function telefonoEfectivo_(ph, countryISO, paises = COUNTRIES) {
   const tocado = ph && ph._escrito !== undefined && ph._escrito !== null;
   if (tocado) {
-    const { national, res } = evaluarTelefonoEscrito(ph._escrito, ph._pais, countryISO);
+    const { national, res } = evaluarTelefonoEscrito(ph._escrito, ph._pais, countryISO, paises);
     return { enPantalla: true, hayAlgo: !!national, valido: !!(res.valid && res.e164), e164: res.e164 || '', res };
   }
   const guardado = String((ph && (ph.phone_number || ph.value)) || '').trim();
   if (!guardado) return { enPantalla: false, hayAlgo: false, valido: false, e164: '', res: null };
-  const r = validatePhone(guardado, countryISO);
+  const r = validatePhone(guardado, countryISO, prefijosDe_(paises));
   return { enPantalla: false, hayAlgo: true, valido: !!r.valid, e164: r.e164 || guardado, res: r };
 }
 
@@ -221,7 +268,7 @@ function claveMotivoTelefono_(res) {
   return 'step2.phone.invalid_for';
 }
 
-function PhoneRow({ phone, idx, countryISO, onChange, onRemove, catalogoTel = [] }) {
+function PhoneRow({ phone, idx, countryISO, onChange, onRemove, catalogoTel = [], paises = COUNTRIES }) {
   const { t } = useTranslation();
   const [touched, setTouched] = useState(false);
   // IMPL-G: separar el DIAL (desplegable de país) del NÚMERO NACIONAL (input). El valor
@@ -233,9 +280,9 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove, catalogoTel = []
   const deriveFromPersisted = () => {
     const digits = (phone.phone_number || '').replace(/\D/g, '');
     if (digits) {
-      const detected = detectCountryByDial(digits);   // legacy '+34…' o '34…' → país por dial
+      const detected = detectCountryByDial(digits, paises);   // legacy '+34…' o '34…' → país por dial
       if (detected) {
-        const dial = COUNTRIES.find(c => c.value === detected)?.dial || '';
+        const dial = paisesConPrefijo_(paises).find(c => c.value === detected)?.dial || '';
         return { country: detected, national: digits.slice(dial.length) };
       }
       // Sin dial detectable: el desplegable cae al país de la dirección; el input muestra
@@ -253,7 +300,7 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove, catalogoTel = []
   // (número nacional del input) → +<dial><national>; sin dial cae al país de la dirección.
   // La normalización/validación E.164 + set cerrado DL-E40 las sigue haciendo validatePhone
   // (vía resolvePhoneValidation) — phone.js NO se toca. El input NUNCA contiene el dial.
-  const { national, res } = evaluarTelefonoEscrito(nationalNumber, phoneCountry, countryISO);
+  const { national, res } = evaluarTelefonoEscrito(nationalNumber, phoneCountry, countryISO, paises);
   const showError = touched && national && !res.valid;
   const errKey = res.needCountry  ? 'step2.phone.country_needed'
                : res.notInSet     ? 'step2.phone.unsupported_country'
@@ -266,7 +313,7 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove, catalogoTel = []
   const cambiarNumero = (v) => { setNationalNumber(v); update({ _escrito: v, _pais: phoneCountry }); };
   const cambiarPais = (v) => {
     setPhoneCountry(v);
-    const ev = evaluarTelefonoEscrito(nationalNumber, v, countryISO);
+    const ev = evaluarTelefonoEscrito(nationalNumber, v, countryISO, paises);
     const campos = { _pais: v, _escrito: nationalNumber };
     // Elegir el país es justo lo que convierte en válido un número que ya estaba escrito:
     // se guarda en el acto, sin obligar a volver a entrar y salir del campo.
@@ -299,13 +346,18 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove, catalogoTel = []
           </select>
         </div>
         {/* D: selector de país/prefijo en la misma fila — da el camino para corregir un
-            número legacy in-place. Poblado de COUNTRIES (no otra lista). */}
+            número legacy in-place. `①84`: aquí la pregunta es «¿de qué país es este
+            teléfono?», así que se ofrecen SOLO los que declaran prefijo — un país sin él
+            no es una respuesta válida (no habría número que componer). Sale de la MISMA
+            lista del servidor que la nacionalidad, filtrada por `dial`. */}
         <div className="col-auto" style={{ minWidth: 150 }}>
           <select className="form-select form-select-sm" value={phoneCountry}
-            aria-label={t('field.phone_country')}
+            aria-label={t('field.phone_country')} data-testid={`phone-country-${idx}`}
             onChange={e => cambiarPais(e.target.value)}>
             <option value="">{t('field.phone_country')}</option>
-            {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label} (+{c.dial})</option>)}
+            {paisesConPrefijo_(paises).map(c => (
+              <option key={c.value} value={c.value}>{c.label} (+{c.dial})</option>
+            ))}
           </select>
         </div>
         <div className="col">
@@ -711,7 +763,8 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         </div>
         <div className="col-md-3">
           <label className="form-label">{t('field.nationality')}</label>
-          <select className="form-select" value={person.nationality} onChange={e => u('nationality', e.target.value)}>
+          <select className="form-select" data-testid={`nationality-${_pk}`}
+            value={person.nationality} onChange={e => u('nationality', e.target.value)}>
             <option value="">{t('placeholder.select')}</option>
             {catalogoPaises.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
@@ -854,6 +907,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
             idx={`${idx}_${i}`}
             countryISO={person.address?.country_id || ''}
             catalogoTel={catalogoTel}
+            paises={catalogoPaises}
             onChange={val => updatePhone(i, val)}
             onRemove={() => {
               const antes = [...person.phones];
@@ -1066,11 +1120,11 @@ function transformPersonForSave(person, idx, arr) {
  * un campo que se dejó vacío deja de guardar el número viejo. Lo que NO es válido no se
  * guarda — la puerta de `handleNext` lo para antes, nombrando el motivo (no se afloja nada).
  */
-function rescatarTelefonosDeLaPantalla(persons) {
+function rescatarTelefonosDeLaPantalla(persons, paises = COUNTRIES) {
   return persons.map(p => ({
     ...p,
     phones: (p.phones || []).map(ph => {
-      const ef = telefonoEfectivo_(ph, p.address?.country_id || '');
+      const ef = telefonoEfectivo_(ph, p.address?.country_id || '', paises);
       if (ef.valido && ef.e164 && ef.e164 !== ph.phone_number) return { ...ph, phone_number: ef.e164 };
       if (ef.enPantalla && !ef.hayAlgo && ph.phone_number)      return { ...ph, phone_number: '' };
       return ph;
@@ -1141,20 +1195,31 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const [catalogoCorreo, setCatalogoCorreo] = useState([]);
   // `①83` fila 1 (países) — a diferencia de los tres catálogos de arriba, `countries` SÍ
   // declara un código legible y ESTABLE: `iso_alpha2` (medido `manual_diagIsoAlpha2DePaises`,
-  // 2026-09-08 — 250 de 252 filas vivas lo tienen, sin duplicados) y coincide EXACTO con los
-  // 118 valores de `constants/countries.js` (`manual_diagIsoAlpha2ConDialVsAsistente`, mismo
-  // día). Por eso NO hace falta el patrón híbrido de TRAMO A (opción sintética por
-  // divergencia de identificador): el valor persistido (ISO alpha-2) es el MISMO en los dos
-  // catálogos, así que ampliar de 118 a ~250 países no puede dejar huérfano ningún valor ya
-  // guardado. Este catálogo alimenta SOLO nacionalidad, país del colegio anterior y la
-  // dirección (`AddressForm`) — el selector de país del TELÉFONO se queda en `COUNTRIES` a
-  // propósito esta vuelta (ver `PhoneRow`, más abajo): la parte con `phone_dial_code` del
-  // catálogo del servidor ya se midió IDÉNTICA a `COUNTRIES` (118/118), así que ampliarlo no
-  // sumaría ningún país y sí acoplaría la puerta de validación del teléfono a una lectura de
-  // red — coste sin beneficio medido, en la pieza más sensible de esta pantalla.
+  // 2026-09-08 — 250 de 252 filas vivas lo tienen, sin duplicados). Por eso NO hace falta el
+  // patrón híbrido de TRAMO A (opción sintética por divergencia de identificador): el valor
+  // persistido (ISO alpha-2) es el MISMO en los dos catálogos, así que ampliar de 118 a ~250
+  // países no puede dejar huérfano ningún valor ya guardado.
+  //
+  // ★ `①84` (2026-09-09) — ESTA LISTA ALIMENTA AHORA **LAS DOS PREGUNTAS**, y el
+  //   párrafo anterior decía lo contrario. Decía que el selector de país del TELÉFONO se
+  //   quedaba en `COUNTRIES` porque el subconjunto con prefijo del servidor ya se había
+  //   medido idéntico (118/118) y ampliarlo «no sumaría ningún país». **Eso era cierto ese
+  //   día y no es un argumento para congelarlo**: mientras la lista del teléfono siga
+  //   escrita a mano, el día que el colegio declare el prefijo de un país nuevo el
+  //   desplegable de nacionalidad lo verá y el del teléfono NO — dos lectores del mismo
+  //   dato, divergiendo en silencio, que es justo el defecto que esta ficha vino a cerrar.
+  //   Re-medido el 2026-09-09 (`manual_diagIsoAlpha2ConDialVsAsistente`): 250 con ISO, **118
+  //   con prefijo**, y esos 118 casan EXACTO con los 118 de `constants/countries.js` en los
+  //   DOS sentidos ⇒ pasar la validación del teléfono al catálogo del servidor no estrecha
+  //   ni ensancha lo que hoy se acepta. Quién decide qué subconjunto usa cada pregunta:
+  //   `paisesConPrefijo_` / `prefijosDe_`, arriba.
   //
   // Sin catálogo (aún no llegó, o el KMS todavía sirve el paquete de ayer): `paisesEfectivos`
-  // cae a la lista estática de siempre — NUNCA un desplegable vacío.
+  // cae a la lista estática de siempre — NUNCA un desplegable vacío. ⚠️ Y ESO DEJA VIVA
+  // `constants/countries.js` como RESPALDO, a propósito: aquí un hueco no es cosmético —
+  // sin país no se puede componer el número, y un conjunto cerrado vacío desactivaría en
+  // silencio la puerta de DL-E40. Retirarlo cambia lo que ve una familia cuando el catálogo
+  // no llega, así que se PROPONE (cola `①83`, punto 3), no se barre de oficio.
   const [catalogoPaises, setCatalogoPaises] = useState([]);
   const paisesEfectivos = catalogoPaises.length ? catalogoPaises : COUNTRIES;
   useEffect(() => {
@@ -1187,9 +1252,17 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         // `①83` fila 1 — el mapeo {code,designation} → {value,label} es el MISMO que ya
         // usan nacionalidad/colegio anterior/dirección con `constants/countries.js`, así
         // que el resto de la pantalla no tiene que distinguir de dónde salió la lista.
+        // `①84` — el `dial` se NORMALIZA a solo dígitos al entrar. El conjunto cerrado lo
+        // compara contra `pn.countryCallingCode` de libphonenumber, que viene SIN '+', y el
+        // candidato internacional se compone como `'+' + dial + nacional`: un '+' o un
+        // espacio guardado en `phone_dial_code` rompería la puerta para TODOS los números
+        // (o compondría '++34'). Un solo sitio lo limpia, aquí, al cruzar la frontera.
         const paises = ((data && data.countries) || [])
           .filter(v => v && v.code && v.designation)
-          .map(c => ({ value: c.code, label: c.designation, dial: c.dial || null }));
+          .map(c => {
+            const dial = String(c.dial || '').replace(/\D/g, '');
+            return { value: c.code, label: c.designation, dial: dial || null };
+          });
         log.info('Step2: catálogo de países', {
           count: paises.length, motivo: (data && data.countriesReason) || null,
         });
@@ -1403,7 +1476,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const handleBack = () => {
     // 18.bis.21 — volver atrás tampoco puede tirar un número escrito y válido: se rescata
     // lo de la pantalla igual que al avanzar (lo inválido no se guarda, se queda como está).
-    updateStep('persons', rescatarTelefonosDeLaPantalla(persons).map(transformPersonForSave));
+    updateStep('persons', rescatarTelefonosDeLaPantalla(persons, paisesEfectivos).map(transformPersonForSave));
     onBack();
   };
 
@@ -1471,7 +1544,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       const countryISO = p.address?.country_id || '';
       const phones = p.phones || [];
       for (const ph of phones) {
-        const ef = telefonoEfectivo_(ph, countryISO);
+        const ef = telefonoEfectivo_(ph, countryISO, paisesEfectivos);
         if (ef.hayAlgo && !ef.valido) {
           markInvalid([`${pkey(p)}:phone`]);  // UX-2 (el PhoneRow ya resalta inline; refuerza)
           setErr(t(claveMotivoTelefono_(ef.res), { name: etiquetaDe(p) }));
@@ -1481,7 +1554,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
       // DL-E49 §3 punto 2 — la declaración abreviada NO pide teléfono: quien lo rellenará
       // es el propio tutor declarado, al entrar por su enlace (§5), no quien lo declara.
       if (p.person_type_id === 'guardian' && !p._declaracionAbreviada) {
-        const hasValid = phones.some(ph => telefonoEfectivo_(ph, countryISO).valido);
+        const hasValid = phones.some(ph => telefonoEfectivo_(ph, countryISO, paisesEfectivos).valido);
         if (!hasValid) {
           markInvalid([`${pkey(p)}:phone`]);  // UX-2
           setErr(t('step2.phone.guardian_required_for', { name: etiquetaDe(p) }));
@@ -1560,7 +1633,7 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
     // recoge el número escrito que aún no se había persistido (Continuar sin salir del
     // campo, o el país elegido después). Lo inválido nunca llega aquí: la puerta de arriba
     // ya paró el avance nombrando el motivo y la persona.
-    const withE164 = rescatarTelefonosDeLaPantalla(withPrimaryEmail);
+    const withE164 = rescatarTelefonosDeLaPantalla(withPrimaryEmail, paisesEfectivos);
     const transformed = withE164.map(transformPersonForSave);
     log.info('Step2: onNext persons (transformed)', transformed);
     updateStep('persons', transformed);

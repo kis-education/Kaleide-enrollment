@@ -6796,6 +6796,230 @@ async function caminoDocumentoDesdeElCatalogo(page, base) {
 }
 
 /**
+ * CAMINO · «los países son DOS preguntas, no una lista con dos usos» (`①84`, 2026-09-09).
+ *
+ * EL DEFECTO QUE CIERRA. `constants/countries.js` tenía 118 países —los que declaran
+ * prefijo telefónico— y servía a CUATRO cosas a la vez: nacionalidad, país del colegio
+ * anterior, país de la dirección **y** el desplegable de país del TELÉFONO (más el conjunto
+ * CERRADO que valida el número, DL-E40). Como la lista era la misma, una familia cuya
+ * nacionalidad fuese uno de los otros ~130 países del catálogo del colegio **no la podía
+ * seleccionar**.
+ *
+ * LA SALIDA NO ES UN HÍBRIDO: son dos preguntas distintas sobre la MISMA lista.
+ *   ¿de qué país eres / dónde vives / dónde estudiaste? → la lista ENTERA.
+ *   ¿de qué país es este teléfono? → SOLO las que declaran prefijo (si no, no hay número
+ *   que componer). ⇒ DL-E40 no se afloja: el conjunto cerrado sigue cerrado y sigue
+ *   validando; lo único que cambia es que sale del catálogo del KMS, no de una lista
+ *   escrita a mano que podía divergir de la de al lado.
+ *
+ * ⚠️ EL DOBLE SIRVE UNA LISTA DISTINTA DE `constants/countries.js`, A PROPÓSITO (ver
+ * `mock-backend.mjs`): si sirviera los mismos valores, esto pasaría EN VACÍO aunque la
+ * pantalla siguiera pintando su lista estática. `ZZ`/`QQ` no declaran prefijo (nacionalidad
+ * SÍ, teléfono NO) y `XK` sí lo declara y **no existe** en la lista estática (es el país que
+ * el desplegable del teléfono no podía ofrecer antes de este cambio).
+ *
+ * ⚠️ Lo que NO cubre: la batería corre contra un backend SIMULADO que **nunca ejecuta
+ * `backend/Code.js` ni el KMS**. Que `enr_wizardFetchLookups` sirva de verdad los 250
+ * países con sus 118 prefijos NO lo acredita esto — se acredita midiendo contra la tabla
+ * (`manual_diagIsoAlpha2ConDialVsAsistente` / `manual_diagCatalogoDePaisesEnFetchLookups`,
+ * 2026-09-09: 250 con ISO, 118 con prefijo, y esos 118 casan EXACTO con la lista estática).
+ */
+async function caminoPaisesDesdeElCatalogo(page, base) {
+  const c = new Camino('paises-desde-el-catalogo')
+  scenario.stage = 'hasta_preguntas'
+
+  let ultimoPersons = null
+  const espiar = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    let body = null
+    try { body = JSON.parse(req.postData() || '{}') } catch { return }
+    if (body && body.action === 'saveStep' && body.step === 'persons') ultimoPersons = body
+  }
+  page.on('request', espiar)
+  const limpiar = () => page.off('request', espiar)
+
+  const irAPersonas = async (etiqueta) => {
+    for (let i = 0; i < 8 && (await dondeEstoy(page)) > 1; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    if (!c.afirmar(`${etiqueta} se llega al paso de Personas`, (await dondeEstoy(page)) === 1,
+      `se quedó en el índice ${await dondeEstoy(page)}`)) return false
+    await desbloquear(page)
+    await page.waitForTimeout(400)
+    return true
+  }
+  const opcionesDe = async (sel) => await sel.$$eval('option', els =>
+    els.map(o => ({ value: o.value, texto: (o.textContent || '').trim() })).filter(o => o.value))
+
+  try {
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    if (!await irAPersonas('(A)')) return c
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
+
+    // ── ANCLA: sin el desplegable de nacionalidad, todo lo de abajo mediría el vacío.
+    const selNac = await page.$('select[data-testid^="nationality-"]')
+    if (!c.afirmar('(A) el paso 2 ofrece el desplegable de nacionalidad', !!selNac,
+      'no se pintó ningún select[data-testid^="nationality-"]: sin él este recorrido no mide nada')) return c
+
+    const nac = await opcionesDe(selNac)
+    const nacValores = nac.map(o => o.value)
+
+    // ── (1) EL DEFECTO ENTERO: la nacionalidad ofrece un país que NO declara prefijo ──
+    c.afirmar('(1) la nacionalidad ofrece un país que NO declara prefijo telefónico',
+      nacValores.includes('ZZ') && nacValores.includes('QQ'),
+      `las nacionalidades ofrecidas fueron ${JSON.stringify(nacValores)}: si faltan los países sin prefijo, la pantalla sigue sirviendo la lista del TELÉFONO como si fuera la de nacionalidad, y una familia cuya nacionalidad no tenga prefijo declarado no la puede seleccionar`)
+
+    // ── (2) la ETIQUETA es la del servidor, no una traducción local ────────────────
+    const zz = nac.find(o => o.value === 'ZZ')
+    c.afirmar('(2) la etiqueta sale de la designación del servidor',
+      !!zz && /E2E/.test(zz.texto),
+      `la opción «ZZ» se leyó ${JSON.stringify(zz && zz.texto)}: se esperaba la designación que sirve el catálogo`)
+
+    // ── ANCLA del teléfono: sin fila de teléfono no hay segunda pregunta que medir.
+    const selTel = await page.$('select[data-testid^="phone-country-"]')
+    if (!c.afirmar('(A) hay un desplegable de país del teléfono', !!selTel,
+      'no se pintó ningún select[data-testid^="phone-country-"]: sin él no se puede comparar la segunda pregunta')) return c
+
+    const tel = await opcionesDe(selTel)
+    const telValores = tel.map(o => o.value)
+
+    // ── (3) LA SEGUNDA PREGUNTA: el teléfono NO ofrece los que no tienen prefijo ────
+    c.afirmar('(3) el país del teléfono NO ofrece un país sin prefijo declarado',
+      !telValores.includes('ZZ') && !telValores.includes('QQ'),
+      `el desplegable del teléfono ofreció ${JSON.stringify(telValores)}: un país sin prefijo no es una respuesta válida a «¿de qué país es este teléfono?» — no habría número que componer`)
+
+    // ── (4) …Y SALE DEL CATÁLOGO DEL SERVIDOR, no de la lista escrita a mano ───────
+    c.afirmar('(4) el país del teléfono sale del catálogo del servidor',
+      telValores.includes('XK'),
+      `el desplegable del teléfono ofreció ${JSON.stringify(telValores)}: «XK» declara prefijo en el catálogo y NO existe en constants/countries.js, así que sin él la pantalla sigue pintando su lista escrita a mano`)
+
+    // ── (5) UN TELÉFONO CON PREFIJO VÁLIDO SE SIGUE GUARDANDO ──────────────────────
+    // Se opera sobre la ÚLTIMA ficha (un alumno: su teléfono es opcional, así que
+    // añadirlo no puede tumbar la puerta del paso por otra causa).
+    const secciones = await page.$$('.dynamic-section')
+    const ultima = secciones.length ? secciones[secciones.length - 1] : null
+    if (!c.afirmar('(A) hay una ficha de alumno donde probar el guardado', !!ultima,
+      'no se pintó ninguna .dynamic-section')) return c
+    let añadido = false
+    for (const b of await ultima.$$('button.add-btn')) {
+      const txt = (await b.evaluate(n => n.textContent || '')).trim()
+      if (/tel[eé]fono|phone/i.test(txt)) { await b.click(); await page.waitForTimeout(200); añadido = true; break }
+    }
+    if (!c.afirmar('(A) el alumno ofrece añadir un teléfono', añadido,
+      'no se encontró el botón de añadir teléfono en la última ficha')) return c
+
+    const selTelUlt = await ultima.$('select[data-testid^="phone-country-"]')
+    const inputTel  = await ultima.$('input[type=tel]')
+    if (!c.afirmar('(A) la fila de teléfono nueva trae su país y su número', !!selTelUlt && !!inputTel,
+      'faltó el desplegable de país o el campo del número en la fila recién añadida')) return c
+    const opcUlt = (await opcionesDe(selTelUlt)).map(o => o.value)
+    if (!c.afirmar('(A) el catálogo del teléfono ofrece «ES» para poder guardar un número',
+      opcUlt.includes('ES'),
+      `el desplegable ofreció ${JSON.stringify(opcUlt)}`)) return c
+    await selTelUlt.selectOption('ES')
+    await page.waitForTimeout(150)
+    await inputTel.fill('600111222')
+    await page.keyboard.press('Tab')
+    await page.waitForTimeout(300)
+
+    await contestarMonoparentalSiHaceFalta(page)
+    ultimoPersons = null
+    const botones = await page.$$(BTN_SIGUIENTE)
+    if (!c.afirmar('(A) el paso deja continuar con el teléfono puesto', botones.length > 0,
+      'no había botón «Continuar»')) return c
+    await botones[0].click()
+    await page.waitForTimeout(LATENCY + 900)
+
+    if (!c.afirmar('(A) el paso se guarda', !!ultimoPersons,
+      `no salió ningún saveStep de personas: ${await quejaDelWizard(page)}`)) return c
+    c.evidencia.llamadas += 1
+    const enviadas = Array.isArray(ultimoPersons.payload) ? ultimoPersons.payload : []
+    // ⚠️ El número viaja en `value`, NO en `phone_number`: `transformPersonForSave`
+    // (`Step2Persons.jsx`) quita el alias de pantalla y deja la forma canónica del servidor.
+    // La primera versión de esta línea leía `phone_number` y salía ROJA SIEMPRE, con el fix
+    // puesto y sin él — medía un campo que nunca existe. Mismo criterio que
+    // `telefono-que-se-ve-se-guarda`, que ya lo leía como `ph.value || ph.phone_number`.
+    const numeros = enviadas.flatMap(p => (p.phones || [])
+      .map(ph => String((ph && (ph.value || ph.phone_number)) || '')).filter(Boolean))
+    c.afirmar('(5) un teléfono con prefijo del catálogo se sigue guardando, normalizado a E.164',
+      numeros.some(n => n === '+34600111222'),
+      `los teléfonos enviados fueron ${JSON.stringify(numeros)}: el conjunto cerrado sale ahora del catálogo del servidor, así que si esto falla la puerta de DL-E40 está rechazando un prefijo que el propio catálogo declara`)
+
+    // ── (B) SIN CATÁLOGO DE PAÍSES: se cae a la lista estática, NUNCA a un hueco ────
+    // ⛔ Aquí el respaldo NO es cosmético y por eso se afirma: sin país no se puede
+    // componer el número, y un conjunto cerrado vacío desactivaría EN SILENCIO la puerta
+    // de DL-E40. Retirarlo cambia lo que ve una familia cuando el catálogo no llega —
+    // se PROPONE (cola `①83`, punto 3), no se barre.
+    await esperarSilencioDeRed(20000, 400)
+    scenario.catalogoPaisesVacio = true
+    // ⛔ SESIÓN LIMPIA DE VERDAD: la caché de MÓDULO de `api.js` (`_lookupsCache`)
+    // sobrevive a un cambio de hash — medido en `sexo-desde-el-catalogo`.
+    await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+    await page.goto('about:blank')
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    if (!await irAPersonas('(B)')) return c
+
+    const selNac2 = await page.$('select[data-testid^="nationality-"]')
+    if (!c.afirmar('(B) el paso 2 sigue ofreciendo la nacionalidad sin catálogo', !!selNac2,
+      'no se pintó el desplegable de nacionalidad con el catálogo caído')) return c
+    const nac2 = (await opcionesDe(selNac2)).map(o => o.value)
+    c.afirmar('(B) sin catálogo la nacionalidad cae a la lista estática, nunca vacía',
+      nac2.includes('ES') && nac2.includes('AF') && !nac2.includes('ZZ'),
+      `se pintaron ${nac2.length} opciones (${JSON.stringify(nac2.slice(0, 6))}…): sin respaldo la familia se queda sin poder declarar su nacionalidad`)
+
+    const selTel2 = await page.$('select[data-testid^="phone-country-"]')
+    if (!c.afirmar('(B) sigue habiendo desplegable de país del teléfono', !!selTel2,
+      'no se pintó el desplegable de país del teléfono con el catálogo caído')) return c
+    const tel2 = (await opcionesDe(selTel2)).map(o => o.value)
+    c.afirmar('(B) sin catálogo el país del teléfono cae a la lista estática, nunca vacío',
+      tel2.includes('ES') && tel2.length > 100,
+      `se pintaron ${tel2.length} opciones: con el desplegable vacío no hay forma de corregir un número, y el conjunto cerrado de DL-E40 se quedaría sin nadie a quien comparar`)
+
+    // ── (C) EL CATÁLOGO LLEGA PERO NADIE DECLARA PREFIJO ──────────────────────────
+    // ⚠️ Caso DISTINTO de (B), y hace falta: en (B) la lista llega vacía y la salva el
+    // respaldo de `paisesEfectivos`; aquí la lista NO está vacía, así que ese respaldo no
+    // se activa y el único que puede salvar el desplegable del teléfono es el de
+    // `paisesConPrefijo_`. **Medido el 2026-09-09: sin esta fase, romper ese respaldo a
+    // propósito NO ponía roja ninguna afirmación** — la de (B) pasaba igual, o sea que no
+    // podía fallar. Es la fase que la convierte en una medida.
+    await esperarSilencioDeRed(20000, 400)
+    scenario.catalogoPaisesVacio = false
+    scenario.catalogoPaisesSinPrefijos = true
+    await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+    await page.goto('about:blank')
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    if (!await irAPersonas('(C)')) return c
+
+    const selNac3 = await page.$('select[data-testid^="nationality-"]')
+    if (!c.afirmar('(C) el paso 2 sigue ofreciendo la nacionalidad', !!selNac3,
+      'no se pintó el desplegable de nacionalidad con un catálogo sin prefijos')) return c
+    const nac3 = (await opcionesDe(selNac3)).map(o => o.value)
+    c.afirmar('(C) la nacionalidad sigue siendo la del catálogo (la pregunta no depende del prefijo)',
+      nac3.includes('ZZ') && nac3.includes('XK'),
+      `se pintaron ${JSON.stringify(nac3)}: sin prefijos declarados la lista de nacionalidad no cambia — esa pregunta no los necesita`)
+
+    const selTel3 = await page.$('select[data-testid^="phone-country-"]')
+    if (!c.afirmar('(C) sigue habiendo desplegable de país del teléfono', !!selTel3,
+      'no se pintó el desplegable de país del teléfono con un catálogo sin prefijos')) return c
+    const tel3 = (await opcionesDe(selTel3)).map(o => o.value)
+    c.afirmar('(C) con el catálogo servido y NINGÚN prefijo declarado, el teléfono cae a la lista estática',
+      tel3.includes('ES') && tel3.length > 100 && !tel3.includes('ZZ'),
+      `se pintaron ${tel3.length} opciones (${JSON.stringify(tel3.slice(0, 6))}…): sin respaldo aquí el desplegable se queda vacío y el conjunto cerrado de DL-E40 se desactiva en silencio`)
+
+    return c
+  } finally {
+    scenario.catalogoPaisesVacio = false
+    scenario.catalogoPaisesSinPrefijos = false
+    limpiar()
+  }
+}
+
+/**
  * CAMINO · «las opciones NEAE salen del catálogo» (`①83` TRAMO C, 2026-09-08).
  *
  * `Step4Health.jsx` llevaba TRES listas escritas a mano (categoría, tipo de apoyo,
@@ -10465,6 +10689,9 @@ const CAMINOS = [
   // `①83` TRAMO C — las tres listas NEAE (categoría, apoyo, ámbito) salen del catálogo
   // del servidor, igual que el sexo.
   { nombre: 'neae-desde-el-catalogo', fn: caminoNeaeDesdeElCatalogo, minLlamadas: 1, minElementos: 3 },
+  // `①84` — los países son DOS preguntas: la lista entera para nacionalidad/dirección/
+  // colegio anterior, y solo las que declaran prefijo para el teléfono (DL-E40 intacta).
+  { nombre: 'paises-desde-el-catalogo', fn: caminoPaisesDesdeElCatalogo, minLlamadas: 1, minElementos: 11 },
   // `0º.tricies.octies` (D) — no manda ni una petición: mide lo que la pantalla DICE.
   // `0º.septvicies` — el asistente deja de escribir la fila invertida del par de hermanos
   // (DL-S45), y el lector del paso 3 la sigue viendo guardada en cualquier sentido.

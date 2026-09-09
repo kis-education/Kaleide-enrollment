@@ -170,8 +170,22 @@ function lookupsSegunEscenario_(scenario) {
   const idiomas = (scenario && scenario.catalogoIdiomasVacio)
     ? { languages: [], languagesReason: 'CATALOGO_VACIO' }
     : {};
+  // `①84` — el mismo caso para los PAÍSES: un KMS que aún no sirve `countries`, o una
+  // lectura caída. Aquí el respaldo NO es cosmético (sin país no se compone el número y el
+  // conjunto cerrado de DL-E40 se quedaría vacío), así que lo que hay que ver es que la
+  // pantalla cae a la lista estática — nunca a un desplegable vacío.
+  const paises = (scenario && scenario.catalogoPaisesVacio)
+    ? { countries: [], countriesReason: 'CATALOGO_VACIO' }
+    // `①84` — y el caso DISTINTO: el catálogo SÍ llega, pero NINGUNA fila declara prefijo
+    // (un colegio que no ha rellenado `phone_dial_code`). Aquí el respaldo de arriba no
+    // salva nada —la lista NO está vacía—, así que es el ÚNICO caso que ejercita el
+    // respaldo de `paisesConPrefijo_`: sin él, el desplegable del teléfono se queda vacío
+    // y el conjunto cerrado de DL-E40 se desactiva EN SILENCIO.
+    : (scenario && scenario.catalogoPaisesSinPrefijos)
+      ? { countries: (LOOKUPS.countries || []).map(c => ({ ...c, dial: null })), countriesReason: null }
+      : {};
   if (modo !== 'appsheet' && modo !== 'ilegible') {
-    return { ...LOOKUPS, programs: programas, ...sexo, ...neae, ...idiomas };
+    return { ...LOOKUPS, programs: programas, ...sexo, ...neae, ...idiomas, ...paises };
   }
   const convertir = modo === 'appsheet'
     ? aFormatoAppSheet_
@@ -190,6 +204,7 @@ function lookupsSegunEscenario_(scenario) {
     ...sexo,
     ...neae,
     ...idiomas,
+    ...paises,
   };
 }
 
@@ -338,6 +353,32 @@ const LOOKUPS = {
     { code: 'kms-row-work-e2e',   designation: 'Trabajo (E2E)' },
   ],
   phoneNrTypesReason: null,
+  // ── `①84` (2026-09-09) — LOS PAÍSES SON **DOS PREGUNTAS**, NO UNA LISTA CON DOS USOS ──
+  // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation, dial}`, tal cual la arma
+  // `enr_catalogoDePaises_` (`kis-app kms-server/enr/wizard-gateway.gs`) — UNA sola lista,
+  // con `dial` presente SOLO en las filas que declaran `phone_dial_code`. El consumidor
+  // decide: nacionalidad / colegio anterior / dirección usan la lista ENTERA; el
+  // desplegable de país del TELÉFONO, solo las que traen `dial`.
+  //
+  // ⚠️ LA LISTA ES DISTINTA DE `constants/countries.js`, A PROPÓSITO — si sirviera los
+  // mismos valores, «las opciones salen del catálogo» pasaría EN VACÍO aunque la pantalla
+  // siguiera pintando su lista escrita a mano. Por eso:
+  //   · `ZZ` y `QQ` NO existen en ningún catálogo real y **NO declaran prefijo** → son la
+  //     prueba del defecto entero: la nacionalidad SÍ los ofrece, el teléfono NO.
+  //   · `ES` sí declara prefijo (34) — es el que usa el camino para guardar un teléfono.
+  //   · `AF` (93) está en los dos catálogos, así que sirve de ancla de continuidad.
+  //   · `XK` declara prefijo (383) y **NO está** en `constants/countries.js`: es el país
+  //     que hoy el desplegable del teléfono NO podría ofrecer con la lista escrita a mano.
+  //   · las designaciones llevan «(E2E)» — si la pantalla pintara una traducción local en
+  //     vez de la designación del servidor, se vería.
+  countries: [
+    { code: 'AF', designation: 'Afganistán (E2E)', dial: '93' },
+    { code: 'ES', designation: 'España (E2E)',     dial: '34' },
+    { code: 'XK', designation: 'Kosovo (E2E)',     dial: '383' },
+    { code: 'ZZ', designation: 'País sin prefijo (E2E)', dial: null },
+    { code: 'QQ', designation: 'Otro sin prefijo (E2E)', dial: null },
+  ],
+  countriesReason: null,
   emailTypes: [
     { code: 'kms-row-personal-e2e',  designation: 'Personal (E2E)' },
     { code: 'kms-row-work-e2e',      designation: 'Trabajo (E2E)' },
