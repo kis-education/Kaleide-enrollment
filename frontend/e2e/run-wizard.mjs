@@ -6198,28 +6198,39 @@ async function caminoTelefonoQueSeVeSeGuarda(page, base) {
 }
 
 /**
- * CAMINO · «los idiomas que habla cada persona» (①45 + ①82).
+ * CAMINO · «los idiomas que habla cada persona» (①45 + ①82 + ①87).
  *
  * Diego, 2026-08-16: «El wizard debería recoger el idioma o idiomas hablados por la
- * familia como dato opcional.» Hasta este cambio el paso 2 no lo preguntaba en ninguna
+ * familia como dato opcional.» Hasta ese cambio el paso 2 no lo preguntaba en ninguna
  * parte: `languages`/`language_id` tenían CERO apariciones en todo `frontend/src`,
  * mientras el KMS ya escribía (`enr_persistPersons_`) y ya devolvía (`enr_wizardHydrate`)
  * ese dato — la fontanería entera construida y sin nadie que la usara.
  *
  * ①82 (2026-09-06) — Diego: «¿Cómo que no se puede? Siempre se debe poder editar el
- * idioma.» Un idioma ya guardado dejó de estar bloqueado: se desmarca por el MISMO
+ * idioma.» Un idioma ya guardado dejó de estar bloqueado: se quita por el MISMO
  * camino que un correo o un teléfono (`pedirQuitar` → `retirarDelExpediente`, clase
  * `IDIOMA`), que el KMS ya reconoce (`enr/retirada.gs`, `kms-server @1544`).
  *
- * Las SEIS cosas que mide, y ninguna sobra:
- *   (1) se pueden declarar VARIOS idiomas para una persona;
+ * ①87 (2026-09-09) — Diego: «Salen decenas de marcadores. Debería ser un desplegable
+ * apilable. Selecciono uno de la lista y lo añado.» La rejilla de UNA CASILLA POR IDIOMA
+ * DEL CATÁLOGO se sustituye por: lo YA declarado en una lista apilada (una fila por
+ * idioma, con su propio botón de quitar) + un desplegable con SOLO lo que falta por
+ * declarar y un botón «Añadir». Este camino deja de teclear/marcar casillas y pasa a
+ * elegir-en-el-desplegable-y-pulsar-Añadir, y de mirar `.checked`/`.disabled` a mirar si
+ * la fila apilada existe.
+ *
+ * Las SIETE cosas que mide, y ninguna sobra:
+ *   (0) ANCLA — el paso ofrece el desplegable de «Añadir idioma»;
+ *   (1) se pueden declarar VARIOS idiomas para una persona, apilados uno a uno;
  *   (2) viajan en el guardado con la forma EXACTA que el escritor del KMS lee
  *       (`p.languages[].language_id`) — mandar otra cosa se descarta en silencio;
- *   (3) lo ya declarado vuelve marcado y la casilla NO está deshabilitada;
- *   (3.bis) desmarcarlo PREGUNTA antes (mismo cuadro que quitar un correo/teléfono) y,
+ *   (3) lo ya declarado se ve en su lista apilada, con un botón para quitarlo;
+ *   (3.bis) quitarlo PREGUNTA antes (mismo cuadro que quitar un correo/teléfono) y,
  *       al confirmar, avisa al servidor con `clase:'IDIOMA'` + el `record_id` — y la
- *       casilla queda desmarcada;
- *   (4) es OPCIONAL DE VERDAD: la persona que no marca ninguno no impide avanzar.
+ *       fila apilada desaparece;
+ *   (4) es OPCIONAL DE VERDAD: la persona que no añade ninguno no impide avanzar;
+ *   (B) sin catálogo el desplegable no ofrece opciones escritas a mano, un idioma ya
+ *       declarado se sigue viendo, y la pantalla AVISA en vez de quedarse muda.
  *
  * ⚠️ Lo que NO cubre: la batería corre contra un backend SIMULADO que nunca ejecuta
  * `backend/Code.js` ni llama al KMS. Que la fila se escriba de verdad en
@@ -6239,19 +6250,38 @@ async function caminoIdiomasHablados(page, base) {
   page.on('request', espiar)
   const limpiar = () => page.off('request', espiar)
 
-  // Casilla de un idioma DENTRO de una ficha concreta. Se localiza por posición en el DOM
-  // (`.dynamic-section` es lo que pinta `PersonSection`) + el `data-testid` del idioma —
-  // el mismo utillaje que `caminoTelefonoQueSeVeSeGuarda`, sin inventar selectores.
-  const casilla = async (cual, code) => {
+  // `①87` — la casilla de una por idioma se sustituyó por un desplegable + «Añadir» que
+  // apila lo declarado. La ficha de una persona (`.dynamic-section`, lo que pinta
+  // `PersonSection`) se localiza por posición, igual que antes; dentro de ella:
+  //   · `idioma-fila-<code>`   — la fila apilada de un idioma YA declarado.
+  //   · `idioma-quitar-<code>` — su botón de quitar (①82: presente ⟺ se puede editar).
+  //   · `idioma-select-*`      — el desplegable con SOLO lo que falta por declarar.
+  //   · `idioma-anadir-*`      — el botón que apila lo elegido en el desplegable.
+  const seccion = async (cual) => {
     const ss = await page.$$('.dynamic-section')
     if (!ss.length) return null
-    const s = cual === 'ultima' ? ss[ss.length - 1] : ss[0]
-    return await s.$(`[data-testid="idioma-${code}"]`)
+    return cual === 'ultima' ? ss[ss.length - 1] : ss[0]
   }
-  const estado = async (cual, code) => {
-    const el = await casilla(cual, code)
-    if (!el) return null
-    return await el.evaluate(n => ({ marcado: n.checked, bloqueado: n.disabled }))
+  const fila = async (cual, code) => {
+    const s = await seccion(cual)
+    return s ? await s.$(`[data-testid="idioma-fila-${code}"]`) : null
+  }
+  const botonQuitar = async (cual, code) => {
+    const s = await seccion(cual)
+    return s ? await s.$(`[data-testid="idioma-quitar-${code}"]`) : null
+  }
+  // Elige `code` en el desplegable de AÑADIR de una ficha y pulsa «Añadir».
+  const anadir = async (cual, code) => {
+    const s = await seccion(cual)
+    if (!s) return false
+    const select = await s.$('[data-testid^="idioma-select-"]')
+    const boton = await s.$('[data-testid^="idioma-anadir-"]')
+    if (!select || !boton) return false
+    const opcion = await select.$(`option[value="${code}"]`)
+    if (!opcion) return false
+    await select.selectOption(code)
+    await boton.click()
+    return true
   }
 
   try {
@@ -6270,29 +6300,32 @@ async function caminoIdiomasHablados(page, base) {
     const pantalla = await page.evaluate(sondaPantalla)
     c.evidencia.elementos = pantalla.pasos + pantalla.campos
 
-    // ── ANCLA: si el paso no ofrece el control, las afirmaciones de abajo medirían el
-    //    vacío. Se comprueba primero y se para, nombrándolo.
+    // ── ANCLA: si el paso no ofrece el desplegable, las afirmaciones de abajo medirían
+    //    el vacío. Se comprueba primero y se para, nombrándolo.
+    const seccionPrimera = await seccion('primera')
+    const selectPrimera = seccionPrimera ? await seccionPrimera.$('[data-testid^="idioma-select-"]') : null
     if (!c.afirmar('el paso 2 pregunta qué idiomas habla cada persona',
-      !!(await casilla('primera', 'en')),
-      'no se pintó ninguna casilla de idioma en la primera ficha: el paso no recoge el dato')) return c
+      !!selectPrimera,
+      'no se pintó el desplegable de «Añadir idioma» en la primera ficha: el paso no recoge el dato')) return c
 
     // ── `①83` fila IDIOMAS — LAS OPCIONES SALEN DEL CATÁLOGO, no de una lista escrita
     //    a mano. El doble sirve `ZZ-LANG-E2E`, un código que NO existe en
-    //    `constants/languages.js`: si aparece, la pantalla está leyendo el servidor.
-    c.afirmar('las casillas de idioma salen del catálogo del servidor, no de una lista escrita a mano',
-      !!(await casilla('primera', 'ZZ-LANG-E2E')),
-      'no se pintó ninguna casilla para «ZZ-LANG-E2E» (un código que solo existe en el catálogo del doble): las opciones siguen viniendo de la lista local')
+    //    `constants/languages.js`: si se ofrece como opción, el desplegable lee el servidor.
+    const opcionZZ = await selectPrimera.$('option[value="ZZ-LANG-E2E"]')
+    c.afirmar('las opciones del desplegable salen del catálogo del servidor, no de una lista escrita a mano',
+      !!opcionZZ,
+      'no se ofreció «ZZ-LANG-E2E» (un código que solo existe en el catálogo del doble): las opciones siguen viniendo de la lista local')
 
     // ── (3) LO YA DECLARADO — el tutor viene del servidor con `es` declarado, y ①82
-    //        (Diego: «siempre se debe poder editar el idioma») lo deja SIN bloquear ──
-    const yaEs = await estado('primera', 'es')
-    c.afirmar('un idioma YA declarado vuelve marcado', !!(yaEs && yaEs.marcado),
-      `la casilla de «es» del tutor volvió ${JSON.stringify(yaEs)}: lo que la familia ya declaró no se le muestra`)
-    c.afirmar('y la casilla NO está deshabilitada (①82: ya se puede editar)',
-      !!(yaEs && !yaEs.bloqueado),
-      `la casilla de «es» del tutor volvió ${JSON.stringify(yaEs)}: sigue bloqueada — Diego pidió justo lo contrario`)
+    //        (Diego: «siempre se debe poder editar el idioma») deja quitarlo ──
+    const filaEs = await fila('primera', 'es')
+    c.afirmar('un idioma YA declarado se ve en su lista apilada', !!filaEs,
+      'no se pintó la fila apilada de «es» del tutor: lo que la familia ya declaró no se le muestra')
+    const quitarEsAncla = await botonQuitar('primera', 'es')
+    c.afirmar('y ofrece un botón para quitarlo (①82: ya se puede editar)', !!quitarEsAncla,
+      'no había botón para quitar «es»: un idioma ya declarado se queda congelado, y Diego pidió justo lo contrario')
 
-    // ── (3.bis) DESMARCARLO pregunta, y al confirmar avisa al servidor con IDIOMA ───
+    // ── (3.bis) QUITARLO pregunta, y al confirmar avisa al servidor con IDIOMA ───────
     let retiradaIdioma = null
     const espiarRetirar = (req) => {
       if (!/\/__gas/.test(req.url())) return
@@ -6302,13 +6335,13 @@ async function caminoIdiomasHablados(page, base) {
     }
     page.on('request', espiarRetirar)
     try {
-      const elEs = await casilla('primera', 'es')
-      if (!c.afirmar('la casilla de «es» ya declarada se puede localizar', !!elEs,
-        'no se encontró la casilla de «es» en la primera ficha')) return c
-      await elEs.click()
+      const quitarEs = await botonQuitar('primera', 'es')
+      if (!c.afirmar('el botón de quitar «es» ya declarada se puede localizar', !!quitarEs,
+        'no se encontró el botón de quitar «es» en la primera ficha')) return c
+      await quitarEs.click()
       const cuadroIdioma = await page.waitForSelector('[data-testid="confirm-dialog"]', { timeout: 4000 }).catch(() => null)
-      if (!c.afirmar('desmarcar un idioma ya declarado PREGUNTA antes', !!cuadroIdioma,
-        'no salió el cuadro de confirmación al desmarcar un idioma ya guardado')) return c
+      if (!c.afirmar('quitar un idioma ya declarado PREGUNTA antes', !!cuadroIdioma,
+        'no salió el cuadro de confirmación al quitar un idioma ya guardado')) return c
       const aceptar = await page.$('[data-testid="confirm-dialog-accept"]')
       if (aceptar) await aceptar.click()
       await page.waitForTimeout(LATENCY + 500)
@@ -6317,25 +6350,25 @@ async function caminoIdiomasHablados(page, base) {
         !!(retiradaIdioma && Array.isArray(retiradaIdioma.retirar) && retiradaIdioma.retirar[0]
           && retiradaIdioma.retirar[0].clase === 'IDIOMA' && retiradaIdioma.retirar[0].id),
         `la petición de retirada fue ${JSON.stringify(retiradaIdioma)}: no llevó clase «IDIOMA» con el identificador de la fila`)
-      const trasDesmarcar = await estado('primera', 'es')
-      c.afirmar('y la casilla queda desmarcada', !(trasDesmarcar && trasDesmarcar.marcado),
-        `la casilla de «es» volvió ${JSON.stringify(trasDesmarcar)}: el servidor confirmó la retirada y la pantalla la sigue mostrando marcada`)
+      const filaTrasQuitar = await fila('primera', 'es')
+      c.afirmar('y la fila apilada desaparece', !filaTrasQuitar,
+        'la fila de «es» seguía pintada: el servidor confirmó la retirada y la pantalla la sigue mostrando')
     } finally {
       page.off('request', espiarRetirar)
     }
 
-    // ── (1) VARIOS IDIOMAS en la persona que no tiene ninguno (el último alumno) ────
+    // ── (1) VARIOS IDIOMAS en la persona que no tiene ninguno (el último alumno),
+    //        elegidos del desplegable y apilados con «Añadir», uno detrás de otro ────
     for (const code of ['en', 'fr']) {
-      const el = await casilla('ultima', code)
-      if (!c.afirmar(`el alumno ofrece declarar «${code}»`, !!el,
-        `no se encontró la casilla del idioma ${code} en la última ficha`)) return c
-      await el.click()
-      await page.waitForTimeout(120)
+      const ok = await anadir('ultima', code)
+      if (!c.afirmar(`el alumno puede elegir «${code}» en el desplegable y pulsar «Añadir»`, ok,
+        `no se pudo elegir/añadir el idioma ${code} en la última ficha (¿no está entre las opciones?)`)) return c
+      await page.waitForTimeout(150)
     }
-    const trasMarcar = await Promise.all(['en', 'fr'].map(x => estado('ultima', x)))
-    c.afirmar('se pueden declarar VARIOS idiomas para la misma persona',
-      trasMarcar.every(e => e && e.marcado),
-      `las casillas quedaron ${JSON.stringify(trasMarcar)}: el control no admite más de uno`)
+    const filasTrasAnadir = await Promise.all(['en', 'fr'].map(x => fila('ultima', x)))
+    c.afirmar('se pueden declarar VARIOS idiomas para la misma persona, apilados uno a uno',
+      filasTrasAnadir.every(Boolean),
+      `las filas apiladas fueron ${JSON.stringify(filasTrasAnadir.map(Boolean))}: el desplegable no admite añadir más de uno`)
 
     // ── (2) VIAJAN en el guardado, con la forma que el KMS lee ─────────────────────
     // DL-E49 §3 punto 1 — este camino mide los idiomas, no la pregunta de familia
@@ -6377,10 +6410,10 @@ async function caminoIdiomasHablados(page, base) {
       await page.waitForTimeout(400)
       await desbloquear(page)
       await page.waitForTimeout(200)
-      const alVolver = await Promise.all(['en', 'fr'].map(x => estado('ultima', x)))
-      c.afirmar('al volver al paso, los idiomas declarados siguen marcados',
-        alVolver.every(e => e && e.marcado),
-        `las casillas volvieron ${JSON.stringify(alVolver)}: lo que la familia declaró se perdió al navegar`)
+      const alVolver = await Promise.all(['en', 'fr'].map(x => fila('ultima', x)))
+      c.afirmar('al volver al paso, los idiomas declarados siguen apilados',
+        alVolver.every(Boolean),
+        `las filas volvieron ${JSON.stringify(alVolver.map(Boolean))}: lo que la familia declaró se perdió al navegar`)
 
       // Se avanza de nuevo ANTES de nada más: `Step2Persons` publica su borrador
       // (`0º.tricies.quintricies`) mientras está montado, y el `atras` de arriba lo deja
@@ -6420,21 +6453,35 @@ async function caminoIdiomasHablados(page, base) {
     await desbloquear(page)
     await page.waitForTimeout(500)
 
-    // ── ANCLA: sin la caja de idiomas, las dos afirmaciones de abajo medirían el vacío.
-    const cajaIdiomas = await page.$(`[data-testid^="idiomas-"]`)
+    // ── ANCLA: sin la caja de idiomas, las afirmaciones de abajo medirían el vacío.
+    const seccionPrimeraB = await seccion('primera')
+    const cajaIdiomas = seccionPrimeraB ? await seccionPrimeraB.$('[data-testid^="idiomas-"]') : null
     if (!c.afirmar('(B) el paso 2 sigue ofreciendo el campo de idiomas', !!cajaIdiomas,
       'no se pintó ningún [data-testid^="idiomas-"]: sin el campo, lo de abajo no mide nada')) return c
 
-    const casillasSinCatalogo = await cajaIdiomas.$$('input[type="checkbox"]')
-    c.afirmar('(B) sin catálogo NO se pinta ninguna casilla escrita a mano',
-      casillasSinCatalogo.length === 0,
-      `se pintaron ${casillasSinCatalogo.length} casilla(s) sin catálogo del servidor: ha vuelto una lista escrita a mano en el asistente`)
+    // Sin catálogo, `idiomasParaAnadir` sale vacío: el desplegable no debe ofrecer NINGUNA
+    // opción real (solo el placeholder). Si aparecieran opciones, sería la lista escrita a
+    // mano de `constants/languages.js` volviendo a hacer de catálogo.
+    const selectB = await cajaIdiomas.$('[data-testid^="idioma-select-"]')
+    const opcionesRealesB = selectB ? await selectB.$$('option:not([value=""])') : []
+    c.afirmar('(B) sin catálogo el desplegable NO ofrece ninguna opción escrita a mano',
+      opcionesRealesB.length === 0,
+      `se ofrecieron ${opcionesRealesB.length} opción(es) sin catálogo del servidor: ha vuelto una lista escrita a mano en el asistente`)
 
-    const avisoIdiomas = await page.$('[data-testid^="idiomas-no-disponible-"]')
+    // Y un idioma YA declarado (el «es» del tutor, que la hidratación vuelve a servir en
+    // esta entrada nueva — la retirada de la FASE A vivía solo en el estado del navegador,
+    // no en el fixture del doble) SIGUE viéndose con su etiqueta de respaldo, aunque el
+    // catálogo esté caído: ocultarlo mentiría sobre lo que hay guardado.
+    const filaEsSinCatalogo = await seccionPrimeraB.$('[data-testid="idioma-fila-es"]')
+    c.afirmar('(B) un idioma ya declarado se sigue viendo aunque el catálogo esté caído',
+      !!filaEsSinCatalogo,
+      'la fila de «es» no se pintó sin catálogo: un dato ya guardado desaparece de la vista')
+
+    const avisoIdiomas = await seccionPrimeraB.$('[data-testid^="idiomas-no-disponible-"]')
     const textoAvisoIdiomas = avisoIdiomas ? ((await avisoIdiomas.textContent()) || '').trim() : null
     c.afirmar('(B) la pantalla AVISA de que las opciones de idioma no se pudieron cargar',
       !!textoAvisoIdiomas && textoAvisoIdiomas.length > 10,
-      `el aviso leído fue ${JSON.stringify(textoAvisoIdiomas)}: con la caja vacía y sin aviso, la familia avanza y el dato se pierde sin que nadie diga nada`)
+      `el aviso leído fue ${JSON.stringify(textoAvisoIdiomas)}: con el desplegable vacío y sin aviso, la familia avanza y el dato se pierde sin que nadie diga nada`)
 
     return c
   } finally {
