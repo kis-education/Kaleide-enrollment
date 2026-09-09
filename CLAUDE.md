@@ -4467,6 +4467,88 @@ se entera de que algo cambió»*) · y el **renombrado**, que sale **«MEDICIÓN
 **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
 lo que cambia es cuánto se recalcula por detrás.
 
+### `①84` (2026-09-09) — los PAÍSES son DOS preguntas, no una lista con dos usos
+
+**Diego, orden literal de `①83`:** *«Mira todos los catálogos que están hardcodeados en el wizard y
+arréglalo de una puta vez. No quiero ver ni un solo dato hardcodeado!!»*
+
+**Lo medido ANTES de tocar nada.** `constants/countries.js` tenía **118** países —los que declaran
+prefijo telefónico— y servía a **CUATRO** cosas a la vez: nacionalidad · país del colegio anterior ·
+país de la dirección · **y** el desplegable de país del TELÉFONO, más el conjunto **CERRADO** que
+valida el número (DL-E40). El KMS ya servía la lista buena y el asistente **ya consumía las tres
+primeras** desde el 2026-09-08 — pero el teléfono seguía en la lista estática.
+
+⇒ **el defecto que quedaba no era «faltan países»: era que había DOS lectores del mismo dato.** El
+día que el colegio declare el prefijo de un país nuevo, la nacionalidad lo ve y el teléfono NO.
+
+**La salida no es un híbrido: son dos preguntas distintas sobre la MISMA lista.**
+
+| La pregunta | Cuántos | Quién la hace |
+|---|---|---|
+| ¿de qué país eres / dónde vives / dónde estudiaste? | la lista ENTERA (250) | nacionalidad · dirección · colegio anterior |
+| ¿de qué país es este teléfono? (⇒ qué prefijo se compone) | **solo las que declaran `dial`** (118) | el desplegable del teléfono **y** el conjunto cerrado |
+
+⛔ **La segunda NO es un recorte de la primera por comodidad: es su DEFINICIÓN.** Un país sin
+prefijo declarado no es una respuesta válida — el sistema no sabría qué número componer. **DL-E40
+no se toca ni se afloja**: el conjunto sigue cerrado y sigue validando; lo único que cambia es de
+dónde sale.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ EL KMS SIRVE UNA SOLA LISTA, con `dial` por fila** (`enr_catalogoDePaises_`,
+  `kis-app kms-server/enr/wizard-gateway.gs`), y es deliberado: dos catálogos podrían divergir. El
+  CONSUMIDOR decide cuál de las dos preguntas hace — `paisesConPrefijo_` / `prefijosDe_`
+  (`Step2Persons.jsx`), **los dos únicos sitios** que lo deciden. No se escribe un tercero.
+- **`utils/phone.js` NO cambió de contrato**: su tercer argumento (`dialCodes`) ya era inyectable
+  desde siempre. Lo que cambió es **quién llama**: `Step2Persons` le pasa el conjunto del catálogo
+  en vez de dejar el valor por defecto.
+- **MEDIDO el 2026-09-09 contra la tabla real** (`manual_diagIsoAlpha2ConDialVsAsistente`): **250**
+  países con ISO, **118 con prefijo**, y esos 118 casan **EXACTO —en los dos sentidos—** con los 118
+  de la lista estática ⇒ el conjunto que se acepta **no se estrecha ni se ensancha**. Por eso la
+  parada obligatoria del encargo (*«si el conjunto que llega no cubre los prefijos que hoy acepta,
+  PARAS»*) **no se disparó**.
+- **⛔ El `dial` se NORMALIZA a solo dígitos al cruzar la frontera** (`Step2Persons`, en el `.map()`
+  de `fetchLookups`). El conjunto cerrado compara contra `pn.countryCallingCode` de
+  libphonenumber, que viene **sin `+`**, y el candidato se compone como `'+' + dial + nacional`: un
+  `+` o un espacio guardado en `phone_dial_code` rompería la puerta para **TODOS** los números (o
+  compondría `++34`). Un solo sitio lo limpia.
+- **⚠️ `constants/countries.js` SIGUE VIVA, a propósito — 15 usos en 3 ficheros, medidos.** Es el
+  RESPALDO de cuando el catálogo no llega. Aquí un hueco **no es cosmético**: sin país no se
+  compone el número, y un conjunto cerrado vacío **desactiva la puerta de DL-E40 EN SILENCIO**
+  (`validatePhone` degrada a E.164 puro con el conjunto vacío, por diseño). Retirarlo cambia lo que
+  ve una familia ⇒ **se PROPONE** (`kis-app docs/kms/loop-backlog.md` `①83`, punto 3), no se barre.
+  Es el mismo criterio que el desplegable del tipo de documento («sin catálogo, la lista legada
+  completa»).
+
+**Red**: camino NUEVO `paises-desde-el-catalogo`, **tres fases** — (A) catálogo servido · (B)
+catálogo **vacío** · (C) catálogo servido y **ningún** prefijo declarado. ⚠️ **El doble sirve una
+lista DISTINTA de la estática, a propósito**: `ZZ`/`QQ` no declaran prefijo (la nacionalidad SÍ los
+ofrece, el teléfono NO) y `XK` sí lo declara y **no existe** en la lista estática — sin esa
+diferencia el recorrido pasaría **en vacío** aunque la pantalla siguiera pintando su lista escrita a
+mano. **Rojo demostrado TRES veces**, cada uno nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| una sola lista para las cuatro cosas (el defecto entero) | *«las nacionalidades ofrecidas fueron [… sin ZZ/QQ]: … una familia cuya nacionalidad no tenga prefijo declarado no la puede seleccionar»* + la etiqueta y `XK` |
+| el teléfono ofrece la lista ENTERA (el híbrido arriesgado) | *«el desplegable del teléfono ofreció ["AF","ES","XK","ZZ","QQ"]: un país sin prefijo no es una respuesta válida…»* |
+| quitar el respaldo de `paisesConPrefijo_` | *«se pintaron 0 opciones ([]…): sin respaldo aquí el desplegable se queda vacío y el conjunto cerrado de DL-E40 se desactiva en silencio»* |
+
+⚠️ **Y LA MEDICIÓN SE CORRIGIÓ A SÍ MISMA DOS VECES, que es lo que más vale de esta vuelta.**
+(1) La afirmación del teléfono guardado leía `ph.phone_number` y **salía ROJA siempre, con el
+arreglo puesto y sin él**: el número viaja en **`value`** —`transformPersonForSave` quita el alias
+de pantalla—, o sea que medía un campo que **nunca existe**. (2) La afirmación «(B) sin catálogo el
+teléfono cae a la lista estática» **no podía fallar**: en (B) la lista llega vacía y la salva el
+respaldo de `paisesEfectivos`, así que romper el de `paisesConPrefijo_` **no ponía nada rojo**. Por
+eso existe la **fase (C)**, que es la única que lo ejercita.
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js` ni el KMS**. Que el KMS sirva de verdad 250 países con sus 118 prefijos **no lo
+acredita esto** — se acredita midiendo contra la tabla y leyendo el contenido DESPLEGADO.
+
+**Publicación**: solo `frontend/` — **no toca `backend/Code.js` ni el KMS**, así que no necesita
+turno ni `clasp`: sale por CI al empujar a `main`. **Textos, manual y ayuda en pantalla: ninguno
+toca** — la familia ve la misma pantalla, con más países donde tiene sentido y los mismos donde no.
+
 ### `0º.tricies.quattuortricies` (2026-09-06) — el iPhone no se lleva la sesión por delante
 
 **Irse a otra app en iPhone aborta las peticiones en vuelo, y el asistente lo pintaba como un fallo
