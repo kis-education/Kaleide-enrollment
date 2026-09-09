@@ -820,6 +820,18 @@ function startServer() {
           setTimeout(() => responder({ status: 'ok', ts: new Date().toISOString() }), LATENCY)
           return
         }
+        // ── `①86` · UNA RESPUESTA LEGÍTIMA QUE ADEMÁS LLEVA `status` ───────────────────
+        // El reconocimiento de la comprobación de salud es ESTRECHO a propósito
+        // (exactamente dos claves, `status` y `ts`). Esto sirve para AFIRMARLO: una
+        // respuesta de verdad —con su `ok` y todo lo demás— que encima traiga un `status`
+        // de primer nivel tiene que seguir pasando. Ensanchar el criterio a «tiene
+        // `status`» se la tragaría, y la familia se quedaría fuera de su solicitud por
+        // una respuesta perfectamente buena.
+        if (scenario.statusEnRespuestaLegitima && payload && payload.action === 'hydrateSession') {
+          const legitima = dispatch(payload)
+          setTimeout(() => responder({ ...legitima, status: 'ACTIVE' }), LATENCY)
+          return
+        }
         const out = dispatch(payload)
         // Latencia simulada: sin ella no se puede distinguir un avance optimista
         // de uno que espera al servidor. En real no se inyecta: ya tarda de verdad.
@@ -9056,34 +9068,47 @@ async function caminoLaSaludNoEsUnFallo(page, base) {
     // fallo ya se silencia: lo único que había que arreglar es que dejara de contarse
     // como error. Aquí se afirma lo que NO debe pasar.
     calls = []
+    scenario.magicLinkMode = 'constant'
     scenario.saludEnVezDeRespuesta = { sendMagicLink: 1 }
-    await page.goto(`${base}/#/`, { waitUntil: 'domcontentloaded', timeout: 30000 })
-    await page.waitForSelector('input[type="email"]', { timeout: LATENCY * 3 + 20000 })
-    await page.fill('input[type="email"]', DATOS.emailKnown)
-    const consent = await page.$('input[type="checkbox"]')
-    if (consent) await consent.check().catch(() => {})
-    await page.click('button[type="submit"]')
-
-    // Se espera a que la pantalla genérica salga (el envío es «dispara y sigue»), y
-    // ADEMÁS se deja margen de sobra para que un segundo POST llegara a salir si el
-    // arreglo estuviera mal: sin esa espera, «no salió un segundo» sería trivial.
-    await page.waitForFunction(
-      () => /revisa tu correo|check your (e-?mail|inbox)|te hemos enviado|we(?:'| ha)ve sent/i.test(document.body.textContent || ''),
-      null, { timeout: LATENCY * 4 + 25000 },
-    ).catch(() => {})
-    await page.waitForTimeout(LATENCY * 2 + 3000)
+    // Se rellena la portada por el MISMO camino que los demás recorridos
+    // (`rellenarPortada`), que además deja respirar a las llamadas de fondo — así, si
+    // un segundo POST llegara a salir, saldría dentro de esa espera. Sin ella,
+    // «no salió un segundo» sería trivialmente cierto y no mediría nada.
+    const pantallaB = await rellenarPortada(page, base, DATOS.emailKnown)
+    await page.waitForTimeout(LATENCY * 2 + 2000)
 
     const envios = llamadas('sendMagicLink')
     c.afirmar('(7) `sendMagicLink` NO se repite: sale UNA sola petición de enlace',
       envios.length === 1,
       `salieron ${envios.length} peticiones de enlace: repetirla manda OTRO correo a la familia y ROTA el token que acaba de emitirse`)
+    c.afirmar('(8) y a la familia se le sigue dando la MISMA pantalla genérica de siempre',
+      pantallaB.sobreEnviado && !pantallaB.errorFatal,
+      `sobreEnviado=${pantallaB.sobreEnviado} errorFatal=${pantallaB.errorFatal}: el ack es constante por diseño (WIZ-ENUM) y no puede cambiar porque el transporte se pierda`)
 
-    const textoB = await page.evaluate(() => (document.body.textContent || '').replace(/\s+/g, ' ').trim())
-    c.afirmar('(8) y a la familia se le sigue dando la MISMA pantalla genérica, sin error',
-      !/Unknown server error/i.test(textoB),
-      `la portada decía: ${textoB.slice(0, 200)}`)
+    // ── C · EL CRITERIO ES ESTRECHO, Y ESO HAY QUE AFIRMARLO ────────────────────────────
+    // Una respuesta LEGÍTIMA (con su `ok` y su contenido) que además traiga un `status` de
+    // primer nivel debe pasar tal cual. Con el criterio ancho («tiene `status`») se la
+    // tragaría el carril de transporte y la familia se quedaría FUERA de su solicitud por
+    // una respuesta buena. Sin esta fase, ensanchar el criterio no lo notaría nadie.
+    calls = []
+    scenario.saludEnVezDeRespuesta = null
+    scenario.statusEnRespuestaLegitima = true
+    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const entroC = await page.waitForFunction(() => {
+      const pasos = document.querySelectorAll('.wizard-step')
+      return !!(pasos.length && [...pasos].some(p => p.classList.contains('active')))
+    }, null, { timeout: LATENCY * 6 + 40000 }).then(() => true).catch(() => false)
+    const hidratacionesC = llamadas('hydrateSession')
+    c.afirmar('(9) una respuesta LEGÍTIMA que además lleva `status` sigue pasando',
+      entroC,
+      `el asistente no entró en la solicitud con una respuesta buena; se registraron ${hidratacionesC.length} peticiones de hydrateSession. El criterio se ha ENSANCHADO y se está tragando respuestas de verdad`)
+    c.afirmar('(10) y NO se la trata como transporte: no se repite la lectura',
+      hidratacionesC.length === 1,
+      `se registraron ${hidratacionesC.length} peticiones de hydrateSession (se esperaba 1): una respuesta buena se está reintentando como si fuera un fallo`)
   } finally {
     scenario.saludEnVezDeRespuesta = null
+    scenario.statusEnRespuestaLegitima = false
     scenario.stage = 'hasta_preguntas'
   }
 

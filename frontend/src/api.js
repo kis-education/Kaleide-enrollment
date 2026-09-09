@@ -841,8 +841,14 @@ async function _gasCallUnaVez(action, payload = {}) {
   // medidos, y el propio arnés espera hasta 240 s a que cargue el cuestionario. Es una red
   // contra el caso «no vuelve»: pasado el tope se ABORTA y el error entra por el camino que
   // ya existe (la cola marca `error` y ofrece «Reintentar»), en vez de quedarse colgado.
-  // Reintentar es seguro: las escrituras del KMS usan claves deterministas, así que repetir
-  // cae en la misma fila.
+  // ⚠️ AQUÍ SE AFIRMABA que «reintentar es seguro: las escrituras del KMS usan claves
+  // deterministas, así que repetir cae en la misma fila». MEDIDO el 2026-09-09 (`①86`):
+  // **esa razón no se sostiene como garantía** — `sys_enqueueJob_` solo colapsa por
+  // `dedupe_key` mientras el trabajo está en `Queued`/`Processing`; uno ya TERMINADO no
+  // dedupea. Lo que sigue siendo cierto es lo que importa en ESTE punto: el reintento de
+  // aquí lo pulsa UNA PERSONA sobre un guardado que se le dice fallido, no lo dispara el
+  // cliente a ciegas. Por eso NINGUNA escritura entra en la lista de repetición
+  // automática (ver `LECTURAS_REINTENTABLES_AL_VOLVER`, arriba).
   const TOPE_MS = 240000;
   const abortador = (typeof AbortController !== 'undefined') ? new AbortController() : null;
   const corte = abortador ? setTimeout(() => abortador.abort(), TOPE_MS) : null;
