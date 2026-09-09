@@ -4,6 +4,33 @@ import CabeceraDeSujeto from '../CabeceraDeSujeto';
 import * as log from '../../logger';
 
 /**
+ * `0º.tricies.septies` (2026-09-09) — a qué `person_type_id` repite esta pregunta.
+ *
+ * Lee el campo YA RESUELTO por el KMS (`qb_audienceRepeatOverPersonType_`,
+ * `kis-app kms-server/qb/audience-categories.gs`) — el catálogo Capa 2 declarado ahí es
+ * la fuente de verdad, no una comparación escrita a mano en este fichero. Diego,
+ * 2026-09-09: *«No se hardcodean valores en el código. Jamás. Los catálogos son siempre
+ * de clase 2.»*
+ *
+ * **Con respaldo declarado, no ciego**: si la hidratación todavía no proyecta
+ * `repeat_over_person_type_id` (ventana de publicación entre repos, o una hidratación
+ * vieja en caché), se cae a comparar el código crudo con los DOS valores que ya se
+ * guardan hoy (`participant`/`client`) — el comportamiento byte-idéntico de antes de
+ * este cambio. Un tercer código futuro solo funciona sin tocar este fichero cuando el
+ * KMS manda el campo resuelto.
+ *
+ * @param {object} q la pregunta enriquecida
+ * @returns {?string} 'applicant' | 'guardian' | null
+ */
+function repeatOverPersonType(q) {
+  if (q && q.repeat_over_person_type_id != null) return q.repeat_over_person_type_id || null;
+  const aud = q && q.audience_category_id;
+  if (aud === 'participant') return 'applicant';
+  if (aud === 'client') return 'guardian';
+  return null;
+}
+
+/**
  * QbSetRenderer — shared question-set renderer (DL-Q05 §5 Capa D qb-render).
  *
  * Single React component consumed by:
@@ -72,8 +99,7 @@ export default function QbSetRenderer({
     const generales = [];
     sets.forEach(set => (set.items || []).forEach(item => {
       const q = item.question;
-      const aud = q && q.audience_category_id;
-      if (q && q.question_id && aud !== 'participant' && aud !== 'client') generales.push(q.question_id);
+      if (q && q.question_id && !repeatOverPersonType(q)) generales.push(q.question_id);
     }));
     let out = responses;
     generales.forEach(qid => {
@@ -115,13 +141,14 @@ export default function QbSetRenderer({
         if (!q) { decisions.push({ set8: log.sid(set.set_id), q: 'NO_item.question' }); return; }
         const q8 = log.sid(q.question_id);
         const aud = q.audience_category_id;
-        if (aud === 'participant') {
+        const repeatOver = repeatOverPersonType(q);
+        if (repeatOver === 'applicant') {
           if (!applicants.length) { decisions.push({ q8, aud, shown: false, reason: 'no_applicants' }); return; }
           applicants.forEach(a => {
             const pk = a.person_id || a._uid;
             decisions.push({ q8, aud, person8: log.sid(pk), shown: meetsConditions(q, a, respuestasEfectivas, pk, condCtx) });
           });
-        } else if (aud === 'client') {
+        } else if (repeatOver === 'guardian') {
           if (!guardians.length) { decisions.push({ q8, aud, shown: false, reason: 'no_guardians' }); return; }
           guardians.forEach(g => {
             const pk = g.person_id || g._uid;
@@ -253,7 +280,7 @@ function piezasDelConjunto_(set, { applicants, guardians, respuestasEfectivas, g
 
     // Preguntas CON AUDIENCIA declarada: un área por sujeto, con su nombre UNA vez
     // y todas sus preguntas debajo (0º.tricies.decies).
-    const esAlumno = bloque.audiencia === 'participant';
+    const esAlumno = bloque.repeatOver === 'applicant';
     const sujetos  = esAlumno ? applicants : guardians;
     sujetos.forEach((persona, pi) => {
       const personKey = persona.person_id || persona._uid;
@@ -291,28 +318,30 @@ function piezasDelConjunto_(set, { applicants, guardians, respuestasEfectivas, g
 // el colegio las declaró; empujar los grupos al final movería preguntas que hoy salen arriba.
 // Con un conjunto homogéneo —el caso normal— el resultado es idéntico a cualquier otra regla.
 //
-// ⛔ SOLO agrupa lo que tiene AUDIENCIA declarada (`participant`/`client`). Una pregunta de
-// la solicitud no tiene sujeto: se queda como bloque suelto y se pinta EXACTAMENTE como hoy.
+// ⛔ SOLO agrupa lo que tiene AUDIENCIA declarada (repite por `applicant`/`guardian`, hoy
+// `participant`/`client`). Una pregunta de la solicitud no tiene sujeto: se queda como
+// bloque suelto y se pinta EXACTAMENTE como hoy.
 //
-// ⛔ NO decide de quién es una pregunta: eso lo declara el catálogo (`audience_category_id`) y
-// llega ya resuelto. Aquí solo se AGRUPA lo que llega, conservando el orden de `set.items`
-// (que es el `sequence`/`display_order` del conjunto) dentro de cada sujeto.
+// ⛔ NO decide de quién es una pregunta: eso lo declara el catálogo (`audience_category_id`,
+// resuelto por el KMS a `repeat_over_person_type_id` — `0º.tricies.septies`) y llega ya
+// resuelto. Aquí solo se AGRUPA lo que llega, conservando el orden de `set.items` (que es
+// el `sequence`/`display_order` del conjunto) dentro de cada sujeto.
 function agruparPorSujeto_(set) {
   const bloques = [];
-  const abierto = {};   // audiencia → el bloque ya abierto, para que TODAS caigan en él
+  const abierto = {};   // repeatOver → el bloque ya abierto, para que TODAS caigan en él
   (set.items || []).forEach(item => {
     const q = item && item.question;
     if (!q) return;
-    const aud = q.audience_category_id;
-    if (aud !== 'participant' && aud !== 'client') {
+    const repeatOver = repeatOverPersonType(q);
+    if (!repeatOver) {
       bloques.push({ tipo: 'general', pregunta: q });
       return;
     }
-    if (!abierto[aud]) {
-      abierto[aud] = { tipo: 'audiencia', audiencia: aud, preguntas: [] };
-      bloques.push(abierto[aud]);
+    if (!abierto[repeatOver]) {
+      abierto[repeatOver] = { tipo: 'audiencia', repeatOver, preguntas: [] };
+      bloques.push(abierto[repeatOver]);
     }
-    abierto[aud].preguntas.push(q);
+    abierto[repeatOver].preguntas.push(q);
   });
   return bloques;
 }

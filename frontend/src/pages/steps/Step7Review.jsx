@@ -12,7 +12,7 @@ import CalendarioDePagos from '../../shared/CalendarioDePagos';
 import SelectorDeFormaDePago from '../../shared/SelectorDeFormaDePago';
 import StepUpReverify from '../../components/StepUpReverify';
 import { openDocument } from '../../utils/documentProxy';
-import { translateRelationLabel, translateGender, translateIdType } from '../../utils/enumLabels';
+import { translateRelationLabel, translateGender, translateIdType, translatePhoneType, translateEmailType } from '../../utils/enumLabels';
 import { fechaLegible } from '../../utils/fechas'; // 0º.vicies.sexies: EL único formateador
 import { CONSENT_TEXTS } from '../../consentTexts';
 import * as log from '../../logger';
@@ -574,8 +574,12 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   );
 
   // Lookup tables — needed to resolve IDs to labels
+  // `①83` TRAMO A — typesOfIDs/phoneNrTypes/emailTypes: los MISMOS catálogos que Step2Persons
+  // consume (mismo fetchLookups, sin viaje nuevo), para resolver tipo de documento/teléfono/
+  // correo con el catálogo del KMS ANTES de caer al traductor legado.
   const [lookups, setLookups] = useState({
     relationTypes: [], allergies: [], dietary: [], medical: [],
+    typesOfIDs: [], phoneNrTypes: [], emailTypes: [],
   });
   // Question sets — to resolve qid → question text
   const [questionSets, setQuestionSets] = useState([]);
@@ -588,6 +592,9 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         allergies:     data.allergies     || [],
         dietary:       data.dietary       || [],
         medical:       data.medical       || [],
+        typesOfIDs:    data.typesOfIDs    || [],
+        phoneNrTypes:  data.phoneNrTypes  || [],
+        emailTypes:    data.emailTypes    || [],
       }))
       .catch(() => {});
     // WIZARD-UX: cached question catalog shared with Step5 (keyed by language).
@@ -602,6 +609,16 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   const resolveLabel = (list, id) => {
     const found = list.find(x => x.id === id);
     return found ? (found.label || found.id) : (id || '');
+  };
+
+  // `①83` TRAMO A — resuelve documento/teléfono/correo con el catálogo del KMS primero
+  // (por `code`, forma híbrida `{code, designation}`), y solo si el valor no casa con
+  // ningún `code` del catálogo cae al traductor LEGADO. Mismo criterio que Step2Persons.
+  const resolverTipoConCatalogo_ = (valor, catalogo, legacyTranslate) => {
+    if (!valor) return '';
+    const enCatalogo = (catalogo || []).find(c => c.code === valor);
+    if (enCatalogo) return enCatalogo.designation;
+    return legacyTranslate(valor, t);
   };
 
   // ─── Submit logic ──────────────────────────────────────────────────────────
@@ -759,7 +776,7 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         <DataRow label={t('field.place_of_birth')}value={g.place_of_birth} />
         <DataRow label={t('field.nationality')}   value={g.nationalities?.[0]?.country_id} />
         {g.ids?.[0] && (
-          <DataRow label={t('field.id_number')} value={`${translateIdType(g.ids[0].id_type_id, t)}: ${g.ids[0].id_number}`} />
+          <DataRow label={t('field.id_number')} value={`${resolverTipoConCatalogo_(g.ids[0].id_type_id, lookups.typesOfIDs, translateIdType)}: ${g.ids[0].id_number}`} />
         )}
         <DataRow label={t('field.address_line_1')} value={g.address?.address_line_1} />
         <DataRow label={t('field.address_line_2')} value={g.address?.address_line_2} />
@@ -771,8 +788,8 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         {(g.emails || []).map((e, ei) => {
           const addr = e.email_address || e.value || '';
           if (!addr) return null;
-          const typeKey = `email_type.${e.email_type_id || e.type}`;
-          const typeLabel = e.email_type_id && i18n.exists(typeKey) ? t(typeKey) : e.email_type_id || '';
+          const emailTypeValue = e.email_type_id || e.type;
+          const typeLabel = resolverTipoConCatalogo_(emailTypeValue, lookups.emailTypes, translateEmailType);
           return (
             <div key={ei} style={{ display: 'flex', gap: 12, padding: '5px 0', fontSize: '0.88rem', borderBottom: '1px solid var(--bg)', alignItems: 'center' }}>
               <span style={{ color: 'var(--muted)', minWidth: 170, flexShrink: 0 }}>{t('contact.email')}</span>
@@ -789,8 +806,8 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
         {(g.phones || []).map((ph, pi) => {
           const num = ph.phone_number || ph.value || '';
           if (!num) return null;
-          const typeKey = `phone_type.${ph.phone_type_id || ph.phone_nr_type_id}`;
-          const typeLabel = (ph.phone_type_id || ph.phone_nr_type_id) && i18n.exists(typeKey) ? t(typeKey) : (ph.phone_type_id || ph.phone_nr_type_id || '');
+          const phoneTypeValue = ph.phone_type_id || ph.phone_nr_type_id;
+          const typeLabel = resolverTipoConCatalogo_(phoneTypeValue, lookups.phoneNrTypes, translatePhoneType);
           return (
             <div key={pi} style={{ display: 'flex', gap: 12, padding: '5px 0', fontSize: '0.88rem', borderBottom: '1px solid var(--bg)', alignItems: 'center' }}>
               <span style={{ color: 'var(--muted)', minWidth: 170, flexShrink: 0 }}>{t('contact.phone')}</span>

@@ -4,7 +4,7 @@ import { useWizard } from '../../context/WizardContext';
 import * as log from '../../logger';
 import AddressForm, { emptyAddress } from '../../components/AddressForm';
 import { COUNTRIES } from '../../constants/countries';
-import { LANGUAGES, languageLabel } from '../../constants/languages';
+import { languageLabel } from '../../constants/languages';
 import LockedBanner from '../../components/LockedBanner';
 import StepNav from '../../components/StepNav';
 import { generateUuid } from '../../utils/uuid';
@@ -13,10 +13,51 @@ import { parseBool, preparePersonForUI, preparePersonsForUI, deriveSameAddressFl
 import { confirmarYQuitar } from '../../lib/quitar';
 import StepUpReverify from '../../components/StepUpReverify';
 import { identidadDelEnlace, avisarATutor, fetchLookups } from '../../api';
-import { translateGender } from '../../utils/enumLabels';
+import { translateGender, translateIdType, translatePhoneType, translateEmailType } from '../../utils/enumLabels';
 
 const EMAIL_TYPES = ['personal', 'work', 'emergency'];
 const PHONE_TYPES = ['mobile', 'home', 'work'];
+const ID_TYPES_LEGACY = ['passport', 'dni', 'nie', 'other'];
+
+/**
+ * `①83` TRAMO A — el desplegable HÍBRIDO de documento/teléfono/correo.
+ *
+ * Con catálogo del KMS (`typesOfIDs`/`phoneNrTypes`/`emailTypes`, `code` = Row ID de
+ * AppSheet — ninguna de las tres tablas declara un código legible, medido y escrito
+ * en `enr_catalogoDeFilas_`): se ofrecen sus filas, y SI el valor YA GUARDADO en esta
+ * persona/teléfono/correo es uno de los CUATRO literales legados en inglés
+ * (`passport`/`dni`/`nie`/`other`, `mobile`/`home`/`work`, `personal`/`work`/
+ * `emergency` — lo que `renewal-preload.gs` sigue escribiendo mientras este tramo no
+ * publique el lado del asistente) y NO casa con ningún `code` del catálogo, se añade
+ * UNA opción sintética que lo representa con su traducción de siempre. Así una
+ * solicitud EN CURSO o precargada por renovación no se queda con el desplegable
+ * vacío al reabrirse (`EN-CURSO.md`, bloque `RESERVA LIBERADA — ①83 TRAMO A, lado del
+ * asistente`, 2026-09-08 — el hallazgo que paró este tramo la primera vez).
+ *
+ * Sin catálogo (aún no llegó, o el KMS está caído): cae a la lista legada de
+ * siempre — NUNCA un desplegable vacío, que sería peor que el comportamiento de hoy.
+ *
+ * Las selecciones NUEVAS escriben lo que el desplegable ofrezca: el `code` del
+ * catálogo (Row ID) cuando lo hay, o el literal legado cuando no.
+ *
+ * @param {Array<{code:string, designation:string}>} catalogo
+ * @param {string} valorActual  el valor YA guardado en este campo, si lo hay
+ * @param {string[]} legacyList los cuatro/tres literales legados, para el respaldo
+ * @param {Function} legacyTranslate  `translateIdType`/`translatePhoneType`/`translateEmailType`
+ * @param {Function} t
+ * @returns {Array<{value:string, label:string}>}
+ */
+function opcionesHibridas_(catalogo, valorActual, legacyList, legacyTranslate, t) {
+  if (!catalogo || !catalogo.length) {
+    return legacyList.map(v => ({ value: v, label: legacyTranslate(v, t) }));
+  }
+  const opciones = catalogo.map(c => ({ value: c.code, label: c.designation }));
+  const casaEnCatalogo = valorActual && catalogo.some(c => c.code === valorActual);
+  if (valorActual && !casaEnCatalogo) {
+    opciones.push({ value: valorActual, label: legacyTranslate(valorActual, t) });
+  }
+  return opciones;
+}
 
 // CLI 8 (DL-E39 ENMIENDA 3): versión del texto de atestación de tutor único. Se
 // registra junto al acto (attestant + timestamp) para trazabilidad legal; bumpea si
@@ -180,7 +221,7 @@ function claveMotivoTelefono_(res) {
   return 'step2.phone.invalid_for';
 }
 
-function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
+function PhoneRow({ phone, idx, countryISO, onChange, onRemove, catalogoTel = [] }) {
   const { t } = useTranslation();
   const [touched, setTouched] = useState(false);
   // IMPL-G: separar el DIAL (desplegable de país) del NÚMERO NACIONAL (input). El valor
@@ -253,7 +294,8 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
           <select className="form-select form-select-sm" value={phone.phone_type_id || ''}
             onChange={e => update({ phone_type_id: e.target.value })}>
             <option value="">{t('placeholder.select')}</option>
-            {PHONE_TYPES.map(pt => <option key={pt} value={pt}>{t(`phone_type.${pt}`)}</option>)}
+            {opcionesHibridas_(catalogoTel, phone.phone_type_id, PHONE_TYPES, translatePhoneType, t)
+              .map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
         {/* D: selector de país/prefijo en la misma fila — da el camino para corregir un
@@ -308,7 +350,7 @@ function PhoneRow({ phone, idx, countryISO, onChange, onRemove }) {
   );
 }
 
-function PreviousSchoolRow({ school, onChange, onRemove, birthYear }) {
+function PreviousSchoolRow({ school, onChange, onRemove, birthYear, countries = COUNTRIES }) {
   const { t } = useTranslation();
   const u = (f, v) => onChange({ ...school, [f]: v });
   const currentYear = new Date().getFullYear();
@@ -334,7 +376,7 @@ function PreviousSchoolRow({ school, onChange, onRemove, birthYear }) {
           <select className="form-select form-select-sm" value={school.country_id}
             onChange={e => u('country_id', e.target.value)}>
             <option value="">{t('field.country')}</option>
-            {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+            {countries.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
         </div>
         <div className="col-md-2">
@@ -500,7 +542,7 @@ function AbbreviatedGuardianRow({ person, onChange, onRemove, avisar, invalid })
   );
 }
 
-function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar, valoresDeSexo = [], sexoNoDisponible = false }) {
+function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId, primaryEmail, invalidFields = {}, onFieldEdit, pedirQuitar, avisar, valoresDeSexo = [], sexoNoDisponible = false, catalogoDeIdiomas = [], idiomasNoDisponible = false, catalogoDoc = [], catalogoTel = [], catalogoCorreo = [], catalogoPaises = COUNTRIES }) {
   const { t } = useTranslation();
   // UX-2: resaltado por-campo. `inv(field)` consulta si está marcado inválido; editar un
   // campo lo limpia (vía onFieldEdit, subido al estado del padre).
@@ -551,34 +593,40 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
   // que viaja al servidor: aquí no hay campos de pantalla que luego haya que limpiar
   // (a diferencia de `nationality`/`id_type_id`, que son aplanados de un array de uno).
   //
-  // ⛔ LO YA DECLARADO NO SE DESMARCA, y no es capricho de pantalla: los satélites de
-  // persona del KMS son APPEND-ONLY —`enr_persistPersons_` escribe con clave por
-  // identidad (persona+idioma) y su propio comentario dice «viva ⇒ no se toca
-  // (append-only)»—, y `enrPersonLanguages` NO es una de las clases que la familia
-  // puede quitar (`enr/retirada.gs` → PERSONA · CORREO · TELEFONO · VINCULO ·
-  // DOCUMENTO; ahí solo aparece como tabla que se ARRASTRA al quitar la persona
-  // entera). Dejar desmarcar un idioma ya guardado sería el defecto exacto que
-  // `lib/quitar.js` existe para cerrar: quitarlo de la pantalla y que vuelva al
-  // recargar. Se enseña marcado y bloqueado — la misma honestidad que el paso 6 con
-  // el tipo de un documento ya subido (`0º.sexdecies`).
-  const yaDeclarado = (code) =>
-    (person.languages || []).some(l => l && l.language_id === code && l.record_id);
+  // ①82 — un idioma YA GUARDADO (`record_id` presente) SÍ SE PUEDE desmarcar, con el
+  // mismo camino que un correo o un teléfono: se pide confirmación y se avisa al
+  // servidor (`clase: 'IDIOMA'`, `id: record_id`) por `pedirQuitar` — el KMS ya
+  // reconoce esa clase en `enr/retirada.gs` (`kms-server @1544`). Diego, 2026-09-06:
+  // «¿Cómo que no se puede? Siempre se debe poder editar el idioma.» Un idioma marcado
+  // en esta misma sesión, sin `record_id` todavía, se desmarca directo — nunca se
+  // guardó, no hay nada que avisarle al servidor (mismo criterio que `emails`/`phones`).
   const hablaIdioma = (code) =>
     (person.languages || []).some(l => l && l.language_id === code);
   const toggleLanguage = (code) => {
-    if (yaDeclarado(code)) return;                         // append-only: no se desmarca
     const actuales = person.languages || [];
+    const item = actuales.find(l => l && l.language_id === code);
+    if (item && item.record_id) {
+      pedirQuitar({
+        clase: 'IDIOMA',
+        id: item.record_id,
+        pregunta: t('quitar.confirmar_idioma'),
+        quitarDeLaPantalla: () => u('languages', actuales.filter(l => !(l && l.language_id === code))),
+        volverAPonerlo: () => u('languages', actuales),
+      });
+      return;
+    }
     const next = hablaIdioma(code)
       ? actuales.filter(l => !(l && l.language_id === code))
       : [...actuales, { language_id: code }];
     u('languages', next);
   };
-  // Los idiomas que la familia ya declaró y que NO están en el catálogo curado (dato
-  // heredado, u otro camino que escribió otro código): se pintan igual, con su código
-  // crudo. Esconder un idioma ya declarado sería mentir sobre lo que hay guardado.
+  // Los idiomas que la familia ya declaró y que NO están en el catálogo que sirve HOY el
+  // servidor (dato heredado, u otro camino que escribió otro código, o un catálogo que
+  // todavía no llegó): se pintan igual, con `languageLabel()` como respaldo de etiqueta.
+  // Esconder un idioma ya declarado sería mentir sobre lo que hay guardado.
   const idiomasFueraDelCatalogo = (person.languages || [])
     .map(l => (l && l.language_id) || '')
-    .filter(c => c && !LANGUAGES.some(l => l.value === c));
+    .filter(c => c && !catalogoDeIdiomas.some(o => o.code === c));
 
   const updateSchool = (i, val) => {
     const ps = [...(person.previous_schools || [])];
@@ -665,7 +713,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           <label className="form-label">{t('field.nationality')}</label>
           <select className="form-select" value={person.nationality} onChange={e => u('nationality', e.target.value)}>
             <option value="">{t('placeholder.select')}</option>
-            {COUNTRIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+            {catalogoPaises.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
         </div>
         <div className="col-md-3">
@@ -674,12 +722,11 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
         </div>
         <div className="col-md-4">
           <label className="form-label">{t('field.id_type')}</label>
-          <select className="form-select" value={person.id_type_id} onChange={e => u('id_type_id', e.target.value)}>
+          <select className="form-select" data-testid={`id-type-${_pk}`}
+            value={person.id_type_id} onChange={e => u('id_type_id', e.target.value)}>
             <option value="">{t('placeholder.select')}</option>
-            <option value="passport">{t('id.passport')}</option>
-            <option value="dni">{t('id.dni')}</option>
-            <option value="nie">{t('id.nie')}</option>
-            <option value="other">{t('id.other')}</option>
+            {opcionesHibridas_(catalogoDoc, person.id_type_id, ID_TYPES_LEGACY, translateIdType, t)
+              .map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
         <div className="col-md-4">
@@ -691,23 +738,25 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
             recoger el idioma o idiomas hablados por la familia como dato opcional.»
             NO es el «idioma preferente» del centro: aquí se pregunta QUÉ habla esta
             persona, admite varios, y no está acotado a los idiomas en los que el KMS
-            rinde (una familia habla francés aunque el sistema no hable francés). */}
+            rinde (una familia habla francés aunque el sistema no hable francés).
+            ①82 — un idioma YA guardado se puede desmarcar igual que los demás; ver
+            `toggleLanguage` arriba para el camino de retirada.
+            `①83` fila IDIOMAS — las opciones salen del CATÁLOGO que manda el servidor
+            (`catalogoDeIdiomas`), mismo molde que el sexo unas líneas arriba. */}
         <div className="col-12">
           <label className="form-label">{t('field.languages')}</label>
           <div className="d-flex flex-wrap gap-2" data-testid={`idiomas-${_pk}`}>
-            {LANGUAGES.map(l => {
-              const marcado  = hablaIdioma(l.value);
-              const bloqueado = yaDeclarado(l.value);
+            {catalogoDeIdiomas.map(o => {
+              const marcado = hablaIdioma(o.code);
               return (
-                <div className="form-check form-check-inline me-0" key={l.value}>
+                <div className="form-check form-check-inline me-0" key={o.code}>
                   <input type="checkbox" className="form-check-input"
-                    id={`lang_${_pk}_${l.value}`}
-                    data-testid={`idioma-${l.value}`}
+                    id={`lang_${_pk}_${o.code}`}
+                    data-testid={`idioma-${o.code}`}
                     checked={marcado}
-                    disabled={bloqueado}
-                    onChange={() => toggleLanguage(l.value)} />
-                  <label className="form-check-label small" htmlFor={`lang_${_pk}_${l.value}`}>
-                    {l.label}
+                    onChange={() => toggleLanguage(o.code)} />
+                  <label className="form-check-label small" htmlFor={`lang_${_pk}_${o.code}`}>
+                    {o.designation}
                   </label>
                 </div>
               );
@@ -716,6 +765,14 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           {idiomasFueraDelCatalogo.length > 0 && (
             <div className="form-text">
               {t('field.languages_other', { list: idiomasFueraDelCatalogo.map(languageLabel).join(', ') })}
+            </div>
+          )}
+          {/* El campo es OPCIONAL, así que un desplegable vacío NO bloquearía el paso —
+              y ése es justo el peligro: la familia avanza y el dato se pierde sin que
+              nadie diga nada. Falla NOMBRANDO, mismo criterio que `field.gender_unavailable`. */}
+          {idiomasNoDisponible && (
+            <div className="form-text text-danger" data-testid={`idiomas-no-disponible-${_pk}`}>
+              {t('field.languages_unavailable')}
             </div>
           )}
           <div className="form-text">{t('field.languages_help')}</div>
@@ -750,7 +807,8 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
                 <select className="form-select form-select-sm" value={em.email_type_id || ''}
                   onChange={e => updateEmail(i, { ...em, email_type_id: e.target.value })}>
                   <option value="">{t('placeholder.select')}</option>
-                  {EMAIL_TYPES.map(et => <option key={et} value={et}>{t(`email_type.${et}`)}</option>)}
+                  {opcionesHibridas_(catalogoCorreo, em.email_type_id, EMAIL_TYPES, translateEmailType, t)
+                    .map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
               <div className="col">
@@ -795,6 +853,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
             phone={ph}
             idx={`${idx}_${i}`}
             countryISO={person.address?.country_id || ''}
+            catalogoTel={catalogoTel}
             onChange={val => updatePhone(i, val)}
             onRemove={() => {
               const antes = [...person.phones];
@@ -834,6 +893,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
           <AddressForm
             address={person.address || emptyAddress()}
             onChange={addr => u('address', addr)}
+            countries={catalogoPaises}
           />
         )}
       </div>
@@ -851,6 +911,7 @@ function PersonSection({ person, idx, isFirst, onChange, onRemove, firstPersonId
                 {(person.previous_schools || []).map((s, i) => (
                   <PreviousSchoolRow key={s._uid || i} school={s}
                     birthYear={birthYear}
+                    countries={catalogoPaises}
                     onChange={val => updateSchool(i, val)}
                     onRemove={() => removeSchool(i)} />
                 ))}
@@ -1051,6 +1112,51 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   // se DICE en pantalla al lado del campo.
   const [valoresDeSexo, setValoresDeSexo] = useState([]);
   const [sexoNoDisponible, setSexoNoDisponible] = useState(false);
+  // `①83` fila IDIOMAS — LOS IDIOMAS QUE PUEDE DECLARAR CADA PERSONA.
+  //
+  // Mismo molde que `valoresDeSexo`, dos filas arriba, y la MISMA llamada a
+  // `fetchLookups`: el KMS ya sirve el catálogo (`languages`, `enr_idiomasDelCatalogo_`)
+  // en la misma lista que sexo/alergias/tipos de vínculo — no se abre una petición nueva.
+  //
+  // ⛔ `constants/languages.js` (`LANGUAGES`) deja de ser la fuente de las opciones y pasa
+  // a ser SOLO el diccionario de respaldo para pintar la etiqueta de un código que la
+  // familia ya declaró y que hoy no está en el catálogo del servidor (heredado, u otro
+  // camino que escribió otro código) — `idiomasFueraDelCatalogo`, más abajo, sigue
+  // necesitando ese respaldo para no ocultar un dato ya guardado.
+  //
+  // ⚠️ Igual que el sexo: sin catálogo el campo NO puede quedarse mudo (es OPCIONAL, nada
+  // en `handleNext` lo exige), así que un fallo se DICE en vez de dejar un control vacío
+  // que la familia no note.
+  const [catalogoDeIdiomas, setCatalogoDeIdiomas] = useState([]);
+  const [idiomasNoDisponible, setIdiomasNoDisponible] = useState(false);
+  // `①83` TRAMO A — los tres catálogos del desplegable HÍBRIDO (documento/teléfono/
+  // correo), servidos por el KMS (`typesOfIDs`/`phoneNrTypes`/`emailTypes`) en la
+  // MISMA llamada que ya trae `genderValues`: NO se abre un segundo viaje al KMS.
+  // Lista vacía = catálogo ilegible, sin declarar, o un KMS que aún no los sirve —
+  // `opcionesHibridas_` cae entonces a la lista legada de siempre, nunca a un
+  // desplegable vacío (esos tres campos, a diferencia del sexo, YA tenían opciones
+  // antes de que existiera el catálogo).
+  const [catalogoDoc, setCatalogoDoc] = useState([]);
+  const [catalogoTel, setCatalogoTel] = useState([]);
+  const [catalogoCorreo, setCatalogoCorreo] = useState([]);
+  // `①83` fila 1 (países) — a diferencia de los tres catálogos de arriba, `countries` SÍ
+  // declara un código legible y ESTABLE: `iso_alpha2` (medido `manual_diagIsoAlpha2DePaises`,
+  // 2026-09-08 — 250 de 252 filas vivas lo tienen, sin duplicados) y coincide EXACTO con los
+  // 118 valores de `constants/countries.js` (`manual_diagIsoAlpha2ConDialVsAsistente`, mismo
+  // día). Por eso NO hace falta el patrón híbrido de TRAMO A (opción sintética por
+  // divergencia de identificador): el valor persistido (ISO alpha-2) es el MISMO en los dos
+  // catálogos, así que ampliar de 118 a ~250 países no puede dejar huérfano ningún valor ya
+  // guardado. Este catálogo alimenta SOLO nacionalidad, país del colegio anterior y la
+  // dirección (`AddressForm`) — el selector de país del TELÉFONO se queda en `COUNTRIES` a
+  // propósito esta vuelta (ver `PhoneRow`, más abajo): la parte con `phone_dial_code` del
+  // catálogo del servidor ya se midió IDÉNTICA a `COUNTRIES` (118/118), así que ampliarlo no
+  // sumaría ningún país y sí acoplaría la puerta de validación del teléfono a una lectura de
+  // red — coste sin beneficio medido, en la pieza más sensible de esta pantalla.
+  //
+  // Sin catálogo (aún no llegó, o el KMS todavía sirve el paquete de ayer): `paisesEfectivos`
+  // cae a la lista estática de siempre — NUNCA un desplegable vacío.
+  const [catalogoPaises, setCatalogoPaises] = useState([]);
+  const paisesEfectivos = catalogoPaises.length ? catalogoPaises : COUNTRIES;
   useEffect(() => {
     fetchLookups(i18n.language)
       .then(data => {
@@ -1063,10 +1169,36 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
         // servidor ya dice su motivo (`genderValuesReason`) en el registro; a la familia se
         // le dice, en llano, que las opciones no se pudieron cargar y que puede seguir.
         setSexoNoDisponible(vs.length === 0);
+        const ls = ((data && data.languages) || []).filter(l => l && l.code);
+        log.info('Step2: idiomas del catálogo', {
+          count: ls.length, motivo: (data && data.languagesReason) || null,
+        });
+        setCatalogoDeIdiomas(ls);
+        setIdiomasNoDisponible(ls.length === 0);
+        const doc = ((data && data.typesOfIDs) || []).filter(v => v && v.code);
+        const tel = ((data && data.phoneNrTypes) || []).filter(v => v && v.code);
+        const correo = ((data && data.emailTypes) || []).filter(v => v && v.code);
+        log.info('Step2: catálogos de documento/teléfono/correo', {
+          doc: doc.length, tel: tel.length, correo: correo.length,
+        });
+        setCatalogoDoc(doc);
+        setCatalogoTel(tel);
+        setCatalogoCorreo(correo);
+        // `①83` fila 1 — el mapeo {code,designation} → {value,label} es el MISMO que ya
+        // usan nacionalidad/colegio anterior/dirección con `constants/countries.js`, así
+        // que el resto de la pantalla no tiene que distinguir de dónde salió la lista.
+        const paises = ((data && data.countries) || [])
+          .filter(v => v && v.code && v.designation)
+          .map(c => ({ value: c.code, label: c.designation, dial: c.dial || null }));
+        log.info('Step2: catálogo de países', {
+          count: paises.length, motivo: (data && data.countriesReason) || null,
+        });
+        setCatalogoPaises(paises);
       })
       .catch(err => {
         log.error('Step2: fetchLookups failed', { message: err.message });
         setSexoNoDisponible(true);
+        setIdiomasNoDisponible(true);
       });
   }, [i18n.language]);
 
@@ -1565,6 +1697,12 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               onFieldEdit={clearInvalidField}
               valoresDeSexo={valoresDeSexo}
               sexoNoDisponible={sexoNoDisponible}
+              catalogoDeIdiomas={catalogoDeIdiomas}
+              idiomasNoDisponible={idiomasNoDisponible}
+              catalogoDoc={catalogoDoc}
+              catalogoTel={catalogoTel}
+              catalogoCorreo={catalogoCorreo}
+              catalogoPaises={paisesEfectivos}
             />
           );
         })}
@@ -1696,6 +1834,12 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
               onFieldEdit={clearInvalidField}
               valoresDeSexo={valoresDeSexo}
               sexoNoDisponible={sexoNoDisponible}
+              catalogoDeIdiomas={catalogoDeIdiomas}
+              idiomasNoDisponible={idiomasNoDisponible}
+              catalogoDoc={catalogoDoc}
+              catalogoTel={catalogoTel}
+              catalogoCorreo={catalogoCorreo}
+              catalogoPaises={paisesEfectivos}
             />
           );
         })}

@@ -2278,6 +2278,11 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
     var signingToken = (sctxH && sctxH._signer_row && sctxH._signer_row.signing_token) || null;
     var sessionId    = (sctxH && sctxH.session_id) || null;
     var signerId     = (sctxH && sctxH.signer_id) || null;
+    // `0º.tricies.novemtricies` (b), 2026-09-08: mismo `entity_id` que
+    // `resolveGuardianSigningContext_`/`resolveSigningContextFromSession_` — el hydrate
+    // del KMS (`sctxH`) es otra forma y hoy no lo trae; el resolvedor local (`sctxW`) sí,
+    // desde este mismo cambio. Sin él, degrada a `null` — el cliente ya sabe tratarlo.
+    var entityId = (sctxH && sctxH.entity_id) || null;
     if (!signingToken && groupId && guardianPid) {
       try {
         var firmaW = _datosDeFirmaDelExpediente_(token);
@@ -2288,6 +2293,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
           signingToken = sctxW.signing_token;
           sessionId    = sctxW.session_id;
           signerId     = sctxW.signer_id;
+          entityId     = sctxW.entity_id || entityId;
         }
       } catch (eS) { /* pre-AD o sin sesión: nada que calentar */ }
     }
@@ -2313,6 +2319,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
             session_id:         sessionId || null,
             guardian_person_id: guardianPid,
             signing_token:      signingToken,
+            entity_id:          entityId || null,
           } : null;
           var d = derivarPantallaAdmision_(admSrc.state_code || null,
                                            admSrc.signing_status || null, ctx);
@@ -2498,6 +2505,10 @@ function doGet(e) {
  * @returns {TextOutput}
  */
 function doPost(e) {
+  // ④31 — cuánto tarda POR DENTRO, del primer instante al último, para poder restarlo
+  // del tiempo de reloj que ve quien llama y separar el peaje del salto (§"El salto del
+  // asistente al KMS…" en loop-backlog.md). Molde: `apiDispatch_` del KMS (`__perf.ms`).
+  const _perfT0_ = Date.now();
   try {
     const payload = JSON.parse(e.postData.contents);
     _dbgStart_(payload); // DBG-TRACE: cronología server-side si _dbg:true
@@ -2586,6 +2597,9 @@ function doPost(e) {
       // forget del frontend tras pedir magic link; ticket single-use o KAL-4 directo).
       case 'warmBundle':              result = warmBundle_(payload);              break;
       case 'notifyLiveStateChange':   result = notifyLiveStateChange_(payload);   break;
+      // D118 punto 4 — el KMS empuja la copia YA COMPUTADA (no solo avisa). Mismo gate
+      // firmado que notifyLiveStateChange; lo llama SOLO el KMS.
+      case 'pushWarmHydrate':         result = pushWarmHydrate_(payload);         break;
       case 'getLiveStateVersion':     result = getLiveStateVersion_(payload);     break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
       // getTrackingData, getInterviewForEnrollment, getAdmissionDecisionForEnrollment,
@@ -2598,7 +2612,10 @@ function doPost(e) {
     }
 
     const dbgB = _dbgBlock_();
-    return jsonResponse_(dbgB ? { ok: true, ...result, _dbg: dbgB } : { ok: true, ...result });
+    const __perf = { ms: Date.now() - _perfT0_ };
+    return jsonResponse_(dbgB
+      ? { ok: true, ...result, _dbg: dbgB, __perf: __perf }
+      : { ok: true, ...result, __perf: __perf });
 
   } catch (err) {
     // KAL-11: log full message internally with email/UUID redaction (Stackdriver interno).
@@ -5048,6 +5065,15 @@ function resolveSigningContextFromSession_(groupId, persons, sessionsHint, signe
   return {
     signer_id:          chosen.signer_id || null,
     session_id:         session.session_id || null,
+    // `0º.tricies.novemtricies` (b), 2026-09-08: desde DL-S105 §10 la sesión ancla al
+    // EXPEDIENTE DEL HIJO (`sysSigningSessions.entity_id = enrollmentId`), no al grupo.
+    // Sin esto el cliente no podía saber de QUÉ hijo es la sesión activa, y su matriz de
+    // consentimientos de imagen (Step9Gdpr.jsx) enseñaba a TODOS los solicitantes de la
+    // solicitud en cada pasada — un tutor que encadena la firma de sus dos hijos veía la
+    // misma pantalla dos veces. Sesiones legadas (ancladas al grupo) devuelven aquí el
+    // `enrollment_group_id`, que `admissionState.por_alumno` nunca casa como `enrollment_id`
+    // ⇒ el cliente degrada solo, sin tocar nada más.
+    entity_id:          session.entity_id || null,
     guardian_person_id: chosen.signer_person_id || null,
     signing_token:      chosen.signing_token,
   };
@@ -5105,6 +5131,9 @@ function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint,
   return {
     signer_id:          signer.signer_id || null,
     session_id:         session.session_id || null,
+    // `0º.tricies.novemtricies` (b) — ver el comentario gemelo en
+    // `resolveSigningContextFromSession_`, arriba: mismo campo, mismo motivo.
+    entity_id:          session.entity_id || null,
     guardian_person_id: guardianPersonId,
     signing_token:      signer.signing_token,
   };
@@ -6459,6 +6488,11 @@ function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
         // no añadan audience_category_id per pregunta — informativo, no
         // determinante para filtrado).
         audience_category_id: q.audience_category_id || null,
+        // `0º.tricies.septies` (2026-09-09) — a qué `person_type_id` repite, YA RESUELTO
+        // por el catálogo Capa 2 del KMS (`qb_audienceRepeatOverPersonType_`). Passthrough
+        // verbatim: `QbSetRenderer` lo usa con caída al código crudo cuando este campo
+        // todavía no llega (ventana de publicación entre repos).
+        repeat_over_person_type_id: q.repeat_over_person_type_id || null,
         question_text:    q.designation  || '',
         help_text:        q.description  || '',
         placeholder_text: '',
@@ -9820,6 +9854,60 @@ function notifyLiveStateChange_(p) {
   const version = _bumpLiveStateVersion_(groupId, clases);
   Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (v.event.reason || '?') + ' clases=' + clases.join(',') + ' -> v' + version));
   return { ok: true, bumped: true, version: version };
+}
+
+/**
+ * D118 punto 4 (Diego, 2026-09-07) — recibe la copia YA COMPUTADA que el KMS empuja por el
+ * canal firmado (DL-S106; `enr_pushWarmHydrateCopyToWizard_`, `kms-server/enr/wizard-warm.gs`),
+ * y la ESCRIBE en la MISMA caja que lee `warmEntryBundle_`/`hydrateSession_` cuando esa
+ * familia entra por su enlace. NO es un endpoint de usuario: lo llama SOLO el KMS.
+ * Verificación firma→ventana→no-repetición ANTES de mirar el contenido — el MISMO gate
+ * que `notifyLiveStateChange_` (`verifySignedKmsNotice_`), mismo criterio de rechazo en
+ * silencio.
+ *
+ * ⛔ SOLO GUARDA. Quién puede LEER esta copia lo sigue decidiendo su propia puerta —el
+ * código de un solo uso (②27), KAL-4— exactamente igual que hoy: esto no adelanta ni un
+ * dato a nadie que no fuera ya a recibirlo por el camino de siempre.
+ *
+ * ⛔ NUNCA BUMPA LA VERSIÓN DE CLASE — SOLO LA LEE. La versión de clase es POR GRUPO, no
+ * por tutor (`_claseVersionKey_`); bumparla aquí invalidaría de golpe la copia de
+ * CUALQUIER OTRO tutor del mismo expediente que ya estuviera caliente — justo lo
+ * contrario de lo que este empuje viene a conseguir. Se archiva bajo la versión de clase
+ * QUE HAYA AHORA MISMO: si alguien la bumpó un instante antes (otro cambio en vuelo), la
+ * entrada queda tildada vieja y el siguiente que la lea recalcula en vivo — degradación
+ * segura, nunca un dato incorrecto servido.
+ *
+ * ⛔ EL `n` QUE LLEGA ES `email_id` DE `enrEmails`, NUNCA el email en claro ni el
+ * `resume_token`. Se pasa TAL CUAL a `_wzN_` — que devuelve la rama `nTrim` sin
+ * transformarlo— para que la clave coincida BYTE A BYTE con la que calcula
+ * `hydrateSession_`/`warmEntryBundle_` cuando esa misma familia entra por su `?n=`.
+ *
+ * @param {Object} p — { action, event:{enrollment_group_id, n, payload}, nonce, timestamp, signature }
+ * @returns {{ok:boolean, stored?:boolean, reason?:string}}
+ */
+function pushWarmHydrate_(p) {
+  p = p || {};
+  const v = verifySignedKmsNotice_(p, 'pushWarmHydrate');
+  if (!v.ok) return { ok: false, reason: 'UNAUTHORIZED' };
+
+  const groupId = v.event.enrollment_group_id;
+  const n = v.event.n;
+  const payload = v.event.payload;
+  try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
+  if (!n || typeof n !== 'string' || n.length > 200) return { ok: false, reason: 'BAD_REQUEST' };
+  if (!payload || typeof payload !== 'object') return { ok: false, reason: 'BAD_REQUEST' };
+
+  try {
+    const cache = CacheService.getScriptCache();
+    const key = _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, null));
+    const version = _versionDeClase_(groupId, 'hyd');
+    const stored = _wzCachePutChunked_(cache, key, JSON.stringify({ v: version, data: payload }), 1800);
+    Logger.log(redact_('[pushWarmHydrate_] group=' + groupId + ' n=' + String(n).slice(0, 8) + '… v=' + version + ' stored=' + stored));
+    return { ok: true, stored: !!stored };
+  } catch (e) {
+    Logger.log('[pushWarmHydrate_] non-fatal — ' + (e && e.message));
+    return { ok: false, reason: 'STORE_FAILED' };
+  }
 }
 
 /**

@@ -701,6 +701,11 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
     setRows(prev => [...prev, { id: newRowId(), description: '', dueno: '', rec_type_code: '', file_id: '', file_name: '' }]);
   };
 
+  // 18.bis.85 — el clic sobre el panel BLOQUEADO (pointerEvents:none) cae al `onClick` de este
+  // `<div>` envolvente; hace temblar el botón «Editar» del banner 600 ms, el mismo patrón que
+  // ya usan Step1/2/3/4/5 (`highlightEdit`) — sin esto el clic "caducaba" sin decir por qué.
+  const [highlightEdit, setHighlightEdit] = useState(false);
+
   // Aviso de que un documento se retira, cuando el servidor no explica por qué no pudo.
   const [avisoQuitar, setAvisoQuitar] = useState('');
   // ②27 — quitar un documento exige el código de un solo uso, igual que subirlo. Guarda el
@@ -752,7 +757,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
 
       <StepNav position="top" onBack={handleBack} onNext={handleNext} savePending={savePending} />
 
-      {locked && <LockedBanner onUnlock={onUnlock} />}
+      {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
 
       {/* ②27 — quitar un documento exige el código de un solo uso, igual que subirlo. Si la
           ventana se agotó, se pide aquí y al acertar se repite el gesto ya confirmado. */}
@@ -771,6 +776,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
         </div>
       )}
 
+      <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : undefined}>
       <div className="kis-card" style={locked ? { pointerEvents: 'none', opacity: 0.7 } : {}}>
         {/* WIZARD-DOCS2: estado inicial sin paneles → solo aviso + botón "Añadir archivo"
             (patrón Step2Persons). Cada panel abre al pulsar el botón; se puede quitar. */}
@@ -810,6 +816,7 @@ export default function Step6Documents({ onNext, onBack, locked, onUnlock, saveP
         <button type="button" className="add-btn" onClick={handleAddRow}>
           <i className="bi bi-plus-lg me-1" /> {t('doc.add')}
         </button>
+      </div>
       </div>
 
       <div className="d-flex justify-content-between mt-4">

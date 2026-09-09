@@ -81,3 +81,35 @@ export function translateIdType(value, t) {
   const out = t(key);
   return out === key ? value : out;
 }
+
+/**
+ * `①83` TRAMO A — traduce un código LEGADO de tipo de teléfono ("mobile"/"home"/
+ * "work") a su etiqueta i18n (`phone_type.*`). Fallback al valor crudo si no casa
+ * — nunca una etiqueta inventada. Hermana de `translateIdType`; se usa como
+ * respaldo del desplegable HÍBRIDO (ver `Step2Persons.jsx`) y del resumen del
+ * paso 7, para el valor que un colegio guardó ANTES de que existiera el
+ * catálogo del KMS.
+ * @param {string} value
+ * @param {Function} t
+ * @returns {string}
+ */
+export function translatePhoneType(value, t) {
+  if (!value) return '';
+  const key = `phone_type.${normalizeKey(value)}`;
+  const out = t(key);
+  return out === key ? value : out;
+}
+
+/**
+ * `①83` TRAMO A — igual que `translatePhoneType`, para el tipo de correo
+ * ("personal"/"work"/"emergency", `email_type.*`).
+ * @param {string} value
+ * @param {Function} t
+ * @returns {string}
+ */
+export function translateEmailType(value, t) {
+  if (!value) return '';
+  const key = `email_type.${normalizeKey(value)}`;
+  const out = t(key);
+  return out === key ? value : out;
+}

@@ -62,14 +62,18 @@ const guardian = (id, first, email) => ({
   emails:          [{ value: email || FIXTURE.emailKnown, is_default: 'TRUE' }],
   nationalities:   [],
   ids:             [],
-  // ①45 — un idioma YA DECLARADO, con la forma EXACTA de la fila que devuelve el
+  // ①45/①82 — un idioma YA DECLARADO, con la forma EXACTA de la fila que devuelve el
   // hidratador real (`enr_wizardHydrateCompute_` → `attach('enrPersonLanguages',
   // 'languages')` adjunta la fila ENTERA, `record_id` incluido). Va aquí a propósito:
-  // sin una fila ya guardada, la afirmación de que lo declarado NO se puede desmarcar
-  // —los satélites del KMS son append-only— se comprobaría en vacío, que es peor que no
-  // comprobarla. El alumno va con `[]` para medir el otro lado: declarar de cero.
-  languages:       [{ record_id: 'lang_g1_es', person_id: id, language_id: 'es',
-                      is_mother_tongue: 'TRUE', is_active: 'TRUE' }],
+  // sin una fila ya guardada, la afirmación de que lo declarado se puede DESMARCAR
+  // —①82, el KMS ya reconoce la clase `IDIOMA` en `enr/retirada.gs`— se comprobaría en
+  // vacío, que es peor que no comprobarla. El alumno va con `[]` para medir el otro
+  // lado: declarar de cero. `record_id` lleva forma de UUID (como emite `retirada.gs`)
+  // para que `seGuardoAlgunaVez` (`lib/quitar.js`) lo trate como «ya se guardó de
+  // verdad» y dispare la petición al servidor — con un id sin esa forma la retirada se
+  // resolvería en el navegador sin llegar a medir la llamada.
+  languages:       [{ record_id: 'dddddddd-1111-4111-8111-dddddddddddd', person_id: id,
+                      language_id: 'es', is_mother_tongue: 'TRUE', is_active: 'TRUE' }],
   address:         { address_line_1: 'Calle Falsa 1', city: 'Las Palmas', country_id: 'ES', zip: '35001' },
 });
 
@@ -151,8 +155,23 @@ function lookupsSegunEscenario_(scenario) {
   const sexo = (scenario && scenario.catalogoSexoVacio)
     ? { genderValues: [], genderValuesReason: 'CATALOGO_VACIO' }
     : {};
+  // `①83` TRAMO C — el mismo caso que `catalogoSexoVacio`, para los TRES catálogos
+  // NEAE: un KMS que aún no los sirve, o una lectura caída. Los TRES a la vez, porque
+  // es lo que ocurre de verdad — es la MISMA llamada la que falla.
+  const neae = (scenario && scenario.catalogoNeaeVacio)
+    ? {
+        neaeCategories: [], neaeCategoriesReason: 'CATALOGO_VACIO',
+        neaeSupportTypes: [], neaeSupportTypesReason: 'CATALOGO_VACIO',
+        neaeScopes: [], neaeScopesReason: 'CATALOGO_VACIO',
+      }
+    : {};
+  // `①83` fila IDIOMAS — el mismo caso que `catalogoSexoVacio`: un KMS que aún no sirve
+  // `languages`, o una lectura caída.
+  const idiomas = (scenario && scenario.catalogoIdiomasVacio)
+    ? { languages: [], languagesReason: 'CATALOGO_VACIO' }
+    : {};
   if (modo !== 'appsheet' && modo !== 'ilegible') {
-    return { ...LOOKUPS, programs: programas, ...sexo };
+    return { ...LOOKUPS, programs: programas, ...sexo, ...neae, ...idiomas };
   }
   const convertir = modo === 'appsheet'
     ? aFormatoAppSheet_
@@ -169,6 +188,8 @@ function lookupsSegunEscenario_(scenario) {
       period_ends_on:   convertir(p.period_ends_on),
     })),
     ...sexo,
+    ...neae,
+    ...idiomas,
   };
 }
 
@@ -252,6 +273,77 @@ const LOOKUPS = {
     { code: 'ZZ-E2E',     designation: 'Valor E2E',  label_key: 'gender.ZZ-E2E' },
   ],
   genderValuesReason: null,
+  // ── `①83` TRAMO C (2026-09-08) — LOS TRES CATÁLOGOS NEAE ─────────────────────────
+  // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation}`, tal cual la arma
+  // `enr_catalogoDeOpciones_` (`kis-app kms-server/enr/wizard-gateway.gs`) — la
+  // `designation` YA viene localizada por el servidor, no hay `label_key` que resolver
+  // aquí (a diferencia de `genderValues`).
+  //
+  // ⚠️ Cada lista lleva un código FUERA del catálogo real y una designación que NO
+  // coincide con la traducción local `neae.cat.*`/`neae.sup.*`/`neae.scope.*`, a
+  // propósito: si la pantalla pintara la traducción local en vez de la designación del
+  // servidor, la comprobación lo cazaría (`ASD` real con un texto distinto al de
+  // `translation.json`, y un código `ZZ-NEAE-*` que esa traducción local ni conoce).
+  neaeCategories: [
+    { code: 'ASD',              designation: 'TEA (E2E)' },
+    { code: 'ADHD',              designation: 'TDAH (E2E)' },
+    { code: 'ZZ-NEAE-CAT-E2E',   designation: 'Necesidad E2E' },
+  ],
+  neaeCategoriesReason: null,
+  neaeSupportTypes: [
+    { code: 'PT',                designation: 'Pedagogía terapéutica (E2E)' },
+    { code: 'LOGOPEDIA',         designation: 'Logopedia (E2E)' },
+    { code: 'ZZ-NEAE-SUP-E2E',   designation: 'Apoyo E2E' },
+  ],
+  neaeSupportTypesReason: null,
+  neaeScopes: [
+    { code: 'PRIOR_SCHOOL',      designation: 'Centro anterior (E2E)' },
+    { code: 'EXTERNAL_CURRENT',  designation: 'Externo actual (E2E)' },
+  ],
+  neaeScopesReason: null,
+  // ── `①83` fila IDIOMAS (2026-09-08) — LOS IDIOMAS QUE PUEDE DECLARAR CADA PERSONA ──
+  // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation}`, tal cual la arma
+  // `enr_idiomasDelCatalogo_` (`kis-app kms-server/enr/wizard-gateway.gs`, reusando
+  // `sys_idiomasIndice_`) y la sirve `enr_wizardFetchLookups` bajo `languages`.
+  //
+  // `es`/`en`/`fr` tienen que estar (el camino `idiomas-hablados` los usa por su código
+  // literal — `es` es el ya declarado del tutor 1, `en`/`fr` los que marca el alumno) y
+  // se añade `ZZ-LANG-E2E`, fuera de todo catálogo real, para que quede claro que la
+  // pantalla pinta lo que sirve el servidor y no una lista escrita a mano.
+  languages: [
+    { code: 'es', designation: 'Español (E2E)' },
+    { code: 'en', designation: 'Inglés (E2E)' },
+    { code: 'fr', designation: 'Francés (E2E)' },
+    { code: 'ZZ-LANG-E2E', designation: 'Idioma E2E' },
+  ],
+  languagesReason: null,
+  // ── `①83` TRAMO A (2026-09-08) — DOCUMENTO/TELÉFONO/CORREO: DESPLEGABLE HÍBRIDO ──
+  // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation}`, tal cual la arma
+  // `enr_catalogoDeFilas_` (`kis-app kms-server/enr/wizard-gateway.gs`) — y el `code` es
+  // el `Row ID` OPACO de AppSheet, no un literal legible («ninguna de las tres tablas
+  // declara un código legible y estable»). Por eso los códigos de abajo NO se parecen en
+  // nada a `passport`/`dni`/`nie`/`other` — a propósito: es justo lo que hace que un
+  // valor YA GUARDADO con el literal legado no case con ningún `code` del catálogo, y
+  // por lo que el desplegable HÍBRIDO existe (ver `documento-desde-el-catalogo`).
+  typesOfIDs: [
+    { code: 'kms-row-dni-e2e',      designation: 'DNI (E2E)' },
+    { code: 'kms-row-nie-e2e',      designation: 'NIE (E2E)' },
+    { code: 'kms-row-passport-e2e', designation: 'Pasaporte (E2E)' },
+    { code: 'kms-row-other-e2e',    designation: 'Otro (E2E)' },
+  ],
+  typesOfIDsReason: null,
+  phoneNrTypes: [
+    { code: 'kms-row-mobile-e2e', designation: 'Móvil (E2E)' },
+    { code: 'kms-row-home-e2e',   designation: 'Fijo (E2E)' },
+    { code: 'kms-row-work-e2e',   designation: 'Trabajo (E2E)' },
+  ],
+  phoneNrTypesReason: null,
+  emailTypes: [
+    { code: 'kms-row-personal-e2e',  designation: 'Personal (E2E)' },
+    { code: 'kms-row-work-e2e',      designation: 'Trabajo (E2E)' },
+    { code: 'kms-row-emergency-e2e', designation: 'Emergencia (E2E)' },
+  ],
+  emailTypesReason: null,
 };
 
 /**
@@ -498,7 +590,7 @@ function recortarPorTutorE2E_(data, viewerN) {
  *   (que es lo que hace aterrizar en Documentos); con lista, el paso queda por visitado y
  *   el aterrizaje se va a Revisión, igual que en el sistema real.
  */
-export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision, dosHermanosAdmitidos) {
+export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision, dosHermanosAdmitidos, sesionFirmaActivaHijo, aterrizarEnGdpr) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -700,10 +792,22 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
       signing_available: true,
       signing_ready:     true,
       signing_status:    'READY',
+      // `0º.tricies.novemtricies` (b), 2026-09-08: `entity_id` es el ancla REAL de la sesión
+      // de firma (DL-S105 §10 = `enrollment_id` del hijo). El doble refleja el CONTRATO REAL
+      // — `sesionFirmaActivaHijo` (1|2) fija a cuál de los dos hijos de `por_alumno` pertenece
+      // ESTA sesión, tal y como lo haría el KMS con dos sesiones vivas; sin la palanca, ningún
+      // recorrido existente cambia (`entity_id` queda `undefined`, byte-idéntico a ayer).
       signing_context: {
-        signer_id:  'signer-e2e-1',
-        session_id: 'sess-e2e-1',
-        steps: { billing_confirmed: false, gdpr_completed: false, review_completed: false, signed: false },
+        signer_id:          'signer-e2e-1',
+        session_id:         'sess-e2e-1',
+        // El CONTRATO real (`resolveGuardianSigningContext_`/`resolveSigningContextFromSession_`)
+        // siempre lleva `guardian_person_id` — es el mismo tutor que `recovered_guardian_person_id`
+        // resuelve unas líneas más arriba. Sin él, `Step9Gdpr.jsx` nunca añade al propio tutor
+        // como sujeto de la matriz de imagen, y esa mitad del contrato quedaría sin ejercitar.
+        guardian_person_id: viewerIdE2E_(viewerN) || FIXTURE.guardian1Id,
+        entity_id:  sesionFirmaActivaHijo === 2 ? 'enr-e2e-2'
+          : sesionFirmaActivaHijo === 1 ? 'enr-e2e-1' : undefined,
+        steps: { billing_confirmed: !!aterrizarEnGdpr, gdpr_completed: false, review_completed: false, signed: false },
       },
     },
   }, viewerN);
@@ -865,7 +969,8 @@ export function createDispatcher(scenario, record) {
         };
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
-        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos);
+        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos,
+        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr);
       // ⚠️ EL DOBLE NO PUEDE CONTRADECIRSE A SÍ MISMO (medido el 2026-08-27): la hidratación
       // decía SIEMPRE «sin reparto guardado» mientras `getSavedBillingSplits` devolvía 60/40.
       // En el servidor real las dos salen de la MISMA fuente (`billing_splits` de la
@@ -916,6 +1021,15 @@ export function createDispatcher(scenario, record) {
           }
         });
       }
+      // `①83` TRAMO A — un tutor con `id_type_id` LEGADO (el literal inglés de antes del
+      // catálogo, `passport`/`dni`/`nie`/`other`), que NO casa con ningún `code` del
+      // catálogo Row-ID de arriba. Es el caso exacto que el desplegable HÍBRIDO existe
+      // para cubrir: sin la opción sintética, esa familia vería su documento
+      // «desaparecer» del desplegable (medido en la ficha de `①83`, TRAMO A).
+      if (scenario.idTypeLegado) {
+        const g1 = (h.persons || []).find(pe => pe && pe.person_id === FIXTURE.guardian1Id);
+        if (g1) g1.ids = [{ id_type_id: 'passport', id_number: '12345678A' }];
+      }
       // ⭐ DL-E63 — «el colegio cambió un dato». La palanca cambia el NOMBRE del alumno en la
       // hidratación, que es lo que hace de verdad una corrección hecha desde la ficha del KMS.
       // Sin la palanca la hidratación sale byte-idéntica a la de siempre.
@@ -940,7 +1054,8 @@ export function createDispatcher(scenario, record) {
     // tiempo restante sigue bajando.
     getAdmissionState: (p) => {
       const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
-        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos);
+        scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos,
+        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr);
       const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
       // 0º.tricies.octies (B) — los pasos cuyo ÚLTIMO guardado murió en la cola del KMS.
       // Copia declarada del contrato real (`enr_guardadosQueNoLlegaron_`): CÓDIGOS de paso,

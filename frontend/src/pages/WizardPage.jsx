@@ -172,6 +172,18 @@ export default function WizardPage() {
     }
   }, [admissionState?.state_code, admissionState?.signing_ready, admissionState?.signing_status, resumeToken, signingContext?.signing_token]); // eslint-disable-line
 
+  // `0º.tricies.novemtricies` (b), 2026-09-08 — `signerCtx` NO solo se alimenta al pulsar
+  // "Continuar" en el Step 7 (`enterSigning`): una familia que RECUPERA su enlace estando
+  // YA a mitad de firma aterriza DIRECTO en el sub-paso de firma que toque (la rama
+  // `signingInProgress` de `WizardContext.hydrateFromResume`), sin pasar nunca por ese
+  // clic. Sin este efecto, `signerCtx` se quedaba `null` en ese camino — y con él
+  // `Step9Gdpr` no podía saber de qué hijo es la sesión (`entity_id`) ni quién es el
+  // propio tutor (`guardian_person_id`). Mismo dato que `enterSigning` ya copiaba a mano;
+  // aquí se mantiene sincronizado SIEMPRE que `signingContext` esté presente.
+  useEffect(() => {
+    if (signingContext) setSignerCtx(signingContext);
+  }, [signingContext]); // eslint-disable-line
+
   // STEP-FRAMEWORK preload del catálogo: al ENTRAR a un paso cuyo catálogo declara
   // `preload: ['documents']` (Step 10 s_review), dispara el MISMO warm (mismo cache del
   // contexto). Best-effort: con el cache caliente es no-op (loadDocument es idempotente
