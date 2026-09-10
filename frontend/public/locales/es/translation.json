@@ -556,6 +556,7 @@
   "neae.supports_unavailable": "Ahora mismo no podemos cargar las opciones para declarar un apoyo nuevo. Puedes seguir; inténtalo más tarde.",
   "neae.diagnosis_label": "Situación",
   "neae.diagnosis_placeholder": "Selecciona (opcional)…",
+  "neae.diagnosis_unavailable": "Ahora mismo no podemos cargar las opciones de situación. Puedes seguir; inténtalo más tarde.",
   "neae.condition_obs_placeholder": "Detalles que ayuden a la planificación (opcional)",
   "neae.supports_label": "¿Ha recibido algún apoyo, refuerzo o terapia?",
   "neae.review_conditions": "Necesidades / perfil",

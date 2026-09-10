@@ -7120,7 +7120,7 @@ async function caminoNeaeDesdeElCatalogo(page, base) {
     const pantalla = await page.evaluate(sondaPantalla)
     c.evidencia.elementos = pantalla.pasos + pantalla.campos
 
-    // ── ANCLAS: sin los tres controles, todo lo de abajo mediría el vacío ──────────
+    // ── ANCLAS: sin los cuatro controles, todo lo de abajo mediría el vacío ────────
     const buscadorCat = await page.$('[data-testid="neae-cat-search"]')
     const selApoyo     = await page.$('[data-testid="neae-support-type-select"]')
     const selAmbito    = await page.$('[data-testid="neae-scope-select"]')
@@ -7162,6 +7162,26 @@ async function caminoNeaeDesdeElCatalogo(page, base) {
     c.afirmar('la condición añadida queda puesta EN PANTALLA con la designación del catálogo',
       textoCondicion.includes('Necesidad E2E'),
       `la tarjeta de la condición dice ${JSON.stringify(textoCondicion)}: se esperaba «Necesidad E2E»`)
+
+    // ── `①83` fila 7 — EL DIAGNÓSTICO: el desplegable de la tarjeta es el del catálogo ──
+    const selDiag = await page.$('[data-testid="neae-diag-select"]')
+    if (!c.afirmar('la tarjeta de la condición ofrece el desplegable de diagnóstico',
+      !!selDiag, 'no se pintó [data-testid="neae-diag-select"] tras declarar la necesidad')) return c
+    const opcionesDiag = await selDiag.$$eval('option', els => els.map(o => ({ value: o.value, texto: (o.textContent || '').trim() })))
+    const conValorDiag = opcionesDiag.filter(o => o.value)
+    const esperadasDiag = ['NONE', 'SUSPECTED', 'ZZ-NEAE-DIAG-E2E']
+    c.afirmar('el diagnóstico ofrece EXACTAMENTE lo que sirve el catálogo (nunca la lista de ayer escrita a mano)',
+      conValorDiag.length === esperadasDiag.length && esperadasDiag.every(x => conValorDiag.some(o => o.value === x)),
+      `se pintaron ${JSON.stringify(conValorDiag.map(o => o.value))}, se esperaba ${JSON.stringify(esperadasDiag)}`)
+    const sinDiag = conValorDiag.find(o => o.value === 'NONE')
+    c.afirmar('el diagnóstico pinta la designación del SERVIDOR, no la traducción local',
+      !!sinDiag && sinDiag.texto === 'Sin diagnóstico (E2E)',
+      `«NONE» se leyó «${sinDiag && sinDiag.texto}» (se esperaba «Sin diagnóstico (E2E)», ` +
+      `la traducción local dice «Sin diagnóstico»: si coincidiera, la pantalla estaría ignorando el catálogo)`)
+    if (!c.afirmar('el código fuera del catálogo real (sin traducción local) SÍ se puede elegir',
+      conValorDiag.some(o => o.value === 'ZZ-NEAE-DIAG-E2E'),
+      `«ZZ-NEAE-DIAG-E2E» no está entre las opciones pintadas (${JSON.stringify(conValorDiag.map(o => o.value))})`)) return c
+    await selDiag.selectOption('ZZ-NEAE-DIAG-E2E')
 
     // ── (1) + (2) EL APOYO: los DOS desplegables son los del catálogo ─────────────
     const opcionesApoyo = await selApoyo.$$eval('option', els => els.map(o => ({ value: o.value, texto: (o.textContent || '').trim() })))
@@ -7223,9 +7243,13 @@ async function caminoNeaeDesdeElCatalogo(page, base) {
     const enviado = Array.isArray(ultimoNeae.neae) ? ultimoNeae.neae[0] : null
     const codigosCondiciones = enviado ? (enviado.conditions || []).map(x => x.category_code) : []
     const codigosApoyos = enviado ? (enviado.supports || []).map(x => x.support_type) : []
+    const diagnosticosEnviados = enviado ? (enviado.conditions || []).map(x => x.diagnosis_status) : []
     c.afirmar('lo elegido VIAJA hacia el servidor, con el código del catálogo (no una traducción)',
       codigosCondiciones.includes('ZZ-NEAE-CAT-E2E') && codigosApoyos.includes('ZZ-NEAE-SUP-E2E'),
       `condiciones enviadas: ${JSON.stringify(codigosCondiciones)} · apoyos enviados: ${JSON.stringify(codigosApoyos)}`)
+    c.afirmar('el diagnóstico elegido VIAJA hacia el servidor, con el código del catálogo',
+      diagnosticosEnviados.includes('ZZ-NEAE-DIAG-E2E'),
+      `diagnósticos enviados: ${JSON.stringify(diagnosticosEnviados)}`)
 
     // ── (4) SIN CATÁLOGO, LA PANTALLA LO DICE ───────────────────────────────────────
     await esperarSilencioDeRed(20000, 400)   // el precalentado en vuelo, no el producto
@@ -7258,9 +7282,48 @@ async function caminoNeaeDesdeElCatalogo(page, base) {
       !!avisoApoyo && ((await avisoApoyo.textContent()) || '').trim().length > 10,
       'no se pintó ningún aviso junto al bloque de apoyos: con el campo mudo, la familia no sabe que el catálogo no llegó')
 
+    // ── (C) SOLO EL DIAGNÓSTICO FALTA — el resto de NEAE sigue vivo ────────────────
+    // `①83` fila 7: con categorías/apoyos/ámbitos SANOS se puede declarar una necesidad
+    // nueva de verdad, y es la única forma de que exista una tarjeta cuyo desplegable de
+    // diagnóstico se pueda comprobar deshabilitado.
+    scenario.catalogoNeaeVacio = false
+    scenario.catalogoNeaeDiagVacio = true
+    await esperarSilencioDeRed(20000, 400)
+    await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+    await page.goto('about:blank')
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    if (!await irASalud()) return c
+
+    const buscadorCat3 = await page.$('[data-testid="neae-cat-search"]')
+    if (!c.afirmar('(C) el buscador de necesidades sigue vivo (solo falta el diagnóstico)',
+      !!buscadorCat3, 'el buscador de necesidades desapareció cuando solo faltaba el diagnóstico')) return c
+    await buscadorCat3.click()
+    await buscadorCat3.fill('E2E')
+    try { await page.waitForSelector('.border.rounded.mt-1 > div', { timeout: 4000 }) } catch { /* se cuenta abajo */ }
+    const necesidadE2E2 = await page.$$('.border.rounded.mt-1 > div')
+    const opcion2 = await (async () => {
+      for (const el of necesidadE2E2) { if ((await el.textContent() || '').trim() === 'Necesidad E2E') return el }
+      return null
+    })()
+    if (!c.afirmar('(C) se puede declarar una necesidad nueva (su catálogo sigue vivo)',
+      !!opcion2, 'no se pudo elegir «Necesidad E2E» aunque el catálogo de categorías estaba sano')) return c
+    await opcion2.click()
+    await page.waitForTimeout(150)
+
+    const selDiag2 = await page.$('[data-testid="neae-diag-select"]')
+    if (!c.afirmar('(C) la tarjeta de la condición pinta el desplegable de diagnóstico igualmente',
+      !!selDiag2, 'no se pintó [data-testid="neae-diag-select"] con el resto de NEAE sano')) return c
+    c.afirmar('(C) sin su catálogo, el desplegable de diagnóstico queda DESHABILITADO',
+      await selDiag2.evaluate(el => !!el.disabled), 'el desplegable de diagnóstico seguía activo con su catálogo vacío')
+    const avisoDiag = await page.$('[data-testid="neae-diag-no-disponible"]')
+    c.afirmar('(C) la pantalla AVISA de que no se puede declarar el diagnóstico',
+      !!avisoDiag && ((await avisoDiag.textContent()) || '').trim().length > 10,
+      'no se pintó ningún aviso junto al desplegable de diagnóstico: con el campo mudo, la familia no sabe que el catálogo no llegó')
+
     return c
   } finally {
     scenario.catalogoNeaeVacio = false
+    scenario.catalogoNeaeDiagVacio = false
     limpiar()
   }
 }

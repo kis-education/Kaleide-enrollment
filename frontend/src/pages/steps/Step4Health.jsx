@@ -10,23 +10,25 @@ import * as log from '../../logger';
 // El staging siempre escribe provenance=FAMILY_DECLARED server-side. Q4
 // (willing_to_share_reports) retirada por decisión de Diego 2026-07-12.
 //
-// ── `①83` TRAMO C (2026-09-08) — las TRES listas de arriba SALEN DEL CATÁLOGO ────
+// ── `①83` TRAMO C (2026-09-08 + 2026-09-10) — las CUATRO listas de arriba SALEN
+// DEL CATÁLOGO ────
 // Diego: «Mira todos los catálogos que están hardcodeados en el wizard y arréglalo
 // de una puta vez. No quiero ver ni un solo dato hardcodeado!!». El KMS ya sirve
-// `neaeCategories`/`neaeSupportTypes`/`neaeScopes` por el MISMO canal que
-// `genderValues` (`enr.wizardFetchLookups` → `enr_catalogoDeOpciones_`, desplegado
-// `@1544`), con la designación YA localizada en el idioma pedido — mismo molde que
-// `0º.tricies.duodecies`, copiado sin rediseñar. Las tres se piden en el `useEffect`
-// de más abajo y se pintan con las TRES situaciones de siempre: cargando (aún no se
-// sabe) · con catálogo · sin catálogo (se DICE al lado del campo, campo opcional ⇒
-// nunca se calla).
+// `neaeCategories`/`neaeSupportTypes`/`neaeScopes`/`neaeDiagnosisStatuses` por el
+// MISMO canal que `genderValues` (`enr.wizardFetchLookups` → `enr_catalogoDeOpciones_`),
+// con la designación YA localizada en el idioma pedido — mismo molde que
+// `0º.tricies.duodecies`, copiado sin rediseñar. Las cuatro se piden en el
+// `useEffect` de más abajo y se pintan con las TRES situaciones de siempre: cargando
+// (aún no se sabe) · con catálogo · sin catálogo (se DICE al lado del campo, campo
+// opcional ⇒ nunca se calla).
 //
-// `NEAE_DIAGNOSIS` NO entra: es un CICLO (`sysStates_T`:
-// SUSPECTED→IN_EVALUATION→DIAGNOSED, design/neae-module-2026-07-12.md §7 decisión 4)
-// sin sembrar todavía — servirlo como lista plana falsearía el mecanismo que el
-// propio diseño le reserva. Sigue aquí, tal cual, hasta que se decida enganchar la
-// máquina de estados (`docs/kms/pendiente-diego.md` D132).
-const NEAE_DIAGNOSIS  = ['NONE', 'SUSPECTED', 'IN_EVALUATION', 'DIAGNOSED'];
+// ⛔ El diagnóstico NO es la máquina de estados que el diseño reserva para el
+// seguimiento del CASO por el colegio (`sysStates_T`, SUSPECTED→IN_EVALUATION→
+// DIAGNOSED, design/neae-module-2026-07-12.md §7 decisión 4, sin sembrar todavía):
+// lo que se sirve aquí es el catálogo PLANO de 4 códigos que la FAMILIA declara al
+// rellenar el cuestionario — la misma lista que ya pinta a mano el panel de
+// personal del KMS (`ApplicationDetailPage.jsx`, `diagOpciones`), servida por el
+// canal declarativo en vez de escrita dos veces. `docs/kms/pendiente-diego.md` D132.
 
 // ── RE-SEMBRADO QUE FUSIONA, NUNCA PISA (2026-08-10) ──────────────────────────
 // Molde copiado de `Step6Documents.jsx:258-273` («SOLO AÑADE lo que falta, NUNCA
@@ -250,6 +252,7 @@ function ApplicantNeaeSection({
   categorias, categoriasNoDisponible,
   apoyos, apoyosNoDisponible,
   ambitos, ambitosNoDisponible,
+  diagnosticos, diagnosticosNoDisponible,
 }) {
   const { t } = useTranslation();
 
@@ -340,12 +343,17 @@ function ApplicantNeaeSection({
                 <div className="row g-2">
                   <div className="col-12 col-md-5">
                     <label className="form-label form-label-sm mb-1" style={{ fontSize: '0.8rem' }}>{t('neae.diagnosis_label')}</label>
-                    <select className="form-select form-select-sm"
-                      value={c.diagnosis_status || ''}
+                    <select className="form-select form-select-sm" data-testid="neae-diag-select"
+                      value={c.diagnosis_status || ''} disabled={diagnosticosNoDisponible}
                       onChange={e => updateCondition(i, 'diagnosis_status', e.target.value)}>
                       <option value="">{t('neae.diagnosis_placeholder')}</option>
-                      {NEAE_DIAGNOSIS.map(s => <option key={s} value={s}>{t('neae.diag.' + s)}</option>)}
+                      {(diagnosticos || []).map(o => <option key={o.code} value={o.code}>{o.designation}</option>)}
                     </select>
+                    {diagnosticosNoDisponible && (
+                      <div className="form-text text-danger" data-testid="neae-diag-no-disponible">
+                        {t('neae.diagnosis_unavailable')}
+                      </div>
+                    )}
                   </div>
                   <div className="col-12 col-md-7">
                     <label className="form-label form-label-sm mb-1" style={{ fontSize: '0.8rem' }}>{t('health.observations')}</label>
@@ -512,6 +520,9 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
   const [apoyosNoDisponible, setApoyosNoDisponible] = useState(false);
   const [ambitosOpts, setAmbitosOpts] = useState([]);
   const [ambitosNoDisponible, setAmbitosNoDisponible] = useState(false);
+  // `①83` fila 7 (2026-09-10) — catálogo PLANO de 4 códigos de diagnóstico, mismo molde.
+  const [diagOpts, setDiagOpts] = useState([]);
+  const [diagNoDisponible, setDiagNoDisponible] = useState(false);
 
   useEffect(() => {
     // Idioma en la petición: la caché de catálogos va por idioma (ver `api.js`, 2026-08-19).
@@ -524,10 +535,12 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
         const cats = ((data && data.neaeCategories)   || []).filter(v => v && v.code);
         const sups = ((data && data.neaeSupportTypes) || []).filter(v => v && v.code);
         const amb  = ((data && data.neaeScopes)        || []).filter(v => v && v.code);
+        const diag = ((data && data.neaeDiagnosisStatuses) || []).filter(v => v && v.code);
         log.info('Step4: catálogos NEAE del servidor', {
           categorias: cats.length, motivoCategorias: (data && data.neaeCategoriesReason) || null,
           apoyos: sups.length, motivoApoyos: (data && data.neaeSupportTypesReason) || null,
           ambitos: amb.length, motivoAmbitos: (data && data.neaeScopesReason) || null,
+          diagnostico: diag.length, motivoDiagnostico: (data && data.neaeDiagnosisStatusesReason) || null,
         });
         setCategoriasOpts(cats);
         setCategoriasNoDisponible(cats.length === 0);
@@ -535,12 +548,15 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
         setApoyosNoDisponible(sups.length === 0);
         setAmbitosOpts(amb);
         setAmbitosNoDisponible(amb.length === 0);
+        setDiagOpts(diag);
+        setDiagNoDisponible(diag.length === 0);
       })
       .catch(err => {
         log.error('Step4: fetchLookups failed', { message: err && err.message });
         setCategoriasNoDisponible(true);
         setApoyosNoDisponible(true);
         setAmbitosNoDisponible(true);
+        setDiagNoDisponible(true);
       });
   }, []); // eslint-disable-line
 
@@ -663,6 +679,7 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
               categorias={categoriasOpts} categoriasNoDisponible={categoriasNoDisponible}
               apoyos={apoyosOpts} apoyosNoDisponible={apoyosNoDisponible}
               ambitos={ambitosOpts} ambitosNoDisponible={ambitosNoDisponible}
+              diagnosticos={diagOpts} diagnosticosNoDisponible={diagNoDisponible}
             />
           </ApplicantHealthSection>
         ))}

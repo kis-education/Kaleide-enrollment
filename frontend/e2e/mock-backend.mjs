@@ -163,8 +163,15 @@ function lookupsSegunEscenario_(scenario) {
         neaeCategories: [], neaeCategoriesReason: 'CATALOGO_VACIO',
         neaeSupportTypes: [], neaeSupportTypesReason: 'CATALOGO_VACIO',
         neaeScopes: [], neaeScopesReason: 'CATALOGO_VACIO',
+        neaeDiagnosisStatuses: [], neaeDiagnosisStatusesReason: 'CATALOGO_VACIO',
       }
-    : {};
+    // `①83` fila 7 — el caso DISTINTO: solo el diagnóstico falta (categorías/apoyos/ámbitos
+    // siguen sirviéndose), para poder declarar una condición NUEVA y comprobar que SU
+    // desplegable de diagnóstico —que vive DENTRO de la tarjeta, y por eso necesita que
+    // categorías siga viva— queda deshabilitado y avisa, sin que el resto de NEAE se apague.
+    : (scenario && scenario.catalogoNeaeDiagVacio)
+      ? { neaeDiagnosisStatuses: [], neaeDiagnosisStatusesReason: 'CATALOGO_VACIO' }
+      : {};
   // `①83` fila IDIOMAS — el mismo caso que `catalogoSexoVacio`: un KMS que aún no sirve
   // `languages`, o una lectura caída.
   const idiomas = (scenario && scenario.catalogoIdiomasVacio)
@@ -316,6 +323,17 @@ const LOOKUPS = {
     { code: 'EXTERNAL_CURRENT',  designation: 'Externo actual (E2E)' },
   ],
   neaeScopesReason: null,
+  // ── `①83` fila 7 (2026-09-10) — EL DIAGNÓSTICO NEAE, CATÁLOGO PLANO ──────────────
+  // Mismo criterio que los tres de arriba: designación que NO coincide con la
+  // traducción local `neae.diag.*` (para cazar si la pantalla ignora el catálogo y
+  // sigue pintando el respaldo escrito a mano) y un código fuera del catálogo real
+  // (`ZZ-NEAE-DIAG-E2E`) que esa traducción local ni conoce.
+  neaeDiagnosisStatuses: [
+    { code: 'NONE',              designation: 'Sin diagnóstico (E2E)' },
+    { code: 'SUSPECTED',         designation: 'Sospecha (E2E)' },
+    { code: 'ZZ-NEAE-DIAG-E2E',  designation: 'Diagnóstico E2E' },
+  ],
+  neaeDiagnosisStatusesReason: null,
   // ── `①83` fila IDIOMAS (2026-09-08) — LOS IDIOMAS QUE PUEDE DECLARAR CADA PERSONA ──
   // LA FORMA ES LA DEL SERVIDOR DE VERDAD: `{code, designation}`, tal cual la arma
   // `enr_idiomasDelCatalogo_` (`kis-app kms-server/enr/wizard-gateway.gs`, reusando

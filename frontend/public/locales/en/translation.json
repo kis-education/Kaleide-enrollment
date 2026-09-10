@@ -556,6 +556,7 @@
   "neae.supports_unavailable": "We can't load the options to declare a new support right now. You can carry on; try again later.",
   "neae.diagnosis_label": "Situation",
   "neae.diagnosis_placeholder": "Select (optional)…",
+  "neae.diagnosis_unavailable": "We can't load the situation options right now. You can carry on; try again later.",
   "neae.condition_obs_placeholder": "Details that help planning (optional)",
   "neae.supports_label": "Has the child received any support, reinforcement or therapy?",
   "neae.review_conditions": "Needs / learning profile",
