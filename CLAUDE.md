@@ -40,7 +40,7 @@
 > | `comprobar-selector-appsheet` | que los filtros emitan `AND()`/`OR()` como FUNCIONES, no infijos que AppSheet descarta en silencio |
 > | `comprobar-personas-quitadas` | que no se cuente a quien la familia ya quitó de su solicitud |
 > | `comprobar-verja-publica` | las cinco puertas anónimas, el código de un solo uso de los 13 manejadores de mutación, y que cada tramo de `②17` siga preguntándole al KMS |
-> | `comprobar-receptor-firmado` | que el receptor del aviso del KMS verifique la firma ANTES de mirar el contenido |
+> | `comprobar-receptor-firmado` | que **los TRES** receptores firmados del KMS (`notifyLiveStateChange_`, `pushWarmHydrate_`, `sembrarRecuperacion_`) verifiquen la firma ANTES de mirar el contenido |
 > | `comprobar-pantalla-del-cliente` | que las banderas de pantalla salgan de UN derivador y no se copien del KMS |
 > | `comprobar-codigos-de-consentimiento` | que ningún consentimiento se registre con un código inventado |
 > | `comprobar-que-el-wizard-no-escribe-estado` | que el asistente no fije el estado ni mande el correo del envío |
@@ -1686,6 +1686,65 @@ Test: `manual_testRecognizeFamilyAntiEnum` en `backend/Code.js`. Verifica shape 
 4. La otra rama (uso interno "Guardar y seguir luego") entra por **`resume_token`** y sus errores **sí** se propagan (el asistente los muestra como toast): ahí no hay enumeración que proteger, porque quien llama ya ha demostrado ser de la familia. Ver §"Las CINCO puertas del asistente".
 
 Residual conocido (NO cerrado): el action público `initEnrollmentSession` sigue distinguiendo en su respuesta (`already_submitted` / `resumed` / creada), pero está **detrás de la verja reCAPTCHA fail-closed**. Test: `manual_testSendMagicLinkConstantAck`. Cross-ref: `kis-app/docs/kms/security/audit-2026-07-27.md` §C fila WIZ-ENUM + §KAL-10 (mismo patrón en `recognizeFamily_`).
+
+### La CACHÉ DE RECUPERACIÓN — la 2ª vez que se teclea un correo no se pregunta al KMS (2026-09-11)
+
+**Recuperar el enlace por correo pagaba SIEMPRE un viaje al KMS, y en este camino el gasto es
+el SALTO, no la consulta.** Medido con `manual_diagTimelineDelCorreo` sobre un envío real: el
+paso `kms_recuperacion_del_correo` costó **16,8 s**, y las otras dos llamadas del mismo
+recorrido **18,7 s** y **14,3 s** *haciendo trabajos completamente distintos* ⇒ **~15 s son el
+salto**. El manejador del KMS (`enr_wizardRecuperacionDelCorreo`) hace **2-4 lecturas ligeras**.
+
+**Por eso la copia vive AQUÍ**, en el almacén de servidor de este proceso: si viviera en el KMS
+habría que seguir yendo a preguntar. Y es admisible porque **ese almacén no se puede volcar
+desde la web** — medido contra `origin/main`: `doGet` devuelve `{status:'ok'}` y el
+`switch(action)` del `doPost` **no tiene ni una acción que lea `CacheService`/`PropertiesService`
+a granel** (0 usos de `getProperties()`/`getAll()`/`getKeys()` en todo el fichero).
+
+**Medido sobre `sendMagicLink_` REAL** (arnés efímero fuera del repositorio): 1ª recuperación
+**1 viaje**, 2ª **0**.
+
+**Lo que hay que retener al tocar esto:**
+
+- ⛔ **NUNCA se guarda ni se sirve una respuesta VACÍA.** Cuando no hay expediente,
+  `sendMagicLink_` **CREA uno nuevo**: un «no hay ninguno» guardado convertiría en permanente
+  el agujero que `enr_wizardRecuperacionDelCorreo` ya documenta (mandarle a una familia que ya
+  tiene su solicitud el enlace de un borrador vacío).
+- ⛔ **NI UNA ENTRADA CON UN TOKEN MUERTO — el SELLO por expediente.** Rotar el enlace mata el
+  viejo, así que una entrada rotada sería **peor que no tener caché**. Cada expediente lleva un
+  sello (`recu_sello_<grupo>`) que sube **en el sitio ÚNICO** donde este proceso ya declara que
+  cambió algo: `_olvidarCabeceraMemo_` — sus SIETE llamantes son rotar, abandonar, «esto no es
+  mío», el auto-abandono de sesiones paralelas, enviar y la limpieza de huérfanas. **Un segundo
+  sitio divergiría.**
+- ⛔ **Un sello AUSENTE es FALLO de caché, nunca acierto.** Sin esa regla, desalojar el sello
+  resucitaría una entrada vieja. Con ella, perder el sello, la entrada o las dos acaba en el
+  camino de siempre.
+- ⛔ **La caché NO regala la gracia que salta el código de un solo uso** (②27): esa gracia se
+  acuña SOLO sobre un token recién rotado, y rotar sigue siendo una llamada real al KMS.
+- **La entrada se escribe DESPUÉS del bucle de renovación**, con los tokens FINALES y los sellos
+  de después de los bumps — escribirla antes dejaría dentro el token que acaba de morir. Y
+  `created_at` se refresca en los que rotaron, por el mismo motivo que `_moverLaCopiaDeLaPuerta_`.
+- **La verja reCAPTCHA, su ORDEN, el cupo, KAL-4 y el ack constante (WIZ-ENUM) no se tocan.**
+  El correo se guarda **RESUMIDO**, jamás en claro (KAL-11).
+
+**El KMS la SIEMBRA al invitar** (`enr_sembrarRecuperacionEnAsistente_`), por el receptor
+firmado `sembrarRecuperacion_` — mismo gate y mismo molde que `pushWarmHydrate_` (DL-S106), y
+compartiendo con la ruta pública **un solo recorrido** (`enr_recuperacionDelCorreoCore_`):
+sembrar con un recorrido propio sería sembrar una respuesta que puede diferir de la que este
+asistente recibiría preguntando.
+
+⚠️ **LÍMITES HONESTOS.** La **1ª** recuperación de un correo que nadie invitó sigue pagando el
+viaje (no hay nada que guardar todavía) · la entrada **vence en 6 h** —el techo de
+`CacheService`, no una decisión de diseño—, así que **el sembrado solo sirve dentro de esa
+ventana** y una familia invitada que pierde su correo suele volver días después ·
+`PropertiesService` (sin vencimiento) **NO se usa a propósito**: comparte el cupo de 500 KB con
+los secretos del proyecto y llenarlo arriesga romper la configuración — esa compensación la
+decide Diego · y **la cola de la que sale el correo (62-266 s) no se toca**.
+
+⚠️ **La batería NO cubre esto**: corre contra un backend simulado que **nunca ejecuta
+`backend/Code.js`**. **Quien toque esta cadena, que la mida** con un arnés efímero fuera del
+repositorio, y que **rompa a propósito** antes de darla por buena — al hacerlo aquí apareció que
+una rotura salía VERDE porque el arnés no ejecutaba el eslabón real (`_olvidarCabeceraMemo_`).
 
 ### Las CINCO puertas del asistente: cuatro pasan por UNA verja, la quinta exige el token (②2 + ②12 + ②26)
 
