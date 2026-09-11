@@ -614,6 +614,64 @@ function _errorDeEnlace_(mensaje, codigo) {
 }
 
 /**
+ * Cuánto vive un enlace de recuperación: SIETE días desde `created_at`, salvo que la
+ * solicitud ya esté enviada (ésas se recuperan siempre, DL-E38).
+ *
+ * ⛔ **UN SOLO SITIO.** Vivía escrito dentro de `_rechazosDelEnlace_` y ahora lo miran DOS:
+ * el juez que RECHAZA un enlace caducado y el que decide si HACE FALTA renovarlo
+ * (`_alEnlaceLeQuedaMargen_`). Dos copias de este número divergirían, y la segunda
+ * decidiría «le queda margen» sobre un plazo que la primera ya no reconoce.
+ * @private
+ */
+var RESUME_TOKEN_TTL_MS_ = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * `③18.bis.15` (2026-09-11) — **MARGEN MÍNIMO: por debajo de esto se renueva el
+ * enlace; por encima se manda el que ya hay.**
+ *
+ * ★ **El VALOR lo decide Diego.** Está aquí, con nombre, en UN solo sitio y en días, para
+ * que cambiarlo sea una línea. La propuesta con la que nace son **2 días**.
+ *
+ * ⚠️ **LO QUE ACEPTA, escrito para que nadie se sorprenda, y es DELIBERADO:** con esto un
+ * enlace de recuperación **ya no nace siempre con la validez al máximo** — puede llegar con
+ * el margen que le quedaba (nunca menos de éste). Y **los enlaces de correos anteriores
+ * siguen valiendo** hasta su vencimiento original: hoy la rotación los invalidaba. Las dos
+ * cosas son el efecto buscado, no un descuido.
+ * @private
+ */
+var MARGEN_MINIMO_DEL_ENLACE_MS_ = 2 * 24 * 60 * 60 * 1000;
+
+/**
+ * ¿Al enlace que la familia YA tiene le queda margen de validez suficiente como para
+ * mandárselo tal cual, sin rotarlo?
+ *
+ * ⛔ **DEGRADA HACIA RENOVAR.** Devuelve `true` SOLO cuando se puede DEMOSTRAR el margen.
+ * Falta `created_at`, fecha ilegible, no hay token que reenviar, cualquier duda ⇒ `false`
+ * ⇒ se renueva como siempre. **Nunca se manda un enlace caducado por ahorrar un salto.**
+ *
+ * ⛔ **NO mira `submitted_at`, a propósito.** Esa regla —«las enviadas no se renuevan»— tiene
+ * UN dueño, el `if (g.submitted_at) return;` de sus dos llamantes, y sigue intacta. Meterla
+ * también aquí crearía un segundo criterio sobre lo mismo (y además al revés: para una
+ * enviada este helper diría «renueva», que es justo lo contrario de lo que toca).
+ *
+ * @param {Object} group fila del expediente (proyección de `enr.expedienteDelToken` o de
+ *                       `enr.recuperacionDelCorreo`: las dos traen `created_at`)
+ * @returns {boolean} true ⇒ NO hace falta renovar
+ * @private
+ */
+function _alEnlaceLeQuedaMargen_(group) {
+  try {
+    if (!group || !group.resume_token) return false;   // sin token que reenviar: renovar
+    const creado = group.created_at ? new Date(group.created_at).getTime() : 0;
+    if (!creado || isNaN(creado)) return false;        // sin fecha legible: renovar
+    const restante = (creado + RESUME_TOKEN_TTL_MS_) - Date.now();
+    return restante >= MARGEN_MINIMO_DEL_ENLACE_MS_;
+  } catch (e) {
+    return false;                                      // cualquier duda: renovar
+  }
+}
+
+/**
  * `0º.tricies.vicies.quinquies` (2026-08-26) — **UN SOLO SITIO decide si un enlace vale.**
  *
  * Los TRES rechazos —no reconocido · abandonado · caducado a los 7 días salvo enviada—
@@ -641,7 +699,7 @@ function _rechazosDelEnlace_(group) {
     return _errorDeEnlace_('Unauthorized: resume_token abandoned', 'ENLACE_ABANDONADO');
   }
   if (!group.submitted_at) {
-    const RESUME_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+    const RESUME_TOKEN_TTL_MS = RESUME_TOKEN_TTL_MS_;
     const createdAt = group.created_at ? new Date(group.created_at).getTime() : 0;
     if (createdAt && (Date.now() - createdAt) > RESUME_TOKEN_TTL_MS) {
       Logger.log(redact_('[requireResumeToken_] reject: expired group=' + group.enrollment_group_id));
@@ -3673,7 +3731,13 @@ function sendMagicLink_(p) {
     // nuevo server-side (CSPRNG) y lo persiste; si no pudo persistir (P72) devuelve
     // renewed:false con el token vivo (mismo fallback que el batch multi histórico).
     let tokenToSend = grp.resume_token;
-    if (!grp.submitted_at) {
+    // ★ `③18.bis.15` (2026-09-11) — SI AL ENLACE LE QUEDA MARGEN, NO SE RENUEVA.
+    // Renovar es el salto MÁS CARO de este camino (18,7 s de los 38 s medidos el 2026-09-11
+    // con `manual_diagTimelineDelCorreo`), y es innecesario cuando el enlace que la familia
+    // va a recibir todavía tiene días de validez por delante: se manda el que ya hay.
+    // ⛔ La regla de las ENVIADAS no se toca y sigue mandando ella: `!grp.submitted_at`.
+    const _sinRenovarPorMargen = !grp.submitted_at && _alEnlaceLeQuedaMargen_(grp);
+    if (!grp.submitted_at && !_sinRenovarPorMargen) {
       const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: grp.resume_token });
       tokenToSend = (touch && touch.resume_token) || grp.resume_token;
       // ⛔ ②17 (2026-08-19) — AQUÍ SE ROTA EL ENLACE, así que la cabecera que la puerta dejó
@@ -3696,14 +3760,26 @@ function sendMagicLink_(p) {
         Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
       }
     }
-    _trazaPaso_(trazaInterna, 'kms_renovar_enlace', { n: grp.submitted_at ? 0 : 1 });
+    _trazaPaso_(trazaInterna, 'kms_renovar_enlace', {
+      n:          (grp.submitted_at || _sinRenovarPorMargen) ? 0 : 1,
+      con_margen: _sinRenovarPorMargen ? 1 : 0,
+    });
 
     // IDENTITY-FROM-LINK (2026-06-11): `n` := email_id de la fila enrEmails del guardian
     // destino (opaco, sin PII, ya existe). La identidad viaja EN EL ENLACE; cero columna.
     // ②17: ya resuelto arriba, en la MISMA pregunta que dijo de quién es el correo. Sin
     // tutor que case → `nEmailId` queda null y el enlace sale sin `n`, igual que antes.
     // Gracia OTP-skip anclada al resume_token recién rotado (single-use, 10 min).
-    _mintMagicLinkNonce_(tokenToSend, grp.enrollment_group_id);
+    // ⛔ `③18.bis.15` — SI NO SE HA ROTADO POR MARGEN, **NO SE ACUÑA LA GRACIA**.
+    // La propiedad de seguridad que `_mintMagicLinkNonce_` declara en su cabecera es literal:
+    // *«la rotación del token en la emisión crea el marcador con el token NUEVO; un token
+    // viejo/filtrado/reusado no tiene marcador»*. Acuñarla sobre un token que NO se ha rotado
+    // se la regala a cualquiera que YA tuviera ese token (basta con disparar la recuperación
+    // pública con el correo de la familia, sin leer su buzón) ⇒ se salta el código de un solo
+    // uso, que existe justo para probar que quien opera AHORA controla el buzón (②27/②24).
+    // COSTE ACEPTADO: la familia cuyo enlace no se rota teclea su código, como en cualquier
+    // otra visita fuera de la ventana de gracia. Es la mitad honesta del ahorro.
+    if (!_sinRenovarPorMargen) _mintMagicLinkNonce_(tokenToSend, grp.enrollment_group_id);
     const langP1 = grp.preferred_language || 'es';
     // WIZARD-TERMINAL P3: el contenido lo gobierna el KMS. Path 1 (single session, p.ej.
     // desde dentro del wizard) → isFirstApp false (sin bloque GDPR).
@@ -3860,8 +3936,19 @@ function sendMagicLink_(p) {
       // que se cuenta aparte y con su número: sin eso, «tardó mucho» no dice si fue un viaje
       // lento o cuatro viajes normales.
       const _renovaciones = [];
+      // ★ `③18.bis.15` (2026-09-11) — los expedientes cuyo enlace TODAVÍA TIENE
+      // MARGEN no se renuevan: se manda el `resume_token` que ya tienen. Se apuntan aquí
+      // para que la gracia OTP-skip NO se acuñe sobre ellos (ver más abajo, y el porqué en
+      // el bloque equivalente de la rama de token).
+      const sinRenovarPorMargen = {};
+      let _conMargen = 0;
       sorted.forEach(g => {
         if (g.submitted_at) return; // submitted: send existing token, do not renew
+        if (_alEnlaceLeQuedaMargen_(g)) {
+          sinRenovarPorMargen[g.enrollment_group_id] = true;
+          _conMargen++;
+          return;   // ⛔ ni se renueva, ni se olvida la copia de la puerta: nada ha cambiado
+        }
         const _tRenov = Date.now();
         try {
           const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: g.resume_token });
@@ -3888,8 +3975,9 @@ function sendMagicLink_(p) {
         }
       });
       _trazaPaso_(trazaCorreo, 'kms_renovar_enlace', {
-        n:       _renovaciones.length,
-        cada_ms: _renovaciones,
+        n:          _renovaciones.length,
+        cada_ms:    _renovaciones,
+        con_margen: _conMargen,
       });
       // ②17 (octavo tramo): el `email_id` de ESTE buzón en CADA expediente ya viene
       // resuelto por el KMS —que es quien lee `enrEmails`—, de modo que aquí no se
@@ -3914,7 +4002,13 @@ function sendMagicLink_(p) {
         // instead of the abridged multi template when there's actually only one
         // open session — which is the common case under the new single-session policy.
         const nEmailId = identificadorDeCorreo[grps[0].enrollment_group_id] || null;
-        _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
+        // ⛔ `③18.bis.15` — la gracia OTP-skip solo se acuña sobre un token RECIÉN
+        // ROTADO (ver el porqué en la rama de token). Los que se mandan sin renovar por
+        // margen quedan fuera; los ya ENVIADOS y los que fallaron al renovar siguen
+        // EXACTAMENTE como antes de este cambio.
+        if (!sinRenovarPorMargen[grps[0].enrollment_group_id]) {
+          _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
+        }
         // WIZARD-TERMINAL P3: contenido gobernado por el KMS. isFirstApp false (recuperación).
         const resumeUrlR = RESUME_BASE_URL + grps[0].resume_token + (nEmailId ? '?n=' + nEmailId : '');
         _trazaPaso_(trazaCorreo, 'armar_el_enlace', { n_expedientes: 1 });
@@ -3935,7 +4029,12 @@ function sendMagicLink_(p) {
         // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
         // del guardian en SU grupo. La gracia OTP-skip se ancla al resume_token de cada grupo.
         const nEmailIds = grps.map(g => identificadorDeCorreo[g.enrollment_group_id] || null);
-        grps.forEach(g => _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id));
+        // ⛔ `③18.bis.15` — mismo criterio que la rama de un solo expediente: los
+        // que se mandan sin renovar por margen NO reciben gracia.
+        grps.forEach(g => {
+          if (sinRenovarPorMargen[g.enrollment_group_id]) return;
+          _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id);
+        });
         // WIZARD-TERMINAL P3: la lista de enlaces la pre-renderiza el wizard en UN placeholder;
         // el resto del contenido (saludo, footer) lo gobierna el KMS. El report link usa el
         // primer token (reportUnsolicited_ bloquea el email, no la sesión — cualquiera vale).

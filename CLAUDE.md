@@ -4615,6 +4615,78 @@ vez de enseñar un fallo que no era suyo.
 **Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp` y sin
 turno.
 
+### `③18.bis.15` (2026-09-11) — si al enlace le queda margen, NO se renueva
+
+**El correo del enlace tardaba 38 s de trabajo síncrono, y 18,7 s se iban en UNA sola llamada:
+`enr.renewApplicationSession`.** Cada salto al KMS cuesta ~15-19 s de arranque de Apps Script
+(§"EL TIEMPO DE UNA PANTALLA ES SU NÚMERO DE VIAJES", `kis-app/CLAUDE.md`), así que el ahorro no
+está en afinar nada: está en **no hacer el viaje cuando no hace falta**. Y no hace falta cuando el
+enlace que la familia va a recibir **todavía tiene días de validez por delante**.
+
+**⚠️ LA PREMISA DEL ENCARGO ERA FALSA, y es el hallazgo que va primero.** Decía: *«comprueba que
+`created_at` viene en la proyección; si NO viene, añádelo a esa proyección»*. **Ya venía, en las
+DOS rutas** — `enr_wizardRecuperacionDelCorreo` lo declara entre sus cinco campos y
+`enr_wizardExpedienteDelToken` también (`kis-app kms-server/enr/wizard-gateway.gs`) ⇒ **CERO
+cambios en el KMS**: este tramo es de un solo repositorio y de un solo fichero.
+
+**El umbral, con nombre y en un solo sitio:** `MARGEN_MINIMO_DEL_ENLACE_MS_` — **nace en 2 días y
+el VALOR lo decide Diego**; cambiarlo es una línea. Y el plazo de vida del enlace
+(`RESUME_TOKEN_TTL_MS_`, 7 días) **subió a constante de módulo**: lo miran ahora DOS —el juez que
+RECHAZA un enlace caducado (`_rechazosDelEnlace_`) y el que decide si hace falta renovarlo—, y dos
+copias de ese número divergirían.
+
+**⛔ DEGRADA HACIA RENOVAR.** `_alEnlaceLeQuedaMargen_` devuelve `true` **solo cuando puede
+DEMOSTRAR** el margen: sin `created_at`, con fecha ilegible, sin token que reenviar o ante cualquier
+excepción ⇒ `false` ⇒ se renueva como siempre. **Nunca se manda un enlace caducado por ahorrar un
+salto.**
+
+**⛔ Y NO MIRA `submitted_at`, a propósito.** Esa regla —«las enviadas no se renuevan»— tiene UN
+dueño, el `if (g.submitted_at) return;` de sus dos llamantes, y se queda **verbatim**. Meterla
+también aquí sería un segundo criterio sobre lo mismo, y además al revés (para una enviada este
+ayudante diría «renueva»).
+
+**⛔⛔ LO QUE EL ENCARGO NO PEDÍA Y ERA OBLIGATORIO: si no se rota, NO SE ACUÑA LA GRACIA.** La
+propiedad que `_mintMagicLinkNonce_` declara en su propia cabecera es literal: *«la rotación del
+token en la emisión crea el marcador con el token NUEVO; un token viejo/filtrado/reusado no tiene
+marcador»*. Acuñarla sobre un token **que no se ha rotado** se la regala a cualquiera que YA
+tuviera ese token —le basta con disparar la recuperación pública con el correo de la familia, **sin
+leer su buzón**— y con ella se salta el código de un solo uso, que existe justo para probar que
+quien opera AHORA controla el buzón (②27/②24). **COSTE ACEPTADO**: la familia cuyo enlace no se
+rota teclea su código, como en cualquier otra visita fuera de la ventana de gracia. Es la mitad
+honesta del ahorro, y está en los **tres** puntos de emisión (rama de token · un expediente ·
+varios).
+
+**⛔ Y cuando NO se renueva no se olvida la copia de la puerta.** `_olvidarCabeceraMemo_` y
+`_moverLaCopiaDeLaPuerta_` existen porque **la rotación invalida el token viejo**; aquí no rota
+nada, así que la copia sigue siendo cierta — tirarla costaría el viaje en vivo que este tramo viene
+a evitar (§`0º.tricies.vicies.quinquies`).
+
+**DOS CONSECUENCIAS DELIBERADAS, escritas para que nadie las lea como defecto:** un enlace de
+recuperación **ya no nace siempre con la validez al máximo** (llega con el margen que le quedaba,
+nunca menos del umbral), y **los enlaces de correos anteriores siguen valiendo** hasta su
+vencimiento original — hoy cada rotación los mataba.
+
+**LO QUE NO CAMBIA, campo por campo:** el **ack constante** de la rama pública (WIZ-ENUM) —el
+camino con margen y el que renueva devuelven la MISMA forma, y el ahorro **acerca** los dos tiempos
+en vez de separarlos— · **KAL-4** (el expediente sale del token, jamás del cuerpo) · la **verja
+reCAPTCHA** y su orden · el **cupo** de 5/hora · los **tres rechazos** del enlace · el código de un
+solo uso · y la regla de las enviadas.
+
+⚠️ **NINGUNA RED AUTOMÁTICA CUBRE ESTO**: `npm run e2e:wizard` corre contra un backend **simulado**
+que **nunca ejecuta `backend/Code.js`**, y este cambio es invisible para el navegador (mismo correo,
+misma pantalla; solo cambia cuánto se espera y si el enlace rota). Se **midió aparte**, con un arnés
+efímero fuera del repositorio que extrae del FUENTE `RESUME_TOKEN_TTL_MS_`,
+`MARGEN_MINIMO_DEL_ENLACE_MS_`, `_alEnlaceLeQuedaMargen_`, `_errorDeEnlace_`, `_rechazosDelEnlace_`
+y **los dos bloques de `sendMagicLink_` enteros**, y los ejecuta con dobles: **30 afirmaciones
+verdes** —incluido un barrido de 481 instantes de la vida del enlace donde «le queda margen» y «está
+caducado» **nunca** se solapan— y **SEIS roturas ROJAS demostradas**: el código de AYER (renueva
+siempre) · acuñar la gracia sin rotar (las tres ramas) · que el ayudante mire `submitted_at` · que
+deje de degradar ante `created_at` ausente · olvidar la copia de la puerta sin haber rotado · y el
+**renombrado**, que sale **«MEDICIÓN CIEGA»** y no verde. **Quien toque esto, que lo mida.**
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia recibe exactamente el mismo correo
+con exactamente el mismo enlace; lo que cambia es cuánto tarda en llegarle.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.
