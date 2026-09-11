@@ -4996,6 +4996,28 @@ Windows Schannel: añade `--ssl-no-revoke` a curl si la red corporativa bloquea 
 **Los pide el asistente; los MANDA el KMS (D123).** Son cuatro avisos + el código de un solo uso, y
 ninguno es la confirmación a la familia: `WIZARD_MAGIC_LINK` y `WIZARD_MAGIC_LINK_MULTI` (a la familia, el enlace para volver a su solicitud) · `WIZARD_SESSION_STARTED` y `WIZARD_UNSOLICITED_REPORTED` (a admisiones, internos) · `WIZARD_OTP` (el código de un solo uso, por `sendViaKmsAuthCode_`). **La confirmación de «solicitud recibida» y los avisos del expediente NO los manda el wizard: los gobierna el motor de avisos del KMS a partir de los hitos** (los dos correos del envío se retiraron del wizard el 2026-08-07 y hoy cuelgan de la entrada en RQ).
 
+> **★ 2026-09-11 — DECISIÓN DE DIEGO: de los cuatro, DOS son de salida.** Cita literal: *«Los únicos
+> emails que debería mandar el wizard por petición propia a la API del KMS deberían ser el magic link
+> y el OTP. A partir de ahí, el resto de emails transaccionales van asociados a cambios de estado y
+> estos a su vez, mueven hitos que son los que deben enviar el email.»*
+>
+> **Lo que ya cambió (KMS publicado el 2026-09-11):** la lista cerrada del KMS
+> (`kms-server/sys/notify-public.gs`) **retiró `WIZARD_FAMILY_CONFIRMATION` y
+> `WIZARD_INTERNAL_NOTIFICATION`** — CERO llamantes desde agosto de 2026, medido contra `origin/main`.
+> Aquí solo quedaban en comentarios y en la expresión de `comprobar-que-el-wizard-no-escribe-estado.mjs`,
+> que vigila justamente que no vuelvan. **Nada que tocar en este repositorio por eso.**
+>
+> **Lo que NO ha cambiado todavía, y por qué:** los CINCO códigos de arriba **siguen saliendo desde
+> aquí exactamente igual**. `WIZARD_UNSOLICITED_REPORTED` es el próximo en irse —el KMS ya deja
+> constancia del hecho como hito cuando `enr.abandonApplicationSession` recibe
+> `motivo: 'NO_SOLICITADO'`, pero **este repositorio aún no lo manda** y ninguna regla escucha—; se
+> retira en UNA sola publicación cuando Diego declare el hito y su aviso, **nunca antes** (dejaría a
+> admisiones sin enterarse). ⛔ **`WIZARD_SESSION_STARTED` NO se puede mover**: ocurre antes de que
+> exista expediente y los hitos cuelgan del expediente; el único punto de partida que serviría
+> (`ENTITY_CREATED_AT`) no tiene camino inmediato ⇒ llegaría hasta un día tarde. Es decisión de Diego.
+> Detalle, orden exacto y camino de clics: `kis-app/docs/kms/decisions/sys.md` **DL-S69 §0** y
+> `kis-app/docs/kms/loop-backlog.md` **`①96`**.
+
 **Un nombre de plantilla dentro de un comentario NO es un envío.** Antes de afirmar que el wizard manda algo, cuenta los llamadores contra `origin/main` — nunca contra el árbol de trabajo: `git show origin/main:backend/Code.js | grep -oE "sendViaKmsNotify_\('[A-Z_]+'" | sort -u`. Un `@param` obsoleto que nombraba `WIZARD_FAMILY_CONFIRMATION` (cero llamadores) hizo que **tres agentes distintos, en dos días**, le afirmaran a Diego que el wizard manda esa confirmación; tuvo que desmentirlo tres veces y estuvo a punto de frenar un despliegue.
 
 ---
