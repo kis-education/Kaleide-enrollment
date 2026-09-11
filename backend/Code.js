@@ -12431,3 +12431,44 @@ function manual_diagFicherosEnCarpetaVieja() {
   Logger.log(JSON.stringify(out, null, 2));
   return out;
 }
+
+/**
+ * ⛔ SONDA DE UNA NOCHE (2026-09-11) — ¿a qué dirección del KMS habla el asistente?
+ *
+ * Diego, 2026-09-10: «hay que conectar el wizard ya con el despliegue PostgreSQL». Antes de
+ * cambiar nada hay que saber a dónde apunta hoy. Solo LEE una propiedad del proyecto; no escribe.
+ * No es un secreto: es una dirección pública de despliegue. El testigo de servicio NO se imprime.
+ */
+function manual_diagADondeHablaElAsistente() {
+  var p = PropertiesService.getScriptProperties();
+  var url = p.getProperty('KMS_DEPLOYMENT_URL') || '(sin poner)';
+  var l = [];
+  l.push('KMS_DEPLOYMENT_URL = ' + url);
+  l.push('QB_SERVICE_TOKEN puesto: ' + (p.getProperty('QB_SERVICE_TOKEN') ? 'sí' : 'NO'));
+  l.push('¿es la URL del Head (/dev)? ' + (/\/dev\/?$/.test(url) ? 'SÍ' : 'no, es /exec'));
+  var txt = l.join('\n');
+  Logger.log(txt);
+  return txt;
+}
+
+/**
+ * ⛔ CAMBIA la dirección del KMS a la que habla el asistente. Sin argumento solo INFORMA.
+ * @param {string} [url] la dirección nueva (tiene que acabar en /exec o /dev)
+ */
+function manual_apuntarElAsistenteAlKms(url) {
+  var p = PropertiesService.getScriptProperties();
+  var antes = p.getProperty('KMS_DEPLOYMENT_URL') || '(sin poner)';
+  if (!url) {
+    var m = 'AHORA: ' + antes + '\nSin argumento no se cambia nada.';
+    Logger.log(m); return m;
+  }
+  // ⛔ Se comprueba la FORMA antes de escribir: una dirección sin `/exec` o `/dev` no es un
+  //    despliegue de Apps Script, y dejarla puesta rompe TODO el asistente en silencio.
+  if (!/^https:\/\/script\.google\.com\/.*\/(exec|dev)$/.test(String(url))) {
+    var e = 'NO SE CAMBIA: «' + url + '» no tiene forma de dirección de despliegue de Apps Script.';
+    Logger.log(e); return e;
+  }
+  p.setProperty('KMS_DEPLOYMENT_URL', String(url));
+  var r = 'ANTES : ' + antes + '\nAHORA : ' + p.getProperty('KMS_DEPLOYMENT_URL');
+  Logger.log(r); return r;
+}
