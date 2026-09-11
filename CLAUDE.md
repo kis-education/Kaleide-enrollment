@@ -1804,12 +1804,18 @@ cuerpo · usando el memo de LECTURA del gate en una rama que ROTA el token · re
 **Límite declarado** en la cabecera del módulo: es un detector por líneas, no un analizador
 sintáctico, y **no afirma que Google puntúe bien**.
 
-**Lo que este cambio NO cierra, y hay que decirlo:** quien SÍ pueda resolver un reCAPTCHA
-(puntuación ≥ 0,5, o un servicio de resolución) **sigue viendo ~46 s frente a ~7 s**. La verja
-**encarece** el sondeo masivo, no lo elimina. Eliminarlo requiere **sacar el envío del camino
-de la respuesta** (apuntar el trabajo para que se haga y contestar al momento), que toca los
-dos proyectos y **retrasa el correo de la familia** — decisión de producto, no de código.
-Queda escrito en la cola (`kis-app/docs/kms/loop-backlog.md` ②2).
+⛔ **Lo que este apartado decía que quedaba abierto —que quien saltara el anti-robot podía
+distinguir por TIEMPO si un correo tiene solicitud (~46 s frente a ~7 s)— está RETIRADO.** Decisión
+expresa de Diego, que lo devolvió **dos veces** (2026-08-16 y 2026-09-11): *«medir tiempos diferentes
+no es nada que pueda dar una pista de nada. Toda la idea es absurda.»* **No es un riesgo aceptado ni
+un residuo: no se considera un problema.** No se mide, no se reporta y **no condiciona ninguna
+publicación** — si al tocar este camino te parece que «los tiempos podrían separarse», **eso NO es un
+hallazgo**. Citas y motivo: `kis-app/docs/kms/pendiente-diego.md` **D50**.
+
+**Lo que SÍ sigue vigente y no se toca:** la respuesta de esta rama es **constante en su FORMA**
+(`_magicLinkConstantAck_`, con señuelo cuando no hay expediente) y la **verja anti-robot** sigue en
+las tres entradas públicas, fail-closed — encarece el sondeo masivo y protege el cupo de
+recuperación de las familias.
 
 ### `0º.sexdecies` (2026-08-21) — tras subir un documento, la familia ya puede comprobar qué tipo declaró y de quién dijo que era
 
