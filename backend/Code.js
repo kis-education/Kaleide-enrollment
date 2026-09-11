@@ -2509,6 +2509,10 @@ function doPost(e) {
   // del tiempo de reloj que ve quien llama y separar el peaje del salto (§"El salto del
   // asistente al KMS…" en loop-backlog.md). Molde: `apiDispatch_` del KMS (`__perf.ms`).
   const _perfT0_ = Date.now();
+  // TIMELINE DEL CORREO (2026-09-11) — el MISMO instante, visible desde `sendMagicLink_`
+  // para poder decir cuánto pasa entre que la petición llega y el correo se pide. Una
+  // asignación; ningún comportamiento cambia.
+  _TRAZA_DOPOST_MS_ = _perfT0_;
   try {
     const payload = JSON.parse(e.postData.contents);
     _dbgStart_(payload); // DBG-TRACE: cronología server-side si _dbg:true
@@ -3450,6 +3454,99 @@ function resolveGuardianForRecovery_(resumeToken, recoveredEmail) {
 // nada más (cualquier fila viva del expediente, con o sin persona vinculada), así que sigue
 // habiendo `n` para correos que no resuelven a tutor, igual que antes.
 
+// ─── TIMELINE DEL CORREO DEL ENLACE (2026-09-11) ─────────────────────────────
+//
+// PARA QUÉ: Diego pidió su enlace y el correo tardó casi cinco minutos. Se sabía que la base
+// de datos NO es el cuello (consultas en milisegundos) y que el proceso tiene DOS mitades —
+// una SÍNCRONA aquí (verja + preguntas al KMS) y una ASÍNCRONA en el KMS (el correo queda
+// apuntado y un trabajador lo manda después)—, pero NO quedaba REGISTRADO el tiempo de cada
+// paso de una corrida real. Esto lo registra.
+//
+// DÓNDE ATERRIZA: los tiempos viajan DENTRO del contexto de `sys-public.sendNotification`,
+// que el KMS persiste ENTERO en la columna `payload` de la fila del trabajo (`sys_JobQueue`).
+// Esa MISMA fila lleva además `created_at` (cuándo se apuntó) y `processed_at` (cuándo se
+// mandó de verdad) ⇒ UNA sola fila tiene el recorrido completo. Se lee con la sonda de solo
+// lectura `manual_diagTimelineDelCorreo` del KMS.
+//
+// ⛔ NI UN DATO DE FAMILIA. Solo relojes, duraciones, un identificador de traza acuñado aquí
+// y un código de plantilla del catálogo. Ni correos, ni nombres, ni enlaces, ni tokens.
+//
+// ⛔ DEGRADA SIN ROMPER, y es la condición de todo esto: si cualquier parte de la traza
+// falla, el correo sale EXACTAMENTE igual. Ninguna de estas funciones lanza nunca.
+//
+// ⚠️ Y NO cambia el comportamiento: añadir claves al contexto NO invalida la firma (el
+// canónico se computa sobre el objeto que se firma, y estas claves están dentro cuando se
+// firma) y NO toca el `dedupe_key` del KMS, que se calcula de (plantilla, destinatarios,
+// ficha, día) y no del contenido.
+
+/** Instante en que se evaluó el ámbito global de este fichero — el arranque del script. */
+var _TRAZA_CARGA_MS_ = Date.now();
+
+/** Instante de entrada a `doPost` (lo estampa `doPost`). Null si se llega por otra vía. */
+var _TRAZA_DOPOST_MS_ = null;
+
+/**
+ * @private Abre una traza de tiempos. NUNCA lanza.
+ * @param {string} camino  'publica' | 'interna' — qué rama de `sendMagicLink_` se recorre.
+ */
+function _trazaAbrir_(camino) {
+  try {
+    var ahora = Date.now();
+    var ref = _TRAZA_DOPOST_MS_ || ahora;
+    var tz = {
+      id:        Utilities.getUuid(),
+      camino:    camino,
+      t_llegada: new Date(ref).toISOString(),
+      pasos:     [],
+      _ref:      ref,
+      _ultimo:   ref,
+    };
+    // El arranque del script hasta la entrada de `doPost`: es el peaje de Apps Script, y
+    // sin él parecería que el asistente tarda menos de lo que la familia espera.
+    if (_TRAZA_DOPOST_MS_ && _TRAZA_CARGA_MS_) {
+      tz.pasos.push({ p: 'arranque_del_script', ms: Math.max(0, _TRAZA_DOPOST_MS_ - _TRAZA_CARGA_MS_) });
+    }
+    return tz;
+  } catch (e) { return null; }
+}
+
+/**
+ * @private Cierra un tramo y lo apunta. NUNCA lanza.
+ * @param {?Object} tz      traza abierta (o null — entonces no hace nada).
+ * @param {string}  nombre  nombre del paso, en llano.
+ * @param {?Object} extra   datos EXTRA sin PII (p.ej. `{ n: 2 }` expedientes).
+ */
+function _trazaPaso_(tz, nombre, extra) {
+  try {
+    if (!tz) return;
+    var ahora = Date.now();
+    var paso = { p: nombre, ms: ahora - tz._ultimo };
+    if (extra) { Object.keys(extra).forEach(function (k) { paso[k] = extra[k]; }); }
+    tz.pasos.push(paso);
+    tz._ultimo = ahora;
+  } catch (e) { /* la traza nunca puede impedir un correo */ }
+}
+
+/**
+ * @private Cierra la traza y devuelve el objeto LIMPIO que viaja al KMS. NUNCA lanza.
+ * Devuelve `undefined` si algo falló: el contexto sale entonces sin traza y el correo igual.
+ */
+function _trazaParaElKms_(tz, plantilla) {
+  try {
+    if (!tz) return undefined;
+    var ahora = Date.now();
+    return {
+      id:           tz.id,
+      tpl:          plantilla || null,
+      camino:       tz.camino,
+      t_llegada:    tz.t_llegada,
+      t_pide_envio: new Date(ahora).toISOString(),
+      asistente_ms: ahora - tz._ref,
+      pasos:        tz.pasos,
+    };
+  } catch (e) { return undefined; }
+}
+
 /**
  * Resends magic link for an existing enrollment session.
  *
@@ -3497,6 +3594,13 @@ function sendMagicLink_(p) {
     // de la rama pública (②2) — quien no trae llave no debe poder gastar trabajo ni
     // consumirle el cupo a una familia real.
     const groupId = requireResumeToken_(p);
+
+    // TIMELINE DEL CORREO (2026-09-11) — se abre DESPUÉS de la puerta a propósito: la puerta
+    // va lo primero de esta rama por seguridad (②26) y nada puede colarse por delante, ni
+    // siquiera una línea de medición. El reloj no se pierde: la referencia es la entrada a
+    // `doPost`, así que este primer tramo YA incluye lo que costó la puerta.
+    const trazaInterna = _trazaAbrir_('interna');
+    _trazaPaso_(trazaInterna, 'puerta_del_enlace');
 
     // ②17 (2026-08-23) — ESTA ERA UNA DE LAS DOS ÚLTIMAS LECTURAS DIRECTAS A AppSheet DEL
     // CAMINO VIVO. Ahora la fila la da el lector ÚNICO `_expedienteDelToken_` (sexto tramo),
@@ -3557,8 +3661,10 @@ function sendMagicLink_(p) {
       // tutor-1 / artefacto Stage-1), ése es el tutor del enlace y de él sale el `n`.
       if (tutorPrimario.tutor) nEmailId = tutorPrimario.email_id;
     }
+    _trazaPaso_(trazaInterna, 'kms_cabecera_y_tutor');
     _checkMagicLinkRateLimit_((destEmail || '').toLowerCase().trim());
     _checkMagicLinkRateLimitIp_(null /* KAL-6: IP source pending — GAS no expone IP; noop */);
+    _trazaPaso_(trazaInterna, 'cupo_por_buzon');
 
     // Renew token + created_at for non-submitted sessions so the new link is
     // always valid for a fresh 7-day window regardless of when the session was
@@ -3590,6 +3696,7 @@ function sendMagicLink_(p) {
         Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
       }
     }
+    _trazaPaso_(trazaInterna, 'kms_renovar_enlace', { n: grp.submitted_at ? 0 : 1 });
 
     // IDENTITY-FROM-LINK (2026-06-11): `n` := email_id de la fila enrEmails del guardian
     // destino (opaco, sin PII, ya existe). La identidad viaja EN EL ENLACE; cero columna.
@@ -3601,12 +3708,15 @@ function sendMagicLink_(p) {
     // WIZARD-TERMINAL P3: el contenido lo gobierna el KMS. Path 1 (single session, p.ej.
     // desde dentro del wizard) → isFirstApp false (sin bloque GDPR).
     const resumeUrlP1 = RESUME_BASE_URL + tokenToSend + (nEmailId ? '?n=' + nEmailId : '');
+    _trazaPaso_(trazaInterna, 'armar_el_enlace', { n_expedientes: 1 });
     sendViaKmsNotify_('WIZARD_MAGIC_LINK', destEmail, {
       family_name:      '',
       resume_url:       resumeUrlP1,
       report_url:       REPORT_BASE_URL + tokenToSend,
       gdpr_block:       _kmsRenderGdprBlock_(false),
       admissions_email: ADMISSIONS_EMAIL,
+      // TIMELINE — viaja al KMS y acaba en la fila del trabajo. Cero datos de familia.
+      _traza:           _trazaParaElKms_(trazaInterna, 'WIZARD_MAGIC_LINK'),
       lang:             langP1,
     });
     // SPEC-WIZ-WARMUP-V2: ticket para que el frontend dispare warmBundle fire-and-forget
@@ -3628,6 +3738,9 @@ function sendMagicLink_(p) {
     // La decisión recuperar-vs-crear vive AHORA SERVER-SIDE (antes la tomaba el
     // cliente ramificando sobre el propio oráculo: la landing leía "not found" y
     // llamaba a initEnrollmentSession). Ver la rama "sin grupo" abajo.
+    // TIMELINE DEL CORREO (2026-09-11) — se abre AQUÍ, lo primero de la rama pública, para
+    // que el reloj empiece a contar antes de la verja. Ver el bloque de arriba.
+    const trazaCorreo = _trazaAbrir_('publica');
     assertValidEmail_(p.primary_email, 'primary_email');
     const typedEmail = p.primary_email.toLowerCase().trim();
 
@@ -3652,6 +3765,7 @@ function sendMagicLink_(p) {
     //
     // NUNCA lanza: un error aquí solo puede distinguirse de un éxito ⇒ mismo ack.
     const verja = _verjaPublicaVeredicto_(p.recaptcha_token);
+    _trazaPaso_(trazaCorreo, 'verja_recaptcha');
     if (!verja.ok) {
       Logger.log(redact_('sendMagicLink_: suppressed for ' + typedEmail +
                  ' (' + verja.code + ') — constant ack (②2)'));
@@ -3671,6 +3785,7 @@ function sendMagicLink_(p) {
                  ' (' + ((eRate && eRate.code) || 'RATE') + ') — constant ack'));
       return _magicLinkConstantAck_();
     }
+    _trazaPaso_(trazaCorreo, 'cupo_por_buzon');
 
     try {
       // ── ②17 OCTAVO TRAMO (2026-08-15): LAS LECTURAS LAS HACE EL KMS ─────────
@@ -3691,6 +3806,8 @@ function sendMagicLink_(p) {
       // los enviados se les manda su token EXISTENTE (abajo se salta su renovación,
       // igual que en el camino 1).
       const recuperacion = _recuperacionDelCorreo_(p.primary_email);
+      // TIMELINE — primer viaje al KMS de esta rama (`enr.recuperacionDelCorreo`).
+      _trazaPaso_(trazaCorreo, 'kms_recuperacion_del_correo');
       // DL-E38 a1: un tutor NO principal recupera con SU propio correo — el KMS localiza
       // esos expedientes por `enrEmails` (y comprueba ahí dentro que la fila es de un
       // tutor, no de un menor). El enlace se manda al correo tecleado, o sea al buzón de
@@ -3738,10 +3855,17 @@ function sendMagicLink_(p) {
       // grupo sigue en UN batch paralelo (read-only, PERF 2026-06-12 intacta).
       const sorted = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
       const newTokens = {};   // group_id → token nuevo persistido por el KMS
+      // TIMELINE — cada renovación es UN viaje al KMS más, y son N (uno por expediente sin
+      // enviar). Es justo el tramo que crece con el número de solicitudes de esa familia, así
+      // que se cuenta aparte y con su número: sin eso, «tardó mucho» no dice si fue un viaje
+      // lento o cuatro viajes normales.
+      const _renovaciones = [];
       sorted.forEach(g => {
         if (g.submitted_at) return; // submitted: send existing token, do not renew
+        const _tRenov = Date.now();
         try {
           const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: g.resume_token });
+          _renovaciones.push(Date.now() - _tRenov);
           // ⛔ ②17 (2026-08-19) — misma rotación, mismo olvido que en la rama de arriba.
           // ★ PARTE (B) — ídem: mover antes de olvidar. Esta rama NO tiene puerta viva, así
           // que aquí NO se fabrica ninguna ficha: solo se traslada una copia que una puerta
@@ -3759,8 +3883,13 @@ function sendMagicLink_(p) {
             Logger.log(redact_('sendMagicLink_: token not renewed for group ' + g.enrollment_group_id + ' (KMS fallback — keeps live token)'));
           }
         } catch (e) {
+          _renovaciones.push(Date.now() - _tRenov);
           Logger.log(redact_('sendMagicLink_: failed to renew token for group ' + g.enrollment_group_id + ': ' + e.message));
         }
+      });
+      _trazaPaso_(trazaCorreo, 'kms_renovar_enlace', {
+        n:       _renovaciones.length,
+        cada_ms: _renovaciones,
       });
       // ②17 (octavo tramo): el `email_id` de ESTE buzón en CADA expediente ya viene
       // resuelto por el KMS —que es quien lee `enrEmails`—, de modo que aquí no se
@@ -3788,6 +3917,7 @@ function sendMagicLink_(p) {
         _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
         // WIZARD-TERMINAL P3: contenido gobernado por el KMS. isFirstApp false (recuperación).
         const resumeUrlR = RESUME_BASE_URL + grps[0].resume_token + (nEmailId ? '?n=' + nEmailId : '');
+        _trazaPaso_(trazaCorreo, 'armar_el_enlace', { n_expedientes: 1 });
         sendViaKmsNotify_('WIZARD_MAGIC_LINK', p.primary_email, {
           family_name:      '',
           resume_url:       resumeUrlR,
@@ -3795,6 +3925,8 @@ function sendMagicLink_(p) {
           gdpr_block:       _kmsRenderGdprBlock_(false),
           admissions_email: ADMISSIONS_EMAIL,
           lang:             lang,
+          // TIMELINE — viaja al KMS y acaba en la fila del trabajo. Cero datos de familia.
+          _traza:           _trazaParaElKms_(trazaCorreo, 'WIZARD_MAGIC_LINK'),
         });
         // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
         // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
@@ -3807,11 +3939,14 @@ function sendMagicLink_(p) {
         // WIZARD-TERMINAL P3: la lista de enlaces la pre-renderiza el wizard en UN placeholder;
         // el resto del contenido (saludo, footer) lo gobierna el KMS. El report link usa el
         // primer token (reportUnsolicited_ bloquea el email, no la sesión — cualquiera vale).
+        _trazaPaso_(trazaCorreo, 'armar_los_enlaces', { n_expedientes: grps.length });
         sendViaKmsNotify_('WIZARD_MAGIC_LINK_MULTI', p.primary_email, {
           family_name:        '',
           resume_links_block: _kmsRenderResumeLinksBlock_(grps.map(g => g.resume_token), nEmailIds, lang),
           report_url:         REPORT_BASE_URL + grps[0].resume_token,
           admissions_email:   ADMISSIONS_EMAIL,
+          // TIMELINE — viaja al KMS y acaba en la fila del trabajo. Cero datos de familia.
+          _traza:             _trazaParaElKms_(trazaCorreo, 'WIZARD_MAGIC_LINK_MULTI'),
           lang:               lang,
         });
         // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
