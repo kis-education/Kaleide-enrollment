@@ -2661,6 +2661,9 @@ function doPost(e) {
       case 'notifyLiveStateChange':   result = notifyLiveStateChange_(payload);   break;
       // D118 punto 4 — el KMS empuja la copia YA COMPUTADA (no solo avisa). Mismo gate
       // firmado que notifyLiveStateChange; lo llama SOLO el KMS.
+      // 2026-09-11 — el KMS siembra la respuesta de recuperación de un correo al invitar.
+      // Mismo gate firmado que los dos de arriba; lo llama SOLO el KMS.
+      case 'sembrarRecuperacion':     result = sembrarRecuperacion_(payload);     break;
       case 'pushWarmHydrate':         result = pushWarmHydrate_(payload);         break;
       case 'getLiveStateVersion':     result = getLiveStateVersion_(payload);     break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
@@ -3113,6 +3116,11 @@ function initEnrollmentSession_(p, opts) {
   });
   const enrollmentGroupId = created.enrollment_group_id;
   const resumeToken       = created.resume_token;
+
+  // ★ 2026-09-11 — ese correo acaba de ganar un expediente que la copia guardada NO conoce
+  // (§`_recuperacionDeLaCache_`). Se olvida en el acto: una respuesta incompleta le mandaría
+  // a la familia el enlace de unas solicitudes sí y de otras no.
+  _olvidarRecuperacionEnCache_((p.primary_email || '').toLowerCase().trim());
 
   // NOTE: GDPR consent record is intentionally deferred to submit time.
   // At init we have no enrEnrollments to attach the consent to, and the
@@ -3881,9 +3889,17 @@ function sendMagicLink_(p) {
       // para que el enlace los devuelva a la firma. Solo se excluyen los abandonados; a
       // los enviados se les manda su token EXISTENTE (abajo se salta su renovación,
       // igual que en el camino 1).
-      const recuperacion = _recuperacionDelCorreo_(p.primary_email);
-      // TIMELINE — primer viaje al KMS de esta rama (`enr.recuperacionDelCorreo`).
-      _trazaPaso_(trazaCorreo, 'kms_recuperacion_del_correo');
+      // ★ 2026-09-11 — LA CACHÉ VA PRIMERO. Este viaje costó **16,8 s** medidos, y ~15 de
+      // ellos son el SALTO, no la consulta (§`_recuperacionDeLaCache_`, arriba, con el porqué
+      // y con todo lo que la copia NO cubre). Sirve solo respuestas NO VACÍAS y con el sello
+      // de cada expediente al día; cualquier duda es un fallo de caché y se recorre el camino
+      // de siempre, byte a byte.
+      let recuperacion = _recuperacionDeLaCache_(p.primary_email);
+      const deLaCacheRecu = !!recuperacion;
+      if (!recuperacion) recuperacion = _recuperacionDelCorreo_(p.primary_email);
+      // TIMELINE — primer viaje al KMS de esta rama (`enr.recuperacionDelCorreo`). Con
+      // `de_cache:true` el paso sale en ~0 ms porque NO hubo viaje.
+      _trazaPaso_(trazaCorreo, 'kms_recuperacion_del_correo', { de_cache: deLaCacheRecu });
       // DL-E38 a1: un tutor NO principal recupera con SU propio correo — el KMS localiza
       // esos expedientes por `enrEmails` (y comprueba ahí dentro que la fila es de un
       // tutor, no de un menor). El enlace se manda al correo tecleado, o sea al buzón de
@@ -3990,6 +4006,28 @@ function sendMagicLink_(p) {
         const gid = g.enrollment_group_id;
         return (gid in newTokens) ? { ...g, resume_token: newTokens[gid] } : g;
       });
+
+      // ★ 2026-09-11 — SE GUARDA AQUÍ, y el sitio importa: DESPUÉS del bucle de renovación.
+      // Así la entrada lleva los tokens FINALES (`newTokens` ya aplicado) y los sellos de
+      // DESPUÉS de los bumps que la propia rotación acaba de provocar ⇒ queda consistente
+      // consigo misma. Guardarla antes dejaría una entrada con el token que acaba de morir.
+      //
+      // ⚠️ `created_at` se REFRESCA en los que rotaron, por el MISMO motivo que
+      // `_moverLaCopiaDeLaPuerta_`: el KMS lo reescribe al rotar (reinicia el plazo de 7
+      // días), y conservar el viejo haría que `_alEnlaceLeQuedaMargen_` creyera que al enlace
+      // le queda menos de lo que le queda — con el único efecto de renovar de más la próxima
+      // vez, nunca de mandar uno caducado.
+      try {
+        const _conTokenFinal = (lista) => (lista || []).map(g => {
+          const nt = newTokens[g.enrollment_group_id];
+          return nt ? Object.assign({}, g, { resume_token: nt, created_at: new Date().toISOString() }) : g;
+        });
+        _guardarRecuperacionEnCache_(p.primary_email, {
+          por_correo_principal:    _conTokenFinal(recuperacion.porCorreoPrincipal),
+          por_tutor:               _conTokenFinal(recuperacion.porTutor),
+          identificador_de_correo: identificadorDeCorreo,
+        });
+      } catch (eCache) { /* guardar la copia NUNCA puede impedir que salga el enlace */ }
 
       // IDENTITY-FROM-LINK (2026-06-11): el link va al email tecleado (p.primary_email =
       // buzón del guardian dueño). `n` := email_id de la fila enrEmails de ESE email en
@@ -4947,6 +4985,17 @@ function _olvidarCabeceraMemo_(token, groupId) {
   try {
     if (token) CacheService.getScriptCache().remove(_claveCopiaPuerta_(token));
   } catch (e2) { /* best-effort */ }
+  // ★ 2026-09-11 — Y EL SELLO DEL EXPEDIENTE, que es lo que invalida LA CACHÉ DE
+  // RECUPERACIÓN (§`_recuperacionDeLaCache_`). Va AQUÍ y no en cada llamante a propósito:
+  // éste es el ÚNICO sitio del asistente que ya declara «acabo de cambiar algo de este
+  // expediente», y sus SIETE llamantes son exactamente los cambios que este proceso provoca
+  // — rotar el enlace, abandonar, «esto no es mío», el auto-abandono de sesiones paralelas,
+  // enviar la solicitud y la limpieza de huérfanas. Un segundo sitio divergiría.
+  //
+  // ⛔ Lo que esto impide es lo único que de verdad duele: servir un enlace ROTADO. La
+  // rotación mata el token viejo, y sin este sello la entrada de OTRO tutor del mismo
+  // expediente seguiría mandándolo.
+  _bumparSelloDeGrupo_(groupId);
 }
 
 /**
@@ -5046,6 +5095,185 @@ function _expedientesDelCorreo_(email) {
     personasPorExpediente: r.personas_por_expediente || {},
     recuentoFallido:       !!r.recuento_fallido,
   };
+}
+
+/**
+ * ━━━ LA CACHÉ DE RECUPERACIÓN (2026-09-11) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ *
+ * **Qué ahorra, y por qué vive AQUÍ y no en el KMS.** Responder la recuperación cuesta hoy
+ * UN viaje al KMS, y **el viaje es el gasto, no la consulta**: medido el 2026-09-11 con
+ * `manual_diagTimelineDelCorreo` sobre un envío real, el paso `kms_recuperacion_del_correo`
+ * costó **16,8 s**, y las otras dos llamadas al KMS del mismo recorrido costaron
+ * **18,7 s** y **14,3 s** *haciendo trabajos completamente distintos* ⇒ ~15 s son el salto.
+ * El manejador del KMS (`enr_wizardRecuperacionDelCorreo`) hace **2-4 lecturas ligeras**.
+ * Por eso la copia vive en el almacén de ESTE proceso: si viviera en el KMS habría que
+ * seguir yendo a preguntar, que es justo lo que se quiere evitar.
+ *
+ * ⚠️ **Y lo que la hace admisible es que este almacén NO SE PUEDE VOLCAR DESDE LA WEB.**
+ * Comprobado el 2026-09-11 contra `origin/main`: `doGet` devuelve `{status:'ok'}` y nada más;
+ * el `switch(action)` del `doPost` **no tiene ni una acción que lea `CacheService` ni
+ * `PropertiesService` a granel** (0 usos de `getProperties()`/`getAll()`/`getKeys()` en todo
+ * el fichero). Solo lo lee el código de este script.
+ *
+ * ⛔ **NUNCA SE GUARDA NI SE SIRVE UNA RESPUESTA VACÍA**, y no es un detalle de estilo: cuando
+ * `sendMagicLink_` no encuentra expediente **CREA UNO NUEVO** y le manda el enlace de un
+ * borrador vacío a una familia que ya tenía el suyo. Un «no hay ninguno» guardado convertiría
+ * ese agujero —ya documentado en `enr_wizardRecuperacionDelCorreo`— en permanente.
+ *
+ * ⛔ **NI UNA ENTRADA CON UN TOKEN MUERTO. CÓMO SE GARANTIZA: EL SELLO POR EXPEDIENTE.**
+ * El `resume_token` es un portador de 7 días y **rotarlo mata al viejo** (por eso existe
+ * `_olvidarCabeceraMemo_`). Una entrada con un token rotado sería **peor que no tener
+ * caché**: la familia recibiría un enlace que no abre. Por eso cada expediente lleva un
+ * **sello** (`recu_sello_<grupo>`, un contador) que se **sube en el MISMO sitio** donde el
+ * asistente ya olvida la copia de la puerta — `_olvidarCabeceraMemo_` —, o sea en los SIETE
+ * puntos donde este proceso provoca un cambio: rotar el enlace, abandonar, «esto no es
+ * mío», el auto-abandono de sesiones paralelas, enviar la solicitud y la limpieza de
+ * huérfanas. La entrada guarda el sello que vio; si no casa, **no se sirve**.
+ *
+ * ⛔ **Y FALLA HACIA EL LADO SEGURO POR CONSTRUCCIÓN: un sello AUSENTE es un FALLO DE
+ * CACHÉ**, nunca un acierto. Sin esa regla, desalojar el sello (`CacheService` desaloja
+ * cuando quiere) resucitaría una entrada vieja. Con ella, cualquier pérdida —del sello, de
+ * la entrada o de las dos— acaba en el camino de siempre.
+ *
+ * ⚠️ **LO QUE ESTO NO CUBRE, dicho para que nadie se sorprenda.** El sello solo conoce lo
+ * que hace ESTE proceso. Un cambio del lado del COLEGIO —invitar a una familia que ya tenía
+ * solicitud, añadir un tutor a una existente— puede tardar hasta el plazo de la entrada en
+ * notarse. La INVITACIÓN sí está cubierta: el KMS reescribe la entrada por el canal firmado
+ * (`sembrarRecuperacion_`). **Añadir un tutor NO lo está** — ese tutor recuperaría con la
+ * respuesta anterior hasta que la entrada venza. Y como nunca se guarda una respuesta vacía,
+ * el caso que de verdad duele (crear un expediente de más) no puede ocurrir por esta vía.
+ *
+ * ⚠️ **EL PLAZO SON 6 HORAS — y esa cifra NO es una decisión de diseño, es el TECHO de
+ * `CacheService`.** Se dice porque tiene una consecuencia medida: **el sembrado del KMS al
+ * invitar solo sirve dentro de esas 6 horas**, y una familia invitada que pierde su correo
+ * suele volver días después. La única forma de que durara más sería `PropertiesService`
+ * (sin vencimiento), y **NO se usa a propósito**: comparte el cupo de 500 KB con los
+ * secretos del proyecto (`QB_SERVICE_TOKEN`, `NOTIFY_HMAC_SECRET`…) y llenarlo de entradas
+ * por correo arriesga romper la configuración. Esa compensación la decide Diego, no un
+ * agente.
+ * @private
+ */
+var RECU_CACHE_TTL_S_ = 21600;   // 6 h — el techo de ScriptCache; ver el bloque de arriba
+var RECU_SELLO_TTL_S_ = 21600;   // el sello NUNCA vence antes que la entrada que protege
+
+/** @private — la clave de la entrada. El correo se guarda RESUMIDO, jamás en claro (KAL-11). */
+function _claveRecuperacion_(email) {
+  return 'recu_' + sha256Hex_(Utilities.newBlob(String(email || '').toLowerCase().trim()).getBytes()).slice(0, 40);
+}
+
+/** @private — la clave del sello de un expediente. */
+function _claveSelloDeGrupo_(groupId) {
+  return 'recu_sello_' + String(groupId || '').trim();
+}
+
+/**
+ * @private El sello ACTUAL de un expediente, o `null` si no hay ninguno.
+ * ⛔ `null` NO es «cero»: quien lo lea tiene que tratarlo como FALLO DE CACHÉ.
+ */
+function _selloDeGrupo_(groupId) {
+  try {
+    if (!groupId) return null;
+    var v = CacheService.getScriptCache().get(_claveSelloDeGrupo_(groupId));
+    return v === null || v === undefined ? null : String(v);
+  } catch (e) { return null; }
+}
+
+/** @private Lee el sello y, si no hay, lo CREA — para que el lector nunca vea un hueco. */
+function _asegurarSelloDeGrupo_(groupId) {
+  try {
+    if (!groupId) return null;
+    var actual = _selloDeGrupo_(groupId);
+    if (actual !== null) return actual;
+    CacheService.getScriptCache().put(_claveSelloDeGrupo_(groupId), '1', RECU_SELLO_TTL_S_);
+    return '1';
+  } catch (e) { return null; }
+}
+
+/**
+ * @private SUBE el sello de un expediente ⇒ toda entrada de recuperación que lo mencione
+ * deja de servirse. Lo llama `_olvidarCabeceraMemo_`, que es el único sitio donde este
+ * proceso ya declara «acabo de cambiar algo de este expediente».
+ */
+function _bumparSelloDeGrupo_(groupId) {
+  try {
+    if (!groupId) return;
+    var cache = CacheService.getScriptCache();
+    var actual = Number(cache.get(_claveSelloDeGrupo_(groupId)) || 0);
+    if (!isFinite(actual)) actual = 0;
+    cache.put(_claveSelloDeGrupo_(groupId), String(actual + 1), RECU_SELLO_TTL_S_);
+  } catch (e) { /* best-effort: subir el sello no puede tumbar nada */ }
+}
+
+/** @private Todos los expedientes que menciona una respuesta de recuperación. */
+function _gruposDeLaRecuperacion_(r) {
+  return [].concat((r && r.por_correo_principal) || [], (r && r.por_tutor) || []);
+}
+
+/**
+ * @private La respuesta de recuperación guardada para un correo, o `null` si no se puede
+ * servir. **NUNCA lanza** — cualquier duda es un fallo de caché y el camino vivo sigue.
+ */
+function _recuperacionDeLaCache_(email) {
+  try {
+    var crudo = CacheService.getScriptCache().get(_claveRecuperacion_(email));
+    if (!crudo) return null;
+    var entrada = null;
+    try { entrada = JSON.parse(crudo); } catch (eP) { return null; }
+    var r = entrada && entrada.r;
+    var sellos = entrada && entrada.sellos;
+    if (!r || !sellos) return null;
+    var grupos = _gruposDeLaRecuperacion_(r);
+    if (!grupos.length) return null;                 // jamás se sirve una respuesta vacía
+    for (var i = 0; i < grupos.length; i++) {
+      var g = grupos[i];
+      if (!g || !g.enrollment_group_id || !g.resume_token) return null;
+      var actual = _selloDeGrupo_(g.enrollment_group_id);
+      if (actual === null) return null;              // sello ausente ⇒ FALLO (fail-safe)
+      if (actual !== String(sellos[g.enrollment_group_id])) return null;
+    }
+    return {
+      porCorreoPrincipal:    r.por_correo_principal || [],
+      porTutor:              r.por_tutor            || [],
+      identificadorDeCorreo: r.identificador_de_correo || {},
+      identificadorFallido:  false,
+    };
+  } catch (e) { return null; }
+}
+
+/**
+ * @private Guarda la respuesta de recuperación de un correo, con el sello de cada
+ * expediente. Devuelve `false` —sin escribir nada— si la respuesta está vacía o si algún
+ * expediente no trae token: las dos cosas son motivos para NO tener caché, no para tener una
+ * mala. **NUNCA lanza.**
+ */
+function _guardarRecuperacionEnCache_(email, r) {
+  try {
+    var grupos = _gruposDeLaRecuperacion_(r);
+    if (!grupos.length) return false;
+    var sellos = {};
+    for (var i = 0; i < grupos.length; i++) {
+      var g = grupos[i];
+      if (!g || !g.enrollment_group_id || !g.resume_token) return false;
+      var sello = _asegurarSelloDeGrupo_(g.enrollment_group_id);
+      if (sello === null) return false;
+      sellos[g.enrollment_group_id] = sello;
+    }
+    CacheService.getScriptCache().put(
+      _claveRecuperacion_(email),
+      JSON.stringify({ r: {
+        por_correo_principal:    r.por_correo_principal || [],
+        por_tutor:               r.por_tutor            || [],
+        identificador_de_correo: r.identificador_de_correo || {},
+      }, sellos: sellos }),
+      RECU_CACHE_TTL_S_);
+    return true;
+  } catch (e) { return false; }
+}
+
+/** @private Olvida la entrada de un correo. Lo llama quien CREA un expediente para él. */
+function _olvidarRecuperacionEnCache_(email) {
+  try { CacheService.getScriptCache().remove(_claveRecuperacion_(email)); }
+  catch (e) { /* best-effort */ }
 }
 
 /**
@@ -10142,6 +10370,75 @@ function pushWarmHydrate_(p) {
     Logger.log('[pushWarmHydrate_] non-fatal — ' + (e && e.message));
     return { ok: false, reason: 'STORE_FAILED' };
   }
+}
+
+/**
+ * 2026-09-11 — recibe del KMS la respuesta de recuperación YA COMPUTADA de un correo y la
+ * deja guardada, para que la primera vez que esa persona teclee su correo en la portada no
+ * haya que ir a preguntarla (~15 s del salto). **NO es una acción de usuario: la llama SOLO
+ * el KMS**, por el MISMO canal firmado y con el MISMO gate que `pushWarmHydrate_`
+ * (`verifySignedKmsNotice_`, DL-S106): firma → ventana → no-repetición, **antes de mirar
+ * una sola cosa del contenido**, y rechazo en silencio con la misma forma sea cual sea el
+ * motivo.
+ *
+ * ⛔ **SOLO GUARDA — no autoriza nada.** Esta copia no abre ninguna puerta: solo decide
+ * **qué enlace se le manda AL BUZÓN QUE SE TECLEA**, y quien lo recibe es ese mismo buzón.
+ * Todo lo demás —el código de un solo uso (⑧24), KAL-4, los tres rechazos del enlace— sigue
+ * exactamente igual: la copia de la PUERTA (`_claveCopiaPuerta_`) es otra cosa y no se toca.
+ *
+ * ⛔ **SE VALIDA LA FORMA DE TODO LO QUE LLEGA** — el correo (`assertValidEmail_`), cada
+ * expediente y cada token (`assertValidUuid_`). Si algo no cuadra, **no se guarda nada**: una
+ * entrada que mezclara el expediente de otra familia con este buzón mandaría el enlace de esa
+ * otra familia a este correo. La firma ya lo impide; la validación es el cinturón.
+ *
+ * ⛔ **NUNCA SE GUARDA UNA RESPUESTA VACÍA** (lo rechaza `_guardarRecuperacionEnCache_`): un
+ * «no hay ninguno» guardado haría que `sendMagicLink_` le creara un expediente NUEVO a una
+ * familia que ya tiene el suyo.
+ *
+ * ⚠️ **Lo que este sembrado NO arregla, y hay que decirlo:** la entrada vence en 6 h —el
+ * techo de `CacheService`— y una familia invitada que pierde su correo suele volver días
+ * después. Fuera de esa ventana, su primera recuperación vuelve a costar el viaje y es el
+ * relleno perezoso el que la deja rápida a partir de la segunda.
+ *
+ * @param {Object} p — { action, event:{ email, recuperacion:{por_correo_principal, por_tutor,
+ *                       identificador_de_correo} }, nonce, timestamp, signature }
+ * @returns {{ok:boolean, stored?:boolean, reason?:string}}
+ */
+function sembrarRecuperacion_(p) {
+  p = p || {};
+  const v = verifySignedKmsNotice_(p, 'sembrarRecuperacion');
+  if (!v.ok) return { ok: false, reason: 'UNAUTHORIZED' };
+
+  const email = String((v.event && v.event.email) || '').toLowerCase().trim();
+  try { assertValidEmail_(email, 'email'); } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
+
+  const r = v.event && v.event.recuperacion;
+  if (!r || typeof r !== 'object') return { ok: false, reason: 'BAD_REQUEST' };
+
+  const listas = [r.por_correo_principal, r.por_tutor];
+  for (let i = 0; i < listas.length; i++) {
+    const lista = listas[i];
+    if (lista !== undefined && !Array.isArray(lista)) return { ok: false, reason: 'BAD_REQUEST' };
+    const filas = lista || [];
+    for (let j = 0; j < filas.length; j++) {
+      const g = filas[j];
+      if (!g || typeof g !== 'object') return { ok: false, reason: 'BAD_REQUEST' };
+      try {
+        assertValidUuid_(g.enrollment_group_id, 'enrollment_group_id');
+        assertValidUuid_(g.resume_token, 'resume_token');
+      } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
+    }
+  }
+
+  const guardada = _guardarRecuperacionEnCache_(email, {
+    por_correo_principal:    r.por_correo_principal || [],
+    por_tutor:               r.por_tutor            || [],
+    identificador_de_correo: r.identificador_de_correo || {},
+  });
+  // KAL-11: ni el correo ni un solo token en el registro — solo el veredicto y el recuento.
+  Logger.log('[sembrarRecuperacion_] guardada=' + guardada +
+             ' expedientes=' + _gruposDeLaRecuperacion_(r).length);
+  return { ok: true, stored: !!guardada };
 }
 
 /**

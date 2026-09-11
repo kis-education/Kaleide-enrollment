@@ -35,18 +35,31 @@ export function comprobarReceptor(fuente) {
   const nVerif = (sinComentarios.match(/function verifySignedKmsNotice_/g) || []).length
   if (nVerif !== 1) fallos.push(`se esperaba UN verificador \`verifySignedKmsNotice_\`, hay ${nVerif}`)
 
-  // 2 — el receptor lo INVOCA, y lo hace ANTES de leer el contenido.
-  const cuerpo = /function notifyLiveStateChange_\s*\([^)]*\)\s*\{([\s\S]*?)\n\}/.exec(sinComentarios)
-  if (!cuerpo) {
-    fallos.push('no se encontró `notifyLiveStateChange_` — el detector está ciego, verde aquí NO equivale a verificado')
-  } else {
+  // 2 — CADA receptor lo INVOCA, y lo hace ANTES de leer el contenido.
+  //
+  // ★ 2026-09-11 — SON TRES, NO UNO. Este control se escribió cuando `notifyLiveStateChange_`
+  // era el único receptor firmado; después entró `pushWarmHydrate_` (que empuja PII) y ahora
+  // `sembrarRecuperacion_` (que empuja `resume_token`), y **ninguno de los dos estaba
+  // vigilado**. Los tres están en el `switch(action)` del `doPost` `ANYONE_ANONYMOUS`, o sea
+  // que los tres son alcanzables desde internet sin autenticación: verificar antes de mirar
+  // no es una propiedad de UNO, es la del canal.
+  const RECEPTORES = ['notifyLiveStateChange_', 'pushWarmHydrate_', 'sembrarRecuperacion_']
+  for (const nombre of RECEPTORES) {
+    const re = new RegExp('function ' + nombre + '\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}')
+    const cuerpo = re.exec(sinComentarios)
+    if (!cuerpo) {
+      fallos.push('no se encontró `' + nombre + '` — el detector está CIEGO sobre él, verde aquí NO equivale a verificado')
+      continue
+    }
     const c = cuerpo[1]
     const iVerif = c.indexOf('verifySignedKmsNotice_')
-    const iLee = c.indexOf('enrollment_group_id')
-    if (iVerif < 0) fallos.push('`notifyLiveStateChange_` no invoca al verificador')
-    else if (iLee >= 0 && iLee < iVerif) fallos.push('el receptor LEE el contenido antes de verificar la firma')
+    // Lo primero que se mira del CONTENIDO: `v.event` / `p.event`, sea cual sea el campo.
+    const mLee = /\.event\b/.exec(c)
+    const iLee = mLee ? mLee.index : -1
+    if (iVerif < 0) fallos.push('`' + nombre + '` no invoca al verificador')
+    else if (iLee >= 0 && iLee < iVerif) fallos.push('`' + nombre + '` LEE el contenido antes de verificar la firma')
     // 3 — el patrón viejo no vuelve: comparar un secreto que viene en el cuerpo.
-    if (/notify_secret/.test(c)) fallos.push('vuelve `notify_secret` — el secreto no puede viajar en el cuerpo')
+    if (/notify_secret/.test(c)) fallos.push('`' + nombre + '`: vuelve `notify_secret` — el secreto no puede viajar en el cuerpo')
   }
 
   // 4 — las tres comprobaciones, en orden, dentro del verificador.
@@ -73,7 +86,7 @@ try {
   const fallos = comprobarReceptor(fuente)
   fallos.forEach((f) => console.log('  ✗ ' + f))
   if (fallos.length) motivo = `${fallos.length} infracción(es): ${fallos.join(' · ')}`
-  else console.log('  ✓ el receptor verifica firma → ventana → no-repetición ANTES de leer el contenido')
+  else console.log('  ✓ los TRES receptores firmados verifican firma → ventana → no-repetición ANTES de leer el contenido')
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)
 } finally {
