@@ -2080,174 +2080,35 @@ function _wzCacheGetChunked_(cache, key) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ①97 (2026-09-12) — EL ALMACÉN DURABLE: debajo de ScriptCache, para que recuperar
-// una solicitud NUNCA salga vacío por un desalojo del caché.
+// ①97 RUMBO CORREGIDO (Diego, 2026-09-12) — LA COPIA VIVE EN LA ScriptCache, Y PUNTO
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// ScriptCache es *best-effort* — Google puede desalojarlo antes de su TTL declarado
-// bajo presión de memoria, y el empuje por-escritura + el repaso de 3h (D118) solo
-// mantenían viva la copia MIENTRAS el caché no la tirara. Medido el 2026-09-12
-// (loop-backlog `①97`, log real de Diego): con la copia fría, recuperar pagó
-// `enr.tutorQueRecupera` (14,2 s) y la re-hidratación murió por transporte a los
-// ~62 s — el navegador se rinde antes de que el cómputo en frío del KMS (~49 s)
-// termine. Un almacén que sobrevive al desalojo del caché evita ese viaje entero.
+// ⛔ **AQUÍ VIVIÓ UN ALMACÉN DURABLE EN DRIVE, Y NO VUELVE.** Se construyó la noche del
+// 2026-09-11/12 como segunda capa debajo de `ScriptCache` (`_wzHydLeerConDurable_`,
+// `_almacenDurableGuardar_`/`_almacenDurableLeer_`/`_almacenDurableBorrarClave_` +
+// `manual_diagAlmacenDurable`), y Diego corrigió el rumbo a la mañana siguiente: *«Se debe
+// guardar en el caché de GAS. No son tantos datos, son unas cuantas filas de varias
+// tablas.»*
 //
-// **Por qué UN ARCHIVO POR CLAVE en una carpeta de Drive, y no otra cosa:**
-// - `PropertiesService` queda DESCARTADO a propósito — comparte el cupo de 500 KB
-//   con los secretos del proyecto (KMS_DEPLOYMENT_URL, QB_SERVICE_TOKEN, el secreto
-//   de reCAPTCHA…) y una sola familia real ya pesa ~28 KB (D118, medido). El mismo
-//   descarte que ya hizo el KMS para su caché de recuperación por correo.
-// - Una Hoja de cálculo propia (`SpreadsheetApp`) se DESCARTÓ tras intentarlo: exige
-//   el scope `https://www.googleapis.com/auth/spreadsheets`, que NO estaba
-//   concedido — añadirlo habría obligado a Diego a reautorizar el proyecto antes de
-//   que nada de esto sirviera para nada, y este entorno no tiene forma de comprobar
-//   en vivo que la reautorización saldría bien (ver el límite honesto, abajo).
-// - `DriveApp` **ya está concedido** — es el MISMO scope (`drive`, completo) que este
-//   proyecto usa a diario para los documentos que suben las familias
-//   (`getOrCreateDriveFolder_`). Usarlo aquí no le pide a Diego ni un permiso más:
-//   cero riesgo de reautorización, cero ventana en la que algo deje de funcionar.
-// - Un ARCHIVO por clave (no un único fichero-índice) evita cualquier límite de
-//   tamaño de una sola celda o de un solo blob: cada archivo pesa lo que pese SU
-//   solicitud, y el KMS YA topa su empuje en 40.000 bytes por prudencia
-//   (`ENR_WARM_PUSH_MAX_BYTES_`, `kis-app kms-server/enr/wizard-warm.gs`) — muy por
-//   debajo de cualquier límite de Drive.
-// - `folder.getFilesByName(clave)` es una búsqueda de Drive por nombre exacto (usa
-//   el índice de Drive, no un listado completo) — rápida a cualquier escala, no solo
-//   a la de hoy.
+// **Y no era solo que sobrara: METÍA UNA LECTURA DE DRIVE EN EL CAMINO MÁS CALIENTE.**
+// `_wzHydLeerConDurable_` se llamaba en CADA hidratación y en CADA resolución de identidad
+// desde el espejo; con la `ScriptCache` fría eso son, por llamada, abrir la carpeta de
+// Drive (o CREARLA si la propiedad no estaba) más un `getFilesByName` — dentro de la
+// petición que una familia está esperando. Y una copia guardada en Drive **sobrevive al
+// desalojo del caché pero también a `_wzCacheInvalidate_`**, que solo sube la versión: el
+// fichero se queda ahí, y el único motivo por el que no se sirve viejo es que la
+// comprobación de versión lo descarta. Un almacén que solo es correcto porque otro control
+// lo salva es un almacén que sobra.
 //
-// **Qué guarda:** un archivo de texto por CLAVE (la misma `_wzCacheKey_('hyd', …)`
-// que ya usa ScriptCache — mismo dato, misma clave, dos almacenes), con el MISMO
-// serializado `{v, data}` que ya viaja a ScriptCache. NUNCA un criterio de versión
-// distinto — quien lee sigue comparando `env.v` contra `_versionDeClase_`, igual.
+// **Lo que lo sustituye**: la copia la mantiene caliente el DISPARADOR DE ESTE PROYECTO
+// (`espejoRefrescarCopias`, §"EL ESPEJO PERMANENTE" más abajo), que le PIDE al KMS los
+// datos de las solicitudes vivas y los escribe en esta misma `ScriptCache`, bajo la MISMA
+// clave que lee la recuperación. El KMS ya no empuja nada ni tiene disparador ninguno.
 //
-// **NUNCA CREA UN «SÍ»**: solo se escribe cuando alguien YA computó o recibió el
-// dato de verdad (el mismo punto que ya escribía en ScriptCache). Un fallo al leer
-// o escribir aquí es SIEMPRE best-effort — jamás tumba el camino que lo llama.
-//
-// **BACKFILL**: no hace falta ningún mecanismo nuevo — el repaso de 3h que YA
-// existe (`enr_warmActiveEnrollmentsSweep`, KMS) empuja la copia de TODA solicitud
-// viva por su cauce firmado de siempre; lanzarlo una vez tras publicar este cambio
-// puebla el almacén durable de todas las solicitudes vivas sin esperar 3h.
-//
-// ⚠️ **LÍMITE HONESTO DE ESTA VUELTA** — no se pudo ejecutar en vivo dentro de esta
-// sesión: `clasp run` contra este proyecto responde «Unable to run script function»
-// para CUALQUIER función (incluida una que solo lee una Script Property, sin tocar
-// Drive) — es un fallo de autorización del canal de EJECUCIÓN de esta sesión, no de
-// este cambio. `clasp push`/`clasp deploy` SÍ funcionan (medido: los tres ficheros
-// se subieron sin cortarse). La construcción se apoya en que `DriveApp` es el MISMO
-// servicio y el MISMO scope que ya funciona a diario para subir documentos de
-// familias — no en una medición nueva de esta sesión. Queda pendiente comprobarlo
-// con `manual_diagAlmacenDurable` (más abajo) en cuanto alguien tenga `clasp run`
-// operativo contra este proyecto, o desde el editor de Apps Script.
-
-var ALMACEN_DURABLE_FOLDER_ID_KEY_ = 'WIZARD_ALMACEN_DURABLE_FOLDER_ID';
-var ALMACEN_DURABLE_MAX_BYTES_ = 200000;  // muy por debajo de cualquier límite de Drive
-
-/**
- * Abre (o crea, una sola vez) la carpeta de Drive del almacén durable. Best-effort:
- * cualquier fallo (permiso denegado, cuota) devuelve `null` y el llamante degrada
- * al camino de hoy (ScriptCache / KMS en vivo).
- * @returns {?GoogleAppsScript.Drive.Folder}
- * @private
- */
-function _almacenDurableCarpeta_() {
-  try {
-    var props = PropertiesService.getScriptProperties();
-    var id = props.getProperty(ALMACEN_DURABLE_FOLDER_ID_KEY_);
-    if (id) {
-      try { return DriveApp.getFolderById(id); } catch (eOpen) { /* la carpeta se perdió — recrear */ }
-    }
-    var carpeta = DriveApp.createFolder('KMS — espejo durable del asistente (NO BORRAR)');
-    props.setProperty(ALMACEN_DURABLE_FOLDER_ID_KEY_, carpeta.getId());
-    return carpeta;
-  } catch (e) {
-    Logger.log('[_almacenDurableCarpeta_] non-fatal — ' + (e && e.message));
-    return null;
-  }
-}
-
-/**
- * Guarda (upsert) el serializado bajo `clave` como archivo de texto en la carpeta
- * del almacén durable. Best-effort de punta a punta — nunca lanza; un payload que
- * excede el techo defensivo se descarta SIN escribir nada.
- * @returns {boolean} true si quedó guardado.
- */
-function _almacenDurableGuardar_(clave, serialized) {
-  try {
-    if (!clave || !serialized || serialized.length > ALMACEN_DURABLE_MAX_BYTES_) return false;
-    var carpeta = _almacenDurableCarpeta_();
-    if (!carpeta) return false;
-    var existentes = carpeta.getFilesByName(clave);
-    if (existentes.hasNext()) {
-      existentes.next().setContent(serialized);
-    } else {
-      carpeta.createFile(clave, serialized, MimeType.PLAIN_TEXT);
-    }
-    return true;
-  } catch (e) {
-    Logger.log('[_almacenDurableGuardar_] non-fatal — ' + (e && e.message));
-    return false;
-  }
-}
-
-/**
- * Lee el serializado guardado bajo `clave`. Best-effort — cualquier fallo devuelve
- * `null`, indistinguible de «no está» (el llamante ya trata ambos como MISS).
- * @returns {?string}
- */
-function _almacenDurableLeer_(clave) {
-  try {
-    if (!clave) return null;
-    var carpeta = _almacenDurableCarpeta_();
-    if (!carpeta) return null;
-    var existentes = carpeta.getFilesByName(clave);
-    if (!existentes.hasNext()) return null;
-    return existentes.next().getBlob().getDataAsString();
-  } catch (e) {
-    Logger.log('[_almacenDurableLeer_] non-fatal — ' + (e && e.message));
-    return null;
-  }
-}
-
-/**
- * Borra FÍSICAMENTE el archivo de una clave (§"lo que un agente crea para probar se
- * elimina FÍSICAMENTE al terminar" — usado por el diagnóstico de verify-first; NO
- * se llama desde el camino normal, que solo crea/actualiza).
- * @returns {boolean} true si no queda ningún archivo con esa clave (ya lo borrara
- *          esta llamada, o no hubiera ninguno).
- */
-function _almacenDurableBorrarClave_(clave) {
-  try {
-    var carpeta = _almacenDurableCarpeta_();
-    if (!carpeta) return false;
-    var existentes = carpeta.getFilesByName(clave);
-    var borrado = false;
-    while (existentes.hasNext()) { existentes.next().setTrashed(true); borrado = true; }
-    return true; // llegó a comprobar y, si había algo, lo mandó a la papelera
-  } catch (e) {
-    Logger.log('[_almacenDurableBorrarClave_] non-fatal — ' + (e && e.message));
-    return false;
-  }
-}
-
-/**
- * Lector ÚNICO de la copia de hidratación: ScriptCache PRIMERO, el almacén durable
- * DESPUÉS. Si el durable acierta, se re-archiva en ScriptCache (para que el próximo
- * lector de esta ventana no vuelva a pagar ni la propia carpeta de Drive) y se devuelve
- * EXACTAMENTE la misma forma que `_wzCacheGetChunked_` — una cadena serializada, o
- * `null`. El criterio de versión (`env.v` contra `_versionDeClase_`) lo sigue
- * aplicando el LLAMANTE, sin cambio — este lector solo decide DE DÓNDE sale la
- * cadena, nunca si es válida.
- * @private
- */
-function _wzHydLeerConDurable_(cache, key) {
-  var raw = _wzCacheGetChunked_(cache, key);
-  if (raw) return raw;
-  var durable = _almacenDurableLeer_(key);
-  if (!durable) return null;
-  try { _wzCachePutChunked_(cache, key, durable, ESPEJO_HYD_TTL_S_); } catch (eRe) { /* best-effort */ }
-  return durable;
-}
+// ⚠️ **La carpeta de Drive que llegó a crearse NO se borra desde aquí**: puede contener
+// copias de familias reales y borrar datos del colegio lo decide Diego (`CLAUDE.md` §"Las
+// filas existentes NUNCA frenan un cambio de modelo"). Se queda huérfana, sin ningún
+// lector, y se retira a mano cuando él lo diga.
 
 /**
  * WIZARD-CACHE — invalida hyd/adm del token tras CUALQUIER escritura del grupo
@@ -2774,6 +2635,11 @@ function doPost(e) {
     const action = payload.action;
     let result;
 
+    // ①97 — el disparador del espejo se asegura AQUÍ, una vez cada varias horas y detrás
+    // de una marca de caché (un `cache.get` de ~1 ms en la inmensa mayoría de peticiones).
+    // Ver `_asegurarDisparadorDelEspejo_`: nunca propaga, nunca duplica.
+    _asegurarDisparadorDelEspejo_();
+
     switch (action) {
       // ── DL-E15 actions (new canonical names) ────────────────────────────────
       // Legacy names are kept as aliases for transitional frontend compatibility.
@@ -2855,7 +2721,6 @@ function doPost(e) {
       // 2026-09-11 — el KMS siembra la respuesta de recuperación de un correo al invitar.
       // Mismo gate firmado que los dos de arriba; lo llama SOLO el KMS.
       case 'sembrarRecuperacion':     result = sembrarRecuperacion_(payload);     break;
-      case 'pushWarmHydrate':         result = pushWarmHydrate_(payload);         break;
       case 'getLiveStateVersion':     result = getLiveStateVersion_(payload);     break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
       // getTrackingData, getInterviewForEnrollment, getAdmissionDecisionForEnrollment,
@@ -3538,8 +3403,7 @@ function _identidadDesdeElEspejo_(groupId, n, correo) {
   if (!groupId) return null;
   try {
     var cache = CacheService.getScriptCache();
-    // ①97 (durable): ScriptCache primero, el almacén durable después — nunca al revés.
-    var raw = _wzHydLeerConDurable_(cache, _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, correo)));
+    var raw = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, correo)));
     if (!raw) return null;
     var env = JSON.parse(raw);
     if (!env || env.v !== _versionDeClase_(groupId, 'hyd')) return null; // versión vieja ⇒ NO acierto
@@ -10358,8 +10222,7 @@ function hydrateSession_(p) {
   const wzHydCache = CacheService.getScriptCache();
   const wzHydKey = _wzCacheKey_('hyd', groupId + '_' + _wzN_(p && p.n, p && p.recovered_email));
   try {
-    // ①97 (durable): ScriptCache primero, el almacén durable después — nunca al revés.
-    const wzHydRaw = _wzHydLeerConDurable_(wzHydCache, wzHydKey);
+    const wzHydRaw = _wzCacheGetChunked_(wzHydCache, wzHydKey);
     if (wzHydRaw) {
       const envH = JSON.parse(wzHydRaw);
       data = (envH && envH.v === _versionDeClase_(groupId, 'hyd')) ? envH.data : null;
@@ -10395,10 +10258,9 @@ function hydrateSession_(p) {
       language:        (p && p.language) ? String(p.language).trim() : null,
     }) || {};
     try {
-      var wzHydSerializado_ = JSON.stringify({ v: _versionDeClase_(groupId, 'hyd'), data: data });
-      _wzCachePutChunked_(wzHydCache, wzHydKey, wzHydSerializado_, ESPEJO_HYD_TTL_S_);
-      // ①97 (durable): la misma copia, en el almacén que sobrevive a un desalojo de caché.
-      _almacenDurableGuardar_(wzHydKey, wzHydSerializado_);
+      // ①97 — el write-through del camino vivo usa el MISMO escritor que el disparador
+      // del espejo: una sola forma de archivar una copia (clave, sobre y plazo).
+      _espejoGuardarCopia_(wzHydCache, groupId, null, data, { claveYa: wzHydKey });
     } catch (eWzWt) { /* best-effort */ }
   }
 
@@ -10599,69 +10461,70 @@ function notifyLiveStateChange_(p) {
 }
 
 /**
- * D118 punto 4 (Diego, 2026-09-07) — recibe la copia YA COMPUTADA que el KMS empuja por el
- * canal firmado (DL-S106; `enr_pushWarmHydrateCopyToWizard_`, `kms-server/enr/wizard-warm.gs`),
- * y la ESCRIBE en la MISMA caja que lee `warmEntryBundle_`/`hydrateSession_` cuando esa
- * familia entra por su enlace. NO es un endpoint de usuario: lo llama SOLO el KMS.
- * Verificación firma→ventana→no-repetición ANTES de mirar el contenido — el MISMO gate
- * que `notifyLiveStateChange_` (`verifySignedKmsNotice_`), mismo criterio de rechazo en
- * silencio.
+ * ①97 RUMBO CORREGIDO (Diego, 2026-09-12) — **EL ESCRITOR ÚNICO DE LA COPIA CALIENTE.**
  *
- * ⛔ SOLO GUARDA. Quién puede LEER esta copia lo sigue decidiendo su propia puerta —el
- * código de un solo uso (②27), KAL-4— exactamente igual que hoy: esto no adelanta ni un
- * dato a nadie que no fuera ya a recibirlo por el camino de siempre.
+ * Archiva la hidratación de recuperación de UN (expediente × tutor) en la `ScriptCache` de
+ * este proyecto, bajo la MISMA clave, el MISMO sobre `{v,data}` y el MISMO plazo que lee
+ * `hydrateSession_`. Lo usan los DOS que archivan: el disparador del espejo
+ * (`espejoRefrescarCopias`, que TIRA del KMS) y el write-through del camino vivo. ⛔ Dos
+ * formas de archivar la misma copia es exactamente cómo acaban divergiendo (`CLAUDE.md`
+ * §"Regla — refactors preservan el código probado").
  *
- * ⛔ NUNCA BUMPA LA VERSIÓN DE CLASE — SOLO LA LEE. La versión de clase es POR GRUPO, no
- * por tutor (`_claseVersionKey_`); bumparla aquí invalidaría de golpe la copia de
- * CUALQUIER OTRO tutor del mismo expediente que ya estuviera caliente — justo lo
- * contrario de lo que este empuje viene a conseguir. Se archiva bajo la versión de clase
- * QUE HAYA AHORA MISMO: si alguien la bumpó un instante antes (otro cambio en vuelo), la
- * entrada queda tildada vieja y el siguiente que la lea recalcula en vivo — degradación
- * segura, nunca un dato incorrecto servido.
+ * ⛔ **NUNCA BUMPA LA VERSIÓN DE CLASE — SOLO LA LEE.** La versión es POR GRUPO, no por
+ * tutor (`_claseVersionKey_`): bumparla aquí invalidaría de golpe la copia de CUALQUIER
+ * OTRO tutor del mismo expediente que ya estuviera caliente — justo lo contrario de lo que
+ * esto viene a conseguir. Se archiva bajo la versión QUE HAYA AHORA MISMO: si alguien la
+ * bumpó un instante antes, la entrada queda tildada vieja y el siguiente que la lea
+ * recalcula en vivo — degradación segura, nunca un dato incorrecto servido.
  *
- * ⛔ EL `n` QUE LLEGA ES `email_id` DE `enrEmails`, NUNCA el email en claro ni el
- * `resume_token`. Se pasa TAL CUAL a `_wzN_` — que devuelve la rama `nTrim` sin
+ * ⛔ **EL `n` QUE LLEGA ES `email_id` DE `enrEmails`, NUNCA el email en claro ni el
+ * `resume_token`.** Se pasa TAL CUAL a `_wzN_` —que devuelve la rama `nTrim` sin
  * transformarlo— para que la clave coincida BYTE A BYTE con la que calcula
  * `hydrateSession_`/`warmEntryBundle_` cuando esa misma familia entra por su `?n=`.
  *
- * @param {Object} p — { action, event:{enrollment_group_id, n, payload}, nonce, timestamp, signature }
- * @returns {{ok:boolean, stored?:boolean, reason?:string}}
+ * ⛔ **SOLO GUARDA.** Quién puede LEER esta copia lo sigue decidiendo su propia puerta —el
+ * código de un solo uso (②27), KAL-4— exactamente igual: esto no adelanta ni un dato a
+ * nadie que no fuera ya a recibirlo por el camino de siempre.
+ *
+ * @param {GoogleAppsScript.Cache.Cache} cache
+ * @param {string} groupId
+ * @param {?string} n  `email_id`; se ignora si el llamante pasa `opciones.claveYa`.
+ * @param {Object} payload  lo que devolvió la hidratación para ESE tutor.
+ * @param {{claveYa?:string}} [opciones]  clave ya calculada por el llamante (camino vivo).
+ * @returns {boolean} true si quedó archivada.
+ * @private
  */
-function pushWarmHydrate_(p) {
-  p = p || {};
-  const v = verifySignedKmsNotice_(p, 'pushWarmHydrate');
-  if (!v.ok) return { ok: false, reason: 'UNAUTHORIZED' };
-
-  const groupId = v.event.enrollment_group_id;
-  const n = v.event.n;
-  const payload = v.event.payload;
-  try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
-  if (!n || typeof n !== 'string' || n.length > 200) return { ok: false, reason: 'BAD_REQUEST' };
-  if (!payload || typeof payload !== 'object') return { ok: false, reason: 'BAD_REQUEST' };
-
+function _espejoGuardarCopia_(cache, groupId, n, payload, opciones) {
   try {
-    const cache = CacheService.getScriptCache();
-    const key = _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, null));
+    if (!cache || !groupId || !payload || typeof payload !== 'object') return false;
+    const key = (opciones && opciones.claveYa)
+      ? opciones.claveYa
+      : _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, null));
     const version = _versionDeClase_(groupId, 'hyd');
     const serialized = JSON.stringify({ v: version, data: payload });
-    const stored = _wzCachePutChunked_(cache, key, serialized, ESPEJO_HYD_TTL_S_);
-    // ①97 (durable): éste es el canal por el que el KMS empuja CADA escritura y el
-    // repaso de 3h — es el punto que de verdad hace que el almacén durable quede
-    // poblado para toda solicitud viva, sin esperar a que alguien la recupere.
-    const storedDurable = _almacenDurableGuardar_(key, serialized);
-    Logger.log(redact_('[pushWarmHydrate_] group=' + groupId + ' n=' + String(n).slice(0, 8) + '… v=' + version + ' stored=' + stored + ' stored_durable=' + storedDurable));
-    return { ok: true, stored: !!stored, stored_durable: !!storedDurable };
+    return !!_wzCachePutChunked_(cache, key, serialized, ESPEJO_HYD_TTL_S_);
   } catch (e) {
-    Logger.log('[pushWarmHydrate_] non-fatal — ' + (e && e.message));
-    return { ok: false, reason: 'STORE_FAILED' };
+    Logger.log('[_espejoGuardarCopia_] non-fatal — ' + (e && e.message));
+    return false;
   }
 }
+
+// ⛔ AQUÍ VIVÍA `pushWarmHydrate_`, EL RECEPTOR DEL EMPUJE DEL KMS, Y NO VUELVE (①97 rumbo
+// corregido, Diego 2026-09-12): *«es el Wizard el que le va haciendo peticiones al KMS»*.
+// El KMS retiró sus DOS emisores —el empuje por cada escritura `enr*` (`ENR_PUSH_MIRROR`) y
+// el del repaso de 3 h (`enr_pushWarmHydrateCopyToWizard_`)— así que este receptor se quedó
+// sin nadie que lo llamara; y era una acción MÁS en el `switch(action)` de un `doPost`
+// `ANYONE_ANONYMOUS`, o sea superficie pública que ya no hace falta. Su `case` del
+// despachador se retira con él.
+//
+// ⚠️ El canal firmado NO se toca: `verifySignedKmsNotice_` sigue vivo y con DOS receptores
+// (`notifyLiveStateChange_` y `sembrarRecuperacion_`), que son otra cosa y siguen usándose.
 
 /**
  * 2026-09-11 — recibe del KMS la respuesta de recuperación YA COMPUTADA de un correo y la
  * deja guardada, para que la primera vez que esa persona teclee su correo en la portada no
  * haya que ir a preguntarla (~15 s del salto). **NO es una acción de usuario: la llama SOLO
- * el KMS**, por el MISMO canal firmado y con el MISMO gate que `pushWarmHydrate_`
+ * el KMS**, por el MISMO canal firmado y con el MISMO gate que `notifyLiveStateChange_`
  * (`verifySignedKmsNotice_`, DL-S106): firma → ventana → no-repetición, **antes de mirar
  * una sola cosa del contenido**, y rechazo en silencio con la misma forma sea cual sea el
  * motivo.
@@ -13289,58 +13152,208 @@ function manual_apuntarElAsistenteAlKms(url) {
   Logger.log(r); return r;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ①97 · EL ESPEJO PERMANENTE — EL ASISTENTE TIRA, Y LO HACE SU PROPIO DISPARADOR
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Diego, 2026-09-12, literal: *«Una copia permanentemente actualizada en el caché del
+// backend del Wizard de los expedientes activos de la escuela (KiS). NI más ni menos.»* ·
+// *«el sitio para instalarlo no es el KMS, es el Wizard (backend). Se instala una vez y
+// listo, y es el Wizard el que le va haciendo peticiones al KMS.»* · *«Se debe guardar en
+// el caché de GAS. No son tantos datos, son unas cuantas filas de varias tablas.»*
+//
+// **QUÉ HACE, en una frase:** cada `ESPEJO_CADA_MIN_` minutos, este proyecto le pide al KMS
+// (`enr.copiasDeLasSolicitudesVivas`, UNA lectura) los datos de recuperación de todas las
+// solicitudes vivas del colegio, y los archiva en SU `ScriptCache` bajo la MISMA clave que
+// lee la recuperación — `wz_hydv2_<expediente>_<email_id>`, una por (expediente × tutor),
+// porque la hidratación se recorta al tutor que mira (DL-E49 §2).
+//
+// ⛔ **NO HAY OTRO ALMACÉN.** Ni Drive, ni hojas de cálculo, ni tabla ninguna: la
+// `ScriptCache` del proyecto y nada más (§"LA COPIA VIVE EN LA ScriptCache, Y PUNTO").
+//
+// ⛔ **NO ADELANTA NI UN DATO A NADIE.** Esto SOLO GUARDA. Quién puede leer esa copia lo
+// siguen decidiendo las puertas de siempre —el código de un solo uso (②27), KAL-4, el
+// candado `pii_gated`—, que no se tocan. Una copia caliente que nadie acredita no se sirve.
+//
+// ⛔ **EL DISPARADOR SE INSTALA UNA VEZ Y NO SE DUPLICA.** Y la diferencia con el defecto
+// que esto viene a corregir es MEDIBLE, no una promesa: el KMS es
+// `executeAs: USER_ACCESSING`, así que su autoinstalación corría bajo la identidad de CADA
+// persona que entraba y los disparadores son POR IDENTIDAD ⇒ uno por persona. **Este
+// proyecto es `executeAs: USER_DEPLOYING`**: TODA ejecución —`doPost` público incluido—
+// corre bajo UNA sola identidad, la de quien publicó, así que
+// `ScriptApp.getProjectTriggers()` siempre devuelve los mismos y el «si ya hay uno, no
+// crees otro» funciona de verdad.
+//
+// **Coste**: `ScriptApp.getProjectTriggers()` NO se llama en cada petición. Se llama cuando
+// la marca de caché no está — como mucho una vez cada `ESPEJO_GUARDA_S_`. El resto de
+// peticiones pagan un `cache.get`.
+
+var ESPEJO_DISPARADOR_FN_ = 'espejoRefrescarCopias';
+var ESPEJO_CADA_MIN_      = 30;      // ScriptApp solo admite 1/5/10/15/30 minutos
+var ESPEJO_GUARDA_KEY_    = 'espejo_disparador_ok';
+var ESPEJO_GUARDA_S_      = 21600;   // 6 h — el techo de ScriptCache
+var ESPEJO_GRUPOS_POR_VUELTA_ = 25;  // páginas que pide al KMS por vuelta
+var ESPEJO_CURSOR_KEY_        = 'espejo_cursor';   // por dónde iba la vuelta anterior
+var ESPEJO_PRESUPUESTO_MS_    = 4 * 60 * 1000;  // margen bajo el techo de 6 min
+
 /**
- * ①97 — verify-first: ¿es viable el almacén durable (una carpeta propia de Drive) en
- * ESTE proyecto? Escribe un fichero de PRUEBA con prefijo `ZZ_` (§"lo que un agente crea
- * para probar se elimina FÍSICAMENTE al terminar"), lo lee de vuelta, mide los tres
- * tiempos por separado, y lo borra él mismo antes de devolver el veredicto — nunca deja
- * residuo, ni siquiera si algo falla a medias (todo en `finally`).
+ * ①97 — asegura (idempotente) que existe EL disparador del espejo, y solo uno.
  *
- * NO escribe ni un dato personal (KAL-11): la clave y el payload de prueba son literales
- * fijos, sin relación con ninguna solicitud real.
+ * ⛔ **NUNCA PROPAGA.** Se llama desde `doPost`, que sirve a familias reales: un fallo aquí
+ * (cuota de disparadores, permiso) no puede tumbar la petición de nadie. Todo en `try`.
  *
- * ⚠️ `_almacenDurableBorrarClave_` mueve el fichero a la papelera de Drive
- * (`setTrashed(true)`), NO lo destruye de forma irrecuperable — es lo único que la API
- * de Apps Script ofrece sin el servicio avanzado `Drive`. Se deja anotado, no se le da
- * la vuelta a la advertencia.
- *
- * @returns {Object} veredicto con los tiempos y si el fichero de prueba quedó limpio.
+ * ⛔ **DETRÁS DE UNA MARCA DE CACHÉ.** Sin ella, cada petición pública pagaría un
+ * `ScriptApp.getProjectTriggers()`. Con ella, lo paga una de cada muchas.
+ * @private
  */
-function manual_diagAlmacenDurable() {
-  var claveDePrueba = 'ZZ_TEST_ALMACEN_DURABLE_' + Date.now();
-  var payloadDePrueba = JSON.stringify({ v: 1, data: { prueba: true, marca: Date.now() } });
-  var out = {
-    abrir_ms: null, escribir_ms: null, leer_ms: null,
-    escrito_ok: false, leido_ok: false, leido_coincide: false,
-    limpiado_ok: false, error: null,
-  };
+function _asegurarDisparadorDelEspejo_() {
   try {
-    var t0 = Date.now();
-    var carpeta = _almacenDurableCarpeta_();
-    out.abrir_ms = Date.now() - t0;
-    if (!carpeta) { out.error = 'no se pudo abrir/crear la carpeta (scope no concedido, o cuota)'; return out; }
-
-    var t1 = Date.now();
-    out.escrito_ok = _almacenDurableGuardar_(claveDePrueba, payloadDePrueba);
-    out.escribir_ms = Date.now() - t1;
-
-    var t2 = Date.now();
-    var leido = _almacenDurableLeer_(claveDePrueba);
-    out.leer_ms = Date.now() - t2;
-    out.leido_ok = !!leido;
-    out.leido_coincide = leido === payloadDePrueba;
-  } catch (e) {
-    out.error = String((e && e.message) || e);
-  } finally {
-    // Limpieza best-effort, pase lo que pase arriba — nunca deja residuo VISIBLE
-    // (queda en la papelera de Drive, no destruida — ver aviso de la cabecera).
-    try {
-      out.limpiado_ok = _almacenDurableBorrarClave_(claveDePrueba);
-    } catch (eClean) {
-      out.limpiado_ok = false;
-      out.error = (out.error ? out.error + ' | ' : '') + 'limpieza falló: ' + String((eClean && eClean.message) || eClean);
+    var cache = CacheService.getScriptCache();
+    if (cache.get(ESPEJO_GUARDA_KEY_)) return;          // ya comprobado en esta ventana
+    var mios = ScriptApp.getProjectTriggers().filter(function(t) {
+      return t.getHandlerFunction() === ESPEJO_DISPARADOR_FN_;
+    });
+    if (mios.length >= 1) {
+      // Deja EXACTAMENTE uno — si alguna vez se colaran dos, se corrige aquí.
+      for (var i = 1; i < mios.length; i++) { try { ScriptApp.deleteTrigger(mios[i]); } catch (_e) {} }
+    } else {
+      ScriptApp.newTrigger(ESPEJO_DISPARADOR_FN_).timeBased().everyMinutes(ESPEJO_CADA_MIN_).create();
+      Logger.log('[espejo] disparador instalado cada ' + ESPEJO_CADA_MIN_ + ' min');
     }
+    cache.put(ESPEJO_GUARDA_KEY_, '1', ESPEJO_GUARDA_S_);
+  } catch (e) {
+    try { Logger.log('[_asegurarDisparadorDelEspejo_] swallowed — ' + (e && e.message)); } catch (_eL) {}
   }
+}
+
+/**
+ * ①97 — **EL DISPARADOR**. Pide al KMS las copias de recuperación de todas las solicitudes
+ * vivas del colegio y las archiva en la `ScriptCache` de este proyecto.
+ *
+ * No es una acción del despachador: **no está en el `switch(action)` de `doPost`** y no se
+ * puede invocar desde internet. La lanza el disparador por tiempo, o `manual_*` a mano.
+ *
+ * **Paginado**: el KMS pagina por grupo y devuelve `siguiente_desde`; aquí se recorre hasta
+ * que sea `null`, con presupuesto de tiempo propio para no topar con los 6 minutos de Apps
+ * Script. Si se corta, la vuelta siguiente empieza por donde iba (`ESPEJO_CURSOR_KEY_`).
+ *
+ * ⛔ **BEST-EFFORT DE PUNTA A PUNTA.** Un fallo del KMS, del transporte o de una copia suelta
+ * se registra y se sigue: lo peor que pasa es que esa copia se quede como estaba y la
+ * familia pague su viaje al entrar — que es el camino de siempre.
+ *
+ * ⛔ **NI UN DATO PERSONAL EN EL LOG** (KAL-11): solo conteos y el expediente truncado.
+ *
+ * @returns {{vueltas:number, copias:number, archivadas:number, grupos_totales:number,
+ *            desde:number, siguiente_desde:?number, corte_por_tiempo:boolean, error:?string}}
+ */
+function espejoRefrescarCopias() {
+  var out = { vueltas: 0, copias: 0, archivadas: 0, grupos_totales: 0,
+              desde: 0, siguiente_desde: null, corte_por_tiempo: false, error: null };
+  var t0 = Date.now();
+  var cache = CacheService.getScriptCache();
+
+  // Retoma por donde se cortó la vuelta anterior; si no hay marca, empieza por el principio.
+  var desde = 0;
+  try { desde = Math.max(0, Number(cache.get(ESPEJO_CURSOR_KEY_)) || 0); } catch (_eC) { desde = 0; }
+  out.desde = desde;
+
+  try {
+    while (true) {
+      if (Date.now() - t0 > ESPEJO_PRESUPUESTO_MS_) { out.corte_por_tiempo = true; break; }
+      var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', {
+        desde: desde, cuantas: ESPEJO_GRUPOS_POR_VUELTA_,
+      }) || {};
+      out.vueltas++;
+      out.grupos_totales = r.grupos_totales || 0;
+      var copias = r.copias || [];
+      out.copias += copias.length;
+      for (var i = 0; i < copias.length; i++) {
+        var c = copias[i];
+        if (!c || !c.enrollment_group_id || !c.n || !c.payload) continue;
+        if (_espejoGuardarCopia_(cache, String(c.enrollment_group_id), String(c.n), c.payload)) {
+          out.archivadas++;
+        }
+      }
+      var sig = (r.siguiente_desde === 0 || r.siguiente_desde) ? Number(r.siguiente_desde) : null;
+      if (sig === null || sig <= desde) { desde = 0; break; }   // vuelta completa
+      desde = sig;
+    }
+  } catch (e) {
+    out.error = String((e && e.message) || e).slice(0, 200);
+    Logger.log('[espejoRefrescarCopias] non-fatal — ' + redact_(out.error));
+  }
+
+  out.siguiente_desde = desde || null;
+  try { cache.put(ESPEJO_CURSOR_KEY_, String(desde || 0), ESPEJO_GUARDA_S_); } catch (_eP) {}
+  Logger.log('[espejoRefrescarCopias] ' + JSON.stringify(out));
+  return out;
+}
+
+/**
+ * ①97 — instala el disparador del espejo A MANO (idempotente), sin esperar a que entre
+ * ninguna petición. Para `clasp run` o el editor de Apps Script.
+ * @returns {Object}
+ */
+function manual_instalarElDisparadorDelEspejo() {
+  var out = { antes: 0, despues: 0, creado: false, borrados: 0 };
+  try {
+    var mios = ScriptApp.getProjectTriggers().filter(function(t) {
+      return t.getHandlerFunction() === ESPEJO_DISPARADOR_FN_;
+    });
+    out.antes = mios.length;
+    for (var i = 1; i < mios.length; i++) { try { ScriptApp.deleteTrigger(mios[i]); out.borrados++; } catch (_e) {} }
+    if (!mios.length) {
+      ScriptApp.newTrigger(ESPEJO_DISPARADOR_FN_).timeBased().everyMinutes(ESPEJO_CADA_MIN_).create();
+      out.creado = true;
+    }
+    // Comprobación POR LECTURA, nunca por el «ok» de la escritura.
+    out.despues = ScriptApp.getProjectTriggers().filter(function(t) {
+      return t.getHandlerFunction() === ESPEJO_DISPARADOR_FN_;
+    }).length;
+    out.veredicto = (out.despues === 1) ? 'VERDE — hay exactamente UN disparador del espejo'
+                                        : 'ROJO — hay ' + out.despues;
+  } catch (e) { out.veredicto = 'ROJO — ' + (e && e.message); }
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
+/**
+ * ①97 — SOLO LECTURA: ¿está el espejo caliente, y bajo qué claves? Devuelve CONTEOS y
+ * booleanos — cero correos, cero nombres, cero identificadores completos (KAL-11).
+ * @returns {Object}
+ */
+function manual_diagElEspejo() {
+  var out = { diag: 'manual_diagElEspejo', disparadores_del_espejo: 0,
+              disparadores_totales: 0, cursor: null, copias_vistas: 0, detalle: [] };
+  try {
+    var trs = ScriptApp.getProjectTriggers();
+    out.disparadores_totales = trs.length;
+    out.disparadores_del_espejo = trs.filter(function(t) {
+      return t.getHandlerFunction() === ESPEJO_DISPARADOR_FN_;
+    }).length;
+  } catch (_e) {}
+  var cache = CacheService.getScriptCache();
+  try { out.cursor = cache.get(ESPEJO_CURSOR_KEY_); } catch (_e2) {}
+  try {
+    // Pregunta al KMS QUÉ claves debería haber, y comprueba cuáles están calientes.
+    var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', { desde: 0, cuantas: ESPEJO_GRUPOS_POR_VUELTA_ }) || {};
+    (r.copias || []).forEach(function(c) {
+      if (!c || !c.enrollment_group_id || !c.n) return;
+      var key = _wzCacheKey_('hyd', String(c.enrollment_group_id) + '_' + _wzN_(String(c.n), null));
+      var raw = _wzCacheGetChunked_(cache, key);
+      var vigente = null, personas = null;
+      if (raw) {
+        try {
+          var env = JSON.parse(raw);
+          vigente = (env && env.v === _versionDeClase_(String(c.enrollment_group_id), 'hyd'));
+          personas = (env && env.data && env.data.persons) ? env.data.persons.length : 0;
+        } catch (_e3) {}
+      }
+      out.copias_vistas++;
+      out.detalle.push({ grupo: String(c.enrollment_group_id).slice(0, 8) + '…',
+                         caliente: !!raw, version_vigente: vigente, personas_n: personas });
+    });
+  } catch (e) { out.error = String((e && e.message) || e).slice(0, 200); }
   Logger.log(JSON.stringify(out, null, 2));
   return out;
 }

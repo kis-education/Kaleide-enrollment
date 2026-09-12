@@ -37,13 +37,21 @@ export function comprobarReceptor(fuente) {
 
   // 2 — CADA receptor lo INVOCA, y lo hace ANTES de leer el contenido.
   //
-  // ★ 2026-09-11 — SON TRES, NO UNO. Este control se escribió cuando `notifyLiveStateChange_`
-  // era el único receptor firmado; después entró `pushWarmHydrate_` (que empuja PII) y ahora
-  // `sembrarRecuperacion_` (que empuja `resume_token`), y **ninguno de los dos estaba
-  // vigilado**. Los tres están en el `switch(action)` del `doPost` `ANYONE_ANONYMOUS`, o sea
-  // que los tres son alcanzables desde internet sin autenticación: verificar antes de mirar
-  // no es una propiedad de UNO, es la del canal.
-  const RECEPTORES = ['notifyLiveStateChange_', 'pushWarmHydrate_', 'sembrarRecuperacion_']
+  // ★ 2026-09-11 — NO ES UNO. Este control se escribió cuando `notifyLiveStateChange_` era el
+  // único receptor firmado; después entraron otros y **ninguno estaba vigilado**. Todos están
+  // en el `switch(action)` del `doPost` `ANYONE_ANONYMOUS`, o sea que son alcanzables desde
+  // internet sin autenticación: verificar antes de mirar no es una propiedad de UNO, es la
+  // del canal.
+  //
+  // ★ 2026-09-12 (①97 rumbo corregido) — SON DOS. `pushWarmHydrate_` se RETIRÓ con su `case`
+  // del despachador: el KMS ya no empuja la copia caliente (quitó sus dos emisores), la TIRA
+  // el disparador de este proyecto (`espejoRefrescarCopias`). Quitarlo de esta lista NO
+  // afloja nada — lo que se retiró es el receptor, no su comprobación. ⚠️ **Y este control
+  // hizo lo correcto al hacerlo**: salió ROJO nombrando el caso (*«no se encontró
+  // `pushWarmHydrate_` — el detector está CIEGO sobre él»*) en vez de pasar en verde sobre
+  // algo que ya no podía ver. Si vuelve a entrar un receptor firmado, se añade AQUÍ en el
+  // mismo cambio.
+  const RECEPTORES = ['notifyLiveStateChange_', 'sembrarRecuperacion_']
   for (const nombre of RECEPTORES) {
     const re = new RegExp('function ' + nombre + '\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}')
     const cuerpo = re.exec(sinComentarios)
@@ -86,7 +94,7 @@ try {
   const fallos = comprobarReceptor(fuente)
   fallos.forEach((f) => console.log('  ✗ ' + f))
   if (fallos.length) motivo = `${fallos.length} infracción(es): ${fallos.join(' · ')}`
-  else console.log('  ✓ los TRES receptores firmados verifican firma → ventana → no-repetición ANTES de leer el contenido')
+  else console.log('  ✓ los DOS receptores firmados verifican firma → ventana → no-repetición ANTES de leer el contenido')
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)
 } finally {
