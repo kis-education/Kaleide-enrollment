@@ -1496,13 +1496,29 @@ export function createDispatcher(scenario, record) {
         concept: 'Cuota escolar', amount_cents: bruto, discount_cents: desc,
         net_cents: bruto - desc, currency_code: 'EUR' }));
       const filas = venc(3, 100000, 5000);
+      // ★ D66 (`cli-el-presupuesto-que-no-se-pudo-calcular.md`) — `scenario.presupuestoNoCalculable`
+      // reproduce el contrato REAL de `enr_wizardBuildBudget_` cuando `fin_previewSchedule` lanza:
+      // `budget: null` + `budget_error: 'NO_CALCULABLE'`, NUNCA un presupuesto en ceros fabricado.
+      // El resto de la fila (`items`, `applied_modality_id`, `modality_previews`) se conserva
+      // — el fallo es SOLO del cálculo del calendario, no de la suscripción entera.
+      // ⛔ `scenario.presupuestoVacioLegitimo` es el caso DISTINTO que D66 exige no confundir con
+      // el anterior: el servidor SÍ contestó, y contestó que esta suscripción no tiene ningún
+      // vencimiento — `budget_error` sigue en `null`.
+      const budgetDeLaPrimera = scenario.presupuestoNoCalculable
+        ? { budget: null, budget_error: 'NO_CALCULABLE' }
+        : scenario.presupuestoVacioLegitimo
+        ? { budget: { subscription_id: 'sub-e2e-1', occurrences: [],
+                      total_cents: 0, gross_cents: 0, discount_cents: 0, net_cents: 0,
+                      currency_code: 'EUR' }, budget_error: null }
+        : { budget: { subscription_id: 'sub-e2e-1', occurrences: filas,
+                      total_cents: 300000, gross_cents: 300000,
+                      discount_cents: 15000, net_cents: 285000, currency_code: 'EUR' },
+            budget_error: null };
       return { ok: true, modalities_available: true, sin_nada_que_elegir: null,
         subscriptions: [{
           subscription_id: 'sub-e2e-1', enrollment_id: 'enr-e2e-1',
           state_code: 'DRAFT', is_draft: true,
-          budget: { subscription_id: 'sub-e2e-1', occurrences: filas,
-                    total_cents: 300000, gross_cents: 300000,
-                    discount_cents: 15000, net_cents: 285000, currency_code: 'EUR' },
+          ...budgetDeLaPrimera,
           items: [], applied_modality_id: 'mod-anual-e2e',
           modality_previews: [
             { modality_id: 'mod-anual-e2e', modality_code: 'ANUAL', designation: 'Anual',

@@ -420,6 +420,8 @@
   "signing.billing.budget.empty": "Todavía no hay pagos previstos para este expediente.",
   "signing.billing.budget.not_admitted_yet": "Todavía no hay forma de pago que elegir: el colegio aún no ha resuelto tu solicitud. Cuando la admita, aquí verás el presupuesto y podrás elegir cómo pagarlo.",
   "signing.billing.budget.no_draft_yet": "Tu solicitud ya está admitida, pero todavía no hemos preparado la matrícula. En cuanto esté, aquí podrás elegir la forma de pago.",
+  "signing.billing.budget.not_calculable": "No hemos podido calcular este presupuesto. Ya hemos avisado al colegio; te lo haremos llegar en cuanto esté resuelto.",
+  "signing.billing.budget.not_calculable_blocks": "No hemos podido calcular el presupuesto de una matrícula. Ya hemos avisado al colegio — no puedes continuar hasta que esté resuelto.",
   "signing.billing.budget.col_concept": "Concepto",
   "signing.billing.budget.col_due": "Fecha de pago",
   "signing.billing.budget.col_amount": "Importe",

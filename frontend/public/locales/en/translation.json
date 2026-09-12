@@ -420,6 +420,8 @@
   "signing.billing.budget.empty": "There are no scheduled payments for this application yet.",
   "signing.billing.budget.not_admitted_yet": "There's no payment option to choose yet: the school hasn't decided on your application. Once it's admitted, you'll see the budget here and be able to choose how to pay.",
   "signing.billing.budget.no_draft_yet": "Your application has been admitted, but we haven't prepared the enrolment yet. As soon as it's ready you'll be able to choose how to pay here.",
+  "signing.billing.budget.not_calculable": "We couldn't calculate this budget. We've already notified the school; we'll send it to you once it's resolved.",
+  "signing.billing.budget.not_calculable_blocks": "We couldn't calculate the budget for an enrolment. We've already notified the school — you can't continue until it's resolved.",
   "signing.billing.budget.col_concept": "Item",
   "signing.billing.budget.col_due": "Payment date",
   "signing.billing.budget.col_amount": "Amount",

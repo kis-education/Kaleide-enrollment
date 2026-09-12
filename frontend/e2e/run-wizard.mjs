@@ -3712,6 +3712,92 @@ async function caminoPaso8SinNadaQueElegir(page, base) {
 }
 
 /**
+ * ★ D66 (`cli-el-presupuesto-que-no-se-pudo-calcular.md`, Diego «La a») — cuando el KMS NO
+ * puede calcular el presupuesto de una suscripción (p.ej. un impuesto sin declarar,
+ * DL-087), el paso 8 ya NO fabrica un presupuesto en ceros: lo DICE, y bloquea el avance.
+ *
+ * Dos fases, para no confundir «no se pudo calcular» con «se pudo calcular y no hay nada
+ * que pagar» — son dos respuestas MUY distintas y hasta hoy compartían la misma rama:
+ *   (A) `budget_error: 'NO_CALCULABLE'` → aviso de bloqueo + el botón Continuar NO avanza.
+ *   (B) `budget: {occurrences:[]}, budget_error: null` → sigue comportándose EXACTAMENTE
+ *       como antes (el aviso de «no hay pagos previstos», Continuar SÍ avanza).
+ *
+ * ⛔ ANCLA por delante en las dos fases: sin comprobar que el paso 8 llegó a pintar, las
+ * demás afirmaciones pasarían sobre una pantalla que no se montó.
+ */
+async function caminoPaso8PresupuestoNoCalculable(page, base) {
+  const c = new Camino('paso8-presupuesto-no-calculable')
+  scenario.stage = 'firma'
+  try {
+    // ── FASE A · NO CALCULABLE — bloquea, y lo dice ───────────────────────────────────
+    scenario.presupuestoNoCalculable = true
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 900)
+    const pantallaA = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantallaA.pasos + pantallaA.campos + pantallaA.tarjetas
+
+    if (!c.afirmar('ANCLA · se aterriza en el paso 8', pantallaA.pasoActivo === 7,
+      `aterrizó en el índice ${pantallaA.pasoActivo}: lo que sigue mediría el aire`)) return c
+
+    const avisoBloqueo = await page.$eval('[data-testid="paso8-presupuesto-no-calculable"]',
+      n => n.textContent.trim()).catch(() => null)
+    c.afirmar('un presupuesto NO calculable se DICE, no se disfraza de "sin pagos previstos"',
+      !!avisoBloqueo && avisoBloqueo.length > 20,
+      `el aviso leído fue ${JSON.stringify(avisoBloqueo)}: sin decirlo, la familia vería un presupuesto en ceros — indistinguible de una matrícula gratis`)
+
+    c.afirmar('y NO se pinta el calendario de pagos (no hay nada que calcular todavía)',
+      !(await page.$('[data-testid="paso8-desglose"]')),
+      'se pintó [data-testid="paso8-desglose"] con el presupuesto sin calcular: eso sería inventar un calendario')
+
+    await page.click('[data-testid="nav-siguiente"]')
+    await page.waitForTimeout(300)
+    const pantallaTrasClic = await page.evaluate(sondaPantalla)
+    c.afirmar('con el presupuesto sin calcular, el botón Continuar NO avanza',
+      pantallaTrasClic.pasoActivo === 7,
+      `tras pulsar Continuar aterrizó en el índice ${pantallaTrasClic.pasoActivo} (se esperaba seguir en 7): avanzar dejaría firmar una matrícula sin presupuesto`)
+
+    const errores = await page.$$eval('.field-error', ns => ns.map(n => (n.textContent || '').trim()))
+    c.afirmar('y el paso explica por qué no avanza',
+      errores.some(x => x.length > 15),
+      `los errores leídos fueron ${JSON.stringify(errores)}: bloquear en silencio deja a la familia sin saber qué hacer`)
+
+    c.afirmar('⛔ NO se ofrece un botón de "reintentar" (PASO 1: ningún fallo de este camino se acredita como pasajero)',
+      !(await page.$('[data-testid="paso8-reintentar-presupuesto"]')),
+      'apareció un botón de reintento: reintentar un impuesto sin declarar es una promesa falsa')
+
+    // ── FASE B · VACÍO LEGÍTIMO — sigue comportándose EXACTAMENTE como antes ──────────
+    scenario.presupuestoNoCalculable = false
+    scenario.presupuestoVacioLegitimo = true
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 900)
+    const pantallaB = await page.evaluate(sondaPantalla)
+    if (!c.afirmar('ANCLA · (B) también se aterriza en el paso 8', pantallaB.pasoActivo === 7,
+      `aterrizó en el índice ${pantallaB.pasoActivo}: lo que sigue mediría el aire`)) return c
+
+    c.afirmar('(B) un presupuesto legítimamente VACÍO no se confunde con "no calculable"',
+      !(await page.$('[data-testid="paso8-presupuesto-no-calculable"]')),
+      'se pintó el aviso de bloqueo sobre una suscripción sin fallo — el criterio distingue mal budget_error de occurrences vacío')
+
+    const avisoVacio = await page.$eval('[data-testid="paso8-presupuesto-vacio"]',
+      n => n.textContent.trim()).catch(() => null)
+    c.afirmar('(B) y sigue diciendo lo de siempre: "no hay pagos previstos"',
+      !!avisoVacio && avisoVacio.length > 10,
+      `el aviso leído fue ${JSON.stringify(avisoVacio)}: el caso legítimo dejó de comportarse como antes`)
+
+    await page.click('[data-testid="nav-siguiente"]')
+    await page.waitForTimeout(LATENCY + 500)
+    const pantallaTrasClicB = await page.evaluate(sondaPantalla)
+    c.afirmar('(B) con un presupuesto legítimamente vacío, Continuar SÍ avanza',
+      pantallaTrasClicB.pasoActivo !== 7,
+      `tras pulsar Continuar siguió en el índice ${pantallaTrasClicB.pasoActivo}: el caso "nada que pagar" no debe bloquearse`)
+  } finally {
+    scenario.presupuestoNoCalculable = false
+    scenario.presupuestoVacioLegitimo = false
+  }
+  return c
+}
+
+/**
  * SALUD DESDE LA PANTALLA — elegir alergia, dieta y condición médica y comprobar que la
  * elección QUEDA PUESTA. Separa dos culpables que hasta hoy se confundían: «el producto no
  * guarda» y «el robot no registra la elección».
@@ -10758,6 +10844,8 @@ const CAMINOS = [
   { nombre: 'reparto-no-se-siembra-de-vacio', fn: caminoRepartoNoSeSiembraDeVacio,
     minLlamadas: 1, minElementos: 5 },
   { nombre: 'paso8-sin-nada-que-elegir', fn: caminoPaso8SinNadaQueElegir, minLlamadas: 1, minElementos: 5 },
+  { nombre: 'paso8-presupuesto-no-calculable', fn: caminoPaso8PresupuestoNoCalculable,
+    minLlamadas: 2, minElementos: 5 },
   // Ejercita el paso 4 DESDE LA PANTALLA también en simulado. Nació para contestar, sin
   // gastar una corrida de 35 min, si el `0 de 1` de la salud contra el sistema real era
   // del producto o del conductor. Se queda: era cobertura que faltaba.

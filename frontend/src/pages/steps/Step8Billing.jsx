@@ -147,6 +147,13 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   const [modalityErr, setModalityErr] = useState('');   // fallo de MONEY → PERSISTENTE
   const [applying, setApplying]     = useState(null);   // modality_id en curso
 
+  // ★ D66 (2026-09-11, Diego «La a») — al menos una suscripción del grupo llegó marcada
+  // `budget_error` (el servidor NO pudo calcular su presupuesto — p.ej. un impuesto sin
+  // declarar, DL-087). Se distingue de «no hay nada que pagar»: eso es `budget_error:null`
+  // con `occurrences:[]`, y sigue pintándose exactamente como hoy.
+  const hayPresupuestoNoCalculable = !!(budget && (budget.subscriptions || [])
+    .some(sub => sub && sub.budget_error));
+
   // ⭐ EL PASO 8 AL DÍA (2026-08-27) — lo que el KMS dice que le toca pagar a cada tutor,
   // indexado por el identificador con el que ESTA pantalla nombra sus filas
   // (`payer_person_id`, el de la solicitud — el KMS ya lo traduce desde el del núcleo).
@@ -400,6 +407,11 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   // KAL-4/KAL-7 intactos: el KMS deriva grupo/signer del token; el payload solo lleva %.
   const submit = () => {
     if (locked) { onAdvance(); return; } // solo lectura: avanza sin guardar
+    // ★ D66 — con el presupuesto sin calcular NO se avanza. El colegio ya está avisado
+    // (`enr_avisarPresupuestoNoCalculable_`, best-effort, KMS); aquí solo se bloquea el paso
+    // hasta que la configuración se arregle — ⛔ SIN botón de reintentar (PASO 1: los fallos no
+    // se pueden acreditar como transitorios).
+    if (hayPresupuestoNoCalculable) { setErr(t('signing.billing.budget.not_calculable_blocks')); return; }
     const v = validate();
     if (v) { setErr(v); return; }
     setErr('');
@@ -524,7 +536,19 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
                 solo formatea. ⛔ Y el desglose del descuento POR VENCIMIENTO depende de que
                 el motor lo reparta por plazo (`0º.tricies.sextricies`): cuando un número
                 llegue `null`, la columna pinta «—» EXACTAMENTE igual que en el paso 7. */}
-            {((sub.budget && sub.budget.occurrences) || []).length > 0 ? (
+            {/* ★ D66 (2026-09-11, Diego «La a») — el presupuesto de ESTA suscripción no se pudo
+                calcular (p.ej. un impuesto sin declarar en el artículo, DL-087). Se dice claro,
+                se avisa que ya se ha avisado al colegio, y NO se ofrece «Reintentar»: el PASO 1
+                del encargo (`cli-el-presupuesto-que-no-se-pudo-calcular.md`) midió que ningún
+                código de fallo de este camino se puede acreditar como transitorio — ofrecer un
+                botón que reintenta un fallo de configuración es una promesa falsa. */}
+            {sub.budget_error ? (
+              <div className="alert alert-danger" role="alert"
+                   data-testid="paso8-presupuesto-no-calculable"
+                   style={{ fontSize: '0.84rem' }}>
+                {t('signing.billing.budget.not_calculable')}
+              </div>
+            ) : ((sub.budget && sub.budget.occurrences) || []).length > 0 ? (
               <CalendarioDePagos
                 filas={(sub.budget.occurrences || []).map(o => ({
                   concepto:        o.concept,
@@ -541,7 +565,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
               />
             ) : (
               !budgetErr && (
-                <p style={{ color: 'var(--muted)', fontSize: '0.84rem' }}>
+                <p data-testid="paso8-presupuesto-vacio" style={{ color: 'var(--muted)', fontSize: '0.84rem' }}>
                   {t('signing.billing.budget.empty')}
                 </p>
               )
