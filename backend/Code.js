@@ -7227,7 +7227,27 @@ function fetchLookups_(p) {
   // ②54 (2026-09-06) — acción pública SIN verja ni cupo hasta hoy. Antes del trabajo caro.
   _checkPublicCatalogRateLimit_('lookups', idioma);
 
-  return kmsProxy_('enr.fetchApplicationLookups', { school_id: SCHOOL_ID, language: idioma || null });
+  // ④31 (2026-09-12) — PERF-KMS2, flag SUELTO (sin gate de identidad).
+  //
+  // `getSavedBillingSplits_`/`initiateSigningSession_` exponen `_perf` SOLO tras resolver
+  // identidad real (KAL-11: no filtrar timing junto a datos de familia). Esta acción es
+  // `public`, no tiene identidad que resolver y NO devuelve ni un dato personal — solo
+  // catálogos del centro (alergias, dieta, tipos de vínculo, programas…), iguales para
+  // cualquier llamante. Por eso el flag se suelta: no hay nada que gatear detrás.
+  //
+  // `PERF2_.kms_fetch_ms` (kmsProxy_) aísla el salto HTTP puro asistente→KMS, separado del
+  // resto del trabajo del asistente — es la medida PAREADA que `④31` pedía para esta acción,
+  // la más lenta y más medida del asistente.
+  var perfP0 = Date.now(); // PERF-KMS2
+  var data = kmsProxy_('enr.fetchApplicationLookups', { school_id: SCHOOL_ID, language: idioma || null });
+  var perfProxyMs = Date.now() - perfP0;
+  Logger.log('[PERF] fetchLookups t_proxy=' + perfProxyMs + ' kms_fetch=' + PERF2_.kms_fetch_ms);
+  if (p && p._perf === true) {
+    data = Object.assign({}, data, { _perf: {
+      t_proxy_ms: perfProxyMs, kms_fetch_ms: PERF2_.kms_fetch_ms,
+    } });
+  }
+  return data;
 }
 
 /**
