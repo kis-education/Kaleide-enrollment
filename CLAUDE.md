@@ -40,7 +40,7 @@
 > | `comprobar-selector-appsheet` | que los filtros emitan `AND()`/`OR()` como FUNCIONES, no infijos que AppSheet descarta en silencio |
 > | `comprobar-personas-quitadas` | que no se cuente a quien la familia ya quitó de su solicitud |
 > | `comprobar-verja-publica` | las cinco puertas anónimas, el código de un solo uso de los 13 manejadores de mutación, y que cada tramo de `②17` siga preguntándole al KMS |
-> | `comprobar-receptor-firmado` | que **los TRES** receptores firmados del KMS (`notifyLiveStateChange_`, `pushWarmHydrate_`, `sembrarRecuperacion_`) verifiquen la firma ANTES de mirar el contenido |
+> | `comprobar-receptor-firmado` | que **los DOS** receptores firmados del KMS (`notifyLiveStateChange_`, `sembrarRecuperacion_`) verifiquen la firma ANTES de mirar el contenido *(eran TRES hasta el 2026-09-12: `pushWarmHydrate_` se retiró con `①97`, porque el KMS dejó de empujar)* |
 > | `comprobar-pantalla-del-cliente` | que las banderas de pantalla salgan de UN derivador y no se copien del KMS |
 > | `comprobar-codigos-de-consentimiento` | que ningún consentimiento se registre con un código inventado |
 > | `comprobar-que-el-wizard-no-escribe-estado` | que el asistente no fije el estado ni mande el correo del envío |
@@ -1728,7 +1728,7 @@ a granel** (0 usos de `getProperties()`/`getAll()`/`getKeys()` en todo el ficher
   El correo se guarda **RESUMIDO**, jamás en claro (KAL-11).
 
 **El KMS la SIEMBRA al invitar** (`enr_sembrarRecuperacionEnAsistente_`), por el receptor
-firmado `sembrarRecuperacion_` — mismo gate y mismo molde que `pushWarmHydrate_` (DL-S106), y
+firmado `sembrarRecuperacion_` — mismo gate y mismo molde que `notifyLiveStateChange_` (DL-S106), y
 compartiendo con la ruta pública **un solo recorrido** (`enr_recuperacionDelCorreoCore_`):
 sembrar con un recorrido propio sería sembrar una respuesta que puede diferir de la que este
 asistente recibiría preguntando.
@@ -4126,29 +4126,24 @@ dos son fuego-y-olvido: **no están en el camino que la familia espera**.
    no se puede enseñar**. Qué conjuntos le tocan a cada familia se sigue resolviendo por familia,
    siempre.
 
-**⛔ Lo que decía aquí — que la copia SIEMPRE CALIENTE «está a medias y no se puede medir desde
-aquí» — quedó SUPERADO el 2026-09-12 (`①97`).** Lo que faltaba —que la copia se refresque en cuanto
-el KMS escribe, no solo cada 3 h— **se construyó y se midió con arnés efímero (25 afirmaciones
-verdes, 3 rojos demostrados; detalle: `kis-app/docs/kms/pendiente-diego.md` D118)**: los TRES puntos donde el
-KMS avisa de un cambio de solicitud (`enr_notifyWizardLiveState_`, `enr_avisarSiLaSolicitudCambio_`,
-`enr_jobHandler_persist_`) encolan, además de subir la versión de siempre, un trabajo
-`ENR_PUSH_MIRROR` que recalcula y empuja la copia de ESE grupo — sin esperar al repaso de 3 h.
+**⛔ Lo que decía aquí — que la copia SIEMPRE CALIENTE «está a medias» — quedó SUPERADO el
+2026-09-12 (`①97`), PERO NO COMO SE ESCRIBIÓ PRIMERO.** Aquí llegó a decirse que lo resolvía un
+empuje del KMS en cada escritura (`ENR_PUSH_MIRROR`) más un repaso de 3 h suyo: **eso se retiró
+ENTERO el mismo día por decisión de Diego** —*«el sitio para instalarlo no es el KMS, es el Wizard
+(backend) […] y es el Wizard el que le va haciendo peticiones al KMS»*—. **Quien mantiene caliente
+la copia es EL DISPARADOR DE ESTE PROYECTO**: `espejoRefrescarCopias`, cada 30 min, que le pide al
+KMS `enr.copiasDeLasSolicitudesVivas` y archiva bajo la MISMA clave que lee la recuperación. Ver
+§"EL ESPEJO PERMANENTE" en `backend/Code.js`.
 
-**Y en este lado (el asistente), la IDENTIDAD también se resuelve primero contra la copia.**
+**Y en este lado, la IDENTIDAD también se resuelve primero contra la copia.**
 `_tutorQueRecupera_` —el resolvedor ÚNICO, sin segundo lector— consulta la copia que ya escribe
-`hydrateSession_`/`pushWarmHydrate_` (misma clave `wz_hyd_`, ahora con **6 h de vida** en vez de
-30 min, `ESPEJO_HYD_TTL_S_`) antes de preguntarle al KMS, y solo si su versión sigue vigente. Con
-un solo tutor no hay dos personas que confundir: la copia de un tutor **nunca** contiene los datos
-del otro (DL-E49 §2, filtrado en el propio KMS antes de empujar). Medido con arnés efímero
-(21 afirmaciones verdes, 2 rojos demostrados, incluida una comparación ANTES/DESPUÉS real: 1 viaje
-al KMS → 0 con la copia caliente).
+`hydrateSession_` (misma clave `wz_hyd_`, con **6 h de vida**, `ESPEJO_HYD_TTL_S_`) antes de
+preguntarle al KMS, y solo si su versión sigue vigente. Con un solo tutor no hay dos personas que
+confundir: la copia de un tutor **nunca** contiene los datos del otro (DL-E49 §2, filtrado en el
+propio KMS antes de servirla).
 
-**Límite honesto que sigue en pie:** la PRIMERA visita de un tutor que nunca se calentó (ni por el
-repaso de 3 h, ni por un empuje reciente) sigue pagando el viaje al KMS — eso es correcto, no hay
-nada que servir todavía. ⛔ **Y lo que decía aquí — que la copia es SOLO `ScriptCache`, «no un
-almacén persistente», y que construir uno de verdad era «trabajo aparte» — quedó SUPERADO el
-2026-09-12 (`①97` REABIERTA, ficha más abajo): ese almacén persistente ya está construido**, debajo
-de `ScriptCache` en el propio camino de lectura.
+**Límite honesto que sigue en pie:** la PRIMERA visita de un tutor cuya copia todavía no se calentó
+sigue pagando el viaje al KMS — eso es correcto, no hay nada que servir todavía.
 
 **Red**: recorrido NUEVO `un-viaje-al-abrir` (9 afirmaciones), con **ancla** por delante — que la
 verja llegue a salir — para que las demás no puedan pasar sobre una pantalla que no se montó.
@@ -4179,77 +4174,92 @@ por Diego y por las sondas del KMS (`0º.tricies.vicies.bis`), no los de este re
 **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
 lo que cambia es cuánto espera para verla.
 
-### `①97` REABIERTA (2026-09-12) — el almacén DURABLE: recuperar una solicitud ya no puede salir vacío por un desalojo de `ScriptCache`
+### `①97` RUMBO CORREGIDO (2026-09-12) — EL ESPEJO PERMANENTE: la copia vive en la `ScriptCache`, y la mantiene caliente UN DISPARADOR DE ESTE PROYECTO
 
-**Diego probó su solicitud de pruebas y recuperarla por el enlace le devolvió TODO VACÍO** — el
-mismo `①97` que ya se había cerrado como «espejo permanente publicado» (push-on-write en cada
-escritura de `enr*` + repaso de 3 h, ambos en el KMS) volvió a fallar. **Medido, log real
-2026-09-12 05:02**: la copia caliente de esa solicitud estaba FRÍA, y sin ella la re-hidratación
-real **murió por transporte a los ~62 s** (el socket se cae — no el tope de 240 s del cliente).
+**Diego probó su solicitud de pruebas, recuperarla por el enlace salió mal, y corrigió el rumbo de
+las últimas 24 h.** Citas literales: *«Una copia permanentemente actualizada en el caché del backend
+del Wizard de los expedientes activos de la escuela (KiS). NI más ni menos.»* · *«el sitio para
+instalarlo [el disparador] no es el KMS, es el Wizard (backend). Se instala una vez y listo, y es el
+Wizard el que le va haciendo peticiones al KMS.»* · *«Se debe guardar en el caché de GAS. No son
+tantos datos, son unas cuantas filas de varias tablas.»*
 
-**La causa de fondo NO era la disciplina de escritura — era `ScriptCache` en sí.** El push-on-write
-y el repaso de 3 h ya llegan a toda solicitud viva; lo que ninguno de los dos puede arreglar es que
-`ScriptCache` es **best-effort por diseño de Google**: puede desalojar una entrada antes de su TTL
-declarado pase lo que pase con quién y cuántas veces la reescriba. Necesitaba una segunda capa,
-**debajo** de `ScriptCache` en el camino de lectura, que sí sobreviva a un desalojo.
+**EL MODELO, en una frase: el ASISTENTE TIRA; el KMS no empuja y no dispara nada.**
 
-**Verify-first, antes de escribir nada.** `clasp run` **no pudo ejecutar ni una función contra este
-proyecto** en esta sesión — ni siquiera una de control, independiente de scope, que sí funciona
-contra el KMS. Con eso descartado, el diseño se apoya en algo que SÍ está demostrado: el scope
-`drive`, ya concedido y usado a diario para las fotos y documentos que sube una familia
-(`getOrCreateDriveFolder_`). Pedir un scope nuevo (se valoró `spreadsheets`) habría significado
-reautorización sin poder comprobar en vivo que el mecanismo nuevo funciona — riesgo que no se
-tomó. Se eligió `DriveApp`, no `SpreadsheetApp`.
+| Pieza | Dónde |
+|---|---|
+| **el almacén** | la `ScriptCache` de ESTE proyecto, bajo `wz_hydv2_<expediente>_<email_id>` — la MISMA clave que lee la recuperación |
+| **el escritor ÚNICO** | `_espejoGuardarCopia_` (clave, sobre `{v,data}`, plazo). Lo usan los DOS que archivan: el disparador y el write-through del camino vivo |
+| **el disparador** | `espejoRefrescarCopias`, cada 30 min, instalado por `_asegurarDisparadorDelEspejo_` |
+| **de dónde salen los datos** | UNA lectura del KMS: `enr.copiasDeLasSolicitudesVivas` |
 
-**El mecanismo — una carpeta propia de Drive, un fichero por clave de hidratación:**
+**Por qué la copia va por (expediente × TUTOR) y no por expediente:** porque la hidratación **se
+recorta al tutor que mira** (DL-E49 §2) — la copia de un tutor **nunca** contiene los datos del
+otro. Por eso la lectura del KMS devuelve una copia por cada tutor con correo vinculado, y el `n`
+que viaja es el **`email_id`** de `enrEmails`: el MISMO identificador opaco que ya va en el `?n=` del
+magic-link, para que la clave coincida BYTE A BYTE con la que calcula `_wzN_` cuando esa familia
+entra por su enlace.
 
-- `_almacenDurableCarpeta_` — abre (o crea, la primera vez) una carpeta con nombre fijo, guardando
-  su id en `PropertiesService` para no volver a buscarla por nombre.
-- `_almacenDurableGuardar_` / `_almacenDurableLeer_` / `_almacenDurableBorrarClave_` — un fichero
-  de texto por clave (`{v, data}`, el MISMO sobre que ya usa `ScriptCache`), tope de 200.000 bytes
-  (muy por debajo del techo real de Drive, y del propio techo de 40.000 bytes que el KMS ya aplica
-  al empujar).
-- `_wzHydLeerConDurable_` — **`ScriptCache` PRIMERO, Drive DESPUÉS, nunca al revés**. Un acierto de
-  Drive se re-siembra en `ScriptCache` antes de devolverlo, para que la siguiente lectura de esa
-  misma solicitud sea otra vez gratis.
-- **Se escribe en los TRES puntos que ya escribían `ScriptCache`**: la propia hidratación
-  (`hydrateSession_`) y el receptor firmado `pushWarmHydrate_` — que es el canal por el que el KMS
-  empuja **cada** escritura de `enr*` y el repaso de 3 h, así que es el que de verdad puebla el
-  almacén durable para toda solicitud viva, sin esperar a que nadie la recupere.
+⛔ **NO ADELANTA NI UN DATO A NADIE.** Esto SOLO GUARDA. Quién puede leer esa copia lo siguen
+decidiendo las puertas de siempre —el código de un solo uso (②27), KAL-4, el candado `pii_gated`—,
+que no se tocan.
 
-**⛔ NUNCA crea un «sí»: solo CONSERVA lo que ya se calculó o recibió en otro sitio.** Igual que
-`_moverLaCopiaDeLaPuerta_` (③18.bis.15) — un almacén que inventara respuestas sería peor que no
-tenerlo.
+⛔ **EL ESCRITOR NUNCA BUMPA LA VERSIÓN DE CLASE, SOLO LA LEE.** La versión es POR GRUPO, no por
+tutor: bumparla al archivar invalidaría de golpe la copia de cualquier OTRO tutor del mismo
+expediente que ya estuviera caliente — justo lo contrario de lo que esto busca.
 
-**⛔ Y el borrado de la sonda de prueba usa `setTrashed(true)`, NO destruye de forma
-irrecuperable** — es lo único que da la API base de Apps Script sin el servicio avanzado `Drive`.
-Queda escrito como límite honesto en la cabecera del propio diagnóstico
-(`manual_diagAlmacenDurable`, verify-first: crea/lee/borra un fichero `ZZ_` de prueba y mide los
-tres tiempos por separado), no se le da la vuelta.
+#### ⛔ LAS TRES PIEZAS QUE SE RETIRARON, Y NINGUNA VUELVE
 
-**Backfill inmediato, sin esperar al repaso de 3 h**: `enr_warmActiveEnrollmentsSweep()` (KMS,
-`kms-server/enr/wizard-warm.gs`) se disparó UNA VEZ a mano tras publicar — `{empujados:1,
-fallidos:0}` sobre la única solicitud viva del entorno de pruebas — para que el almacén durable
-quedara poblado sin esperar a que nadie recuperase esa solicitud primero.
+1. **EL ALMACÉN DURABLE EN DRIVE** (construido la noche anterior; `_almacenDurableCarpeta_` /
+   `Guardar_` / `Leer_` / `BorrarClave_`, `_wzHydLeerConDurable_`, `manual_diagAlmacenDurable`).
+   **Y no era solo que sobrara: metía una lectura de DRIVE en el camino más caliente** — se llamaba
+   en CADA hidratación y en CADA resolución de identidad desde el espejo, así que con la
+   `ScriptCache` fría eso es abrir la carpeta de Drive (o **CREARLA**, si la propiedad no estaba)
+   más un `getFilesByName`, **dentro de la petición que una familia está esperando**. Y una copia
+   guardada en Drive **sobrevive al desalojo del caché pero también a `_wzCacheInvalidate_`**, que
+   solo sube la versión: el fichero se queda ahí, y lo único que impide servirlo viejo es que la
+   comprobación de versión lo descarta. Un almacén que solo es correcto porque otro control lo salva
+   es un almacén que sobra.
+   ⚠️ **La carpeta que llegó a crearse NO se borra desde el código**: puede llevar copias de
+   familias reales, y borrar datos del colegio lo decide Diego. Queda huérfana, sin ningún lector.
+2. **EL RECEPTOR `pushWarmHydrate_` y su `case` del despachador.** El KMS retiró sus DOS emisores,
+   así que se quedó sin nadie que lo llamara — y era una acción MÁS en el `switch(action)` de un
+   `doPost` `ANYONE_ANONYMOUS`. ⚠️ **El canal firmado NO se toca**: `verifySignedKmsNotice_` sigue
+   vivo con **dos** receptores (`notifyLiveStateChange_` y `sembrarRecuperacion_`), que son otra
+   cosa y siguen usándose.
+3. **En el KMS**, el empuje por cada escritura `enr*` (`ENR_PUSH_MIRROR`), el empuje del repaso de
+   3 h, y **el disparador con su autoinstalación desde `buildApiContext_`**.
 
-**Publicado y ACREDITADO leyendo el CONTENIDO de la versión desplegada** (no el repositorio ni el
-reporte de `clasp`): dirección fija `/exec` → **`@283`** (`versionNumber` confirmado por la API de
-Apps Script), y el fuente de esa versión exacta contiene las cinco funciones nuevas y **cero**
-referencias al diseño abandonado de Sheets. `git` `5b57d71` en `Kaleide-enrollment origin/main`.
+**⚠️ Y POR QUÉ EL DISPARADOR ESTABA MAL EN EL KMS — el motivo es MEDIBLE, no de gusto:** el KMS es
+`executeAs: USER_ACCESSING` y **los disparadores de Apps Script son POR IDENTIDAD**, así que aquella
+autoinstalación creaba uno **por cada persona que entraba al KMS**. **Este proyecto es
+`executeAs: USER_DEPLOYING`**: TODA ejecución —el `doPost` público incluido— corre bajo UNA sola
+identidad, la de quien publicó, de modo que `ScriptApp.getProjectTriggers()` devuelve siempre los
+mismos y el «si ya hay uno, no crees otro» funciona de verdad. **Es la diferencia que hace correcto
+aquí lo que allí era un defecto.**
 
-⚠️ **LÍMITE HONESTO — lo que NO se pudo verificar en esta vuelta:** sin `clasp run` contra este
-proyecto, ningún camino nuevo se ejecutó en vivo antes de publicar; el diseño descansa en que el
-scope reutilizado (`drive`) ya funciona a diario para otra cosa, no en una medición directa de ESTE
-mecanismo. Y el criterio de aceptación completo — la solicitud real de Diego recuperando con
-**CERO** viajes al KMS, medido — no se pudo comprobar de punta a punta sin trazar tráfico de su
-sesión en vivo, que no es algo que esta vuelta pudiera hacer sin exponer datos de familia. Lo que
-sí se acreditó: el código está desplegado, las cinco funciones existen en la versión servida, y el
-repaso del KMS empujó con éxito (`fallidos:0`) al menos una solicitud real a través del canal que
-ahora también escribe en el almacén durable.
+**Coste del enganche en `doPost`:** `ScriptApp.getProjectTriggers()` **NO** se llama en cada
+petición — solo cuando la marca de caché (`espejo_disparador_ok`, 6 h) no está. El resto pagan un
+`cache.get`.
+
+**Verify-first de esta vuelta:** `clasp run` **NO pudo ejecutar ni una función contra este
+proyecto** (probado con `manual_testAppSheetEscape`, que ya existía y no depende de ningún scope
+nuevo: *«Unable to run script function»*) ⇒ **el disparador no se pudo instalar desde aquí a mano**,
+y por eso se instala solo en la primera petición que entre. `manual_instalarElDisparadorDelEspejo`
+queda para quien SÍ tenga ese canal, o para el editor de Apps Script.
+
+⚠️ **NINGUNA BATERÍA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend simulado que
+**nunca ejecuta `backend/Code.js`** ni llama al KMS. Se midió con un **arnés efímero fuera de los
+dos repositorios** que extrae del FUENTE REAL las funciones de los dos lados y las ejecuta con
+dobles: **24 afirmaciones verdes** y **SIETE roturas ROJAS demostradas** — archivar bajo una clave
+que la recuperación no lee · que el escritor bumpe la versión · que la lectura del KMS deje de
+exigir el `service_token` · que el KMS deje de descartar al tutor que la familia quitó · que el
+disparador se instale habiendo ya uno · que un KMS caído tumbe la vuelta · y el **renombrado**, que
+sale **«MEDICIÓN CIEGA»** y no verde. ⚠️ **Y el arnés se corrigió a sí mismo**: la rotura de la
+clave hacía **reventar** el arnés con una traza (`JSON.parse` de `undefined`) en vez de nombrar el
+caso — un rojo que no dice qué se rompió no es una medida. **Quien toque esta cadena, que la mida.**
 
 **Textos, manual y ayuda en pantalla: ninguno toca** — no hay ningún cambio observable para la
-familia; lo que cambia es que su solicitud sobrevive a un desalojo de caché que antes la dejaba
-vacía.
+familia; lo que cambia es cuánto espera al entrar.
 
 ### 2026-08-26 — «No hay programas de admisión» cuando SÍ los hay: el paso 1 confundía «no me han llegado» con «no existen»
 
