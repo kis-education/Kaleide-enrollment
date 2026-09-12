@@ -4145,9 +4145,10 @@ al KMS → 0 con la copia caliente).
 
 **Límite honesto que sigue en pie:** la PRIMERA visita de un tutor que nunca se calentó (ni por el
 repaso de 3 h, ni por un empuje reciente) sigue pagando el viaje al KMS — eso es correcto, no hay
-nada que servir todavía. Y la copia sigue siendo `ScriptCache` (best-effort, sin garantía de Google
-más allá de su ventana), no un almacén persistente — construir uno persistente de verdad seguiría
-siendo trabajo aparte, y no era lo que impedía el ahorro medido aquí.
+nada que servir todavía. ⛔ **Y lo que decía aquí — que la copia es SOLO `ScriptCache`, «no un
+almacén persistente», y que construir uno de verdad era «trabajo aparte» — quedó SUPERADO el
+2026-09-12 (`①97` REABIERTA, ficha más abajo): ese almacén persistente ya está construido**, debajo
+de `ScriptCache` en el propio camino de lectura.
 
 **Red**: recorrido NUEVO `un-viaje-al-abrir` (9 afirmaciones), con **ancla** por delante — que la
 verja llegue a salir — para que las demás no puedan pasar sobre una pantalla que no se montó.
@@ -4177,6 +4178,78 @@ por Diego y por las sondas del KMS (`0º.tricies.vicies.bis`), no los de este re
 **Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
 **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
 lo que cambia es cuánto espera para verla.
+
+### `①97` REABIERTA (2026-09-12) — el almacén DURABLE: recuperar una solicitud ya no puede salir vacío por un desalojo de `ScriptCache`
+
+**Diego probó su solicitud de pruebas y recuperarla por el enlace le devolvió TODO VACÍO** — el
+mismo `①97` que ya se había cerrado como «espejo permanente publicado» (push-on-write en cada
+escritura de `enr*` + repaso de 3 h, ambos en el KMS) volvió a fallar. **Medido, log real
+2026-09-12 05:02**: la copia caliente de esa solicitud estaba FRÍA, y sin ella la re-hidratación
+real **murió por transporte a los ~62 s** (el socket se cae — no el tope de 240 s del cliente).
+
+**La causa de fondo NO era la disciplina de escritura — era `ScriptCache` en sí.** El push-on-write
+y el repaso de 3 h ya llegan a toda solicitud viva; lo que ninguno de los dos puede arreglar es que
+`ScriptCache` es **best-effort por diseño de Google**: puede desalojar una entrada antes de su TTL
+declarado pase lo que pase con quién y cuántas veces la reescriba. Necesitaba una segunda capa,
+**debajo** de `ScriptCache` en el camino de lectura, que sí sobreviva a un desalojo.
+
+**Verify-first, antes de escribir nada.** `clasp run` **no pudo ejecutar ni una función contra este
+proyecto** en esta sesión — ni siquiera una de control, independiente de scope, que sí funciona
+contra el KMS. Con eso descartado, el diseño se apoya en algo que SÍ está demostrado: el scope
+`drive`, ya concedido y usado a diario para las fotos y documentos que sube una familia
+(`getOrCreateDriveFolder_`). Pedir un scope nuevo (se valoró `spreadsheets`) habría significado
+reautorización sin poder comprobar en vivo que el mecanismo nuevo funciona — riesgo que no se
+tomó. Se eligió `DriveApp`, no `SpreadsheetApp`.
+
+**El mecanismo — una carpeta propia de Drive, un fichero por clave de hidratación:**
+
+- `_almacenDurableCarpeta_` — abre (o crea, la primera vez) una carpeta con nombre fijo, guardando
+  su id en `PropertiesService` para no volver a buscarla por nombre.
+- `_almacenDurableGuardar_` / `_almacenDurableLeer_` / `_almacenDurableBorrarClave_` — un fichero
+  de texto por clave (`{v, data}`, el MISMO sobre que ya usa `ScriptCache`), tope de 200.000 bytes
+  (muy por debajo del techo real de Drive, y del propio techo de 40.000 bytes que el KMS ya aplica
+  al empujar).
+- `_wzHydLeerConDurable_` — **`ScriptCache` PRIMERO, Drive DESPUÉS, nunca al revés**. Un acierto de
+  Drive se re-siembra en `ScriptCache` antes de devolverlo, para que la siguiente lectura de esa
+  misma solicitud sea otra vez gratis.
+- **Se escribe en los TRES puntos que ya escribían `ScriptCache`**: la propia hidratación
+  (`hydrateSession_`) y el receptor firmado `pushWarmHydrate_` — que es el canal por el que el KMS
+  empuja **cada** escritura de `enr*` y el repaso de 3 h, así que es el que de verdad puebla el
+  almacén durable para toda solicitud viva, sin esperar a que nadie la recupere.
+
+**⛔ NUNCA crea un «sí»: solo CONSERVA lo que ya se calculó o recibió en otro sitio.** Igual que
+`_moverLaCopiaDeLaPuerta_` (③18.bis.15) — un almacén que inventara respuestas sería peor que no
+tenerlo.
+
+**⛔ Y el borrado de la sonda de prueba usa `setTrashed(true)`, NO destruye de forma
+irrecuperable** — es lo único que da la API base de Apps Script sin el servicio avanzado `Drive`.
+Queda escrito como límite honesto en la cabecera del propio diagnóstico
+(`manual_diagAlmacenDurable`, verify-first: crea/lee/borra un fichero `ZZ_` de prueba y mide los
+tres tiempos por separado), no se le da la vuelta.
+
+**Backfill inmediato, sin esperar al repaso de 3 h**: `enr_warmActiveEnrollmentsSweep()` (KMS,
+`kms-server/enr/wizard-warm.gs`) se disparó UNA VEZ a mano tras publicar — `{empujados:1,
+fallidos:0}` sobre la única solicitud viva del entorno de pruebas — para que el almacén durable
+quedara poblado sin esperar a que nadie recuperase esa solicitud primero.
+
+**Publicado y ACREDITADO leyendo el CONTENIDO de la versión desplegada** (no el repositorio ni el
+reporte de `clasp`): dirección fija `/exec` → **`@283`** (`versionNumber` confirmado por la API de
+Apps Script), y el fuente de esa versión exacta contiene las cinco funciones nuevas y **cero**
+referencias al diseño abandonado de Sheets. `git` `5b57d71` en `Kaleide-enrollment origin/main`.
+
+⚠️ **LÍMITE HONESTO — lo que NO se pudo verificar en esta vuelta:** sin `clasp run` contra este
+proyecto, ningún camino nuevo se ejecutó en vivo antes de publicar; el diseño descansa en que el
+scope reutilizado (`drive`) ya funciona a diario para otra cosa, no en una medición directa de ESTE
+mecanismo. Y el criterio de aceptación completo — la solicitud real de Diego recuperando con
+**CERO** viajes al KMS, medido — no se pudo comprobar de punta a punta sin trazar tráfico de su
+sesión en vivo, que no es algo que esta vuelta pudiera hacer sin exponer datos de familia. Lo que
+sí se acreditó: el código está desplegado, las cinco funciones existen en la versión servida, y el
+repaso del KMS empujó con éxito (`fallidos:0`) al menos una solicitud real a través del canal que
+ahora también escribe en el almacén durable.
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — no hay ningún cambio observable para la
+familia; lo que cambia es que su solicitud sobrevive a un desalojo de caché que antes la dejaba
+vacía.
 
 ### 2026-08-26 — «No hay programas de admisión» cuando SÍ los hay: el paso 1 confundía «no me han llegado» con «no existen»
 
