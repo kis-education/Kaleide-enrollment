@@ -2079,6 +2079,176 @@ function _wzCacheGetChunked_(cache, key) {
   } catch (e) { return null; }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ①97 (2026-09-12) — EL ALMACÉN DURABLE: debajo de ScriptCache, para que recuperar
+// una solicitud NUNCA salga vacío por un desalojo del caché.
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// ScriptCache es *best-effort* — Google puede desalojarlo antes de su TTL declarado
+// bajo presión de memoria, y el empuje por-escritura + el repaso de 3h (D118) solo
+// mantenían viva la copia MIENTRAS el caché no la tirara. Medido el 2026-09-12
+// (loop-backlog `①97`, log real de Diego): con la copia fría, recuperar pagó
+// `enr.tutorQueRecupera` (14,2 s) y la re-hidratación murió por transporte a los
+// ~62 s — el navegador se rinde antes de que el cómputo en frío del KMS (~49 s)
+// termine. Un almacén que sobrevive al desalojo del caché evita ese viaje entero.
+//
+// **Por qué UN ARCHIVO POR CLAVE en una carpeta de Drive, y no otra cosa:**
+// - `PropertiesService` queda DESCARTADO a propósito — comparte el cupo de 500 KB
+//   con los secretos del proyecto (KMS_DEPLOYMENT_URL, QB_SERVICE_TOKEN, el secreto
+//   de reCAPTCHA…) y una sola familia real ya pesa ~28 KB (D118, medido). El mismo
+//   descarte que ya hizo el KMS para su caché de recuperación por correo.
+// - Una Hoja de cálculo propia (`SpreadsheetApp`) se DESCARTÓ tras intentarlo: exige
+//   el scope `https://www.googleapis.com/auth/spreadsheets`, que NO estaba
+//   concedido — añadirlo habría obligado a Diego a reautorizar el proyecto antes de
+//   que nada de esto sirviera para nada, y este entorno no tiene forma de comprobar
+//   en vivo que la reautorización saldría bien (ver el límite honesto, abajo).
+// - `DriveApp` **ya está concedido** — es el MISMO scope (`drive`, completo) que este
+//   proyecto usa a diario para los documentos que suben las familias
+//   (`getOrCreateDriveFolder_`). Usarlo aquí no le pide a Diego ni un permiso más:
+//   cero riesgo de reautorización, cero ventana en la que algo deje de funcionar.
+// - Un ARCHIVO por clave (no un único fichero-índice) evita cualquier límite de
+//   tamaño de una sola celda o de un solo blob: cada archivo pesa lo que pese SU
+//   solicitud, y el KMS YA topa su empuje en 40.000 bytes por prudencia
+//   (`ENR_WARM_PUSH_MAX_BYTES_`, `kis-app kms-server/enr/wizard-warm.gs`) — muy por
+//   debajo de cualquier límite de Drive.
+// - `folder.getFilesByName(clave)` es una búsqueda de Drive por nombre exacto (usa
+//   el índice de Drive, no un listado completo) — rápida a cualquier escala, no solo
+//   a la de hoy.
+//
+// **Qué guarda:** un archivo de texto por CLAVE (la misma `_wzCacheKey_('hyd', …)`
+// que ya usa ScriptCache — mismo dato, misma clave, dos almacenes), con el MISMO
+// serializado `{v, data}` que ya viaja a ScriptCache. NUNCA un criterio de versión
+// distinto — quien lee sigue comparando `env.v` contra `_versionDeClase_`, igual.
+//
+// **NUNCA CREA UN «SÍ»**: solo se escribe cuando alguien YA computó o recibió el
+// dato de verdad (el mismo punto que ya escribía en ScriptCache). Un fallo al leer
+// o escribir aquí es SIEMPRE best-effort — jamás tumba el camino que lo llama.
+//
+// **BACKFILL**: no hace falta ningún mecanismo nuevo — el repaso de 3h que YA
+// existe (`enr_warmActiveEnrollmentsSweep`, KMS) empuja la copia de TODA solicitud
+// viva por su cauce firmado de siempre; lanzarlo una vez tras publicar este cambio
+// puebla el almacén durable de todas las solicitudes vivas sin esperar 3h.
+//
+// ⚠️ **LÍMITE HONESTO DE ESTA VUELTA** — no se pudo ejecutar en vivo dentro de esta
+// sesión: `clasp run` contra este proyecto responde «Unable to run script function»
+// para CUALQUIER función (incluida una que solo lee una Script Property, sin tocar
+// Drive) — es un fallo de autorización del canal de EJECUCIÓN de esta sesión, no de
+// este cambio. `clasp push`/`clasp deploy` SÍ funcionan (medido: los tres ficheros
+// se subieron sin cortarse). La construcción se apoya en que `DriveApp` es el MISMO
+// servicio y el MISMO scope que ya funciona a diario para subir documentos de
+// familias — no en una medición nueva de esta sesión. Queda pendiente comprobarlo
+// con `manual_diagAlmacenDurable` (más abajo) en cuanto alguien tenga `clasp run`
+// operativo contra este proyecto, o desde el editor de Apps Script.
+
+var ALMACEN_DURABLE_FOLDER_ID_KEY_ = 'WIZARD_ALMACEN_DURABLE_FOLDER_ID';
+var ALMACEN_DURABLE_MAX_BYTES_ = 200000;  // muy por debajo de cualquier límite de Drive
+
+/**
+ * Abre (o crea, una sola vez) la carpeta de Drive del almacén durable. Best-effort:
+ * cualquier fallo (permiso denegado, cuota) devuelve `null` y el llamante degrada
+ * al camino de hoy (ScriptCache / KMS en vivo).
+ * @returns {?GoogleAppsScript.Drive.Folder}
+ * @private
+ */
+function _almacenDurableCarpeta_() {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var id = props.getProperty(ALMACEN_DURABLE_FOLDER_ID_KEY_);
+    if (id) {
+      try { return DriveApp.getFolderById(id); } catch (eOpen) { /* la carpeta se perdió — recrear */ }
+    }
+    var carpeta = DriveApp.createFolder('KMS — espejo durable del asistente (NO BORRAR)');
+    props.setProperty(ALMACEN_DURABLE_FOLDER_ID_KEY_, carpeta.getId());
+    return carpeta;
+  } catch (e) {
+    Logger.log('[_almacenDurableCarpeta_] non-fatal — ' + (e && e.message));
+    return null;
+  }
+}
+
+/**
+ * Guarda (upsert) el serializado bajo `clave` como archivo de texto en la carpeta
+ * del almacén durable. Best-effort de punta a punta — nunca lanza; un payload que
+ * excede el techo defensivo se descarta SIN escribir nada.
+ * @returns {boolean} true si quedó guardado.
+ */
+function _almacenDurableGuardar_(clave, serialized) {
+  try {
+    if (!clave || !serialized || serialized.length > ALMACEN_DURABLE_MAX_BYTES_) return false;
+    var carpeta = _almacenDurableCarpeta_();
+    if (!carpeta) return false;
+    var existentes = carpeta.getFilesByName(clave);
+    if (existentes.hasNext()) {
+      existentes.next().setContent(serialized);
+    } else {
+      carpeta.createFile(clave, serialized, MimeType.PLAIN_TEXT);
+    }
+    return true;
+  } catch (e) {
+    Logger.log('[_almacenDurableGuardar_] non-fatal — ' + (e && e.message));
+    return false;
+  }
+}
+
+/**
+ * Lee el serializado guardado bajo `clave`. Best-effort — cualquier fallo devuelve
+ * `null`, indistinguible de «no está» (el llamante ya trata ambos como MISS).
+ * @returns {?string}
+ */
+function _almacenDurableLeer_(clave) {
+  try {
+    if (!clave) return null;
+    var carpeta = _almacenDurableCarpeta_();
+    if (!carpeta) return null;
+    var existentes = carpeta.getFilesByName(clave);
+    if (!existentes.hasNext()) return null;
+    return existentes.next().getBlob().getDataAsString();
+  } catch (e) {
+    Logger.log('[_almacenDurableLeer_] non-fatal — ' + (e && e.message));
+    return null;
+  }
+}
+
+/**
+ * Borra FÍSICAMENTE el archivo de una clave (§"lo que un agente crea para probar se
+ * elimina FÍSICAMENTE al terminar" — usado por el diagnóstico de verify-first; NO
+ * se llama desde el camino normal, que solo crea/actualiza).
+ * @returns {boolean} true si no queda ningún archivo con esa clave (ya lo borrara
+ *          esta llamada, o no hubiera ninguno).
+ */
+function _almacenDurableBorrarClave_(clave) {
+  try {
+    var carpeta = _almacenDurableCarpeta_();
+    if (!carpeta) return false;
+    var existentes = carpeta.getFilesByName(clave);
+    var borrado = false;
+    while (existentes.hasNext()) { existentes.next().setTrashed(true); borrado = true; }
+    return true; // llegó a comprobar y, si había algo, lo mandó a la papelera
+  } catch (e) {
+    Logger.log('[_almacenDurableBorrarClave_] non-fatal — ' + (e && e.message));
+    return false;
+  }
+}
+
+/**
+ * Lector ÚNICO de la copia de hidratación: ScriptCache PRIMERO, el almacén durable
+ * DESPUÉS. Si el durable acierta, se re-archiva en ScriptCache (para que el próximo
+ * lector de esta ventana no vuelva a pagar ni la propia carpeta de Drive) y se devuelve
+ * EXACTAMENTE la misma forma que `_wzCacheGetChunked_` — una cadena serializada, o
+ * `null`. El criterio de versión (`env.v` contra `_versionDeClase_`) lo sigue
+ * aplicando el LLAMANTE, sin cambio — este lector solo decide DE DÓNDE sale la
+ * cadena, nunca si es válida.
+ * @private
+ */
+function _wzHydLeerConDurable_(cache, key) {
+  var raw = _wzCacheGetChunked_(cache, key);
+  if (raw) return raw;
+  var durable = _almacenDurableLeer_(key);
+  if (!durable) return null;
+  try { _wzCachePutChunked_(cache, key, durable, ESPEJO_HYD_TTL_S_); } catch (eRe) { /* best-effort */ }
+  return durable;
+}
+
 /**
  * WIZARD-CACHE — invalida hyd/adm del token tras CUALQUIER escritura del grupo
  * (NUNCA servir stale tras un write). Borrar la clave _meta basta: el get troceado
@@ -3368,7 +3538,8 @@ function _identidadDesdeElEspejo_(groupId, n, correo) {
   if (!groupId) return null;
   try {
     var cache = CacheService.getScriptCache();
-    var raw = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, correo)));
+    // ①97 (durable): ScriptCache primero, el almacén durable después — nunca al revés.
+    var raw = _wzHydLeerConDurable_(cache, _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, correo)));
     if (!raw) return null;
     var env = JSON.parse(raw);
     if (!env || env.v !== _versionDeClase_(groupId, 'hyd')) return null; // versión vieja ⇒ NO acierto
@@ -10187,7 +10358,8 @@ function hydrateSession_(p) {
   const wzHydCache = CacheService.getScriptCache();
   const wzHydKey = _wzCacheKey_('hyd', groupId + '_' + _wzN_(p && p.n, p && p.recovered_email));
   try {
-    const wzHydRaw = _wzCacheGetChunked_(wzHydCache, wzHydKey);
+    // ①97 (durable): ScriptCache primero, el almacén durable después — nunca al revés.
+    const wzHydRaw = _wzHydLeerConDurable_(wzHydCache, wzHydKey);
     if (wzHydRaw) {
       const envH = JSON.parse(wzHydRaw);
       data = (envH && envH.v === _versionDeClase_(groupId, 'hyd')) ? envH.data : null;
@@ -10222,8 +10394,12 @@ function hydrateSession_(p) {
       recovered_email: effRecoveredEmail || null,
       language:        (p && p.language) ? String(p.language).trim() : null,
     }) || {};
-    try { _wzCachePutChunked_(wzHydCache, wzHydKey,
-      JSON.stringify({ v: _versionDeClase_(groupId, 'hyd'), data: data }), ESPEJO_HYD_TTL_S_); } catch (eWzWt) { /* best-effort */ }
+    try {
+      var wzHydSerializado_ = JSON.stringify({ v: _versionDeClase_(groupId, 'hyd'), data: data });
+      _wzCachePutChunked_(wzHydCache, wzHydKey, wzHydSerializado_, ESPEJO_HYD_TTL_S_);
+      // ①97 (durable): la misma copia, en el almacén que sobrevive a un desalojo de caché.
+      _almacenDurableGuardar_(wzHydKey, wzHydSerializado_);
+    } catch (eWzWt) { /* best-effort */ }
   }
 
   // DL-C-A (g): el KMS pliega el catálogo de preguntas (raw qb) en el hydrate. Lo
@@ -10467,9 +10643,14 @@ function pushWarmHydrate_(p) {
     const cache = CacheService.getScriptCache();
     const key = _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, null));
     const version = _versionDeClase_(groupId, 'hyd');
-    const stored = _wzCachePutChunked_(cache, key, JSON.stringify({ v: version, data: payload }), ESPEJO_HYD_TTL_S_);
-    Logger.log(redact_('[pushWarmHydrate_] group=' + groupId + ' n=' + String(n).slice(0, 8) + '… v=' + version + ' stored=' + stored));
-    return { ok: true, stored: !!stored };
+    const serialized = JSON.stringify({ v: version, data: payload });
+    const stored = _wzCachePutChunked_(cache, key, serialized, ESPEJO_HYD_TTL_S_);
+    // ①97 (durable): éste es el canal por el que el KMS empuja CADA escritura y el
+    // repaso de 3h — es el punto que de verdad hace que el almacén durable quede
+    // poblado para toda solicitud viva, sin esperar a que alguien la recupere.
+    const storedDurable = _almacenDurableGuardar_(key, serialized);
+    Logger.log(redact_('[pushWarmHydrate_] group=' + groupId + ' n=' + String(n).slice(0, 8) + '… v=' + version + ' stored=' + stored + ' stored_durable=' + storedDurable));
+    return { ok: true, stored: !!stored, stored_durable: !!storedDurable };
   } catch (e) {
     Logger.log('[pushWarmHydrate_] non-fatal — ' + (e && e.message));
     return { ok: false, reason: 'STORE_FAILED' };
@@ -13106,4 +13287,60 @@ function manual_apuntarElAsistenteAlKms(url) {
   p.setProperty('KMS_DEPLOYMENT_URL', String(url));
   var r = 'ANTES : ' + antes + '\nAHORA : ' + p.getProperty('KMS_DEPLOYMENT_URL');
   Logger.log(r); return r;
+}
+
+/**
+ * ①97 — verify-first: ¿es viable el almacén durable (una carpeta propia de Drive) en
+ * ESTE proyecto? Escribe un fichero de PRUEBA con prefijo `ZZ_` (§"lo que un agente crea
+ * para probar se elimina FÍSICAMENTE al terminar"), lo lee de vuelta, mide los tres
+ * tiempos por separado, y lo borra él mismo antes de devolver el veredicto — nunca deja
+ * residuo, ni siquiera si algo falla a medias (todo en `finally`).
+ *
+ * NO escribe ni un dato personal (KAL-11): la clave y el payload de prueba son literales
+ * fijos, sin relación con ninguna solicitud real.
+ *
+ * ⚠️ `_almacenDurableBorrarClave_` mueve el fichero a la papelera de Drive
+ * (`setTrashed(true)`), NO lo destruye de forma irrecuperable — es lo único que la API
+ * de Apps Script ofrece sin el servicio avanzado `Drive`. Se deja anotado, no se le da
+ * la vuelta a la advertencia.
+ *
+ * @returns {Object} veredicto con los tiempos y si el fichero de prueba quedó limpio.
+ */
+function manual_diagAlmacenDurable() {
+  var claveDePrueba = 'ZZ_TEST_ALMACEN_DURABLE_' + Date.now();
+  var payloadDePrueba = JSON.stringify({ v: 1, data: { prueba: true, marca: Date.now() } });
+  var out = {
+    abrir_ms: null, escribir_ms: null, leer_ms: null,
+    escrito_ok: false, leido_ok: false, leido_coincide: false,
+    limpiado_ok: false, error: null,
+  };
+  try {
+    var t0 = Date.now();
+    var carpeta = _almacenDurableCarpeta_();
+    out.abrir_ms = Date.now() - t0;
+    if (!carpeta) { out.error = 'no se pudo abrir/crear la carpeta (scope no concedido, o cuota)'; return out; }
+
+    var t1 = Date.now();
+    out.escrito_ok = _almacenDurableGuardar_(claveDePrueba, payloadDePrueba);
+    out.escribir_ms = Date.now() - t1;
+
+    var t2 = Date.now();
+    var leido = _almacenDurableLeer_(claveDePrueba);
+    out.leer_ms = Date.now() - t2;
+    out.leido_ok = !!leido;
+    out.leido_coincide = leido === payloadDePrueba;
+  } catch (e) {
+    out.error = String((e && e.message) || e);
+  } finally {
+    // Limpieza best-effort, pase lo que pase arriba — nunca deja residuo VISIBLE
+    // (queda en la papelera de Drive, no destruida — ver aviso de la cabecera).
+    try {
+      out.limpiado_ok = _almacenDurableBorrarClave_(claveDePrueba);
+    } catch (eClean) {
+      out.limpiado_ok = false;
+      out.error = (out.error ? out.error + ' | ' : '') + 'limpieza falló: ' + String((eClean && eClean.message) || eClean);
+    }
+  }
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
 }
