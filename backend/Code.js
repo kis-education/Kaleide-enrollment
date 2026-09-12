@@ -5034,6 +5034,42 @@ function _expedienteDelToken_(resumeToken, opciones) {
 }
 
 /**
+ * ②17 (2026-09-12) — sibling de `_expedienteDelToken_` para el ÚLTIMO camino que quedaba
+ * leyendo AppSheet directo: `sendVerificationCode_` rama step-up SIN `resume_token` (el
+ * camino LEGADO de `signing_token`-solo). Mismo contrato `{ok, fila, rechazo, motivo}`.
+ *
+ * ⛔ NO se toca `_expedienteDelToken_` (10 llamantes, demasiado cargado para arriesgar) —
+ * éste es un sibling deliberadamente mínimo, sin la memoria de ejecución ni los
+ * discriminadores de identidad/subida (no hacen falta en este camino, que solo pregunta
+ * por la cabecera UNA vez).
+ *
+ * ⛔ REUTILIZA el TERCER MODO de `enr.expedienteDelToken` (KMS, ②17 2026-09-12), que a su
+ * vez reutiliza el recorrido YA AUDITADO de `enr.resolveSigningToken` — PROHIBIDO escribir
+ * un segundo lector del `signing_token` en ningún lado.
+ *
+ * @param {string} signingToken
+ * @returns {{ok:boolean, fila:(Object|null), rechazo:(string|null), motivo:(string|null)}}
+ */
+function _expedienteDelTokenPorFirma_(signingToken) {
+  var token = signingToken ? String(signingToken).trim() : '';
+  if (!token) return { ok: true, fila: null, rechazo: null, motivo: null };
+  try { assertValidSigningToken_(token, 'signing_token'); }
+  catch (e) { return { ok: true, fila: null, rechazo: null, motivo: null }; }
+
+  try {
+    var r = kmsProxy_('enr.expedienteDelToken', { signing_token: token }) || {};
+    return { ok: true, fila: r.expediente || null, rechazo: null, motivo: null };
+  } catch (e2) {
+    var msg = (e2 && e2.message) || String(e2);
+    var codigo = (e2 && e2.code) || '';
+    var contestado = codigo === 'UNAUTHORIZED' || codigo === 'BAD_REQUEST';
+    Logger.log(redact_('[_expedienteDelTokenPorFirma_] ' + (contestado ? 'token rechazado por el KMS' :
+      'lectura KMS fallida') + ' — ' + msg));
+    return { ok: false, fila: null, rechazo: contestado ? msg : null, motivo: msg };
+  }
+}
+
+/**
  * ②17 (duodécimo tramo) — memoria de EJECUCIÓN de la cabecera que ya validó la puerta.
  *
  * NO es un segundo resolvedor y NO es una memoria de 300 s: vive solo mientras dura ESTA
@@ -6626,21 +6662,24 @@ function sendVerificationCode_(p) {
       const consultaSU = _expedienteDelToken_(p.resume_token);
       primary_email = (consultaSU.ok && consultaSU.fila && consultaSU.fila.primary_email) || null;
     }
-    if (!primary_email) {
-      // ⛔ LA LECTURA DIRECTA SE QUEDA, y no es pereza — cubre DOS casos que no tienen otra
-      // vía: (a) el camino de `signing_token`, que `signingCommon.js` declara «legacy» y que
-      // se alcanza cuando NO hay token de recuperación — ahí `enr.expedienteDelToken` no
-      // sirve, porque pide precisamente un `resume_token`; y (b) un KMS que no contesta,
-      // donde DEGRADA exactamente como degradaba antes de este cambio. Quitarla dejaría a
-      // esa familia con `BAD_REQUEST` en vez de su código.
-      // ⇒ Por eso ②17 NO se cierra aquí: mientras esta línea exista, la credencial de
-      // AppSheet sigue haciendo falta en el asistente. Moverla exige que el KMS sirva la
-      // cabecera desde un `signing_token`, que es otro tramo y toca el otro repositorio.
-      const grpRows = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {
-        Filter: '"enrollment_group_id" = "' + appsheetEscape_(enrollmentGroupId) + '"'
-      });
-      primary_email = grpRows && grpRows[0] && grpRows[0].primary_email;
+    if (!primary_email && p && p.signing_token) {
+      // ②17 (2026-09-12) — el ÚLTIMO respaldo directo a AppSheet del asistente se RETIRA.
+      // Leía `enrEnrollmentGroups` con la credencial de la aplicación entera desde un
+      // proceso público y anónimo, y desde que el KMS lee PostgreSQL esa lectura iba a la
+      // base VIEJA — ya no era solo una brecha de credencial, era INCORRECTO.
+      //
+      // El camino LEGADO de `signing_token`-solo (sin `resume_token`, el único que llegaba
+      // hasta aquí) pregunta ahora al KMS por el MISMO `signing_token` que
+      // `_resolveStepUpGroup_` ya usó para resolver `enrollmentGroupId` arriba — tercer
+      // modo de `enr.expedienteDelToken`, que reutiliza el recorrido YA AUDITADO de
+      // `enr.resolveSigningToken` (PROHIBIDO escribir un segundo lector).
+      const consultaFirma = _expedienteDelTokenPorFirma_(p.signing_token);
+      primary_email = (consultaFirma.ok && consultaFirma.fila && consultaFirma.fila.primary_email) || null;
     }
+    // ⛔ SIN `signing_token` que preguntar (p.ej. un fallo de transporte del KMS con
+    // `resume_token` ya intentado arriba, línea :6625), NO se degrada a AppSheet — esa
+    // lectura apuntaría a la base VIEJA. El expediente se rechaza abajo con el mismo
+    // mensaje de siempre: es más honesto que servir un dato que puede ser falso.
     if (!primary_email) {
       const errNoEmail = new Error('No primary_email on file for this group');
       errNoEmail.code = 'BAD_REQUEST';

@@ -518,7 +518,7 @@ Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un p
   - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
 - `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
 - **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos") y **LA PUERTA y sus tres hermanas** (§"②17 — LA PUERTA") y **EL PULSO DE LA ADMISIÓN** (§"②17 — EL PULSO") y **EL RACIMO DE FIRMA E HITOS** (§"②17 — EL RACIMO DE FIRMA"). **Re-medido el 2026-08-23: quedan 44 lecturas directas y NINGUNA en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`). **De esas 44, solo UNA está en el camino vivo** —el respaldo de `sendVerificationCode_`, que cubre el camino legado de `signing_token` y el KMS caído (§"②17 — el CAMINO VIVO baja de DOS lecturas directas a UNA")—; las otras **43** viven en funciones `manual_*` de editor **y en `adminCleanupOrphanSessions`, que NO está en el despachador** ⇒ **no alcanzables desde internet**. Bajarlas mejora el recuento pero **no estrecha el agujero**, así que esto ya no se coge por el número. ⚠️ **Esta línea dijo «DOS… las dos con su motivo escrito para no moverse» hasta el 2026-08-23, y uno de esos dos motivos era un comentario CADUCADO** — la de `sendMagicLink_` salió ese día sin coste alguno. **`submitEnrollmentSession_`, `requireResumeToken_`, `assertGroupEditable_`, `getAdmissionState_`, `buildAdmissionContext_` y `resolveSigningToken_` están a CERO.** **La entrada sigue ABIERTA: la credencial sigue en el asistente** — acotarla por cliente es `②18`, y hoy es lo único que queda de peso en esta ficha.
+- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos") y **LA PUERTA y sus tres hermanas** (§"②17 — LA PUERTA") y **EL PULSO DE LA ADMISIÓN** (§"②17 — EL PULSO") y **EL RACIMO DE FIRMA E HITOS** (§"②17 — EL RACIMO DE FIRMA"). **Re-medido el 2026-09-12: quedan 43 lecturas directas y NINGUNA en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`) — **CERO en el camino vivo**. La última que quedaba en él, el respaldo de `sendVerificationCode_` (el camino legado de `signing_token`), se retiró (§"②17 — el ÚLTIMO respaldo directo se retira"). Las 43 restantes viven **todas** en funciones `manual_*` de editor **y en `adminCleanupOrphanSessions`, que NO está en el despachador** ⇒ **no alcanzables desde internet**. ⇒ **el objetivo de ②17 —que ninguna lectura directa a AppSheet sea alcanzable desde el proceso público y anónimo— está CERRADO.** Lo que queda abierto es otra cosa, ya sin relación con AppSheet: la credencial de servicio (`service_token`) que autentica al asistente frente al KMS sigue sin acotar por cliente — eso es `②18`.
 
 ### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
 
@@ -3737,6 +3737,8 @@ código no es criterio normativo" (`kis-app/CLAUDE.md`).
 **⛔ ②17 NO SE CIERRA, y hay que decirlo así: mientras esa línea exista, la credencial de AppSheet
 sigue haciendo falta en el asistente.** Moverla exige que el KMS sirva la cabecera desde un
 `signing_token` — otro tramo, y toca el otro repositorio.
+*(★ HECHO el 2026-09-12 — ver §"②17 — el ÚLTIMO respaldo directo se retira", más abajo: esa línea
+ya no existe.)*
 
 **Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_(' backend/Code.js` **menos 1**):
 **45 → 44** lecturas; **0** en lote. Y lo que importa: **el camino vivo baja de DOS a UNA**.
@@ -3759,6 +3761,65 @@ primera rotura **reventaba con una traza** en vez de nombrar el caso.
 **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla; lo
 que cambia es de dónde sale una fila y cuánta superficie pública queda apoyada en la credencial.
 
+### ②17 (2026-09-12) — el ÚLTIMO respaldo directo se retira
+
+**La lectura directa que quedaba de `sendVerificationCode_` —el camino de `signing_token` sin
+`resume_token`— apuntaba a una base que dejó de ser la buena.** El KMS migró su almacenamiento a
+PostgreSQL (`KMS_DATOS_EN_POSTGRES='true'`); esa lectura seguía preguntándole a AppSheet, así que
+había dejado de ser solo una concesión de seguridad **para convertirse en un defecto de
+corrección**: podía devolver datos de la base VIEJA, superseded.
+
+**Lo construido, en los dos repositorios, reusando lo ya auditado — sin escribir un segundo
+lector:**
+
+- **KMS** (`kis-app kms-server/enr/wizard-gateway.gs`): `enr_wizardExpedienteDelToken` gana un
+  **tercer modo**. Cuando la petición trae `signing_token` y **no** trae `resume_token`, delega en
+  la función nueva `enr_wizardGateDesdeFirma_`, que resuelve el expediente reusando **el mismo
+  recorrido auditado** de `enr.resolveSigningToken` (`enr_resolveSigningTokenInternal_` →
+  `sys_resolveSigningToken_`) y lee el grupo con el mismo criterio `!deleted_at` que ya usan
+  `staging.gs`/`wizard-datalayer.gs`/`wizard-firma.gs`. KAL-4 intacta: el
+  `enrollment_group_id` sale SIEMPRE del token, nunca del cuerpo — se comprobó pasando un id
+  inyectado en el payload y confirmando que se ignora.
+- **Asistente** (`backend/Code.js`): nuevo ayudante hermano `_expedienteDelTokenPorFirma_`,
+  deliberadamente mínimo (sin memoria de ejecución, sin los discriminadores de identidad/subida
+  que sí necesita `_expedienteDelToken_` — este camino es de un solo uso) que llama a
+  `enr.expedienteDelToken` con `{signing_token}` y devuelve el contrato `{ok, fila, rechazo,
+  motivo}` ya establecido por DL-E57. El fallback directo de `sendVerificationCode_` pasa a usar
+  este ayudante; **sin `signing_token` que preguntar, ya NO degrada a AppSheet** — se rechaza con
+  el mismo mensaje de siempre, porque servir un dato de la base vieja es menos honesto que
+  rechazar.
+
+**Medido antes y después, contra `origin/main`:** lecturas directas a AppSheet **44 → 43**
+(descontando la definición de `appsheetRequest_`); en el **camino vivo** (alcanzable desde
+internet, fuera de `manual_*` y de `adminCleanupOrphanSessions`), **1 → 0**. `②17` queda cerrada
+para el objetivo de "ninguna lectura directa alcanzable desde el proceso público" — lo que sigue
+abierto es otra cosa, `②18` (acotar el `service_token` por cliente).
+
+⚠️ **Se decidió NO conservar el viejo caso "(b) KMS-caído-con-resume_token degrada a AppSheet".**
+Ese degradado sigue siendo posible en teoría (un fallo de transporte tras intentar con
+`resume_token`), pero como AppSheet ya no es la base viva, degradar ahí serviría un dato
+potencialmente falso. Se prefiere el rechazo explícito, honesto, a una respuesta que podría
+mentir.
+
+⚠️ **Orden de publicación: KMS primero.** El asistente depende de que el tercer modo exista en el
+KMS; publicarlo al revés no rompe nada (el asistente seguía llamando al modo antiguo), pero deja
+sin sentido la actualización del asistente hasta que el KMS la sirva.
+
+⚠️ **Ninguna red automática cubre esto** — los 8 controles de CI de este repositorio no ejercitan
+`backend/Code.js` contra un KMS real, y `npm run e2e:wizard` corre contra un backend simulado. Se
+**midió con un arnés efímero** (fuera del repositorio, no commiteado) que extrae
+`enr_wizardGateDesdeFirma_` del fuente real del KMS y la ejecuta con dobles: **7 afirmaciones
+verdes** (token válido resuelve group+id+school · token inválido → UNAUTHORIZED · grupo ausente →
+UNAUTHORIZED · grupo BORRADO se descarta → UNAUTHORIZED · sin `school_id` cae al respaldo · KAL-4:
+el id del payload se ignora · `service_token` se verifica antes que el `signing_token`) y **2
+roturas ROJAS demostradas**: quitar el filtro `!deleted_at` (confirmado que SIN el filtro un grupo
+borrado se serviría igual — la rotura no mordía sin él) y renombrar la función medida, que sale
+**"MEDICIÓN CIEGA"** en vez de un falso verde. `check-quality-gates.mjs` del KMS: VERDE (27 gates).
+Los 8 controles de este repositorio: VERDES.
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia nunca alcanza este camino salvo
+por el enlace legado de `signing_token`; lo que cambia es de dónde sale el dato y que un KMS caído
+se rechaza en vez de arriesgar servir la base vieja.
 
 ### `0º.tricies.vicies.semel` (2026-08-25) — «el enlace puede haber caducado» cuando NO ha caducado
 
