@@ -4126,18 +4126,28 @@ dos son fuego-y-olvido: **no están en el camino que la familia espera**.
    no se puede enseñar**. Qué conjuntos le tocan a cada familia se sigue resolviendo por familia,
    siempre.
 
-**⛔ LO QUE NO SE HIZO, con su motivo: la copia SIEMPRE CALIENTE que pidió Diego.** Su dirección
-(*«que el backend del wizard tenga siempre almacenada en caché una copia de esos expedientes… en
-función del token se sirven unos u otros… solo si algo cambia se invalida»*) **está construida a
-medias y lo que falta no se puede medir desde aquí**: el mecanismo de servir-por-token e invalidar
-por los dos lados **ya existe entero** (`wz_hyd_`/`wz_adm_` + `_wzCacheInvalidate_` +
-`notifyLiveStateChange_`, y el aviso del KMS ya cubre el éxito — punto 1 de arriba). Lo que falta es
-**que la copia esté hecha ANTES**, y eso exige un disparador por tiempo instalado en el proyecto de
-Apps Script del asistente ⇒ **subir al Head, que es del TURNO**; y sus tres preguntas —¿cabe un
-expediente troceado × 40 en el almacén compartido? ¿se mantiene caliente siendo *best-effort*?
-¿cuánto cuesta el disparador?— **solo se contestan ejecutando contra el sistema real**. El propio
-encargo pone el listón: *«sin ese antes-y-después no está hecho»*. Construirlo a ciegas lo
-incumpliría.
+**⛔ Lo que decía aquí — que la copia SIEMPRE CALIENTE «está a medias y no se puede medir desde
+aquí» — quedó SUPERADO el 2026-09-12 (`①97`).** Lo que faltaba —que la copia se refresque en cuanto
+el KMS escribe, no solo cada 3 h— **se construyó y se midió con arnés efímero (25 afirmaciones
+verdes, 3 rojos demostrados; detalle: `kis-app/docs/kms/pendiente-diego.md` D118)**: los TRES puntos donde el
+KMS avisa de un cambio de solicitud (`enr_notifyWizardLiveState_`, `enr_avisarSiLaSolicitudCambio_`,
+`enr_jobHandler_persist_`) encolan, además de subir la versión de siempre, un trabajo
+`ENR_PUSH_MIRROR` que recalcula y empuja la copia de ESE grupo — sin esperar al repaso de 3 h.
+
+**Y en este lado (el asistente), la IDENTIDAD también se resuelve primero contra la copia.**
+`_tutorQueRecupera_` —el resolvedor ÚNICO, sin segundo lector— consulta la copia que ya escribe
+`hydrateSession_`/`pushWarmHydrate_` (misma clave `wz_hyd_`, ahora con **6 h de vida** en vez de
+30 min, `ESPEJO_HYD_TTL_S_`) antes de preguntarle al KMS, y solo si su versión sigue vigente. Con
+un solo tutor no hay dos personas que confundir: la copia de un tutor **nunca** contiene los datos
+del otro (DL-E49 §2, filtrado en el propio KMS antes de empujar). Medido con arnés efímero
+(21 afirmaciones verdes, 2 rojos demostrados, incluida una comparación ANTES/DESPUÉS real: 1 viaje
+al KMS → 0 con la copia caliente).
+
+**Límite honesto que sigue en pie:** la PRIMERA visita de un tutor que nunca se calentó (ni por el
+repaso de 3 h, ni por un empuje reciente) sigue pagando el viaje al KMS — eso es correcto, no hay
+nada que servir todavía. Y la copia sigue siendo `ScriptCache` (best-effort, sin garantía de Google
+más allá de su ventana), no un almacén persistente — construir uno persistente de verdad seguiría
+siendo trabajo aparte, y no era lo que impedía el ahorro medido aquí.
 
 **Red**: recorrido NUEVO `un-viaje-al-abrir` (9 afirmaciones), con **ancla** por delante — que la
 verja llegue a salir — para que las demás no puedan pasar sobre una pantalla que no se montó.

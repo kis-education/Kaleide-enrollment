@@ -727,6 +727,27 @@ function _rechazosDelEnlace_(group) {
 var COPIA_PUERTA_TTL_S_ = 1800;
 
 /**
+ * ①97 (2026-09-12, Diego) — el plazo del ESPEJO PERMANENTE del hydrate ('wz_hyd_').
+ *
+ * ★ Antes eran 1800 s (30 min), el mismo TTL que el resto de las cachés 'wz_*' de este
+ * fichero. Con el espejo permanente la copia YA NO depende de un plazo para seguir siendo
+ * cierta: la mantienen frescas los DOS lados que la invalidan por versión —
+ * `_wzCacheInvalidate_` en cada escritura del propio asistente y el aviso del KMS
+ * (`enr_avisarleAlAsistente_`, D118 ampliado el 2026-09-12) en cada escritura `enr*` del
+ * lado del KMS—, así que un plazo corto solo forzaba recalcular ANTES de que hiciera falta.
+ * Se sube a 6 h para que coincida con el repaso de D118 (`enr_warmActiveEnrollmentsSweep`,
+ * cada 3 h) y con el techo real de `CacheService` (~6 h por entrada): mientras el repaso
+ * siga corriendo, la entrada se refresca sola bastante antes de caducar.
+ *
+ * ⛔ NO ES "para siempre": sigue siendo un TTL de ScriptCache (best-effort, no durable por
+ * diseño de Google) — una entrada puede desalojarse antes por presión de memoria del
+ * proyecto. Cuando eso pasa, el camino de hoy (viaje en vivo al KMS) se recorre entero,
+ * exactamente como con cualquier fallo de caché.
+ * @private
+ */
+var ESPEJO_HYD_TTL_S_ = 21600;
+
+/**
  * La clave de la copia de la puerta. Vivía escrita a mano en DOS sitios
  * (`requireResumeTokenMemo_` y `requireResumeToken_`) con el mismo cálculo copiado; ahora
  * es una sola. El token es un secreto de portador ⇒ se guarda RESUMIDO, nunca en claro
@@ -3311,6 +3332,75 @@ function recognizeFamily_(p, opts) {
 }
 
 /**
+ * ①97 (2026-09-12, Diego) — resuelve DE QUIÉN es un correo (o el `n` de un enlace)
+ * mirando SOLO el ESPEJO que este proceso ya guarda de la hidratación de ESE expediente
+ * (`wz_hyd_`), SIN llamar al KMS.
+ *
+ * ⛔ **NO ES UN SEGUNDO RESOLVEDOR**: `_tutorQueRecupera_` sigue siendo el ÚNICO sitio que
+ * decide DE QUIÉN es un correo — éste es solo su PRIMER intento, y cae al KMS (su camino
+ * de siempre) en cuanto no puede contestar con certeza. La regla, el criterio y el orden
+ * de precedencia (`n` > `recovered_email` > respaldo «tutor 1») siguen viviendo SOLO en
+ * `effectiveRecoveredEmail_`/`_identidadDelEnlace_`, que llaman a `_tutorQueRecupera_` sin
+ * saber si por dentro miró el espejo o preguntó al KMS — el contrato de salida es idéntico.
+ *
+ * CÓMO CONTESTA: lee la MISMA entrada `wz_hyd_` que `hydrateSession_` escribe/lee (mismo
+ * `_wzCacheKey_('hyd', groupId+'_'+_wzN_(n,correo))`), comprueba que su versión SIGUE SIENDO
+ * la vigente (`_versionDeClase_(groupId,'hyd')` — una entrada con versión vieja es un fallo
+ * de caché, NUNCA un acierto) y, si acierta, busca dentro de `data.persons[]` la fila que
+ * casa con el discriminador recibido (por `email_id` si llegó `n`, por el valor del correo
+ * si llegó `correo`, dentro de `person.emails[]`).
+ *
+ * ⛔ **DEGRADA A `null` ANTE CUALQUIER DUDA** — sin entrada, con la versión caducada, sin
+ * `data.persons`, o sin una fila que case exactamente: el llamante cae al camino de
+ * siempre (`kmsProxy_('enr.tutorQueRecupera', …)`), que es EXACTAMENTE lo que hacía antes
+ * de que este ayudante existiera. Nunca se inventa una identidad para ahorrar un viaje.
+ *
+ * @param {string} groupId  el expediente, YA derivado del token por la puerta (KAL-4) —
+ *                          nunca se deriva aquí de nada que llegue en el cuerpo.
+ * @param {string} n        el `email_id` del enlace, o `''`.
+ * @param {string} correo   el correo del cliente, o `''` — UNO de los dos, nunca los dos
+ *                          (mismo contrato que `_tutorQueRecupera_`, que ya lo valida).
+ * @returns {?{correo:string, tutor:string, email_id:(string|null)}} `null` si no se puede
+ *          contestar con certeza desde el espejo.
+ * @private
+ */
+function _identidadDesdeElEspejo_(groupId, n, correo) {
+  if (!groupId) return null;
+  try {
+    var cache = CacheService.getScriptCache();
+    var raw = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, correo)));
+    if (!raw) return null;
+    var env = JSON.parse(raw);
+    if (!env || env.v !== _versionDeClase_(groupId, 'hyd')) return null; // versión vieja ⇒ NO acierto
+    var data = env.data;
+    var personas = (data && data.persons) || [];
+    if (!personas.length) return null;
+
+    var porEmailId = n ? String(n).trim() : '';
+    var porCorreo = correo ? String(correo).toLowerCase().trim() : '';
+
+    for (var i = 0; i < personas.length; i++) {
+      var p = personas[i];
+      if (!p) continue;
+      var emails = p.emails || [];
+      for (var j = 0; j < emails.length; j++) {
+        var em = emails[j];
+        if (!em) continue;
+        var emId = em.email_id ? String(em.email_id).trim() : '';
+        var emVal = em.value ? String(em.value).toLowerCase().trim() : '';
+        var casa = porEmailId ? (emId && emId === porEmailId) : (porCorreo && emVal === porCorreo);
+        if (casa && emVal && p.person_id) {
+          return { correo: emVal, tutor: String(p.person_id), email_id: emId || null };
+        }
+      }
+    }
+    return null; // no se encontró una fila que case ⇒ el llamante cae al KMS
+  } catch (e) {
+    return null; // cualquier duda ⇒ el llamante cae al KMS, el camino de siempre
+  }
+}
+
+/**
  * ②17 (noveno tramo, 2026-08-15) — EL ÚNICO SITIO por el que este proceso pregunta DE QUIÉN
  * es un correo (o el identificador opaco de un enlace) dentro de un expediente.
  *
@@ -3363,6 +3453,20 @@ function _tutorQueRecupera_(resumeToken, opciones) {
 
   var clave = token + '|' + (n ? 'n:' + n : 'c:' + correo);
   if (Object.prototype.hasOwnProperty.call(_TUTOR_MEMO_, clave)) return _TUTOR_MEMO_[clave];
+
+  // ①97 (2026-09-12) — PRIMER intento: el espejo permanente de la hidratación de ESTE
+  // expediente, sin llamar al KMS. El `groupId` sale de la memoria de EJECUCIÓN que la
+  // puerta (`_puertaConLaCabecera_`) ya rellenó para este MISMO token — nunca de nada que
+  // llegue en el cuerpo (KAL-4 intacta: si esa memoria no tiene nada, no se deriva de otro
+  // sitio, se cae directamente al KMS, el camino de siempre).
+  var _cabeceraEjec = _memoCabeceraEjecucion_[_memoCabeceraClave_(token, false)];
+  var _groupIdEjec = _cabeceraEjec && _cabeceraEjec.enrollment_group_id;
+  var desdeEspejo = _identidadDesdeElEspejo_(_groupIdEjec, n, correo);
+  if (desdeEspejo) {
+    _TUTOR_MEMO_[clave] = desdeEspejo;
+    if (n && desdeEspejo.correo) _TUTOR_MEMO_[token + '|c:' + desdeEspejo.correo] = desdeEspejo;
+    return desdeEspejo;
+  }
 
   var r = kmsProxy_('enr.tutorQueRecupera',
     n ? { resume_token: token, n: n } : { resume_token: token, correo: correo }) || {};
@@ -10119,7 +10223,7 @@ function hydrateSession_(p) {
       language:        (p && p.language) ? String(p.language).trim() : null,
     }) || {};
     try { _wzCachePutChunked_(wzHydCache, wzHydKey,
-      JSON.stringify({ v: _versionDeClase_(groupId, 'hyd'), data: data }), 1800); } catch (eWzWt) { /* best-effort */ }
+      JSON.stringify({ v: _versionDeClase_(groupId, 'hyd'), data: data }), ESPEJO_HYD_TTL_S_); } catch (eWzWt) { /* best-effort */ }
   }
 
   // DL-C-A (g): el KMS pliega el catálogo de preguntas (raw qb) en el hydrate. Lo
@@ -10363,7 +10467,7 @@ function pushWarmHydrate_(p) {
     const cache = CacheService.getScriptCache();
     const key = _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, null));
     const version = _versionDeClase_(groupId, 'hyd');
-    const stored = _wzCachePutChunked_(cache, key, JSON.stringify({ v: version, data: payload }), 1800);
+    const stored = _wzCachePutChunked_(cache, key, JSON.stringify({ v: version, data: payload }), ESPEJO_HYD_TTL_S_);
     Logger.log(redact_('[pushWarmHydrate_] group=' + groupId + ' n=' + String(n).slice(0, 8) + '… v=' + version + ' stored=' + stored));
     return { ok: true, stored: !!stored };
   } catch (e) {
