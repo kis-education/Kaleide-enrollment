@@ -8456,9 +8456,8 @@ async function caminoCodigoSinCongelar(page, base) {
     return c
   }
 
-  // Cuándo SALE y cuándo VUELVE cada petición. Listas, no un solo valor: por el remontaje
-  // de arriba hay un envío automático en vuelo antes de que la familia toque nada, y
-  // quedarse con «la primera» mediría la petición equivocada.
+  // Cuándo SALE y cuándo VUELVE cada petición. Listas, no un solo valor: la familia puede
+  // pulsar «reenviar» y quedarse con «la primera» mediría la petición equivocada.
   const salidas = {}
   const vueltas = {}
   const accionDe = (req) => {
@@ -8539,14 +8538,14 @@ async function caminoCodigoSinCongelar(page, base) {
   }
 
   /**
-   * Abre la verja de cero y deja la pantalla QUIETA: espera a que el envío automático haya ido
-   * y vuelto, para que lo que se mida después sea la petición del BOTÓN y no la suya.
+   * Abre la verja de cero y deja la pantalla QUIETA para que lo que se mida después sea la
+   * petición del BOTÓN.
    *
-   * ⚠️ Desde `0º.tricies.nonies` el auto-envío de la PRIMERA entrada deja su espera corta
-   * corriendo (antes se perdía en el remontaje y el botón quedaba libre por accidente — ése era
-   * el defecto). Este recorrido mide el GESTO de la familia, así que entra una SEGUNDA vez: la
-   * sesión ya no auto-envía (`otpAutoSentForRecovery` persiste) y la verja parte de cero, con
-   * su botón disponible. Quien mide el auto-envío es `codigo-al-entrar-por-enlace`.
+   * ⛔ 2026-09-13 (Diego, FIRME) — la verja YA NO auto-envía ningún código al entrar. Este
+   * recorrido mide el GESTO de la familia (pulsar «Enviar código»), así que solo hay que abrir
+   * la verja y esperar a que el remontaje de la rehidratación quede quieto; no hay envío
+   * automático que drenar. Se entra dos veces por prudencia con el remontaje — ninguna manda
+   * código.
    */
   const abrirLaVerja = async (etiqueta) => {
     await drenar()
@@ -8615,9 +8614,9 @@ async function caminoCodigoSinCongelar(page, base) {
       foto.casillaLista,
       'se le decía a la familia que el código estaba enviado y la casilla seguía deshabilitada: la pantalla se queda congelada esperando al servidor')
 
-    c.afirmar('el aviso dice qué hacer si el código no llega',
-      /2-3|2 ?a ?3/.test(foto.aviso || ''),
-      `el aviso dice «${foto.aviso}» y no da un plazo concreto: «espera unos minutos» no le sirve a quien no sabe si pedir otro`)
+    c.afirmar('mientras el código sale, el aviso dice «enviando…» (honesto, no un «ya está» prematuro)',
+      /envi[aá]ndo|sending/i.test(foto.aviso || ''),
+      `el aviso dice «${foto.aviso}»: mientras la petición está en vuelo debe decir que se está enviando, no afirmar que ya ha llegado`)
 
     // ── «reenviar» limitado por RELOJ, no por el viaje ─────────────────────────────
     // Ya con la petición contestada (ningún viaje en vuelo), si el botón sigue bloqueado
@@ -8640,6 +8639,10 @@ async function caminoCodigoSinCongelar(page, base) {
         : `el botón quedó libre («${trasVolver.reenviarTexto}») en cuanto contestó el servidor: la limitación seguía siendo el viaje, no una espera deliberada`)
     c.afirmar('el envío de la petición no dejó nada bloqueado ni borró lo tecleado',
       trasVolver.casillaLista, 'la casilla se deshabilitó al volver la respuesta')
+
+    c.afirmar('cuando el servidor confirma, el aviso pasa a «enviado» con su plazo concreto',
+      /2-3|2 ?a ?3/.test(trasVolver.aviso || ''),
+      `tras confirmar el servidor, el aviso dice «${trasVolver.aviso}» y no el plazo (2-3 min): quien no sepa si pedir otro se queda sin referencia`)
 
     // ══ PASE 2 · se puede TECLEAR y ENTRAR sin esperar a esa respuesta ════════════
     scenario.otpSuperado = false
@@ -8737,32 +8740,23 @@ async function caminoCodigoSinCongelar(page, base) {
 }
 
 /**
- * codigo-al-entrar-por-enlace — ENTRAR POR EL ENLACE MANDA UN SOLO CÓDIGO, Y LA PANTALLA LO DICE.
+ * codigo-al-entrar-por-enlace — ENTRAR POR EL ENLACE NO MANDA NINGÚN CÓDIGO; SE PIDE A DEMANDA.
  *
- * ── El defecto que cierra (Diego, 2026-08-22) ────────────────────────────────────────
- * *«Cuando se carga el wizard desde un enlace, automáticamente envía un OTP y eso da error,
- * porque la pantalla de carga permite enviar otro. No tiene sentido.»*
- *
- * ── La causa, MEDIDA — y NO era ninguno de los dos candidatos de la ficha ────────────
- * La verja se **REMONTA**: `WizardPage` la pinta, ésta auto-envía el código, y acto seguido su
- * efecto de rehidratación (`needsHydration`, cierto porque la hidratación con el candado puesto
- * vuelve sin `email.verified`) pone `rehydrating=true` ⇒ el padre devuelve el loader neutro y la
- * verja DESAPARECE. Al volver (15-40 s), la SEGUNDA instancia nacía con su estado local a cero:
- * «pulsa para recibir tu código», casilla DESHABILITADA y botón «Enviar» LIBRE — con el primer
- * código ya volando. La familia no tenía más remedio que pulsar para poder teclear, y ese
- * segundo envío PISA al primero en la caché del servidor (`cache.put(codeKey, code, 600)`,
- * `backend/Code.js`) ⇒ el código que ya le había llegado deja de valer.
- *   · NO era «el auto-envío falla» (candidato 1): el envío sale bien.
- *   · NO era «`autoSentRef` se reinicia y auto-envía otra vez» (candidato 2): `shouldAutoSend`
- *     ya es falso en la segunda instancia, porque `otpAutoSentForRecovery` persiste. Lo que se
- *     perdía no era el freno del envío, era la MEMORIA de que ya se había enviado.
+ * ── La decisión (Diego, 2026-09-13, FIRME — SUPERSEDE al auto-envío de `0º.tricies.nonies`) ──
+ * *«El OTP de entrada NO se auto-envía. Muestra un botón «Enviar código»; la familia pulsa una
+ * vez → un solo código.»* Motivo: con auto-envío, la familia —que no lee— pulsa «Enviar» igual,
+ * le llega un SEGUNDO código, el auto-enviado queda invalidado, teclea el viejo → error → pide
+ * otro → bucle infinito. Sin auto-envío no hay código fantasma que invalidar ni estado «¿ya lo
+ * mandé?» que se pueda perder al degradar el transporte (que es justo lo que se rompió la noche
+ * del 2026-09-13). KAL-4, el código de un solo uso, los cupos y la anti-enumeración NO cambian:
+ * solo CUÁNDO se envía.
  *
  * ── Qué se afirma aquí ───────────────────────────────────────────────────────────────
- * (1) entrar por el enlace gasta UN solo código · (2) la pantalla DICE que ya se envió ·
- * (3) la casilla está lista para teclearlo · (4) «reenviar» está en su espera corta, así que no
- * se invita a quemar otro · (5) y con eso se entra. Y la otra mitad: (6) si ese auto-envío FALLA,
- * el error llega a la familia aunque lo provoque una instancia ya desmontada, y (7) no la deja
- * sin salida.
+ * (1) entrar por el enlace NO gasta ningún código · (2) la pantalla NO dice que se haya enviado
+ * uno · (3) la casilla está DESHABILITADA hasta pulsar · (4) el botón ofrece «Enviar código»
+ * disponible y sin cuenta atrás · (5) al pulsar sale UN solo código y la casilla queda lista ·
+ * (6) con ese código se entra. Y la otra mitad: (7) si al pedir el código el servidor RECHAZA,
+ * el error llega a la familia, y (8) no la deja sin salida.
  *
  * ⚠️ Esto cubre LA PANTALLA. `backend/Code.js` no se ejecuta en esta batería (backend simulado).
  */
@@ -8860,11 +8854,11 @@ async function caminoCodigoAlEntrarPorEnlace(page, base) {
   try {
     scenario.piiGated = true
     scenario.otpSuperado = false
-    // El viaje del código tarda MUCHO más que la latencia normal — como en la vida real. Así el
-    // remontaje ocurre con la petición todavía en vuelo, que es el caso que rompía.
+    // El código lo pide la familia; el viaje tarda MUCHO más que la latencia normal, como en
+    // la vida real, para poder comprobar que la pantalla no se congela mientras el código sale.
     scenario.codigoDemoraMs = 3000
 
-    // ══ FASE A · entrar por el enlace: UN código, y la pantalla lo dice ═══════════════
+    // ══ FASE A · entrar por el enlace NO manda ningún código ═════════════════════════
     if (!c.afirmar('con la verja puesta, el asistente pide el código antes de enseñar nada',
       await entrarYAsentar('a'),
       'nunca apareció la casilla del código: la secuencia que este recorrido mide no llegó a darse')) return c
@@ -8873,65 +8867,85 @@ async function caminoCodigoAlEntrarPorEnlace(page, base) {
     c.evidencia.elementos = 1
     c.evidencia.llamadas  = peticiones.length
 
-    c.afirmar('(1) entrar por el enlace gasta UN SOLO código',
-      cuantas('sendVerificationCode') === 1,
-      `salieron ${cuantas('sendVerificationCode')} peticiones de código al entrar: la verja se remonta y la segunda instancia olvida que el primero ya iba de camino, así que la familia gasta otro de su cupo y el que le llegó al buzón deja de valer`)
+    c.afirmar('(1) entrar por el enlace NO gasta ningún código: se pide a demanda',
+      cuantas('sendVerificationCode') === 0,
+      `salieron ${cuantas('sendVerificationCode')} peticiones de código al entrar, sin que la familia pulsara nada: el auto-envío manda un código que quien no lee acaba invalidando al pedir otro (bucle infinito)`)
 
-    c.afirmar('(2) la pantalla DICE que el código ya se envió',
-      !!foto.aviso,
-      `tras asentarse, la verja no muestra el aviso de «te hemos enviado un código» (aviso: ${JSON.stringify(foto.aviso)}): con un código ya en vuelo, invita a pedir otro`)
+    c.afirmar('(2) la pantalla NO dice que ya se ha enviado un código',
+      foto.aviso == null,
+      `la verja muestra «${foto.aviso}» sin que se haya pedido nada: invita a teclear un código que nadie ha enviado`)
 
-    c.afirmar('(3) la casilla está lista para teclear el código que va a llegar',
-      foto.casillaLista,
-      'la casilla del código está DESHABILITADA con un código ya enviado: la familia se ve obligada a pulsar «Enviar» solo para poder escribir, y ese segundo envío invalida el primero')
+    c.afirmar('(3) la casilla está DESHABILITADA hasta pulsar «Enviar código»',
+      !foto.casillaLista,
+      'la casilla del código está lista sin haberse pedido código: la pantalla promete un código que no existe')
 
-    c.afirmar('(4) «reenviar» está en su espera corta, no ofreciendo otro código de inmediato',
-      foto.reenviarBloqueado && /\d/.test(foto.reenviarTexto || ''),
+    c.afirmar('(4) el botón ofrece «Enviar código», disponible y sin cuenta atrás',
+      !foto.reenviarBloqueado && !/\d/.test(foto.reenviarTexto || ''),
       foto.reenviarBloqueado
-        ? `el botón está bloqueado pero no dice cuánto falta («${foto.reenviarTexto}»)`
-        : `el botón quedó libre («${foto.reenviarTexto}») justo después del auto-envío: se está invitando a la familia a quemar un segundo código`)
+        ? `el botón para pedir el código está bloqueado nada más entrar («${foto.reenviarTexto}»): la familia no puede pedirlo`
+        : `el botón muestra una cuenta atrás («${foto.reenviarTexto}») sin haberse enviado nada`)
 
-    // ⚠️ NO se teclea a ciegas: con la casilla deshabilitada `page.fill` LANZA, y el runner
-    // descarta el camino entero sustituyéndolo por «el recorrido se rompió» — perdiendo las
-    // cuatro afirmaciones de arriba, que son las que nombran el defecto. Se comprueba antes.
-    const tecleado = foto.casillaLista
-      ? await page.fill('input[autocomplete="one-time-code"]', '123456').then(() => true).catch(() => false)
-      : false
+    // La familia pulsa «Enviar código» — UNA vez.
+    const pidio = await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="stepup-reenviar"]')
+      if (!b || b.disabled) return false
+      b.click(); return true
+    })
+    c.afirmar('(5) al pulsar «Enviar código» sale UN solo código y la casilla queda lista',
+      pidio
+        && await page.waitForFunction(
+             () => { const i = document.querySelector('input[autocomplete="one-time-code"]'); return !!(i && !i.disabled) },
+             null, { timeout: 4000 }).then(() => true).catch(() => false)
+        && cuantas('sendVerificationCode') === 1,
+      pidio
+        ? `tras pulsar «Enviar código» salieron ${cuantas('sendVerificationCode')} códigos (se esperaba 1) o la casilla siguió deshabilitada`
+        : 'el botón «Enviar código» estaba bloqueado: la familia no puede pedir su código')
+
+    const tecleado = await page.fill('input[autocomplete="one-time-code"]', '123456').then(() => true).catch(() => false)
     if (tecleado) {
       await page.evaluate(() => {
         const b = [...document.querySelectorAll('button.btn-primary-kis')].find(x => !x.disabled)
         if (b) b.click()
       })
     }
-    c.afirmar('(5) con ese código se entra en la solicitud',
+    c.afirmar('(6) con ese código se entra en la solicitud',
       tecleado && await page.waitForFunction(() => !!document.querySelector('.wizard-step'),
         null, { timeout: LATENCY * 4 + 20000 }).then(() => true).catch(() => false),
       tecleado
-        ? 'el asistente no llegó a pintar los pasos tras teclear el código del auto-envío'
-        : 'no se pudo ni teclear el código: la casilla sigue deshabilitada tras el auto-envío, así que la familia está obligada a pedir otro')
+        ? 'el asistente no llegó a pintar los pasos tras teclear el código'
+        : 'no se pudo teclear el código tras pulsar «Enviar código»')
 
-    // ══ FASE B · si ese auto-envío FALLA, la familia se entera ════════════════════════
+    // ══ FASE B · si al pedir el código el servidor RECHAZA, la familia se entera ═══════
     // El rechazo se PROVOCA a propósito: que quede registrado en consola es lo correcto.
     c.esperarErrorConsola(/gasCall sendVerificationCode: server returned ok=false/,
-      'el servidor rechaza el auto-envío a propósito, para comprobar que la familia se entera')
+      'el servidor rechaza la petición del código a propósito, para comprobar que la familia se entera')
     c.esperarErrorConsola(/StepUpGate: sendVerificationCode failed/,
       'la pantalla registra el rechazo provocado antes de explicárselo a la familia')
 
-    // Sesión NUEVA: sin esto `otpAutoSentForRecovery` (sessionStorage) impide el auto-envío y
-    // esta fase mediría el botón, no el auto-envío — que es lo que se quiere medir.
     await page.evaluate(() => { try { sessionStorage.clear() } catch { /* sandbox */ } })
     scenario.otpSuperado = false
     scenario.codigoFalla = 'RATE_LIMITED'
-    const antes = cuantas('sendVerificationCode')
     if (!c.afirmar('la verja vuelve a abrirse con el servidor a punto de rechazar',
       await entrarYAsentar('b'), 'la casilla del código no volvió a aparecer')) return c
-
+    const antes = cuantas('sendVerificationCode')
+    const pidioB = await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="stepup-reenviar"]')
+      if (!b || b.disabled) return false
+      b.click(); return true
+    })
+    // Se espera a que el rechazo llegue a la pantalla.
+    await page.waitForFunction(() => !!document.querySelector('[data-testid="stepup-error"]'),
+      null, { timeout: LATENCY + 3000 + 8000 }).catch(() => {})
+    await page.waitForTimeout(300)
     const trasFallo = await verja()
-    c.afirmar('(6) el fallo del auto-envío LLEGA a la familia, aunque lo provoque una pantalla que ya no existe',
-      !!trasFallo.error && /demasiados c[oó]digos|requested too many/i.test(trasFallo.error),
-      `la verja muestra error=${JSON.stringify(trasFallo.error)}: el rechazo lo dispara la instancia que se desmonta al rehidratar, así que si no sale del componente la familia se queda esperando un código que nunca salió`)
 
-    c.afirmar('(6.bis) y NO se le sigue diciendo que se lo hemos enviado',
+    c.afirmar('(7) el rechazo del envío LLEGA a la familia',
+      pidioB && !!trasFallo.error && /demasiados c[oó]digos|requested too many/i.test(trasFallo.error),
+      pidioB
+        ? `la verja muestra error=${JSON.stringify(trasFallo.error)}: un envío rechazado tiene que decirse, no quedarse en un «enviando…» eterno`
+        : 'el botón «Enviar código» estaba bloqueado en el segundo pase: no se pudo provocar el rechazo')
+
+    c.afirmar('(7.bis) y NO se le sigue diciendo que se lo hemos enviado',
       trasFallo.aviso == null,
       `sigue en pantalla «${trasFallo.aviso}» junto al error: la familia lee dos cosas que se contradicen`)
 
@@ -8939,7 +8953,7 @@ async function caminoCodigoAlEntrarPorEnlace(page, base) {
     // provocó el robot al irse de la página.
     await drenar()
 
-    c.afirmar('(7) un auto-envío fallido NO cierra el camino de entrar',
+    c.afirmar('(8) un envío fallido NO cierra el camino de entrar',
       trasFallo.casillaLista && !trasFallo.reenviarBloqueado && cuantas('sendVerificationCode') === antes + 1,
       `casilla ${trasFallo.casillaLista ? 'lista' : 'DESHABILITADA'}, «reenviar» ${trasFallo.reenviarBloqueado ? 'BLOQUEADO' : 'libre'}, peticiones ${cuantas('sendVerificationCode') - antes} (se esperaba 1): tras un fallo la familia tiene que poder pedir otro sin esperar`)
 
@@ -9504,17 +9518,18 @@ async function caminoUnViajeAlAbrir(page, base) {
     const total = peticiones.length
 
     // ── (1) EL RECUENTO. Es la afirmación de la ficha, dicha en su propio término. ────────
-    // El listón son CUATRO, y las cuatro tienen su motivo escrito — ninguna es un viaje de
-    // datos duplicado:
+    // ⛔ 2026-09-13 (Diego, FIRME): la verja YA NO auto-envía el código al entrar (se pide a
+    // demanda), así que `sendVerificationCode` DESAPARECIÓ de la entrada. El listón baja de
+    // cuatro a TRES, y las tres tienen su motivo escrito — ninguna es un viaje de datos
+    // duplicado:
     //   1. `hydrateSession`      — LA ÚNICA QUE PINTA: trae la cabecera del expediente.
-    //   2. `sendVerificationCode`— el código que la familia necesita para entrar.
-    //   3. `warmSession`         — cocina la solicitud mientras ella teclea (fuego y olvido).
-    //   4. `warmBundle`          — a los 4 s, y lo único que hace de verdad en este camino es
+    //   2. `warmSession`         — cocina la solicitud mientras ella teclea (fuego y olvido).
+    //   3. `warmBundle`          — a los 4 s, y lo único que hace de verdad en este camino es
     //                              arrancar el precalentado de la simulación del paso 7: su
     //                              otra mitad choca con el freno de `warmSession_` (120 s por
     //                              token Y por expediente) y vuelve `RATE_LIMITED`.
     //
-    // ⚠️ NO SE BAJA A TRES fundiendo 3 y 4, y el motivo está MEDIDO: cada una es la única
+    // ⚠️ NO SE BAJA A DOS fundiendo 2 y 3, y el motivo está MEDIDO: cada una es la única
     // que calienta en SU camino — `warmSession` en la RECARGA (donde `ResumePage` no llega a
     // montarse) y `warmBundle` en la ENTRADA POR EL ENLACE (donde además arranca la fase de
     // la simulación). Fundirlas es tocar `backend/Code.js` y arriesga DUPLICAR el arranque
@@ -9522,8 +9537,8 @@ async function caminoUnViajeAlAbrir(page, base) {
     // hecho.
     //
     // El techo es lo que impide que el tropel vuelva sin que nadie se entere.
-    c.afirmar('(1) abrir el asistente cuesta CUATRO viajes como mucho, no ocho',
-      total <= 4,
+    c.afirmar('(1) abrir el asistente cuesta TRES viajes como mucho, no ocho',
+      total <= 3,
       `salieron ${total} peticiones al abrir: [${peticiones.join(', ')}] — el tropel de la entrada ha vuelto`)
 
     // ── (1.bis) Y LA PROPIEDAD DE FONDO: la que PINTA no compite con nadie. ───────────────
@@ -9558,22 +9573,32 @@ async function caminoUnViajeAlAbrir(page, base) {
       cuantas('getLiveStateVersion') === 0 && cuantas('getAdmissionState') === 0,
       `el pulso salió ${cuantas('getLiveStateVersion') + cuantas('getAdmissionState')} vez/veces con la verja cerrada`)
 
-    // ── (5) LO QUE NO SE TOCA: el código SIGUE saliendo solo. Quitar viajes no puede
-    //       convertirse en dejar a la familia esperando a pulsar un botón. ────────────────
-    c.afirmar('(5) y el código de un solo uso SIGUE saliendo solo al abrir',
-      cuantas('sendVerificationCode') === 1,
-      `sendVerificationCode salió ${cuantas('sendVerificationCode')} vez/veces: si no sale sola, la familia se queda esperando un código que nadie ha pedido`)
+    // ── (5) EL CÓDIGO NO SE AUTO-ENVÍA AL ABRIR (Diego, 2026-09-13, FIRME). ──────────────
+    // Antes se exigía aquí que el código SÍ saliera solo; esa decisión se REVIRTIÓ: con
+    // auto-envío, quien no lee pulsaba «Enviar» igual, el segundo código invalidaba al
+    // auto-enviado y la familia entraba en bucle. Ahora se pide a demanda (lo mide
+    // `codigo-al-entrar-por-enlace`), así que al ABRIR no puede haber salido ninguno.
+    c.afirmar('(5) el código de un solo uso NO sale solo al abrir (se pide a demanda)',
+      cuantas('sendVerificationCode') === 0,
+      `sendVerificationCode salió ${cuantas('sendVerificationCode')} vez/veces al abrir: la verja está volviendo a auto-enviar, y un código fantasma que la familia invalida al pulsar «Enviar» es el bucle que esta decisión cerró`)
 
     c.notas.push(`✓ viajes al abrir con la verja puesta: ${total} — `
       + `[${salidas.map(x => `${x.a}@${x.t}ms`).join(', ')}]`
       + ` · la solicitud volvió a los ${hidratacionVuelveEn}ms`)
 
-    // ── (6) Y TRAS TECLEAR EL CÓDIGO, LA SOLICITUD LLEGA ENTERA. Es la otra mitad: quitar
-    //       viajes de la entrada no puede dejar a la familia sin sus catálogos después. ───
+    // ── (6) Y TRAS PEDIR Y TECLEAR EL CÓDIGO, LA SOLICITUD LLEGA ENTERA. Es la otra mitad:
+    //       quitar viajes de la entrada no puede dejar a la familia sin sus catálogos. ────
     const antesDelCodigo = peticiones.length
     scenario.otpSuperado = true
-    // Mismos gestos que `entrarConElCodigo` del recorrido de la ventana — no se inventa
-    // navegación nueva: se teclea el código y se pulsa el botón primario de la verja.
+    // El código ya NO se auto-envía (2026-09-13): la casilla arranca deshabilitada, así que
+    // primero se pulsa «Enviar código» —como hace `codigo-al-entrar-por-enlace`— y se espera
+    // al aviso de «enviado» antes de teclear.
+    await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="stepup-reenviar"]')
+      if (b && !b.disabled) b.click()
+    })
+    await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="stepup-enviado"]'), null, { timeout: 4000 }).catch(() => {})
     await page.fill('input[autocomplete="one-time-code"]', '123456')
     await page.evaluate(() => {
       const b = [...document.querySelectorAll('button.btn-primary-kis')].find(x => !x.disabled)

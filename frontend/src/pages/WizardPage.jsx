@@ -853,7 +853,12 @@ const handleNext = async (stepKey, data, extra = null) => {
             .catch(err => log.error('WizardPage: rehydrate post step-up failed', { message: err.message }))
             .finally(() => setRehydrating(false));
         }}
-        shouldAutoSend={!otpAutoSentForRecovery}
+        /* ⛔ 2026-09-13 (Diego, FIRME) — el código NO se auto-envía al entrar por el enlace.
+           La verja muestra el botón «Enviar código» y la familia lo pulsa una vez. Motivo:
+           con auto-envío, quien no lee pulsa igual, le llega un SEGUNDO código que invalida
+           al auto-enviado, teclea el viejo → error → bucle. `otpAutoSentForRecovery` queda
+           sin uso funcional (se conserva su cableado por si se revierte). */
+        shouldAutoSend={false}
         onAutoSent={markOtpAutoSentForRecovery}
         /* `0º.tricies.nonies`: la verja se DESMONTA en cuanto arranca la rehidratación y
            vuelve a montarse al terminar. Sin esto, la segunda instancia olvidaba que el

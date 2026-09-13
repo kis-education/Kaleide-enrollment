@@ -105,6 +105,10 @@ export default function StepUpGate({
 
   const [verifying, setVerifying] = useState(false);
   const [codeSent,  setCodeSent]  = useState(!!yaPedidoAt);
+  // 2026-09-13 (Diego, FIRME) — mientras la petición del código está EN VUELO, la pantalla
+  // dice «enviando código…» (honesto: el envío tarda). No es fire-and-forget mudo: el envío
+  // puede tardar ~50 s y decir «enviado» antes de tiempo confunde. Al volver → «enviado».
+  const [enviando,  setEnviando]  = useState(false);
   const [code,      setCode]      = useState('');
   const [err,       setErr]       = useState(falloPrevio);
   const [info,      setInfo]      = useState(yaPedidoAt ? t('stepup.code_sent') : '');
@@ -177,19 +181,24 @@ export default function StepUpGate({
   const sendCode = ({ manual = false } = {}) => {
     if (manual) setCode('');
     setErr('');
-    // ── FIRE-AND-FORGET (clase #32) ──────────────────────────────────────────
-    // Se dice «enviado» y se desbloquea la casilla EN EL MISMO gesto. La petición
-    // vuela por su cuenta; su resultado solo puede CORREGIR lo dicho, nunca retrasarlo.
+    // ── EL CÓDIGO SE PIDE A DEMANDA, Y SE DICE «enviando…» MIENTRAS SALE ──────
+    // Se desbloquea la casilla EN EL MISMO gesto (para que se pueda teclear cuando llegue)
+    // y arranca la cuenta atrás de «reenviar» — pero el aviso dice la VERDAD: «enviando
+    // código…» mientras el viaje está en vuelo, y pasa a «enviado» solo cuando el servidor
+    // confirma. Mientras `enviando`, el botón de reenviar sigue bloqueado aunque la cuenta
+    // atrás llegue a cero: un solo código, sin fantasma que la familia pueda invalidar.
+    setEnviando(true);
     setCodeSent(true);
-    setInfo(t('stepup.code_sent'));
+    setInfo(t('stepup.enviando'));
     arrancarEspera();
-    // `0º.tricies.nonies`: el hecho sale del componente ANTES del viaje, para que un remontaje
-    // a mitad de la petición encuentre la verja ya en «enviado» y con su cuenta atrás corriendo.
+    // El hecho sale del componente ANTES del viaje, para que un remontaje a mitad de la
+    // petición encuentre la verja con su cuenta atrás corriendo (no un botón libre).
     if (onEnvioPedido) onEnvioPedido();
     // NO mandamos email — el backend lo deriva del token (server-side, KAL-4).
     gasCall('sendVerificationCode', { stepup: true, ...tokenPayload })
-      .then(() => { log.info('StepUpGate: código de entrada solicitado'); })
+      .then(() => { log.info('StepUpGate: código de entrada solicitado'); setEnviando(false); setInfo(t('stepup.code_sent')); })
       .catch(e => {
+        setEnviando(false);
         log.error('StepUpGate: sendVerificationCode failed', { message: e.message });
         // El aviso optimista era mentira: se retira y se pone el error real. Lo que NO
         // se toca es el camino de ENTRAR — ni se borra lo tecleado ni se vuelve a
@@ -209,22 +218,24 @@ export default function StepUpGate({
       });
   };
 
-  // Auto-envío al montar SOLO la primera recuperación (shouldAutoSend). En reload de
-  // una sesión recuperada o re-expiración de frescura (shouldAutoSend=false) NO se
-  // auto-envía: el gate aparece con el botón "enviar código" para que el usuario lo
-  // pida (req. c). autoSentRef cubre el StrictMode double-mount.
+  // ⛔ EL CÓDIGO NO SE AUTO-ENVÍA AL ENTRAR (Diego, 2026-09-13, FIRME). Supersede a
+  // `0º.tricies.nonies`, que lo conservaba. La familia pulsa «Enviar código» a propósito ⇒
+  // UN solo código, sin fantasma que invalidar. Motivo medido: con auto-envío, quien no lee
+  // pulsa igual «Enviar», le llega un SEGUNDO código, el auto-enviado queda invalidado,
+  // teclea el viejo → error → pide otro → bucle infinito. Sin auto-envío no hay código
+  // fantasma ni estado «¿ya lo mandé?» que perder al degradar el transporte (que es justo lo
+  // que se rompió la noche del 2026-09-13). KAL-4, el código de un solo uso, los cupos y la
+  // anti-enumeración NO cambian: solo CUÁNDO se envía — a demanda, no automático.
+  // `shouldAutoSend`/`onAutoSent` se conservan por retrocompatibilidad de la firma; ya no
+  // disparan ningún envío. El PRECALENTADO (warmSession) SÍ sigue saliendo al montar: no
+  // manda ningún código y deja el hydrate caliente para que, tras teclear el OTP, entre rápido.
   useEffect(() => {
     if (autoSentRef.current) return;
     autoSentRef.current = true;
-    // `0º.tricies.nonies`: esta instancia puede ser la SEGUNDA (el remontaje). Si ya se pidió
-    // un código, se reanuda su cuenta atrás en vez de ofrecer el botón libre. No se re-envía
-    // nada: solo se recupera lo que la instancia anterior sabía.
+    // Remontaje (rehidratación): si un código YA se pidió en esta carga, se reanuda su cuenta
+    // atrás en vez de ofrecer el botón libre. No se re-envía nada.
     const restante = restanteDe(yaPedidoAt);
     if (restante > 0) arrancarEspera(restante);
-    if (shouldAutoSend) {
-      sendCode({ manual: false });
-      if (onAutoSent) onAutoSent();
-    }
     // OTP-WARM pieza A (decisión Diego 2026-06-11: "por qué no está el wizard
     // precargando datos… sólo se pone a hidratar cuando introduzco el otp"): mientras
     // el usuario teclea el código, el servidor cocina el snapshot del hydrate y lo
@@ -319,11 +330,13 @@ export default function StepUpGate({
             className="btn btn-link btn-sm p-0"
             style={{ fontSize: '0.85rem' }}
             onClick={() => sendCode({ manual: true })}
-            disabled={espera > 0}
+            disabled={espera > 0 || enviando}
           >
-            {espera > 0
-              ? t('stepup.resend_in', { s: espera })
-              : (codeSent ? t('stepup.resend') : t('stepup.send'))}
+            {enviando
+              ? t('stepup.enviando')
+              : (espera > 0
+                ? t('stepup.resend_in', { s: espera })
+                : (codeSent ? t('stepup.resend') : t('stepup.send')))}
           </button>
         </div>
 

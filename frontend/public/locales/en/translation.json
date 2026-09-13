@@ -518,6 +518,7 @@
   "stepup.send_code": "Send code",
   "stepup.code_sent": "We've sent a code to your email. If it doesn't arrive in 2-3 minutes, request another one.",
   "stepup.send": "Send code",
+  "stepup.enviando": "Sending code…",
   "stepup.press_to_send": "Press to receive your access code in your email.",
   "stepup.resend": "Resend code",
   "stepup.resend_in": "Request another code in {{s}}s",
