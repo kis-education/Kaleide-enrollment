@@ -13416,3 +13416,145 @@ function manual_diagElEspejo() {
   Logger.log(JSON.stringify(out, null, 2));
   return out;
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// ①27 punto 3 — el umbral de bytes con un fichero REAL de Drive
+// ═══════════════════════════════════════════════════════════════════════
+// Lo medido hasta ahora (①27 pieza 9 / DL-R19) cubre fabricar, codificar y
+// devolver un blob sintético en memoria. NO cubre la lectura DESDE Drive ni
+// el viaje al navegador, que es exactamente el camino de `getDocument_`
+// (Code.js, más arriba): `DriveApp.getFileById(id).getBlob().getBytes()`
+// seguido de `Utilities.base64Encode(bytes)`. Esta sonda mide ESE camino,
+// literal, con ficheros reales subidos y leídos de Drive — no simulados.
+
+var SONDA_UMBRAL_PREFIJO_ = 'ZZ_SONDA_umbral_';
+
+/**
+ * Construye un blob sintético de tamaño EXACTO en bytes (ASCII puro, 1 byte
+ * por carácter, para que el tamaño no dependa de la codificación UTF-8).
+ */
+function sondaUmbralConstruirBlob_(bytesObjetivo) {
+  var trozo = 'ZZSONDAUMBRAL0123456789ABCDEFabcdef';
+  var sb = trozo;
+  while (sb.length < bytesObjetivo) { sb += sb; }
+  sb = sb.substring(0, bytesObjetivo);
+  var bytes = Utilities.newBlob(sb).getBytes();
+  return Utilities.newBlob(bytes, 'application/octet-stream',
+                            SONDA_UMBRAL_PREFIJO_ + Date.now() + '_' + bytesObjetivo + '.bin');
+}
+
+/** Borrado FÍSICO vía Drive REST API v3 — DriveApp no tiene borrado permanente. */
+function sondaUmbralBorrarFisico_(fileId) {
+  return UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId, {
+    method: 'delete',
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+}
+
+/** Comprueba por LECTURA, desde el mismo transporte REST, que el fichero ya no existe (404). */
+function sondaUmbralVerificarBorrado_(fileId) {
+  var resp = UrlFetchApp.fetch(
+    'https://www.googleapis.com/drive/v3/files/' + fileId + '?fields=id',
+    { method: 'get', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }
+  );
+  return resp.getResponseCode() === 404;
+}
+
+/**
+ * Barrido de ENTRADA: elimina restos de una corrida anterior que muriera a
+ * medias (§"Lo que un agente crea para PROBAR se ELIMINA FÍSICAMENTE").
+ * Devuelve cuántos ficheros de sonda encontró y borró.
+ */
+function sondaUmbralBarrerEntrada_() {
+  var borrados = 0;
+  var it = DriveApp.searchFiles('title contains "' + SONDA_UMBRAL_PREFIJO_ + '" and trashed = false');
+  while (it.hasNext()) {
+    var f = it.next();
+    sondaUmbralBorrarFisico_(f.getId());
+    borrados++;
+  }
+  return borrados;
+}
+
+/**
+ * Mide, para UNA talla en bytes: subir a Drive, leer de vuelta EXACTAMENTE
+ * como `getDocument_` (getFileById → getBlob → getBytes → base64Encode), y
+ * borra el fichero físicamente al terminar (éxito o fallo).
+ */
+function sondaUmbralMedirTalla_(bytesObjetivo) {
+  var medida = { bytes_objetivo: bytesObjetivo, error: null };
+  var file = null;
+  try {
+    var blob = sondaUmbralConstruirBlob_(bytesObjetivo);
+
+    var t0 = Date.now();
+    file = DriveApp.createFile(blob);
+    medida.subida_ms = Date.now() - t0;
+
+    var fileId = file.getId();
+
+    // El camino REAL de getDocument_: getFileById().getBlob().getBytes()
+    var t1 = Date.now();
+    var blobLeido = DriveApp.getFileById(fileId).getBlob();
+    var bytesLeidos = blobLeido.getBytes();
+    medida.lectura_drive_ms = Date.now() - t1;
+    medida.bytes_leidos = bytesLeidos.length;
+
+    var t2 = Date.now();
+    var base64 = Utilities.base64Encode(bytesLeidos);
+    medida.codificacion_base64_ms = Date.now() - t2;
+    medida.bytes_base64 = base64.length;
+    medida.factor_inflacion = bytesLeidos.length > 0
+      ? Math.round((base64.length / bytesLeidos.length) * 1000) / 1000
+      : null;
+
+    medida.total_ms = medida.subida_ms + medida.lectura_drive_ms + medida.codificacion_base64_ms;
+  } catch (e) {
+    medida.error = String((e && e.message) || e).slice(0, 300);
+  } finally {
+    if (file) {
+      try {
+        sondaUmbralBorrarFisico_(file.getId());
+        medida.borrado_verificado = sondaUmbralVerificarBorrado_(file.getId());
+      } catch (eDel) {
+        medida.error_borrado = String((eDel && eDel.message) || eDel).slice(0, 200);
+      }
+    }
+  }
+  return medida;
+}
+
+/**
+ * Diagnóstico de solo lectura de datos (el contenido es un blob SINTÉTICO,
+ * no hay datos personales en ningún punto). Mide, contra Drive real, el
+ * tiempo de subir + leer + codificar en base64 para varias tallas hasta el
+ * tope de `uploadDocument_` (10 MB), y la inflación real de codificar a
+ * base64 — el camino que `getDocument_` recorre en cada descarga.
+ *
+ * Barrido de entrada + `finally` de salida (borrado físico, verificado por
+ * lectura): ①27 punto 3.
+ */
+function manual_medirUmbralDeBytesConFicheroReal() {
+  var out = { diag: 'manual_medirUmbralDeBytesConFicheroReal', barrido_entrada: 0, medidas: [], error: null };
+  try {
+    out.barrido_entrada = sondaUmbralBarrerEntrada_();
+
+    var TALLAS = [
+      100 * 1024,        // 100 KB
+      1 * 1024 * 1024,   // 1 MB
+      5 * 1024 * 1024,   // 5 MB
+      10 * 1024 * 1024   // 10 MB — el tope de MAX_BYTES en uploadDocument_
+    ];
+    TALLAS.forEach(function(talla) {
+      out.medidas.push(sondaUmbralMedirTalla_(talla));
+    });
+  } catch (e) {
+    out.error = String((e && e.message) || e).slice(0, 300);
+  } finally {
+    // Barrido de SALIDA: por si esta misma corrida dejó algo a medias.
+    try { out.residuo = sondaUmbralBarrerEntrada_(); } catch (eR) { out.residuo_error = String((eR && eR.message) || eR).slice(0, 200); }
+  }
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
