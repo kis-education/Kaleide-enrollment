@@ -2754,6 +2754,10 @@ function doPost(e) {
       });
     }
     return jsonResponse_({ ok: false, error: sanitizeErrorForClient_(err) }, 500);
+  } finally {
+    // D171 — vuelca la traza de ESTA petición (una sola vez, con las cifras ya calculadas).
+    // Con la traza apagada el buffer está vacío y esto retorna en su primera línea.
+    _trazaVolcar_();
   }
 }
 
@@ -9014,6 +9018,92 @@ function _trazarActivo_() {
 }
 var TRAZA_ARRANQUE_ = { llamadas: 0, sumaPared: 0, sumaSalto: 0, sumaKms: 0 };
 
+// ─── LA TRAZA CAPTURADA (D171, 2026-09-14) ─────────────────────────────────────────
+// Encender el interruptor no basta: las líneas `[TRAZA]` aterrizan en el REGISTRO DE
+// EJECUCIONES del proyecto, y ese registro no se puede leer desde fuera — `clasp logs`
+// necesita un `projectId` en `.clasp.json` que este proyecto no declara. Sin esto, Diego
+// tendría que abrir «Ejecuciones», buscar las líneas y copiarlas a mano; y el objetivo de
+// D171 es que él haga UN clic en su enlace y nada más.
+//
+// Por eso la traza, ADEMÁS de registrarse como siempre, se GUARDA — y se lee luego con
+// `manual_trazaDelArranque()`.
+//
+// ⛔ SIN DATOS DE FAMILIA, y la garantía es estructural, no una promesa: se guarda
+//    EXACTAMENTE la misma cadena que ya se registraba (nombres de acción, milisegundos,
+//    contadores y acierto/fallo de la copia). No se compone ni un texto nuevo, así que
+//    esto no puede ampliar lo que la traza enseña.
+// ⛔ APAGADA, BYTE-IDÉNTICO: `_trazaApunte_` solo se alcanza desde dentro de los
+//    `if (_trazarActivo_())` que ya existían, y `_trazaVolcar_()` —lo único que se añade al
+//    camino de TODA petición— retorna en su primera línea si el buffer está vacío, que es
+//    siempre que la traza está apagada. Ni una lectura de propiedad, ni un viaje a la caché.
+// ⛔ Y EL GUARDADO NO FALSEA LO QUE MIDE: se acumula EN MEMORIA durante la petición y se
+//    vuelca UNA vez al final (`finally` de `doPost`). Los `pared`/`kms`/`salto` de cada
+//    línea y las sumas del resumen ya están calculados cuando se vuelca, así que el coste
+//    del volcado (una lectura + una escritura de caché, ~ms) no entra en ninguna cifra
+//    reportada. El candado corto es por si dos peticiones del mismo clic vuelcan a la vez:
+//    sin él, la última en escribir borraría las líneas de la otra.
+// ⚠️ LÍMITE HONESTO: si una ejecución muere por el tope de tiempo de Apps Script, su
+//    `finally` no llega a correr y SUS líneas se pierden. Las de las demás peticiones del
+//    mismo clic sí están, porque cada una vuelca la suya.
+var TRAZA_CAPTURA_CLAVE_ = 'traza_arranque_capturada';
+var TRAZA_CAPTURA_TTL_S_ = 1800;   // 30 min: lo que tarda un clic de Diego y un aviso
+var TRAZA_CAPTURA_MAX_ = 300;      // se conservan las ÚLTIMAS; el arranque produce ~5-15
+var _TRAZA_LINEAS_ = [];           // buffer de ESTA ejecución; vacío ⇒ traza apagada
+
+/** Registra la línea como siempre Y la guarda para poder devolverla luego (D171). */
+function _trazaApunte_(linea) {
+  Logger.log(linea);
+  try {
+    var t = new Date();
+    var hh = ('0' + t.getUTCHours()).slice(-2), mm = ('0' + t.getUTCMinutes()).slice(-2);
+    var ss = ('0' + t.getUTCSeconds()).slice(-2), ms = ('00' + t.getUTCMilliseconds()).slice(-3);
+    _TRAZA_LINEAS_.push(hh + ':' + mm + ':' + ss + '.' + ms + 'Z ' + linea);
+  } catch (eAp) { /* el registro ya salió: no se rompe una petición por no poder guardar */ }
+}
+
+/** Vuelca lo apuntado en ESTA ejecución, APILÁNDOLO sobre lo que ya haya. No lanza nunca. */
+function _trazaVolcar_() {
+  if (!_TRAZA_LINEAS_.length) return;   // traza apagada ⇒ ni una operación más
+  var lineas = _TRAZA_LINEAS_; _TRAZA_LINEAS_ = [];
+  var candado = null;
+  try {
+    candado = LockService.getScriptLock();
+    if (!candado.tryLock(10000)) {
+      candado = null;
+      Logger.log('[TRAZA] volcado PERDIDO: otra ejecución tenía el candado (' + lineas.length + ' líneas)');
+      return;
+    }
+    var cache = CacheService.getScriptCache();
+    var previo = _wzCacheGetChunked_(cache, TRAZA_CAPTURA_CLAVE_);
+    var acum = [];
+    if (previo) { try { acum = JSON.parse(previo) || []; } catch (ePr) { acum = []; } }
+    acum = acum.concat(lineas);
+    if (acum.length > TRAZA_CAPTURA_MAX_) acum = acum.slice(acum.length - TRAZA_CAPTURA_MAX_);
+    _wzCachePutChunked_(cache, TRAZA_CAPTURA_CLAVE_, JSON.stringify(acum), TRAZA_CAPTURA_TTL_S_);
+  } catch (eVo) {
+    Logger.log('[TRAZA] volcado falló: ' + (eVo && eVo.message));
+  } finally {
+    if (candado) { try { candado.releaseLock(); } catch (eRe) {} }
+  }
+}
+
+/** Lo capturado hasta ahora, o `[]`. Lectura pura: no borra y no escribe. */
+function _trazaCapturada_() {
+  try {
+    var previo = _wzCacheGetChunked_(CacheService.getScriptCache(), TRAZA_CAPTURA_CLAVE_);
+    return previo ? (JSON.parse(previo) || []) : [];
+  } catch (eLe) { return []; }
+}
+
+/** Tira lo capturado. Lo llama el ON, para que cada medición empiece en limpio. */
+function _trazaBorrarCapturada_() {
+  try {
+    var cache = CacheService.getScriptCache();
+    cache.remove(TRAZA_CAPTURA_CLAVE_ + '_meta');
+    for (var i = 0; i < 12; i++) cache.remove(TRAZA_CAPTURA_CLAVE_ + '_' + i);
+  } catch (eBo) { /* best-effort */ }
+}
+
 function _dbgStart_(payload) {
   var action = payload && payload.action;
   var sensitive = DBG_ENUM_SENSITIVE_ACTIONS_.indexOf(String(action)) !== -1;
@@ -9153,7 +9243,7 @@ function kmsProxy_(action, payload) {
                  : (typeof _pf.ms === 'number') ? _pf.ms : null;
     const _trSalto = (_trKms === null) ? null : (_trPared - _trKms);
     const _trViajes = (_tz && _tz.viajes) || null;
-    Logger.log('[TRAZA] accion=' + action
+    _trazaApunte_('[TRAZA] accion=' + action
       + ' pared=' + _trPared + 'ms'
       + ' kms=' + (_trKms === null ? '?' : _trKms) + 'ms'
       + ' salto=' + (_trSalto === null ? '?' : _trSalto) + 'ms'
@@ -10396,7 +10486,7 @@ function hydrateSession_(p) {
     } catch (eWzWt) { /* best-effort */ }
   }
   if (_trazarActivo_()) {
-    Logger.log('[TRAZA] copia-de-la-puerta hyd=' + _trazaCache);
+    _trazaApunte_('[TRAZA] copia-de-la-puerta hyd=' + _trazaCache);
   }
 
   // DL-C-A (g): el KMS pliega el catálogo de preguntas (raw qb) en el hydrate. Lo
@@ -10502,7 +10592,7 @@ function hydrateSession_(p) {
   // `doPost`), así que aquí se cierra el acumulado de ESTA ejecución: cuántas llamadas al
   // KMS hizo, y cuánto de su tiempo total fue reloj de pared / manejador / salto.
   if (_trazarActivo_()) {
-    Logger.log('[TRAZA] resumen arranque — llamadas=' + TRAZA_ARRANQUE_.llamadas
+    _trazaApunte_('[TRAZA] resumen arranque — llamadas=' + TRAZA_ARRANQUE_.llamadas
       + ' sumaPared=' + TRAZA_ARRANQUE_.sumaPared + 'ms'
       + ' sumaKms=' + TRAZA_ARRANQUE_.sumaKms + 'ms'
       + ' sumaSalto=' + TRAZA_ARRANQUE_.sumaSalto + 'ms');
@@ -13134,6 +13224,9 @@ function _trazarArranqueEstadoReleido_(accion) {
  */
 function manual_trazarArranqueON() {
   PropertiesService.getScriptProperties().setProperty('TRAZAR_ARRANQUE', 'true');
+  // Cada medición empieza en limpio: si quedaran líneas de un clic anterior, quien las
+  // leyera después mezclaría dos arranques distintos y no lo sabría.
+  _trazaBorrarCapturada_();
   return _trazarArranqueEstadoReleido_('ON');
 }
 
@@ -13152,6 +13245,37 @@ function manual_trazarArranqueON() {
 function manual_trazarArranqueOFF() {
   PropertiesService.getScriptProperties().deleteProperty('TRAZAR_ARRANQUE');
   return _trazarArranqueEstadoReleido_('OFF');
+}
+
+/**
+ * EL INTERRUPTOR DE LA TRAZA (D171) — DEVUELVE la traza capturada, para poder leerla sin
+ * abrir el registro de ejecuciones.
+ *
+ * Existe porque el registro de este proyecto NO se puede leer desde fuera: `clasp logs`
+ * necesita un `projectId` declarado en `.clasp.json`, y este proyecto no lo declara. Sin
+ * esto, las líneas `[TRAZA]` existen pero hay que copiarlas a mano de la pantalla
+ * «Ejecuciones» — justo el trabajo que D171 quiere quitarle a Diego.
+ *
+ * SIN ARGUMENTOS, como sus dos hermanas, y por el mismo motivo: el botón «Ejecutar» del
+ * editor no pasa parámetros.
+ *
+ * NO BORRA lo que devuelve: leer dos veces da lo mismo. Lo que empieza en limpio es
+ * `manual_trazarArranqueON`, que tira lo capturado antes.
+ *
+ * ⛔ NO compone ningún texto: devuelve las MISMAS cadenas que ya se registraban — nombres
+ * de acción, milisegundos, contadores y acierto/fallo de la copia. Ni un dato de familia.
+ *
+ * Y de paso relee el interruptor: quien lee la traza ve, desde OTRA ejecución, si quedó
+ * encendido o apagado — que es lo que acredita de verdad al ON y al OFF (una función no se
+ * acredita a sí misma).
+ *
+ * @returns {{ ok: boolean, encendida: boolean, n: number, lineas: string[] }}
+ */
+function manual_trazaDelArranque() {
+  var lineas = _trazaCapturada_();
+  var estado = _trazarArranqueEstadoReleido_('LEER');
+  Logger.log('[TRAZA-INTERRUPTOR] LEER → ' + lineas.length + ' línea(s) capturada(s)');
+  return { ok: true, encendida: estado.encendida, n: lineas.length, lineas: lineas };
 }
 
 /**

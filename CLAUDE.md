@@ -4302,11 +4302,22 @@ aquí lo que allí era un defecto.**
 petición — solo cuando la marca de caché (`espejo_disparador_ok`, 6 h) no está. El resto pagan un
 `cache.get`.
 
-**Verify-first de esta vuelta:** `clasp run` **NO pudo ejecutar ni una función contra este
+**Verify-first de aquella vuelta:** `clasp run` **NO pudo ejecutar ni una función contra este
 proyecto** (probado con `manual_testAppSheetEscape`, que ya existía y no depende de ningún scope
 nuevo: *«Unable to run script function»*) ⇒ **el disparador no se pudo instalar desde aquí a mano**,
-y por eso se instala solo en la primera petición que entre. `manual_instalarElDisparadorDelEspejo`
-queda para quien SÍ tenga ese canal, o para el editor de Apps Script.
+y por eso se instala solo en la primera petición que entre.
+
+✅ **ESO YA NO ES CIERTO (2026-09-14): `clasp run` contra este proyecto FUNCIONA.** Fallaba porque
+al proyecto le faltaba su proyecto de Google Cloud, y **Diego se lo asignó**. Comprobado ese día con
+la MISMA función que lo había desmentido: `clasp run manual_testAppSheetEscape` devuelve `null` (no
+retorna nada) en vez del error. ⇒ **una `manual_*` de este repositorio ya se puede ejecutar y leer
+desde un agente**, con `NODE_USE_ENV_PROXY=1` desde `backend/`, igual que en el KMS.
+
+⚠️ **Lo que SIGUE sin poder leerse desde fuera es el REGISTRO DE EJECUCIONES**: `clasp logs` exige un
+`projectId` declarado en `.clasp.json`, y **ni este proyecto ni el del KMS lo declaran**. Por eso una
+función que solo escriba con `Logger.log` no es medible desde aquí: lo que quiera leerse **se
+devuelve**, o se guarda y se devuelve (molde: `manual_trazaDelArranque`, §"EL INTERRUPTOR DE LA
+TRAZA").
 
 ⚠️ **NINGUNA BATERÍA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend simulado que
 **nunca ejecuta `backend/Code.js`** ni llama al KMS. Se midió con un **arnés efímero fuera de los
@@ -4975,6 +4986,64 @@ hay forma de saber si seguiría encontrando esa carpeta y esos ficheros, y equiv
 subida de documento de una familia**. Para bajarlo hace falta **medirlo en ejecución** con el
 proyecto delante — publicar el permiso acotado y comprobar que una subida y su lectura de vuelta
 siguen funcionando —; hasta entonces se queda como está.
+
+### EL INTERRUPTOR DE LA TRAZA — y por qué lo que se quiere leer se DEVUELVE, no se registra (D171, 2026-09-14)
+
+**La traza del arranque (`TRAZAR_ARRANQUE`) existe para medir dónde se van los 184 s del clic en el
+enlace de recuperación.** Está **apagada por defecto** y, apagada, el comportamiento es
+**byte-idéntico**. Se mueve con **TRES funciones sin argumentos** de `backend/Code.js`, visibles en
+el selector del editor y ejecutables con `clasp run`:
+
+| Función | Qué hace |
+|---|---|
+| `manual_trazarArranqueON` | pone `TRAZAR_ARRANQUE` a `'true'` **y tira lo capturado antes** (cada medición empieza en limpio) |
+| `manual_trazarArranqueOFF` | **BORRA** la propiedad — `_trazarActivo_()` exige `=== 'true'`, así que ausente y `'false'` son lo mismo para el camino vivo |
+| `manual_trazaDelArranque` | devuelve `{ok, encendida, n, lineas}` — lo capturado, **sin borrarlo** |
+
+⛔ **SIN ARGUMENTOS, y son TRES y no una: el botón «Ejecutar» del editor NO pasa parámetros**, así
+que una sola `manual_trazarArranque(valor)` recibiría `undefined` y apagaría la traza justo al querer
+encenderla. Y **ninguna acaba en guion bajo** (§"Funciones `manual_*` NUNCA con trailing
+underscore"): con él, GAS las vuelve invisibles en el selector, que es donde tienen que estar.
+
+**Las tres RELEEN la propiedad después de tocarla** y registran `encendida = true|false` por el
+lector único `_trazarArranqueEstadoReleido_`. **El «ok» de la escritura no acredita nada** — y aquí
+menos que nunca: la pantalla de propiedades del editor a veces no guarda y no lo dice.
+
+#### ⛔ LO QUE QUIERAS LEER DESDE FUERA, DEVUÉLVELO — el registro de ejecuciones NO se puede leer
+
+**`clasp logs` exige un `projectId` declarado en `.clasp.json`, y ni este proyecto ni el del KMS lo
+declaran** ⇒ **una función que solo escriba con `Logger.log` NO es medible desde un agente.** Ése es
+el motivo entero de que exista la tercera función: las líneas `[TRAZA]` se registran como siempre
+**y además se guardan**, para poder devolverlas.
+
+**Cómo se guarda, y cada punto es una barandilla, no un detalle** (`_trazaApunte_` ·
+`_trazaVolcar_` · `_trazaCapturada_` · `_trazaBorrarCapturada_`):
+
+1. ⛔ **No se compone ni un texto nuevo**: se guarda **la MISMA cadena** que ya se registraba
+   (nombres de acción, milisegundos, contadores, acierto/fallo de la copia). La garantía de que no
+   hay datos de familia es **estructural**, no una promesa — capturar no puede ampliar lo que la
+   traza enseña.
+2. ⛔ **Apagada, byte-idéntico**: `_trazaApunte_` solo se alcanza desde los `if (_trazarActivo_())`
+   que ya existían, y `_trazaVolcar_()` —lo único que se añade al camino de TODA petición, en el
+   `finally` de `doPost`— **retorna en su primera línea con el buffer vacío**. Ni una lectura de
+   propiedad, ni un viaje a la caché.
+3. ⛔ **El guardado NO falsea lo que mide**: se acumula **en memoria** durante la petición y se
+   vuelca **UNA vez al final**, con los `pared`/`kms`/`salto` y las sumas del resumen **ya
+   calculados**. El candado corto es por si dos peticiones del mismo clic vuelcan a la vez: sin él,
+   la última borraría las líneas de la otra.
+4. **Almacén: el que el proyecto YA usa** (`_wzCachePutChunked_`/`_wzCacheGetChunked_` sobre
+   `CacheService`), clave `traza_arranque_capturada`, **30 min**, últimas **300** líneas. No se
+   inventó ningún mecanismo nuevo.
+
+⚠️ **LÍMITE HONESTO**: si una ejecución muere por el tope de tiempo de Apps Script, su `finally` no
+corre y **SUS** líneas se pierden; las de las demás peticiones del mismo clic sí están. Y si el
+código de un solo uso no está fresco, `hydrateSession_` retorna antes (`pii_gated`) y **no hay
+resumen** — las líneas por llamada sí salen.
+
+**El orden de la medición, y solo un paso es de Diego:** un agente ejecuta
+`manual_trazarArranqueON` → **Diego hace UN clic en su enlace** → el agente ejecuta
+`manual_trazaDelArranque` y luego `manual_trazarArranqueOFF`.
+
 
 ## GAS conventions
 
