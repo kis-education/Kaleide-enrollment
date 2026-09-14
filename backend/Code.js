@@ -9049,6 +9049,14 @@ function kmsProxy_(action, payload) {
     requestId: generateUuid_(),
   };
   if (_trazarActivo_()) envelope.payload._trazar = true;
+  // ⛔ EL RELOJ DE PARED ES EL BUCLE ENTERO, NO EL ÚLTIMO INTENTO. Aquí abajo se reintenta
+  //    hasta 3 veces con 1,2 s de espera entre intentos, y `PERF2_.kms_fetch_ms` se PISA en
+  //    cada vuelta ⇒ leerlo como «pared» esconde los intentos fallidos y las esperas: hasta
+  //    ~2,4 s de sueño más dos fetches completos. Justo en el caso que esta traza viene a
+  //    diagnosticar —un arranque que se cuelga y un transporte que degrada— los reintentos
+  //    son la mitad interesante, y sin esto el `salto` saldría más pequeño de lo que la
+  //    familia espera de verdad.
+  const _trPared0 = _trazarActivo_() ? Date.now() : 0;
 
   // ── El salto se REINTENTA, y por eso el `requestId` NO cambia entre intentos ──
   //
@@ -9132,11 +9140,19 @@ function kmsProxy_(action, payload) {
   // `resp` ya parseado, así que traza TANTO el éxito como un error DE NEGOCIO del KMS
   // (que sigue siendo `_traza` válida) — solo un fallo de transporte (ya lanzado arriba)
   // se queda sin línea, porque ahí no hay `_traza` que leer.
-  if (_trazarActivo_() && resp && resp._traza) {
-    const _trPared = PERF2_.kms_fetch_ms || 0;
-    const _trKms = (typeof resp._traza.ms_handler === 'number') ? resp._traza.ms_handler : null;
+  // ⛔ NO SE EXIGE `_traza` PARA REGISTRAR. Los dos proyectos se publican por separado, así
+  //    que puede haber un rato en que este asistente hable con un despliegue del KMS que aún
+  //    no lo devuelve — y entonces la traza se quedaba MUDA justo cuando hace falta. `__perf`
+  //    (con `ms` y `db_calls`) lo devuelve el KMS SIEMPRE desde el 2026-09-08, así que se cae
+  //    a él: se sigue sabiendo el `kms` y el `salto`, y solo se pierde el recuento de viajes.
+  if (_trazarActivo_() && resp) {
+    const _tz = resp._traza || null;
+    const _pf = resp.__perf || {};
+    const _trPared = Date.now() - _trPared0;
+    const _trKms = (_tz && typeof _tz.ms_handler === 'number') ? _tz.ms_handler
+                 : (typeof _pf.ms === 'number') ? _pf.ms : null;
     const _trSalto = (_trKms === null) ? null : (_trPared - _trKms);
-    const _trViajes = resp._traza.viajes || null;
+    const _trViajes = (_tz && _tz.viajes) || null;
     Logger.log('[TRAZA] accion=' + action
       + ' pared=' + _trPared + 'ms'
       + ' kms=' + (_trKms === null ? '?' : _trKms) + 'ms'
@@ -9144,7 +9160,11 @@ function kmsProxy_(action, payload) {
       + ' viajes=' + (_trViajes ? _trViajes.n : 0)
       + (_trViajes && typeof _trViajes.msServicio === 'number' ? (' servicio=' + _trViajes.msServicio + 'ms') : '')
       + (_trViajes && typeof _trViajes.msTestigo === 'number' ? (' token=' + _trViajes.msTestigo + 'ms') : '')
-      + (_trViajes && _trViajes.porVerbo ? (' verbos=' + JSON.stringify(_trViajes.porVerbo)) : ''));
+      + (_trViajes && _trViajes.porVerbo ? (' verbos=' + JSON.stringify(_trViajes.porVerbo)) : '')
+      // `db_calls` cuenta CONSULTAS LÓGICAS (una por tabla del lote) y `viajes` cuenta VIAJES
+      // HTTP reales: bajo PostgreSQL un lote de ocho tablas es UN viaje. Los dos, o ninguno.
+      + (typeof _pf.db_calls === 'number' ? (' consultas=' + _pf.db_calls) : '')
+      + (_tz ? '' : ' (sin _traza: el KMS de esta direccion aun no la devuelve)'));
     TRAZA_ARRANQUE_.llamadas++;
     TRAZA_ARRANQUE_.sumaPared += _trPared;
     if (_trKms !== null) TRAZA_ARRANQUE_.sumaKms += _trKms;
