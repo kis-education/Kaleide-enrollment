@@ -2784,6 +2784,9 @@ function doPost(e) {
       // 2026-09-11 — el KMS siembra la respuesta de recuperación de un correo al invitar.
       // Mismo gate firmado que los dos de arriba; lo llama SOLO el KMS.
       case 'sembrarRecuperacion':     result = sembrarRecuperacion_(payload);     break;
+      // 2026-09-14 — el KMS pide SÍNCRONAMENTE que se acuñe la gracia de un enlace recién
+      // rotado (o vivo de una sesión enviada). Mismo gate firmado; lo llama SOLO el KMS.
+      case 'acunarGraciaDeEnlace':    result = acunarGraciaDeEnlace_(payload);    break;
       case 'getLiveStateVersion':     result = getLiveStateVersion_(payload);     break;
       // ── CLI 60 (2026-05-30): cases borrados ─────────────────────────────────
       // getTrackingData, getInterviewForEnrollment, getAdmissionDecisionForEnrollment,
@@ -11018,6 +11021,45 @@ function sembrarRecuperacion_(p) {
   Logger.log('[sembrarRecuperacion_] guardada=' + guardada +
              ' expedientes=' + _gruposDeLaRecuperacion_(r).length);
   return { ok: true, stored: !!guardada };
+}
+
+/**
+ * «El enlace entra sin esperar» (2026-09-14) — el KMS pide SÍNCRONAMENTE, justo después
+ * de mandar el correo, que se acuñe aquí la gracia que salta el código de un solo uso
+ * para el token que acaba de rotar (o el vivo, si el expediente ya estaba enviado). Mismo
+ * gate firmado que `sembrarRecuperacion_`/`notifyLiveStateChange_` — verificar SIEMPRE
+ * antes de mirar el contenido.
+ *
+ * ⛔ La gracia se acuña sobre el token que el KMS declara, NUNCA sobre uno que este
+ * proceso deduzca — es exactamente la barandilla que `③18.bis.15` existía para proteger
+ * (nunca minar la gracia sobre un token viejo/no rotado).
+ *
+ * Best-effort a propósito: el correo YA salió cuando el KMS hace esta llamada, así que
+ * nada de aquí puede impedir que la familia reciba su enlace — un fallo se traga.
+ *
+ * @param {Object} p — { nonce, timestamp, signature, event: { resume_token,
+ *   enrollment_group_id, lang } }
+ * @returns {{ok:boolean, reason?:string}}
+ */
+function acunarGraciaDeEnlace_(p) {
+  p = p || {};
+  const v = verifySignedKmsNotice_(p, 'acunarGraciaDeEnlace');
+  if (!v.ok) return { ok: false, reason: 'UNAUTHORIZED' };
+
+  const resumeToken = v.event && v.event.resume_token;
+  const groupId = v.event && v.event.enrollment_group_id;
+  try {
+    assertValidUuid_(resumeToken, 'resume_token');
+    assertValidUuid_(groupId, 'enrollment_group_id');
+  } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
+
+  try {
+    _mintMagicLinkNonce_(resumeToken, groupId);
+    _dejarElClicSinLlamadas_(resumeToken, v.event && v.event.lang);
+  } catch (e) {
+    Logger.log(redact_('[acunarGraciaDeEnlace_] non-fatal — ' + ((e && e.message) || e)));
+  }
+  return { ok: true };
 }
 
 /**

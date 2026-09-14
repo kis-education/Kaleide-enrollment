@@ -51,7 +51,12 @@ export function comprobarReceptor(fuente) {
   // `pushWarmHydrate_` — el detector está CIEGO sobre él»*) en vez de pasar en verde sobre
   // algo que ya no podía ver. Si vuelve a entrar un receptor firmado, se añade AQUÍ en el
   // mismo cambio.
-  const RECEPTORES = ['notifyLiveStateChange_', 'sembrarRecuperacion_']
+  //
+  // ★ 2026-09-14 («El enlace entra sin esperar») — SON TRES. `acunarGraciaDeEnlace_` es el
+  // receptor de la llamada SÍNCRONA que el KMS hace justo después de mandar el correo, para
+  // acuñar aquí la gracia que salta el código de un solo uso sobre el token que el KMS declara
+  // — mismo canal firmado, misma obligación de verificar antes de mirar `v.event`.
+  const RECEPTORES = ['notifyLiveStateChange_', 'sembrarRecuperacion_', 'acunarGraciaDeEnlace_']
   for (const nombre of RECEPTORES) {
     const re = new RegExp('function ' + nombre + '\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}')
     const cuerpo = re.exec(sinComentarios)
@@ -94,7 +99,7 @@ try {
   const fallos = comprobarReceptor(fuente)
   fallos.forEach((f) => console.log('  ✗ ' + f))
   if (fallos.length) motivo = `${fallos.length} infracción(es): ${fallos.join(' · ')}`
-  else console.log('  ✓ los DOS receptores firmados verifican firma → ventana → no-repetición ANTES de leer el contenido')
+  else console.log('  ✓ los TRES receptores firmados verifican firma → ventana → no-repetición ANTES de leer el contenido')
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)
 } finally {
