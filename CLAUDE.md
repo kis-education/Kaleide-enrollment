@@ -4845,77 +4845,98 @@ vez de enseñar un fallo que no era suyo.
 **Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp` y sin
 turno.
 
-### `③18.bis.15` (2026-09-11) — si al enlace le queda margen, NO se renueva
+### «El enlace entra sin esperar» (2026-09-14) — SIEMPRE se rota el enlace, y el envío rehace la copia caliente
 
-**El correo del enlace tardaba 38 s de trabajo síncrono, y 18,7 s se iban en UNA sola llamada:
-`enr.renewApplicationSession`.** Cada salto al KMS cuesta ~15-19 s de arranque de Apps Script
-(§"EL TIEMPO DE UNA PANTALLA ES SU NÚMERO DE VIAJES", `kis-app/CLAUDE.md`), así que el ahorro no
-está en afinar nada: está en **no hacer el viaje cuando no hace falta**. Y no hace falta cuando el
-enlace que la familia va a recibir **todavía tiene días de validez por delante**.
+> **★ RETIRA ENTERO `③18.bis.15` (2026-09-11), que decía lo contrario** («si al enlace le queda
+> margen, NO se renueva»). Aquel tramo ahorraba el viaje de renovación (18,7 s de los 38 s del
+> correo) cuando al enlace le quedaban más de 2 de sus 7 días. **No vuelve.**
 
-**⚠️ LA PREMISA DEL ENCARGO ERA FALSA, y es el hallazgo que va primero.** Decía: *«comprueba que
-`created_at` viene en la proyección; si NO viene, añádelo a esa proyección»*. **Ya venía, en las
-DOS rutas** — `enr_wizardRecuperacionDelCorreo` lo declara entre sus cinco campos y
-`enr_wizardExpedienteDelToken` también (`kis-app kms-server/enr/wizard-gateway.gs`) ⇒ **CERO
-cambios en el KMS**: este tramo es de un solo repositorio y de un solo fichero.
+**ESPECIFICACIÓN DE DIEGO, literal (2026-09-14) — no se discute** (*«no quiero otra cosa que no sea
+esto»* · *«me da igual cómo lo hagas»*):
 
-**El umbral, con nombre y en un solo sitio:** `MARGEN_MINIMO_DEL_ENLACE_MS_` — **nace en 2 días y
-el VALOR lo decide Diego**; cambiarlo es una línea. Y el plazo de vida del enlace
-(`RESUME_TOKEN_TTL_MS_`, 7 días) **subió a constante de módulo**: lo miran ahora DOS —el juez que
-RECHAZA un enlace caducado (`_rechazosDelEnlace_`) y el que decide si hace falta renovarlo—, y dos
-copias de ese número divergirían.
+> * Como ya se está accediendo al backend para lanzar el envío del email, **aprovechas y refrescas
+>   el enlace para que sea nuevo**, y se envía en el email.
+> * Además, aprovechas para **mover el caché y refrescarlo con los últimos datos de la BD** de esa
+>   solicitud.
+> * El cliente hace click en el enlace y, **siempre que lo haga entre el envío y los siguientes 10
+>   minutos, entra directamente sin necesidad de OTP**.
+> * El arranque desde el enlace es **ultrarrápido** porque los datos de esa solicitud (**todos
+>   ellos**) ya están en la memoria del backend del wizard.
 
-**⛔ DEGRADA HACIA RENOVAR.** `_alEnlaceLeQuedaMargen_` devuelve `true` **solo cuando puede
-DEMOSTRAR** el margen: sin `created_at`, con fecha ilegible, sin token que reenviar o ante cualquier
-excepción ⇒ `false` ⇒ se renueva como siempre. **Nunca se manda un enlace caducado por ahorrar un
-salto.**
+**POR QUÉ CAÍA `③18.bis.15`, y es aritmética:** la gracia que salta el código de un solo uso **solo
+se acuña sobre un enlace recién rotado** (`_mintMagicLinkNonce_`, ver su cabecera). Con el margen de
+2 días sobre una vida de 7, **el enlace solo rotaba los 2 últimos días** ⇒ **cinco de cada siete
+días pedir el enlace acababa pidiendo el código**. Diego lo sufrió ese mismo día: *«Acabo de hacer
+click en el enlace recién refrescado y me ha vuelto a cerrar la verja.»* Y desde el 2026-09-13 el
+código **ni siquiera se auto-envía** (`shouldAutoSend={false}`, decisión suya), así que la verja
+cerrada le costaba además **pulsar, esperar un SEGUNDO correo y teclear**.
 
-**⛔ Y NO MIRA `submitted_at`, a propósito.** Esa regla —«las enviadas no se renuevan»— tiene UN
-dueño, el `if (g.submitted_at) return;` de sus dos llamantes, y se queda **verbatim**. Meterla
-también aquí sería un segundo criterio sobre lo mismo, y además al revés (para una enviada este
-ayudante diría «renueva»).
+**LAS DOS PIEZAS:**
 
-**⛔⛔ LO QUE EL ENCARGO NO PEDÍA Y ERA OBLIGATORIO: si no se rota, NO SE ACUÑA LA GRACIA.** La
-propiedad que `_mintMagicLinkNonce_` declara en su propia cabecera es literal: *«la rotación del
-token en la emisión crea el marcador con el token NUEVO; un token viejo/filtrado/reusado no tiene
-marcador»*. Acuñarla sobre un token **que no se ha rotado** se la regala a cualquiera que YA
-tuviera ese token —le basta con disparar la recuperación pública con el correo de la familia, **sin
-leer su buzón**— y con ella se salta el código de un solo uso, que existe justo para probar que
-quien opera AHORA controla el buzón (②27/②24). **COSTE ACEPTADO**: la familia cuyo enlace no se
-rota teclea su código, como en cualquier otra visita fuera de la ventana de gracia. Es la mitad
-honesta del ahorro, y está en los **tres** puntos de emisión (rama de token · un expediente ·
-varios).
+| Pieza | Dónde |
+|---|---|
+| **SIEMPRE se rota** — el margen y su ayudante se retiran; la gracia se acuña siempre | `sendMagicLink_`, las DOS ramas (la de token y la pública) |
+| **el ENVÍO rehace la copia** con lo que hay en la base AHORA, bajo la clave del clic | el ticket del envío lleva `r:1` → fase `kms` → `warmSession_({refrescar})` → `warmEntryBundle_(…,{refrescar})` |
 
-**⛔ Y cuando NO se renueva no se olvida la copia de la puerta.** `_olvidarCabeceraMemo_` y
-`_moverLaCopiaDeLaPuerta_` existen porque **la rotación invalida el token viejo**; aquí no rota
-nada, así que la copia sigue siendo cierta — tirarla costaría el viaje en vivo que este tramo viene
-a evitar (§`0º.tricies.vicies.quinquies`).
+⛔ **NO SE ESCRIBIÓ NI UN MECANISMO NUEVO.** El precalentado ya existía y ya lo dispara el cliente
+justo después del envío (`LandingPage.jsx:91`, `WizardPage.jsx:715`); lo único que cambia es que
+ahora **rehace** la copia en vez de reusar la que hubiera, y que la archiva por el **escritor único**
+`_espejoGuardarCopia_`.
 
-**DOS CONSECUENCIAS DELIBERADAS, escritas para que nadie las lea como defecto:** un enlace de
-recuperación **ya no nace siempre con la validez al máximo** (llega con el margen que le quedaba,
-nunca menos del umbral), y **los enlaces de correos anteriores siguen valiendo** hasta su
-vencimiento original — hoy cada rotación los mataba.
+**⛔ Y ESO CERRÓ UN TERCER ESCRITOR QUE YA HABÍA DIVERGIDO.** `warmEntryBundle_` archivaba la copia
+con un `put` propio **a 30 minutos**, mientras el espejo y el write-through del camino vivo la
+archivan a `ESPEJO_HYD_TTL_S_` (**6 h**). Una copia que caduca a los 30 min **deja de estar para el
+clic que llega después** — que es justo lo que ese precalentado existe para evitar.
 
-**LO QUE NO CAMBIA, campo por campo:** el **ack constante** de la rama pública (WIZ-ENUM) —el
-camino con margen y el que renueva devuelven la MISMA forma, y el ahorro **acerca** los dos tiempos
-en vez de separarlos— · **KAL-4** (el expediente sale del token, jamás del cuerpo) · la **verja
-reCAPTCHA** y su orden · el **cupo** de 5/hora · los **tres rechazos** del enlace · el código de un
-solo uso · y la regla de las enviadas.
+**⛔ UN ENVÍO DE ENLACE NO SE FRENA EN EL ANTI-ESTAMPIDA DEL PRECALENTADO, y esto lo destapó la
+medición, no el encargo.** Con una copia ya caliente de los últimos 120 s (una visita anterior, un
+clic al enlace viejo), `warmSession_` salía por `RATE_LIMITED` **sin rehacer nada** ⇒ el clic recibía
+la copia VIEJA. El pase que exime es **de un solo uso** y solo lo minta un envío ⇒ **como mucho UN
+refresco por envío**. ⛔ **El cupo de verdad —5 envíos por hora y buzón, `_checkMagicLinkRateLimit_`—
+NO se toca** y sigue corriendo antes, en `sendMagicLink_`. Y el freno **se sigue sellando**: el
+siguiente precalentado normal se frena igual.
+
+**⚠️ EL ÚNICO CASO QUE NO SE ROTA, dicho en vez de escondido: el expediente YA ENVIADO.** El KMS lo
+rechaza por diseño (`enr_wizardTouchSession` → `renewed:false, submitted:true`, DL-E38: las enviadas
+conservan su token vivo para volver a la firma). Ahí la gracia se acuña **sobre el token vivo** —
+exactamente como se venía haciendo desde siempre hasta el 2026-09-11, no una puerta nueva. Es el
+precio de que la familia que ya envió también entre sin código, que es lo que la especificación pide
+(*«siempre»*).
+
+**LO QUE NO SE TOCA, campo por campo:** la ventana de inactividad de 10 min y su techo de 2 h · que
+una **recarga** vuelva a pedir código (la huella de página viva sigue solo en memoria de JavaScript)
+· **KAL-4** (el expediente sale del enlace, jamás del cuerpo) · la **verja reCAPTCHA** y su orden ·
+el **cupo** de 5/hora · el **ack constante** de la rama pública (WIZ-ENUM) · los **tres rechazos**
+del enlace y su plazo de 7 días (`RESUME_TOKEN_TTL_MS_`, que sobrevive: lo mira
+`_rechazosDelEnlace_`) · y que la copia **no se sirva nunca a otro tutor** (DL-E49 §2 — la clave
+sigue siendo (expediente × tutor)).
+
+**⚠️ LO QUE VUELVE A COSTAR, y es deliberado:** el viaje de renovación (~19 s medidos) vuelve al
+camino del correo, y **los enlaces de correos anteriores vuelven a morir** en cuanto se pide uno
+nuevo. Las dos cosas las decide la especificación (*«ya se está accediendo al backend,
+aprovechas»*).
 
 ⚠️ **NINGUNA RED AUTOMÁTICA CUBRE ESTO**: `npm run e2e:wizard` corre contra un backend **simulado**
-que **nunca ejecuta `backend/Code.js`**, y este cambio es invisible para el navegador (mismo correo,
-misma pantalla; solo cambia cuánto se espera y si el enlace rota). Se **midió aparte**, con un arnés
-efímero fuera del repositorio que extrae del FUENTE `RESUME_TOKEN_TTL_MS_`,
-`MARGEN_MINIMO_DEL_ENLACE_MS_`, `_alEnlaceLeQuedaMargen_`, `_errorDeEnlace_`, `_rechazosDelEnlace_`
-y **los dos bloques de `sendMagicLink_` enteros**, y los ejecuta con dobles: **30 afirmaciones
-verdes** —incluido un barrido de 481 instantes de la vida del enlace donde «le queda margen» y «está
-caducado» **nunca** se solapan— y **SEIS roturas ROJAS demostradas**: el código de AYER (renueva
-siempre) · acuñar la gracia sin rotar (las tres ramas) · que el ayudante mire `submitted_at` · que
-deje de degradar ante `created_at` ausente · olvidar la copia de la puerta sin haber rotado · y el
-**renombrado**, que sale **«MEDICIÓN CIEGA»** y no verde. **Quien toque esto, que lo mida.**
+que **nunca ejecuta `backend/Code.js`**. Se **midió aparte**, con dos arneses efímeros fuera del
+repositorio que cargan `backend/Code.js` ENTERO en un `vm` con dobles de Apps Script (caché, reloj,
+`kmsProxy_` contado) y ejecutan el recorrido completo — envío → precalentado → clic — sobre la
+versión de AYER y la de HOY:
 
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia recibe exactamente el mismo correo
-con exactamente el mismo enlace; lo que cambia es cuánto tarda en llegarle.
+| | ANTES (con margen) | DESPUÉS |
+|---|---|---|
+| ¿rota el enlace? | **no** | **sí** |
+| ¿se acuña la gracia? | **no** | **sí** |
+| el clic entra sin código | **NO** (verja cerrada, `pii_gated`) | **SÍ** |
+| catálogos y cuestionario en la respuesta del clic | **no** (`lookups:{}`) | **sí** |
+| peticiones del navegador para entrar | **5** | **2** |
+
+**CINCO afirmaciones verdes** y **DOS roturas ROJAS demostradas**: sin `refrescar`, el clic recibe
+la copia VIEJA · con la clave del precalentado cambiada, el clic vuelve a pagar la hidratación. Más
+la guarda de **MEDICIÓN CIEGA** (renombrar `warmEntryBundle_` ⇒ el arnés se niega a salir verde).
+**Quien toque esta cadena, que la mida.**
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
+lo que cambia es que entra, y sin esperar.
 
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 

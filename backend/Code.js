@@ -619,57 +619,39 @@ function _errorDeEnlace_(mensaje, codigo) {
  *
  * ⛔ **UN SOLO SITIO.** Vivía escrito dentro de `_rechazosDelEnlace_` y ahora lo miran DOS:
  * el juez que RECHAZA un enlace caducado y el que decide si HACE FALTA renovarlo
- * (`_alEnlaceLeQuedaMargen_`). Dos copias de este número divergirían, y la segunda
- * decidiría «le queda margen» sobre un plazo que la primera ya no reconoce.
+ * (`_rechazosDelEnlace_`). Vivía escrito dentro de ese juez y se sacó aquí para que el
+ * número no acabara copiado en dos sitios que pueden divergir.
  * @private
  */
 var RESUME_TOKEN_TTL_MS_ = 7 * 24 * 60 * 60 * 1000;
 
-/**
- * `③18.bis.15` (2026-09-11) — **MARGEN MÍNIMO: por debajo de esto se renueva el
- * enlace; por encima se manda el que ya hay.**
- *
- * ★ **El VALOR lo decide Diego.** Está aquí, con nombre, en UN solo sitio y en días, para
- * que cambiarlo sea una línea. La propuesta con la que nace son **2 días**.
- *
- * ⚠️ **LO QUE ACEPTA, escrito para que nadie se sorprenda, y es DELIBERADO:** con esto un
- * enlace de recuperación **ya no nace siempre con la validez al máximo** — puede llegar con
- * el margen que le quedaba (nunca menos de éste). Y **los enlaces de correos anteriores
- * siguen valiendo** hasta su vencimiento original: hoy la rotación los invalidaba. Las dos
- * cosas son el efecto buscado, no un descuido.
- * @private
- */
-var MARGEN_MINIMO_DEL_ENLACE_MS_ = 2 * 24 * 60 * 60 * 1000;
-
-/**
- * ¿Al enlace que la familia YA tiene le queda margen de validez suficiente como para
- * mandárselo tal cual, sin rotarlo?
- *
- * ⛔ **DEGRADA HACIA RENOVAR.** Devuelve `true` SOLO cuando se puede DEMOSTRAR el margen.
- * Falta `created_at`, fecha ilegible, no hay token que reenviar, cualquier duda ⇒ `false`
- * ⇒ se renueva como siempre. **Nunca se manda un enlace caducado por ahorrar un salto.**
- *
- * ⛔ **NO mira `submitted_at`, a propósito.** Esa regla —«las enviadas no se renuevan»— tiene
- * UN dueño, el `if (g.submitted_at) return;` de sus dos llamantes, y sigue intacta. Meterla
- * también aquí crearía un segundo criterio sobre lo mismo (y además al revés: para una
- * enviada este helper diría «renueva», que es justo lo contrario de lo que toca).
- *
- * @param {Object} group fila del expediente (proyección de `enr.expedienteDelToken` o de
- *                       `enr.recuperacionDelCorreo`: las dos traen `created_at`)
- * @returns {boolean} true ⇒ NO hace falta renovar
- * @private
- */
-function _alEnlaceLeQuedaMargen_(group) {
-  try {
-    if (!group || !group.resume_token) return false;   // sin token que reenviar: renovar
-    const creado = group.created_at ? new Date(group.created_at).getTime() : 0;
-    if (!creado || isNaN(creado)) return false;        // sin fecha legible: renovar
-    const restante = (creado + RESUME_TOKEN_TTL_MS_) - Date.now();
-    return restante >= MARGEN_MINIMO_DEL_ENLACE_MS_;
-  } catch (e) {
-    return false;                                      // cualquier duda: renovar
-  }
-}
+// ⛔ AQUÍ VIVÍAN `MARGEN_MINIMO_DEL_ENLACE_MS_` Y `_alEnlaceLeQuedaMargen_` (`③18.bis.15`,
+// 2026-09-11), Y NO VUELVEN — **«El enlace entra sin esperar»**, 2026-09-14, especificación
+// LITERAL de Diego: *«Como ya se está accediendo al backend para lanzar el envío del email,
+// aprovechas y refrescas el enlace para que sea nuevo»* · *«El cliente hace click en el enlace
+// y, siempre que lo haga entre el envío y los siguientes 10 minutos, entra directamente sin
+// necesidad de OTP»*.
+//
+// QUÉ HACÍAN: si al enlace le quedaban más de 2 de sus 7 días, NO se renovaba — para ahorrar el
+// viaje de renovación (18,7 s medidos). Y como la gracia que salta el código de un solo uso
+// **solo se acuña sobre un enlace recién rotado** (`_mintMagicLinkNonce_`, ver su cabecera), no
+// acuñarla era la otra mitad del ahorro.
+//
+// POR QUÉ SE RETIRAN: ese ahorro rompía el punto 5 de la especificación **cinco de cada siete
+// días**. El enlace vive 7 días y solo entraba en el margen los 2 últimos ⇒ pedir el enlace
+// acababa pidiendo código casi siempre. Diego lo sufrió el 2026-09-14: *«Acabo de hacer click en
+// el enlace recién refrescado y me ha vuelto a cerrar la verja.»*
+//
+// ⛔ NO AFLOJA LA SEGURIDAD, LA RESTAURA: la propiedad que `_mintMagicLinkNonce_` declara —el
+// permiso va atado a un enlace **recién rotado**— vuelve a cumplirse en todo expediente que se
+// pueda rotar. ⚠️ Y el límite honesto, que se dice en vez de esconderse: un expediente **YA
+// ENVIADO** no se rota nunca (DL-E38, y el KMS lo rechaza por diseño en
+// `enr_wizardTouchSession`), así que ahí la gracia se acuña sobre el token vivo — exactamente
+// como se venía haciendo desde siempre hasta el 2026-09-11. Es el comportamiento de antes de
+// `③18.bis.15`, no una puerta nueva.
+//
+// ⛔ El plazo de 7 días (`RESUME_TOKEN_TTL_MS_`, arriba) NO se toca: lo mira el juez que RECHAZA
+// un enlace caducado (`_rechazosDelEnlace_`), que es otra cosa y sigue viva.
 
 /**
  * `0º.tricies.vicies.quinquies` (2026-08-26) — **UN SOLO SITIO decide si un enlace vale.**
@@ -2338,7 +2320,13 @@ function _warmSimularCuotasPhase_(it) {
   return out;
 }
 
-function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdParam) {
+function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdParam, opciones) {
+  // ★ «El enlace entra sin esperar» (2026-09-14) — `opciones.refrescar` = **rehacer la copia
+  // con lo que hay en la base AHORA**, sin reusar la que hubiera. Lo pide SOLO el precalentado
+  // que nace de un envío de enlace (especificación de Diego: *«aprovechas para mover el caché y
+  // refrescarlo con los últimos datos de la BD de esa solicitud»*). Sin la opción, el
+  // comportamiento es byte-idéntico al de siempre: si hay copia válida, se reusa.
+  var _refrescar = !!(opciones && opciones.refrescar);
   var out = { ok: false, hydrate: false, admission: false, resume: false, members: 0, docs: 0, ms: 0 };
   var t0 = Date.now();
   try {
@@ -2358,7 +2346,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
     // (a) Hydrate completo → wz_hyd_<token>. El KMS tiene SU warm (L2) → pull barato
     //     si el job KMS corrió; si no, se paga UNA vez aquí (no en el click del usuario).
     var data = null;
-    var cachedRaw = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', gidW + '_' + nW));
+    var cachedRaw = _refrescar ? null : _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', gidW + '_' + nW));
     if (cachedRaw) {
       try {
         var envH = JSON.parse(cachedRaw);
@@ -2372,9 +2360,14 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
         recovered_email: recoveredEmail || null,
         language:        lang || null,
       }) || {};
-      out.hydrate = _wzCachePutChunked_(cache, _wzCacheKey_('hyd', gidW + '_' + nW),
-        JSON.stringify({ v: _versionDeClase_(gidW, 'hyd'), data: data }), 1800);
-      Logger.log('[WZCACHE] warm hyd token=' + tPrev + ' cached=' + out.hydrate + ' ms=' + (Date.now() - tH));
+      // ★ 2026-09-14 — SE ARCHIVA POR EL ESCRITOR ÚNICO (`_espejoGuardarCopia_`), no con un
+      // `put` propio. Aquí vivía un TERCER escritor de la MISMA copia, y ya había divergido en
+      // el plazo: guardaba 30 min donde el espejo y el write-through del camino vivo guardan
+      // `ESPEJO_HYD_TTL_S_` (6 h). Una copia que caduca a los 30 min deja de estar para el clic
+      // que llega después — que es justo lo que este precalentado existe para evitar.
+      out.hydrate = _espejoGuardarCopia_(cache, gidW, null, data,
+        { claveYa: _wzCacheKey_('hyd', gidW + '_' + nW) });
+      Logger.log('[WZCACHE] warm hyd token=' + tPrev + ' cached=' + out.hydrate + ' refrescado=' + _refrescar + ' ms=' + (Date.now() - tH));
     }
 
     var groupId     = (data && data.group && data.group.enrollment_group_id) || null;
@@ -3882,13 +3875,12 @@ function sendMagicLink_(p) {
     // nuevo server-side (CSPRNG) y lo persiste; si no pudo persistir (P72) devuelve
     // renewed:false con el token vivo (mismo fallback que el batch multi histórico).
     let tokenToSend = grp.resume_token;
-    // ★ `③18.bis.15` (2026-09-11) — SI AL ENLACE LE QUEDA MARGEN, NO SE RENUEVA.
-    // Renovar es el salto MÁS CARO de este camino (18,7 s de los 38 s medidos el 2026-09-11
-    // con `manual_diagTimelineDelCorreo`), y es innecesario cuando el enlace que la familia
-    // va a recibir todavía tiene días de validez por delante: se manda el que ya hay.
+    // ★ «El enlace entra sin esperar» (2026-09-14) — **SIEMPRE SE RENUEVA.** El margen de
+    // `③18.bis.15` se retiró entero (ver la lápida junto a `RESUME_TOKEN_TTL_MS_`): cada envío
+    // rota el enlace y manda el nuevo, que es lo que hace que la gracia de los 10 minutos se
+    // pueda acuñar sobre un token RECIÉN ROTADO en todo expediente rotable.
     // ⛔ La regla de las ENVIADAS no se toca y sigue mandando ella: `!grp.submitted_at`.
-    const _sinRenovarPorMargen = !grp.submitted_at && _alEnlaceLeQuedaMargen_(grp);
-    if (!grp.submitted_at && !_sinRenovarPorMargen) {
+    if (!grp.submitted_at) {
       const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: grp.resume_token });
       tokenToSend = (touch && touch.resume_token) || grp.resume_token;
       // ⛔ ②17 (2026-08-19) — AQUÍ SE ROTA EL ENLACE, así que la cabecera que la puerta dejó
@@ -3912,8 +3904,7 @@ function sendMagicLink_(p) {
       }
     }
     _trazaPaso_(trazaInterna, 'kms_renovar_enlace', {
-      n:          (grp.submitted_at || _sinRenovarPorMargen) ? 0 : 1,
-      con_margen: _sinRenovarPorMargen ? 1 : 0,
+      n: grp.submitted_at ? 0 : 1,
     });
 
     // IDENTITY-FROM-LINK (2026-06-11): `n` := email_id de la fila enrEmails del guardian
@@ -3921,16 +3912,14 @@ function sendMagicLink_(p) {
     // ②17: ya resuelto arriba, en la MISMA pregunta que dijo de quién es el correo. Sin
     // tutor que case → `nEmailId` queda null y el enlace sale sin `n`, igual que antes.
     // Gracia OTP-skip anclada al resume_token recién rotado (single-use, 10 min).
-    // ⛔ `③18.bis.15` — SI NO SE HA ROTADO POR MARGEN, **NO SE ACUÑA LA GRACIA**.
-    // La propiedad de seguridad que `_mintMagicLinkNonce_` declara en su cabecera es literal:
-    // *«la rotación del token en la emisión crea el marcador con el token NUEVO; un token
-    // viejo/filtrado/reusado no tiene marcador»*. Acuñarla sobre un token que NO se ha rotado
-    // se la regala a cualquiera que YA tuviera ese token (basta con disparar la recuperación
-    // pública con el correo de la familia, sin leer su buzón) ⇒ se salta el código de un solo
-    // uso, que existe justo para probar que quien opera AHORA controla el buzón (②27/②24).
-    // COSTE ACEPTADO: la familia cuyo enlace no se rota teclea su código, como en cualquier
-    // otra visita fuera de la ventana de gracia. Es la mitad honesta del ahorro.
-    if (!_sinRenovarPorMargen) _mintMagicLinkNonce_(tokenToSend, grp.enrollment_group_id);
+    // ★ «El enlace entra sin esperar» (2026-09-14) — SE ACUÑA SIEMPRE, que es el punto 5 de la
+    // especificación de Diego: *«siempre que lo haga entre el envío y los siguientes 10 minutos,
+    // entra directamente sin necesidad de OTP»*. Con el margen retirado, el token que va en el
+    // correo es el RECIÉN ROTADO en todo expediente rotable ⇒ la propiedad que declara
+    // `_mintMagicLinkNonce_` se cumple. ⚠️ El ÚNICO caso sin rotación es el expediente **ya
+    // enviado** (el KMS lo rechaza por diseño): ahí la gracia va sobre el token vivo, igual que
+    // desde siempre hasta el 2026-09-11 — comportamiento restaurado, no puerta nueva.
+    _mintMagicLinkNonce_(tokenToSend, grp.enrollment_group_id);
     const langP1 = grp.preferred_language || 'es';
     // WIZARD-TERMINAL P3: el contenido lo gobierna el KMS. Path 1 (single session, p.ej.
     // desde dentro del wizard) → isFirstApp false (sin bloque GDPR).
@@ -3948,7 +3937,11 @@ function sendMagicLink_(p) {
     });
     // SPEC-WIZ-WARMUP-V2: ticket para que el frontend dispare warmBundle fire-and-forget
     // con el token NUEVO (que solo viaja por email). Identidad warm = la del click real.
-    return { sent: true, warm_ticket: _mintWarmTicket_([{ t: tokenToSend, n: nEmailId, e: destEmail, l: langP1 }]) };
+    // ★ `r: 1` — «El enlace entra sin esperar» (2026-09-14): este ticket nace de un ENVÍO de
+    // enlace, así que su fase `kms` REHACE la copia con lo que hay en la base AHORA en vez de
+    // reusar la que hubiera, y la deja bajo la clave (expediente × tutor) que el clic va a leer
+    // — el mismo `n` opaco que viaja en el `?n=` del enlace.
+    return { sent: true, warm_ticket: _mintWarmTicket_([{ t: tokenToSend, n: nEmailId, e: destEmail, l: langP1, r: 1 }]) };
   } else if (p.primary_email) {
     // ── WIZ-ENUM (audit 2026-07-27): ACK CONSTANTE anti-enumeración (KAL-10) ──
     // ANTES: grupo existente → `{sent:true}`; sin grupo → `throw 'Enrollment group
@@ -4095,19 +4088,11 @@ function sendMagicLink_(p) {
       // que se cuenta aparte y con su número: sin eso, «tardó mucho» no dice si fue un viaje
       // lento o cuatro viajes normales.
       const _renovaciones = [];
-      // ★ `③18.bis.15` (2026-09-11) — los expedientes cuyo enlace TODAVÍA TIENE
-      // MARGEN no se renuevan: se manda el `resume_token` que ya tienen. Se apuntan aquí
-      // para que la gracia OTP-skip NO se acuñe sobre ellos (ver más abajo, y el porqué en
-      // el bloque equivalente de la rama de token).
-      const sinRenovarPorMargen = {};
-      let _conMargen = 0;
+      // ★ «El enlace entra sin esperar» (2026-09-14) — **SIEMPRE SE RENUEVA**, salvo las
+      // enviadas (que el KMS no rota por diseño). El margen de `③18.bis.15` se retiró entero:
+      // ver la lápida junto a `RESUME_TOKEN_TTL_MS_`.
       sorted.forEach(g => {
         if (g.submitted_at) return; // submitted: send existing token, do not renew
-        if (_alEnlaceLeQuedaMargen_(g)) {
-          sinRenovarPorMargen[g.enrollment_group_id] = true;
-          _conMargen++;
-          return;   // ⛔ ni se renueva, ni se olvida la copia de la puerta: nada ha cambiado
-        }
         const _tRenov = Date.now();
         try {
           const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: g.resume_token });
@@ -4134,9 +4119,8 @@ function sendMagicLink_(p) {
         }
       });
       _trazaPaso_(trazaCorreo, 'kms_renovar_enlace', {
-        n:          _renovaciones.length,
-        cada_ms:    _renovaciones,
-        con_margen: _conMargen,
+        n:       _renovaciones.length,
+        cada_ms: _renovaciones,
       });
       // ②17 (octavo tramo): el `email_id` de ESTE buzón en CADA expediente ya viene
       // resuelto por el KMS —que es quien lee `enrEmails`—, de modo que aquí no se
@@ -4157,9 +4141,9 @@ function sendMagicLink_(p) {
       //
       // ⚠️ `created_at` se REFRESCA en los que rotaron, por el MISMO motivo que
       // `_moverLaCopiaDeLaPuerta_`: el KMS lo reescribe al rotar (reinicia el plazo de 7
-      // días), y conservar el viejo haría que `_alEnlaceLeQuedaMargen_` creyera que al enlace
-      // le queda menos de lo que le queda — con el único efecto de renovar de más la próxima
-      // vez, nunca de mandar uno caducado.
+      // días), y conservar el viejo haría que el juez del enlace (`_rechazosDelEnlace_`) lo
+      // creyera más viejo de lo que es — con el único efecto de rechazar antes de tiempo un
+      // enlace que todavía vale.
       try {
         const _conTokenFinal = (lista) => (lista || []).map(g => {
           const nt = newTokens[g.enrollment_group_id];
@@ -4183,13 +4167,10 @@ function sendMagicLink_(p) {
         // instead of the abridged multi template when there's actually only one
         // open session — which is the common case under the new single-session policy.
         const nEmailId = identificadorDeCorreo[grps[0].enrollment_group_id] || null;
-        // ⛔ `③18.bis.15` — la gracia OTP-skip solo se acuña sobre un token RECIÉN
-        // ROTADO (ver el porqué en la rama de token). Los que se mandan sin renovar por
-        // margen quedan fuera; los ya ENVIADOS y los que fallaron al renovar siguen
-        // EXACTAMENTE como antes de este cambio.
-        if (!sinRenovarPorMargen[grps[0].enrollment_group_id]) {
-          _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
-        }
+        // ★ «El enlace entra sin esperar» — la gracia se acuña SIEMPRE (punto 5 de la
+        // especificación de Diego). Con el margen retirado el token es el recién rotado en
+        // todo expediente rotable; el ya ENVIADO va sobre su token vivo, como desde siempre.
+        _mintMagicLinkNonce_(grps[0].resume_token, grps[0].enrollment_group_id);
         // WIZARD-TERMINAL P3: contenido gobernado por el KMS. isFirstApp false (recuperación).
         const resumeUrlR = RESUME_BASE_URL + grps[0].resume_token + (nEmailId ? '?n=' + nEmailId : '');
         _trazaPaso_(trazaCorreo, 'armar_el_enlace', { n_expedientes: 1 });
@@ -4205,15 +4186,15 @@ function sendMagicLink_(p) {
         });
         // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
         // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
-        return _magicLinkConstantAck_(_mintWarmTicket_([{ t: grps[0].resume_token, n: nEmailId, e: identityEmail, l: lang }]));
+        // ★ `r: 1` — ver el porqué en la rama de token: el envío rehace la copia.
+        return _magicLinkConstantAck_(_mintWarmTicket_([{ t: grps[0].resume_token, n: nEmailId, e: identityEmail, l: lang, r: 1 }]));
       } else {
         // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
         // del guardian en SU grupo. La gracia OTP-skip se ancla al resume_token de cada grupo.
         const nEmailIds = grps.map(g => identificadorDeCorreo[g.enrollment_group_id] || null);
-        // ⛔ `③18.bis.15` — mismo criterio que la rama de un solo expediente: los
-        // que se mandan sin renovar por margen NO reciben gracia.
+        // ★ «El enlace entra sin esperar» — mismo criterio que la rama de un solo
+        // expediente: la gracia se acuña SIEMPRE.
         grps.forEach(g => {
-          if (sinRenovarPorMargen[g.enrollment_group_id]) return;
           _mintMagicLinkNonce_(g.resume_token, g.enrollment_group_id);
         });
         // WIZARD-TERMINAL P3: la lista de enlaces la pre-renderiza el wizard en UN placeholder;
@@ -4231,7 +4212,8 @@ function sendMagicLink_(p) {
         });
         // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
         // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
-        return _magicLinkConstantAck_(_mintWarmTicket_(grps.map((g, i) => ({ t: g.resume_token, n: nEmailIds[i] || null, e: identityEmail, l: lang }))));
+        // ★ `r: 1` — ver el porqué en la rama de token: el envío rehace la copia de CADA uno.
+        return _magicLinkConstantAck_(_mintWarmTicket_(grps.map((g, i) => ({ t: g.resume_token, n: nEmailIds[i] || null, e: identityEmail, l: lang, r: 1 }))));
       }
     } catch (eSend) {
       // WIZ-ENUM: cualquier fallo del camino de envío (AppSheet, KMS notify, …) se
@@ -10166,16 +10148,29 @@ function warmSession_(p) {
   //    KAL-4 INTACTA: el expediente lo sigue derivando la puerta DEL ENLACE, jamás del cuerpo de la
   //    petición. La llave va resumida (`sha256`), como el memo del gate: el token es un secreto de
   //    portador y no se escribe en claro en ningún sitio (KAL-11).
+  //    ★ «El enlace entra sin esperar» (2026-09-14) — **UN ENVÍO DE ENLACE NO SE FRENA AQUÍ.**
+  //    MEDIDO con arnés sobre estas mismas funciones: con una copia ya caliente de los últimos
+  //    120 s (una visita anterior, un clic al enlace viejo), el precalentado del envío salía por
+  //    `RATE_LIMITED` **sin rehacer nada** ⇒ el clic recibía la copia VIEJA, justo lo contrario
+  //    de lo que la especificación pide (*«aprovechas para mover el caché y refrescarlo con los
+  //    últimos datos de la BD de esa solicitud»*).
+  //    ⛔ NO se afloja «el cupo»: el de verdad —5 envíos por hora y buzón,
+  //    `_checkMagicLinkRateLimit_`— sigue intacto y corre ANTES, en `sendMagicLink_`. Esto de
+  //    aquí es el freno ANTI-ESTAMPIDA del precalentado que dispara el cliente, y el pase que
+  //    lo exime es **de un solo uso** (`_mintWarmPass_`, consumido en `warmBundle_`) y solo lo
+  //    minta un envío ⇒ como mucho UN refresco por envío, y los envíos ya están capados.
+  //    ⚠️ Y se SIGUE SELLANDO el freno: el siguiente precalentado normal se frena igual.
+  const _deUnEnvio = !!(p && p.refrescar);
   const rlCache = CacheService.getScriptCache();
   const rlTokenKey = _warmRateLimitTokenKey_(p && p.resume_token);
   if (rlTokenKey) {
-    if (rlCache.get(rlTokenKey)) return { ok: true, warmed: false, reason: 'RATE_LIMITED' };
+    if (rlCache.get(rlTokenKey) && !_deUnEnvio) return { ok: true, warmed: false, reason: 'RATE_LIMITED' };
     rlCache.put(rlTokenKey, '1', 120);
   }
 
   const groupId = requireResumeToken_(p);
   const rlKey = 'warmrl_' + groupId;
-  if (rlCache.get(rlKey)) return { ok: true, warmed: false, reason: 'RATE_LIMITED' };
+  if (rlCache.get(rlKey) && !_deUnEnvio) return { ok: true, warmed: false, reason: 'RATE_LIMITED' };
   rlCache.put(rlKey, '1', 120);
 
   // Identidad efectiva — VERBATIM de hydrateSession_ (IDENTITY-FROM-LINK): la clave de
@@ -10194,7 +10189,8 @@ function warmSession_(p) {
   // si wz_hyd_<token> ya está, reusa y solo completa lo que falte). La misma llamada
   // enr.hydrateApplication de antes vive DENTRO del bundle → el warm KMS (L2) se ceba igual.
   var w = warmEntryBundle_(String(p.resume_token).trim(), effRecoveredEmail || null,
-    (p && p.language) ? String(p.language).trim() : null, (p && p.n) || null, groupId);
+    (p && p.language) ? String(p.language).trim() : null, (p && p.n) || null, groupId,
+    { refrescar: !!(p && p.refrescar) });
   if (!w.hydrate) {
     // Best-effort: un warm fallido no es error de cara al cliente (el hydrate real
     // post-OTP seguirá su camino normal). Log redactado para correlación.
@@ -10246,7 +10242,8 @@ function warmBundle_(p) {
     // fase 'kms' — bundle KMS-side (hydrate+admission+members+docs), mismo gate
     // KAL-4 y rate-limit que el warm de la pantalla OTP (warmSession_).
     try {
-      return warmSession_({ resume_token: it0.t, n: it0.n || null, recovered_email: it0.e || null, language: it0.l || null });
+      return warmSession_({ resume_token: it0.t, n: it0.n || null, recovered_email: it0.e || null,
+                            language: it0.l || null, refrescar: !!it0.r });
     } catch (eWk) {
       Logger.log(redact_('[warmBundle_] fase kms non-fatal — ' + (eWk && eWk.message)));
       return { ok: false };
@@ -10304,7 +10301,9 @@ function warmBundle_(p) {
     var passes = [];
     items.forEach(function(it) {
       if (!it || !it.t) return;
-      var pk = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'kms' });
+      // ★ 2026-09-14 — `r` viaja del ticket al pase: un ticket minteado por un ENVÍO de enlace
+      // pide REHACER la copia con los datos de ahora, no reusar la que hubiera.
+      var pk = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'kms', r: it.r ? 1 : 0 });
       // V2.3: fase 'mem' CONCURRENTE e independiente del hydrate — el paso 10
       // (members+docs) queda caliente aunque el usuario llegue en <60s.
       var pm = _mintWarmPass_({ t: it.t, n: it.n || null, e: it.e || null, l: it.l || null, phase: 'mem' });
