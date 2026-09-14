@@ -8996,6 +8996,24 @@ var DBGT_ = { on: false, t0: 0, ev: [] };
 // legible por cualquiera desde internet.
 var DBG_ENUM_SENSITIVE_ACTIONS_ = ['sendMagicLink', 'recognizeFamily', 'reportUnsolicited'];
 
+// ─── TRAZAR_ARRANQUE (docs/kms/prompts/cli-trazar-el-arranque-del-asistente.md) ─────
+// Instrumentación OPT-IN para diagnosticar el retraso real de la recuperación por
+// enlace: apagada por defecto (una Script Property, `TRAZAR_ARRANQUE`), sin cambio de
+// comportamiento cuando está apagada. Cuando Diego la enciende, `kmsProxy_` pide al
+// KMS que trace cada llamada (`payload._trazar=true`), registra una línea `[TRAZA]`
+// por llamada, y ACUMULA aquí para que `hydrateSession_` pueda cerrar con un resumen
+// del arranque entero. Sin PII (KAL-11): solo nombres de acción y milisegundos.
+var _trazarArranqueCache_ = null; // null = sin comprobar todavía; true/false tras la 1ª lectura
+function _trazarActivo_() {
+  if (_trazarArranqueCache_ === null) {
+    try {
+      _trazarArranqueCache_ = PropertiesService.getScriptProperties().getProperty('TRAZAR_ARRANQUE') === 'true';
+    } catch (eTr) { _trazarArranqueCache_ = false; }
+  }
+  return _trazarArranqueCache_;
+}
+var TRAZA_ARRANQUE_ = { llamadas: 0, sumaPared: 0, sumaSalto: 0, sumaKms: 0 };
+
 function _dbgStart_(payload) {
   var action = payload && payload.action;
   var sensitive = DBG_ENUM_SENSITIVE_ACTIONS_.indexOf(String(action)) !== -1;
@@ -9030,6 +9048,7 @@ function kmsProxy_(action, payload) {
     payload:   Object.assign({ service_token: serviceToken }, payload || {}),
     requestId: generateUuid_(),
   };
+  if (_trazarActivo_()) envelope.payload._trazar = true;
 
   // ── El salto se REINTENTA, y por eso el `requestId` NO cambia entre intentos ──
   //
@@ -9107,6 +9126,29 @@ function kmsProxy_(action, payload) {
     const err = new Error(ultimoFallo.mensaje);
     err.code = ultimoFallo.codigo;
     throw err;
+  }
+
+  // TRAZAR_ARRANQUE — una línea por llamada + acumulado de la petición. Va aquí, con
+  // `resp` ya parseado, así que traza TANTO el éxito como un error DE NEGOCIO del KMS
+  // (que sigue siendo `_traza` válida) — solo un fallo de transporte (ya lanzado arriba)
+  // se queda sin línea, porque ahí no hay `_traza` que leer.
+  if (_trazarActivo_() && resp && resp._traza) {
+    const _trPared = PERF2_.kms_fetch_ms || 0;
+    const _trKms = (typeof resp._traza.ms_handler === 'number') ? resp._traza.ms_handler : null;
+    const _trSalto = (_trKms === null) ? null : (_trPared - _trKms);
+    const _trViajes = resp._traza.viajes || null;
+    Logger.log('[TRAZA] accion=' + action
+      + ' pared=' + _trPared + 'ms'
+      + ' kms=' + (_trKms === null ? '?' : _trKms) + 'ms'
+      + ' salto=' + (_trSalto === null ? '?' : _trSalto) + 'ms'
+      + ' viajes=' + (_trViajes ? _trViajes.n : 0)
+      + (_trViajes && typeof _trViajes.msServicio === 'number' ? (' servicio=' + _trViajes.msServicio + 'ms') : '')
+      + (_trViajes && typeof _trViajes.msTestigo === 'number' ? (' token=' + _trViajes.msTestigo + 'ms') : '')
+      + (_trViajes && _trViajes.porVerbo ? (' verbos=' + JSON.stringify(_trViajes.porVerbo)) : ''));
+    TRAZA_ARRANQUE_.llamadas++;
+    TRAZA_ARRANQUE_.sumaPared += _trPared;
+    if (_trKms !== null) TRAZA_ARRANQUE_.sumaKms += _trKms;
+    if (_trSalto !== null) TRAZA_ARRANQUE_.sumaSalto += _trSalto;
   }
 
   // Propaga el error del KMS tal cual al frontend (shape canónica
@@ -10280,11 +10322,19 @@ function hydrateSession_(p) {
   let data = null;
   const wzHydCache = CacheService.getScriptCache();
   const wzHydKey = _wzCacheKey_('hyd', groupId + '_' + _wzN_(p && p.n, p && p.recovered_email));
+  // TRAZAR_ARRANQUE — diagnóstico de acierto/fallo de la copia, SIN gastar ni un viaje
+  // de más: reusa lo que este mismo bloque ya está leyendo (`wzHydRaw`, `envH.v` contra
+  // `_versionDeClase_`). Se calcula siempre (es barato) y solo se REGISTRA si la traza
+  // está encendida — el `if (_trazarActivo_())` de más abajo es el único coste.
+  let _trazaCache = 'sin comprobar';
   try {
     const wzHydRaw = _wzCacheGetChunked_(wzHydCache, wzHydKey);
     if (wzHydRaw) {
       const envH = JSON.parse(wzHydRaw);
-      data = (envH && envH.v === _versionDeClase_(groupId, 'hyd')) ? envH.data : null;
+      const _vEnv = envH && envH.v;
+      const _vActual = _versionDeClase_(groupId, 'hyd');
+      data = (envH && _vEnv === _vActual) ? envH.data : null;
+      _trazaCache = data ? 'HIT directo' : ('MISS — versión distinta (guardada=' + _vEnv + ' actual=' + _vActual + ')');
       // V2.4.1 (regresión cazada por el _dbg de Diego 17:33 — "resume_token not
       // recognized" intermitente): el payload cacheado por GRUPO puede haberse
       // cocinado en una sesión con token YA ROTADO y lo lleva EMBEBIDO en la fila
@@ -10293,8 +10343,10 @@ function hydrateSession_(p) {
       if (data && data.group) data.group.resume_token = String(p.resume_token).trim();
       if (data) Logger.log('[WZCACHE] HIT hyd token=' + String(p.resume_token).slice(0, 8) + '…');
         _dbgEv_('cache', 'HIT hyd');
+    } else {
+      _trazaCache = 'MISS — clave ausente';
     }
-  } catch (eWzHyd) { data = null; /* best-effort → camino vivo */ }
+  } catch (eWzHyd) { data = null; _trazaCache = 'MISS — lectura falló'; /* best-effort → camino vivo */ }
   if (!data) {
     // V2.2 single-flight (log Diego 15:06 — hydrate 73,7s por ESTAMPIDA): si el warm
     // está cocinando este token, esperar su resultado (≤60s) en vez de lanzar un
@@ -10306,11 +10358,12 @@ function hydrateSession_(p) {
         const envH2 = JSON.parse(awaited);
         data = (envH2 && envH2.v === _versionDeClase_(groupId, 'hyd')) ? envH2.data : null;
         if (data && data.group) data.group.resume_token = String(p.resume_token).trim(); // V2.4.1 (ver arriba)
-        if (data) Logger.log('[WZCACHE] HIT hyd (single-flight) token=' + String(p.resume_token).slice(0, 8) + '…');
+        if (data) { Logger.log('[WZCACHE] HIT hyd (single-flight) token=' + String(p.resume_token).slice(0, 8) + '…'); _trazaCache = 'HIT single-flight'; }
       }
     } catch (eAw) { data = null; }
   }
   if (!data) {
+    if (_trazaCache === 'sin comprobar') _trazaCache = 'MISS';
     data = kmsProxy_('enr.hydrateApplication', {
       resume_token:    String(p.resume_token).trim(),
       recovered_email: effRecoveredEmail || null,
@@ -10321,6 +10374,9 @@ function hydrateSession_(p) {
       // del espejo: una sola forma de archivar una copia (clave, sobre y plazo).
       _espejoGuardarCopia_(wzHydCache, groupId, null, data, { claveYa: wzHydKey });
     } catch (eWzWt) { /* best-effort */ }
+  }
+  if (_trazarActivo_()) {
+    Logger.log('[TRAZA] copia-de-la-puerta hyd=' + _trazaCache);
   }
 
   // DL-C-A (g): el KMS pliega el catálogo de preguntas (raw qb) en el hydrate. Lo
@@ -10421,6 +10477,16 @@ function hydrateSession_(p) {
   // quien sea el que entra) y por eso un tutor veía el correo del otro. Sin `n` ni
   // `recovered_email` del cliente, `effectiveRecoveredEmail_` cae al mismo
   // `group.primary_email` (fallback canónico "tutor 1") — cero cambio en ese caso.
+  // TRAZAR_ARRANQUE — cierre del resumen. `hydrateSession_` es el punto donde termina de
+  // verdad el arranque de una sesión (es su propia ejecución de GAS, dispatchada desde
+  // `doPost`), así que aquí se cierra el acumulado de ESTA ejecución: cuántas llamadas al
+  // KMS hizo, y cuánto de su tiempo total fue reloj de pared / manejador / salto.
+  if (_trazarActivo_()) {
+    Logger.log('[TRAZA] resumen arranque — llamadas=' + TRAZA_ARRANQUE_.llamadas
+      + ' sumaPared=' + TRAZA_ARRANQUE_.sumaPared + 'ms'
+      + ' sumaKms=' + TRAZA_ARRANQUE_.sumaKms + 'ms'
+      + ' sumaSalto=' + TRAZA_ARRANQUE_.sumaSalto + 'ms');
+  }
   return Object.assign({}, data, { step_up_fresh: stepUpFresh, step_up_restante_s: stepUpRestanteS,
                                    step_up_cierre: stepUpCierre, recovered_email: effRecoveredEmail || null });
 }
