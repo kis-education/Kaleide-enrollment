@@ -5008,6 +5008,97 @@ subida de documento de una familia**. Para bajarlo hace falta **medirlo en ejecu
 proyecto delante — publicar el permiso acotado y comprobar que una subida y su lectura de vuelta
 siguen funcionando —; hasta entonces se queda como está.
 
+### «Dos llamadas menos al entrar» (2026-09-14) — el ENVÍO deja el clic sin llamadas al KMS
+
+**NO es una avería: no se pierde ni un dato y no hay fuga. Es espera, en el sitio donde la familia
+de verdad espera.** MEDIDO en el clic REAL de Diego (2026-09-14 14:31 UTC,
+`manual_trazaDelArranque`, con `TRAZAR_ARRANQUE` encendida):
+
+| Llamada | Qué pregunta | kms | **salto** | pared |
+|---|---|---|---|---|
+| `enr.expedienteDelToken` | ¿este enlace vale? (la puerta) | 1.540 ms | **10.194 ms** | 11.734 ms |
+| `qb-public.resolveSetForConsumer` | el cuestionario | 453 ms | **10.656 ms** | 11.109 ms |
+
+⇒ **~23 s de espera para 2 s de trabajo**, y la hidratación ya acertaba de la copia caliente
+(`hyd=HIT`) ⇒ estas dos eran lo único que quedaba. **Afinar el motor no arregla nada: lo único que
+quita ese tiempo es NO HACER EL VIAJE.**
+
+**El arreglo, en una frase: los dos viajes se los come el ENVÍO, después de mandar el correo.**
+`_dejarElClicSinLlamadas_(token, lang)` se llama en los TRES puntos de envío de `sendMagicLink_`
+(la rama por token y las dos públicas, un expediente y varios), **justo después de
+`sendViaKmsNotify_`**.
+
+**Por qué ese sitio y no otro, y es la mitad del diseño:** la portada **no espera la respuesta** de
+`sendMagicLink` (§"Las CINCO puertas del asistente" — dispara y pinta su pantalla genérica al
+instante), y el correo **ya ha salido** cuando esto empieza. ⇒ **ni el correo tarda más ni la
+portada se queda esperando**; lo que se ahorra es el clic.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ LA PUERTA NO SE TOCA: SE LLAMA.** Aquí no se fabrica ninguna ficha ni se escribe la copia a
+  mano — se invoca **`requireResumeToken_`**, el mismo gate vivo de siempre, que aplica los TRES
+  rechazos por el juez único (`_rechazosDelEnlace_`), comprueba KAL-4 y escribe la copia con la
+  ficha COMPLETA (los siete campos que proyecta el KMS) y su techo de 30 min
+  (`COPIA_PUERTA_TTL_S_`). **CONSERVA un «sí», jamás lo CREA**: token que no resuelve, sesión
+  abandonada o enlace caducado ⇒ el gate LANZA y **no se escribe nada** (medido: afirmaciones 14,
+  15 y 16 del arnés).
+- **Si la copia ya se MOVIÓ** (`_moverLaCopiaDeLaPuerta_`, la familia que ya estaba trabajando),
+  esto **no cuesta ni un viaje**: el gate la sirve de ahí.
+- **⛔ EL CUESTIONARIO ES TENANT-ESTÁTICO, Y ESO SE MIDIÓ ANTES DE CACHEAR NADA** — es la pregunta
+  que decide si esta copia es segura o si le sirve a una familia el cuestionario de otra.
+  `fetchQuestions_(p)` tiene **EXACTAMENTE DOS ENTRADAS** (`context_code` y `language`) y manda al
+  KMS cuatro campos: esos dos más `consumer_code: 'ADMISSIONS_WIZARD'` y `school_id: SCHOOL_ID`,
+  **constantes de módulo**. Ni el expediente, ni el tutor, ni el programa, ni una persona entran en
+  la llamada ⇒ **no hay ninguna dimensión por familia que pudiera variar la respuesta, porque no se
+  envía ninguna.** Y el propio KMS lo tiene medido y escrito (SPEC-WIZ-PREWARM,
+  `kis-app kms-server/qb/qb-core.gs`): *«el wizard llama con `receptor: { locale }` y NADA más → el
+  subject derivado queda VACÍO → el catálogo es IDÉNTICO para todas las familias del tenant»*, y
+  **su propia caché usa esta misma clave**. Esta copia **copia el criterio del KMS**, un salto más
+  cerca de la familia.
+- **La clave lleva los CUATRO**, incluidos los dos que hoy son constantes: el día que el asistente
+  sirva a un segundo colegio, una clave sin `school_id` cruzaría catálogos.
+- **⛔ UN FALLO NO SE GUARDA**, y el criterio está COPIADO de `qb_core_catalogoImposible_`: un
+  catálogo con secciones y CERO preguntas es la forma exacta de una lectura a medias ⇒ no se
+  guarda (recalcula cada vez, sin ahorro, en vez de apagar el cuestionario del colegio media hora).
+  **CERO secciones SÍ se guarda**: es el colegio que aún no ha declarado cuestionario.
+- **⛔ El cupo público (②54) se comporta EXACTAMENTE igual que ayer** — se consume y se aplica antes
+  de nada. *(Se consideró poner la copia delante, porque ese cupo es COMPARTIDO por todas las
+  familias del colegio y cobrarle el peaje a quien no va a salir a la red es raro; **no se hizo**:
+  mover un cupo público no es de este encargo. Queda PROPUESTO.)*
+- **⛔ BEST-EFFORT ABSOLUTO**: el correo ya salió, así que nada de aquí puede lanzar. Un fallo se
+  traga, se registra redactado (KAL-11) y el clic se comporta como el de ayer.
+
+⚠️ **LÍMITE HONESTO del cuestionario: no hay invalidación** — igual que en el KMS, lo único que lo
+refresca es el plazo (`CATALOGO_PREGUNTAS_TTL_S_`, 30 min). Si el colegio edita una pregunta, su
+cambio puede tardar hasta media hora en verse por este camino, **encima** de la ventana de
+revalidación que el navegador ya tiene (`QCACHE_LS_REVALIDATE_MS`, 30 min). Es el mismo trato que el
+KMS ya aceptó para su caché de 40 min.
+
+⚠️ **NINGUNA BATERÍA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend **simulado** que
+**nunca ejecuta `backend/Code.js`**, y este cambio es invisible para el navegador (misma pantalla,
+mismos textos; solo cambia cuánto se espera). Se **midió aparte**, con un arnés efímero fuera del
+repositorio que extrae del FUENTE `fetchQuestions_`, `_dejarElClicSinLlamadas_`,
+`requireResumeToken_`, `_cabeceraDeLaCopia_`, `_claveCopiaPuerta_`, `_puertaConLaCabecera_`,
+`_rechazosDelEnlace_`, `_expedienteDelToken_` y los cuatro ayudantes del catálogo, y los ejecuta con
+dobles: **23 afirmaciones verdes** —entre ellas el ANTES/DESPUÉS de punta a punta: **2 viajes en el
+clic sin preparar, 0 con preparación**— y **SEIS roturas ROJAS demostradas**: el código de AYER
+(`fetchQuestions_` sin copia) · una clave que ignora el idioma · guardar el catálogo imposible ·
+escribir la copia de la puerta **a mano** en vez de por el gate vivo (cae en 5 afirmaciones, entre
+ellas las tres que impiden CREAR un «sí») · relanzar en vez de ser best-effort · y el **renombrado**,
+que sale **«MEDICIÓN CIEGA»** y no verde. ⚠️ Y el arnés **se corrigió a sí mismo**: su afirmación del
+catálogo imposible medía el guardia de LECTURA y salía VERDE con la escritura rota — se añadió
+`(7.bis)`, que mira el almacén.
+
+⚠️ **Lo que esto NO arregla, y se dice con números:** el **correo sigue tardando ~52 s** —
+`renewApplicationSession` **34.823 ms** (salto 33.525) y `sendNotification` **16.896 ms** (salto
+13.722), o sea **47 de los 52 s son salto**—. Este cambio **no lo toca** (va después del envío) y
+**no lo empeora**. Cerrarlo es otro trabajo.
+
+⚠️ **DÓNDE VIVE ESTO CUANDO EL ENLACE LO EMITA EL KMS.** Diego decidió el 2026-09-14 que emitir un
+enlace sea **UNA sola operación del KMS** y que el asistente pase a ser su cliente fino. Cuando eso
+se construya, `_dejarElClicSinLlamadas_` **se mueve con el resto del envío**: es un solo sitio, no
+decide nada —solo dice «deja lista la copia de ESTE token»— y **no hay que rediseñarla**.
+
 ### EL INTERRUPTOR DE LA TRAZA — y por qué lo que se quiere leer se DEVUELVE, no se registra (D171, 2026-09-14)
 
 **La traza del arranque (`TRAZAR_ARRANQUE`) existe para medir dónde se van los 184 s del clic en el

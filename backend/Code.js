@@ -932,6 +932,76 @@ function requireResumeToken_(payload, opciones) {
 }
 
 /**
+ * «Dos llamadas menos al entrar» (2026-09-14) — DEJA EL CLIC SIN LLAMADAS AL KMS.
+ *
+ * MEDIDO en el clic REAL de Diego (2026-09-14 14:31 UTC, `manual_trazaDelArranque`): la
+ * entrada por enlace costaba DOS viajes al KMS, ~10 s de **puro salto** cada uno, mientras
+ * el KMS trabajaba 1,5 s y 0,45 s:
+ *   `enr.expedienteDelToken          pared=11.734ms kms=1.540ms salto=10.194ms`  ← la puerta
+ *   `qb-public.resolveSetForConsumer pared=11.109ms kms=  453ms salto=10.656ms`  ← el cuestionario
+ * La hidratación ya acertaba de la copia caliente (`hyd=HIT`) ⇒ estas dos eran lo único que
+ * quedaba haciéndole esperar.
+ *
+ * ⛔ **VA DESPUÉS DE MANDAR EL CORREO, y el sitio es la mitad del diseño.** Los dos viajes
+ * que esto hace se los come el ENVÍO, no la familia: la portada **no espera la respuesta**
+ * de `sendMagicLink` (§"Las CINCO puertas del asistente" — dispara y pinta su pantalla
+ * genérica al instante), y el correo ya ha salido cuando esto empieza. ⇒ **ni el correo
+ * tarda más ni la portada se queda esperando**; lo que se ahorra es el clic.
+ *
+ * ⛔ **LA PUERTA NO SE TOCA: se LLAMA.** Aquí no se fabrica ninguna ficha ni se escribe la
+ * copia a mano — se invoca `requireResumeToken_`, que es EL MISMO gate vivo de siempre y
+ * hace lo que siempre ha hecho: aplicar los TRES rechazos por el juez único
+ * (`_rechazosDelEnlace_`), comprobar KAL-4, y escribir la copia con la ficha COMPLETA que
+ * el KMS acaba de devolver, con su techo de 30 min (`COPIA_PUERTA_TTL_S_`).
+ *   · **CONSERVA un «sí», jamás lo CREA**: si el token no resuelve, o la sesión está
+ *     abandonada, o el enlace ha caducado, el gate LANZA y **no se escribe nada** — el clic
+ *     volverá a preguntar en vivo, exactamente como hoy.
+ *   · **Si la copia ya se MOVIÓ** (`_moverLaCopiaDeLaPuerta_`, el caso de la familia que ya
+ *     estaba trabajando), el gate la sirve de ahí y esto **no cuesta ni un viaje**.
+ *   · **El techo de 30 min no se alarga**: quien lo estampa es el propio gate, con su
+ *     instante absoluto, sobre un token que el KMS acaba de emitir.
+ *
+ * ⛔ **BEST-EFFORT ABSOLUTO.** Nada de aquí puede tocar lo que ya ocurrió: el correo está
+ * mandado y la respuesta pública es la que es. Un fallo se traga, se registra redactado
+ * (KAL-11) y el clic se comporta como el de ayer.
+ *
+ * ⚠️ **DÓNDE VIVE ESTO CUANDO EL ENLACE LO EMITA EL KMS.** Diego decidió el 2026-09-14 que
+ * emitir un enlace sea UNA sola operación del KMS y que el asistente pase a ser su cliente
+ * fino. Cuando eso se construya, esta llamada se mueve con el resto del envío: es **un solo
+ * sitio** y no decide nada — solo dice «deja lista la copia de ESTE token». No hay que
+ * rediseñarla, hay que moverla.
+ *
+ * @param {string} token   el resume_token que acaba de viajar en el correo.
+ * @param {?string} lang   el idioma del enlace (el catálogo se guarda por idioma).
+ * @private
+ */
+function _dejarElClicSinLlamadas_(token, lang) {
+  try {
+    if (!token) return;
+    // (1) LA PUERTA — el gate vivo deja su copia completa para el clic.
+    try {
+      requireResumeToken_({ resume_token: String(token).trim() });
+    } catch (ePuerta) {
+      // Un rechazo aquí es legítimo (enlace que no resuelve / abandonado / caducado) y NO
+      // escribe nada: es justo la propiedad que impide que una copia CREE un «sí».
+      Logger.log(redact_('[_dejarElClicSinLlamadas_] puerta no preparada — ' +
+        ((ePuerta && ePuerta.message) || ePuerta)));
+    }
+    // (2) EL CUESTIONARIO — mismo camino que el clic (`fetchQuestions_`), así que si ya hay
+    // copia no cuesta un viaje, y si no la hay la deja escrita. El catálogo es
+    // TENANT-ESTÁTICO (ver `CATALOGO_PREGUNTAS_TTL_S_`): no lleva nada de esta familia.
+    try {
+      fetchQuestions_({ context_code: 'ENROLLMENT', language: lang || 'es' });
+    } catch (eCat) {
+      Logger.log(redact_('[_dejarElClicSinLlamadas_] cuestionario no preparado — ' +
+        ((eCat && eCat.message) || eCat)));
+    }
+  } catch (e) {
+    Logger.log(redact_('[_dejarElClicSinLlamadas_] non-fatal — ' + ((e && e.message) || e)));
+  }
+}
+
+/**
  * Canonical bearer-token gate for the SIGNING flow (`/sign` SigningWizardPage).
  * Parallel a `requireResumeToken_` (gate del wizard `/apply`).
  *
@@ -3941,6 +4011,10 @@ function sendMagicLink_(p) {
     // enlace, así que su fase `kms` REHACE la copia con lo que hay en la base AHORA en vez de
     // reusar la que hubiera, y la deja bajo la clave (expediente × tutor) que el clic va a leer
     // — el mismo `n` opaco que viaja en el `?n=` del enlace.
+    // ★ «Dos llamadas menos al entrar» (2026-09-14) — el correo YA salió; ahora, con lo
+    // que cuesta el envío y NO lo que cuesta el clic, se deja la copia de la puerta y la
+    // del cuestionario listas para cuando esta familia pulse su enlace.
+    _dejarElClicSinLlamadas_(tokenToSend, langP1);
     return { sent: true, warm_ticket: _mintWarmTicket_([{ t: tokenToSend, n: nEmailId, e: destEmail, l: langP1, r: 1 }]) };
   } else if (p.primary_email) {
     // ── WIZ-ENUM (audit 2026-07-27): ACK CONSTANTE anti-enumeración (KAL-10) ──
@@ -4187,6 +4261,10 @@ function sendMagicLink_(p) {
         // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
         // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
         // ★ `r: 1` — ver el porqué en la rama de token: el envío rehace la copia.
+        // ★ «Dos llamadas menos al entrar» (2026-09-14) — el correo YA salió; ahora, con lo
+        // que cuesta el envío y NO lo que cuesta el clic, se deja la copia de la puerta y la
+        // del cuestionario listas para cuando esta familia pulse su enlace.
+        _dejarElClicSinLlamadas_(grps[0].resume_token, lang);
         return _magicLinkConstantAck_(_mintWarmTicket_([{ t: grps[0].resume_token, n: nEmailId, e: identityEmail, l: lang, r: 1 }]));
       } else {
         // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
@@ -4213,6 +4291,12 @@ function sendMagicLink_(p) {
         // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
         // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
         // ★ `r: 1` — ver el porqué en la rama de token: el envío rehace la copia de CADA uno.
+        // ★ «Dos llamadas menos al entrar» (2026-09-14) — el correo YA salió; ahora, con lo
+        // que cuesta el envío y NO lo que cuesta el clic, se deja la copia de la puerta y la
+        // del cuestionario listas para cuando esta familia pulse su enlace.
+        // Con VARIOS expedientes, cada uno tiene su propia puerta; el cuestionario es UNO
+        // (tenant-estático) y el primero lo deja escrito para todos.
+        grps.forEach(g => _dejarElClicSinLlamadas_(g.resume_token, lang));
         return _magicLinkConstantAck_(_mintWarmTicket_(grps.map((g, i) => ({ t: g.resume_token, n: nEmailIds[i] || null, e: identityEmail, l: lang, r: 1 }))));
       }
     } catch (eSend) {
@@ -6858,6 +6942,101 @@ function qbTruthy_(v) {
   return v === true || v === 'Y' || v === 'true' || v === 'TRUE' || v === '1';
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// «Dos llamadas menos al entrar» (2026-09-14) — EL CUESTIONARIO, EN LA COPIA
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// MEDIDO en el clic REAL de Diego (2026-09-14 14:31 UTC, `manual_trazaDelArranque`):
+//   `qb-public.resolveSetForConsumer  pared=11.109ms  kms=453ms  salto=10.656ms  viajes=1`
+// ⇒ el KMS contesta en medio segundo y **10,6 s son el SALTO**. Afinar el motor `qb` no
+// arregla nada: lo único que quita ese tiempo es **no hacer el viaje**.
+//
+// ⛔ DE QUÉ DEPENDE EL CONJUNTO — MEDIDO ANTES DE CACHEAR NADA, que es la pregunta que
+//    decide si esta copia es segura o si le sirve a una familia el cuestionario de otra:
+//
+//    `fetchQuestions_(p)` tiene EXACTAMENTE DOS ENTRADAS — `context_code` y `language` —
+//    y manda al KMS cuatro campos: esos dos más `consumer_code: 'ADMISSIONS_WIZARD'` y
+//    `school_id: SCHOOL_ID`, que son CONSTANTES de módulo. **Ni el expediente, ni el
+//    tutor, ni el programa, ni una persona entran en la llamada**: no hay ninguna
+//    dimensión por familia que pudiera variar la respuesta, porque no se envía ninguna.
+//
+//    Y el propio KMS lo tiene medido y escrito desde SPEC-WIZ-PREWARM
+//    (`kis-app kms-server/qb/qb-core.gs`, §"Catálogo TENANT-ESTÁTICO cacheado"): *«el
+//    wizard llama con `receptor: { locale }` y NADA más → el subject derivado queda VACÍO
+//    → audience filtering es default-open/not-applicable → el catálogo es IDÉNTICO para
+//    todas las familias del tenant»*, y por eso **su propia caché usa esta misma clave**
+//    `(school_id, context_code, consumer_code, locale)`. Esta copia no inventa un criterio
+//    nuevo: **copia el que el KMS ya aplica**, un salto más cerca de la familia.
+//
+//    ⇒ La clave lleva los CUATRO, incluidos los dos que hoy son constantes: el día que el
+//    asistente sirva a un segundo colegio, una clave sin `school_id` cruzaría catálogos.
+//
+// ⛔ UN FALLO NO SE GUARDA, y el criterio está COPIADO del KMS (`qb_core_catalogoImposible_`):
+//    un catálogo con secciones y CERO preguntas sumando todas es la forma exacta que toma
+//    una lectura a medias, y es indistinguible de un colegio que declaró secciones vacías.
+//    No se guarda ⇒ ese caso recalcula cada vez (sin ahorro) en vez de apagar el
+//    cuestionario de todo el colegio durante media hora. **CERO secciones SÍ se guarda**:
+//    es el colegio que aún no ha declarado cuestionario, y es una respuesta legítima.
+//
+// ⚠️ LÍMITE HONESTO: no hay invalidación — igual que en el KMS, lo único que la refresca es
+//    el plazo. Si el colegio edita una pregunta, su cambio puede tardar hasta
+//    `CATALOGO_PREGUNTAS_TTL_S_` en verse por este camino, **encima** de la ventana de
+//    revalidación que el navegador ya tiene (30 min, `QCACHE_LS_REVALIDATE_MS`). Es el
+//    mismo trato que el KMS ya aceptó para su caché de 40 min.
+var CATALOGO_PREGUNTAS_TTL_S_ = 1800;
+
+/**
+ * La clave de la copia del catálogo de preguntas. Lleva DENTRO todo de lo que la respuesta
+ * depende (ver el bloque de arriba) — nada de lo que lleva es un dato de familia.
+ * @private
+ */
+function _claveCatalogoPreguntas_(contextCode, lang) {
+  return 'wzqb_' + SCHOOL_ID + '_ADMISSIONS_WIZARD_' + contextCode + '_' + (lang || '_');
+}
+
+/**
+ * ¿Es este catálogo IMPOSIBLE? — hay ≥1 sección y CERO preguntas sumando todas.
+ * Criterio COPIADO VERBATIM de `qb_core_catalogoImposible_` (KMS, `qb/qb-core.gs`): dos
+ * criterios sobre lo mismo divergen, y éste tiene que decir lo que dice el suyo.
+ * @private
+ */
+function _catalogoDePreguntasImposible_(valor) {
+  var sets = (valor && valor.sets) || null;
+  if (!sets || !sets.length) return false;
+  for (var i = 0; i < sets.length; i++) {
+    var items = sets[i] && sets[i].items;
+    if (items && items.length) return false;
+  }
+  return true;
+}
+
+/** Lee la copia del catálogo. `null` si no hay, o si lo guardado no es utilizable. @private */
+function _catalogoDePreguntasDeLaCopia_(contextCode, lang) {
+  try {
+    var crudo = _wzCacheGetChunked_(CacheService.getScriptCache(),
+      _claveCatalogoPreguntas_(contextCode, lang));
+    if (!crudo) return null;
+    var v = JSON.parse(crudo);
+    if (!v || !v.sets || !Array.isArray(v.sets)) return null;
+    if (_catalogoDePreguntasImposible_(v)) return null;
+    return v;
+  } catch (e) { return null; }
+}
+
+/** Guarda el catálogo. Best-effort: un fallo aquí NO puede tocar la respuesta. @private */
+function _guardarCatalogoDePreguntas_(contextCode, lang, valor) {
+  try {
+    if (!valor || !valor.sets || !Array.isArray(valor.sets)) return false;
+    if (_catalogoDePreguntasImposible_(valor)) {
+      Logger.log('[cuestionario] NO se guarda — catálogo imposible: ' + valor.sets.length +
+        ' secciones y CERO preguntas. Suele ser una lectura a medias, no un colegio sin cuestionario.');
+      return false;
+    }
+    return _wzCachePutChunked_(CacheService.getScriptCache(),
+      _claveCatalogoPreguntas_(contextCode, lang), JSON.stringify(valor), CATALOGO_PREGUNTAS_TTL_S_);
+  } catch (e) { return false; }
+}
+
 /**
  * Fetches a question set with all translations, options, and conditions.
  *
@@ -6889,6 +7068,20 @@ function fetchQuestions_(p) {
   // ②54 (2026-09-06) — acción pública SIN verja ni cupo hasta hoy. Antes del trabajo caro.
   _checkPublicCatalogRateLimit_('preguntas', lang);
 
+  // ★ «Dos llamadas menos al entrar» (2026-09-14) — LA COPIA, ANTES DEL VIAJE. El clic de la
+  // familia pagaba aquí 11,1 s de los que 10,6 eran SALTO (el KMS contesta en 453 ms). La
+  // copia la deja lista el ENVÍO del enlace, después de mandar el correo. De qué depende
+  // esta respuesta —y por qué la clave no puede servirle a una familia el cuestionario de
+  // otra— está medido en el bloque `CATALOGO_PREGUNTAS_TTL_S_`, arriba.
+  //
+  // ⛔ VA DESPUÉS DEL CUPO, y es deliberado: el cupo público (②54) se comporta EXACTAMENTE
+  // igual que ayer —se consume y se aplica antes de nada—, así que este cambio no toca una
+  // puerta pública, solo evita el viaje. *(Se consideró ponerla delante, para que una copia
+  // local no gaste un cupo que es COMPARTIDO por todas las familias del colegio; no se hizo:
+  // mover un cupo público no es de este encargo. Queda PROPUESTO.)*
+  var deLaCopia = _catalogoDePreguntasDeLaCopia_(contextCode, lang);
+  if (deLaCopia) return deLaCopia;
+
   // ── Q05-S5 (DL-Q05): proxy thin a KMS qb-public.resolveSetForConsumer ────
   // El motor reusable vive en kis-app/kms-server/qb/qb-core.gs y se expone
   // via doPost del KMS bajo `qb-public.resolveSetForConsumer` con auth por
@@ -6901,12 +7094,16 @@ function fetchQuestions_(p) {
   // reintentar el `echo` ilegible, las PREGUNTAS se habrían quedado sin reintento, y su
   // fallo medido —«KMS qb-public: non-JSON response: <!doctype html…»— es exactamente
   // el que el reintento cura. Ahora usa el transporte ÚNICO: uno solo que arreglar.
-  return fetchQuestions_adaptKmsResponse_(kmsProxy_('qb-public.resolveSetForConsumer', {
+  var catalogo = fetchQuestions_adaptKmsResponse_(kmsProxy_('qb-public.resolveSetForConsumer', {
     consumer_code: 'ADMISSIONS_WIZARD',
     context_code:  contextCode,
     receptor:      { locale: lang },
     school_id:     SCHOOL_ID,
   }), lang);
+  // Se guarda lo que ACABA de resolver el camino vivo — jamás un fallo (el `kmsProxy_`
+  // lanza y no llegamos aquí) ni un catálogo imposible (`_guardarCatalogoDePreguntas_`).
+  _guardarCatalogoDePreguntas_(contextCode, lang, catalogo);
+  return catalogo;
 }
 
 /**
