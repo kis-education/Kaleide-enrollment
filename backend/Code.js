@@ -13091,6 +13091,70 @@ function manual_setNotifyHmacSecret(value) {
 }
 
 /**
+ * EL INTERRUPTOR DE LA TRAZA (D171) — lector ÚNICO del estado real del interruptor.
+ *
+ * Las dos funciones `manual_trazarArranque*` lo llaman DESPUÉS de escribir: lo que se
+ * devuelve y se registra es lo que la propiedad dice AHORA, releído, nunca lo que se
+ * pretendía escribir. Ése es justo el punto de D171 — la pantalla de propiedades del
+ * editor de Apps Script a veces no guarda y no lo dice, así que el "ok" de la escritura
+ * no acredita nada.
+ *
+ * Dos criterios en un solo sitio para que no puedan divergir entre el ON y el OFF:
+ * qué valor hay guardado, y si `_trazarActivo_()` lo consideraría encendido (el mismo
+ * `=== 'true'` que aplica el camino vivo).
+ *
+ * @param {string} accion 'ON' u 'OFF' — solo para la línea del registro.
+ * @returns {{ ok: boolean, accion: string, valor: (string|null), encendida: boolean }}
+ */
+function _trazarArranqueEstadoReleido_(accion) {
+  var valor = PropertiesService.getScriptProperties().getProperty('TRAZAR_ARRANQUE');
+  var encendida = (valor === 'true');
+  Logger.log('[TRAZA-INTERRUPTOR] ' + accion + ' → TRAZAR_ARRANQUE releída = ' +
+             (valor === null ? '(sin valor)' : JSON.stringify(valor)) +
+             ' · encendida = ' + encendida);
+  return { ok: true, accion: accion, valor: valor, encendida: encendida };
+}
+
+/**
+ * EL INTERRUPTOR DE LA TRAZA (D171) — ENCIENDE la traza del arranque.
+ *
+ * Pone la Script Property `TRAZAR_ARRANQUE` a `'true'` y DEVUELVE lo que la propiedad
+ * dice después de escribirla (releída). A partir de la siguiente ejecución, cada
+ * pregunta al KMS deja su línea `[TRAZA]` y `hydrateSession_` cierra con el resumen del
+ * arranque y el acierto/fallo de la copia caliente. Sin ningún dato de familia (KAL-11).
+ *
+ * SIN ARGUMENTOS a propósito, y son DOS funciones por lo mismo: el botón «Ejecutar» del
+ * editor de Apps Script NO pasa parámetros, así que una sola `manual_trazarArranque(valor)`
+ * recibiría `undefined` y apagaría la traza justo cuando se quiere encender.
+ *
+ * ⚠️ La memoria `_trazarArranqueCache_` es POR EJECUCIÓN: esta función no la toca y no
+ * hace falta: la ejecución siguiente (la petición de la familia) lee la propiedad fresca.
+ *
+ * @returns {{ ok: boolean, accion: string, valor: (string|null), encendida: boolean }}
+ */
+function manual_trazarArranqueON() {
+  PropertiesService.getScriptProperties().setProperty('TRAZAR_ARRANQUE', 'true');
+  return _trazarArranqueEstadoReleido_('ON');
+}
+
+/**
+ * EL INTERRUPTOR DE LA TRAZA (D171) — APAGA la traza del arranque.
+ *
+ * BORRA la Script Property `TRAZAR_ARRANQUE` (no la deja en `'false'`: `_trazarActivo_()`
+ * exige `=== 'true'`, así que ausente y `'false'` son lo mismo para el camino vivo, y
+ * borrarla deja las propiedades del proyecto limpias). Devuelve lo que la propiedad dice
+ * después: `valor: null` y `encendida: false` es lo que hay que ver.
+ *
+ * SIN ARGUMENTOS — mismo motivo que su gemela de arriba.
+ *
+ * @returns {{ ok: boolean, accion: string, valor: (string|null), encendida: boolean }}
+ */
+function manual_trazarArranqueOFF() {
+  PropertiesService.getScriptProperties().deleteProperty('TRAZAR_ARRANQUE');
+  return _trazarArranqueEstadoReleido_('OFF');
+}
+
+/**
  * RED del receptor firmado (DL-S106). Comprueba que `notifyLiveStateChange_` RECHAZA lo que
  * tiene que rechazar y ACEPTA lo legítimo. No se registra en el dispatcher: se ejecuta con la
  * auth del propietario (`clasp run`).
