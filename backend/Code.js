@@ -709,6 +709,51 @@ function _rechazosDelEnlace_(group) {
 var COPIA_PUERTA_TTL_S_ = 1800;
 
 /**
+ * `2026-09-15-sigo-aqui-llega-tarde` — el plazo de LA MEMORIA DE LA IDENTIDAD DEL ENLACE
+ * (`idlinkd_` / `idlinkr_`, ver `_idLinkMemo_`).
+ *
+ * ★ **ERAN 300 s, Y ESOS 300 s ERAN EL DEFECTO — aritmética, no opinión.** La ventana de
+ * inactividad dura **600 s**, el aviso de «¿sigues ahí?» sale a los **480 s**, y esta
+ * memoria moría a los **300 s** ⇒ cuando alguien que llevaba un rato parado pulsaba «sigo
+ * aquí», el fallo de memoria estaba **GARANTIZADO** y `refrescarVentanaDeInactividad_`
+ * pagaba un viaje al KMS de 20-30 s **antes de extender nada**. Eso es el «Comprobando…»
+ * que Diego vio no irse (2026-09-15), y si el viaje tardaba más que lo que quedaba en el
+ * contador, `assertStepUpFresh_` ya no encontraba la marca viva ⇒ **fuera**.
+ *
+ * MEDIDO con arnés efímero sobre las funciones REALES (antes de tocar nada): parado
+ * 2 y 4 min ⇒ **0 viajes**; parado **5, 6, 8 y 10 min ⇒ 1 viaje**, el umbral en los 300 s
+ * clavados. En una sesión larga (el techo de 2 h, pulsando cada 5 min): **25 viajes**.
+ *
+ * ⛔ **ESTO NO AFLOJA NINGUNA PUERTA, y se puede decir campo por campo.** Lo que guarda es
+ * **de qué buzón es este enlace** — un dato DERIVADO, no un permiso:
+ *   · el expediente lo sigue derivando el `resume_token` en cada llamada (KAL-4);
+ *   · la marca de step-up (②24), su buzón, su huella de página y el techo de 2 h no se tocan;
+ *   · `_extenderVentanaStepUp_` sigue EXTENDIENDO y jamás CREANDO;
+ *   · la traducción buzón→persona **NO se memoriza aquí** (vive en `_TUTOR_MEMO_`, que muere
+ *     con la ejecución) ⇒ quien ATRIBUYE algo a una persona (`wizardTutorAtribuible_`, el
+ *     libro de consentimientos, el dueño de un documento) pregunta SIEMPRE en fresco y
+ *     sigue llevándose `null` cuando el tutor ya no consta;
+ *   · `submitted_by_person_id` lo **re-valida el KMS** contra los tutores declarados;
+ *   · la clave lleva el `resume_token` dentro ⇒ rotar el enlace (que hoy pasa en CADA envío)
+ *     deja la entrada vieja inalcanzable.
+ *
+ * ⚠️ **LÍMITE HONESTO, dicho en vez de escondido:** si un tutor **CAMBIA su correo**
+ * (`enr_addEmail_` del KMS ACTUALIZA la fila en su sitio, conservando el `email_id`), el
+ * código de un solo uso puede irse a la dirección anterior durante hasta **30 min** — antes
+ * eran 5. No abre nada (ese buzón ya tenía el enlace, y la puerta misma lo acepta 30 min por
+ * la decisión de arriba), se corrige solo, y es el precio de no echar de su solicitud a
+ * quien está delante. **Y en el otro sentido es MÁS indulgente que antes**: la marca guarda
+ * la huella del buzón con el que NACIÓ, así que un correo editado a mitad de sesión ya no
+ * hace fallar la comparación a los 5 minutos.
+ *
+ * ⛔ **NO SE SUBE MÁS DE AQUÍ.** Se ata por NOMBRE a `COPIA_PUERTA_TTL_S_`: esta memoria no
+ * puede vivir más que la validez del propio enlace al que sirve. Si aquél cambia, éste le
+ * sigue — un número suelto se quedaría atrás.
+ * @private
+ */
+var IDENTIDAD_MEMO_TTL_S_ = COPIA_PUERTA_TTL_S_;
+
+/**
  * ①97 (2026-09-12, Diego) — el plazo del ESPEJO PERMANENTE del hydrate ('wz_hyd_').
  *
  * ★ Antes eran 1800 s (30 min), el mismo TTL que el resto de las cachés 'wz_*' de este
@@ -1499,7 +1544,8 @@ function _stepUpAttemptsKey_(groupId, personaEmail) {
  *
  * No es un resolvedor nuevo: es `effectiveRecoveredEmail_` (identidad DEL ENLACE, `n` =
  * email_id, con la validación KAL-4 de que la fila es de este expediente) envuelto en una
- * memoria de 300 s, porque ahora lo pregunta CADA acto gateado y sin memoria costaría
+ * memoria de `IDENTIDAD_MEMO_TTL_S_`, porque ahora lo pregunta CADA acto gateado y sin
+ * memoria costaría
  * 2-3 lecturas de AppSheet (10-22 s medidos) en cada guardado — que es exactamente el
  * coste que PERF-WIZ quitó de estos caminos.
  *
@@ -1552,7 +1598,10 @@ function _identidadDelEnlace_(p, groupId, opts) {
 }
 
 /**
- * ②24.bis — memoria de 300 s de `_identidadDelEnlace_`, con la clave del MODO por delante.
+ * ②24.bis — memoria de `_identidadDelEnlace_`, con la clave del MODO por delante. Su plazo
+ * lo fija `IDENTIDAD_MEMO_TTL_S_` (ver allí por qué NO puede ser más corto que la ventana
+ * de inactividad a la que sirve: eran 300 s contra una ventana de 600 s, y ése era el
+ * defecto de `2026-09-15-sigo-aqui-llega-tarde`).
  * Si los dos modos compartieran clave se contaminarían entre sí y el fallo sería
  * intermitente e imposible de diagnosticar; por eso el prefijo es parte de la clave.
  * La memoria NUNCA rompe el camino vivo: cualquier fallo suyo se traga y se calcula.
@@ -1580,7 +1629,7 @@ function _idLinkMemo_(p, groupId, prefijo, calcular) {
     Logger.log(redact_('[_identidadDelEnlace_] no se pudo identificar el buzón: ' + e.message));
     email = null;
   }
-  try { if (memoKey) CacheService.getScriptCache().put(memoKey, email || '-', 300); } catch (e) { /* best-effort */ }
+  try { if (memoKey) CacheService.getScriptCache().put(memoKey, email || '-', IDENTIDAD_MEMO_TTL_S_); } catch (e) { /* best-effort */ }
   return email;
 }
 
@@ -1879,10 +1928,26 @@ function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina) {
   return { fresh: fresh, restante_s: fresh ? remainingS : 0, cierre: cierre };
 }
 
+/**
+ * @param {string} enrollmentGroupId
+ * @param {string|null|function():(string|null)} [personaEmail] — el buzón que opera, o el
+ *        THUNK que lo resuelve: se pasa TAL CUAL a `_leerMarcaStepUp_`, que lo invoca solo
+ *        cuando la marca lleva buzón con el que comparar (0º.octies).
+ * @param {string} [huellaPagina]
+ * @private
+ */
 function _isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina) {
   return _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina).fresh;
 }
 
+/**
+ * @param {string} enrollmentGroupId
+ * @param {string|null|function():(string|null)} [personaEmail] — buzón o thunk (ver
+ *        `_isStepUpFresh_`).
+ * @param {string} [huellaPagina]
+ * @throws {Error & {code:'STEPUP_REQUIRED'}}
+ * @private
+ */
 function assertStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina) {
   if (!_isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina)) {
     var err = new Error('Step-up re-verification required');
@@ -1916,7 +1981,23 @@ function assertStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina) {
  */
 function refrescarVentanaDeInactividad_(p) {
   const enrollmentGroupId = requireResumeToken_(p);
-  const persona = _identidadDelEnlace_(p, enrollmentGroupId);
+  // ★ `2026-09-15-sigo-aqui-llega-tarde` — la identidad se resuelve PEREZOSAMENTE, con el
+  // MISMO patrón que el pulso (`getAdmissionState_`, 0º.octies) y por el MISMO motivo: es la
+  // MISMA comparación, solo que sin calcular un dato que no puede cambiar el resultado.
+  // Cuando la marca guardada NO lleva buzón (se acuñó sin poder identificarlo), la regla
+  // `mismaPersona` de `_leerMarcaStepUp_` vale `true` pase lo que pase aquí ⇒ resolverlo solo
+  // costaría un viaje al KMS de 20-30 s en el peor momento: justo cuando la persona está
+  // diciendo «sigo aquí» con el contador en dos minutos.
+  // ⛔ Y NO se toca al revés: cuando la marca SÍ lleva buzón, se resuelve y se compara —
+  // pasarlo vacío desharía el atado de ②24, que es una regresión de seguridad, no un ahorro.
+  // Se memoiza en la ejecución porque esta función lee la marca DOS veces (el gate y, tras
+  // extender, el `cierre`), y no tiene sentido pagarlo dos veces.
+  let _identidadHecha = false;
+  let _identidadValor = null;
+  const persona = function () {
+    if (!_identidadHecha) { _identidadValor = _identidadDelEnlace_(p, enrollmentGroupId); _identidadHecha = true; }
+    return _identidadValor;
+  };
   const pagina  = _huellaDePagina_(p);
   assertStepUpFresh_(enrollmentGroupId, persona, pagina);
   const restante = _extenderVentanaStepUp_(enrollmentGroupId);
@@ -5891,8 +5972,9 @@ function getAdmissionState_(p) {
   // ②24 — de qué buzón es la marca (UN SOLO resolvedor, con memoria).
   //
   // ★ 0º.octies (2026-08-21) — se resuelve PEREZOSAMENTE, y esto es lo único que cambió aquí.
-  // Resolverlo cuesta un viaje al KMS de 20-30 s cuando su memoria de 300 s (`idlinkd_`) no
-  // acierta, y el pulso late una y otra vez mientras la familia mira la pantalla. Medido en el
+  // Resolverlo cuesta un viaje al KMS de 20-30 s cuando su memoria (`idlinkd_`, con el plazo
+  // de `IDENTIDAD_MEMO_TTL_S_`) no acierta, y el pulso late una y otra vez mientras la familia
+  // mira la pantalla. Medido en el
   // registro real del 2026-08-20: `getAdmissionState` tardó 31.467 ms diciendo «HIT adm» —el dato
   // ESTABA guardado— porque antes se habían pagado 29.086 ms en `enr.tutorQueRecupera`.
   // ⛔ NO es un segundo resolvedor ni una identidad de repuesto: es EL MISMO, llamado solo cuando

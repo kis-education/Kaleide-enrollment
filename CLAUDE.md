@@ -2808,6 +2808,105 @@ seguridad del repositorio, VERDES.
 **Publicado**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
 `main` (CI/Pages).
 
+### `2026-09-15-sigo-aqui-llega-tarde` — la identidad del enlace ya no caduca ANTES que la ventana a la que sirve
+
+**Diego, 2026-09-15:** *«el contador de tiempo no me dejaba darle (ponía comprobando). Luego me dejó
+y le dije que sí, que seguía ahí, pero al final me ha bloqueado y me ha dejado fuera.»* Con el aviso
+a **1:21** en su pantalla.
+
+⚠️ **NO era el mecanismo de la ventana, que hacía lo correcto: era ARITMÉTICA de plazos.**
+`refrescarVentanaDeInactividad_` resuelve **de qué buzón es el enlace** (`_identidadDelEnlace_`)
+ANTES de extender nada, y esa resolución tenía una memoria de **300 s** (`idlinkd_`/`idlinkr_`).
+La ventana dura **600 s** y el aviso sale a los **480 s** de no tocar nada ⇒ **quien pulsa «sigo
+aquí» tras estar parado SIEMPRE cae en fallo de memoria**, y eso cuesta un viaje al KMS de 20-30 s.
+Ése es el «Comprobando…» que no se iba. Y si el viaje tardaba más que lo que quedaba,
+`assertStepUpFresh_` ya no encontraba la marca **viva** ⇒ `STEPUP_REQUIRED` ⇒ **fuera**.
+
+**LAS DOS PIEZAS, y la segunda es gratis:**
+
+| Pieza | Qué hace |
+|---|---|
+| **`IDENTIDAD_MEMO_TTL_S_ = COPIA_PUERTA_TTL_S_`** (1800 s) | la memoria de la identidad deja de morir antes que la ventana a la que sirve |
+| **la identidad se resuelve PEREZOSAMENTE** en `refrescarVentanaDeInactividad_` | el MISMO patrón de `0º.octies`: se pasa un *thunk*, y `_leerMarcaStepUp_` solo lo invoca **si la marca guardada LLEVA buzón**. Es la MISMA comparación, byte a byte — lo que se evita es calcular un dato que no puede cambiar el resultado |
+
+**LOS NÚMEROS, medidos sobre las funciones REALES extraídas del fuente y ejecutadas con dobles:**
+
+| Caso | ANTES (`origin/main`) | DESPUÉS |
+|---|---|---|
+| parado 8 min y «sigo aquí» | **1 viaje al KMS** (20-30 s) | **0** |
+| a partir de cuántos minutos parado empezaba a costar | **5** (exactamente los 300 s) | **nunca dentro de la ventana de 10 min** |
+| espejo válido | 0 | 0 |
+| espejo invalidado por el propio guardado de la familia (**el caso normal**) | **1** | **0** |
+| sesión de ~2 h pulsando cada 5 min | **25 viajes** | **6** (refrescos de la copia de la puerta + identidad cada 30 min) |
+
+⛔ **POR QUÉ LA SALIDA FUE EL PLAZO Y NO EL ESPEJO, y esto lo decidió la medición.** La ficha dejaba
+tres salidas abiertas; la (2) era servir la identidad de la copia caliente (`_tutorQueRecupera_` ya
+la mira, `①97`). **Se midió y NO basta sola:** con el espejo válido acierta (0 viajes), pero **todo
+guardado de la familia bumpa la clase `hyd`** —está en TODOS los motivos de `WZ_CLASES_POR_MOTIVO_`—
+y **nada la vuelve a calentar dentro de la sesión** ⇒ en la secuencia real vuelve a 1 viaje. La (3)
+(congelar el contador) es cosmética y el propio encargo la declaraba insuficiente.
+
+⛔ **LA BARANDILLA QUE HUBO QUE COMPROBAR ANTES DE SUBIR EL PLAZO, y es la mitad del trabajo:** que
+`idlinkd_`/`idlinkr_` **no decidan nada que sí tenga que caducar.** Medido sobre los 20 puntos de
+llamada de `_identidadDelEnlace_`: lo único que guardan es **la CADENA del correo del enlace**. La
+traducción correo→persona **NO se memoriza ahí** (vive en `_TUTOR_MEMO_`, de EJECUCIÓN, que muere
+con la petición) ⇒ **quien ATRIBUYE** (`wizardTutorAtribuible_`, el libro de consentimientos, el
+dueño de un documento) **sigue preguntando en fresco** y sigue devolviendo `null` cuando ese tutor ya
+no existe (②24.bis). El KMS revalida `submitted_by_person_id` en cada proxy. Y **la clave lleva el
+`resume_token` dentro**: rotar el enlace deja la entrada vieja inalcanzable.
+
+⚠️ **EL LÍMITE HONESTO, escrito para que no sorprenda:** si un tutor **CAMBIA su correo**
+(`enr_addEmail_` actualiza la fila **en su sitio**, conservando el `email_id`), el código de un solo
+uso puede irse a la dirección anterior **hasta 30 min** — antes eran 5. **No abre nada** (ese buzón
+ya tenía el enlace, y la propia puerta lo acepta 30 min por decisión de Diego), se autocorrige, y es
+el precio de no echar de su solicitud a quien está delante. **En el otro sentido es MÁS indulgente
+que antes**: la marca guarda el resumen del buzón con el que NACIÓ, así que un correo editado a
+mitad de sesión ya no hace fallar la comparación a los 5 minutos.
+
+⛔ **Y NO SE SUBE MÁS.** Está atado **por NOMBRE** a `COPIA_PUERTA_TTL_S_`: el techo de 30 min lo
+fijó Diego (*«No pasa nada por que un enlace tarde 30 minutos en dejar de valer»*), y la identidad
+no puede sobrevivir a la copia de la puerta que la acredita.
+
+⛔ **Lo que NO se tocó, campo por campo:** la ventana de 10 min · el techo de 2 h · `assertStepUpFresh_`
+y el orden de las puertas · el atado de la marca a su buzón (②24) y a su página viva · que una
+**RECARGA** vuelva a pedir el código · que `_extenderVentanaStepUp_` **EXTIENDA y jamás CREE** · y
+que el contador que ve la persona salga del **servidor** (`step_up_restante_s`), nunca del navegador.
+⛔ **Y NO se toca al revés**: cuando la marca SÍ lleva buzón, la identidad se resuelve y se compara —
+pasarla vacía desharía el atado de ②24, que es una regresión de seguridad, no un ahorro.
+
+⚠️ **NINGUNA RED AUTOMÁTICA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend **simulado**
+que **nunca ejecuta `backend/Code.js`**, y su recorrido `ventana-por-inactividad` **comprime el
+reloj**, así que por construcción no puede ver un viaje de 30 s. Se **midió aparte**, con un arnés
+efímero fuera del repositorio que carga `backend/Code.js` ENTERO en un `vm` con dobles de Apps Script
+(reloj controlable, `CacheService` en memoria y `kmsProxy_` CONTADO): **14 afirmaciones verdes** y
+**CINCO roturas ROJAS demostradas** — devolver el plazo a 300 s (3 rojas) · pasar el buzón VACÍO al
+lector (②24 roja) · resucitar una ventana muerta · recalcular el techo al extender (2 rojas) · y el
+**renombrado**, que sale **«MEDICIÓN CIEGA»** y no verde.
+
+⚠️ **Y el arnés se corrigió a sí mismo TRES veces, que es lo que lo hace creíble:** sin reiniciar
+`_TUTOR_MEMO_` y `_memoCabeceraEjecucion_` entre peticiones simuladas **todo salía 0 viajes** (esas
+memorias son de EJECUCIÓN en GAS y viven toda la instancia del `vm`) · el doble de `CacheService`
+sin `putAll`/`getAll` hacía que `_espejoGuardarCopia_` fallara en silencio y el caso del espejo
+midiera el aire · y la rotura de «resucitar una ventana muerta» salía **VERDE** porque
+`assertStepUpFresh_` lanza ANTES y la entrada de caché caduca sola ⇒ hubo que llamar a
+`_extenderVentanaStepUp_` **directamente** sobre una marca con el `exp` pasado y su entrada todavía
+viva, que es la carrera real.
+
+**Control**: `node scripts/comprobar-verja-publica.mjs` sigue **VERDE**, y **se comprobó que no está
+ciego en esta zona**: inyectando `_extenderVentanaStepUp_(id)` en la rama del pulso de
+`getAdmissionState_` sale **ROJO** nombrando SEC-STEPUP #55. Los OCHO controles del repositorio,
+VERDES.
+
+**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla y
+lee exactamente lo mismo; lo que cambia es que «sigo aquí» contesta al instante y no la echa fuera.
+
+⚠️ **Lo que queda, y está en la cola** (`kis-app docs/kms/loop-backlog.md`,
+`2026-09-15-sigo-aqui-llega-tarde`): `requireSignerIdentity_` tiene **su propia** memoria —`sigid_`,
+también de **300 s**, con la misma estructura— y la usan los **CINCO** manejadores de firma
+(`saveBillingInfo_`, `applyPaymentModality_`, `submitGdprConsents_`, `confirmReview_`,
+`initiateSigningSession_`). **NO se tocó aquí**: memoriza el resultado de `requireResumeToken_`, o
+sea la PUERTA, así que subir su plazo exige medir antes qué se salta al acertar.
+
 ### `0º.quadragies.ter` (2026-08-29) — el reparto no se siembra de una sección VACÍA
 
 **⛔ ES DINERO Y SE FIRMA.** El paso 8 daba por hablado al servidor **en cuanto la sección
