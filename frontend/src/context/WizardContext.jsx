@@ -1588,7 +1588,12 @@ export function WizardProvider({ children }) {
     // DL-C-B (g): el catálogo de preguntas viene plegado en el hydrate (DL-C-A) →
     // sembramos la cache (mismo patrón que primeLookups) bajo el locale UI actual.
     // Step5/Step7 lo resuelven de cache sin la llamada fetchQuestions suelta (~42s).
-    if (data.questions) primeQuestions(i18n.language, data.questions);
+    // ⛔ D181: se siembra CON EL PROGRAMA de la propia hidratación (`group.program_id`),
+    // NO con `programaDeLaSolicitud` — ése se deriva al pintar y aquí `stepData` todavía
+    // no se ha asentado, así que sembraría bajo la clave del programa ANTERIOR. Sin
+    // programa declarado (solicitud nueva) la clave lleva `_`, que es la misma que
+    // leerán el paso 5 y el paso 7 hasta que el tutor elija.
+    if (data.questions) primeQuestions(i18n.language, data.questions, group.program_id || '');
     if (data.billing_splits) setBillingSplits(data.billing_splits);
     // GDPR-REHYDRATE (Diego 2026-06-11: "recupera el usuario pero no carga lo que había
     // guardado en los consentimientos"): el hydrate trae el set guardado del firmante
@@ -1789,8 +1794,35 @@ export function WizardProvider({ children }) {
     setSigningContext(prev => data.signing_context || prev);
   }, []);
 
+  // ⛔ D181 — QUÉ PROGRAMA ES ESTA SOLICITUD, DECIDIDO EN UN SOLO SITIO.
+  // Las preguntas del cuestionario van por programa («no es lo mismo la renovación que
+  // la nueva inscripción»), así que tres pantallas necesitan el mismo dato: el paso 5,
+  // el repaso del paso 7 y el precalentado. Si cada una lo derivara por su cuenta
+  // acabarían discrepando — y una clave de caché distinta por pantalla es exactamente
+  // lo que le serviría a una familia el cuestionario de otra.
+  //
+  // ⛔ EL ORDEN ES `email` → `application`, Y NO ES ARBITRARIO — está MEDIDO, y al revés
+  // NO funciona: la hidratación siembra el programa SOLO en `application` (ver arriba:
+  // *«program_id is NOT stored here»* en la rama `email`), y el paso 1, cuando el tutor
+  // CAMBIA de programa, lo escribe SOLO en `email` (`Step1Email.jsx` →
+  // `updateStep('email', {…, program_id: selectedProgramId})`; su `onNext('application', …)`
+  // ENCOLA el guardado pero **no toca `stepData.application`** — comprobado en
+  // `encolarGuardadoDelPaso`). Con `application` delante, un cambio de programa dejaba la
+  // clave clavada en el programa hidratado ⇒ a la solicitud se le seguía sirviendo, de una
+  // copia, el cuestionario del programa ANTERIOR. Lo cazó en ROJO el recorrido
+  // `preguntas-por-programa` de la batería, y por eso existe.
+  //
+  // Vacío ⇒ todavía no se ha elegido programa: la clave lleva `_` y el KMS resuelve el
+  // catálogo sin dimensión de programa, que es lo correcto (DEJA PASAR las preguntas
+  // que no filtran por programa; §"la dimensión ausente NO es aplicable").
+  const programaDeLaSolicitud =
+    (stepData.email && stepData.email.program_id) ||
+    (stepData.application && stepData.application.program_id) ||
+    '';
+
   return (
     <WizardContext.Provider value={{
+      programaDeLaSolicitud,           // D181 — el programa de ESTA solicitud, en un solo sitio
       debeReenviar, setDebeReenviar,   // DL-E49 §8 — «has cambiado datos: vuelve a enviar»
       avisoDelColegio, setAvisoDelColegio,   // DL-E63 — «el colegio ha actualizado datos»
       hidratacionSeq,                        // DL-E63 — key del paso montado

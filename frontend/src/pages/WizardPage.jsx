@@ -58,6 +58,7 @@ export default function WizardPage() {
     recoveryNonce, // IDENTITY-FROM-LINK: `n` = email_id del enlace (identidad canónica)
     reviewConfirmed, // input del mapeo central (catalog.stepEditMode)
     preguntarPorLosGuardados, // 18.bis.84 — «apuntado» no es «guardado»: se vuelve a preguntar
+    programaDeLaSolicitud, // D181 — las preguntas van por programa: el precalentado usa su clave
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -135,8 +136,11 @@ export default function WizardPage() {
   useEffect(() => {
     if (laVerjaVaASalir || rehydrating) return;
     prefetchLookups(i18n.language);
-    prefetchQuestions(i18n.language);
-  }, [laVerjaVaASalir, rehydrating, i18n.language]); // eslint-disable-line
+    // D181: se precalienta bajo la MISMA clave que leerán el paso 5 y el paso 7 —
+    // idioma Y programa. Con otra clave, el precalentado no ahorraría ni un viaje y
+    // además dejaría en el navegador una copia que nadie va a leer.
+    prefetchQuestions(i18n.language, programaDeLaSolicitud);
+  }, [laVerjaVaASalir, rehydrating, i18n.language, programaDeLaSolicitud]); // eslint-disable-line
 
   // WPERF-1 criterio "eager docs": si el expediente está Aprobado (AD) y la firma está
   // lista para este guardian (no completada), calienta el paquete contractual (members

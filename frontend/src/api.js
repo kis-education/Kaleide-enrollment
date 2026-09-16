@@ -346,8 +346,32 @@ export function prefetchDocuments(identity, loadDocument) {
 // to 'ENROLLMENT' exactly as the call-sites used inline.
 // WIZARD-UX (Diego 2026-06-07): Step5 + Step7 used to fetch this independently on
 // every mount → re-fetched on every back/forward. Now they share the cache.
-const _questionsCache  = {};   // { [lang]: data }  (module memory — dies on reload)
-const _questionsFlight = {};   // { [lang]: promise }
+//
+// ★ D181 (2026-09-16) — LA CLAVE YA NO ES SOLO EL IDIOMA: es (idioma × PROGRAMA).
+// Diego decidió que las preguntas se vinculen al programa —«No es lo mismo la renovación que
+// la nueva inscripción. Las preguntas son diferentes.»— y esa vinculación se declara en cada
+// BLOQUE de preguntas, como una regla más de las que ya se editan en su ficha.
+//
+// ⛔ SIN EL PROGRAMA EN LA CLAVE, el catálogo de un programa se le serviría a otro DESDE LA
+// COPIA — peor que no filtrar: el filtro del servidor estaría bien y la respuesta mal. Y no es
+// hipotético: esta caché sobrevive a la recarga (sessionStorage) y a cerrar el navegador
+// (localStorage), así que una familia que cambiara de programa arrastraría el cuestionario
+// viejo durante días.
+//
+// ⛔ El `program_id` NO es un dato de ninguna persona: es un identificador de CONFIGURACIÓN del
+// centro (qué programa). Ponerlo en una clave de `localStorage` no toca KAL-7 («NO PII en
+// localStorage»), igual que ya no lo tocaba el idioma.
+const _questionsCache  = {};   // { [lang|programa]: data }  (module memory — dies on reload)
+const _questionsFlight = {};   // { [lang|programa]: promise }
+
+/**
+ * La clave de la copia del catálogo: idioma Y programa, en un solo sitio.
+ * Sin programa declarado (solicitud NUEVA, que todavía no lo ha elegido) la clave lleva `_`,
+ * que es una clave legítima y distinta de la de cualquier programa concreto.
+ */
+function _claveDelCatalogo(lang, programId) {
+  return (lang || 'es') + '|' + (programId || '_');
+}
 
 // WIZARD-PERF-CACHE-SKELETON (Diego 2026-06-07): capa stale-while-revalidate en
 // sessionStorage para que el paso de Preguntas PINTE de inmediato tras un reload
@@ -391,7 +415,12 @@ const QCACHE_TTL_MS = 10 * 60 * 1000; // espejo de STEPUP_WINDOW_MS (WizardConte
 // del prewarm de SPEC-WIZ-PREWARM), cambiar la revalidación a una llamada LIGERA de
 // versión en vez del fetch pesado de fetchQuestions → la 2ª visita queda sin red visible
 // también fuera de la ventana corta (acceptance criterion pleno).
-const QCACHE_LS_PREFIX        = 'kis_wizard_qcache_persist_v1_';
+// ⛔ D181 — `_v2_`: la clave lleva PROGRAMA desde el 2026-09-16. Las entradas `_v1_` se
+// escribieron SIN programa, así que servirlas ahora le daría a una renovación el
+// cuestionario de una inscripción nueva (o al revés). Se ABANDONAN —no se leen nunca— y
+// `purgeQuestionsCache` las barre además por su prefijo viejo.
+const QCACHE_LS_PREFIX        = 'kis_wizard_qcache_persist_v2_';
+const QCACHE_LS_PREFIX_VIEJO  = 'kis_wizard_qcache_persist_v1_'; // solo para purgar
 const QCACHE_LS_REVALIDATE_MS = 30 * 60 * 1000;            // 30 min: dentro de la ventana se sirve de localStorage SIN red; fuera, se revalida en background
 const QCACHE_LS_MAXAGE_MS     = 30 * 24 * 60 * 60 * 1000;  // 30 días: tope duro — cache más vieja se descarta como fría
 
@@ -432,8 +461,8 @@ function _readPersistedQuestions(key) {
  * @param {string} lang
  * @returns {Object|null}
  */
-export function readQuestionsCacheSync(lang) {
-  const key = lang || 'es';
+export function readQuestionsCacheSync(lang, programId) {
+  const key = _claveDelCatalogo(lang, programId);
   if (_questionsCache[key]) return _questionsCache[key];
   try {
     const raw = sessionStorage.getItem(QCACHE_PREFIX + key);
@@ -503,10 +532,14 @@ export function purgeQuestionsCache() {
   } catch { /* ignore */ }
   // SPEC-WIZ-BROWSERCACHE: purga también la capa PERSISTENTE — el catálogo cacheado
   // NUNCA debe sobrevivir al ciclo de auth (espejo de la decisión de la capa de sesión).
+  // D181: se barre TAMBIÉN el prefijo viejo `_v1_` (entradas sin programa en la clave):
+  // ya no se leen, pero seguirían ocupando sitio en el navegador de la familia.
   try {
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
-      if (k && k.indexOf(QCACHE_LS_PREFIX) === 0) localStorage.removeItem(k);
+      if (k && (k.indexOf(QCACHE_LS_PREFIX) === 0 || k.indexOf(QCACHE_LS_PREFIX_VIEJO) === 0)) {
+        localStorage.removeItem(k);
+      }
     }
   } catch { /* ignore */ }
 }
@@ -519,21 +552,26 @@ export function purgeQuestionsCache() {
  * Si data es falsy no hace nada (cae al fetch de red como fallback).
  * @param {string} lang
  * @param {Object} data — catálogo { sets:[…] }
+ * @param {string} [programId] — D181: el programa de ESTA solicitud (la clave lo lleva).
  */
-export function primeQuestions(lang, data) {
+export function primeQuestions(lang, data, programId) {
   // `typeof data === 'object'` dejaba pasar `{sets:[]}` como catálogo bueno: era el
   // primer eslabón del apagón silencioso del cuestionario. Ver `_catalogoUtilizable`.
   if (!_catalogoUtilizable(data)) return;
-  const key = lang || 'es';
-  _persistQuestions(key, data);
+  _persistQuestions(_claveDelCatalogo(lang, programId), data);
 }
 
-function _doFetchQuestions(lang) {
-  return gasCall('fetchQuestions', { context_code: 'ENROLLMENT', language: lang });
+// D181: el IDENTIFICADOR del programa viaja tal cual; el KMS lo traduce a sus DOS
+// dimensiones (`program_code` / `program_type_code`) leyendo `enrPrograms`. Aquí NO se
+// escribe ni un código de programa.
+function _doFetchQuestions(lang, programId) {
+  const p = { context_code: 'ENROLLMENT', language: lang || 'es' };
+  if (programId) p.program_id = programId;
+  return gasCall('fetchQuestions', p);
 }
 
-export function prefetchQuestions(lang) {
-  const key = lang || 'es';
+export function prefetchQuestions(lang, programId) {
+  const key = _claveDelCatalogo(lang, programId);
   if (_questionsCache[key] || _questionsFlight[key]) return;
   // SPEC-WIZ-BROWSERCACHE: catálogo persistente FRESCO → ceba el módulo sin red.
   const persisted = _readPersistedQuestions(key);
@@ -541,13 +579,13 @@ export function prefetchQuestions(lang) {
     _questionsCache[key] = persisted.data;
     return;
   }
-  _questionsFlight[key] = _doFetchQuestions(key)
+  _questionsFlight[key] = _doFetchQuestions(lang, programId)
     .then(data  => { _persistQuestions(key, data); delete _questionsFlight[key]; return data; })
     .catch(_err => { delete _questionsFlight[key]; });
 }
 
-export function fetchQuestions(lang) {
-  const key = lang || 'es';
+export function fetchQuestions(lang, programId) {
+  const key = _claveDelCatalogo(lang, programId);
   if (_questionsCache[key])  return Promise.resolve(_questionsCache[key]);
   if (_questionsFlight[key]) return _questionsFlight[key];
   // SPEC-WIZ-BROWSERCACHE: si hay catálogo persistente FRESCO (dentro de la ventana de
@@ -561,7 +599,7 @@ export function fetchQuestions(lang) {
     _questionsCache[key] = persisted.data;
     return Promise.resolve(persisted.data);
   }
-  _questionsFlight[key] = _doFetchQuestions(key)
+  _questionsFlight[key] = _doFetchQuestions(lang, programId)
     .then(data  => { _persistQuestions(key, data); delete _questionsFlight[key]; return data; })
     .catch(err  => { delete _questionsFlight[key]; throw err; });
   return _questionsFlight[key];

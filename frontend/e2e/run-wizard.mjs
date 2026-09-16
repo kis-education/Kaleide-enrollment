@@ -269,6 +269,10 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'el-fallo-sustituye-al-aviso':  'exige que el servidor RECHACE la petición del código; no se provoca contra datos reales. En modo simulado sí se cubre, con `scenario.codigoFalla`.',
     'reenviar-limitado-por-reloj':  'misma razón que las tres primeras',
   },
+  'preguntas-por-programa': {
+    'el-programa-viaja-en-la-peticion': 'exige DOS programas declarados y cambiar de uno a otro sobre un expediente vivo; el arnés no puede reescribir el programa de una solicitud real sin dejar datos a medias. En modo simulado sí se cubre, con `scenario.variosProgramas`.',
+    'la-copia-distingue-programas': 'misma razón',
+  },
   'un-viaje-al-abrir': {
     'un-viaje-al-abrir': 'exige forzar la verja de datos personales (dejar caducar la gracia del enlace) para que el asistente se encuentre la respuesta CERRADA, que es la que producía el tropel; contra el sistema real eso pide un buzón que este arnés no lee. En modo simulado sí se cubre, con `scenario.piiGated`.',
   },
@@ -1745,6 +1749,148 @@ async function caminoProgramaSeRecupera(page, base) {
       botones.every(b => b.disabled === false),
       `los botones de continuar quedaron ${JSON.stringify(botones)}: deshabilitado es justo lo que tenía parada a la familia`)
     return c
+  } finally {
+    scenario.variosProgramas = false
+  }
+}
+
+/**
+ * preguntas-por-programa — D181: LAS PREGUNTAS VAN POR PROGRAMA, Y LA COPIA LAS DISTINGUE
+ * (Diego 2026-09-16: *«Creo que las preguntas deberían ir vinculadas al programa. No es lo
+ * mismo la renovación que la nueva inscripción. Las preguntas son diferentes.»*).
+ *
+ * ── Qué mide, y por qué en DOS fases ─────────────────────────────────────────────────
+ * El asistente guarda el cuestionario en tres capas (memoria de módulo · `sessionStorage`
+ * · `localStorage`), y hasta D181 **la clave era solo el idioma**. Con las preguntas
+ * filtradas por programa eso deja de ser una optimización y pasa a ser un DEFECTO: a una
+ * renovación se le serviría, DE UNA COPIA, el cuestionario de una inscripción nueva — y
+ * eso es peor que no filtrar, porque ni siquiera se ve venir del servidor.
+ *
+ * · FASE A (ancla del sembrado) — se entra por el enlace. La hidratación trae el
+ *   cuestionario Y el programa del expediente, así que `primeQuestions` lo siembra bajo
+ *   `idioma|programa`. Si el sembrado y la lectura no usasen la MISMA clave, saldría una
+ *   petición de `fetchQuestions` a la red: se afirma que NO sale ninguna.
+ * · FASE B (el defecto) — se CAMBIA el programa en el paso 1 y se continúa. Eso mueve
+ *   `programaDeLaSolicitud`, o sea la clave ⇒ tiene que salir UNA petición, y su cuerpo
+ *   tiene que llevar `program_id` con el programa NUEVO. Si la clave ignorara el programa,
+ *   la copia de la fase A se serviría tal cual y **no saldría ninguna petición**.
+ *
+ * ⛔ Sirve DOS programas a propósito (`scenario.variosProgramas`): con uno solo el paso 1
+ * lo auto-elige, no hay nada que cambiar y las dos fases medirían el aire.
+ *
+ * ⚠️ Lo que este recorrido NO cubre: la batería corre contra un backend SIMULADO que nunca
+ * ejecuta `backend/Code.js` ni el KMS. Afirma lo que manda el NAVEGADOR y qué clave usa su
+ * copia — no que el KMS derive las dos dimensiones del programa ni que su propia caché las
+ * distinga; eso se mide aparte, leyendo y ejecutando el código real del KMS.
+ */
+async function caminoPreguntasPorPrograma(page, base) {
+  const c = new Camino('preguntas-por-programa')
+  scenario.stage = 'sin_fecha'        // sin fecha ⇒ aterriza en el paso 1
+  scenario.variosProgramas = true
+
+  try {
+    // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────
+    // Este recorrido afirma sobre mecanismos con nombre. Renombrarlos o retirarlos haría
+    // que las afirmaciones de abajo cayeran diciendo «no salió ninguna petición» — cierto,
+    // pero sin nombrar que el recorrido ya no sabe qué mira. Sale CIEGO, no rojo-a-secas.
+    const FUENTES = [
+      // ⛔ Los `\b` NO son adorno: sin ellos, renombrar `_claveDelCatalogo` a
+      // `_claveDelCatalogoLoQueSea` seguía casando por subcadena y el recorrido salía
+      // VERDE con el mecanismo renombrado — medido al exigirle el rojo.
+      ['frontend/src/api.js',                    /\b_claveDelCatalogo\b/],
+      ['frontend/src/api.js',                    /p\.program_id = programId\b/],
+      ['frontend/src/context/WizardContext.jsx', /\bprogramaDeLaSolicitud\b/],
+      ['frontend/src/pages/WizardPage.jsx',      /prefetchQuestions\(i18n\.language, programaDeLaSolicitud\)/],
+      ['frontend/src/pages/steps/Step5Questions.jsx', /fetchQuestions\(i18n\.language, programaDeLaSolicitud\)/],
+    ]
+    const ausentes = []
+    for (const [rel, re] of FUENTES) {
+      let txt = ''
+      try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+      if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+    }
+    if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+      ausentes.length === 0,
+      `no se encontró en el fuente: ${ausentes.join(' · ')} — el recorrido NO puede medir lo que ` +
+      `dice medir, así que NO puede salir verde`)) return c
+
+    if (REAL) {
+      c.noCubierta('el-programa-viaja-en-la-peticion',
+        'exige DOS programas declarados y cambiar de uno a otro sobre un expediente vivo; el arnés no puede reescribir el programa de una solicitud real sin dejar datos a medias. En modo simulado sí se cubre, con `scenario.variosProgramas`.')
+      c.noCubierta('la-copia-distingue-programas', 'misma razón')
+      return c
+    }
+
+    // Se capturan los CUERPOS, no solo la acción: lo que hay que afirmar es qué campo viaja.
+    const preguntas = []
+    const onReq = (req) => {
+      if (!/\/__gas/.test(req.url()) || req.method() !== 'POST') return
+      try {
+        const p = JSON.parse(req.postData() || '{}')
+        if (p.action === 'fetchQuestions') preguntas.push(p)
+      } catch { /* cuerpo raro */ }
+    }
+    page.on('request', onReq)
+
+    try {
+      if (!await entrarPorElEnlace(c, page, base)) return c
+      await page.waitForTimeout(LATENCY + 900)
+
+      // ── ANCLA: sin dos programas no hay nada que cambiar ────────────────────────
+      const opciones = await page.$$eval('select option', os => os.map(o => o.value).filter(Boolean))
+      c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, opciones.length)
+      if (!c.afirmar('el desplegable ofrece MÁS DE UN programa (si no, no hay nada que cambiar)',
+        opciones.length >= 2,
+        `el desplegable trajo ${opciones.length} opción(es): con una sola, este recorrido mediría el aire`)) return c
+
+      const programaDeEntrada = await page.$eval('select', el => el.value).catch(() => null)
+      const otro = opciones.find(v => v !== programaDeEntrada)
+      if (!c.afirmar('hay un programa DISTINTO del que trae el expediente',
+        !!otro, `las opciones fueron ${JSON.stringify(opciones)} y el expediente trae ${JSON.stringify(programaDeEntrada)}`)) return c
+
+      // ── FASE A · el sembrado y la lectura usan la MISMA clave ───────────────────
+      c.afirmar('con el programa del expediente, el cuestionario NO se vuelve a pedir (lo sembró la hidratación)',
+        preguntas.length === 0,
+        `salieron ${preguntas.length} petición(es) de fetchQuestions sin haber cambiado de programa: ` +
+        `la hidratación siembra bajo una clave y la pantalla lee de otra, así que la copia no sirve para nada`)
+
+      // ── FASE B · cambiar de programa cambia la clave ────────────────────────────
+      // ⛔ Un paso YA GUARDADO se recupera PROTEGIDO tras su banner: sin pulsar «Editar»
+      // el desplegable cambia de valor pero «Continuar» no avanza, y este recorrido se
+      // quedaba en el paso 1 midiendo el aire. Se desbloquea como lo haría la familia.
+      const antes = preguntas.length
+      await desbloquear(page)
+      await page.selectOption('select', otro)
+      await page.waitForTimeout(250)
+      if (!c.afirmar('el paso 1 deja continuar con el programa nuevo',
+        await continuar(c, page, 1, 'paso 1 · programa cambiado'),
+        'el wizard no avanzó al paso 2 tras cambiar de programa')) return c
+
+      // El precalentado del cuestionario sale en cuanto `programaDeLaSolicitud` cambia.
+      await page.waitForTimeout(LATENCY + 1200)
+
+      const nuevas = preguntas.slice(antes)
+      c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, preguntas.length || 1)
+      if (!c.afirmar('la copia distingue programas: cambiar de programa VUELVE A PEDIR el cuestionario',
+        nuevas.length >= 1,
+        `no salió ninguna petición de fetchQuestions tras cambiar de programa: la clave de la copia ` +
+        `ignora el programa, así que a esta solicitud se le está sirviendo, DE UNA COPIA, el ` +
+        `cuestionario del programa anterior`)) return c
+
+      const ultima = nuevas[nuevas.length - 1]
+      c.afirmar('la petición del cuestionario lleva el PROGRAMA de la solicitud',
+        ultima.program_id === otro,
+        `el cuerpo de fetchQuestions llevó program_id=${JSON.stringify(ultima.program_id)} ` +
+        `(se esperaba ${JSON.stringify(otro)}): sin el programa, el KMS no puede filtrar las preguntas ` +
+        `y una renovación ve el cuestionario de una inscripción nueva`)
+      c.afirmar('y NO lleva ningún código de programa escrito a mano',
+        !('program_code' in ultima) && !('program_type_code' in ultima),
+        `el cuerpo llevó ${JSON.stringify(Object.keys(ultima))}: el asistente solo TRANSPORTA el ` +
+        `identificador; traducirlo a códigos es del KMS`)
+      return c
+    } finally {
+      page.off('request', onReq)
+    }
   } finally {
     scenario.variosProgramas = false
   }
@@ -10875,6 +11021,11 @@ const CAMINOS = [
   // gastar una corrida de 35 min, si el `0 de 1` de la salud contra el sistema real era
   // del producto o del conductor. Se queda: era cobertura que faltaba.
   { nombre: 'programa-se-recupera', fn: caminoProgramaSeRecupera, minLlamadas: 1, minElementos: 2 },
+  // D181 — las preguntas van por programa: el programa VIAJA en la petición y la copia del
+  // navegador distingue programas (si no, a una renovación se le sirve el cuestionario de
+  // una inscripción nueva, y encima de una copia).
+  { nombre: 'preguntas-por-programa', fn: caminoPreguntasPorPrograma,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'salud-desde-la-pantalla', fn: caminoSaludDesdeLaPantalla, minLlamadas: 1, minElementos: 11 },
   // Defecto 3 de la definición de hecho: el cuestionario se apagaba entero, en silencio
   // y durante media hora, por un fallo pasajero del servidor. Ver el camino.

@@ -527,7 +527,8 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
   const lang         = i18n.language?.startsWith('en') ? 'en' : 'es';
   const { enrollmentGroupId, resumeToken, stepData, awaitPendingSave, hasPendingSave, isSubmitted, setIsSubmitted,
           enqueueSave, setSubmitError, setValidationError, recoveryNonce, recoveredEmail,
-          isStepUpFresh, markStepUpFresh } = useWizard(); // UX-3 + UX-1 + ②24 + ②27
+          isStepUpFresh, markStepUpFresh,
+          programaDeLaSolicitud } = useWizard(); // UX-3 + UX-1 + ②24 + ②27 + D181
 
   // DL-E39 ENMIENDA (gate de ENTRADA, Diego 2026-06-06): el enmascarado per-campo
   // se ELIMINA. Toda la PII queda protegida por el GATE DE ENTRADA del wizard
@@ -598,10 +599,12 @@ export default function Step7Review({ onBack, onAdvanceToSigning, canAdvanceToSi
       }))
       .catch(() => {});
     // WIZARD-UX: cached question catalog shared with Step5 (keyed by language).
-    fetchQuestions(lang)
+    // D181: y por PROGRAMA — el repaso tiene que enseñar el MISMO cuestionario que
+    // rellenó el tutor en el paso 5; con otra clave enseñaría el de otro programa.
+    fetchQuestions(lang, programaDeLaSolicitud)
       .then(data => setQuestionSets(data.sets || []))
       .catch(() => {});
-  }, []); // eslint-disable-line
+  }, [programaDeLaSolicitud]); // eslint-disable-line
 
   const allQuestions = questionSets.flatMap(s => s.questions || []);
 

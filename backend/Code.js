@@ -7037,23 +7037,30 @@ function qbTruthy_(v) {
 // arregla nada: lo único que quita ese tiempo es **no hacer el viaje**.
 //
 // ⛔ DE QUÉ DEPENDE EL CONJUNTO — MEDIDO ANTES DE CACHEAR NADA, que es la pregunta que
-//    decide si esta copia es segura o si le sirve a una familia el cuestionario de otra:
+//    decide si esta copia es segura o si le sirve a una familia el cuestionario de otra.
 //
-//    `fetchQuestions_(p)` tiene EXACTAMENTE DOS ENTRADAS — `context_code` y `language` —
-//    y manda al KMS cuatro campos: esos dos más `consumer_code: 'ADMISSIONS_WIZARD'` y
-//    `school_id: SCHOOL_ID`, que son CONSTANTES de módulo. **Ni el expediente, ni el
-//    tutor, ni el programa, ni una persona entran en la llamada**: no hay ninguna
-//    dimensión por familia que pudiera variar la respuesta, porque no se envía ninguna.
+//    ★ 2026-09-16 (D181) — ESTO CAMBIÓ, y el párrafo anterior quedó FALSO. Decía: *«Ni el
+//    expediente, ni el tutor, ni el PROGRAMA, ni una persona entran en la llamada»* y de ahí
+//    concluía que el catálogo es idéntico para todas las familias del tenant. **Desde D181 el
+//    PROGRAMA sí entra**: Diego decidió que las preguntas se vinculen al programa —*«No es lo
+//    mismo la renovación que la nueva inscripción. Las preguntas son diferentes.»*— y esa
+//    vinculación se declara **en cada BLOQUE de preguntas, como una regla más** de las que ya
+//    se editan en su ficha (nunca en el programa, y JAMÁS escrita en código).
 //
-//    Y el propio KMS lo tiene medido y escrito desde SPEC-WIZ-PREWARM
-//    (`kis-app kms-server/qb/qb-core.gs`, §"Catálogo TENANT-ESTÁTICO cacheado"): *«el
-//    wizard llama con `receptor: { locale }` y NADA más → el subject derivado queda VACÍO
-//    → audience filtering es default-open/not-applicable → el catálogo es IDÉNTICO para
-//    todas las familias del tenant»*, y por eso **su propia caché usa esta misma clave**
-//    `(school_id, context_code, consumer_code, locale)`. Esta copia no inventa un criterio
-//    nuevo: **copia el que el KMS ya aplica**, un salto más cerca de la familia.
+//    ⇒ De qué depende HOY la respuesta, y por tanto qué lleva la clave:
+//      · `context_code`  — lo manda el llamante
+//      · `language`      — lo manda el llamante
+//      · `consumer_code` — constante de módulo (`ADMISSIONS_WIZARD`)
+//      · `school_id`     — constante de módulo
+//      · **`program_id`** — lo manda el llamante desde D181
 //
-//    ⇒ La clave lleva los CUATRO, incluidos los dos que hoy son constantes: el día que el
+//    ⛔ SIN EL PROGRAMA EN LA CLAVE, un programa vería el cuestionario del otro **SERVIDO DE
+//    UNA COPIA** — peor que no filtrar, porque el filtro del KMS estaría bien y la respuesta
+//    mal. Es el mismo motivo por el que el KMS mete el programa en la suya
+//    (`qb_core_prewarmCacheKey_`, `kis-app kms-server/qb/qb-core.gs`, clave `:v2`). Esta copia
+//    no inventa criterio: **copia el del KMS**, un salto más cerca de la familia.
+//
+//    Y los dos campos que hoy son constantes se quedan en la clave igualmente: el día que el
 //    asistente sirva a un segundo colegio, una clave sin `school_id` cruzaría catálogos.
 //
 // ⛔ UN FALLO NO SE GUARDA, y el criterio está COPIADO del KMS (`qb_core_catalogoImposible_`):
@@ -7073,10 +7080,18 @@ var CATALOGO_PREGUNTAS_TTL_S_ = 1800;
 /**
  * La clave de la copia del catálogo de preguntas. Lleva DENTRO todo de lo que la respuesta
  * depende (ver el bloque de arriba) — nada de lo que lleva es un dato de familia.
+ *
+ * ⛔ El `program_id` es un identificador de CONFIGURACIÓN del centro (qué programa), no un dato
+ * de ninguna persona; ponerlo en la clave no filtra nada. Y sin él (D181) la copia de un
+ * programa se le serviría a otro.
+ *
+ * ⛔ `v2` en el nombre: las entradas escritas ANTES de D181 no distinguen programa, así que se
+ * abandonan en vez de servirse. Caducan solas por su propio plazo.
  * @private
  */
-function _claveCatalogoPreguntas_(contextCode, lang) {
-  return 'wzqb_' + SCHOOL_ID + '_ADMISSIONS_WIZARD_' + contextCode + '_' + (lang || '_');
+function _claveCatalogoPreguntas_(contextCode, lang, programId) {
+  return 'wzqb_v2_' + SCHOOL_ID + '_ADMISSIONS_WIZARD_' + contextCode + '_' + (lang || '_')
+    + '_' + (programId || '_');
 }
 
 /**
@@ -7096,10 +7111,10 @@ function _catalogoDePreguntasImposible_(valor) {
 }
 
 /** Lee la copia del catálogo. `null` si no hay, o si lo guardado no es utilizable. @private */
-function _catalogoDePreguntasDeLaCopia_(contextCode, lang) {
+function _catalogoDePreguntasDeLaCopia_(contextCode, lang, programId) {
   try {
     var crudo = _wzCacheGetChunked_(CacheService.getScriptCache(),
-      _claveCatalogoPreguntas_(contextCode, lang));
+      _claveCatalogoPreguntas_(contextCode, lang, programId));
     if (!crudo) return null;
     var v = JSON.parse(crudo);
     if (!v || !v.sets || !Array.isArray(v.sets)) return null;
@@ -7109,7 +7124,7 @@ function _catalogoDePreguntasDeLaCopia_(contextCode, lang) {
 }
 
 /** Guarda el catálogo. Best-effort: un fallo aquí NO puede tocar la respuesta. @private */
-function _guardarCatalogoDePreguntas_(contextCode, lang, valor) {
+function _guardarCatalogoDePreguntas_(contextCode, lang, programId, valor) {
   try {
     if (!valor || !valor.sets || !Array.isArray(valor.sets)) return false;
     if (_catalogoDePreguntasImposible_(valor)) {
@@ -7118,7 +7133,8 @@ function _guardarCatalogoDePreguntas_(contextCode, lang, valor) {
       return false;
     }
     return _wzCachePutChunked_(CacheService.getScriptCache(),
-      _claveCatalogoPreguntas_(contextCode, lang), JSON.stringify(valor), CATALOGO_PREGUNTAS_TTL_S_);
+      _claveCatalogoPreguntas_(contextCode, lang, programId), JSON.stringify(valor),
+      CATALOGO_PREGUNTAS_TTL_S_);
   } catch (e) { return false; }
 }
 
@@ -7131,7 +7147,7 @@ function _guardarCatalogoDePreguntas_(contextCode, lang, valor) {
  * For backwards compat the legacy param name `context_designation` is still
  * accepted but treated as a code (must satisfy UPPER_SNAKE whitelist post-norm).
  *
- * @param {Object} p - { context_code, language } (legacy: context_designation)
+ * @param {Object} p - { context_code, language, program_id? } (legacy: context_designation)
  * @returns {Object} Nested question set structure
  */
 function fetchQuestions_(p) {
@@ -7150,6 +7166,21 @@ function fetchQuestions_(p) {
 
   const lang = p.language || 'es';
 
+  // ★ D181 (2026-09-16) — EL PROGRAMA, si el llamante lo declara. Aquí solo se valida la FORMA
+  // (KAL-5 capa 1, la misma laxitud que un identificador de fichero legible: el centro puede dar
+  // de alta identificadores con la forma que quiera). **QUIÉN es admisible lo dice el KMS** —
+  // este proceso solo TRANSPORTA. Un valor con forma mala se ignora en vez de romper la pantalla:
+  // el catálogo sin programa es el comportamiento de siempre, así que degradar aquí no miente.
+  var programId = '';
+  if (p.program_id != null && p.program_id !== '') {
+    var crudoPid = String(p.program_id).trim();
+    if (/^[A-Za-z0-9._-]{1,128}$/.test(crudoPid)) {
+      programId = crudoPid;
+    } else {
+      Logger.log('[cuestionario] program_id con forma no admisible — se ignora.');
+    }
+  }
+
   // ②54 (2026-09-06) — acción pública SIN verja ni cupo hasta hoy. Antes del trabajo caro.
   _checkPublicCatalogRateLimit_('preguntas', lang);
 
@@ -7164,7 +7195,7 @@ function fetchQuestions_(p) {
   // puerta pública, solo evita el viaje. *(Se consideró ponerla delante, para que una copia
   // local no gaste un cupo que es COMPARTIDO por todas las familias del colegio; no se hizo:
   // mover un cupo público no es de este encargo. Queda PROPUESTO.)*
-  var deLaCopia = _catalogoDePreguntasDeLaCopia_(contextCode, lang);
+  var deLaCopia = _catalogoDePreguntasDeLaCopia_(contextCode, lang, programId);
   if (deLaCopia) return deLaCopia;
 
   // ── Q05-S5 (DL-Q05): proxy thin a KMS qb-public.resolveSetForConsumer ────
@@ -7179,15 +7210,23 @@ function fetchQuestions_(p) {
   // reintentar el `echo` ilegible, las PREGUNTAS se habrían quedado sin reintento, y su
   // fallo medido —«KMS qb-public: non-JSON response: <!doctype html…»— es exactamente
   // el que el reintento cura. Ahora usa el transporte ÚNICO: uno solo que arreglar.
+  //
+  // ★ D181 — el `program_id` viaja DENTRO de `receptor`, que es el sobre declarado del sujeto
+  // para el filtro de audiencia del KMS. ⛔ Se manda el IDENTIFICADOR, nunca el código: el KMS lo
+  // traduce a sus DOS dimensiones (`program_code` y `program_type_code`) leyendo `enrPrograms`,
+  // y así ningún código de programa se escribe a este lado.
+  var receptor = { locale: lang };
+  if (programId) receptor.program_id = programId;
+
   var catalogo = fetchQuestions_adaptKmsResponse_(kmsProxy_('qb-public.resolveSetForConsumer', {
     consumer_code: 'ADMISSIONS_WIZARD',
     context_code:  contextCode,
-    receptor:      { locale: lang },
+    receptor:      receptor,
     school_id:     SCHOOL_ID,
   }), lang);
   // Se guarda lo que ACABA de resolver el camino vivo — jamás un fallo (el `kmsProxy_`
   // lanza y no llegamos aquí) ni un catálogo imposible (`_guardarCatalogoDePreguntas_`).
-  _guardarCatalogoDePreguntas_(contextCode, lang, catalogo);
+  _guardarCatalogoDePreguntas_(contextCode, lang, programId, catalogo);
   return catalogo;
 }
 

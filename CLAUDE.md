@@ -5143,19 +5143,38 @@ portada se queda esperando**; lo que se ahorra es el clic.
   15 y 16 del arnés).
 - **Si la copia ya se MOVIÓ** (`_moverLaCopiaDeLaPuerta_`, la familia que ya estaba trabajando),
   esto **no cuesta ni un viaje**: el gate la sirve de ahí.
-- **⛔ EL CUESTIONARIO ES TENANT-ESTÁTICO, Y ESO SE MIDIÓ ANTES DE CACHEAR NADA** — es la pregunta
-  que decide si esta copia es segura o si le sirve a una familia el cuestionario de otra.
-  `fetchQuestions_(p)` tiene **EXACTAMENTE DOS ENTRADAS** (`context_code` y `language`) y manda al
-  KMS cuatro campos: esos dos más `consumer_code: 'ADMISSIONS_WIZARD'` y `school_id: SCHOOL_ID`,
-  **constantes de módulo**. Ni el expediente, ni el tutor, ni el programa, ni una persona entran en
-  la llamada ⇒ **no hay ninguna dimensión por familia que pudiera variar la respuesta, porque no se
-  envía ninguna.** Y el propio KMS lo tiene medido y escrito (SPEC-WIZ-PREWARM,
-  `kis-app kms-server/qb/qb-core.gs`): *«el wizard llama con `receptor: { locale }` y NADA más → el
-  subject derivado queda VACÍO → el catálogo es IDÉNTICO para todas las familias del tenant»*, y
-  **su propia caché usa esta misma clave**. Esta copia **copia el criterio del KMS**, un salto más
-  cerca de la familia.
-- **La clave lleva los CUATRO**, incluidos los dos que hoy son constantes: el día que el asistente
-  sirva a un segundo colegio, una clave sin `school_id` cruzaría catálogos.
+- **⛔ EL CUESTIONARIO YA NO ES «IGUAL PARA TODOS»: VA POR PROGRAMA, Y LA CLAVE LO LLEVA
+  (D181, 2026-09-16).** ⚠️ **Aquí decía lo contrario, y desde D181 es FALSO** — el texto retirado
+  afirmaba que `fetchQuestions_` tiene *«EXACTAMENTE DOS ENTRADAS»* y que *«ni el expediente, ni el
+  tutor, ni el programa, ni una persona entran en la llamada»*, con lo que *«no hay ninguna dimensión
+  por familia que pudiera variar la respuesta»*. **El programa SÍ entra**: Diego decidió que las
+  preguntas se vinculen al programa (*«No es lo mismo la renovación que la nueva inscripción»*), así
+  que `fetchQuestions_` acepta un **TERCER** campo opcional, `program_id`, y lo reenvía al KMS dentro
+  del `receptor`. ⇒ **la respuesta puede variar entre dos solicitudes del mismo colegio**, y una copia
+  indexada solo por colegio+contexto+consumidor+idioma le serviría a una renovación el cuestionario de
+  una inscripción nueva — **peor que no filtrar**, porque ni se ve venir del servidor.
+- **⛔ POR ESO LA CLAVE LLEVA CINCO COSAS, no cuatro**: colegio · contexto · consumidor · idioma **y
+  programa** (`_claveCatalogoPreguntas_`, prefijo `wzqb_v2_`). Los dos que hoy son constantes se
+  quedan —el día que el asistente sirva a un segundo colegio, una clave sin `school_id` cruzaría
+  catálogos— y el programa es el que de verdad distingue. **El mismo criterio vale en el navegador**
+  (`frontend/src/api.js`, `_claveDelCatalogo(lang, programId)`, prefijo `kis_wizard_qcache_persist_v2_`):
+  las entradas `_v1_` se escribieron SIN programa, así que **se ABANDONAN** —no se leen nunca— y
+  `purgeQuestionsCache` las barre además por su prefijo viejo.
+- **⛔ EL ASISTENTE SOLO TRANSPORTA EL IDENTIFICADOR.** Viaja `program_id` y nada más: traducirlo a
+  sus dimensiones (`program_code` / `program_type_code`) lo hace el KMS leyendo `enrPrograms`
+  (`qb_programaDeclarado_`, `kis-app kms-server/qb/audience-resolver.gs`). **Ni un código de programa
+  escrito a mano en este repositorio** — lo vigila el recorrido `preguntas-por-programa`.
+- **⛔ SIN PROGRAMA NO SE INVENTA NADA**: la clave lleva `_` y el KMS resuelve el catálogo sin esa
+  dimensión, que es lo correcto — una regla cuya dimensión no viene en el sujeto **NO ES APLICABLE y
+  DEJA PASAR** (*default-open*), que es lo que hace que lo compartido se declare una sola vez. Es el
+  caso de la familia que todavía no ha elegido programa en el paso 1.
+- **⛔ Y QUÉ PROGRAMA ES ESTA SOLICITUD SE DECIDE EN UN SOLO SITIO**, `programaDeLaSolicitud`
+  (`frontend/src/context/WizardContext.jsx`), consumido por el paso 5, el repaso del paso 7 y el
+  precalentado. Tres derivaciones distintas son tres claves distintas, y eso **es** el defecto.
+  Su orden es `stepData.email` → `stepData.application`, **medido y no arbitrario**: la hidratación
+  siembra el programa SOLO en `application` y el paso 1, al CAMBIAR de programa, lo escribe SOLO en
+  `email` (su `onNext` encola el guardado pero no toca `stepData.application`). Al revés, cambiar de
+  programa dejaba la clave clavada en el hidratado — lo cazó en ROJO la batería.
 - **⛔ UN FALLO NO SE GUARDA**, y el criterio está COPIADO de `qb_core_catalogoImposible_`: un
   catálogo con secciones y CERO preguntas es la forma exacta de una lectura a medias ⇒ no se
   guarda (recalcula cada vez, sin ahorro, en vez de apagar el cuestionario del colegio media hora).
@@ -5172,6 +5191,29 @@ refresca es el plazo (`CATALOGO_PREGUNTAS_TTL_S_`, 30 min). Si el colegio edita 
 cambio puede tardar hasta media hora en verse por este camino, **encima** de la ventana de
 revalidación que el navegador ya tiene (`QCACHE_LS_REVALIDATE_MS`, 30 min). Es el mismo trato que el
 KMS ya aceptó para su caché de 40 min.
+
+⚠️ **Y desde D181, el programa que el asistente deja preparado sale de la CABECERA del expediente.**
+`_dejarElClicSinLlamadas_` lee el `program_id` que el KMS proyecta en `enr.expedienteDelToken` (su
+**octavo** campo, dado de alta ese mismo día — antes proyectaba SIETE y **el encargo daba por hecho
+que ya venía**: era falso, y hubo que ampliarlo). Con programa declarado, la copia que se deja
+preparada es la del cuestionario **filtrado**; sin él —una solicitud recién creada que todavía no ha
+elegido programa en el paso 1— se prepara la del catálogo sin esa dimensión, y esa familia paga el
+viaje una vez cuando elige. **Eso se dice, no se esconde.**
+
+**Red de la parte del NAVEGADOR (D181): el recorrido `preguntas-por-programa` de `npm run e2e:wizard`**
+(10 afirmaciones, dos fases, con **ancla** por delante y guarda de **MEDICIÓN CIEGA** contra el
+fuente). Sirve **DOS** programas a propósito (`scenario.variosProgramas`): con uno solo el paso 1 lo
+auto-elige, no hay nada que cambiar y las dos fases medirían el aire. **Rojo demostrado CUATRO
+veces**, cada una nombrando su caso — que la clave ignore el programa (*«no salió ninguna petición de
+fetchQuestions tras cambiar de programa: … se le está sirviendo, DE UNA COPIA, el cuestionario del
+programa anterior»*) · que el programa no llegue a la petición (*«llevó program_id=undefined»*) · el
+orden de derivación invertido (mismo rojo que el primero, y así se encontró) · y el **renombrado**,
+que sale **«MEDICIÓN CIEGA»** y no verde. ⚠️ **Y la red se corrigió a sí misma dos veces:** el paso 1
+de una solicitud ya guardada se recupera **PROTEGIDO tras su banner**, así que sin pulsar «Editar» el
+desplegable cambiaba de valor y «Continuar» no avanzaba — el recorrido se quedaba en el paso 1
+midiendo el aire; y los anclajes del fuente no llevaban `\b`, de modo que renombrar
+`_claveDelCatalogo` a `_claveDelCatalogoLoQueSea` seguía casando **por subcadena** y el recorrido
+salía VERDE con el mecanismo renombrado.
 
 ⚠️ **NINGUNA BATERÍA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend **simulado** que
 **nunca ejecuta `backend/Code.js`**, y este cambio es invisible para el navegador (misma pantalla,

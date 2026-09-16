@@ -10,12 +10,13 @@ import * as log from '../../logger';
 
 export default function Step5Questions({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t, i18n }  = useTranslation();
-  const { enrollmentGroupId, resumeToken, stepData, updateStep, enqueueSave, recoveryNonce } = useWizard();
+  const { enrollmentGroupId, resumeToken, stepData, updateStep, enqueueSave, recoveryNonce,
+          programaDeLaSolicitud } = useWizard();   // D181 — las preguntas van por programa
 
   // WIZARD-PERF-CACHE-SKELETON: paint instantáneo (stale-while-revalidate). Si hay
   // catálogo en sessionStorage (mismo idioma, no expirado) lo mostramos sin spinner
   // y revalidamos en background; si no, arrancamos en loading como antes.
-  const _cached = readQuestionsCacheSync(i18n.language);
+  const _cached = readQuestionsCacheSync(i18n.language, programaDeLaSolicitud);
   const [sets,     setSets]     = useState(_cached?.sets || []);
   const [loading,  setLoading]  = useState(!_cached);
   // «NO HAY PREGUNTAS» Y «NO SE PUDO CARGAR» NO SON LO MISMO (2026-08-04). El `.catch`
@@ -44,17 +45,20 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
     // WIZARD-PERF-CACHE-SKELETON: SWR — si ya hay cache fresco (sessionStorage del
     // mismo idioma) NO mostramos spinner; revalidamos en background y reconciliamos.
     let alive = true;
-    const cached = readQuestionsCacheSync(i18n.language);
+    const cached = readQuestionsCacheSync(i18n.language, programaDeLaSolicitud);
     if (cached) { setSets(cached.sets || []); setLoading(false); }
     else { setLoading(true); }
-    fetchQuestions(i18n.language)
+    fetchQuestions(i18n.language, programaDeLaSolicitud)
       .then(data => { if (alive) { setSets(data.sets || []); setCatalogoFallo(false); } })
       // Con catálogo cacheado delante, una revalidación fallida no es un problema para la
       // familia (sigue viendo sus preguntas). SIN catálogo, sí lo es: se dice.
       .catch(() => { if (alive && !cached) { setSets([]); setCatalogoFallo(true); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [i18n.language, intento]); // eslint-disable-line
+    // D181: el PROGRAMA entra en las dependencias — si el tutor lo cambia en el paso 1,
+    // el cuestionario que se pinta tiene que volver a resolverse, no quedarse con el del
+    // programa anterior.
+  }, [i18n.language, intento, programaDeLaSolicitud]); // eslint-disable-line
 
   // ── DBG-SESSION (bug 2): qué llega al render. audience_category_id + has_q por
   // pregunta + nº de hijos/tutores + claves de respuesta (prefijos 8 chars) son
