@@ -2821,6 +2821,12 @@ function doPost(e) {
   // para poder decir cuánto pasa entre que la petición llega y el correo se pide. Una
   // asignación; ningún comportamiento cambia.
   _TRAZA_DOPOST_MS_ = _perfT0_;
+  // MEDIDA 2 — ¿la ejecución llega a terminar? La marca de ENTRADA se escribe YA (no se
+  // acumula en memoria) y la de SALIDA en el `finally` de abajo: una ejecución que muere
+  // deja su entrada SIN cierre, y eso es exactamente lo que `manual_peticionesQueNoVolvieron`
+  // devuelve. Fuera de la traza (apagada por defecto) esto no cuesta nada.
+  var _petId = null;
+  var _petOk = true;
   try {
     const payload = JSON.parse(e.postData.contents);
     _dbgStart_(payload); // DBG-TRACE: cronología server-side si _dbg:true
@@ -2832,6 +2838,11 @@ function doPost(e) {
 
     const action = payload.action;
     let result;
+
+    // MEDIDA 2 — marca de ENTRADA. Va DESPUÉS de conocer la acción (para poder nombrarla) y
+    // ANTES de cualquier trabajo, para que una ejecución que muere a mitad ya la tenga escrita.
+    // Solo con la traza encendida: apagada, ni una escritura de más.
+    if (_trazarActivo_()) _petId = _petMarcarEntrada_(action);
 
     // ①97 — el disparador del espejo se asegura AQUÍ, una vez cada varias horas y detrás
     // de una marca de caché (un `cache.get` de ~1 ms en la inmensa mayoría de peticiones).
@@ -2940,6 +2951,7 @@ function doPost(e) {
       : { ok: true, ...result, __perf: __perf });
 
   } catch (err) {
+    _petOk = false;  // MEDIDA 2 — la petición CONTESTÓ, pero con error. No es una muerte.
     // KAL-11: log full message internally with email/UUID redaction (Stackdriver interno).
     Logger.log('doPost error: ' + redact_(err.message) + '\nstack: ' + (err.stack || 'n/a'));
     // CLI 26 (2026-06-01) — structured error code for state-gate rejections
@@ -2956,6 +2968,10 @@ function doPost(e) {
     }
     return jsonResponse_({ ok: false, error: sanitizeErrorForClient_(err) }, 500);
   } finally {
+    // MEDIDA 2 — marca de SALIDA. Va ANTES del volcado de la traza porque este `finally`
+    // es lo ÚNICO que se ejecuta cuando la petición termina: si la ejecución muere (tope
+    // de 6 min de Apps Script), nada de esto corre y la entrada se queda sin su cierre.
+    if (_petId) _petMarcarSalida_(_petId, _perfT0_, _petOk);
     // D171 — vuelca la traza de ESTA petición (una sola vez, con las cifras ya calculadas).
     // Con la traza apagada el buffer está vacío y esto retorna en su primera línea.
     _trazaVolcar_();
@@ -9482,6 +9498,102 @@ function _trazaBorrarCapturada_() {
   } catch (eBo) { /* best-effort */ }
 }
 
+// ─── ¿LA EJECUCIÓN LLEGA A TERMINAR? (MEDIDA 2 de `cli-el-timbre-y-la-respuesta-que-no-vuelve`) ──
+//
+// POR QUÉ EXISTE. Una de cada tres llamadas de la mañana del 2026-09-16 murió en el segundo tramo
+// (el `echo` de Google), y **no se puede decir de quién es la culpa** porque no queda constancia
+// de que una petición EMPIECE y ACABE:
+//
+//   · terminó  ⇒ el asistente hizo su trabajo y la respuesta se perdió ENTRE GOOGLE Y EL
+//                NAVEGADOR. No es nuestro tiempo, y arreglar nuestro código no lo cambia.
+//   · no terminó ⇒ la mataron (el tope de 6 min de Apps Script, o una excepción). Es nuestra.
+//
+// ⛔ LA TRAZA DE ARRIBA NO PUEDE CONTESTARLO, y por eso esto es OTRA cosa: `_trazaApunte_`
+//    ACUMULA EN MEMORIA y `_trazaVolcar_` escribe **en el `finally`**. Si la ejecución muere, ese
+//    `finally` no corre y sus líneas se pierden ⇒ **la ausencia no distingue «murió» de «no había
+//    nada que apuntar»**. La marca de ENTRADA de aquí se escribe **YA**, antes de nada, para que
+//    sobreviva a la muerte de su propia ejecución. Es la única diferencia, y es toda la medida.
+//
+// LAS BARANDILLAS, y ninguna es opcional:
+//
+// ⛔ NI UN DATO DE FAMILIA. La marca lleva **el nombre de la acción y milisegundos**, nada más.
+//    Ni el correo, ni el enlace, ni el identificador de la solicitud. El identificador que casa la
+//    entrada con la salida se ACUÑA AQUÍ (aleatorio, de esta petición) y no identifica a nadie:
+//    no se reutiliza el `resume_token` ni ningún otro dato (KAL-11 · §"PII solo en GAS").
+// ⛔ APAGADO POR DEFECTO, con la MISMA propiedad que la traza (`TRAZAR_ARRANQUE`) — no se inventa
+//    una segunda. Apagado, el camino de toda petición paga **lo mismo que ya pagaba**: una lectura
+//    de esa propiedad, cacheada en `_trazarArranqueCache_` para el resto de la ejecución (la misma
+//    que `kmsProxy_` ya hace en toda petición que hable con el KMS).
+// ⛔ NO PUEDE TUMBAR UNA PETICIÓN. Todo va en su `try/catch` y un fallo se traga. Una medición que
+//    rompe el producto no es una medición.
+// ⛔ ALMACÉN: el que el proyecto YA usa (`CacheService`), como la traza. Ni una tabla, ni Drive.
+//
+// POR QUÉ CADA MARCA VA EN SU PROPIA LLAVE, y el índice aparte — esto NO es un capricho:
+// `CacheService` no sabe listar llaves, así que hace falta un índice; pero un índice compartido se
+// lee-modifica-escribe, y dos peticiones a la vez **se pisan**. Perder una marca de ENTRADA solo
+// hace que NO se cuente (se reporta de menos: lado seguro); perder un CIERRE haría que una
+// ejecución sana saliera como «murió» — **un falso positivo, que es justo la conclusión
+// equivocada**. Por eso el CIERRE escribe en su propia llave y **nunca toca el índice**: no hay
+// forma de que se pierda por contención. El índice lo toca solo la ENTRADA, con un candado corto;
+// si no lo consigue, la marca existe pero no se lista — falla hacia «no lo cuento».
+var PET_INDICE_CLAVE_ = 'peticiones_en_vuelo_indice';
+var PET_TTL_S_ = 1800;          // 30 min: el mismo horizonte que la traza
+var PET_MAX_ = 150;             // tope: las ÚLTIMAS N. Un clic produce ~5-15
+var PET_LOTE_ = 100;            // `getAll` va de 100 en 100
+var PET_CANDADO_MS_ = 2000;     // si no se consigue, la marca no se indexa (lado seguro)
+
+/**
+ * Apunta que ESTA petición EMPEZÓ. Se escribe YA (no se acumula): es lo único que sobrevive si la
+ * ejecución muere. Devuelve el identificador corto con el que se casará su cierre, o `null`.
+ * NUNCA lanza.
+ */
+function _petMarcarEntrada_(accion) {
+  try {
+    var id = String(Utilities.getUuid()).replace(/-/g, '').slice(0, 8);
+    var cache = CacheService.getScriptCache();
+    // (1) la marca, en su PROPIA llave — sin contención con nadie.
+    cache.put('pet_a_' + id, JSON.stringify({
+      a: String(accion == null ? '(sin accion)' : accion).slice(0, 40),
+      t: Date.now()
+    }), PET_TTL_S_);
+    // (2) el índice, bajo candado corto. Si no se puede, se pierde el LISTADO, no la marca.
+    var candado = null;
+    try {
+      candado = LockService.getScriptLock();
+      if (candado.tryLock(PET_CANDADO_MS_)) {
+        var lista = [];
+        var previo = cache.get(PET_INDICE_CLAVE_);
+        if (previo) { try { lista = JSON.parse(previo) || []; } catch (ePr) { lista = []; } }
+        lista.push(id);
+        if (lista.length > PET_MAX_) lista = lista.slice(lista.length - PET_MAX_);
+        cache.put(PET_INDICE_CLAVE_, JSON.stringify(lista), PET_TTL_S_);
+      } else {
+        candado = null;  // no se consiguió: nada que soltar
+      }
+    } finally {
+      if (candado) { try { candado.releaseLock(); } catch (eRe) {} }
+    }
+    return id;
+  } catch (eEn) { return null; }
+}
+
+/**
+ * Apunta que ESTA petición TERMINÓ, en su PROPIA llave y SIN candado — así un cierre no se puede
+ * perder por contención, que es lo que produciría un «murió» falso.
+ * NUNCA lanza.
+ */
+function _petMarcarSalida_(id, t0, ok) {
+  if (!id) return;
+  try {
+    CacheService.getScriptCache().put('pet_c_' + id, JSON.stringify({
+      ms: t0 ? (Date.now() - t0) : -1,
+      ok: !!ok
+    }), PET_TTL_S_);
+  } catch (eSa) { /* la petición ya contestó: no se rompe por no poder apuntar */ }
+}
+
+// ─── Fin de «¿la ejecución llega a terminar?» ────────────────────────────────────────
+
 function _dbgStart_(payload) {
   var action = payload && payload.action;
   var sensitive = DBG_ENUM_SENSITIVE_ACTIONS_.indexOf(String(action)) !== -1;
@@ -13815,6 +13927,81 @@ function manual_trazaDelArranque() {
   var estado = _trazarArranqueEstadoReleido_('LEER');
   Logger.log('[TRAZA-INTERRUPTOR] LEER → ' + lineas.length + ' línea(s) capturada(s)');
   return { ok: true, encendida: estado.encendida, n: lineas.length, lineas: lineas };
+}
+
+/**
+ * MEDIDA 2 — ¿QUÉ PETICIONES NO VOLVIERON? Devuelve las marcas de ENTRADA que NO tienen su
+ * cierre: ésas son las ejecuciones que murieron sin llegar al `finally` de `doPost`.
+ *
+ * ⛔ POR QUÉ NO SIRVE LA TRAZA (D171) PARA ESTO: la traza acumula sus líneas EN MEMORIA y las
+ * vuelca UNA vez, en el `finally`. Una ejecución que muere por el tope de Apps Script no llega
+ * a ese `finally` ⇒ SUS líneas se pierden, que es exactamente el caso que hay que ver. Por eso
+ * la marca de entrada se escribe YA, en su propia llave.
+ *
+ * ⛔ LO QUE NO LLEVA: ni un dato de familia. Solo el NOMBRE de la acción, milisegundos y un
+ * identificador acuñado AQUÍ al azar — nunca el enlace, ni el correo, ni el expediente
+ * (KAL-11 · §"PII solo en GAS").
+ *
+ * SIN GUION BAJO FINAL, como todas las `manual_*`: con él, GAS la volvería invisible en el
+ * selector del editor.
+ *
+ * SOLO LEE: ni escribe, ni borra, ni apaga el interruptor.
+ *
+ * @returns {{ ok: boolean, encendida: boolean, n_vistas: number, no_volvieron: object[], en_vuelo: object[] }}
+ */
+function manual_peticionesQueNoVolvieron() {
+  var estado = _trazarArranqueEstadoReleido_('PETICIONES');
+  var cache = CacheService.getScriptCache();
+
+  var ids = [];
+  try {
+    var crudo = cache.get(PET_INDICE_CLAVE_);
+    if (crudo) ids = JSON.parse(crudo) || [];
+  } catch (eIx) { ids = []; }
+
+  var muertas = [];
+  var enVuelo = [];
+  var ahora = Date.now();
+
+  // El techo de ejecución de Apps Script son 6 min: por debajo de eso, una entrada sin cierre
+  // puede ser sencillamente una petición que TODAVÍA está corriendo. No se cuenta como muerta.
+  var TECHO_MS = 6 * 60 * 1000;
+
+  for (var i = 0; i < ids.length; i += PET_LOTE_) {
+    var trozo = ids.slice(i, i + PET_LOTE_);
+    var llaves = [];
+    for (var j = 0; j < trozo.length; j++) {
+      llaves.push('pet_a_' + trozo[j]);
+      llaves.push('pet_c_' + trozo[j]);
+    }
+    var leidas = {};
+    try { leidas = cache.getAll(llaves) || {}; } catch (eGa) { leidas = {}; }
+
+    for (var k = 0; k < trozo.length; k++) {
+      var id = trozo[k];
+      var brutoA = leidas['pet_a_' + id];
+      if (!brutoA) continue;                 // caducada (30 min): no dice nada
+      var entrada = null;
+      try { entrada = JSON.parse(brutoA); } catch (ePa) { continue; }
+      if (leidas['pet_c_' + id]) continue;   // volvió: nada que reportar
+
+      var edad = ahora - (entrada.t || 0);
+      var fila = { id: id, accion: entrada.a, hace_ms: edad };
+      if (edad > TECHO_MS) muertas.push(fila); else enVuelo.push(fila);
+    }
+  }
+
+  Logger.log('[PETICIONES] vistas=' + ids.length +
+             ' · no_volvieron=' + muertas.length +
+             ' · en_vuelo=' + enVuelo.length);
+
+  return {
+    ok: true,
+    encendida: estado.encendida,
+    n_vistas: ids.length,
+    no_volvieron: muertas,
+    en_vuelo: enVuelo
+  };
 }
 
 /**
