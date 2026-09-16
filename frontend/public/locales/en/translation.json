@@ -531,6 +531,7 @@
   "stepup.err_too_many_attempts": "Too many attempts. Please wait a moment before trying again.",
   "stepup.err_rate_limited": "You've requested too many codes. Please try again in a few minutes.",
   "stepup.err_generic": "We couldn't verify the code. Please try again.",
+  "stepup.err_no_se_pudo_comprobar": "We couldn't check your code right now. It isn't wrong — the answer never arrived. Press “Enter” again with the same code.",
   "stepup.pii_masked_title": "Protected data",
   "stepup.pii_masked_body": "Date of birth, identity document and address are hidden. Verify to view them.",
   "stepup.address_masked": "Address hidden — verify to view",

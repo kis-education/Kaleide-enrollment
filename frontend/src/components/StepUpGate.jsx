@@ -248,6 +248,28 @@ export default function StepUpGate({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ⛔ `verifyEmail` NO SE REINTENTA A CIEGAS — se PREGUNTA si la ventana ya está abierta.
+  //
+  // El código es de UN SOLO USO: `verifyEmail_` (backend/Code.js) hace `cache.remove(codeKey)` y
+  // estampa `_markStepUpFresh_` ANTES de que su respuesta viaje. Si esa respuesta muere en el
+  // segundo tramo del doble salto de Apps Script (medido 2026-09-16: OCHO de ~21 llamadas, ≈38 %,
+  // cinco de ellas con HTTP 404 que el asistente NO PUEDE emitir), el servidor ACERTÓ y el
+  // navegador no se enteró: código gastado, marca de los 10 min puesta, y el tutor reteclea contra
+  // «Verification code expired or not found».
+  //
+  // ⛔ Repetir `verifyEmail` con el mismo código choca contra su propio acierto Y gasta uno de los
+  // CINCO intentos del cupo anti-fuerza-bruta. Por eso se PREGUNTA una vez, con `getAdmissionState`
+  // —que ya devuelve `step_up_fresh` y `step_up_restante_s` (backend/Code.js:6078-6079)— pasándole
+  // el MISMO `tokenPayload` (KAL-4: el expediente lo deriva el servidor del bearer, nunca del cuerpo).
+  const preguntarSiLaVentanaYaEstaAbierta_ = async () => {
+    const r = await gasCall('getAdmissionState', { ...tokenPayload });
+    return {
+      abierta: !!(r && r.step_up_fresh),
+      restanteS: (r && Number(r.step_up_restante_s)) || 0,
+      cierre: (r && r.step_up_cierre) || null,
+    };
+  };
+
   const verify = async () => {
     const clean = (code || '').trim();
     if (!/^\d{6}$/.test(clean)) { setErr(t('stepup.err_code_format')); return; }
@@ -258,6 +280,38 @@ export default function StepUpGate({
       setCode('');
       onVerified();
     } catch (e) {
+      // ⛔ SOLO cuando el fallo es de TRANSPORTE (①86: el socket murió, o llegó un estado HTTP que
+      // el asistente no puede haber emitido). Un fallo que NO es de transporte —código incorrecto,
+      // caducado, TOO_MANY_ATTEMPTS— es el servidor CONTESTANDO y hay que creerle: se comporta
+      // EXACTAMENTE como antes de este cambio.
+      if (e && e.transporte === true) {
+        try {
+          const v = await preguntarSiLaVentanaYaEstaAbierta_();
+          if (v.abierta) {
+            // El servidor SÍ acertó y se perdió la respuesta: se ENTRA por el mismo camino que el
+            // acierto de hoy, con el tiempo restante que reporta el servidor. La familia no se
+            // entera de nada.
+            log.success('StepUpGate: la respuesta se perdió, pero la ventana ya está abierta', {
+              restante_s: v.restanteS,
+            });
+            setCode('');
+            onVerified(v.restanteS, v.cierre);
+            return;
+          }
+          log.warn('StepUpGate: verifyEmail murió en el transporte y la ventana sigue cerrada');
+        } catch (e2) {
+          log.warn('StepUpGate: no se pudo comprobar si la ventana quedó abierta', {
+            message: e2 && e2.message,
+          });
+        }
+        // Ventana cerrada (o no se pudo comprobar): se dice que NO SE PUDO COMPROBAR — no que el
+        // código sea incorrecto. ⛔ NO se da el código por gastado, ⛔ NO se pide otro por cuenta
+        // propia y ⛔ NO se borra lo tecleado: la familia puede volver a intentarlo con el mismo.
+        setInfo('');
+        setErr(t('stepup.err_no_se_pudo_comprobar'));
+        setVerifying(false);
+        return;
+      }
       log.error('StepUpGate: verifyEmail failed', { message: e.message });
       setErr(errorMessage(e));
       setVerifying(false);

@@ -531,6 +531,7 @@
   "stepup.err_too_many_attempts": "Demasiados intentos. Espera un momento antes de volver a intentarlo.",
   "stepup.err_rate_limited": "Has solicitado demasiados códigos. Inténtalo de nuevo en unos minutos.",
   "stepup.err_generic": "No se pudo verificar el código. Inténtalo de nuevo.",
+  "stepup.err_no_se_pudo_comprobar": "No hemos podido comprobar tu código ahora mismo. No es que sea incorrecto: la respuesta no llegó. Vuelve a pulsar «Acceder» con el mismo código.",
   "stepup.pii_masked_title": "Datos protegidos",
   "stepup.pii_masked_body": "La fecha de nacimiento, el documento de identidad y la dirección se muestran ocultos. Verifica para verlos en claro.",
   "stepup.address_masked": "Dirección oculta — verifica para ver",

@@ -5037,6 +5037,114 @@ la guarda de **MEDICIÓN CIEGA** (renombrar `warmEntryBundle_` ⇒ el arnés se 
 **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
 lo que cambia es que entra, y sin esperar.
 
+### `①86` (segunda cara, 2026-09-16) — una RESPUESTA PERDIDA no es un fallo del código
+
+**El registro COMPLETO de Diego (2026-09-16, 08:28–08:42): de ~21 llamadas, OCHO murieron en el
+segundo tramo del doble salto de Apps Script — un 38 %.** CINCO fueron **HTTP 404**
+(`warmBundle` 42.917 ms · `getLiveStateVersion` 35.234 ms · **`verifyEmail` 14.935 ms** ·
+`fetchQuestions` 22.763 ms · `refrescarVentana` 60.919 ms) y tres, el cuerpo de la comprobación de
+salud del propio asistente en vez de la respuesta.
+
+⭐ **EL CARRIL DE `①86` YA FUNCIONABA — medido en vivo:** las tres de la comprobación de salud
+entraron por él, reintentaron y volvieron rápido (7.353 ms / 7.172 ms). **El 404 es LA MISMA CLASE y
+se quedaba fuera**: `gasCall` lo trataba como «el servidor SÍ contestó», así que ni lo marcaba como
+transporte ni lo reintentaba, y la pantalla lo pintaba como un fallo del código. Este tramo
+**ENSANCHA esa puerta; no construye una segunda.**
+
+**⛔ EL ASISTENTE NO PUEDE EMITIR UN 404, y por eso la clasificación es legítima:** su `doPost`
+contesta siempre por `ContentService` y **no hay un solo `setResponseCode`** en su camino; las dos
+apariciones de `404` en `backend/Code.js` son códigos que LEE de otros servicios. Y la misma
+dirección contestó 200 varias veces en esos mismos minutos ⇒ lo puso el transporte de Google.
+
+**PIEZA 1 · `frontend/src/api.js` — qué estados entran en el carril, y por qué esos.**
+`esEstadoDeTransporte_(status)` con **`ESTADOS_DE_GOOGLE_ = {401, 403, 404, 408, 429}`** más
+**todo `>= 500`**. Son los que el asistente **no puede producir**: su `doPost` **captura y devuelve
+`{ok:false}` con HTTP 200** ante cualquier error propio, así que un código HTTP distinto de 200 solo
+puede venir de la infraestructura — `401`/`403` son la puerta de Google, `404` el `echo` que se
+perdió, `408`/`429` sus frenos, y `5xx` el transporte caído. Cuando casa, el error viaja con
+`transporte = true` + `saludDelAsistente = true` + `estadoHttp`, **y deliberadamente SIN `code`**:
+así `clasificarFalloDeEntrada` lo manda a «no se pudo cargar» ⇒ *«tu enlace sigue siendo válido»*.
+Lo que **no** casa (un 4xx que el asistente sí pudiera producir algún día) se comporta byte-idéntico
+a ayer.
+
+⛔ **NO se toca `clasificarFalloDeEntrada`**, ni se inventa un tercer estado, ni un código nuevo.
+⛔ **Y NO se usa el TIEMPO como señal**: los cinco 404 van de **14,9 s a 60,9 s**, y en la misma
+ventana hubo respuestas buenas de **31,0 · 36,8 · 40,3 · 29,4 y 23,4 s**. Un umbral por reloj
+clasificaría mal en las dos direcciones.
+
+**PIEZA 2 · `StepUpGate.jsx` — el código es de UN SOLO USO, así que NO se reintenta: se PREGUNTA.**
+`verifyEmail_` (`backend/Code.js`) hace `cache.remove(codeKey)` y estampa `_markStepUpFresh_`
+**ANTES de que su respuesta viaje**. Si esa respuesta muere, el servidor ACERTÓ y el navegador no se
+entera: **código gastado, marca de los 10 min puesta**, y el tutor reteclea contra *«Verification
+code expired or not found»*.
+
+⇒ **solo cuando el fallo es de TRANSPORTE** (`e.transporte === true`), la verja pregunta **UNA vez**
+con `getAdmissionState` —que ya devuelve `step_up_fresh` y `step_up_restante_s`
+(`backend/Code.js:6078-6079`)— pasándole el **MISMO `tokenPayload`** (KAL-4: el expediente lo deriva
+el servidor del bearer, nunca del cuerpo):
+
+| Lo que contesta | Qué hace la verja |
+|---|---|
+| **ventana ABIERTA** | ENTRA por `onVerified(restanteS, cierre)`, con el tiempo REAL del servidor. La familia no se entera de nada |
+| **ventana cerrada, o no se pudo preguntar** | dice que **NO SE PUDO COMPROBAR** — ⛔ no da el código por gastado, ⛔ no pide otro por su cuenta y ⛔ **no borra lo tecleado** |
+
+⛔ **Repetir `verifyEmail` con el mismo código choca contra su propio acierto Y quema uno de los
+CINCO intentos** del cupo anti-fuerza-bruta. ⛔ **Un fallo que NO es de transporte** —código
+incorrecto, caducado, `TOO_MANY_ATTEMPTS`— **es el servidor CONTESTANDO y hay que creerle**: se
+comporta EXACTAMENTE como antes de este cambio.
+
+**Y un solo argumento más en `WizardPage`**: `onVerified={(restanteS, cierre) => markStepUpFresh(restanteS, cierre)}`.
+Es **byte-idéntico en el camino normal** — `markStepUpFresh` cae a `STEPUP_WINDOW_MS` cuando
+`restanteS` no es > 0, así que `markStepUpFresh(undefined, undefined)` es lo de siempre.
+
+**Textos nuevos** (los dos idiomas): `stepup.err_no_se_pudo_comprobar`. **No dice que el código sea
+incorrecto** — dice que la respuesta no llegó y que se vuelva a pulsar el botón con el MISMO código.
+⚠️ Y **nombra el botón tal y como la familia lo lee** (`stepup.gate_enter`: «Acceder» en español,
+«Enter» en inglés), no una traducción inventada de su nombre.
+
+**Lo que NO se toca:** la ventana de 10 min y su techo de 2 h · KAL-4 · la verja reCAPTCHA · el cupo
+de 5 intentos y el de 8 códigos/hora · que una **RECARGA** vuelva a pedir el código · que el código
+**no se auto-envíe** (Diego, 2026-09-13) · y **`backend/Code.js`**, que no se toca ni una línea.
+
+**Red**: camino NUEVO `respuesta-perdida-no-es-un-fallo` (9 afirmaciones + ancla + guarda de
+**MEDICIÓN CIEGA**). El 404 lo provoca una palanca nueva del simulado,
+`scenario.estadoHttpEnVezDeRespuesta = { verifyEmail: { veces, status, trabajo } }`, hermana de
+`saludEnVezDeRespuesta`. ⛔ **`trabajo` DECIDE SI EL SERVIDOR HIZO SU TRABAJO, y los dos casos son
+reales** —desde el navegador no se puede saber si la ejecución llegó a correr—: con `true` se
+despacha y solo se sustituye lo que el navegador LEE (el código SE GASTA y la ventana SE ABRE); con
+`false` la petición muere sin efecto. ⛔ **El orden es B→A a propósito**: el simulado acuña la marca
+al despachar `verifyEmail`, así que la ventana solo está CERRADA mientras ningún `verifyEmail` se
+haya despachado — medir (A) primero dejaría (B) pasando en vacío.
+
+**Rojo demostrado TRES veces**, cada una nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| el código de ayer (el 404 no es transporte) | *«la verja muestra error="Network error: 404"»* + *«no salió ninguna getAdmissionState»* + *«lo que la familia vio fue «error:Network error: 404»: el servidor SÍ acertó (código gastado, marca de los 10 min puesta) y la pantalla la deja fuera de su propia solicitud»* |
+| reintentar `verifyEmail` a ciegas en vez de preguntar | *«salieron 2 verifyEmail y 1 sendVerificationCode: repetir el código choca con su propio acierto y quema uno de los CINCO intentos del cupo»* (+ se borra lo tecleado y la casilla queda DESHABILITADA) |
+| renombrar lo medido | **«MEDICIÓN CIEGA · no se encontró en el fuente: frontend/src/components/StepUpGate.jsx :: \bpreguntarSiLaVentanaYaEstaAbierta_\b»** |
+
+⚠️ **Y DOS afirmaciones se corrigieron a sí mismas, que es lo que las hace creíbles.**
+(1) «no dice que el código sea incorrecto» salió **ROJA con el arreglo puesto**: el texto correcto
+usa la palabra para NEGARLA (*«No es que sea incorrecto: la respuesta no llegó»*) ⇒ el criterio no
+podía ser «no menciona la palabra», sino **si le ECHA LA CULPA al código**.
+(2) «con la ventana ya abierta se ENTRA» **pasaba también con el código roto**: el PULSO
+(`getLiveStateVersion` → `getAdmissionState` → `hydrateSession`) rescata a la familia ~30 s después.
+⇒ hoy se mide como **CARRERA** —o entra, o se le echa la culpa al código— y se añade una afirmación
+más: que se entre **por la pregunta**, no porque el pulso la rescate media vuelta de reloj más tarde.
+
+⚠️ **LO QUE LA RED NO CUBRE, y hay que decirlo:** la batería corre contra un backend **simulado**
+que **nunca ejecuta `backend/Code.js`**. Afirma lo que hace el NAVEGADOR. **NO acredita que el
+código se gaste al acertar** — eso se acredita **leyendo `verifyEmail_`** (`cache.remove(codeKey)` +
+`_markStepUpFresh_` antes de responder), que es de donde sale el daño entero.
+
+⚠️ **Y lo que este tramo NO arregla:** que el segundo tramo del doble salto devuelva 404 sigue sin
+explicación —no se sabe por qué lo hace, ni si el servidor acertó en el caso de Diego—. Lo que se
+cierra es que **el asistente deje de contárselo a la familia como un fallo suyo**.
+
+**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), **sin `clasp` y sin
+turno**.
+
 ### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
 
 `Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.

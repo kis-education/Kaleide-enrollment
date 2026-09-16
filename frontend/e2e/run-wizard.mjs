@@ -432,7 +432,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -822,6 +822,35 @@ function startServer() {
           saludPendiente[payload.action] -= 1
           dispatch(payload)
           setTimeout(() => responder({ status: 'ok', ts: new Date().toISOString() }), LATENCY)
+          return
+        }
+        // ── `①86` (segunda cara) · UN ESTADO HTTP QUE EL ASISTENTE NO PUEDE EMITIR ────
+        // Reproduce el otro modo de muerte del segundo tramo del doble salto, medido en el
+        // registro completo de Diego (2026-09-16, 08:28–08:42): OCHO de ~21 llamadas
+        // murieron ahí, y CINCO de ellas con **HTTP 404** — entre ellas `verifyEmail` a los
+        // 14.935 ms. El asistente NO PUEDE emitirlo: su `doPost` contesta siempre por
+        // `ContentService` y no hay un solo `setResponseCode` en su camino ⇒ el 404 lo puso
+        // el transporte de Google, no el servidor.
+        //
+        // ⚠️ `trabajo` DECIDE SI EL SERVIDOR HIZO SU TRABAJO, y los DOS casos son reales:
+        // no se sabe —ni se puede saber desde el navegador— si la ejecución llegó a correr.
+        //   · `trabajo: true`  → se despacha y solo se sustituye lo que el navegador LEE
+        //                        (el código SE GASTA y la ventana SE ABRE, y el cliente no
+        //                        se entera: es el caso que deja a un tutor tecleando contra
+        //                        «Verification code expired or not found»).
+        //   · `trabajo: false` → ni se despacha: la petición muere sin efecto.
+        //
+        // Es un CONTADOR por acción, como sus dos hermanos de arriba.
+        const estadoPendiente = scenario.estadoHttpEnVezDeRespuesta
+        const cfgEstado = estadoPendiente && payload && estadoPendiente[payload.action]
+        if (cfgEstado && cfgEstado.veces > 0) {
+          cfgEstado.veces -= 1
+          if (cfgEstado.trabajo) dispatch(payload)
+          else record({ action: payload.action, payload, estadoHttp: cfgEstado.status })
+          setTimeout(() => {
+            res.writeHead(cfgEstado.status || 404, { 'Content-Type': 'text/html; charset=utf-8' })
+            res.end('<html><head><title>Error 404 (Not Found)</title></head><body>404.</body></html>')
+          }, LATENCY)
           return
         }
         // ── `①86` · UNA RESPUESTA LEGÍTIMA QUE ADEMÁS LLEVA `status` ───────────────────
@@ -9110,6 +9139,238 @@ async function caminoCodigoAlEntrarPorEnlace(page, base) {
 }
 
 /**
+ * respuesta-perdida-no-es-un-fallo — un 404 del TRANSPORTE al verificar el código NO se le
+ * cuenta a la familia como «tu código está mal».
+ *
+ * ── El defecto, medido en el registro COMPLETO de Diego (2026-09-16, 08:28–08:42) ──────
+ * De ~21 llamadas, OCHO murieron en el segundo tramo del doble salto de Apps Script — un
+ * **38 %**. CINCO de ellas con **HTTP 404**, entre ellas `verifyEmail` a los 14.935 ms. El
+ * asistente NO PUEDE emitir un 404: su `doPost` contesta siempre por `ContentService` y no
+ * hay un solo `setResponseCode` en su camino ⇒ lo puso el transporte de Google.
+ *
+ * `gasCall` lo trataba como «el servidor SÍ contestó» ⇒ no lo marcaba como transporte, no
+ * entraba en el carril de `①86` y la pantalla lo pintaba como un fallo del código. Y el
+ * código es de UN SOLO USO: si el servidor acertó y la respuesta se perdió, el código está
+ * gastado y la marca de los 10 min puesta — el tutor reteclea contra «Verification code
+ * expired or not found».
+ *
+ * ── Qué se afirma, en las DOS caras del mismo 404 ─────────────────────────────────────
+ * (A) 404 con la ventana **abierta** (el servidor SÍ hizo su trabajo) ⇒ se ENTRA, y la
+ *     pantalla no dice que el código haya fallado.
+ * (B) 404 con la ventana **cerrada** (no se sabe si llegó a correr) ⇒ se dice que NO SE PUDO
+ *     COMPROBAR, no que el código sea incorrecto, y lo tecleado sigue ahí.
+ *
+ * ⛔ El orden es B→A a propósito: el simulado acuña la marca al despachar `verifyEmail`, así
+ * que la ventana solo está CERRADA mientras ningún `verifyEmail` haya llegado a despacharse.
+ * Medir (A) primero dejaría (B) sin su condición y pasaría en vacío.
+ *
+ * ⚠️ Esto cubre LA PANTALLA. `backend/Code.js` no se ejecuta en esta batería, así que NO
+ * acredita que el código se gaste al acertar — eso se acredita LEYENDO `verifyEmail_`
+ * (`cache.remove(codeKey)` + `_markStepUpFresh_` ANTES de que su respuesta viaje).
+ */
+async function caminoRespuestaPerdida(page, base) {
+  const c = new Camino('respuesta-perdida-no-es-un-fallo')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    // Contra el sistema de verdad no se puede provocar un 404 del transporte de Google, y el
+    // código llega a un buzón que este arnés no lee. No se afloja la verja para que pase.
+    c.noCubierta('404-con-la-ventana-abierta', 'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('404-con-la-ventana-cerrada', 'ver NO_CUBIERTAS_SOLO_REAL')
+    return c
+  }
+
+  // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────────────
+  // Si alguien renombra o retira el mecanismo, las afirmaciones de abajo caerían diciendo
+  // «no se entró» / «el aviso no salió» — ciertas, pero sin nombrar que el recorrido ya no
+  // sabe qué mira. Se comprueba contra el FUENTE: si no está, sale CIEGO, no rojo-a-secas.
+  const FUENTES = [
+    ['frontend/src/api.js', /\besEstadoDeTransporte_\b/],
+    ['frontend/src/api.js', /\bESTADOS_DE_GOOGLE_\b/],
+    ['frontend/src/components/StepUpGate.jsx', /\bpreguntarSiLaVentanaYaEstaAbierta_\b/],
+    ['frontend/src/components/StepUpGate.jsx', /stepup\.err_no_se_pudo_comprobar/],
+  ]
+  const ausentes = []
+  for (const [rel, re] of FUENTES) {
+    let txt = ''
+    try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+    if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+  }
+  if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+    ausentes.length === 0,
+    `no se encontró en el fuente: ${ausentes.join(' · ')} — el recorrido NO puede medir lo que ` +
+    `dice medir, así que NO puede salir verde`)) return c
+
+  // El 404 lo provoca el arnés a propósito, y la aplicación lo registra: es lo correcto.
+  c.esperarErrorConsola(/gasCall verifyEmail: HTTP 404/,
+    'el transporte devuelve 404 a propósito, para comprobar que NO se le cuenta a la familia como código incorrecto')
+
+  const peticiones = []
+  const enVuelo = { n: 0 }
+  const alPedir = (req) => {
+    if (!/\/__gas/.test(req.url())) return
+    enVuelo.n++
+    try { const a = JSON.parse(req.postData() || '{}').action; if (a) peticiones.push(a) } catch { /* cuerpo raro */ }
+  }
+  const alVolver = (req) => { if (/\/__gas/.test(req.url())) enVuelo.n-- }
+  page.on('request', alPedir)
+  page.on('requestfinished', alVolver)
+  page.on('requestfailed', alVolver)
+  const cuantas = (a) => peticiones.filter(x => x === a).length
+
+  const limpiar = () => {
+    page.off('request', alPedir)
+    page.off('requestfinished', alVolver)
+    page.off('requestfailed', alVolver)
+    scenario.piiGated = false
+    scenario.otpSuperado = false
+    scenario.ventanaViva = false
+    scenario.estadoHttpEnVezDeRespuesta = null
+  }
+
+  /** Lo que la familia VE en la verja y lo que puede hacer, en un solo tiro. */
+  const verja = () => page.evaluate(() => {
+    const casilla = document.querySelector('input[autocomplete="one-time-code"]')
+    const error   = document.querySelector('[data-testid="stepup-error"]')
+    return {
+      hayVerja:     !!casilla,
+      casillaLista: !!(casilla && !casilla.disabled),
+      tecleado:     casilla ? (casilla.value || '') : null,
+      error:        error ? (error.innerText || '').trim() : null,
+    }
+  })
+
+  const pulsarEntrar = () => page.evaluate(() => {
+    const b = [...document.querySelectorAll('button.btn-primary-kis')].find(x => !x.disabled)
+    if (!b) return false
+    b.click(); return true
+  })
+
+  // ⛔ «no menciona la palabra incorrecto» NO sirve como criterio, y salió ROJO al primer
+  // intento por eso: el texto correcto la usa para NEGARLA («No es que sea incorrecto: la
+  // respuesta no llegó»). Lo que se mide es si la pantalla le ECHA LA CULPA al código.
+  const niegaLaCulpa  = (t) => !!t && /no es que sea incorrecto|it isn.t wrong/i.test(t)
+  const culpaAlCodigo = (t) => !!t && !niegaLaCulpa(t)
+    && /caducad|expired|not found|inv[aá]lid|incorrect/i.test(t)
+
+  try {
+    // La ventana se modela como el servidor (`scenario.ventanaViva`): sin esta palanca
+    // `getAdmissionState` NO devuelve `step_up_fresh`, y la pregunta que este recorrido mide
+    // no tendría a quién preguntar — pasaría en vacío.
+    scenario.piiGated = true
+    scenario.otpSuperado = false
+    scenario.ventanaViva = true
+
+    await page.goto(`${base}/#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const hayVerja = await page.waitForSelector('input[autocomplete="one-time-code"]',
+      { timeout: LATENCY * 3 + 15000 }).then(() => true).catch(() => false)
+    // La verja se remonta al rehidratar: se espera a que la pantalla quede quieta.
+    await page.waitForTimeout(LATENCY * 2 + 2500)
+
+    // ── ANCLA · la verja llega a salir Y admite teclear ───────────────────────────────
+    if (!c.afirmar('ANCLA · la verja del código sale y, tras pedirlo, admite teclear',
+      hayVerja && await page.evaluate(() => {
+        const b = document.querySelector('[data-testid="stepup-reenviar"]')
+        if (!b || b.disabled) return false
+        b.click(); return true
+      }) && await page.waitForFunction(
+        () => { const i = document.querySelector('input[autocomplete="one-time-code"]'); return !!(i && !i.disabled) },
+        null, { timeout: LATENCY + 6000 }).then(() => true).catch(() => false),
+      'nunca se llegó a una verja con la casilla lista: la secuencia que este recorrido mide no se dio')) return c
+
+    c.evidencia.elementos = 1
+    c.evidencia.llamadas  = peticiones.length
+
+    // ══ FASE B · 404 con la ventana CERRADA ═══════════════════════════════════════════
+    // `trabajo:false`: la petición muere sin llegar a despacharse. Es uno de los dos casos
+    // reales — desde el navegador NO se puede saber si el servidor llegó a correr.
+    scenario.estadoHttpEnVezDeRespuesta = { verifyEmail: { veces: 1, status: 404, trabajo: false } }
+    await page.fill('input[autocomplete="one-time-code"]', '123456')
+    const pulsoB = await pulsarEntrar()
+    await page.waitForFunction(() => !!document.querySelector('[data-testid="stepup-error"]'),
+      null, { timeout: LATENCY * 3 + 12000 }).catch(() => {})
+    await page.waitForTimeout(300)
+    const trasB = await verja()
+
+    c.afirmar('(1) con la ventana cerrada se dice que NO SE PUDO COMPROBAR',
+      pulsoB && !!trasB.error && /no hemos podido comprobar|couldn.t check/i.test(trasB.error),
+      pulsoB
+        ? `la verja muestra error=${JSON.stringify(trasB.error)}: un 404 del transporte no se puede quedar mudo`
+        : 'el botón «Entrar» estaba bloqueado: no se pudo provocar el caso')
+
+    c.afirmar('(2) y NO se afirma que el código sea incorrecto',
+      niegaLaCulpa(trasB.error) && !culpaAlCodigo(trasB.error),
+      `la verja dice «${trasB.error}»: el servidor NUNCA contestó, así que culpar al código es una afirmación falsa — y el código es de UN SOLO USO`)
+
+    c.afirmar('(3) lo tecleado SIGUE ahí y la casilla sigue lista',
+      trasB.tecleado === '123456' && trasB.casillaLista,
+      `la casilla quedó con «${trasB.tecleado}» y ${trasB.casillaLista ? 'lista' : 'DESHABILITADA'}: borrar el código obliga a pedir otro, que es justo lo que no hay que hacer`)
+
+    c.afirmar('(4) NO se reintenta `verifyEmail` a ciegas ni se pide otro código',
+      cuantas('verifyEmail') === 1 && cuantas('sendVerificationCode') === 1,
+      `salieron ${cuantas('verifyEmail')} verifyEmail y ${cuantas('sendVerificationCode')} sendVerificationCode: repetir el código choca con su propio acierto y quema uno de los CINCO intentos del cupo`)
+
+    c.afirmar('(5) se PREGUNTA si la ventana ya estaba abierta',
+      cuantas('getAdmissionState') >= 1,
+      'no salió ninguna getAdmissionState: sin preguntar, el asistente no puede distinguir «el servidor acertó y se perdió la respuesta» de «no llegó a correr»')
+
+    // ══ FASE A · 404 con la ventana ABIERTA (el servidor SÍ hizo su trabajo) ═══════════
+    // La familia vuelve a pulsar «Entrar» con el MISMO código, que es lo que el aviso le dice.
+    const verifyAntes = cuantas('verifyEmail')
+    const pulsoAntes  = cuantas('getLiveStateVersion')
+    scenario.estadoHttpEnVezDeRespuesta = { verifyEmail: { veces: 1, status: 404, trabajo: true } }
+    const pulsoA = await pulsarEntrar()
+    // El aviso de la FASE B sigue en pantalla; `verify()` lo limpia en el mismo gesto del clic.
+    // Se espera a que desaparezca para no leerlo como el desenlace de ESTE intento.
+    await page.waitForFunction(() => !document.querySelector('[data-testid="stepup-error"]'),
+      null, { timeout: 4000 }).catch(() => {})
+    // ⛔ CARRERA, no «¿acabó entrando?». Medido: sin esto la afirmación NO discrimina — con el
+    // código de ayer la familia lee «Network error: 404» y el asistente entra igual ~30 s
+    // después, cuando el PULSO (`getLiveStateVersion` → `getAdmissionState` → `hydrateSession`)
+    // la rescata por su cuenta. Lo que se mide es lo que la familia VE: o entra, o se le echa
+    // la culpa al código.
+    const desenlace = pulsoA ? await page.waitForFunction(() => {
+      if (document.querySelector('.wizard-step')) return 'entra'
+      const e = document.querySelector('[data-testid="stepup-error"]')
+      if (e) return 'error:' + ((e.innerText || '').trim())
+      return false
+    }, null, { timeout: LATENCY * 5 + 20000 })
+      .then(h => h.jsonValue()).catch(() => 'nada') : 'sin-pulsar'
+    const entro = desenlace === 'entra'
+    const avisoA = desenlace.startsWith('error:') ? desenlace.slice(6) : null
+
+    c.afirmar('(6) con la ventana ya abierta se ENTRA, pese al 404',
+      entro,
+      pulsoA
+        ? `lo que la familia vio fue «${desenlace}»: el servidor SÍ acertó (código gastado, marca de los 10 min puesta) y la pantalla la deja fuera de su propia solicitud`
+        : 'el botón «Entrar» estaba bloqueado en el segundo pase: no se pudo provocar el caso')
+
+    c.afirmar('(7) y la pantalla NO dice que el código haya fallado',
+      entro || !culpaAlCodigo(avisoA),
+      `la verja dice «${avisoA}» con la ventana YA abierta`)
+
+    c.afirmar('(8) se entra POR LA PREGUNTA, no porque el pulso rescate 30 s después',
+      entro && cuantas('getLiveStateVersion') === pulsoAntes,
+      entro
+        ? `salieron ${cuantas('getLiveStateVersion') - pulsoAntes} latidos del pulso antes de entrar: la familia estuvo media vuelta de reloj mirando un fallo que no era suyo`
+        : 'no se entró (ver la afirmación anterior), así que tampoco se entró por la pregunta')
+
+    c.afirmar('(9) tampoco aquí se repite `verifyEmail` ni se pide otro código',
+      cuantas('verifyEmail') === verifyAntes + 1 && cuantas('sendVerificationCode') === 1,
+      `salieron ${cuantas('verifyEmail') - verifyAntes} verifyEmail y ${cuantas('sendVerificationCode')} sendVerificationCode en total`)
+
+    // La secuencia de acciones, para poder diagnosticar un rojo sin repetir la corrida. Son
+    // NOMBRES de acción (identificadores cerrados), nunca contenido: cero datos de familia.
+    c.notas.push(`    · secuencia de llamadas: ${peticiones.join(' · ')}`)
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
+/**
  * ventana-por-inactividad — el contador de los 10 minutos se reinicia con la actividad
  * REAL de la familia, el aviso sale dos minutos antes, y una RECARGA vuelve a pedir código.
  *
@@ -11103,6 +11364,10 @@ const CAMINOS = [
   // `0º.tricies.nonies` — entrar por el enlace manda UN código y la pantalla lo dice; la verja
   // se remonta al rehidratar y ya no olvida que ese código va de camino.
   { nombre: 'codigo-al-entrar-por-enlace', fn: caminoCodigoAlEntrarPorEnlace,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
+  // `①86` (segunda cara) — un 404 del TRANSPORTE al verificar el código no se le cuenta a la
+  // familia como «tu código está mal»: se pregunta si la ventana ya quedó abierta.
+  { nombre: 'respuesta-perdida-no-es-un-fallo', fn: caminoRespuestaPerdida,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   // 2026-08-20 — la ventana de los 10 min es de INACTIVIDAD: la actividad la reinicia,
   // el aviso sale dos minutos antes y una RECARGA vuelve a pedir el código.

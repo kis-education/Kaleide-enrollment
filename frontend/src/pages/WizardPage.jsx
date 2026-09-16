@@ -840,8 +840,14 @@ const handleNext = async (stepKey, data, extra = null) => {
            la cache warm del KMS; sin ellos el warm no haría hit. Sin PII: warmSession
            devuelve solo {ok,warmed}. sendVerificationCode ignora los extras. */
         tokenPayload={{ resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, n: recoveryNonce || undefined, language: i18n.language }}
-        onVerified={() => {
-          markStepUpFresh();
+        onVerified={(restanteS, cierre) => {
+          // Los dos argumentos SOLO llegan cuando la respuesta de `verifyEmail` murió en el
+          // transporte y la verja preguntó a `getAdmissionState` si la ventana ya estaba abierta
+          // (el servidor había acertado). En el camino normal llegan `undefined` ⇒
+          // `markStepUpFresh(undefined, undefined)` es byte-idéntico a `markStepUpFresh()`:
+          // los 10 min locales de respaldo. Con ellos se usa el tiempo REAL que reporta el
+          // servidor, que es lo que pinta el aviso de los dos minutos.
+          markStepUpFresh(restanteS, cierre);
           // P-PII-GATE: la resumeSession previa al OTP llegó gateada (sin PII,
           // pre-step-up). Tras el OTP el backend marcó el grupo fresco (verifyEmail
           // stepup:true) → re-hidratamos para cargar la PII del expediente ahora

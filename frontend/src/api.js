@@ -792,6 +792,32 @@ function esComprobacionDeSalud_(data) {
   return claves.length === 2 && claves.includes('status') && claves.includes('ts');
 }
 
+// ── UN ESTADO HTTP QUE EL ASISTENTE NO PUEDE HABER EMITIDO ES TRANSPORTE ───────────────
+//
+// Hermana de `esComprobacionDeSalud_`: la MISMA clase de fallo (el segundo tramo del doble
+// salto de Apps Script) con otra cara. Aquélla reconoce el CUERPO del `doGet` llegando en
+// vez de la respuesta; ésta reconoce que ni siquiera llegó un cuerpo del asistente.
+//
+// ⛔ QUÉ ESTADOS ENTRAN, Y POR QUÉ SE ACOTA — medido contra `origin/main`:
+//   · el `doPost` del asistente contesta SIEMPRE con `ContentService`, y NO hay ni un
+//     `setResponseCode` en su camino ⇒ **no puede emitir un código de error**. Sus rechazos
+//     viajan como HTTP 200 + `{ok:false, error:{code,message}}` — ése es su carril, y NO se
+//     toca (lo maneja `if (!data.ok)`, más abajo).
+//   · Las DOS apariciones de `404` en `backend/Code.js` son códigos que LEE de otros
+//     servicios, no que emita.
+//   ⇒ un `4xx` de Google (404, 403, 429) o cualquier `5xx` lo produjo el transporte.
+//
+// ⛔ NO se ensancha a «todo lo que no sea 200». Un 4xx futuro que el asistente SÍ pudiera
+// producir (si alguien le diera esa capacidad) NO es transporte, y disfrazarlo de corte de
+// red lo haría reintentable en silencio.
+const ESTADOS_DE_GOOGLE_ = new Set([401, 403, 404, 408, 429]);
+function esEstadoDeTransporte_(status) {
+  const n = Number(status);
+  if (!n) return false;
+  if (n >= 500) return true;              // el transporte se cayó
+  return ESTADOS_DE_GOOGLE_.has(n);       // el `echo` respondió por su cuenta
+}
+
 // Lecturas idempotentes que el asistente dispara repetidamente mientras la familia
 // mira la pantalla — pedirlas dos veces no tiene coste ni efecto secundario.
 // LÍMITE HONESTO: lista explícita. Una lectura nueva que no se añada aquí simplemente
@@ -925,8 +951,33 @@ async function _gasCallUnaVez(action, payload = {}) {
   log.info(`← HTTP ${res.status} (${elapsed}ms) for ${action}`);
 
   if (!res.ok) {
-    // Tampoco se marca `transporte`: si `fetch` resolvió, el servidor SÍ contestó (con un
-    // estado de error), que no es lo que provoca un cambio de app en iPhone.
+    // ①86 (segunda cara) — UN ESTADO QUE EL ASISTENTE NO PUEDE HABER EMITIDO ES TRANSPORTE.
+    // Su `doPost` contesta SIEMPRE con `ContentService` (HTTP 200 + `{ok:false,error:{…}}`),
+    // y NO hay ni un `setResponseCode` en su camino ⇒ un 404/403/429 o un 5xx lo produjo el
+    // transporte de Google (el segundo tramo del salto, el `echo`), no el asistente.
+    // MEDIDO (2026-09-16, registro completo de Diego): de ~21 llamadas, OCHO murieron en ese
+    // segundo tramo — CINCO con 404 (y una de ellas era `verifyEmail`, cuyo código es de un
+    // SOLO USO: si el servidor acertó y la respuesta se perdió, el código queda gastado).
+    // ⛔ NO se inventa un tercer estado ni un código nuevo: se reusa el carril de ①86
+    // (`transporte` + `saludDelAsistente`), y `clasificarFalloDeEntrada` NO se toca.
+    // ⛔ PROHIBIDO un umbral de tiempo: los cinco 404 duraron 14,9-60,9 s y en el mismo tramo
+    // hubo respuestas 200 de 23,4-40,3 s — la duración NO distingue nada.
+    if (esEstadoDeTransporte_(res.status)) {
+      log.error(`gasCall ${action}: HTTP ${res.status} — el asistente no puede emitirlo, se trata como TRANSPORTE`, {
+        action, status: res.status, aterrizo_en: res.url, siguio_salto: res.redirected, ms: elapsed,
+      });
+      const e = new Error(`No se pudo leer la respuesta de "${action}".`);
+      // Sin `code` a propósito: `clasificarFalloDeEntrada` (un solo sitio) manda lo que no
+      // trae código a «no se pudo cargar» ⇒ *«tu enlace sigue siendo válido»*, en vez del
+      // error nombrado que echaría a la familia a la portada a pedir otro.
+      e.transporte = true;
+      // Marca INTERNA: ocurre con la familia DELANTE, no solo al volver de otra app.
+      e.saludDelAsistente = true;
+      e.estadoHttp = res.status;
+      throw e;
+    }
+    // El resto (un 4xx que el asistente SÍ podría producir algún día) se comporta como
+    // siempre: el servidor contestó, y no se disfraza de corte de red.
     log.error(`gasCall ${action}: HTTP ${res.status}`, { status: res.status, statusText: res.statusText });
     throw new Error('Network error: ' + res.status);
   }
