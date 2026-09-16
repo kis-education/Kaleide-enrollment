@@ -857,7 +857,11 @@ function requireResumeToken_(payload, opciones) {
   // KMS y la copia NO la tiene. Tomarla de aquí dejaría a `uploadDocument_` sin la
   // comprobación de ACCESO, o desharía `0º.quindecies` hallazgo (2) partiéndola en dos
   // viajes otra vez. Subir un documento sigue exactamente igual que ayer.
-  if (!(opciones && opciones.comprobarSubida)) {
+  // ⛔ CON `copiaCaliente` TAMPOCO se toma el atajo, y por el mismo motivo que con
+  // `comprobarSubida`: lo que se pide es una respuesta que la copia de la puerta NO tiene
+  // (la hidratación entera de la solicitud). Tomar el atajo dejaría la copia sin rehacer,
+  // que es exactamente el hueco que esto viene a cerrar.
+  if (!(opciones && (opciones.comprobarSubida || opciones.copiaCaliente))) {
     const deLaCopia = _cabeceraDeLaCopia_(token);
     if (deLaCopia) {
       _dbgEv_('gate', 'requireResumeToken (copia)');
@@ -897,6 +901,10 @@ function requireResumeToken_(payload, opciones) {
     n: nDiscPuerta || null,
     correo: correoDiscPuerta || null,
     comprobarSubida: subidaPuerta,
+    // ★ 2026-09-16 — se pide en el SEGUNDO ARGUMENTO, igual que la comprobación de subida:
+    // así solo la provoca `_dejarElClicSinLlamadas_` y ninguna otra acción puede dispararla
+    // metiendo una marca en su cuerpo. Sin ella, cero cambio hacia el KMS.
+    copiaCaliente: (opciones && opciones.copiaCaliente) || null,
   });
   if (!consulta.ok && !consulta.rechazo) {
     // NO se pudo PREGUNTAR (transporte). Se LANZA —como lanzaba `appsheetRequest_`, que aquí
@@ -1020,12 +1028,31 @@ function requireResumeToken_(payload, opciones) {
  * @param {?string} lang   el idioma del enlace (el catálogo se guarda por idioma).
  * @private
  */
-function _dejarElClicSinLlamadas_(token, lang) {
+function _dejarElClicSinLlamadas_(token, lang, datosDelTutor) {
   try {
     if (!token) return;
     // (1) LA PUERTA — el gate vivo deja su copia completa para el clic.
+    //
+    // ★ 2026-09-16 — Y EN LA MISMA PREGUNTA, LA COPIA CALIENTE ENTERA (Diego: «la copia en
+    // caliente de TODOS los datos de la solicitud … se deben cargar en cuanto se pide el
+    // primer magic link»). Hasta hoy eso colgaba de un VALE que el navegador tenía que
+    // devolver (`warmBundle`, fire-and-forget): si el tutor se iba a su correo y cerraba la
+    // pestaña —lo que hace siempre—, la copia entera **no se rehacía nunca**.
+    //
+    // ⛔ CERO VIAJES DE MÁS: esta llamada a la puerta YA se hacía aquí, y el correo YA salió
+    // (los tres llamantes invocan esto DESPUÉS de `sendViaKmsNotify_`) ⇒ el envío no paga ni
+    // un milisegundo por esto.
+    //
+    // ⛔ Sin saber de QUÉ tutor es el enlace no se pide: la copia se guarda por (solicitud ×
+    // tutor) y una copia sin destinatario no la lee nadie.
+    var correoDelTutor = (datosDelTutor && datosDelTutor.correo)
+      ? String(datosDelTutor.correo).toLowerCase().trim() : '';
+    var opcionesDeLaPuerta = correoDelTutor
+      ? { copiaCaliente: { correo: correoDelTutor } }
+      : undefined;
+    var groupId = null;
     try {
-      requireResumeToken_({ resume_token: String(token).trim() });
+      groupId = requireResumeToken_({ resume_token: String(token).trim() }, opcionesDeLaPuerta);
     } catch (ePuerta) {
       // Un rechazo aquí es legítimo (enlace que no resuelve / abandonado / caducado) y NO
       // escribe nada: es justo la propiedad que impide que una copia CREE un «sí».
@@ -1033,13 +1060,40 @@ function _dejarElClicSinLlamadas_(token, lang) {
         ((ePuerta && ePuerta.message) || ePuerta)));
     }
     // (2) EL CUESTIONARIO — mismo camino que el clic (`fetchQuestions_`), así que si ya hay
-    // copia no cuesta un viaje, y si no la hay la deja escrita. El catálogo es
-    // TENANT-ESTÁTICO (ver `CATALOGO_PREGUNTAS_TTL_S_`): no lleva nada de esta familia.
+    // copia no cuesta un viaje, y si no la hay la deja escrita.
+    //
+    // ★ D181 (2026-09-16) — el catálogo YA NO es tenant-estático: depende del PROGRAMA (ver
+    // `CATALOGO_PREGUNTAS_TTL_S_`). El programa se lee de la ficha que la puerta ACABA de dejar
+    // en la memoria de EJECUCIÓN — **cero viajes de más**, y jamás del cuerpo de la petición.
+    //
+    // ⛔ **PARA UNA SOLICITUD NUEVA NO HAY PROGRAMA TODAVÍA** (el expediente nace sin él: la
+    // familia lo elige en el paso 1), así que aquí **no se prepara nada** y esa familia paga ese
+    // viaje UNA vez, al llegar al paso 5. Para una RENOVACIÓN —y para cualquier solicitud que ya
+    // tenga programa— sí se prepara, que es el caso que D181 vino a cubrir.
+    //
+    // ⛔ Y preparar el catálogo SIN programa sería PEOR que no preparar: dejaría escrita la copia
+    // de la clave «sin programa», que **no es la que el clic va a leer** — trabajo pagado que
+    // nadie aprovecha.
+    var programaDelEnlace = '';
     try {
-      fetchQuestions_({ context_code: 'ENROLLMENT', language: lang || 'es' });
-    } catch (eCat) {
-      Logger.log(redact_('[_dejarElClicSinLlamadas_] cuestionario no preparado — ' +
-        ((eCat && eCat.message) || eCat)));
+      var fichaDelGrupo = groupId ? _memoCabeceraEjecucion_[groupId] : null;
+      programaDelEnlace = (fichaDelGrupo && fichaDelGrupo.program_id) || '';
+    } catch (eProg) { programaDelEnlace = ''; }
+
+    if (!programaDelEnlace) {
+      Logger.log('[_dejarElClicSinLlamadas_] sin programa declarado todavía — el cuestionario ' +
+        'NO se prepara (se resolverá en el paso 5).');
+    } else {
+      try {
+        fetchQuestions_({
+          context_code: 'ENROLLMENT',
+          language: lang || 'es',
+          program_id: programaDelEnlace,
+        });
+      } catch (eCat) {
+        Logger.log(redact_('[_dejarElClicSinLlamadas_] cuestionario no preparado — ' +
+          ((eCat && eCat.message) || eCat)));
+      }
     }
   } catch (e) {
     Logger.log(redact_('[_dejarElClicSinLlamadas_] non-fatal — ' + ((e && e.message) || e)));
@@ -4098,7 +4152,7 @@ function sendMagicLink_(p) {
     // ★ «Dos llamadas menos al entrar» (2026-09-14) — el correo YA salió; ahora, con lo
     // que cuesta el envío y NO lo que cuesta el clic, se deja la copia de la puerta y la
     // del cuestionario listas para cuando esta familia pulse su enlace.
-    _dejarElClicSinLlamadas_(tokenToSend, langP1);
+    _dejarElClicSinLlamadas_(tokenToSend, langP1, { correo: destEmail });
     return { sent: true, warm_ticket: _mintWarmTicket_([{ t: tokenToSend, n: nEmailId, e: destEmail, l: langP1, r: 1 }]) };
   } else if (p.primary_email) {
     // ── WIZ-ENUM (audit 2026-07-27): ACK CONSTANTE anti-enumeración (KAL-10) ──
@@ -4348,7 +4402,7 @@ function sendMagicLink_(p) {
         // ★ «Dos llamadas menos al entrar» (2026-09-14) — el correo YA salió; ahora, con lo
         // que cuesta el envío y NO lo que cuesta el clic, se deja la copia de la puerta y la
         // del cuestionario listas para cuando esta familia pulse su enlace.
-        _dejarElClicSinLlamadas_(grps[0].resume_token, lang);
+        _dejarElClicSinLlamadas_(grps[0].resume_token, lang, { correo: identityEmail });
         return _magicLinkConstantAck_(_mintWarmTicket_([{ t: grps[0].resume_token, n: nEmailId, e: identityEmail, l: lang, r: 1 }]));
       } else {
         // Un email_id por grupo (paralelo a los tokens): cada link lleva el `n` del email
@@ -4380,7 +4434,7 @@ function sendMagicLink_(p) {
         // del cuestionario listas para cuando esta familia pulse su enlace.
         // Con VARIOS expedientes, cada uno tiene su propia puerta; el cuestionario es UNO
         // (tenant-estático) y el primero lo deja escrito para todos.
-        grps.forEach(g => _dejarElClicSinLlamadas_(g.resume_token, lang));
+        grps.forEach(g => _dejarElClicSinLlamadas_(g.resume_token, lang, { correo: identityEmail }));
         return _magicLinkConstantAck_(_mintWarmTicket_(grps.map((g, i) => ({ t: g.resume_token, n: nEmailIds[i] || null, e: identityEmail, l: lang, r: 1 }))));
       }
     } catch (eSend) {
@@ -5121,6 +5175,15 @@ function _expedienteDelToken_(resumeToken, opciones) {
   // no se adivina de que el cuerpo traiga una marca suelta.
   var subida = (opciones && opciones.comprobarSubida && typeof opciones.comprobarSubida === 'object')
     ? opciones.comprobarSubida : null;
+  // ★ 2026-09-16 — LA COPIA CALIENTE ENTERA, en la MISMA pregunta que la cabecera. Mismo
+  // molde y mismo motivo que los dos discriminadores de arriba: se pide POR SU NOMBRE (lo
+  // declara el llamante), nunca se adivina del cuerpo. Su ÚNICO llamante es
+  // `_dejarElClicSinLlamadas_`, que corre DESPUÉS de mandar el correo ⇒ la copia entera se
+  // deja escrita sin que el envío pague nada y sin depender de que el navegador devuelva el
+  // vale de `warmBundle` (que es lo que fallaba: el tutor se va a su correo y cierra la
+  // pestaña).
+  var copiaCaliente = (opciones && opciones.copiaCaliente && typeof opciones.copiaCaliente === 'object')
+    ? opciones.copiaCaliente : null;
 
   // ②17 (2026-08-19) — LA MISMA FICHA SE PEDÍA DOS VECES POR PETICIÓN. Medido en el log
   // real del asistente desplegado: `hydrateSession` emitía `enr.expedienteDelToken`
@@ -5137,7 +5200,7 @@ function _expedienteDelToken_(resumeToken, opciones) {
   // hace falta ir al KMS igual (la cabecera ya la tenemos, pero la identidad no).
   var clave = _memoCabeceraClave_(token, tolerante);
   var yaResuelta = _memoCabeceraEjecucion_[clave];
-  if (yaResuelta && !nDisc && !correoDisc && !subida) {
+  if (yaResuelta && !nDisc && !correoDisc && !subida && !copiaCaliente) {
     return { ok: true, fila: yaResuelta, rechazo: null, motivo: null };
   }
 
@@ -5145,6 +5208,7 @@ function _expedienteDelToken_(resumeToken, opciones) {
   if (tolerante) cuerpo.tolerar_sesion_cerrada = true;
   if (nDisc) cuerpo.n = nDisc; else if (correoDisc) cuerpo.correo = correoDisc;
   if (subida) cuerpo.comprobar_subida = subida;
+  if (copiaCaliente) cuerpo.copia_caliente = copiaCaliente;
 
   try {
     var r = kmsProxy_('enr.expedienteDelToken', cuerpo) || {};
@@ -5171,6 +5235,17 @@ function _expedienteDelToken_(resumeToken, opciones) {
     // no es de esta familia— y quien la lee tiene que poder distinguirlo de «no pregunté».
     if (subida && r.comprobacion_subida) {
       _SUBIDA_MEMO_[_memoSubidaClave_(token, subida)] = r.comprobacion_subida;
+    }
+    // ★ 2026-09-16 — la copia caliente viajó en la MISMA respuesta: se archiva con el
+    // escritor ÚNICO (`_espejoGuardarCopia_`, vía `_espejoArchivarCopiasDelKms_`), bajo la
+    // MISMA clave que lee `hydrateSession_`. ⛔ Ni un segundo archivador ni un tercer canal.
+    if (copiaCaliente && r.copia_caliente && r.copia_caliente.ok && fila) {
+      var arch = _espejoArchivarCopiasDelKms_(
+        r.copia_caliente.copias,
+        [fila.enrollment_group_id]            // KAL-4: el expediente sale del TOKEN, nunca del cuerpo
+      );
+      Logger.log('[_expedienteDelToken_] copia caliente archivada — ' + arch.archivadas +
+        '/' + (arch.archivadas + arch.descartadas));
     }
     return { ok: true, fila: fila, rechazo: null, motivo: null };
   } catch (e2) {
@@ -11011,8 +11086,20 @@ function notifyLiveStateChange_(p) {
   // qué copias se tiran. Lo que no esté en el mapa las tira todas, igual que ayer.
   const clases = _wzClasesDelMotivo_(v.event.reason);
   const version = _bumpLiveStateVersion_(groupId, clases);
-  Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (v.event.reason || '?') + ' clases=' + clases.join(',') + ' -> v' + version));
-  return { ok: true, bumped: true, version: version };
+
+  // ★ 2026-09-16 — Y SI EL AVISO TRAE LA COPIA REHECHA, SE ARCHIVA (Diego: «⛔ Invalidar NO
+  // es actualizar»). El bump de arriba marca la copia vieja; esto la SUSTITUYE, así que el
+  // tutor no paga el viaje entero por un dato que el colegio acaba de escribir.
+  //
+  // ⛔ EL ORDEN ES ÉSTE Y NO EL CONTRARIO: se bumpa PRIMERO y se archiva DESPUÉS, porque
+  // `_espejoGuardarCopia_` sella con la versión vigente — archivar antes del bump dejaría la
+  // copia recién traída marcada como vieja al instante siguiente.
+  //
+  // Un aviso SIN copias se comporta exactamente como ayer (solo bump).
+  const arch = _espejoArchivarCopiasDelKms_(v.event.copias, [groupId]);
+
+  Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (v.event.reason || '?') + ' clases=' + clases.join(',') + ' -> v' + version + ' copias=' + arch.archivadas + '/' + (arch.archivadas + arch.descartadas)));
+  return { ok: true, bumped: true, version: version, copias: arch.archivadas };
 }
 
 /**
@@ -11045,7 +11132,16 @@ function notifyLiveStateChange_(p) {
  * @param {string} groupId
  * @param {?string} n  `email_id`; se ignora si el llamante pasa `opciones.claveYa`.
  * @param {Object} payload  lo que devolvió la hidratación para ESE tutor.
- * @param {{claveYa?:string}} [opciones]  clave ya calculada por el llamante (camino vivo).
+ * ⛔ **UNA COPIA MÁS VIEJA NO PISA A UNA MÁS NUEVA** (`calculadaEn`, 2026-09-16). Entre que
+ * el KMS calcula una copia y este proceso la archiva pasa la cola (62-266 s medidos), así
+ * que dos avisos que se crucen —o el repaso de fondo, que calcula con hasta 4 min de
+ * antelación— podrían archivar la copia VIEJA la ÚLTIMA y dejarla sellada con la versión de
+ * ahora: lo viejo servido como nuevo. Con la marca, la que llega tarde se descarta.
+ * **Sin marca el comportamiento es el de siempre** (se archiva), así que un emisor que
+ * todavía no la mande no se rompe.
+ *
+ * @param {{claveYa?:string, calculadaEn?:string}} [opciones]  clave ya calculada por el
+ *        llamante (camino vivo) · instante en que el KMS calculó ESTA copia.
  * @returns {boolean} true si quedó archivada.
  * @private
  */
@@ -11055,13 +11151,80 @@ function _espejoGuardarCopia_(cache, groupId, n, payload, opciones) {
     const key = (opciones && opciones.claveYa)
       ? opciones.claveYa
       : _wzCacheKey_('hyd', groupId + '_' + _wzN_(n, null));
+
+    const calculadaEn = (opciones && opciones.calculadaEn) ? Date.parse(opciones.calculadaEn) : NaN;
+    if (!isNaN(calculadaEn)) {
+      try {
+        const previo = _wzCacheGetChunked_(cache, key);
+        if (previo) {
+          const antes = JSON.parse(previo);
+          const tAntes = antes && antes.t ? Date.parse(antes.t) : NaN;
+          if (!isNaN(tAntes) && tAntes > calculadaEn) {
+            Logger.log('[_espejoGuardarCopia_] descartada por vieja — grupo=' +
+              String(groupId).slice(0, 8) + '…');
+            return false;
+          }
+        }
+      } catch (ePrev) { /* si no se puede comparar, se archiva: el comportamiento de siempre */ }
+    }
+
     const version = _versionDeClase_(groupId, 'hyd');
-    const serialized = JSON.stringify({ v: version, data: payload });
-    return !!_wzCachePutChunked_(cache, key, serialized, ESPEJO_HYD_TTL_S_);
+    const sobre = { v: version, data: payload };
+    if (!isNaN(calculadaEn)) sobre.t = new Date(calculadaEn).toISOString();
+    return !!_wzCachePutChunked_(cache, key, JSON.stringify(sobre), ESPEJO_HYD_TTL_S_);
   } catch (e) {
     Logger.log('[_espejoGuardarCopia_] non-fatal — ' + (e && e.message));
     return false;
   }
+}
+
+/**
+ * 2026-09-16 — ARCHIVA LAS COPIAS QUE VIENEN EN UN AVISO FIRMADO DEL KMS. Lo usan los DOS
+ * receptores que ahora pueden traerlas (`sembrarRecuperacion_` al invitar y
+ * `notifyLiveStateChange_` cuando el colegio escribe): **un solo sitio decide cómo se
+ * validan y se archivan**, y por debajo llama al archivador ÚNICO `_espejoGuardarCopia_`.
+ * ⛔ No se escribe un segundo archivador ni se abre un tercer canal (§"EL ASISTENTE NO
+ * DECIDE NADA": el KMS calcula, el asistente guarda).
+ *
+ * ⛔ **CINTURÓN SOBRE LA FORMA, aunque la firma ya lo cubra**: el expediente y el `n` se
+ * validan, y **el expediente tiene que estar en la lista permitida que declara el propio
+ * aviso**. Una copia de OTRA familia archivada bajo esta clave sería servirle a un tutor la
+ * solicitud de otro — lo único que esta pieza podría romper de verdad.
+ *
+ * ⛔ **NO BUMPA NADA.** Quien sube la versión es el receptor, ANTES de llamar aquí; este
+ * archiva bajo la versión vigente. Y **NO cambia quién puede LEER** la copia: el código de
+ * un solo uso (②27), KAL-4 y el recorte por tutor (DL-E49 §2) siguen exactamente igual.
+ *
+ * @param {*} copias  lo que llegó en el sobre (se tolera cualquier cosa: se valida aquí).
+ * @param {string[]} gruposPermitidos  expedientes que el propio aviso declara.
+ * @returns {{archivadas:number, descartadas:number}}
+ * @private
+ */
+function _espejoArchivarCopiasDelKms_(copias, gruposPermitidos) {
+  const res = { archivadas: 0, descartadas: 0 };
+  if (!Array.isArray(copias) || !copias.length) return res;
+  const permitidos = {};
+  (gruposPermitidos || []).forEach(function (g) { if (g) permitidos[String(g)] = true; });
+
+  const cache = CacheService.getScriptCache();
+  for (let i = 0; i < copias.length; i++) {
+    const c = copias[i];
+    if (!c || typeof c !== 'object' || !c.payload || typeof c.payload !== 'object') {
+      res.descartadas++; continue;
+    }
+    const gid = String(c.enrollment_group_id || '');
+    try { assertValidUuid_(gid, 'enrollment_group_id'); } catch (e) { res.descartadas++; continue; }
+    if (!permitidos[gid]) { res.descartadas++; continue; }
+    const n = c.n ? String(c.n) : '';
+    try { assertValidUuid_(n, 'n'); } catch (e) { res.descartadas++; continue; }
+
+    if (_espejoGuardarCopia_(cache, gid, n, c.payload, { calculadaEn: c.calculada_en || null })) {
+      res.archivadas++;
+    } else {
+      res.descartadas++;
+    }
+  }
+  return res;
 }
 
 // ⛔ AQUÍ VIVÍA `pushWarmHydrate_`, EL RECEPTOR DEL EMPUJE DEL KMS, Y NO VUELVE (①97 rumbo
@@ -11138,10 +11301,26 @@ function sembrarRecuperacion_(p) {
     por_tutor:               r.por_tutor            || [],
     identificador_de_correo: r.identificador_de_correo || {},
   });
-  // KAL-11: ni el correo ni un solo token en el registro — solo el veredicto y el recuento.
+
+  // ★ 2026-09-16 — Y LA COPIA CALIENTE ENTERA, si el KMS la manda (Diego: «se deben cargar …
+  // en cuanto se invita a una persona existente desde el KMS»). Hasta hoy este sembrado
+  // guardaba SOLO qué solicitud tiene ese correo, así que el tutor invitado entraba y pagaba
+  // el viaje de la hidratación completa.
+  //
+  // ⛔ Los expedientes permitidos salen de la PROPIA recuperación que acaba de llegar
+  // firmada: una copia de otro expediente se descarta. Un aviso SIN copias se comporta
+  // exactamente como ayer.
+  // `_gruposDeLaRecuperacion_` devuelve las FILAS: aquí hace falta la lista de identificadores.
+  const arch = _espejoArchivarCopiasDelKms_(
+    v.event.copias,
+    _gruposDeLaRecuperacion_(r).map(function (g) { return g && g.enrollment_group_id; })
+  );
+
+  // KAL-11: ni el correo ni un solo token en el registro — solo el veredicto y los recuentos.
   Logger.log('[sembrarRecuperacion_] guardada=' + guardada +
-             ' expedientes=' + _gruposDeLaRecuperacion_(r).length);
-  return { ok: true, stored: !!guardada };
+             ' expedientes=' + _gruposDeLaRecuperacion_(r).length +
+             ' copias=' + arch.archivadas + '/' + (arch.archivadas + arch.descartadas));
+  return { ok: true, stored: !!guardada, copias: arch.archivadas };
 }
 
 /**
@@ -11176,7 +11355,8 @@ function acunarGraciaDeEnlace_(p) {
 
   try {
     _mintMagicLinkNonce_(resumeToken, groupId);
-    _dejarElClicSinLlamadas_(resumeToken, v.event && v.event.lang);
+    _dejarElClicSinLlamadas_(resumeToken, v.event && v.event.lang,
+      { correo: (v.event && v.event.correo_del_tutor) || null });
   } catch (e) {
     Logger.log(redact_('[acunarGraciaDeEnlace_] non-fatal — ' + ((e && e.message) || e)));
   }
