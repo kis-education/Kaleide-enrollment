@@ -7457,12 +7457,12 @@ function manual_diagFetchQuestions() {
  *   - q.conditions                    → question.conditions (passthrough — condition_ref_table/_id)
  *   - set.questions[i] (with sequence)→ set.items[j].question (con item.display_order = sequence)
  *
- * Limitación conocida Q05-S5: el motor qb-core hoy NO devuelve
- * `audience_category_id` (campo del fork legacy que QbSetRenderer usa para
- * fan-out per applicant / per guardian). En el path KMS, las preguntas se
- * renderizan como "general" (clave única = question_id__groupId). El
- * fan-out completo llega en Q05-S6 (DL-Q05) cuando audience filtering
- * server-side esté en qbAudienceRules + el motor pase el discriminador.
+ * `audience_category_id` — medido 2026-09-19 contra `origin/master`
+ * (kis-app kms-server/qb/qb-core.gs:1310): el motor qb-core SÍ lo devuelve, resuelto por
+ * `qb_core_enrichQuestion_` contra el catálogo `qbAudienceRules` (DL-Q05/DL-E49 §2), y aquí
+ * se pasa VERBATIM (línea :7528 de este mismo fichero) para el fan-out per-applicant/
+ * per-guardian de `QbSetRenderer`. Lo mismo para `repeat_over_person_type_id` (:7533),
+ * resuelto por `qb_audienceRepeatOverPersonType_`.
  *
  * @param {Object} kmsData — payload `data` del envelope KMS
  * @param {string} lang    — locale solicitado (passthrough en context)
@@ -7521,10 +7521,9 @@ function fetchQuestions_adaptKmsResponse_(kmsData, lang) {
         // P116 cerrado (KMS deploy @283 commit kis-app e9a424a): el engine
         // qb_resolveSetForConsumer aplica runtime filtering qbAudienceRules a
         // nivel de SET server-side, por lo que el filtro AGE ya descarta sets
-        // no-aplicables antes de llegar al frontend. Aquí pasamos el campo
-        // canónico que emita el KMS (puede ser null mientras Q05-S6 / CLI QB-4
-        // no añadan audience_category_id per pregunta — informativo, no
-        // determinante para filtrado).
+        // no-aplicables antes de llegar al frontend. Aquí pasamos VERBATIM el
+        // campo que emite el KMS — resuelto por `qb_core_enrichQuestion_`
+        // contra qbAudienceRules (medido 2026-09-19, ver JSDoc de arriba).
         audience_category_id: q.audience_category_id || null,
         // `0º.tricies.septies` (2026-09-09) — a qué `person_type_id` repite, YA RESUELTO
         // por el catálogo Capa 2 del KMS (`qb_audienceRepeatOverPersonType_`). Passthrough
