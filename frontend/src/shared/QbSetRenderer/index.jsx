@@ -194,67 +194,172 @@ export default function QbSetRenderer({
   const piezasPorConjunto = sets.map(set => piezasDelConjunto_(set, {
     applicants, guardians, respuestasEfectivas, groupId, condCtx, tr,
   }));
+  // ⛔ UN SOLO RECORRIDO, DOS PREGUNTAS DISTINTAS — y las dos son del PASO, no del conjunto:
+  //   · `variosSujetos` → ¿el encabezado es pastilla o la línea gris de siempre? (sexdecies)
+  //   · `variosHijos`   → ¿manda el SUJETO y el conjunto queda dentro? (2026-09-20, abajo)
+  // Se derivan de la MISMA pasada a propósito: una segunda cuenta, hecha en otro sitio y con
+  // otro criterio, es exactamente cómo volvieron a divergir las dos formas del encabezado.
   const sujetosDelPaso = new Set();
+  const hijosDelPaso = new Set();
   piezasPorConjunto.forEach(piezas => piezas.forEach(p => {
-    if (p.tipo === 'sujeto') sujetosDelPaso.add(p.personKey);
+    if (p.tipo !== 'sujeto') return;
+    sujetosDelPaso.add(p.personKey);
+    if (p.esAlumno) hijosDelPaso.add(p.personKey);
   }));
   const variosSujetos = sujetosDelPaso.size > 1;
+  const variosHijos = hijosDelPaso.size > 1;
+
+  // ── LO QUE SE PINTA, en tres piezas reutilizadas por las DOS formas de la pantalla ─────
+  // Están aquí, y no repetidas en cada rama, para que la forma de HOY (un solo hijo) siga
+  // produciendo EXACTAMENTE el mismo DOM: dos copias del mismo JSX divergen.
+
+  // Una pregunta DE LA SOLICITUD: su clave es el expediente.
+  const pintarGeneral = pieza => (
+    <div key={pieza.key} className="mb-4">
+      <QuestionField
+        question={pieza.q}
+        value={respuestasEfectivas[pieza.key]}
+        onChange={v => setResponse(pieza.key, v)}
+        readOnly={readOnly}
+        respondentKey={groupId}
+      />
+    </div>
+  );
+
+  // Las preguntas que le tocan a UN sujeto dentro de UN conjunto.
+  const pintarPreguntasDe = pieza => pieza.suyas.map(q => {
+    // ⛔ LA CLAVE NO CAMBIA: es la que guarda y recupera la respuesta.
+    const key = `${q.question_id}__${pieza.personKey}`;
+    return (
+      <div key={key} className="mb-3">
+        <QuestionField
+          question={q}
+          value={respuestasEfectivas[key]}
+          onChange={v => setResponse(key, v)}
+          readOnly={readOnly}
+          respondentKey={pieza.personKey}
+        />
+      </div>
+    );
+  });
+
+  // El área de un sujeto DENTRO de un conjunto: su nombre una vez y sus preguntas debajo.
+  const bloqueDeSujeto = pieza => (
+    <div key={`qb-sujeto-${pieza.bi}-${pieza.personKey}`}
+         className={variosSujetos ? 'sujeto-bloque' : 'mb-4'}
+         data-qb-sujeto={pieza.personKey}>
+      <CabeceraDeSujeto nombre={pieza.name} icono={pieza.icono}
+                        destacado={variosSujetos} />
+      {pintarPreguntasDe(pieza)}
+    </div>
+  );
+
+  // ── (2026-09-20) · CON VARIOS HIJOS MANDA EL SUJETO, Y EL CONJUNTO QUEDA DENTRO ────────
+  //
+  // Diego, 2026-09-20: «el wizard presenta las preguntas de forma caótica. Debería agrupar
+  // por sujeto, de tal forma que todas las preguntas de un hijo estén juntas».
+  //
+  // El agrupador de `0º.tricies.decies` EXISTE y se llama — lo que fallaba era EL NIVEL:
+  // agrupa dentro de CADA conjunto (su acumulador es local, `agruparPorSujeto_`) y el paso
+  // pintaba UNA TARJETA POR CONJUNTO. Con cuatro conjuntos y dos hijos eso da
+  // `[higiene: Jara, Pepito][valores: …][antecedentes: Jara, Pepito]…`: cada bloque ordenado
+  // por dentro y las preguntas de un mismo hijo REPARTIDAS por toda la pantalla.
+  //
+  // ⛔ CON UN SOLO HIJO LA PANTALLA NO CAMBIA. Sin nada que separar, una sección de primer
+  // nivel por sujeto es ruido — mismo criterio que la pastilla. La rama de abajo es la de
+  // siempre, sin tocar: es lo que hace que esa promesa se pueda comprobar y no solo decir.
+  if (!variosHijos) {
+    return (
+      <>
+        {sets.map((set, si) => (
+          <div key={set.set_id} className="kis-card">
+            {set.designation && (
+              <h3 style={TITULO_DEL_CONJUNTO}>{set.designation}</h3>
+            )}
+            {(piezasPorConjunto[si] || []).map(pieza => (
+              pieza.tipo === 'general' ? pintarGeneral(pieza) : bloqueDeSujeto(pieza)
+            ))}
+          </div>
+        ))}
+      </>
+    );
+  }
+
+  // Con varios hijos: primero LO QUE NO ES DE UN HIJO —la solicitud y el tutor, que se
+  // contestan UNA vez— y después una sección por cada hijo. Intercalarlas obliga a saltar,
+  // que es justo lo que se viene a quitar.
+  const piezasSinHijo = piezasPorConjunto.map(
+    piezas => piezas.filter(p => p.tipo === 'general' || !p.esAlumno));
+
+  // Una sección por hijo, EN EL ORDEN EN QUE APARECE, y dentro sus conjuntos TAL Y COMO
+  // LLEGAN. ⛔ No se ordena nada: hoy no hay ningún `sort` en el frontal y el `display_order`
+  // ya viaja resuelto desde el servidor — inventar aquí una ordenación sería un segundo
+  // criterio sobre lo que el centro declara.
+  const seccionesPorHijo = [];
+  const dondeVaCadaHijo = {};
+  piezasPorConjunto.forEach((piezas, si) => piezas.forEach(pieza => {
+    if (pieza.tipo !== 'sujeto' || !pieza.esAlumno) return;
+    if (dondeVaCadaHijo[pieza.personKey] === undefined) {
+      dondeVaCadaHijo[pieza.personKey] = seccionesPorHijo.length;
+      seccionesPorHijo.push({
+        personKey: pieza.personKey, name: pieza.name, icono: pieza.icono, conjuntos: [],
+      });
+    }
+    seccionesPorHijo[dondeVaCadaHijo[pieza.personKey]].conjuntos.push({ set: sets[si], pieza });
+  }));
 
   return (
     <>
-      {sets.map((set, si) => (
-        <div key={set.set_id} className="kis-card">
-          {set.designation && (
-            <h3 style={{ color: 'var(--teal-dk)', fontSize: '1.05rem' }}>{set.designation}</h3>
-          )}
+      {sets.map((set, si) => {
+        const piezas = piezasSinHijo[si] || [];
+        // Un conjunto que solo tenía preguntas de alumno ya no pinta tarjeta propia: sus
+        // preguntas viven dentro de cada hijo. Una tarjeta con solo el título es ruido.
+        if (!piezas.length) return null;
+        return (
+          <div key={set.set_id} className="kis-card">
+            {set.designation && (
+              <h3 style={TITULO_DEL_CONJUNTO}>{set.designation}</h3>
+            )}
+            {piezas.map(pieza => (
+              pieza.tipo === 'general' ? pintarGeneral(pieza) : bloqueDeSujeto(pieza)
+            ))}
+          </div>
+        );
+      })}
 
-          {(() => {
-            const piezas = piezasPorConjunto[si] || [];
-
-            return piezas.map(pieza => {
-              if (pieza.tipo === 'general') {
-                return (
-                  <div key={pieza.key} className="mb-4">
-                    <QuestionField
-                      question={pieza.q}
-                      value={respuestasEfectivas[pieza.key]}
-                      onChange={v => setResponse(pieza.key, v)}
-                      readOnly={readOnly}
-                      respondentKey={groupId}
-                    />
-                  </div>
-                );
-              }
-              return (
-                <div key={`qb-sujeto-${pieza.bi}-${pieza.personKey}`}
-                     className={variosSujetos ? 'sujeto-bloque' : 'mb-4'}
-                     data-qb-sujeto={pieza.personKey}>
-                  <CabeceraDeSujeto nombre={pieza.name} icono={pieza.icono}
-                                    destacado={variosSujetos} />
-                  {pieza.suyas.map(q => {
-                    // ⛔ LA CLAVE NO CAMBIA: es la que guarda y recupera la respuesta.
-                    const key = `${q.question_id}__${pieza.personKey}`;
-                    return (
-                      <div key={key} className="mb-3">
-                        <QuestionField
-                          question={q}
-                          value={respuestasEfectivas[key]}
-                          onChange={v => setResponse(key, v)}
-                          readOnly={readOnly}
-                          respondentKey={pieza.personKey}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            });
-          })()}
+      {seccionesPorHijo.map(seccion => (
+        <div key={`qb-hijo-${seccion.personKey}`} className="kis-card">
+          {/* ⛔ LA PASTILLA SE REUSA: `CabeceraDeSujeto` + `.sujeto-bloque` son el ÚNICO
+              sitio que decide cómo se ve un separador de sujeto. Copiar aquí su aspecto a
+              mano es exactamente cómo divergieron el cuestionario y el simulador de cuotas
+              antes de que ese componente existiera. */}
+          <div className="sujeto-bloque" data-qb-sujeto={seccion.personKey}>
+            <CabeceraDeSujeto nombre={seccion.name} icono={seccion.icono} destacado />
+            {seccion.conjuntos.map(cj => (
+              <div key={`${seccion.personKey}-${cj.set.set_id}`}
+                   data-qb-conjunto={cj.set.set_id} className="mb-2">
+                {/* El título del conjunto SE CONSERVA — es lo que el centro declara y lo
+                    que da sentido a la pregunta. Lo que cambia es que deja de ser el
+                    contenedor de primer nivel. */}
+                {cj.set.designation && (
+                  <h4 style={TITULO_DEL_CONJUNTO_EN_UN_HIJO}>{cj.set.designation}</h4>
+                )}
+                {pintarPreguntasDe(cj.pieza)}
+              </div>
+            ))}
+          </div>
         </div>
       ))}
     </>
   );
 }
+
+// El título de un conjunto, en sus dos sitios: de primer nivel (una tarjeta por conjunto) y
+// dentro de la sección de un hijo, donde va subordinado a su pastilla.
+const TITULO_DEL_CONJUNTO = { color: 'var(--teal-dk)', fontSize: '1.05rem' };
+const TITULO_DEL_CONJUNTO_EN_UN_HIJO = {
+  color: 'var(--teal-dk)', fontSize: '0.92rem', fontWeight: 700, margin: '0 0 10px',
+};
 
 // ─── QUÉ PIEZAS PINTA UN CONJUNTO, en orden ──────────────────────────────────────────
 //
@@ -294,7 +399,10 @@ function piezasDelConjunto_(set, { applicants, guardians, respuestasEfectivas, g
           ? `${tr('applicant.title', { n: pi + 1 }) || 'Applicant'} ${pi + 1}`
           : `${tr('guardian.title',  { n: pi + 1 }) || 'Guardian'} ${pi + 1}`);
       piezas.push({
-        tipo: 'sujeto', bi, personKey, suyas, name,
+        // `esAlumno` viaja en la pieza desde 2026-09-20: quien pinta necesita distinguir
+        // «de un hijo» de «del tutor» para decidir qué va en una sección propia y qué se
+        // queda arriba. ⛔ NO decide de quién es la pregunta — eso ya venía resuelto.
+        tipo: 'sujeto', bi, personKey, suyas, name, esAlumno,
         icono: esAlumno ? 'bi-person' : 'bi-person-fill',
       });
     });

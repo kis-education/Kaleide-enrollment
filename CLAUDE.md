@@ -2527,6 +2527,12 @@ ir a publicar.**
 
 ### `0º.tricies.decies` (2026-08-22) — las preguntas del cuestionario se agrupan POR ALUMNO
 
+> ⭐ **AMPLIADA el 2026-09-20 — lee ANTES la entrada siguiente.** Lo de aquí sigue siendo cierto
+> DENTRO de un conjunto; lo que faltaba era el NIVEL. Desde el 2026-09-20 **manda el SUJETO y el
+> conjunto queda dentro**, así que dos frases de abajo YA NO describen la pantalla: la **Red** ya
+> no se mide por tarjeta sino en TODO el paso, y con dos hijos el nombre de cada uno se pinta **una
+> sola vez en el paso entero**, no una vez por conjunto.
+
 **Diego, cita literal:** *«tampoco salen agrupadas. Tienes que ir al alimón, mirando a quién le
 corresponden. Lo lógico es que dentro de cada pill, haya un área de agrupación por sujeto»*.
 
@@ -2556,8 +2562,9 @@ Ahora **`agruparPorSujeto_(set)`** reparte los elementos en BLOQUES y quien pint
 
 **⚠️ El componente vive en los DOS repositorios y SOLO se tocó el del asistente, y hay un motivo
 MEDIDO.** La copia del KMS (`kis-app frontend/src/shared/qb-renderer/`) tiene **un solo
-consumidor** —`worlds/admin/qb/QbQuestionEditPage.jsx:885`, la **vista previa** de una pregunta— y
-se le pasa **exactamente UN alumno sintético** (`persons={[{…}]}`, `:888`) ⇒ ahí no hay nada que
+consumidor** —`worlds/admin/qb/QbQuestionEditPage.jsx:939`, la **vista previa** de una pregunta— y
+se le pasa **exactamente UN alumno sintético** (`persons={[{…}]}`, `:942`) *(líneas RE-MEDIDAS el
+2026-09-20 contra `origin/master`; decían `:885`/`:888` y habían derivado)* ⇒ ahí no hay nada que
 agrupar y el cambio no se vería. Tocarlo además habría arrastrado el muro `e2e:tables`, **ese día
 ROJO en `origin/master` por un cambio ajeno**, sin ganar nada.
 
@@ -2574,6 +2581,90 @@ reserva como CEDIDA y empujó ese aviso — pero la rutina ya estaba en vuelo y 
 vuelta solo sobrevive **esta documentación**, que la publicación no traía. Es el mismo desenlace que
 `0º.tricies.quater`. **La reserva se lee antes de la primera línea de código Y otra vez antes de
 publicar** — y aun así, cuando una mano ya está en vuelo, ceder tarde no evita el trabajo doble.
+
+### (2026-09-20) — el paso 5 agrupa POR HIJO: manda el sujeto y el conjunto queda dentro
+
+**Diego, 2026-09-20, tras publicarse la conversión del idioma viejo:** *«ya salen los hijos con las
+preguntas. Lo único que el wizard presenta las preguntas de forma caótica. Debería agrupar por
+sujeto, de tal forma que todas las preguntas de un hijo estén juntas.»*
+
+⛔ **NO era que faltara el agrupador: EXISTE, se llama y nadie lo revirtió. Lo que fallaba era el
+NIVEL.** Confirmado contra `origin/main` @ `9043421` antes de tocar nada: `agruparPorSujeto_`
+(`shared/QbSetRenderer/index.jsx`) solo recorre `set.items` y su acumulador `const abierto = {}` es
+**LOCAL a la llamada** ⇒ se reinicia en cada conjunto; y el paso pintaba **una tarjeta por
+conjunto**. Con cuatro conjuntos y dos hijos eso da
+`[higiene: Jara, Pepito][valores: …][antecedentes: Jara, Pepito]…`: **cada bloque ordenado por
+dentro y las preguntas de un mismo hijo repartidas por toda la pantalla.**
+
+**Cómo queda:** primero **lo que NO es de un hijo** —las preguntas de la solicitud y las del tutor,
+que se contestan una vez—, y después **una sección por cada hijo** con sus conjuntos dentro, cada
+uno con su título.
+
+**Lo que hay que retener al tocar esto:**
+
+- **⛔ CON UN SOLO HIJO LA PANTALLA NO CAMBIA, y eso NO es una promesa: está MEDIDO.** La rama de un
+  solo hijo es la de siempre, sin tocar (`if (!variosHijos)`), y el DOM del paso 5 con una familia
+  de un hijo salió **BYTE-IDÉNTICO** —2.710 bytes, `cmp` sin diferencia— entre el código de ayer y
+  el de hoy. El arnés que lo midió **distingue**: con la guarda rota (`> 0`) el DOM pasa a 2.794.
+  Sin nada que separar, una sección de primer nivel es ruido — mismo criterio que la pastilla.
+- **⛔ UN SOLO RECORRIDO, DOS PREGUNTAS.** `variosSujetos` (¿pastilla o línea gris?) y `variosHijos`
+  (¿manda el sujeto?) se derivan de **la MISMA pasada** sobre las piezas ya calculadas. Una segunda
+  cuenta, en otro sitio y con otro criterio, es exactamente cómo divergieron las dos formas del
+  encabezado en `0º.tricies.vicies.septies`.
+- **⛔ LA PASTILLA SE REUSA.** `CabeceraDeSujeto` + `.sujeto-bloque` siguen siendo el ÚNICO sitio
+  que decide cómo se ve un separador de sujeto: la sección de un hijo los MONTA, no copia su
+  aspecto. **Cero CSS nuevo.**
+- **⛔ LA CLAVE DE LA RESPUESTA NO SE TOCA** (`question_id__personKey`) y **de quién es cada
+  pregunta se sigue leyendo del catálogo**: aquí solo se AGRUPA lo que llega. `esAlumno` viaja en la
+  pieza para poder distinguir «de un hijo» de «del tutor» al repartir, no para decidir nada.
+- **⛔ NO SE ORDENA NADA.** El orden de los hijos es el de su primera aparición y el de los
+  conjuntos dentro de cada hijo, el de llegada. Hoy no hay ningún `sort` en el frontal y el
+  `display_order` ya viaja resuelto (`backend/Code.js:7543`): inventar aquí una ordenación sería un
+  segundo criterio sobre lo que el centro declara.
+- **Las condiciones se siguen evaluando POR SUJETO** y un hijo al que no le queda ninguna pregunta
+  **no se pinta** — de ahí que Jara salga con cinco preguntas y Pepito con cuatro en el catálogo
+  del robot: el conjunto «7 años o más» solo le entra a ella.
+- **Un conjunto que solo tenía preguntas de alumno YA NO pinta tarjeta propia**: sus preguntas viven
+  dentro de cada hijo, y una tarjeta con solo el título es ruido.
+
+**⚠️ EL GEMELO DEL KMS NO SE TOCÓ, y esta vez el motivo es MÁS FUERTE que en `0º.tricies.decies`:
+ese fichero NO TIENE este código.** Medido el 2026-09-20 contra `origin/master`:
+`kis-app frontend/src/shared/qb-renderer/index.jsx` son **235 líneas** con **CERO** apariciones de
+`agruparPorSujeto_`, `piezasDelConjunto_`, `CabeceraDeSujeto`, `.sujeto-bloque` o `data-qb-sujeto` —
+el agrupamiento nunca aterrizó allí. Y su **único** consumidor,
+`worlds/admin/qb/QbQuestionEditPage.jsx:939-948`, le pasa **un solo alumno sintético**
+(`persons={[{ person_type_id:'applicant', _uid:'preview', … }]}`, `:942`) y **un solo conjunto** ⇒
+no hay ni dos hijos ni dos conjuntos que agrupar, así que el cambio no se vería. **No se tocó.**
+
+**Red**: el recorrido `cuestionario-no-se-apaga`, que **ya se ejercita con DOS hijos y DOS
+conjuntos** — se amplió ahí, no se abrió uno nuevo. Sus afirmaciones `(d.*)` **dejan de medirse por
+tarjeta y pasan a medirse en TODO el paso**: hasta hoy se medían dentro de cada tarjeta a propósito
+(*«un mismo hijo aparece legítimamente una vez en cada conjunto»*), **y esa frase ERA el defecto
+dicho en voz alta** — medido así, el caso que Diego devolvió salía VERDE. Nuevas: `(d.1)` el nombre
+de cada hijo UNA sola vez en todo el paso · `(d.2)` sus preguntas seguidas (4 y 5) · `(d.1.bis)` los
+conjuntos dentro del hijo **con su título** · `(d.1.ter)` lo que no es de un hijo va delante ·
+`(e.2.bis)` reescrita (lo que vigilaba —un conjunto que cae a la línea gris— ya no puede ocurrir:
+el encabezado es uno por hijo para todo el paso) · `(e.3.bis)` con un solo hijo la pantalla sigue
+siendo la de siempre.
+
+**Rojo demostrado DOS veces**, cada una nombrando su caso:
+
+| Rotura | Rojo obtenido |
+|---|---|
+| devolver el agrupamiento al nivel de conjunto (el código de ayer) | *«los encabezados de sujeto, en orden, fueron ["RobotHijoE2E…","RobotHijoDosE2E…","RobotHijoE2E…"]: un nombre repetido significa que el hijo vuelve a salir más abajo…»* + `(d.2)` `[…4],[…4],[…1]` + `(d.1.bis)` sin títulos + `(e.2.bis.0)` 0 conjuntos dentro de un hijo |
+| quitar la guarda del hijo único (`> 1` → `> 0`) | *«las tarjetas de primer nivel fueron ["Preguntas del robot"] y se leyeron 2 conjunto(s) metidos dentro de un hijo: con un solo hijo se esperaban los DOS conjuntos del catálogo como tarjetas y ninguna sección por sujeto»* + `(e.3)` en rojo |
+
+⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
+`backend/Code.js`** ni el KMS ⇒ afirma lo que PINTA el navegador, que es donde vive este defecto
+entero. **No se tocó ni una línea de servidor**, en ninguno de los dos repositorios.
+
+**Textos, manual y ayuda en pantalla: ninguno toca.** No hay ni una cadena nueva ni cambiada — el
+título del conjunto lo declara el centro y el nombre del hijo es el dato de la familia; los dos ya
+se pintaban. Este repositorio no tiene manual de usuario ni ayuda dentro de la aplicación: sus
+únicos textos son los de `frontend/public/locales/`.
+
+**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), **sin `clasp` y sin
+turno**.
 
 ### `0º.tricies.sexdecies` (2026-08-22) — se VE dónde acaba un hermano y empieza el otro
 

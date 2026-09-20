@@ -4166,74 +4166,125 @@ async function caminoCuestionarioNoSeApaga(page, base) {
     `eligiendo por el código del tipo y ③51 no tiene efecto; todo cajas ⇒ se perdió la caída.`)
 
   // ── 0º.tricies.decies (2026-08-22) · LAS PREGUNTAS SE AGRUPAN POR SUJETO ─────────────
-  // Diego: «tampoco salen agrupadas… lo lógico es que dentro de cada pill haya un área de
-  // agrupación por sujeto». El simulado sirve DOS preguntas de alumno y el expediente tiene
-  // DOS alumnos, así que la secuencia observable distingue las dos formas:
-  //   intercalado (lo de antes) → Jara·P1 · Pepito·P1 · Jara·P2 · Pepito·P2  (4 encabezados)
-  //   agrupado    (lo de ahora) → Jara·[P1,P2] · Pepito·[P1,P2]              (2 encabezados)
-  // Se mide sobre el TEXTO en orden de documento, no sobre un atributo: así la afirmación
-  // habla del comportamiento y no de cómo esté marcado el HTML por dentro.
-  // ⛔ POR TARJETA, no por página (`0º.tricies.vicies.septies`, 2026-08-26). El catálogo del
-  // robot sirve ahora DOS conjuntos —y cada conjunto es una tarjeta—, así que un mismo hijo
-  // aparece legítimamente una vez en cada uno. Medir sobre la página entera diría que su
-  // nombre «se repite» cuando lo que pasa es que hay dos conjuntos: la afirmación de
-  // agrupación habla de lo que ocurre DENTRO de un conjunto, y así se mide.
-  const tarjetas = await page.evaluate(() => {
-    const out = [];
-    document.querySelectorAll('.kis-card').forEach(card => {
-      const fichas = [];
+  // ⭐ AMPLIADO el 2026-09-20 · MANDA EL SUJETO, Y EL CONJUNTO QUEDA DENTRO.
+  //
+  // Diego, 2026-09-20: «el wizard presenta las preguntas de forma caótica. Debería agrupar
+  // por sujeto, de tal forma que todas las preguntas de un hijo estén juntas». El agrupador
+  // de 2026-08-22 EXISTE y se llama — lo que fallaba era EL NIVEL: agrupaba DENTRO de cada
+  // conjunto y el paso pintaba una tarjeta POR CONJUNTO, así que con dos conjuntos el mismo
+  // hijo salía DOS VECES, con sus preguntas repartidas por la pantalla.
+  //
+  // ⛔ POR ESO ESTO YA NO SE MIDE POR TARJETA, SINO EN TODO EL PASO. Hasta hoy se medía
+  // dentro de cada tarjeta a propósito —«un mismo hijo aparece legítimamente una vez en cada
+  // conjunto»—, y esa frase ERA el defecto dicho en voz alta: medido así, el caso que Diego
+  // devolvió salía VERDE. Lo que se afirma ahora es lo que él pidió: en TODO el paso, el
+  // nombre de un hijo una sola vez y todo lo suyo debajo.
+  //
+  // Se mide sobre el TEXTO en orden de documento: así la afirmación habla de lo que la
+  // familia lee y no de cómo esté marcado el HTML por dentro. Lo único que se mira del
+  // marcado es SI una pregunta cuelga de un sujeto, que es una pregunta distinta («¿de
+  // quién es esto?») y no se puede contestar por el texto.
+  const enOrden = await page.evaluate(() => {
+    const out = []
+    document.querySelectorAll(
+      '[data-testid="sujeto-separador"], [data-qb-conjunto], p, label.form-label'
+    ).forEach(el => {
       // `0º.tricies.sexdecies`: con VARIOS sujetos el encabezado es la PASTILLA; con uno
       // solo sigue siendo la línea gris de siempre. Se aceptan las dos formas, porque lo
       // que esta sonda mide es el ORDEN de lo que se lee, no cómo esté marcado el HTML.
-      card.querySelectorAll(
-        '[data-testid="sujeto-separador"], p, label.form-label'
-      ).forEach(el => {
-        if (el.getAttribute('data-testid') === 'sujeto-separador') {
-          fichas.push({ t: 'sujeto', v: (el.textContent || '').trim() });
-          return;
+      if (el.getAttribute('data-testid') === 'sujeto-separador') {
+        out.push({ t: 'sujeto', v: (el.textContent || '').trim() })
+        return
+      }
+      if (el.hasAttribute('data-qb-conjunto')) {
+        const h = el.querySelector('h4')
+        out.push({ t: 'conjunto', v: h ? (h.textContent || '').trim() : '' })
+        return
+      }
+      if (el.tagName === 'P') {
+        if (el.querySelector('i.bi-person, i.bi-person-fill')) {
+          out.push({ t: 'sujeto', v: (el.textContent || '').trim() })
         }
-        if (el.tagName === 'P') {
-          if (el.querySelector('i.bi-person, i.bi-person-fill')) {
-            fichas.push({ t: 'sujeto', v: (el.textContent || '').trim() });
-          }
-          return;
-        }
-        fichas.push({ t: 'pregunta', v: (el.textContent || '').trim() });
-      });
-      if (fichas.length) out.push(fichas);
-    });
-    return out;
+        return
+      }
+      out.push({
+        t: 'pregunta', v: (el.textContent || '').trim(),
+        deSujeto: !!el.closest('[data-qb-sujeto]'),
+      })
+    })
+    return out
   })
-  const orden = tarjetas[0] || []
-  const nombres = orden.filter(f => f.t === 'sujeto').map(f => f.v)
-  // ANCLA: sin encabezados de sujeto las tres afirmaciones de abajo pasarían EN VACÍO —
-  // que es exactamente lo que pasaba antes de este cambio, cuando el catálogo del robot
+  const nombres = enOrden.filter(f => f.t === 'sujeto').map(f => f.v)
+  // ANCLA: sin encabezados de sujeto las afirmaciones de abajo pasarían EN VACÍO — que es
+  // exactamente lo que pasaba antes de `0º.tricies.decies`, cuando el catálogo del robot
   // era general entero y la pantalla no pintaba ni un nombre.
   if (c.afirmar('(d.0) ancla — el paso 5 pinta preguntas CON SUJETO',
     nombres.length >= 2,
     `se leyeron ${nombres.length} encabezado(s) de sujeto: sin ellos, agrupar no se puede medir`)) {
 
-    const nombresPorTarjeta = tarjetas.map(f => f.filter(x => x.t === 'sujeto').map(x => x.v))
-    c.afirmar('(d.1) el nombre de cada alumno se pinta UNA sola vez DENTRO de su conjunto',
-      nombresPorTarjeta.every(ns => new Set(ns).size === ns.length),
-      `los encabezados por conjunto fueron ${JSON.stringify(nombresPorTarjeta)}: un nombre ` +
-      `repetido DENTRO de un conjunto significa que las preguntas siguen intercaladas y la ` +
-      `familia salta de un hijo a otro`)
+    c.afirmar('(d.1) el nombre de cada hijo se pinta UNA sola vez en TODO el paso',
+      new Set(nombres).size === nombres.length,
+      `los encabezados de sujeto, en orden, fueron ${JSON.stringify(nombres)}: un nombre ` +
+      `repetido significa que el hijo vuelve a salir más abajo —una vez por conjunto— y sus ` +
+      `preguntas quedan repartidas por la pantalla, que es lo que Diego llamó caótico`)
 
-    // Cada sujeto arrastra TODAS sus preguntas: se cuentan las que van entre su encabezado
-    // y el siguiente. Intercalado da 1 por encabezado; agrupado da las 2 del catálogo.
+    // Cada hijo arrastra TODAS sus preguntas: se cuentan las que van entre su encabezado y
+    // el siguiente. Repartido por conjuntos da TRES bloques (4·4·1); agrupado por hijo da
+    // DOS: las cinco de Jara —las cuatro del conjunto básico más la del conjunto que solo
+    // le entra a ella por edad— y las cuatro de Pepito.
     const porSujeto = []
-    orden.forEach(f => {
+    enOrden.forEach(f => {
       if (f.t === 'sujeto') porSujeto.push({ nombre: f.v, preguntas: [] })
-      else if (porSujeto.length) porSujeto[porSujeto.length - 1].preguntas.push(f.v)
+      else if (f.t === 'pregunta' && f.deSujeto && porSujeto.length) {
+        porSujeto[porSujeto.length - 1].preguntas.push(f.v)
+      }
     })
-    // CUATRO por alumno desde `0º.tricies.vicies.decies`: las dos de texto de siempre más las
-    // dos de redondeles que se dieron de alta para poder ver el defecto de los grupos.
-    // Intercalado daría 1 por encabezado; agrupado, las 4 del conjunto.
-    c.afirmar('(d.2) las preguntas de un mismo alumno salen SEGUIDAS, bajo su nombre',
-      porSujeto.length > 0 && porSujeto.every(s => s.preguntas.length === 4),
-      `bajo cada nombre se leyeron ${JSON.stringify(porSujeto.map(s => s.preguntas.length))} ` +
-      `pregunta(s) (se esperaban 4 por alumno): ${JSON.stringify(porSujeto)}`)
+    const cuentas = porSujeto.map(s => s.preguntas.length).slice().sort((a, b) => a - b)
+    c.afirmar('(d.2) todas las preguntas de un mismo hijo salen SEGUIDAS bajo su nombre',
+      porSujeto.length === 2 && JSON.stringify(cuentas) === '[4,5]',
+      `bajo cada nombre se leyeron ${JSON.stringify(porSujeto.map(s => [s.nombre, s.preguntas.length]))}: ` +
+      `se esperaban DOS bloques (uno por hijo) con 4 y 5 preguntas. Tres bloques ⇒ el hijo se ` +
+      `repite por conjunto; un bloque de 1 ⇒ sus preguntas siguen repartidas`)
+
+    // ── EL TÍTULO DEL CONJUNTO SE CONSERVA, DENTRO DEL HIJO ─────────────────────────────
+    // Es lo que el centro declara y lo que da sentido a la pregunta: lo que cambia es que
+    // deja de ser el contenedor de primer nivel. Sin esto, agrupar por hijo se llevaría por
+    // delante la única pista de a qué viene cada pregunta.
+    const conjuntosDentro = await page.evaluate(() => {
+      const out = []
+      document.querySelectorAll('[data-qb-sujeto]').forEach(bl => {
+        const cab = bl.querySelector('[data-testid="sujeto-separador"]')
+        out.push({
+          sujeto: cab ? (cab.textContent || '').trim() : null,
+          titulos: [...bl.querySelectorAll('[data-qb-conjunto]')].map(cj => {
+            const h = cj.querySelector('h4')
+            return h ? (h.textContent || '').trim() : ''
+          }),
+        })
+      })
+      return out
+    })
+    c.afirmar('(d.1.bis) los conjuntos de un hijo van DENTRO de su sección, con su título',
+      conjuntosDentro.length === 2 &&
+      conjuntosDentro.every(s => s.titulos.length >= 1 && s.titulos.every(Boolean)) &&
+      conjuntosDentro.some(s => s.titulos.length === 2),
+      `las secciones por hijo leídas fueron ${JSON.stringify(conjuntosDentro)}: se esperaban DOS, ` +
+      `con el título de cada conjunto dentro y al menos una con los DOS conjuntos. Sin títulos, ` +
+      `la familia no sabe a qué viene cada pregunta; sin secciones, no se agrupó por hijo`)
+
+    // ── LO QUE NO ES DE UN HIJO VA PRIMERO ──────────────────────────────────────────────
+    // Las preguntas de la solicitud (y las del tutor) se contestan UNA vez: intercalarlas
+    // entre los hijos obliga a saltar, que es justo lo que se viene a quitar.
+    const primerSujeto = enOrden.findIndex(f => f.t === 'sujeto')
+    const sueltas = enOrden
+      .map((f, i) => ({ f, i }))
+      .filter(x => x.f.t === 'pregunta' && !x.f.deSujeto)
+    c.afirmar('(d.1.ter) lo que NO es de un hijo se pinta ANTES de las secciones por hijo',
+      primerSujeto > 0 && sueltas.length >= 2 && sueltas.every(x => x.i < primerSujeto),
+      `el primer encabezado de sujeto va en la posición ${primerSujeto} y las preguntas que no ` +
+      `cuelgan de ningún sujeto, en ${JSON.stringify(sueltas.map(x => x.i))} ` +
+      `(el orden completo fue ${JSON.stringify(enOrden.map(f => f.t))}): las preguntas de la ` +
+      `solicitud se contestan una vez y van delante, no intercaladas entre los hijos`)
 
     // ── 0º.tricies.sexdecies (2026-08-22) · SE VE DÓNDE ACABA UN HERMANO Y EMPIEZA EL
     // OTRO. Diego: «es difícil visualmente separar un hermano del otro. La letra es muy
@@ -4273,40 +4324,56 @@ async function caminoCuestionarioNoSeApaga(page, base) {
       `corriendo seguidas y solo las separa una línea de texto`)
 
     // ── `0º.tricies.vicies.septies` (2026-08-26) · LA MISMA PANTALLA, UN SOLO ASPECTO ───
+    // ⭐ REESCRITA el 2026-09-20, porque lo que vigilaba YA NO PUEDE OCURRIR.
+    //
     // Diego, con captura: «Jara se ve en pequeñito, pero en los paneles anteriores habíamos
     // puesto un pill más resaltado». El conjunto `set-e2e-2` («7 años o más») deja fuera al
-    // hermano pequeño POR SUS CONDICIONES ⇒ solo le entra UN alumno. Cuando «¿hay más de un
-    // sujeto?» se calculaba DENTRO de cada conjunto, ese caía a la línea gris mientras el de
-    // al lado sacaba pastilla. Se comprueba EN EL BLOQUE de ese conjunto, no en el montón:
-    // así el rojo nombra el caso en vez de decir «alguno de los tres no tiene pastilla».
-    const soloUno = await page.evaluate(() => {
-      const cards = [...document.querySelectorAll('.kis-card')];
-      // La tarjeta con UN solo bloque de sujeto habiendo dos hermanos en la solicitud: ésa
-      // es la del conjunto que por edad deja a uno fuera.
-      const card = cards.filter(x => x.querySelectorAll('[data-qb-sujeto]').length === 1).pop();
-      if (!card) return null;
-      const bloque = card.querySelector('[data-qb-sujeto]');
-      const cab = bloque.querySelector('[data-testid="sujeto-separador"]');
-      const eb = getComputedStyle(bloque);
-      const ec = cab ? getComputedStyle(cab) : null;
+    // hermano pequeño POR SUS CONDICIONES ⇒ cuando «¿hay más de un sujeto?» se calculaba
+    // DENTRO de cada conjunto, ese caía a la línea gris mientras el de al lado sacaba
+    // pastilla. Desde que manda el SUJETO, el encabezado es UNO por hijo para todo el paso:
+    // un conjunto no tiene encabezado propio que pueda caer, así que ese defecto es
+    // estructuralmente imposible y afirmarlo sería medir el aire.
+    //
+    // Lo que sí hay que vigilar es la otra mitad de aquella decisión, que sigue viva y es
+    // la que hace falta ahora: ese conjunto de un solo hermano TIENE que aparecer DENTRO de
+    // la sección de ese hermano —con su título— y NO como una tarjeta suelta al final. Si
+    // volviera a pintarse aparte, la familia leería el nombre de Jara dos veces y sus
+    // preguntas volverían a quedar repartidas, que es el defecto entero.
+    const conjuntoDeUnSoloHermano = await page.evaluate(() => {
+      const titulo = 'Voz del aplicante (7 años o más)'
+      const dentroDeUnHijo = []
+      document.querySelectorAll('[data-qb-sujeto] [data-qb-conjunto]').forEach(cj => {
+        const h = cj.querySelector('h4')
+        const cab = cj.closest('[data-qb-sujeto]').querySelector('[data-testid="sujeto-separador"]')
+        dentroDeUnHijo.push({
+          titulo: h ? (h.textContent || '').trim() : '',
+          hijo: cab ? (cab.textContent || '').trim() : null,
+        })
+      })
       return {
-        conjunto: (card.querySelector('h3') || {}).textContent || '',
-        nombre:   cab ? (cab.textContent || '').trim() : null,
-        bordeIzq: parseFloat(eb.borderLeftWidth) || 0,
-        fondo:    ec ? ec.backgroundColor : null,
-        tamano:   ec ? parseFloat(ec.fontSize) : 0,
-        peso:     ec ? Number(ec.fontWeight) || 0 : 0,
-      };
+        titulo,
+        dentroDeUnHijo,
+        // Un conjunto que solo tiene preguntas de alumno YA NO pinta tarjeta propia: una
+        // tarjeta con solo el título es ruido, y su nombre repetido arriba es el defecto.
+        tarjetasSueltas: [...document.querySelectorAll('.kis-card > h3')]
+          .map(h => (h.textContent || '').trim()),
+      }
     })
-    if (c.afirmar('(e.2.bis.0) ancla — hay un conjunto al que por sus condiciones solo le entra UN hermano',
-      !!soloUno,
-      'no se encontró ningún conjunto con un solo bloque de sujeto: sin él, la afirmación de abajo pasaría EN VACÍO')) {
-      c.afirmar('(e.2.bis) un conjunto con UN SOLO hermano lleva la MISMA pastilla que los demás',
-        !!soloUno.nombre && !transparente(soloUno.fondo) && soloUno.tamano >= 15 &&
-        soloUno.peso >= 700 && soloUno.bordeIzq >= 2,
-        `el conjunto ${JSON.stringify(soloUno.conjunto)} pintó ${JSON.stringify(soloUno)}: ` +
-        `si la cuenta se hace DENTRO del conjunto, éste cae a la línea gris mientras el de al ` +
-        `lado saca pastilla — y la familia ve la misma pantalla con dos aspectos`)
+    if (c.afirmar('(e.2.bis.0) ancla — hay conjuntos pintados DENTRO de la sección de un hijo',
+      conjuntoDeUnSoloHermano.dentroDeUnHijo.length >= 3,
+      `se leyeron ${conjuntoDeUnSoloHermano.dentroDeUnHijo.length} conjunto(s) dentro de una ` +
+      `sección de hijo (se esperaban al menos 3: los dos de Jara y el de Pepito): sin ellos, ` +
+      `la afirmación de abajo pasaría EN VACÍO`)) {
+      const elDeUno = conjuntoDeUnSoloHermano.dentroDeUnHijo
+        .filter(x => x.titulo === conjuntoDeUnSoloHermano.titulo)
+      c.afirmar('(e.2.bis) el conjunto que solo le entra a UN hermano va DENTRO de ese hermano',
+        elDeUno.length === 1 &&
+        !conjuntoDeUnSoloHermano.tarjetasSueltas.includes(conjuntoDeUnSoloHermano.titulo),
+        `el conjunto ${JSON.stringify(conjuntoDeUnSoloHermano.titulo)} apareció ` +
+        `${elDeUno.length} vez/veces dentro de un hijo (${JSON.stringify(elDeUno)}) y las ` +
+        `tarjetas sueltas del paso fueron ${JSON.stringify(conjuntoDeUnSoloHermano.tarjetasSueltas)}: ` +
+        `si vuelve a pintarse como tarjeta aparte, el nombre de ese hijo sale dos veces y sus ` +
+        `preguntas quedan otra vez repartidas por la pantalla`)
     }
 
     // ── ⛔⛔ `0º.tricies.vicies.decies` (2026-08-26) · LOS REDONDELES NO SE PISAN ─────────
@@ -4477,6 +4544,11 @@ async function caminoCuestionarioNoSeApaga(page, base) {
       bloques:      document.querySelectorAll('[data-qb-sujeto]').length,
       pastillas:    document.querySelectorAll('[data-testid="sujeto-separador"]').length,
       lineaDeSiempre: !!document.querySelector('.kis-card p i.bi-person, .kis-card p i.bi-person-fill'),
+      // 2026-09-20: la forma de la pantalla. Con UN solo hijo tiene que seguir siendo la de
+      // siempre —una tarjeta POR CONJUNTO, con su titulo de primer nivel— y NO la de por
+      // sujeto, que se reconoce por los conjuntos metidos dentro de un hijo.
+      tarjetas:     [...document.querySelectorAll('.kis-card > h3')].map(h => (h.textContent || '').trim()),
+      conjuntosDentroDeUnHijo: document.querySelectorAll('[data-qb-sujeto] [data-qb-conjunto]').length,
     }))
     // `0º.tricies.vicies.septies`: con DOS conjuntos en el catálogo, un solo alumno pinta un
     // bloque POR CONJUNTO (los dos suyos). Lo que se afirma abajo sigue siendo lo mismo: con
@@ -4489,6 +4561,20 @@ async function caminoCuestionarioNoSeApaga(page, base) {
         solo.pastillas === 0 && solo.lineaDeSiempre,
         `pastillas=${solo.pastillas} · línea de siempre=${solo.lineaDeSiempre}: con un solo hijo no hay ` +
         `nada que separar, así que el separador con peso sobra — y el nombre no puede desaparecer`)
+
+      // ── (e.3.bis) 2026-09-20 · CON UN SOLO HIJO LA PANTALLA NO CAMBIA ────────────────
+      // Agrupar por SUJETO de primer nivel solo tiene sentido cuando hay más de un hijo:
+      // con uno solo no hay nada que separar y una sección propia es ruido — el mismo
+      // criterio con el que se decide la pastilla, y derivado de la MISMA pasada. Esto es
+      // lo que hace COMPROBABLE la promesa de que esa familia ve la pantalla de siempre:
+      // sigue habiendo una tarjeta por conjunto, con su título, y CERO conjuntos metidos
+      // dentro de un hijo.
+      c.afirmar('(e.3.bis) con UN SOLO hijo la pantalla sigue siendo la de siempre: una tarjeta por conjunto',
+        solo.tarjetas.length === 2 && solo.tarjetas.every(Boolean) &&
+        solo.conjuntosDentroDeUnHijo === 0,
+        `las tarjetas de primer nivel fueron ${JSON.stringify(solo.tarjetas)} y se leyeron ` +
+        `${solo.conjuntosDentroDeUnHijo} conjunto(s) metidos dentro de un hijo: con un solo hijo ` +
+        `se esperaban los DOS conjuntos del catálogo como tarjetas y ninguna sección por sujeto`)
     }
     // Y también al SALIR: el recorrido siguiente navega, y una petición de éste a medias
     // se abortaría y contaría como error de consola de un camino que ya terminó.
