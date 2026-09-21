@@ -754,6 +754,37 @@ var COPIA_PUERTA_TTL_S_ = 1800;
 var IDENTIDAD_MEMO_TTL_S_ = COPIA_PUERTA_TTL_S_;
 
 /**
+ * `2026-09-15-sigo-aqui-llega-tarde` (segunda mitad) — el plazo de la memoria
+ * `sigid_` de `requireSignerIdentity_`, la MISMA clase de espera que `IDENTIDAD_MEMO_TTL_S_`
+ * ya cerró para `idlinkd_`/`idlinkr_`, en otro camino: los CINCO manejadores de firma
+ * (`saveBillingInfo_`, `applyPaymentModality_`, `submitGdprConsents_`, `confirmReview_`,
+ * `initiateSigningSession_`).
+ *
+ * ★ **ERAN 300 s, medidos antes: 10-22 s por llamada (2-3 lecturas) en cada fallo de
+ * memoria** — un tutor que revisa su matrícula con calma paga ese viaje cada vez que
+ * pasan 5 minutos entre dos actos.
+ *
+ * ⛔ **COMPROBACIÓN PREVIA, hecha ANTES de subir esto (no supuesta):** `sigid_` memoriza
+ * `{g: enrollment_group_id, e: buzón}` — el RESULTADO de `requireResumeToken_` (la
+ * puerta, KAL-4 + TTL 7 días + abandonada), no un permiso. Los CINCO manejadores que la
+ * usan mandan `sctx.identity` —que LLEVA el `resume_token`, no solo el `enrollment_group_id`
+ * derivado— en la MISMA llamada a `kmsProxy_` (`saveBillingInfo_`:10019,
+ * `applyPaymentModality_`:10126, y los otros tres del bloque de firma) ⇒ **el KMS
+ * revalida TODO —token/TTL/abandonada/guardián— en CADA proxy, siempre**: subir el
+ * plazo de este memo NO alarga la ventana en que un enlace abandonado o caducado sigue
+ * entrando por estos manejadores. Lo único que un acierto de caché salta es la
+ * RE-DERIVACIÓN local (la llamada a `requireResumeToken_` + `effectiveRecoveredEmail_`
+ * DENTRO de este fichero), nunca la autorización — igual que ya declara el comentario
+ * de `requireSignerIdentity_`.
+ *
+ * ⛔ **NO SE SUBE MÁS DE AQUÍ.** Atado por NOMBRE a `COPIA_PUERTA_TTL_S_`, igual que
+ * `IDENTIDAD_MEMO_TTL_S_`: esta memoria no puede vivir más que la validez del propio
+ * enlace al que sirve.
+ * @private
+ */
+var SIGID_MEMO_TTL_S_ = COPIA_PUERTA_TTL_S_;
+
+/**
  * ①97 (2026-09-12, Diego) — el plazo del ESPEJO PERMANENTE del hydrate ('wz_hyd_').
  *
  * ★ Antes eran 1800 s (30 min), el mismo TTL que el resto de las cachés 'wz_*' de este
@@ -1238,8 +1269,11 @@ function requireSignerIdentity_(payload) {
     //     todo check de single-use vive server-side en el KMS (P222 intacta).
     //   - Clave = sha256(resume_token|n|recovered_email) → la rotación del token
     //     (sendMagicLink_) cambia la clave; la entrada vieja queda inalcanzable y expira.
-    //   - TTL 300s. El KMS re-valida TODO (token/TTL/abandoned/guardian) en cada proxy —
-    //     el memo solo ahorra la re-derivación wizard-side, no autoriza nada por sí solo.
+    //   - `2026-09-15-sigo-aqui-llega-tarde`: TTL `SIGID_MEMO_TTL_S_` (=`COPIA_PUERTA_TTL_S_`,
+    //     ver su JSDoc), no 300s — el KMS re-valida TODO (token/TTL/abandoned/guardian) en
+    //     cada proxy, porque lo que viaja es `sctx.identity` con el `resume_token` dentro,
+    //     no solo el `enrollment_group_id` derivado: el memo solo ahorra la re-derivación
+    //     wizard-side, no autoriza nada por sí solo.
     var memoKey = null;
     try {
       var memoRaw = [String(payload.resume_token).trim(), payload.n || '', payload.recovered_email || ''].join('|');
@@ -1271,7 +1305,7 @@ function requireSignerIdentity_(payload) {
     }
     try {
       if (memoKey) {
-        CacheService.getScriptCache().put(memoKey, JSON.stringify({ g: groupId, e: effEmail }), 300);
+        CacheService.getScriptCache().put(memoKey, JSON.stringify({ g: groupId, e: effEmail }), SIGID_MEMO_TTL_S_);
       }
     } catch (ePut) { /* best-effort */ }
     return {

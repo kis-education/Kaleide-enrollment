@@ -314,9 +314,13 @@ fallo de memoria y pagaba un viaje de 20-30 s al KMS — y si tardaba más que l
 quedaba fuera. ⛔ **Y no se toca al revés: pasar el buzón VACÍO es MÁS PERMISIVO**, deshace el atado
 de ②24 y le da a un tutor la marca que se ganó otro.
 
-⚠️ **Pendiente, en la cola:** `requireSignerIdentity_` tiene **su propia** memoria (`sigid_`, 300 s)
-que usan los cinco manejadores de firma. **No se subió** porque memoriza el resultado de la PUERTA:
-subirla exige medir antes qué se salta al acertar.
+**`requireSignerIdentity_` tiene su propia memoria (`sigid_`), que usan los cinco manejadores de
+firma** (`saveBillingInfo_`, `applyPaymentModality_`, `submitGdprConsents_`, `confirmReview_`,
+`initiateSigningSession_`) — la misma clase de espera, en otro camino. **Ya está atada por NOMBRE**
+(`SIGID_MEMO_TTL_S_ = COPIA_PUERTA_TTL_S_`, 30 min): medido antes de subirla que lo que un acierto de
+caché salta es solo la RE-DERIVACIÓN local, nunca la autorización — los cinco manejadores mandan
+`sctx.identity` (con el `resume_token` dentro) en la misma llamada a `kmsProxy_`, así que el KMS
+revalida token/TTL/abandonada/guardián en CADA proxy, acierte o no la memoria local.
 
 ### ②24.bis · El respaldo «si no consta, el tutor 1» vale para DOS usos y NO para el tercero
 
