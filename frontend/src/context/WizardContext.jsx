@@ -1480,6 +1480,16 @@ export function WizardProvider({ children }) {
         conditions: p.neae         || [],
         supports:   p.neae_support || [],
       })),
+      // `2026-09-16-la-salud-no-se-recupera` — EL LOTE `person_subreads` (KMS
+      // `enr_wizardHydrateCompute_`, kis-app kms-server/enr/wizard-datalayer.gs:418)
+      // TRAE LAS TRES TABLAS DE SALUD Y LAS DOS DE NEAE EN UNA SOLA LECTURA: si esa
+      // lectura falla, `health`/`neae` de arriba llegan VACÍOS — indistinguibles de
+      // «esta familia no ha declarado nada». `degraded_sections` es la señal que el
+      // KMS ya manda (commit 675e5c3cb) para decir «no se pudo preguntar», y aquí es
+      // donde se lee — en NINGÚN otro sitio, para que no haya dos criterios sobre el
+      // mismo dato. Step4Health la usa para (a) avisar y (b) no dejar que un guardado
+      // sobre una categoría vacía-y-no-tocada borre lo que el colegio sí tiene.
+      healthLoadFailed: Array.isArray(data.degraded_sections) && data.degraded_sections.includes('person_subreads'),
       questions: responsesDict,
       // ⭐ `0º.tricies.quindecies` (Diego, 2026-08-22) — LA FORMA DE LOS DOCUMENTOS SE
       // NORMALIZA AQUÍ, en el MISMO sitio y por el MISMO motivo que `persons`, `relations`,

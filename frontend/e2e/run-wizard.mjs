@@ -432,7 +432,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -4110,6 +4110,117 @@ async function caminoSaludDesdeLaPantalla(page, base) {
     scenario.neaeDelServidor = false
   }
   return c
+}
+
+/**
+ * `2026-09-16-la-salud-no-se-recupera` — UNA SECCIÓN QUE DEGRADA NO SE DISFRAZA DE VACÍA.
+ *
+ * El lote `person_subreads` (KMS `enr_wizardHydrateCompute_`, kis-app
+ * kms-server/enr/wizard-datalayer.gs:418) trae las TRES tablas de salud y las DOS de NEAE
+ * EN UNA SOLA LECTURA: si esa lectura falla, la pantalla recibe TODO vacío — indistinguible
+ * de «esta familia no ha declarado nada». Sin protección, el «Continuar» de esta pantalla
+ * mandaría `[]` para las tres categorías de CADA solicitante, y el escritor del KMS las lee
+ * como REPLACE-ON-SAVE (`enr_persistHealth_`) — BORRARÍA alergias, dietas y condiciones
+ * médicas que el colegio ya tuviera.
+ *
+ * La protección: `degraded_sections` (que el KMS ya manda) se lee en `WizardContext` y pinta
+ * un aviso honesto; y el «Continuar» de `Step4Health` OMITE (`undefined`, nunca `[]`) la
+ * categoría de un solicitante que la familia NO ha tocado EN ESTA PANTALLA — el escritor del
+ * KMS ya sabe leer esa ausencia como «no toques esto» (mismo criterio que protege al NEAE,
+ * medido en `salud-desde-la-pantalla`).
+ *
+ * ⚠️ Esta batería NO ejecuta el KMS ni `backend/Code.js` ⇒ aquí se mide lo que manda el
+ * NAVEGADOR — que es exactamente lo que puede causar el borrado. Que el servidor SEPA leer
+ * la ausencia se verifica leyendo `enr_persistHealth_` (citado arriba, líneas 4749-4753).
+ */
+async function caminoLaSaludNoSeDisfrazaDeVacia(page, base) {
+  const c = new Camino('la-salud-no-se-disfraza-de-vacia')
+  scenario.stage = 'hasta_preguntas'
+  scenario.saludDegradaEnLaHidratacion = true
+  try {
+    // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────
+    const FUENTES = [
+      ['frontend/src/context/WizardContext.jsx', /healthLoadFailed/],
+      ['frontend/src/pages/steps/Step4Health.jsx', /healthAEnviar_/],
+    ]
+    const ausentes = []
+    for (const [rel, re] of FUENTES) {
+      let txt = ''
+      try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+      if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+    }
+    if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este camino mide EXISTE con su nombre',
+      ausentes.length === 0,
+      `no se encontró en el fuente: ${ausentes.join(' · ')} — este camino NO puede medir lo que dice medir, así que NO puede salir verde`)) return c
+
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    // Retroceder hasta Salud (índice 3), como en `salud-desde-la-pantalla`.
+    for (let i = 0; i < 6 && (await dondeEstoy(page)) > 3; i++) {
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (!atras) break
+      await atras.click()
+      await page.waitForTimeout(250)
+    }
+    const donde = await dondeEstoy(page)
+    if (!c.afirmar('se llega al paso de Salud pulsando «Atrás»', donde === 3,
+      `se quedó en el índice ${donde}`)) return c
+    await desbloquear(page)
+
+    // ── ANCLA: el aviso honesto SE VE. Sin esto, lo que sigue mediría el aire.
+    const aviso = await page.$('[data-testid="paso4-salud-no-cargo"]')
+    if (!c.afirmar('ANCLA · con la carga degradada, el aviso honesto se pinta',
+      !!aviso, 'no se pintó el aviso de carga fallida')) return c
+
+    // ── Se toca SOLO el bloque de salud del PRIMER solicitante ──
+    const grupos = await page.$$('.input-group input.form-control')
+    if (!c.afirmar('la pantalla ofrece al menos un buscador de salud', grupos.length >= 1,
+      `se ofrecieron ${grupos.length}`)) return c
+    await grupos[0].click()
+    await grupos[0].fill('a')
+    let opcion = null
+    try { opcion = await page.waitForSelector('.border.rounded.mt-1 > div', { timeout: 4000 }) } catch { /* se cuenta abajo */ }
+    if (!c.afirmar('se pudo elegir una alergia del catálogo para el primer solicitante',
+      !!opcion, 'el catálogo no ofreció sugerencias: sin elección no se puede comprobar «tocado»')) return c
+    await opcion.click()
+    await page.waitForTimeout(150)
+
+    const cuerpos = []
+    const espiar = (req) => {
+      if (!/\/__gas/.test(req.url())) return
+      let body = null
+      try { body = JSON.parse(req.postData() || '{}') } catch { return }
+      if (body && body.action === 'saveStep' && body.step === 'health') cuerpos.push(body)
+    }
+    page.on('request', espiar)
+    try {
+      await continuar(c, page, 4, 'salud con la carga degradada')
+      await page.waitForTimeout(LATENCY + 700)
+      c.evidencia.llamadas = Math.max(c.evidencia.llamadas || 0, cuerpos.length)
+      if (!c.afirmar('el «Continuar» mandó el guardado del paso de salud', cuerpos.length > 0,
+        'no se capturó ninguna llamada saveStep(health): lo que sigue mediría el aire')) return c
+
+      const payload = (cuerpos[0] && cuerpos[0].payload) || []
+      const resumen = JSON.stringify(payload.map(h => ({
+        p: String(h && h.person_id || '').slice(0, 8),
+        claves: h ? Object.keys(h).filter(k => h[k] !== undefined) : [],
+      })))
+      const tocado   = payload[0]
+      const sinTocar = payload.slice(1)
+
+      c.afirmar('el solicitante TOCADO manda sus tres categorías (lo editado no se omite)',
+        !!tocado && Array.isArray(tocado.allergies),
+        `lo enviado fue ${resumen}: el bloque tocado no llevó \`allergies\` como array`)
+
+      c.afirmar('el/los solicitante(s) que NADIE tocó NO mandan las tres categorías vacías',
+        sinTocar.length === 0 || sinTocar.every(h => h.allergies === undefined && h.dietary === undefined && h.medical === undefined),
+        `lo enviado fue ${resumen}: con \`[]\` en vez de OMITIDO, este guardado BORRARÍA lo que el colegio ya tuviera declarado de ese solicitante (\`enr_persistHealth_\` sustituye la categoría que llega definida)`)
+    } finally {
+      page.off('request', espiar)
+    }
+    return c
+  } finally {
+    scenario.saludDegradaEnLaHidratacion = false
+  }
 }
 
 /**
@@ -11374,6 +11485,10 @@ const CAMINOS = [
   { nombre: 'preguntas-por-programa', fn: caminoPreguntasPorPrograma,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 2 },
   { nombre: 'salud-desde-la-pantalla', fn: caminoSaludDesdeLaPantalla, minLlamadas: 1, minElementos: 11 },
+  // `2026-09-16-la-salud-no-se-recupera` — un guardado sobre una carga degradada no puede
+  // disfrazar «no se pudo preguntar» de «no hay nada declarado» y borrar lo ya guardado.
+  { nombre: 'la-salud-no-se-disfraza-de-vacia', fn: caminoLaSaludNoSeDisfrazaDeVacia,
+    minLlamadas: 1, minElementos: 1 },
   // Defecto 3 de la definición de hecho: el cuestionario se apagaba entero, en silencio
   // y durante media hora, por un fallo pasajero del servidor. Ver el camino.
   { nombre: 'cuestionario-no-se-apaga', fn: caminoCuestionarioNoSeApaga, minLlamadas: 1, minElementos: 2 },

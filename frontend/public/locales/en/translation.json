@@ -285,6 +285,7 @@
   "health.search_dietary": "Search dietary requirements…",
   "health.search_medical": "Search medical conditions…",
   "health.observations": "Notes / observations",
+  "health.load_failed": "We couldn't check the health information you'd already saved (it isn't empty — it just failed to load). If something you'd already declared looks blank, reload the page before continuing. Anything you don't touch here is kept exactly as it was.",
   "allergy.peanut": "Peanut",
   "allergy.dairy": "Dairy",
   "allergy.egg": "Egg",

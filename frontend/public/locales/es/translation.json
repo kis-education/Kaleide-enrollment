@@ -285,6 +285,7 @@
   "health.search_dietary": "Buscar requisitos dietéticos…",
   "health.search_medical": "Buscar condiciones médicas…",
   "health.observations": "Observaciones / notas",
+  "health.load_failed": "No hemos podido comprobar los datos de salud que ya tenías guardados (no es que estén vacíos: no se han podido cargar). Si ves algo en blanco que ya habías declarado, vuelve a cargar la página antes de continuar. Lo que no toques aquí se conserva tal y como estaba.",
   "allergy.peanut": "Cacahuete",
   "allergy.dairy": "Lácteos",
   "allergy.egg": "Huevo",

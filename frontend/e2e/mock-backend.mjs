@@ -1097,6 +1097,23 @@ export function createDispatcher(scenario, record) {
           if (pe && pe.person_type_id === 'applicant') pe.first_name = scenario.datoCambiadoPorElColegio;
         });
       }
+      // `2026-09-16-la-salud-no-se-recupera` — EL LOTE `person_subreads` (KMS
+      // `enr_wizardHydrateCompute_`, kis-app kms-server/enr/wizard-datalayer.gs:418) DEGRADÓ.
+      // Trae las TRES tablas de salud y las DOS de NEAE en una sola lectura: si esa lectura
+      // falla, el KMS manda `health`/`neae` VACÍOS **y** `degraded_sections: ['person_subreads']`
+      // (commit 675e5c3cb) — la señal que distingue «no se pudo preguntar» de «no hay nada
+      // declarado». Se fuerza el vacío aquí también (no basta con no sembrar contenido: si
+      // `scenario.neaeDelServidor` está a la vez activa, esta palanca GANA) porque lo que se
+      // mide es el comportamiento de la PANTALLA ante la señal, no la ausencia de datos.
+      if (scenario.saludDegradaEnLaHidratacion) {
+        h.degraded_sections = ['person_subreads'];
+        (h.persons || []).forEach(pe => {
+          if (pe && pe.person_type_id === 'applicant') {
+            pe.allergies = []; pe.dietary = []; pe.medical = [];
+            pe.neae = []; pe.neae_support = [];
+          }
+        });
+      }
       const conVentana = scenario.ventanaViva
         ? { step_up_fresh: true, step_up_restante_s: leerMarca(p).restante_s, step_up_cierre: leerMarca(p).cierre }
         : {};

@@ -432,6 +432,11 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
     apuntarTrabajo,                  // 18.bis.84 — este guardado NO pasa por la cola: se apunta a mano
   } = useWizard();
   const applicants = (stepData.persons || []).filter(p => p.person_type_id === 'applicant');
+  // `2026-09-16-la-salud-no-se-recupera` — la hidratación degradó en el lote que trae
+  // las tres tablas de salud Y las dos de NEAE (`person_subreads`, ver el comentario
+  // de `WizardContext.jsx` donde se lee). Con esto en `true`, lo que se ve vacío
+  // abajo puede no serlo: «no se pudo cargar», no «no hay nada declarado».
+  const healthLoadFailed = !!stepData.healthLoadFailed;
 
   // DL-E39 ENMIENDA (gate de entrada): la salud Art.9 RGPD está protegida por el
   // GATE DE ENTRADA del wizard (StepUpGate), no por ocultación per-campo. Una vez
@@ -637,17 +642,39 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
       .catch(err => log.warn('Step4: saveNeae failed (background)', { message: err?.message }));
   };
 
+  // `2026-09-16-la-salud-no-se-recupera` — UNA CATEGORÍA VACÍA Y NO TOCADA NO SE
+  // MANDA A CIEGAS CUANDO LA CARGA DEGRADÓ. Mismo criterio que ya protege al NEAE
+  // (`seEnvia`, más abajo en `persistNeae`), aplicado aquí PORQUE el escritor del
+  // KMS ya sabe leerlo: `enr_persistHealth_` (kis-app kms-server/enr/wizard-gateway.gs
+  // :4749-4753) SOLO da de baja la categoría cuyo campo llega DEFINIDO — «si el
+  // payload omite una categoría, no la tocamos». Con `healthLoadFailed`, una ficha
+  // vacía-y-sin-tocar por la familia manda `undefined` en sus tres campos en vez de
+  // `[]`, para que el servidor no confunda «no se pudo cargar» con «se ha borrado
+  // todo». Devuelve la MISMA forma con la que se siembra `stepData.health` (nunca
+  // dos formas del mismo dato: una divergiría de la otra en la próxima navegación).
+  const healthAEnviar_ = () => {
+    if (!healthLoadFailed) return healthData;
+    return healthData.map(h => {
+      const pid = h && h.person_id;
+      if (pid && saludTocada.current.has(pid)) return h;
+      if (saludConContenido(h)) return h;
+      return { person_id: pid, allergies: undefined, dietary: undefined, medical: undefined };
+    });
+  };
+
   const handleBack = () => {
-    updateStep('health', healthData);
+    const aEnviar = healthAEnviar_();
+    updateStep('health', aEnviar);
     persistNeae();
     onBack();
   };
 
   const handleNext = () => {
-    log.info('Step4: onNext health', healthData);
-    updateStep('health', healthData);
+    const aEnviar = healthAEnviar_();
+    log.info('Step4: onNext health', aEnviar);
+    updateStep('health', aEnviar);
     persistNeae();
-    onNext('health', healthData);
+    onNext('health', aEnviar);
   };
 
   return (
@@ -660,6 +687,16 @@ export default function Step4Health({ onNext, onBack, locked, onUnlock, savePend
       <StepNav position="top" onBack={handleBack} onNext={handleNext} savePending={savePending} />
 
       {locked && <LockedBanner onUnlock={onUnlock} highlight={highlightEdit} />}
+
+      {/* `2026-09-16-la-salud-no-se-recupera` — banner HONESTO: lo vacío de abajo
+          puede ser «no se pudo cargar», no «nada declarado». Persistente mientras
+          dure la degradación de ESTA hidratación — no tiene botón de cerrar, porque
+          cerrarlo no cambia si el dato de verdad se pudo leer. */}
+      {healthLoadFailed && (
+        <div className="alert alert-warning" role="alert" data-testid="paso4-salud-no-cargo">
+          {t('health.load_failed')}
+        </div>
+      )}
 
       <div onClick={locked ? () => { setHighlightEdit(true); setTimeout(() => setHighlightEdit(false), 600); } : touchActivity}>
       <fieldset disabled={locked} style={{ border: 'none', padding: 0, margin: 0, pointerEvents: locked ? 'none' : undefined }}>
