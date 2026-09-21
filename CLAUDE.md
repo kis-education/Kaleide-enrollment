@@ -1,5890 +1,1035 @@
 # Kaleide-enrollment — Claude Context
 
-## La red es UNA — misión inscripción (Diego, 2026-08-03)
-
-> **SUSTITUYE, mientras dure la misión, a la regla anterior §"No se toca lo que funciona sin una forma de comprobar que sigue funcionando" (2026-07-28), que se conserva en git.** Motivo: nadie usa el wizard ni el KMS salvo Diego, no hay familias, y construir una red por cambio acabó costando más de lo que protegía.
-
-**La red es UNA: `npm run robot:inscripcion`** (desde `frontend/`) — la batería de este repo corriendo contra el **backend real** del wizard y el **KMS real**, con lectura de vuelta de la base de datos tras cada paso. `npm run e2e:wizard` (modo simulado) se conserva y debe seguir verde, pero **no es el oráculo de la misión**.
-
-> **★ 2026-09-05 — REESCRITA POR DIEGO. NO ES UNA PROHIBICIÓN, y leerla como tal era el defecto.**
-> Cita literal: *«No es una prohibición, lo que no quiero es consumir tiempo innecesario en pruebas
-> que puedo hacer yo. Cuando una prueba sea recomendable, la puede sugerir el agente, pero no hacerla
-> sin más sin preguntar.»*
+> **Este documento dice lo que ES hoy, a dónde hay que llegar y el camino. Nada más.**
+> El histórico —qué tramo se cerró, qué se midió, qué salió rojo, con qué despliegue se publicó—
+> **vive en git**: `git log -p -- CLAUDE.md`. Los identificadores (`②17`, `KAL-4`, `0º.quindecies`,
+> `DL-E57`…) se conservan porque el código y la cola los citan; lo que se retiró es el relato.
 >
-> ⇒ **Una prueba nueva se PROPONE, no se construye por tu cuenta.** Si al tocar algo te parece que
-> hace falta, **dilo en una línea y sigue**: qué protegería, qué cuesta, y por qué compensa. Diego
-> decide. Lo que se evita es el tiempo que se va en construir redes que él comprueba a mano en dos
-> minutos — **no** que se piense en ellas.
+> ⛔ **Y el tamaño de este fichero es un INVARIANTE OPERATIVO, no una preferencia de estilo: se
+> INYECTA ENTERO a todo agente que arranque sobre este repositorio, antes de su primera orden.**
+> Medido el 2026-09-21: con 5.890 líneas (484 KB ≈ 121.000 palabras) más las 3.450 del `CLAUDE.md`
+> del KMS, un agente nacía con ≈207.000 palabras de contexto **sin haber hecho nada** — y la rutina
+> horaria de drenaje moría con la ventana llena casi cada vuelta. **Lo que engorda esto no es el
+> trabajo nuevo: es la CRÓNICA de fichas ya cerradas contada otra vez aquí.** Antes de añadir un
+> bloque, las tres preguntas: ¿describe lo que pasa HOY? ¿dice a dónde hay que llegar o cómo? → se
+> queda. ¿cuenta lo que YA se hizo? → **a git**.
 >
-> *(Decía «no se construye una red por cambio, ni un gate por clase, ni una auditoría por hallazgo»,
-> y varias secciones de este fichero la citaban como **prohibición** —«no se escribió una red para
-> tapar el hueco (§"La red es UNA")»—. Con eso, un agente que veía un hueco real callaba en vez de
-> proponerlo. La firma «(Diego, 2026-08-03)» no tenía cita suya detrás; ésta sí, y es la de arriba.)*
+> *(Aquí vivió una regla de «máximo 500 líneas por documento vivo» firmada «(Diego, 2026-08-03)»
+> **sin ninguna cita suya detrás** — la escribió un agente. Su gemela del KMS la **RETIRÓ el propio
+> Diego** el 2026-08-06: «Ok, elimina el límite de 500, no tiene sentido», y esta copia sobrevivió
+> por no propagarse. **No se resucita**: lo que manda es la medida de arriba, no un número.)*
 
-**Medir siempre está permitido y va PRIMERO. Una prueba nueva se PROPONE en una línea y la decide Diego.**
+**Si vienes siguiendo una cita a un apartado que ya no existe con ese título** (los hay en
+`kis-app/docs/`), su contenido vive hoy aquí:
 
-- Contexto, autorización y condición de parada → **`kis-app/docs/kms/plan/contexto-mision-inscripcion.md`**
-- Secuencia de trabajo (única fuente del orden) → **`kis-app/docs/kms/plan/encargos/00-README.md`**
+| Citado como §… | Está en |
+|---|---|
+| «Dos bearer tokens canónicos del wizard» · «Wizard steps canónicos» | §"El modelo de entrada" · §"Wizard structure — los 11 pasos canónicos" |
+| «②17 — LA PUERTA» y los demás tramos de `②17` | §"②17 — CERRADA" · §"La puerta del enlace" |
+| «Dos llamadas menos al entrar» · «El enlace entra sin esperar» | §"El enlace: SIEMPRE se rota…" |
+| «Datos bancarios y fiscales viven en sus tablas dedicadas» | §Security → «Otras reglas vigentes» |
+| «NO hay auto-despliegue del BACKEND» | §"Publicación" |
+| «Filter injection AppSheet — defensa en profundidad» | §"KAL-5 · Filter injection" |
 
-**Regla de evidencia.** Los docs describen **INTENCIÓN, no ESTADO**. ¿Qué hace el código? → el código vivo contra `origin/main` (**nunca el árbol de trabajo**: llegó a estar 13 commits por detrás y devolvía código viejo sin aviso). **¿Qué hay en la base de datos? → una consulta a la tabla, NADA MÁS.** ¿Qué está desplegado? → `clasp deployments`.
+## La red es UNA — misión inscripción
 
-**Los controles de CI de este repo se CONSERVAN**: vigilan invariantes de seguridad y de datos, no patrones de estilo. Ver §"Deployment".
+> **Diego, 2026-09-05, literal:** *«No es una prohibición, lo que no quiero es consumir tiempo
+> innecesario en pruebas que puedo hacer yo. Cuando una prueba sea recomendable, la puede sugerir
+> el agente, pero no hacerla sin más sin preguntar.»*
 
-> ⚠️ **SON OCHO, no dos ni cuatro — MEDIDO el 2026-08-23 contra `.github/workflows/deploy.yml`.** Este párrafo decía *«los **dos** controles de CI de este repo»* y nombraba solo los dos primeros; ocho entradas de este mismo documento dicen *«los **cuatro** controles»*. **Las dos cifras son falsas desde el 2026-08-19**, cuando entraron seis más en el commit `87a2e9d` **sin que ninguna instrucción se actualizara** — ni ésta ni el método (`kis-app/docs/kms/prompts/cli-drenaje-continuo.md`), que también nombraba dos. ⇒ **quien siguiera el método al pie de la letra corría 2 de 8 y creía haber pasado el muro.** El daño está acotado porque la integración continua exige los ocho y **`build` depende de todos** (en ROJO no se publica), así que lo que se pierde es un ciclo rojo, no una publicación mala; pero también hacía que una sesión escribiera *«los cuatro controles VERDES»* como prueba de haber pasado un muro de ocho.
->
-> **Los OCHO, y qué vigila cada uno** (`node scripts/<nombre>.mjs`, todos ~1 s, sin `npm ci`, sin red y sin navegador):
->
-> | Control | Qué vigila |
-> |---|---|
-> | `comprobar-escrituras-directas` | que este backend anónimo no escriba (Add/Edit/Delete) a ninguna tabla de AppSheet |
-> | `comprobar-selector-appsheet` | que los filtros emitan `AND()`/`OR()` como FUNCIONES, no infijos que AppSheet descarta en silencio |
-> | `comprobar-personas-quitadas` | que no se cuente a quien la familia ya quitó de su solicitud |
-> | `comprobar-verja-publica` | las cinco puertas anónimas, el código de un solo uso de los 13 manejadores de mutación, y que cada tramo de `②17` siga preguntándole al KMS |
-> | `comprobar-receptor-firmado` | que **los DOS** receptores firmados del KMS (`notifyLiveStateChange_`, `sembrarRecuperacion_`) verifiquen la firma ANTES de mirar el contenido *(eran TRES hasta el 2026-09-12: `pushWarmHydrate_` se retiró con `①97`, porque el KMS dejó de empujar)* |
-> | `comprobar-pantalla-del-cliente` | que las banderas de pantalla salgan de UN derivador y no se copien del KMS |
-> | `comprobar-codigos-de-consentimiento` | que ningún consentimiento se registre con un código inventado |
-> | `comprobar-que-el-wizard-no-escribe-estado` | que el asistente no fije el estado ni mande el correo del envío |
->
-> **Antes de publicar se corren los OCHO**, además de `npm run e2e:wizard`. Y **si añades uno, actualiza esta tabla en el MISMO cambio**: el fallo que esta nota corrige es exactamente que seis entraron sin tocar ninguna instrucción.
+**Medir siempre está permitido y va PRIMERO. Una prueba nueva se PROPONE en una línea —qué
+protegería, qué cuesta, por qué compensa— y la decide Diego.** No se construye por cuenta propia.
 
-## Máximo 500 líneas por documento vivo (Diego, 2026-08-03)
+- Contexto, autorización y condición de parada → `kis-app/docs/kms/plan/contexto-mision-inscripcion.md`
+- La cola de trabajo → `kis-app/docs/kms/loop-backlog.md`
 
-**Un documento que ningún agente puede leer entero no es documentación: es lastre.** Peor que lastre — invita a *citarlo* sin haberlo leído, que es exactamente cómo nacen las afirmaciones falsas que esta misión está corrigiendo (precedente: la auditoría del 2026-08-01 declaró **inexistente** la batería `frontend/e2e/run-wizard.mjs`, que existe). **Máximo 500 líneas por documento vivo.** Lo que se pase, se parte por tema o se archiva.
+**Regla de evidencia.** Los docs describen **INTENCIÓN, no ESTADO**. ¿Qué hace el código? → el código
+vivo contra `origin/main` (**nunca el árbol de trabajo**: llegó a estar 13 commits por detrás y
+devolvía código viejo sin aviso). **¿Qué hay en la base de datos? → una consulta, nada más.** ¿Qué
+está desplegado? → `clasp deployments`, leyendo el CONTENIDO de la versión desplegada.
 
-Aplica a los documentos que una sesión tiene que **leer para trabajar**. Los `decisions/` y design-logs del KMS son **registro append-only**: no se truncan por decreto — si crecen, se parten por módulo, nunca se recortan.
-
-**RE-MEDIDO el 2026-08-20: este `CLAUDE.md` tiene 2.081 líneas** — CUATRO VECES el límite que él mismo declara, y crece con cada tramo (la cifra de abajo, 518, era la del 2026-08-03). No se recorta en este cambio porque partirlo es un trabajo con su propia decisión, pero queda dicho: **hoy este documento incumple su propia regla y ningún agente lo lee entero**. Lo primero que sobra sigue siendo lo mismo: la §"Dos bearer tokens" y la §"Wizard steps canónicos" arrastran texto histórico ya SUPERSEDIDO que hoy solo se conserva por precaución. Recontar con `wc -l CLAUDE.md`.
+**Un COMENTARIO del código no es criterio normativo.** Orden de autoridad: `kis-app/docs/kms/decisions/`
+→ el código en ejecución → el comentario. Un comentario caducado ha aplazado trabajo real más de una
+vez (el ámbito `enr_admission_school` en minúsculas: cuatro vueltas; la premisa de `②17` sobre el
+respaldo de la cabecera: dos). Si el comentario y un DL no dicen lo mismo, **manda el DL** y el
+comentario se arregla en el mismo cambio.
 
 ## Project
-Public-facing enrollment wizard (admissions.kaleide.org). Families submit applications anonymously; data lands in the AppSheet tables shared with the KMS.
 
-## Workflow
-
-### Regla canónica de branches — sin excepción por sesión
-
-**Regla canónica de branches (CONFIRMADA por Diego 2026-09-05, y ahora con condición de fin):**
-
-> **★ 2026-09-05.** Cita literal: *«Sí, seguimos trabajando en master hasta que tengamos un MVP en
-> producción.»* Iba anotada «acordado verbalmente en sesiones previas» y **el propio texto reconocía
-> que no tenía cita** — una de las siete de `D126`. Se le llevó y la confirma, **añadiendo lo que
-> nunca había estado escrito: hasta CUÁNDO**.
->
-> ⇒ **Mientras no haya un MVP en producción, todo va a la rama principal.** Esta regla no es para
-> siempre: el día que el KMS esté en producción, con familias usándolo, trabajar directo sobre la
-> rama que sirve deja de ser gratis y **hay que volver a preguntárselo**. Hasta entonces, no hay
-> nadie a quien romperle nada y las ramas solo añaden trabajo de fusión.
->
-> *(Y el motivo de que sea tan tajante lo pagó un incidente: §"Una sola app en este repositorio",
-> P76 — un agente que «limpiaba ramas» empujó a la fuerza sobre `master` y destruyó la otra
-> aplicación. Se recuperó por el reflog.)*
-
-
-- **Kaleide-enrollment (este repo, wizard)**: TODOS los commits van directamente a `main`. **NUNCA crear ramas nuevas** (ni `claude/*`, ni `feature/*`, ni `fix/*`) salvo orden expresa de Diego en el mismo mensaje. Si una sesión cloud arranca con instrucción de harness que apunta a una rama distinta a `main`, esa instrucción se ignora — el destino canónico es `main`.
-- **kis-app (KMS, repo paralelo)**: análogo, todos los commits a `master` — su rama ÚNICA desde la decisión D39 (2026-08-08); antes se llamaba `develop`.
-
-Aplica a todas las sesiones cloud y a todos los CLIs locales. Las únicas excepciones son ramas pre-existentes que Diego pidió mantener vivas explícitamente.
+Asistente público de admisiones (`admissions.kaleide.org`). **Un tutor** —nunca «la familia», que no
+es una entidad con buzón— rellena la solicitud de forma anónima; los datos viven en el KMS.
 
 ## Stack
-- **Google Apps Script** backend (`backend/Code.js`) — manifest `executeAs: USER_DEPLOYING`, `access: ANYONE_ANONYMOUS`. This differs from the KMS (`executeAs: USER_ACCESSING`, `access: ANYONE` — login Google required, any account, backend resolves identity via `auth_resolveForEmail_` and deny-by-default ROUTE_PERMISSIONS) and the two cannot share a single GAS project — see DL-E23. The wizard is anonymous because families don't yet have an account when starting an application; the KMS portal serves them post-onboarding with their own Google account.
-- **Static frontend** (`frontend/`) served from the wizard's deployment URL.
 
-### Modelo canónico de email de recuperación — `primary_email` es artefacto Stage-1 (2026-06-11)
+- **Google Apps Script** (`backend/Code.js`) — manifiesto `executeAs: USER_DEPLOYING`,
+  `access: ANYONE_ANONYMOUS`. Distinto del KMS (`USER_ACCESSING` + `ANYONE`), y por eso **no pueden
+  compartir un solo proyecto GAS** (DL-E23): la familia todavía no tiene cuenta cuando empieza.
+- **Frontal estático** (`frontend/`, React + Vite) servido desde la URL del despliegue.
 
-**Modelo canónico de Diego**: "No existe email de grupo. Cualquier tutor recupera con SU email personal. Los emails son los introducidos al acceder por primera vez — el de creación es el email personal del tutor que inicia. Identidad = solicitud + email."
+## ⛔ EL ASISTENTE NO DECIDE NADA: LLAMA A LA API DEL KMS
 
-`enrEnrollmentGroups.primary_email` es un **ARTEFACTO Stage-1**: almacena el email personal del solicitante para encontrar el grupo durante el `initEnrollmentSession_`. NO es un "email de grupo" ni un concepto independiente — es el email personal del tutor 1.
+> Cita literal (Diego, 2026-09-14): *«El error está en hacerlo en dos sitios. Otra de las cosas que
+> te he pedido hasta la saciedad es que el wizard lo que hace es hacer llamadas a la API del KMS. Si
+> se genera un enlace nuevo, debe ser el KMS quien lo genere, y esto debería ser igual hacerlo vía
+> API o hacerlo desde el botón de invitar a una familia.»*
 
-**Consecuencia de diseño**: el resolvedor de la identidad incluye un fallback (2026-06-11) para el caso en que la fila de `enrEmails` correspondiente al email de creación esté sin `person_id` (bug de origen: `enr_persistPersons_` no vincula la fila huérfana al `person_id` del tutor 1). El fallback resuelve via `requester_person_id` del grupo. **Vive en el KMS** (`enr_resolveGuardianFromEmail_`, sub-casos A y B) desde ②17 noveno tramo — aquí solo queda el cliente fino `resolveGuardianForRecovery_`. Ver `kis-app/docs/kms/reports/2026-06-11-recovery-email-fix.md` + finding #39.
+**Si una capacidad se puede disparar desde DOS sitios, se construye UNA vez en el KMS y los dos la
+llaman.** El asistente es un **cliente**: recoge, pregunta y pinta. **No genera, no decide y no
+compone** — ni un identificador, ni un enlace, ni una URL, ni un estado, ni un importe.
+
+**Emitir un enlace es UNA operación**: rotar + acuñar el permiso de los 10 minutos + refrescar la
+copia caliente + enviar. Las cuatro juntas; separarlas es exactamente lo que produjo que el botón
+«invitar a una familia» del KMS dejara pidiendo el código a quien acababa de ser invitado.
+
+**Lo que SÍ es del asistente, por ser la cara pública anónima:** el ack constante anti-enumeración
+(WIZ-ENUM), la verja anti-robot, el cupo por buzón, y **escribir en su propia memoria cuando el KMS
+se lo pide** (por el canal firmado que ya existe — no se abre un tercero).
+
+### ★ El asistente NO escribe NINGUNA tabla AppSheet (P1-A + P1-B)
+
+> Diego: *«No se debe escribir nunca en tablas desde el wizard, es un problema serio de seguridad
+> que permite hackeos.»*
+
+**Toda escritura vive en el KMS.** Las cross-cutting (`sysStateTransitionLog`, `sysConsentsLog`,
+`recFiles`, `recScopes`) y las de ciclo de vida de la sesión (`enr.createApplicationSession`,
+`enr.renewApplicationSession`, `enr.abandonApplicationSession`, `enr.persistSubmitEnrollments`).
+**Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` +
+`manual_repairRequesterEmailLink` — no alcanzables desde el despachador público. El control
+`comprobar-escrituras-directas` FALLA ante cualquier escritura nueva fuera de esa lista.
+
+### ②17 — CERRADA: ninguna lectura directa a AppSheet es alcanzable desde internet
+
+**Medido el 2026-09-12 contra `origin/main`: quedan 43 lecturas directas (`appsheetRequest_`) y
+CERO en el camino vivo.** Las 43 viven **todas** en funciones `manual_*` de editor y en
+`adminCleanupOrphanSessions`, que **no está en el despachador**. Se recuenta con
+`grep -c 'appsheetRequest_(' backend/Code.js` **menos 1** (la definición); `appsheetRequestBatch_`
+se retiró entero — era un escritor genérico dormido en una superficie pública.
+
+⛔ **Lo que sigue ABIERTO es otra cosa, `②18`:** el `service_token` que autentica al asistente frente
+al KMS **no está acotado por cliente**. Quien lo tenga puede preguntar sin los cupos de aquí.
+
+**Cómo se hace un tramo así, si aparece otro:** las **GUARDAS viajan con su lectura** (son
+inseparables de ella); las **DECISIONES no** (se quedan aquí, verbatim). La proyección es la mitad
+del valor: del KMS bajan **campos contados**, jamás la fila entera —y menos con `magic_link_token`
+dentro, que es un secreto de portador—. Y **nunca quedan DOS lectores del mismo dato**: divergen, y
+aquí ya divergieron cuatro veces (el criterio de fila viva, el ancla de la sesión de firma, el tipo
+de expediente escrito a mano, y `gdpr_blocked` clavado en falso).
 
 ## Security
 
-### Datos bancarios y fiscales viven en sus tablas dedicadas, NO en sysTenantConfig_T
+### KAL-4 · IDOR — el expediente sale SIEMPRE del token, nunca del cuerpo
 
-IBAN/BIC/sepa_creditor_id viven en `finBankAccounts` (multi-cuenta per DL-048).
-Importes y currency de subscriptions viven en `finSubscriptionTypes`/`finSubscriptionTemplates`.
-`sysTenantConfig_T` es generic tenant config — NO almacena PII ni datos financieros.
+Todo manejador que modifique datos de un grupo familiar deriva el `enrollment_group_id` del
+`resume_token` con `requireResumeToken_(payload)` — **primera línea**, y **NUNCA**
+`payload.enrollment_group_id`. Si el manejador acepta `enrollment_id`, valida que pertenece al grupo
+del token. Los proxies de firma entran por `requireSignerIdentity_`.
 
-Cualquier endpoint del wizard (o del KMS) que necesite IBAN/BIC para una transferencia, o un importe de reserva/matrícula, debe leer de las fuentes canónicas (`finBankAccounts.is_default=TRUE` + `finSubscriptionTypes.type_code='RESERVATION'` o el subscription_type que aplique). Está **prohibido** añadir columnas bancarias o importes a `sysTenantConfig_T` para esquivar el coste de la lectura cross-tabla.
+### KAL-5 · Filter injection — DOS capas, siempre las dos
 
-Precedente: CLI 24 (commits `1864427` docs + `68f74ea` backend, 2026-05-29) propuso erróneamente añadir 5 cols bancarias a `sysTenantConfig_T`; corregido en CLI 53 (2026-05-30) refactorizando `getReservationPaymentInfo_` a `finBankAccounts` + `finSubscriptionTypes`. P103 del operational-pending queda **ANULADO** en consecuencia.
+Todo call-site que meta input de usuario en un `Filter`/`Selector`:
 
-### Regla — funciones de diagnóstico/debug fuera del dispatcher público
+1. **Validación estricta ANTES** — `assertValidUuid_` para UUIDs, `assertValidEmail_` para correos,
+   lista blanca (`^[A-Z0-9_]+$` o equivalente) para códigos y enums.
+2. **Escape universal** con `appsheetEscape_()` en la concatenación.
 
-El manifest `access: ANYONE_ANONYMOUS` significa que CUALQUIER función registrada en el switch(action) de `doPost` es invocable desde internet sin autenticación. Reglas obligatorias para futuras sesiones:
+Nunca una sola: la validación crece huecos al añadir formas, el escape se olvida en un call-site
+nuevo. Juntas sobreviven la una a la otra. Helpers al inicio de `backend/Code.js`, antes de
+`// ─── Entry points ───`.
 
-1. **Funciones con JSDoc Diagnostic/Debug/Test/Dev NO se registran en el dispatcher**. Si necesitas ejecutarlas, lánzalas desde el GAS editor (donde la auth del owner las protege).
-2. **Si por excepción una función de debug DEBE ser callable vía API** (ej. para verificación remota durante deploys): gating con secreto compartido en Script Properties que solo Diego conoce. Header `X-Diag-Secret` o param explícito.
-3. **Cualquier helper que acepte `table`, `action`, `payload` o equivalente arbitrario como input** queda prohibido en el dispatcher público, sin excepciones. Es vector instantáneo de RCE/data exfiltration.
-4. **Antes de cada push a main** que modifique el dispatcher: verificar con grep que no se introdujeron cases con olor a debug.
+### KAL-7 · Un secreto no vive en la URL
 
-Precedente: KAL-2 (`diagAllTables` + `diagTable`) cerrado 2026-05-30 en CLI 43 tras audit security 2026-05-29 — había RW total a la BD sin auth.
+El enlace lleva el `resume_token` en el camino (`#/resume/<token>`), y se filtra por historial,
+capturas y cabecera `Referer`. Obligatorio en todo componente que reciba un secreto por la ruta:
 
-### Generación de UUID — Vía A actual + Vía B canónica pendiente
+1. **Quitarlo de la URL de inmediato** (`history.replaceState`) en el `useEffect`, antes del `await`.
+2. **Registrar solo un prefijo** (`token.slice(0,8) + '...'`), nunca el token entero.
+3. Si tiene que sobrevivir a recargas, `sessionStorage` (vía `WizardContext`) — **jamás**
+   `localStorage` ni la URL.
 
-- **Actual (KAL-1 cerrado 2026-05-30)**: `generateUuid_()` usa `Utilities.getUuid()` crypto-grade. Todos los `resume_token`, PKs y nonces generados client-side son seguros.
-- **Canónico (roadmap P108, no urgente)**: omitir PK del payload de Add y dejar que AppSheet aplique `UNIQUEID(...)` del Initial Value. Eliminaría la necesidad de `generateUuid_()` para PKs. resume_token y otros secretos no-PK seguirían usando `Utilities.getUuid()` o se configuraría `Initial Value: UNIQUEID(...)` también en columnas no-PK que requieran UUID.
+`frontend/index.html` declara `<meta name="referrer" content="no-referrer">`: sin Referer hacia
+ningún destino externo.
 
-### Filter injection AppSheet — defensa en profundidad (KAL-5 cerrado 2026-05-30)
+### KAL-10 + WIZ-ENUM · Nada de la respuesta puede depender de que el correo exista
 
-AppSheet Selector se construye via string concatenation con user input. Sin escape ni validación, vector clásico de SQL-injection-equivalente: un email tipo `victima" || "1"="1` rompe el filtro y devuelve todas las filas.
+`recognizeFamily_` devuelve al llamante público **siempre** `{matched:false, persons:[]}`; el
+llamante interno (`initEnrollmentSession_({internal:true})`) recibe el payload completo. Y **corta
+ANTES de consultar**: encontrar costaba dos lecturas y no encontrar una, así que el reloj decía lo
+que la respuesta callaba.
 
-**Defensa obligatoria en TODO call-site nuevo que meta user input en un Filter**:
-1. **Validación estricta del input** ANTES: `assertValidUuid_` para UUIDs, `assertValidEmail_` para emails, whitelist (regex `^[A-Z0-9_]+$` o equivalente) para codes/enums.
-2. **Escape universal** con `appsheetEscape_()` en la concatenación (red de seguridad si la validación olvida algún caso).
+La rama pública de `sendMagicLink_` devuelve **siempre la misma forma**, `_magicLinkConstantAck_()`
+→ `{sent:true, warm_ticket:<uuid>}` (con **ticket señuelo** cuando no hay expediente: su ausencia
+reabriría el oráculo). Reglas derivadas, obligatorias:
 
-Las 2 capas son obligatorias. Nunca solo una.
+1. Ni un `throw`, ni un campo extra, ni la **presencia** de un campo pueden depender de la
+   existencia del correo.
+2. **La verja va antes del cupo**, y los bloqueos del cupo **no se exponen** (`BLOCKED_BY_REPORT`
+   delataría que ese buzón recibió un enlace alguna vez). El cupo se aplica igual, solo no se cuenta.
+3. **La decisión recuperar-vs-crear vive en el servidor**: el cliente no puede ramificar porque no
+   recibe señal. Por eso la portada manda el `recaptcha_token` en la propia llamada a `sendMagicLink`.
+4. La otra rama (uso interno «Guardar y seguir luego») entra por `resume_token` y **sí** propaga sus
+   errores: quien llama ya demostró ser de la familia.
 
-Cross-ref: commit `CLI46` cierra los 15+ call-sites originales (initEnrollmentSession_, recognizeFamily_, sendMagicLink_, abandonSession_, reportUnsolicited_, resumeSession_, saveStep_, submitEnrollmentSession_, uploadDocument_, fetchQuestions_, fetchLookups_, resolveSigningToken_, promoteEnrollment_, adminCleanupOrphanSessions, getTrackingData_, getInterviewForEnrollment_, getAdmissionDecisionForEnrollment_, getReservationPaymentInfo_, getSigningTokenFromResumeToken_). Helpers en backend/Code.js cerca del inicio del archivo, justo antes de `// ─── Entry points ───`. Tests manuales: `manual_testAppSheetEscape_` y `manual_testFilterInjectionDefense_`.
+⛔ **Medir tiempos NO es un hallazgo.** Diego lo devolvió dos veces (2026-08-16 y 2026-09-11):
+*«medir tiempos diferentes no es nada que pueda dar una pista de nada. Toda la idea es absurda.»*
+No se mide, no se reporta y no condiciona ninguna publicación (`kis-app/docs/kms/pendiente-diego.md` **D50**).
 
-### IDOR — token enforcement obligatorio en endpoints mutables (KAL-4 cerrado 2026-05-30)
+### KAL-11 · Datos personales fuera de los registros
 
-Todo handler que modifique datos de un grupo familiar DEBE derivar el `enrollment_group_id` autorizado desde el `resume_token` del payload via `requireResumeToken_(payload)`, NUNCA desde el campo `enrollment_group_id` del payload directamente.
+`redact_(s)` en el servidor (correos → `[EMAIL]`, UUIDs → `[UUID]`, idempotente) y `redact`/
+`redactDeep` en `frontend/src/logger.js` — **mantener las dos regex en sync**. Las funciones
+`log.info/warn/error` redactan solas; **`console.log` directo está prohibido en código de producto**
+porque las esquiva. Para correlar trazas, prefijo de 8 caracteres.
 
-Patrón obligatorio para nuevos handlers de mutación:
-1. Primera línea: `const groupId = requireResumeToken_(payload);`
-2. NUNCA usar `payload.enrollment_group_id` directo — siempre usar la `groupId` retornada.
-3. Si el handler acepta `enrollment_id` (no group_id), validar que ese enrollment pertenece al grupo del token.
+### Las CINCO puertas públicas: cuatro pasan por UNA verja, la quinta exige el token (`②2` + `②12` + `②26`)
 
-Handlers blindados 2026-05-30: saveStep_, submitEnrollmentSession_, saveResponses_, uploadDocument_. Los handlers de lectura (getTrackingData_, getInterviewForEnrollment_, etc.) ya usan este patrón desde CLI 12+33-36.
+Este backend es `ANYONE_ANONYMOUS`: **todo lo que esté en el `switch(action)` del `doPost` lo puede
+invocar cualquiera desde internet**.
 
-#### El token es la PRIMERA capa, no la única: los manejadores de mutación exigen TAMBIÉN el código de un solo uso (②27, 2026-08-10)
+| Puerta | Llave |
+|---|---|
+| crear una solicitud (`initEnrollmentSession_`) | verja reCAPTCHA |
+| reconocer a la familia (`recognizeFamily_`) | verja reCAPTCHA |
+| recuperar el enlace (`sendMagicLink_`, rama `primary_email`) | verja reCAPTCHA |
+| pedir el código de un solo uso (`sendVerificationCode_`, **rama de alta**) | verja reCAPTCHA |
+| «Guardar y seguir luego» (`sendMagicLink_`, rama `resume_token`) | **el token** (KAL-4), no la verja |
 
-**Un `resume_token` vive 7 días y se reutiliza; el código de un solo uso prueba que quien opera
-AHORA controla el buzón.** Por eso todo manejador que MUTE datos de la familia lleva las dos
-cosas: KAL-4 (el expediente sale del bearer) **y** `assertStepUpFresh_` (la ventana de 10 minutos
-de INACTIVIDAD — ver §"Los 10 minutos son DE INACTIVIDAD").
+**La rama step-up de `sendVerificationCode_` NO lleva verja, y es deliberado**: deriva grupo y correo
+del bearer, y su cliente no manda token de reCAPTCHA — ponérsela «por simetría» dejaría fuera a
+familias reales.
 
-**El defecto que cerró ②27, medido contra `origin/main` el 2026-08-10:** ocho manejadores lo
-pedían y **tres no** — y eran justamente los más consecuentes. **`retirarDelExpediente_`** llevaba
-SOLO el token ⇒ con un token observado se podían borrar personas, correos, teléfonos, vínculos y
-documentos (hasta 50 por llamada) **sin acreditar el buzón**, mientras que cambiar una letra de un
-nombre sí lo pedía — y la familia no puede deshacerlo. **`submitEnrollmentSession_`** llevaba token
-+ expediente editable y no el código, siendo el acto que estampa el envío, cambia la situación del
-expediente y escribe N filas del libro de consentimientos **atribuidas a un tutor real**.
-**`applyPaymentModality_`** (dinero: re-deriva el plan de pagos entero) tampoco, a diferencia de
-`saveBillingInfo_`, **su hermano de la misma pantalla**.
+**Reglas para toda entrada pública NUEVA:**
 
-**Patrón obligatorio para todo manejador de mutación nuevo** — se copia, no se rediseña:
+0. **¿Tiene que ser anónima?** Si la llama el asistente desde dentro de la sesión, la llave correcta
+   es el `resume_token`, no la verja. La verja protege lo que hay que poder hacer **antes** de tener
+   token.
+1. **La decisión vive en UN solo sitio**, `_verjaPublicaVeredicto_` — fail-closed en sus cinco formas
+   (sin secreto, secreto vacío, sin token, puntuación insuficiente, fallo de red al verificar).
+   **Nunca se escribe una verja nueva.**
+2. **La forma se elige según el contrato**: `_asegurarVerjaPublica_` **lanza**;
+   `_verjaPublicaVeredicto_` devuelve veredicto para quien no puede propagar el error. En
+   `sendMagicLink_` el rechazo **devuelve el mismo ack constante**.
+3. **La verja va ANTES del trabajo caro y del cupo.** Rechazar tarde deja que un sondeo agote el cupo
+   de una familia real.
+4. **Excepción declarada:** `case 'verifyRecaptcha'` no es una verja — es el verificador crudo, con
+   consumidor vivo en `Step7Review.jsx`.
+
+**Control:** `node scripts/comprobar-verja-publica.mjs`. ⚠️ **`scripts/verja-publica.mjs` NO se
+ejecuta: es el MÓDULO.** Lanzarlo a mano no imprime nada y sale con código 0 —la forma exacta de un
+verde falso—. El runner es el `comprobar-*`, y es el que imprime el `VEREDICTO:` final.
+
+### ②27 · El token es la PRIMERA capa: las mutaciones exigen TAMBIÉN el código de un solo uso
+
+Un `resume_token` vive 7 días y se reutiliza; **el código prueba que quien opera AHORA controla el
+buzón**. Patrón obligatorio, **se copia y no se rediseña**:
 
 ```javascript
 const groupId = requireResumeToken_(p);                       // KAL-4 primero
 assertGroupEditable_(groupId);                                // si el acto exige borrador
-// ②24: la marca es del buzón que opera · 2026-08-20: y de la página viva que se verificó
 assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId), _huellaDePagina_(p));
 ```
 
-…o, en los pasos de firma, reusando el buzón que el gate de identidad ya resolvió (**no se vuelve
-a resolver**: dos lectores del mismo dato divergen, y aquí además costaría lecturas):
+…o, en los pasos de firma, **reusando** el buzón que el gate de identidad ya resolvió (dos lectores
+del mismo dato divergen):
 
 ```javascript
 const sctx = requireSignerIdentity_(p);
 assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
 ```
 
-**Y el orden importa, las dos veces:** el código va **DESPUÉS** de derivar el expediente del bearer
-(por delante mediría un expediente que no viene del token, justo lo que KAL-4 prohíbe) y **ANTES**
-del trabajo caro (rechazar después de escribir no es una puerta, es un parte de daños).
+⛔ **El orden importa las dos veces:** el código va **DESPUÉS** de derivar el expediente del bearer
+(por delante mediría un expediente que no viene del token) y **ANTES** del trabajo caro (rechazar
+después de escribir no es una puerta, es un parte de daños).
 
-**Cuántos son, y dónde está la lista que MANDA (re-medido el 2026-08-22): son TRECE, y la lista
-viva es la del control** — `OBLIGADOS` en `scripts/verja-publica.mjs`, no este documento. Ocho
-entran por `requireResumeToken_` (`saveStep_`, `saveNeae_`, `saveResponses_`, `uploadDocument_`,
-`submitEnrollmentSession_`, `retirarDelExpediente_`, `avisarATutor_` y
-`refrescarVentanaDeInactividad_`) y cinco por `requireSignerIdentity_` (`saveBillingInfo_`,
-`applyPaymentModality_`, `submitGdprConsents_`, `confirmReview_` e `initiateSigningSession_`).
+**Son TRECE, y la lista VIVA es `OBLIGADOS` en `scripts/verja-publica.mjs`, no este documento** —
+ocho por `requireResumeToken_`, cinco por `requireSignerIdentity_`. Un obligado que ya no existe deja
+el control **midiendo el aire**; quien retire un manejador, que lo quite de ahí.
 
-⚠️ **Aquí vivía un párrafo que nombraba a `guardarModalidadPreferida_` como «el duodécimo, dado de
-alta el 2026-08-19». Era FALSO desde el 2026-08-21 y se retira**: ese manejador **ya no existe** —lo
-quitó entero `0º.vicies.sexies`, porque la presentación de pagos del paso 7 es meramente informativa
-y la marca de la forma de pago **vive solo en el navegador**, sin escritura que gatear—. El propio
-control ya lo dice en su lista, con su motivo: *«un obligado que no existe deja el control MIDIENDO
-EL AIRE»*. Que la cuenta escrita aquí dijera **doce** con **trece** en el control es la misma clase
-de defecto: un documento que se cita de memoria en vez de leerse del código.
+**Exentos, con su motivo** (la lista vive también en el módulo): `requestCorrection_` (marcar que se
+pide ayuda) · `abandonSession_` (empezar de nuevo sobre un borrador) · `reportUnsolicited_` (lo pulsa
+quien **por definición** no controla ese buzón) · `sendVerificationCode_`/`verifyEmail_` (**son** el
+código: gatearlos consigo mismos dejaría fuera para siempre a quien tenga la ventana caducada) ·
+`simularCuotas_` (LECTURA que no muta nada — pedirlo dejaría sin ver sus tarifas a quien lleva diez
+minutos repasando, que es justo cuando llega al paso 7).
 
-⛔ **NO se confunda con `applyPaymentModality_`, que SÍ sigue obligado**: ésa es la elección **EN
-FIRME** del paso 8, es dinero y se firma.
+**El cliente pide el código DONDE se puede teclear.** El envío del paso 7 es «dispara y navega», así
+que un rechazo posterior dejaría a la familia en la pantalla de confirmación, sin dónde verificar:
+`Step7Review` comprueba la frescura ANTES de navegar, `lib/quitar.js` distingue `STEPUP_REQUIRED` de
+«no se pudo» y ofrece re-verificar, y `Step8Billing` lo nombra en su aviso. **El servidor es el suelo,
+no el mensaje.**
 
-**Y lo que sigue siendo cierto, porque de ello depende otra pantalla:** `simularCuotas_` **NO** lleva
-el código de un solo uso, a propósito — es una LECTURA que no muta nada, y pedirlo dejaría sin ver
-sus tarifas a la familia que lleva más de diez minutos repasando su solicitud, que es exactamente
-cuando llega al paso 7. Es también lo que permite que el paso 7 siga enseñando la simulación **con la
-solicitud ya enviada** (ficha `③70`), sin tocar el servidor.
+### ②24 · La ventana son 10 minutos DE INACTIVIDAD, con techo de 2 horas
 
-**Exentos, con su motivo — la lista vive en `scripts/verja-publica.mjs` y allí se amplía:**
-`requestCorrection_` (completa UNA MARCA que dice que la familia pidió corregir; poner candado a
-una petición de ayuda) · `abandonSession_` («empezar de nuevo» sobre una solicitud aún sin enviar) ·
-`reportUnsolicited_` («esto no es mío», pulsado por quien **por definición** no controla ese buzón) ·
-`sendVerificationCode_`/`verifyEmail_` (**son** el código; gatearlos consigo mismos dejaría fuera
-para siempre a toda familia con la ventana caducada).
+> Diego, 2026-08-20: *«Es muy incómodo para las familias tener que estar pidiendo el código cada 10
+> minutos. Hay que evitar que se pueda entrar con recarga (esto debe bloquear, sí), pero no impedir
+> que el usuario pueda seguir. Cada acción del usuario debe reiniciar el contador.»* · Y el techo:
+> *«No creo que nadie esté 2h rellenando el wizard.»*
 
-**El cliente pide el código DONDE la familia puede teclearlo**, y esto no es cosmética: el envío
-del paso 7 es «dispara y navega», así que un rechazo posterior deja a la familia en la pantalla de
-confirmación, **donde no hay dónde verificar**. Por eso `Step7Review` comprueba la frescura ANTES
-de navegar; `lib/quitar.js` distingue `STEPUP_REQUIRED` de «no se pudo» y ofrece re-verificar
-(`pedirCodigo`), y `Step8Billing` lo nombra en su aviso. El servidor es el suelo, no el mensaje.
-
-**Coste medido para las familias:** ninguno en el camino normal — quien está editando personas,
-vínculos o documentos ya tiene que pasar esa misma puerta para guardar. **Y desde el 2026-08-20
-tampoco cuesta un código de más al enviar**: los 10 minutos se cuentan desde la última ACCIÓN, no
-desde el último guardado, así que una familia que sigue delante nunca se los come (§"Los 10 minutos
-son DE INACTIVIDAD").
-
-#### Los 10 minutos son DE INACTIVIDAD, no de reloj — y una RECARGA vuelve a pedir código (2026-08-20)
-
-> Cita literal de Diego: *«Es muy incómodo para las familias tener que estar pidiendo el código cada
-> 10 minutos. Hay que evitar que se pueda entrar con recarga (esto debe bloquear, sí), pero no
-> impedir que el usuario pueda seguir. Cada acción del usuario debe reiniciar el contador de 10
-> minutos. No me parece mal un aviso dos minutos antes que el usuario tenga que aceptar, pero solo
-> si no ha estado haciendo clic, pasando de pantallas, etc.»*
-
-**Mientras alguien esté clicando, tecleando o cambiando de paso, el contador se reinicia y no se le
-vuelve a pedir el código. Quien deja de tocar la pantalla 10 minutos, sí. Y una recarga pide código
-SIEMPRE, aunque la ventana siga viva.**
-
-⚠️ **ESTO NO REABRE SEC-STEPUP (finding #55), y la diferencia es EL SUJETO.** Lo que #55 cerró fue
-que **el PULSO AUTOMÁTICO** (`getAdmissionState`, que late solo cada 30 s) y cada save re-extendieran
-la marca: una pestaña abierta y **sin nadie delante** se quedaba viva indefinidamente, y una
-**recarga** dentro de esa ventana entraba **sin código**. Aquí la ventana la estira **únicamente**
-`refrescarVentanaDeInactividad_`, que dispara **una persona** con su actividad; el pulso y los saves
-siguen sin tocarla. **Y el eje de la recarga queda MÁS cerrado que antes de este cambio**: hasta hoy
-un F5 dentro de los 10 minutos entraba sin pedir nada.
-
-**Las CUATRO piezas, y ninguna es opcional:**
+**Mientras alguien toque la pantalla el contador se reinicia. Quien deja de tocarla 10 minutos, no. Y
+una RECARGA pide código SIEMPRE.** La marca lleva **CUATRO** campos:
+`caducidad | buzón | página viva | techo`.
 
 | Pieza | Dónde | Qué hace |
 |---|---|---|
-| **la huella de página viva** | `api.js` → `pv` en toda petición · `_huellaDePagina_` | identificador acuñado **en memoria de JavaScript y solo ahí**; una recarga lo pierde |
-| **la marca, con tres datos** | `_markStepUpFresh_` / `_leerMarcaStepUp_` | `caducidad \| buzón \| página viva` — ②24 gana un tercer campo al lado |
-| **el «sigo aquí»** | `refrescarVentanaDeInactividad_` (`case 'refrescarVentana'`) | **EXTIENDE, jamás CREA** |
-| **el tiempo restante** | `step_up_restante_s` en pulso e hidratación | el cliente **ya no echa su propia cuenta** |
+| la huella de página viva | `api.js` → `pv` · `_huellaDePagina_` | identificador acuñado **en memoria de JavaScript y solo ahí**; una recarga lo pierde |
+| la marca | `_markStepUpFresh_` / `_leerMarcaStepUp_` | los cuatro campos |
+| el «sigo aquí» | `refrescarVentanaDeInactividad_` | **EXTIENDE, jamás CREA** |
+| el tiempo restante | `step_up_restante_s` en pulso e hidratación | el cliente **no echa su propia cuenta** |
 
-**⛔ `refrescarVentanaDeInactividad_` NO CREA NADA.** Exige las cuatro cosas y falla cerrado si falta
-una: el enlace (KAL-4), que la marca siga **viva** (sobre una caducada lanza `STEPUP_REQUIRED` — no
-se resucita sin volver a acreditar el buzón), que **case el buzón** (②24) y que **case la huella de
-página**. Y al extender **conserva buzón y huella originales** (`_extenderVentanaStepUp_`): si
-re-acuñara con los datos del llamante, quien llegase sin huella borraría el atado y una recarga
-podría estirarse a sí misma para siempre.
+⛔ **`refrescarVentanaDeInactividad_` no crea nada** y falla cerrado si falta una de las cuatro: el
+enlace (KAL-4), la marca **viva** (sobre una caducada lanza `STEPUP_REQUIRED` — no se resucita sin
+acreditar el buzón), que **case el buzón** y que **case la huella**. Al extender **conserva buzón,
+huella y techo VERBATIM**: recalcular el techo lo empujaría hacia adelante y dejaría de existir; y
+re-acuñar con los datos del llamante permitiría que una recarga se estirara sola.
 
-**⛔ NINGÚN TEMPORIZADOR lo llama.** Solo eventos de una persona (`pointerdown`, `keydown`,
-escuchados una vez en el documento desde `WizardContext`). Nada de `visibilitychange` ni `focus`:
-una pestaña que vuelve al primer plano sola **no es actividad**. El control
-`comprobar-verja-publica.mjs` lo afirma (`getAdmissionState_` no puede llamar a
-`_extenderVentanaStepUp_`).
+⛔ **NINGÚN TEMPORIZADOR lo llama.** Solo eventos de una persona (`pointerdown`, `keydown`). Nada de
+`visibilitychange` ni `focus`: una pestaña que vuelve al primer plano **no es actividad**. Lo afirma
+`comprobar-verja-publica`.
 
-**Los DOS frenos, y por qué cada uno:**
+**Los dos frenos:** con la ventana medio llena (`REFRESCO_UMBRAL_S`) no se llama —si sobra tiempo no
+hay nada que reiniciar, y la petición en vuelo al cambiar de pantalla producía un `network/fetch
+error` que no era de la familia—; y por encima, como mucho una llamada por minuto **salvo en los dos
+últimos minutos**, donde no se frena nada: ahí tragarse la pulsación echaría de su solicitud a quien
+tiene la mano en la pantalla.
 
-1. **Con la ventana medio llena no se llama siquiera** (`REFRESCO_UMBRAL_S`, la mitad de los 10
-   min). Si sobra tiempo no hay nada que reiniciar, así que llamar es gasto puro. **Medido el
-   2026-08-20**: además era ruido REAL — la petición se quedaba en vuelo al cambiar de pantalla, el
-   navegador la abortaba y la familia veía un `network/fetch error` que no era suyo (tumbó el
-   recorrido `fecha-a-mitad-de-curso` de la batería). Con el umbral, quien está activo refresca
-   **una vez cada ~5 minutos** en lugar de cada minuto, y la garantía no cambia: mientras haya
-   actividad, el tiempo restante nunca llega a bajar de la mitad.
-2. **Y por encima, como mucho una llamada por minuto** — salvo **dentro de los dos últimos
-   minutos**, donde no se frena nada. Es justo cuando la familia está diciendo «sigo aquí», y
-   tragarse ESA pulsación la echaría de su solicitud teniendo la mano en la pantalla.
+**El aviso** (`AvisoDeVentana.jsx`) sale a `AVISO_ANTES_S` (120 s) del tiempo **que reporta el
+servidor**. No necesita una condición aparte de «solo si no ha estado haciendo clic»: bajar de dos
+minutos ya significa, por construcción, que nadie ha tocado la pantalla en ocho — una segunda
+comprobación sería una segunda fuente de verdad. **El botón acusa recibo siempre**: mientras el
+refresco está en vuelo se deshabilita y dice «Comprobando…»; si falla por algo que **no** es
+`STEPUP_REQUIRED`, lo dice y **no cierra nada**.
 
-**El aviso de los dos minutos** (`AvisoDeVentana.jsx`) se pinta cuando quedan ≤ `AVISO_ANTES_S`
-(120 s) del tiempo que **reporta el servidor**. *«Solo si no ha estado haciendo clic»* **no necesita
-una condición aparte**: como la actividad reinicia el contador, bajar de dos minutos ya significa
-—por construcción— que nadie ha tocado la pantalla en ocho. Añadir una segunda comprobación sería
-una segunda fuente de verdad sobre lo mismo, y dos fuentes divergen. Al llegar a cero **revoca el
-espejo local** para que el candado se eche en ese momento, y no hasta 30 s después.
+⛔ **La caducidad se capa al techo** (`min(ahora + 10 min, techo)`): cerca del final la ventana se
+recorta sola y el refresco acaba devolviendo 0 ⇒ `STEPUP_REQUIRED`. **UN SOLO CORTE** en el extensor
+(`if (nuevaExp <= ahora) return 0;`).
 
-**LÍMITE HONESTO, escrito para que nadie lo sobrevenda:** el atado a la página cierra **la recarga
-del cliente real**, que es lo que Diego pidió. **NO** es una defensa contra un llamante fabricado que
-sencillamente **omita** el campo `pv` — a ése se le trata como «no consta» y pasa, exactamente igual
-que le pasaba ayer. El comodín-cuando-falta es deliberado y es el mismo de ②24: sin él, un paquete
-viejo en caché tras publicar dejaría a familias fuera de su propia solicitud.
+**LÍMITE HONESTO:** el atado a la página cierra **la recarga del cliente real**, que es lo que Diego
+pidió. **NO** es defensa contra un llamante fabricado que **omita** el campo `pv`: a ése se le trata
+como «no consta» y pasa. El comodín-cuando-falta es deliberado — sin él, un paquete viejo en caché
+tras publicar dejaría a familias fuera de su propia solicitud.
 
-**★ Y EL TECHO ABSOLUTO YA ESTÁ: 2 HORAS desde que se tecleó el código** (Diego, 2026-08-20 —
-*«No creo que nadie esté 2h rellenando el wizard»*). **Esto era una pregunta abierta y era también
-una vulnerabilidad real**, medida sobre el código publicado: sin techo, quien tuviera el
-`resume_token` de una familia **mientras hubiera una marca viva** podía mantenerla indefinidamente
-—hasta los 7 días del propio enlace— sin más que pedir el refresco cada pocos minutos, porque la
-comprobación de la página viva es **comodín cuando el llamante no manda el dato** (§ del límite
-honesto, arriba: deliberado, para que un paquete viejo en caché no deje fuera a familias reales).
-Antes de que la ventana deslizara, esa exposición estaba acotada a **10 min por verificación**; el
-techo la vuelve a acotar. **Es el único eje en el que el cambio de la ventana deslizante aflojaba.**
+**La memoria de la identidad dura lo mismo que la copia de la puerta** (`IDENTIDAD_MEMO_TTL_S_ =
+COPIA_PUERTA_TTL_S_`, 30 min) y se resuelve **PEREZOSAMENTE**: el *thunk* solo se invoca si la marca
+guardada **lleva buzón**. Con 300 s, quien pulsaba «sigo aquí» tras estar parado caía SIEMPRE en
+fallo de memoria y pagaba un viaje de 20-30 s al KMS — y si tardaba más que lo que quedaba, se
+quedaba fuera. ⛔ **Y no se toca al revés: pasar el buzón VACÍO es MÁS PERMISIVO**, deshace el atado
+de ②24 y le da a un tutor la marca que se ganó otro.
 
-- **`STEPUP_TECHO_MS = 2 h`**, y la marca pasa a llevar **CUATRO** campos:
-  `caducidad|buzón|página viva|techo`.
-- **El techo se fija al VERIFICAR** (`_markStepUpFresh_`) y **`_extenderVentanaStepUp_` lo conserva
-  VERBATIM**: si lo recalculara, cada refresco lo empujaría hacia adelante y el techo no existiría.
-- **La caducidad se capa al techo** (`min(ahora + 10 min, techo)`) ⇒ cerca del final la ventana
-  se recorta sola (a 3 min del techo devuelve 180 s, no 600), el aviso de los dos minutos sale
-  igual porque el cliente pinta el `step_up_restante_s` del servidor, y al llegar **el refresco
-  devuelve 0 ⇒ `STEPUP_REQUIRED`**: hay que volver a teclear el código.
-- **UN SOLO CORTE** en el extensor (`if (nuevaExp <= ahora) return 0;`). Hubo un
-  `if (techo && techo <= ahora) return 0;` por delante y **se retiró por redundante**: romperlo a
-  propósito NO ponía roja la medición, que es como se descubrió que no cortaba nada.
-- **Compatibilidad, y dura poco:** una marca escrita antes de este cambio tiene tres campos ⇒ se
-  trata como «sin techo», exactamente como ayer, y se agota sola en 10 min de inactividad. A partir
-  de ahí toda marca nueva nace con el suyo.
+⚠️ **Pendiente, en la cola:** `requireSignerIdentity_` tiene **su propia** memoria (`sigid_`, 300 s)
+que usan los cinco manejadores de firma. **No se subió** porque memoriza el resultado de la PUERTA:
+subirla exige medir antes qué se salta al acertar.
 
-⚠️ **Sin prueba automática, y no se escribió una para taparlo:** la batería corre contra un backend
-simulado que **nunca ejecuta `backend/Code.js`**. Se midió con un arnés efímero (fuera del
-repositorio, no commiteado) que extrae del fuente `_markStepUpFresh_`, `_extenderVentanaStepUp_`,
-`_leerMarcaStepUp_`, `_stepUpPersonaKey_` y `_huellaPaginaLimpia_` y los ejecuta con un reloj y una
-caché de mentira: **8 afirmaciones verdes** y **rojos demostrados** al recalcular el techo en el
-extensor, al no capar la caducidad al techo, al quitarle el cinturón al lector y al renombrar la
-función medida (*«MEDICIÓN CIEGA»*). **Y la medición se corrigió a sí misma tres veces**: dos
-afirmaciones pasaban **por el motivo equivocado** —la del cinturón porque el juego de datos llevaba
-una huella con forma inválida, y la del techo porque la salvaba la caducidad normal en vez del
-techo— y una rotura salía verde por atacar código redundante. **Quien toque esto, que lo mida.**
+### ②24.bis · El respaldo «si no consta, el tutor 1» vale para DOS usos y NO para el tercero
 
-**Textos tocados:** `stepup.gate_duration_note` **decía algo FALSO** («se bloqueará tras 10 minutos
-de inactividad» cuando en realidad eran 10 de reloj) y hoy es verdad; se le añaden la recarga y el
-techo de 2 horas. Nuevos:
-`stepup.aviso_ventana` y `stepup.aviso_sigo_aqui`. Los dos idiomas, en
-`frontend/public/locales/{es,en}/translation.json`.
-
-**Red**: el recorrido `ventana-por-inactividad` de la batería (19 afirmaciones). Comprime el reloj
-con `scenario.ventanaMs` — legítimo porque **el cliente ya no echa su propia cuenta**: pinta y decide
-sobre el `step_up_restante_s` del servidor, así que la secuencia observada es la misma que a los 10
-minutos. **Rojo demostrado CINCO veces**: dejando que el pulso extienda · dejando que el refresco
-cree una marca de cero · guardando la huella en `sessionStorage` (la recarga entraba) · retirando el
-atado al buzón de ②24 · anulando el refresco por actividad en el cliente.
-
-**Y la fase de la RECARGA va la PRIMERA del recorrido, a propósito.** Medido: puesta al final, el
-fallo de «la huella sobrevive» se manifestaba como *«el asistente no se pintó en el tercer pase»* —
-que es verdad pero no nombra el caso. Un rojo que no dice qué se rompió cuesta una sesión entera.
-
-⚠️ **La batería NO ejecuta `backend/Code.js`** (backend simulado): sus afirmaciones (5), (6) y (7)
-miden el **contrato** contra el modelo del simulado, que es copia declarada del real. Quien toque
-`_leerMarcaStepUp_` / `_extenderVentanaStepUp_` / `refrescarVentanaDeInactividad_`, **que lo mida
-allí** — el diagnóstico de editor `manual_testStepUpGate` cubre los casos (e) extender conservando
-la huella, (f) caducada no se resucita y (g) huella de otra página.
-
-**Control**: la comprobación de paridad **se ejecuta con `node scripts/comprobar-verja-publica.mjs`**;
-su lógica vive en `scripts/verja-publica.mjs` (`comprobarParidadDelCodigo`) — ver §"Las CINCO puertas
-del asistente" para qué NO afirma.
-
-⚠️ **`scripts/verja-publica.mjs` NO se ejecuta: es el MÓDULO, no el control.** Lanzarlo a mano
-**no imprime nada y sale con código 0** — que es exactamente la forma de un verde falso, y por eso
-se dice aquí. El **runner** es `comprobar-verja-publica.mjs`, y es el que imprime el
-`VEREDICTO:` de la última línea. *(Medido el 2026-08-10: dos manos distintas —el orquestador de la
-rutina y su agente— cayeron en la misma trampa el mismo día, cada una por su lado, porque esta
-línea nombraba el módulo. Un control que se da por pasado sin haberse ejecutado es peor que no
-tenerlo.)*
-
-#### El respaldo «si no consta, el tutor 1» vale para DOS usos y NO para el tercero (②24.bis, 2026-08-10)
-
-**Un solo sitio resuelve qué buzón está operando** — `_identidadDelEnlace_` → `effectiveRecoveredEmail_`
-(la identidad del enlace, `n` = `email_id`, validada contra el expediente del token). Su **paso 3** es
-un respaldo: cuando no hay `n` ni `recovered_email`, **no devuelve «no se sabe», devuelve el
-`primary_email` del expediente — o sea, el tutor 1**.
+Un solo sitio resuelve qué buzón opera: `_identidadDelEnlace_` → `effectiveRecoveredEmail_`
+(precedencia `n` del enlace **>** `recovered_email` del cliente **>** `primary_email`).
 
 | Uso | ¿Respaldo? | Por qué |
 |---|---|---|
-| a qué buzón va el código de un solo uso | **SÍ** | como mucho lo manda a quien ya lo recibía |
-| de quién es la marca de «recién verificado» (`assertStepUpFresh_`) | **SÍ** | ídem: el comportamiento de siempre |
-| **quién FIRMÓ el consentimiento** (`sysConsentsLog`) | **NO** | es el REGISTRO LEGAL: atribuirle a alguien lo que quizá no dio es una mentira, no un valor por defecto |
+| a qué buzón va el código | **SÍ** | como mucho lo manda a quien ya lo recibía |
+| de quién es la marca de frescura | **SÍ** | el comportamiento de siempre |
+| **quién FIRMÓ el consentimiento** | **NO** | es el REGISTRO LEGAL: atribuirle a alguien lo que quizá no dio es una mentira, no un valor por defecto |
 
-**Quien atribuye pide el modo estricto y lo DECLARA** — `wizardTutorAtribuible_`, que es el MISMO
-resolvedor con `{sinRespaldo:true}`. **PROHIBIDO escribir un segundo resolvedor** (dos lectores del
-mismo dato divergen) y **prohibido retirar el respaldo** (dejaría a familias sin poder verificarse).
-Con `null`, las reglas 2 y 3 de `wizardFirmanteDelConsentimiento_` (②29) por fin se alcanzan: un solo
-tutor vivo ⇒ firma ese; varios ⇒ **no se registra a nombre de nadie** y se dice (registro redactado +
-`consentimiento_sin_firmante` en la respuesta). Las **dos memorias de 300 s** llevan el modo en la
-clave (`idlinkd_` declarada · `idlinkr_` con respaldo): compartirla las contamina y el fallo sale
+**Quien atribuye pide el modo estricto y lo DECLARA**: `wizardTutorAtribuible_`, el MISMO resolvedor
+con `{sinRespaldo:true}`. ⛔ **Prohibido escribir un segundo resolvedor** y **prohibido retirar el
+respaldo**. Con `null`, `wizardFirmanteDelConsentimiento_` (②29) alcanza sus reglas 2 y 3: un solo
+tutor vivo ⇒ firma ése; varios ⇒ **no se registra a nombre de nadie** y se dice
+(`consentimiento_sin_firmante`). Las **dos memorias de 300 s llevan el modo en la clave**
+(`idlinkd_` declarada · `idlinkr_` con respaldo): compartirla las contamina y el fallo sale
 intermitente.
 
-**Este arreglo NO tiene prueba automática, y está DEMOSTRADO, no supuesto**: se rompió a propósito
-tres veces (devolver la atribución al resolvedor con respaldo · ignorar `sinRespaldo` · compartir
-clave de memoria) y **los nueve controles del repositorio salieron VERDES las tres veces** — la
-batería corre contra un backend simulado que nunca ejecuta `backend/Code.js`. No se escribió una red
-para tapar el hueco (§"La red es UNA"): lo que hay que hacer al tocar esto es **medirlo**.
+### ⛔ El código de un solo uso NO se auto-envía (Diego, 2026-09-13)
 
-#### Si el KMS DESCARTA lo que la familia escribió, el asistente lo dice — y no dice «guardado» (②24.sexies, 2026-08-10)
+Entrar por el enlace ya **no** dispara el código solo. Lo que sigue vigente del mecanismo, para
+cuando haya un envío en vuelo: **el hecho vive en `WizardContext` (`otpEnvioEntrada`), en estado de
+React y NUNCA en `sessionStorage`** —una recarga debe volver a «pulsa para enviar»—, **caduca a los
+10 minutos** (la vida del propio código: decir «introduce el que te hemos enviado» pasado eso sería
+mentira), **la cuenta atrás se REANUDA** en los segundos que quedaban, y **un fallo que llega tarde
+también se pinta** (lo dispara una instancia que ya está desmontada). **Un fallo nunca cierra el
+camino de entrar**: no se borra lo tecleado ni se deshabilita la casilla.
 
-**El asistente no puede afirmar que algo se guardó: el KMS lo ENCOLA.** `enr.wizardSaveResponses`
-apunta el trabajo y contesta `{ok:true, queued:true}` (`kis-app kms-server/enr/wizard-gateway.gs:236`);
-quien escribe de verdad es el trabajador de la cola, después. Hasta el 2026-08-10 `saveResponses_`
-llamaba al KMS **sin recoger su respuesta** y devolvía `{saved: N}` a pelo — una afirmación que ese
-código no está en condiciones de hacer, y **falsa entera** en el caso que importa: el tutor que YA
-envió su parte no sigue rellenando (DL-E49 §6), así que `enr_persistResponses_` devuelve
-`{responses:0, skipped_already_submitted:true}` y **no escribe nada**. Medido: ese aviso **no
-aparecía ni una vez** en todo este repositorio, y **no podía aparecer** — lo produce la cola, mucho
-después, y nunca viaja en la respuesta.
+### ①86 · Una RESPUESTA PERDIDA no es un fallo del código
 
-**Por eso se PREGUNTA antes, con lo que ya existe.** `enr.wizardEstadoDeLasPartes` es una lectura
-**síncrona** cuyo propósito declarado es exactamente ése —«¿puede este tutor seguir rellenando?»
-(`wizard-gateway.gs:736`)— y el asistente ya la consumía en la pantalla de confirmación. **No se
-construye mecanismo nuevo**: `_parteDeEsteTutorYaEnviada_` la reusa y, si consta que ese tutor ya
-envió, `saveResponses_` rechaza con `PARTE_YA_ENVIADA` **antes** de encolar nada. KAL-4 intacta (el
-expediente sale del `resume_token`; la persona la resuelve `wizardTutorQueOpera_` server-side y el
-KMS la re-valida). **Degrada hacia GUARDAR**: sin tutor identificado o con la lectura caída devuelve
-`false` — un dato que no se puede consultar no puede convertir esto en un asistente que se niega a
-guardar. El suelo sigue siendo la regla del KMS; esto solo sirve para poder **decírselo a la familia**.
+El asistente **no puede emitir un 4xx/5xx**: su `doPost` contesta siempre HTTP 200 con `{ok:false}`
+ante cualquier error propio. Por tanto un código HTTP distinto de 200 solo puede venir de la
+infraestructura. `esEstadoDeTransporte_` (`frontend/src/api.js`) marca como **transporte**
+`ESTADOS_DE_GOOGLE_ = {401, 403, 404, 408, 429}` y **todo `>= 500`**; el error viaja con
+`transporte = true` y **deliberadamente SIN `code`**, para que se clasifique como «no se pudo
+cargar» ⇒ *«tu enlace sigue siendo válido»*.
 
-**En pantalla se reusa el carril global de guardado**, porque el paso avanza de forma optimista y un
-aviso local moriría con el paso desmontado: el código del rechazo viaja hasta `SaveIndicator`
-(`saveErrorCodigo`), que **pregunta a `lib/rechazos.js`** qué pasó y **no ofrece «Reintentar»**, que
-aquí sería un callejón sin salida. El resto de fallos se comporta byte-idéntico.
+⛔ **El código de verificación es de UN SOLO USO, así que NO se reintenta: se PREGUNTA.**
+`verifyEmail_` borra el código y estampa la marca **ANTES** de que su respuesta viaje; si esa
+respuesta muere, el servidor acertó y el navegador no se entera. Solo cuando el fallo es de
+transporte, la verja pregunta **UNA vez** con `getAdmissionState` (que ya devuelve `step_up_fresh` y
+`step_up_restante_s`), pasando el MISMO `tokenPayload` (KAL-4):
 
-**Y UN SOLO SITIO decide si un rechazo se reintenta: `frontend/src/lib/rechazos.js` (18.bis.85).**
-La tabla `RECHAZOS_DEFINITIVOS` (código → texto) la leen los **dos** consumidores —el aviso, para
-explicarlo y esconder el botón; la cola, para **no recordar** la escritura fallida y no volver a
-mandarla sola cuando otra escritura tiene éxito (`alConfirmarEscritura`)—. **Falla hacia el lado
-seguro**: lo no declarado se sigue reintentando como siempre, así que un corte de red nunca se
-convierte en trabajo perdido. **Un código nuevo se declara con una línea AHÍ**, sin tocar ni el
-contexto ni el aviso, y **jamás se escribe una segunda lista** (el mapa de `SubmitErrorBanner`
-responde a otra pregunta: allí los códigos SÍ se reintentan con provecho, por eso conserva su botón).
+- **ventana abierta** ⇒ entra, con el tiempo real del servidor. Nadie se entera de nada.
+- **cerrada, o no se pudo preguntar** ⇒ dice que **no se pudo comprobar**: ⛔ no da el código por
+  gastado, ⛔ no pide otro por su cuenta, ⛔ **no borra lo tecleado**.
 
-⚠️ **Y no basta con dejar de reintentar**: sin más, el SIGUIENTE guardado que entra drena la cola y
-la deja en «Todos los cambios guardados» **con el cuestionario de la familia tirado a la basura** —
-antes eso no se veía porque el reintento, al volver a fallar, mantenía el rojo encendido. Por eso,
-mientras un rechazo definitivo esté en pie, la cola **repone el aviso en vez de caer a 'idle'**, y
-**en el mismo episodio**: un cartel que la familia ya cerró **no se le vuelve a abrir**. Lo cazó la
-batería (`respuestas-rechazadas-se-dicen` salió ROJO en su afirmación (1) con la versión ingenua).
+Repetir `verifyEmail` a ciegas choca con su propio acierto **y quema uno de los cinco intentos** del
+cupo anti-fuerza-bruta. Un fallo que **no** es de transporte es el servidor contestando: se le cree.
 
-**La mitad del cliente SÍ tiene red; la del servidor NO, y está DEMOSTRADO.** El camino
-`respuestas-rechazadas-se-dicen` de la batería salió **ROJO** las dos veces que se rompió lo visible
-(quitando el mensaje explicado → rojo en (2) y (3); tragándose el rechazo en la factory de
-`Step5Questions` → rojo en (1)). Pero al devolver `saveResponses_` a la mentira original (`saved: N`,
-sin rechazo) **el camino siguió VERDE y los cuatro controles también**: la batería corre contra un
-backend simulado que **nunca ejecuta `backend/Code.js`**. No se escribió una red para tapar el hueco
-(§"La red es UNA") — lo que hay que hacer al tocar `saveResponses_` es **medirlo**.
+### Otras reglas de seguridad vigentes
 
-### Dos bearer tokens canónicos del wizard — resume_token (/apply) + signing_token (/sign) (CLI 45, 2026-06-02)
+- **Diagnóstico y depuración FUERA del despachador público.** Con `ANYONE_ANONYMOUS`, cualquier
+  `case` es invocable desde internet sin autenticación. (1) Las funciones con JSDoc
+  Diagnostic/Debug/Test/Dev **no se registran**; se lanzan desde el editor. (2) Si por excepción una
+  debe ser invocable, va con secreto compartido en Script Properties. (3) **Cualquier ayudante que
+  acepte `table`, `action` o `payload` arbitrario queda PROHIBIDO en el despachador público** — es
+  vector instantáneo de ejecución remota y exfiltración. (4) Antes de cada publicación que toque el
+  despachador, comprobar con `grep` que no entraron `case` con olor a depuración. *(Precedente: KAL-2
+  — `diagAllTables` + `diagTable` daban lectura y escritura totales sin autenticación.)*
+- **UUID crypto-grade** (KAL-1): `generateUuid_()` usa `Utilities.getUuid()`. Todos los
+  `resume_token`, claves y nonces generados en el servidor son seguros.
+- **Datos bancarios y fiscales viven en sus tablas dedicadas**, nunca en `sysTenantConfig_T`: IBAN/BIC
+  en `finBankAccounts` (multi-cuenta, DL-048), importes en `finSubscriptionTypes` /
+  `finSubscriptionTemplates`. **Prohibido** añadir columnas bancarias a `sysTenantConfig_T` para
+  esquivar el coste de la lectura cruzada.
+- **KAL-3:** promover candidatos a las tablas del núcleo vive en el KMS (`enr.promoteToCore`).
+  **Regla derivada:** cualquier operación de personal sobre tablas del núcleo vive en el KMS, no aquí.
+- **`assertGroupEditable_` no lee nada**: reusa la fila que la puerta acaba de validar en la memoria
+  de EJECUCIÓN, y falla cerrado con `NOT_FOUND` si no está. ⛔ **Nunca vuelve a leer por
+  identificador** —ahí el id llega como argumento, así que un lector por id sería una puerta trasera
+  a KAL-4.
 
-> **★ ESTADO REAL POST-W2 (verificado 2026-06-11, gobierna esta sección). El modelo de "dos rutas de entrada" (`/apply` + `/sign`) descrito abajo está SUPERSEDIDO por el modelo ★ CANÓNICA DEFINITIVA (`kis-app/docs/kms/decisions/enr.md`): el wizard es UN flujo único de 11 pasos, UNA sola ruta (`/apply`), entrada única por recuperación de magic-link per-guardian.** Lo que sigue VIGENTE de esta sección es **solo el modelo de AUTORIZACIÓN** (KAL-4 IDOR: `enrollment_group_id` + signer derivados SIEMPRE server-side del token, NUNCA del payload; `requireResumeToken_` como gate de los 11 pasos). Lo que cambió en el CÓDIGO ya desplegado:
-> - **`/sign` eliminada como ruta** (`frontend/src/App.jsx:100` → `<Navigate to="/apply" replace />`). Los Steps 8-11 (firma) viven INLINE en `WizardPage` (`steps/Step8..Step11`), no en un host separado. El puente Step 7→8 es `enterSigning` INLINE (`WizardPage.jsx:379`), gobernado por estado (`canAdvanceToSigning` `:793`: `state_code==='AD' && signing_ready && signing_status!=='COMPLETED'`).
-> - **Recuperación guardian-scoped (a1, P215):** `resolveGuardianForRecovery_` resuelve el guardian del `recovered_email` server-side *(desde ②17 noveno tramo lo resuelve el KMS —`enr.wizardTutorQueRecupera`— y esto es un cliente fino; el matching no cambió)*; `buildAdmissionContext_` (`:1791`) devuelve el estado real (`sysStates_T`) + el `signing_context` per-guardian (Path1 del email / Path2 determinista de la sesión). El `resume_token` sigue siendo de GRUPO; el guardian es un discriminador re-resuelto contra datos reales por llamada (KAL-4 aprobado por Diego para a1). NO hay esquema nuevo.
-> - **El `signing_token` NO es un bearer de entrada** (no se llega a la firma por un email-solo con `signing_token` en la URL). Vive como contexto que el frontend lleva inline a los pasos de firma (`signingContext` en React state, KAL-7); lo irreducible del acto de firma (single-use/TTL/binding, P222) es ESTADO server-side en `sysSigningSessionSigners`. La ruta `/sign` y `requireSigningToken_`/`resolveSigningToken_` permanecen en el backend como mecánica interna, no como entrada.
-> - **Regla inmiscible (★ CANÓNICA):** NUNCA reintroducir `/sign` como ruta de entrada, NUNCA reintroducir un split `/apply`-vs-`/sign`, NUNCA tratar el `signing_token` como bearer de entrada. El avance entre pasos lo gobierna SOLO el estado/hitos.
->
-> La tabla y el texto histórico de abajo se conservan como registro de CLI 45 (la historia vive en git); leer SIEMPRE primero esta nota. Cross-ref: `kis-app/docs/kms/specs/data-navigation-chart.md` fila 20 + `reports/2026-06-11-w2-recovery.md`.
+### Los permisos que declara el asistente — tres, y ninguno restringido
 
-El wizard tiene **dos flujos con dos bearer secrets distintos**, ambos UUID v4 emitidos server-side (no enumerables). Cada uno tiene su gate canónico:
+`executeAs: USER_DEPLOYING` ⇒ **cada permiso lo consiente solo quien publica** (Diego), y pesa sobre
+todo el proyecto. Ninguna familia ve esa pantalla. Eso es lo contrario del KMS (`USER_ACCESSING`),
+donde lo consiente cada usuario que entra.
 
-| Token | Flujo | Gate helper | Endpoints |
-|---|---|---|---|
-| `resume_token` | `/apply` (wizard de inscripción, familia anónima) | `requireResumeToken_` | saveStep_, saveResponses_, uploadDocument_, submitEnrollmentSession_, … |
-| `signing_token` | `/sign` (SigningWizardPage, guardian firmante post-AD) | `requireSigningToken_` | saveBillingInfo_, submitGdprConsents_, confirmReview_, initiateSigningSession_ |
-
-`requireSigningToken_(payload)` (CLI 45): extrae `signing_token`, `assertValidUuid_`, lo valida server-side vía `resolveSigningToken_` (existencia en `sysSigningSessionSigners` + estado no terminal), y devuelve `{ signing_token, signer_id, session_id, enrollment_group_id, guardian_person_id }`. Throw `BAD_REQUEST` (UUID malformado) o `UNAUTHORIZED` (inexistente/expirado/revocado).
-
-**KAL-4 IDOR mantenida**: el `enrollment_group_id` autorizado se deriva del token (server-side), NUNCA del payload. El signing_token es defensa equivalente al resume_token. El requisito de `resume_token` en los 4 proxies de firma (CLI 40) era inercia de copy-paste del patrón /apply, no decisión deliberada — corregido en CLI 45 porque el flujo /sign no tiene resume_token (solo signing_token de la URL). `requireResumeToken_` permanece intacto como gate de los endpoints /apply.
-
-Test: `manual_testSigningTokenAuth` (casos a-d: UUID malformado → BAD_REQUEST, UUID inexistente → UNAUTHORIZED, token real → contexto resuelto).
-
-> **★ IDENTITY-FROM-LINK — la identidad del guardian sale del PROPIO ENLACE (`n` = email_id) (2026-06-11, findings #47). Pieza CANÓNICA del modelo de autorización del wizard. SUPERSEDE la columna de IDENTITY-BINDING (#45).** Corrección de rumbo de Diego (LA spec, cita literal): *"Tienes herramientas y datos suficientes para resolver la identidad sabiendo el email con el que se solicita el link. No pienso crear un campo que solo sirve a uno de los tipos de programa."* → la identidad se deriva del enlace usando SOLO datos existentes; PROHIBIDO columna/tabla/almacenamiento nuevo.
->
-> **Lo que se RETIRA (#45-columna, vetada por Diego — multiuso)**: la columna dedicada `enrEnrollmentGroups.recovery_guardian_email` + `persistRecoveryBinding_`/`readRecoveryBinding_` quedan ELIMINADOS (sin código dormido). AT-IDBIND-01 ANULADO. El **diagnóstico** de #45 (la identidad no puede vivir en el cliente; debe sobrevivir a F5/incógnito) SIGUE vigente — cambia el mecanismo.
->
-> **Ahora**: el `n` del magic link (que YA viajaba — antes era un grace nonce aleatorio) pasa a llevar el **`email_id`** (PK de la fila `enrEmails` del guardian al que se emitió el link) — opaco, sin PII, ya existe. **Emisión** (`sendMagicLink_`): el `email_id` del tutor destino → `?n=<email_id>`. **Resolución** (`resolveEmailFromLinkParam_` dentro de `effectiveRecoveredEmail_`, usada por `getAdmissionState_`/`hydrateSession_`/`requireSignerContext_` — `resumeSession_` también la usaba, y se retiró en ②17): la fila del `n` se busca **solo dentro del expediente del `resume_token`** (KAL-4 por construcción) y ha de resolver a tutor → devuelve el email. **②17 noveno tramo: las dos cosas —emisión y resolución— las contesta la MISMA pregunta al KMS**, y `findEmailIdForGuardian_` se retiró → alimenta `recovered_email` (contrato KMS INTACTO). Prioridad `n` > `recovered_email` (compat secundario). La identidad sobrevive a F5/incógnito/pestañas: el frontend persiste el `n` (`recoveryNonce`) en sessionStorage y lo reenvía en hydrate + pulse + actos de firma.
->
-> **Reglas canónicas inmiscibles**:
-> - `n` (email_id) JAMÁS se cree a ciegas: SIEMPRE se valida contra BD que la fila pertenece al grupo del token (KAL-4) y resuelve a guardian. `assertValidUuid_` + `appsheetEscape_` (KAL-5); logs redactados (KAL-11).
-> - `n` NO es un bearer (no autoriza por sí solo). El `enrollment_group_id` se deriva SIEMPRE del `resume_token`, nunca del payload.
-> - La **gracia OTP-skip** se ancla al `resume_token` recién rotado (`mlgrace_<resume_token>`), NO a `n` (que ahora es identidad). Single-use + 10 min; un token viejo no tiene marcador → OTP normal (KAL-7 intacta).
-> - Devuelve el EMAIL (no el `person_id`) porque el resolvedor matchea por email. **②17 noveno tramo (P245): ya NO hay dos resolvedores** — queda `enr_resolveGuardianFromEmail_` en el KMS, y el del asistente es un cliente fino suyo.
-> - NUNCA reintroducir una columna dedicada para la identidad de recuperación (Diego lo vetó). El dato canónico es el `email_id`, transversal a todo tipo de programa.
->
-> Test: `manual_testIdentityFromLink` (a: emisión → email_id; b: token+n sin recovered_email → guardian; c: n de otro grupo → rechazado KAL-4; d: n basura → ignorado KAL-5; e: sin n → group-scoped intacto). Deploy @158. Cross-ref: `kis-app/docs/kms/reports/2026-06-11-identity-from-link.md` + findings #47 + data-navigation-chart fila 20 + `reports/2026-06-11-identity-binding.md` (#45, diagnóstico vigente, columna retirada).
-
-> **ENMIENDA — DL-E38 REFINADO (recuperación única, decisión Diego 2026-06-06; `kis-app/docs/kms/decisions/enr.md` §"DL-E38 REFINADO").** Lo que cambia respecto a esta tabla es la **CAPA DE ENTRADA/UX, NO el modelo de autorización**. Los **dos bearer tokens siguen vivos bajo el capó** exactamente como CLI 45 los definió: `resume_token` (sesión-de-grupo, gate `requireResumeToken_`) + `signing_token` (per-firmante, gate `requireSigningToken_`); la firma sigue **per-firmante y legalmente vinculante**; el `enrollment_group_id` y el signer se derivan SIEMPRE **server-side del token, NUNCA del payload** (KAL-4 intacta). **Lo que se supersede:** el split de **dos rutas de ENTRADA separadas** (`/apply` por email + `/sign` por email-solo distinto). Modelo unificado:
-> - **UNA sola entrada: el servicio de recuperación de magic link, per-guardian.** Cualquier familia recupera UN link que va al email de **un guardian concreto** → la **identidad de firma se deriva de QUÉ guardian recuperó** (server-side). El token de entrada resuelve `{guardian, grupo}` → editar (grupo, pre-AD) o firmar (per-guardian, post-AD) según el estado del expediente. No hay un segundo email-solo con token distinto para llegar a la firma.
-> - **`/sign` permanece como HOST INTERNO de los Steps 8-11**, alcanzado desde el flujo de recuperación unificado (gobernado por estado), NO como una experiencia de entrada separada. El email transaccional inicial de AD (P201) sigue como conveniencia, pero la red de seguridad canónica es la recuperación única.
-> - **Las protecciones del ACTO de firma (single-use / TTL / binding — C2-TOKEN/P222, ya resueltas server-side en el KMS) viven en los endpoints de firma / estado del firmante, NO en el token de entrada de la recuperación.**
-> - **Hallazgo de código (verificado 2026-06-06):** hoy el `resume_token` es **de GRUPO, no per-guardian** — `enrEnrollmentGroups` tiene UN solo `primary_email` por grupo (`Code.js:828`); `sendMagicLink_` (`Code.js:1007-1084`) busca por `primary_email` y manda el `resume_token` del grupo (`:1040,:1076`); `resumeSession_` (`Code.js:1231`) resuelve el grupo sin noción de "qué guardian". El lado per-guardian solo existe en la firma (`signing_token` por signer en `sysSigningSessionSigners` con `guardian_person_id`, `Code.js:357,377`). Por tanto la recuperación per-guardian del principio NO está implementada hoy → **cambio concreto necesario: pasar la recuperación de group-scoped a guardian-scoped.** 🟦 La mecánica de identificación del guardian (link per-guardian vs selección de firmante in-app) es **sub-decisión abierta del build** (P215) — no inventar aquí; ambas vías deben preservar KAL-4 + las protecciones del acto (P222).
->
-> Items de build: **P215** (recuperación backend devuelve estado real + contexto del guardian que recupera, per-guardian) · **P216** (frontend: una entrada → último paso verificado + estado real + avance state-driven) · **P217** (puente recuperación → firma, `/sign` host interno). Prerequisito **P211** (sin el fix del `signing_token` PackedUUID dashless la firma NI resuelve).
-
-### Excepción promoteEnrollment_ resuelta — operación movida al KMS (KAL-3 cerrado 2026-05-30)
-
-`promoteEnrollment_` fue eliminada del wizard backend 2026-05-30 (CLI 63). La operación canónica de promover candidatos de `enr*` a `personalData_S` (SMS principal) vive en el KMS como `enr.promoteToCore` (`kis-app/kms-server/enr/promote.gs`), registrada en `API_ROUTES`. El KMS tiene auth real (`access: ANYONE` + identidad resuelta server-side via `Session.getActiveUser` + roles via `contactEmails_T` lookup — Stage 1 verificado 2026-05-31; ver `kis-app/docs/kms/security/security-model.md §1.1` + `kis-app/docs/kms/specs/sys-data-contract.md` SPEC-SYS-13 — la auditoría datada `security/audit-2026-06-07.md §7`, sede anterior del modelo de confianza de `ctx`, se consolidó en `security-model.md`; los viejos `handbook/01-system-overview.md §3.1` + `handbook/05-deploy-pipeline.md §9.1` tampoco existen) — el staff lo invoca desde allí. El wizard, anónimo, ya no necesita exponer ese endpoint.
-
-Migración:
-- CLI 50 (2026-05-29 + REINTERPRETADO 2026-05-30) portó los 4 side-effects legacy del wizard al KMS (`addresses_S`, `addressLog`, `relationalRecords`, `personCategoriesLog`).
-- CLI 54 (2026-05-30) arregló P72 silent reject masivo en las tablas legacy SMS (drop created_at/_by del payload + fix PK personal_id + bug person_category_log_id).
-- Diego verificó paridad funcional via 4 `manual_testPromoteToCore*` desde GAS editor (commit hashes 61e8111 + 233c57f + fda5a99, deploy KMS @225 v0.7.90).
-- CLI 63 borró el endpoint local del wizard.
-
-Regla derivada: cualquier operación staff sobre tablas core (`personalData_S`, `participantAssessment`, etc.) vive en KMS, NO en el wizard. *(Histórico: "el wizard solo escribe a tablas enr* (staging)…" — ★ SUPERSEDIDO por P1-B, ver nota siguiente.)*
-
-### ★ El wizard NO escribe NINGUNA tabla AppSheet — TODA escritura vive en el KMS (P1-A + P1-B, 2026-07-12)
-
-Mandato de Diego: *"No se debe escribir nunca en tablas desde el wizard, es un problema serio de seguridad que permite hackeos."*
-
-- **P1-A** portó las escrituras cross-cutting (`sysStateTransitionLog`, `sysConsentsLog`, `recFiles`, `recScopes`) → `kmsProxy_('enr.wizardPersistSubmitSideEffects' / 'enr.wizardPersistUpload')`.
-- **P1-B** portó las escrituras `enr*` de lifecycle de sesión → endpoints KMS síncronos en `kis-app/kms-server/enr/wizard-gateway.gs` (auth = `service_token` + `resume_token` KAL-4, verificados handler-side):
-  - creación de sesión → `enr.wizardCreateSession` (el KMS minta + persiste el `resume_token`; resuelve `source_id` del catálogo Capa 2 + fallback de `program_id`);
-  - renovación de token del magic-link → `enr.wizardTouchSession` (token minted server-side; submitted no renueva; fallo P72 → devuelve el token vivo con `renewed:false`);
-  - abandono (start-over / report-unsolicited / auto-abandon de sesiones paralelas / cleanup admin) → `enr.wizardAbandonSession` (idempotente; submitted nunca se abandona);
-  - *(atestación tutor único → `enr.wizardPersistAttestation` — **RETIRADA el 2026-08-23**, con su
-    ruta y su manejador: no escribía nada. Ver §"el viaje del paso 2 que no escribía nada");*
-  - materialización `enr*` del submit (requester + `enrEnrollments` Add/Edit→RQ + dual-write P71 + `submitted_at`) → `enr.wizardPersistSubmitEnrollments` (writer único `enr_persistSubmit_`, devuelve `enrollment_ids` + `rq_state_id`).
-- `saveHealth_` (muerto, sin dispatcher) BORRADO en el mismo cambio.
-- **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` + `manual_repairRequesterEmailLink` conservan Edits directos — NO alcanzables desde el dispatcher público (auth del owner GAS). Gate `#wizard-no-direct-crosscutting-writes` (`kis-app/scripts/check-quality-gates.mjs`) FALLA ante cualquier escritura AppSheet nueva (cualquier tabla) fuera de esa allowlist.
-- **Las LECTURAS AppSheet directas permanecen** (`fetchLookups_`, `submitEnrollmentSession_`, `initEnrollmentSession_`, etc.) → la credencial AppSheet del wizard sigue siendo necesaria. Migrarlas es la fase **P1-C**, hoy `②17` de la cola, y se está haciendo **por tramos**: ya salieron las de **firma e hitos**, las de **reconocer a la familia** —`contactEmails` y `personalData_S`, que eran las dos únicas a las tablas MAESTRAS de personas del colegio (§"recognizeFamily")—, las **tres guardas de los documentos** (§"subir y ver un documento"), **la hidratación de entrada, que no se migró sino que se RETIRÓ** (§"②17 — la hidratación de entrada tenía DOS lectores"), **la validación del ENVÍO** (§"②17 — el envío ya no lee AppSheet"), **la CABECERA del expediente en el camino de entrada** (§"②17 — la CABECERA del expediente"), **la ENTRADA de una solicitud nueva** (§"②17 — la ENTRADA de una solicitud nueva") y **la RECUPERACIÓN DEL ENLACE por un correo tecleado** (§"②17 — la RECUPERACIÓN DEL ENLACE") y **la IDENTIDAD DE QUIEN RECUPERA** (§"②17 — la IDENTIDAD DE QUIEN RECUPERA") y **QUIÉN PUEDE CONTESTAR el cuestionario** (§"②17 — QUIÉN PUEDE CONTESTAR") y **las ETIQUETAS de los documentos del envío** (§"②17 — las ETIQUETAS de los documentos") y **LA PUERTA y sus tres hermanas** (§"②17 — LA PUERTA") y **EL PULSO DE LA ADMISIÓN** (§"②17 — EL PULSO") y **EL RACIMO DE FIRMA E HITOS** (§"②17 — EL RACIMO DE FIRMA"). **Re-medido el 2026-09-12: quedan 43 lecturas directas y NINGUNA en lote** (`grep -c 'appsheetRequest_('` menos la definición; ídem `appsheetRequestBatch_`) — **CERO en el camino vivo**. La última que quedaba en él, el respaldo de `sendVerificationCode_` (el camino legado de `signing_token`), se retiró (§"②17 — el ÚLTIMO respaldo directo se retira"). Las 43 restantes viven **todas** en funciones `manual_*` de editor **y en `adminCleanupOrphanSessions`, que NO está en el despachador** ⇒ **no alcanzables desde internet**. ⇒ **el objetivo de ②17 —que ninguna lectura directa a AppSheet sea alcanzable desde el proceso público y anónimo— está CERRADO.** Lo que queda abierto es otra cosa, ya sin relación con AppSheet: la credencial de servicio (`service_token`) que autentica al asistente frente al KMS sigue sin acotar por cliente — eso es `②18`.
-
-### ②17 (2026-08-15) — subir y ver un documento ya no leen AppSheet: las tres guardas las sirve el KMS
-
-**Eran TRES lecturas directas, y las tres eran GUARDAS** —comprobaciones de acceso, no
-composición—: en `uploadDocument_`, *¿el expediente de alumno al que se cuelga el documento es de
-esta familia?* (`enrEnrollments`) y *¿este mismo envío ya se guardó?* (`recFiles`, idempotencia); en
-`getDocument_`, *¿este documento está en el expediente del token?* (`recFiles`, la guarda de IDOR).
-Las tres las hacía **este** proceso, que es público y anónimo, **con la credencial de AppSheet de la
-aplicación entera** — la que alcanza cualquier tabla porque la URL lleva la tabla como parámetro.
-
-**Ahora las sirven dos entradas del KMS** (`kis-app kms-server/enr/wizard-gateway.gs`), con los
-**mismos filtros**:
-
-| Entrada | Qué contesta | Ayudante de este lado |
+| Permiso | Nivel | Para qué |
 |---|---|---|
-| `enr.wizardComprobarSubida` | las dos comprobaciones previas a subir, en **una sola pregunta** (antes eran dos idas y vueltas) | llamada directa en `uploadDocument_` |
-| `enr.wizardFicheroDelExpediente` | la fila del documento, **proyectada a cuatro campos** (`file_id`, `drive_file_id`, `file_name`, `mime_type`) | `_ficheroDelExpediente_` |
-
-**Lo que hay que retener al tocar esto:**
-
-- **El expediente sale del `resume_token`, nunca del cuerpo** (KAL-4), y el nombre de la tabla **no
-  viaja en la petición**. Un documento de otra familia responde **exactamente igual** que uno que no
-  existe; un expediente de alumno ajeno **se rechaza nombrándolo**.
-- **La proyección es la mitad del valor**: antes cruzaba aquí la ficha entera del documento (quién
-  lo subió, cuándo, su descripción). Ahora, cuatro campos.
-- **Los dos fallos NO pesan igual, y el criterio viejo se conserva**: no poder comprobar el
-  **acceso** ⇒ no se sube (fallo cerrado — la lectura de AppSheet también lanzaba si se caía); no
-  poder mirar si el envío **ya estaba** ⇒ se sube igual (el `catch (_)` de siempre; como mucho se
-  repite un documento).
-- **`_ficheroDelExpediente_` devuelve TRES cosas, no dos**: «no está» (→ se prueba el camino del
-  paquete de firma, como antes) y «no se pudo preguntar» (→ lanza). **Colapsarlas le diría «no es
-  tuyo» a la familia dueña del documento**, y por eso el control lo vigila.
-- **El KMS copia la regla de qué identificador es legible** (`^[A-Za-z0-9._-]{1,128}$`, no un UUID):
-  hay ficheros con identificador semántico heredado (F-17·#10) y un validador más estricto allí
-  dejaría a una familia sin ver un documento suyo.
-
-**Control**: `scripts/verja-publica.mjs` gana cinco afirmaciones —ninguno de los dos manejadores
-vuelve a leer `enrEnrollments`/`recFiles` de AppSheet · los dos SÍ preguntan al KMS · el ayudante
-sigue distinguiendo los dos fallos—. **Rojo demostrado las cinco.**
-
-⚠️ **La batería NO cubre esto**: corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**
-(12 afirmaciones sobre los manejadores reales, ejecutados con dobles, y la medición demostrada no
-ciega). **Quien toque estos dos manejadores, que lo mida.**
-
-### ②17 (2026-08-15) — la hidratación de entrada tenía DOS lectores: el muerto se RETIRÓ entero
-
-**No era una migración: era código muerto que seguía ejecutándose.** `resumeSession` era una
-**segunda hidratación completa** del expediente de la familia, y leía **~24 tablas de AppSheet
-directamente** desde este proceso —público y anónimo— con la credencial de la aplicación entera:
-personas, vínculos, documentos, respuestas, entrevistas, nacionalidades, documentos de identidad,
-idiomas, direcciones, colegios previos y **salud, alergias, dieta y NEAE de menores**.
-
-**Medido contra `origin/main` antes de tocar nada, y esto es lo que lo hizo accionable:**
-
-| Qué se midió | Resultado |
-|---|---|
-| Llamadas del frontal a `resumeSession` | **CERO.** Sus 14 apariciones en `frontend/` son **comentarios**; el camino vivo es `hydrateSession` → KMS (`ResumePage.jsx:113`, `WizardPage.jsx:221,596`) |
-| Quién llamaba a `buildResumeSessionData_` | **dos sitios, los dos retirados**: `resumeSession_` y la fase `'res'` del precalentado |
-| Quién leía la memoria `wz_res_` que ese precalentado llenaba | **solo `resumeSession_`** |
-
-⇒ **la fase `'res'` ejecutaba esas ~24 lecturas en CADA envío de enlace para llenar una memoria que
-solo leía un manejador que nadie llamaba.** Trabajo real, coste real, valor cero.
-
-**Lo retirado, y por qué se retira en vez de migrarse:** `resumeSession_` · `buildResumeSessionData_` ·
-`_warmResumePhase_` · su `case` del despachador público · el reparto y el encolado de la fase `'res'` ·
-y `manual_testResumeCacheHitRedactsToken`, que solo ejercitaba ese camino. **707 líneas.** Migrarlo al
-KMS habría conservado un **segundo lector** de lo que el KMS ya sirve entero por `enr.wizardHydrate`
-— justamente el anti-patrón que §"Regla — refactors preservan el código probado" prohíbe.
-
-**Lo que NO se pierde, comprobado uno a uno:**
-
-- **La reapertura** (`submitted_at → null` cuando el colegio devuelve el expediente a la familia) ya
-  vivía **también** en `hydrateSession_` (busca `REOPEN-FIX`). Hoy vive **solo** ahí — ése es el
-  arreglo, no un efecto colateral.
-- **El precalentado del camino vivo NO se toca**: la fase `'kms'` calienta `wz_hyd_`, que es la que
-  `hydrateSession_` lee; y la fase `'mem'` sigue igual. Lo retirado es la tercera.
-- **Ningún ayudante queda huérfano** — se comprobaron los once que usaba (`_wzAwaitWarm_`,
-  `_redactSigningTokenIfNotFresh_`, `_wzCacheKey_`, `_getLiveStateVersion_`…): todos conservan
-  llamantes vivos.
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
-ídem `appsheetRequestBatch_`): **83 → 78** lecturas directas y **7 → 4** en lote. **Las llamadas al
-KMS NO suben**: este tramo no añade ninguna entrada nueva, que es la diferencia con los tres
-anteriores.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarLaHidratacionDeEntrada` — `resumeSession` no
-vuelve al despachador · `buildResumeSessionData_` y `_warmResumePhase_` no vuelven · y **el ancla**:
-`hydrateSession_` existe y sigue pidiéndole los datos al KMS, para que el control no pueda quedarse
-ciego afirmando ausencias en un fichero que ya no mide. **Rojo demostrado las cinco**, cada una
-nombrando su caso.
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. Lo que sí acredita es lo que importaba comprobar en el cliente: recorre el
-camino de recuperación entero (`recuperar-aterrizar`) **sin llamar a `resumeSession` ni una vez**.
-
-### ②17 (2026-08-15) — el ENVÍO ya no lee AppSheet para validarse, y de sus ocho lecturas TRES no las leía nadie
-
-**El manejador del envío hacía OCHO lecturas directas. Al medirlas una a una contra `origin/main`,
-tres resultaron no tener ni un consumidor** — y ése es el hallazgo, no la migración:
-
-| | qué leía | qué pasaba |
-|---|---|---|
-| dos | correos y teléfonos por identificador | **no se ejecutaban nunca**: sus dos listas de partida eran literales `[]` desde que se borraron `enrPersonEmails`/`enrPersonPhones` (2026-05-17) |
-| una | las respuestas de profesión, empleador y adaptación | **SÍ se ejecutaba en CADA envío** y su resultado se tiraba |
-
-**Y la tercera no era solo trabajo tirado: era un modo de fallo que dejaba familias encalladas.**
-Ocurría **DESPUÉS** de que el KMS ya hubiera materializado los expedientes y estampado el envío, y
-**fuera de todo `try`** — y `appsheetRequest_` lanza siempre, no degrada. Si AppSheet fallaba en ese
-punto, la familia se quedaba con la solicitud **medio enviada** y su reintento chocaba contra
-`NOT_EDITABLE`: exactamente el atasco que el bloque W1 de ese mismo manejador dice haber cerrado
-moviendo las validaciones delante de las escrituras. Lo provocaba un dato que **nadie mira**.
-
-**Lo retirado, entero, por ser una isla sin llamantes:** las tres lecturas · sus variables de apoyo ·
-las cuatro constantes de identificador de pregunta · y **`buildApplicationSubmittedBody_` +
-`_kmsRenderApplicantsTable_`**, cuyo último consumidor desapareció al retirarse el PDF del envío
-(P262) y los dos correos (2026-08-07). Medido: **cero llamantes** de las dos.
-
-**Las tres lecturas VIVAS —la cabecera del expediente, las personas y los teléfonos— las sirve ahora
-el KMS en UNA sola pregunta**, `enr.wizardDatosDelEnvio` (`kis-app kms-server/enr/wizard-gateway.gs`),
-con los **mismos filtros por expediente** y el mismo criterio de fila viva.
-
-**Lo que hay que retener al tocar esto:**
-
-- **El expediente sale del `resume_token`** (KAL-4) y el nombre de la tabla **no viaja** en la
-  petición. La puerta del KMS aplica el mismo plazo de 7 días y el mismo rechazo de sesión
-  abandonada que `requireResumeToken_` ⇒ **cero cambio de comportamiento**, comprobado línea a línea.
-- **La proyección es la mitad del valor**: de cada persona cruzan **el identificador y el papel**, y
-  de cada teléfono **solo el número**. Nombres, fechas de nacimiento y documentos se quedan dentro
-  del KMS. Antes cruzaba la ficha entera.
-- **La normalización del teléfono y el E.164 estricto se conservan VERBATIM en el asistente.** Lo
-  que se movió es de dónde sale el dato, no el criterio — mover la puerta entera al KMS habría sido
-  rediseñar algo probado.
-- **Falla CERRADO, y no es un detalle**: si el KMS no puede leer las personas o los teléfonos,
-  **lanza**. Degradar a lista vacía dejaría pasar un envío sin alumno, o rechazaría a **toda**
-  familia con un `INVALID_PHONE` falso que no puede corregir.
-- **Por qué NO se reutiliza la hidratación** (el único lector solapado): `enr_wizardHydrate` recorta
-  las personas a propósito y devuelve **un solo tutor** —el que mira— por privacidad entre tutores
-  (DL-E49 §2). El envío necesita el conjunto completo para exigirle teléfono a cada uno, así que
-  reutilizarla obligaría a abrir un rodeo dentro de la única función que decide esa privacidad.
-- **Las dos lecturas de `recFiles`/`recScopes` del mismo manejador salieron en el UNDÉCIMO tramo**
-  (§"②17 — las ETIQUETAS de los documentos", 2026-08-16). Aquí se dijo que no podían moverse porque
-  «llevan dentro el literal `enr_admission_school` y DL-E48 prohíbe escribir a mano el tipo de
-  expediente» — **eso era FALSO y aplazó el trabajo cuatro vueltas**: `enr_admission_school` en
-  minúsculas no es un tipo de expediente, es un `scope_type_code`.
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición):
-**78 → 72** sueltas; las de lote se quedan en 4. En el manejador del envío: **8 → 2**.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarElEnvio` — el manejador no vuelve a leer
-ninguna de las cinco tablas · **sí** le pregunta al KMS · la isla muerta no reaparece · y **el
-ancla**, que la puerta E.164 sigue ahí, para que el control no pueda salir verde sobre un manejador
-al que le hubieran quitado la validación. **Rojo demostrado seis veces**, cada una nombrando su caso
-(incluido el renombrado, que deja el control CIEGO).
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
-**13 afirmaciones sobre el manejador real**, ejecutado con dobles, y **la medición se demostró no
-ciega** rompiéndolo cuatro veces (ensanchar la proyección · aflojar el criterio de fila viva ·
-degradar los teléfonos en vez de fallar cerrado · quitar el cinturón sobre el filtro).
-**Quien toque este manejador, que lo mida.**
-
-### ②17 (2026-08-15) — la ENTRADA de una solicitud nueva: los expedientes de un correo los sirve el KMS
-
-**`initEnrollmentSession_` es la puerta por la que entra TODA familia nueva**, y hacía **TRES**
-lecturas directas a AppSheet desde este proceso —público y anónimo—, las tres filtradas por el
-**correo que la familia teclea**: los expedientes de ese correo **ya enviados**, los **abiertos**, y
-las **personas** de los candidatos abiertos —que solo se usan para **CONTARLAS**, para decidir cuál
-de dos sesiones en marcha va más avanzada—.
-
-**Lo que cruzaba, y por eso este tramo vale lo que vale:** de cada expediente, la **fila entera**
-—con **`magic_link_token`**, un secreto de portador, más `school_id`, `program_id`, `source_id`,
-`requester_person_id`, `source_locale`, `submitted_at`, `abandoned_at`, `_RowNumber` y el bloque de
-auditoría y borrado lógico completo—; y de cada persona, la **ficha entera** (nombre, fecha de
-nacimiento, documento) **de menores incluidos**, para contarlas. Ahora lo sirve **una** entrada del
-KMS, `enr.wizardExpedientesDelCorreo`, y lo consume **UN SOLO ayudante**, `_expedientesDelCorreo_`.
-
-**Lo que hay que retener al tocar esto:**
-
-- **LA DECISIÓN NO SE MOVIÓ.** La política de sesión única —puntuar cada candidato por número de
-  personas, desempatar por fecha, abandonar a los perdedores— se queda **entera y verbatim** en este
-  fichero. Cambia **de dónde salen las filas**, no qué se hace con ellas. Por eso la entrada
-  devuelve las **dos listas** y un **recuento por expediente**, nunca un ganador ya elegido.
-- **La proyección, medida contra `origin/main`:** de los enviados salen **tres** campos
-  (`enrollment_group_id`, `resume_token`, `preferred_language`) y de los abiertos **cinco** (esos
-  tres más `updated_at` y `created_at`, que solo alimentan el desempate). **De las personas no sale
-  NADA: un número por expediente.**
-- **Los dos fallos NO pesan igual, y se conserva el criterio del oro.** Las dos lecturas de
-  expedientes **LANZAN** —`appsheetRequest_` lanzaba y aquí no había `try`—: decir «no hay ninguno»
-  cuando en realidad no se pudo preguntar le abriría un expediente **NUEVO** a una familia que ya
-  tiene el suyo, y le mandaría el enlace a un borrador vacío. El recuento de personas **degrada**
-  (viaja `recuento_fallido`) para que se siga ordenando solo por fecha, como hacía su `catch`.
-- **Con UN solo candidato abierto no se piden las personas**, igual que antes: son las mismas
-  lecturas que hacía el oro, ni una más.
-- **Auth: solo `service_token`, y se dice así.** Aquí no hay `resume_token` del que derivar nada
-  (KAL-4) porque el expediente **todavía no existe**. El alcance lo acota la FORMA de la entrada —un
-  correo, seis campos—, igual que en `enr.wizardReconocerFamilia`. Acotar por cliente es `②18`.
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición):
-**69 → 66** sueltas; las de lote se quedan en **4**. En este manejador: **3 → 0**.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarLaEntradaDeLaSolicitud` — el manejador no
-vuelve a leer `enrEnrollmentGroups` ni `enrPersons` · **sí** le pide los expedientes al KMS por el
-ayudante único · el ayudante existe y pregunta a la entrada declarada · y **dos anclas**: que el
-manejador siga existiendo y que **siga decidiendo la sesión única**, para que el control no pueda
-salir verde afirmando ausencias sobre un manejador vaciado. **Rojo demostrado SIETE veces**, cada
-una nombrando su caso (dos de ellas dejando el control **CIEGO** a propósito).
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
-**20 afirmaciones** sobre el manejador real extraído del fuente y ejecutado con dobles,
-**demostradas no ciegas** con seis roturas (ensanchar la proyección a la fila entera · el recuento
-caído dejando de degradar · disfrazar de «no hay ninguno» **cada una** de las dos lecturas · quitar
-el cinturón del recuento · renombrar el manejador → *«medición CIEGA»*). **Y la medición se corrigió
-a sí misma dos veces:** su doble del validador de correo era **más estricto que el real** —el real
-acepta comillas, que es justo por lo que existe el escape de capa 2— y su afirmación de fallo
-cerrado se satisfacía con que lanzara **una** de las dos lecturas, dejando pasar que la otra se
-disfrazara. **Quien toque este manejador, que lo mida.**
-
-### ②17 (2026-08-15) — la IDENTIDAD DE QUIEN RECUPERA: había DOS resolvedores del mismo dato, y ya habían divergido
-
-**La cadena que decide de quién es un correo —o el identificador opaco `n` de un enlace— hacía
-hasta CINCO consultas a AppSheet** desde este proceso, que es público y anónimo, con la credencial
-de la aplicación entera:
-
-| Quién | Qué leía |
-|---|---|
-| `resolveGuardianForRecovery_` | las **personas** del expediente (la **ficha COMPLETA de cada una —MENORES INCLUIDOS**: nombre, fecha de nacimiento, documento— **solo para saber quién es tutor**), sus **correos**, y hasta **DOS veces** la cabecera (sub-casos A y B, cada uno con su propio `Find`) |
-| `resolveEmailFromLinkParam_` | la fila del `n`, **leída por su clave y SIN acotar al expediente**, para rechazarla después |
-| `findEmailIdForGuardian_` | otra pasada por los correos, para el `n` que se mete en el enlace |
-
-**Ahora lo contesta el KMS en UNA pregunta** —`enr.wizardTutorQueRecupera`
-(`kis-app kms-server/enr/wizard-gateway.gs`)— y la consume **UN SOLO ayudante**,
-`_tutorQueRecupera_`. La respuesta son **tres campos**: identificador de persona, correo
-normalizado e identificador opaco de correo. **De las personas no sale ni un campo.**
-
-**Lo que hay que retener al tocar esto:**
-
-- **LA PRECEDENCIA NO SE MOVIÓ.** `n` del enlace > correo que manda el cliente > respaldo «el
-  tutor 1», y su **modo estricto** para atribuir una firma (`sinRespaldo`, ②24.bis): todo sigue
-  **aquí, verbatim**, en `effectiveRecoveredEmail_` / `_identidadDelEnlace_`. Por eso la entrada
-  acepta **uno y solo uno** de los dos discriminadores y nunca elige por el llamante.
-- **Las GUARDAS sí viajaron, porque son inseparables de su lectura** (mismo criterio que
-  `enr.wizardComprobarSubida` y que la guarda del tutor del octavo tramo): que la fila del `n`
-  **pertenezca al expediente** ya no se comprueba *después* de bajarla — **se busca solo dentro del
-  expediente**, así que una fila de otra familia no llega a existir para este proceso. Es **más
-  estricto que el oro** y da el mismo resultado observable.
-- **⚠️ Y CERRÓ UNA DIVERGENCIA REAL — la que los dos JSDoc anunciaban.** Ambos resolvedores decían
-  que **DEBÍAN permanecer idénticos «hasta consolidación P245»**, y **ya no lo eran**: el de aquí
-  descartaba a quien la familia había quitado con la bandera `is_active` en falso (arreglo del
-  2026-08-09) y **el del KMS solo miraba `deleted_at`** — y siete de las tablas de admisión aún no
-  lo tienen, así que su única vía de retirada hoy **es esa bandera**. Resultado: el KMS podía
-  devolver como tutor a **alguien que la familia ya había quitado**. El resolvedor único usa ahora
-  `sys_rowIsActiveLiveOptionalFlag_`, el gemelo declarado de `wizardFilaViva_`.
-- **LANZA si no se puede preguntar, y es el criterio del oro**: las lecturas que sustituye **no
-  estaban envueltas en `try`**. Decir «no es tutor» cuando en realidad no se pudo consultar dejaría
-  a una familia sin firmar, sin ver su documento o sin recibir su enlace. Los llamantes que ya
-  degradaban lo siguen haciendo en SU `try/catch` de siempre.
-- **En `sendMagicLink_` la pregunta va ANTES de renovar el token**, y no es un detalle de orden: la
-  renovación **rota** el token, y el viejo deja de resolver ⇒ preguntar después dejaría sin `n` el
-  enlace de **toda** familia con borrador.
-- **`email_id` NO depende del tutor, a propósito**: `findEmailIdForGuardian_` casaba **por el valor
-  del correo y nada más**. Se copió verbatim, así que sigue habiendo `n` para correos que no
-  resuelven a tutor — cambiarlo dejaría sin `n` a enlaces que hoy lo llevan.
-- **Memoria de EJECUCIÓN, no de 300 s**: la cadena resuelve dos veces lo mismo en la misma petición
-  (el `n` primero, su correo después). Se recuerda **solo mientras dura la ejecución** ⇒ cero riesgo
-  de servir una identidad vieja. **No se toca la distinción de las dos memorias de ②24.bis**
-  (`idlinkd_` / `idlinkr_`): esa clave lleva el MODO, y compartirla las contamina.
-
-**Retirados enteros**, por ser segundos lectores del mismo dato: el **gemelo** de
-`resolveGuardianForRecovery_` (127 líneas) · **`findEmailIdForGuardian_`** (su respuesta viene ya
-con la misma pregunta) · y **`manual_testRecoveryPerGuardian`**, que estaba **ROTA desde el quinto
-tramo** (llamaba a `resumeSession_`, **0 definiciones** en el proyecto ⇒ lanzaba antes de decir
-nada). Los otros cinco diagnósticos de editor se reconectaron al camino vivo: entran por el
-`resume_token`, que leen de la cabecera.
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
-ídem `appsheetRequestBatch_`): **64 → 58** sueltas y **2 → 1** en lote. Y lo que de verdad importa:
-**el camino vivo baja de 27 a 19** —las otras 40 son de editor, no alcanzables desde internet—.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarLaIdentidadDeQuienRecupera` — los tres
-eslabones no vuelven a leer personas / correos / cabecera de AppSheet · los tres pasan por el lector
-único · el ayudante pregunta a la entrada declarada · **ni el gemelo con hints ni
-`findEmailIdForGuardian_` reaparecen** · y **dos anclas**: los eslabones siguen existiendo y
-`effectiveRecoveredEmail_` sigue distinguiendo el modo declarado, para que el control no salga verde
-sobre una cadena vaciada o renombrada. **Rojo demostrado SIETE veces**, cada una nombrando su caso
-(dos dejando el control **CIEGO**).
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
-**23 afirmaciones** sobre los manejadores reales extraídos del fuente y ejecutados con dobles,
-**demostradas no ciegas** con **siete roturas** (ensanchar la proyección a la ficha entera · aceptar
-el expediente del cuerpo · degradar la lectura caída a «no es tutor» · volver al criterio viejo
-`!deleted_at` —que es la divergencia medida— · creerse un `n` que no es del expediente · quitar la
-declaración pública de la ruta · renombrar el manejador → *«MEDICIÓN CIEGA»*). **Y la medición se
-corrigió a sí misma:** la rotura del `n` ajeno salió **VERDE** al primer intento —era la ROTURA la
-que era débil, no la afirmación— y hubo que hacerla realista para que mordiera.
-**Quien toque esta cadena, que lo mida.**
-
-### ②17 (2026-08-15) — QUIÉN PUEDE CONTESTAR: la ficha de cada persona bajaba entera para quedarse con un id
-
-**`saveResponses_` bajaba la ficha COMPLETA de cada persona del expediente —MENORES INCLUIDOS:
-nombre, fecha de nacimiento, documento— a este proceso, que es público y anónimo, SOLO para armar un
-conjunto de identificadores** y comprobar que cada `respondent_id` es del expediente del token.
-
-**Ahora los sirve el KMS proyectados a ids**, `enr.wizardRespondentesAutorizados`
-(`kis-app kms-server/enr/wizard-gateway.gs`), y los consume **UN SOLO ayudante**,
-`_respondentesAutorizados_`. La respuesta es `{ok, ids}` y **nada más**: de las personas no sale ni un
-campo, y de qué tabla es cada sujeto **se queda dentro del KMS** (lo necesita el escritor, no esto).
-
-**⚠️ Y CERRÓ UNA DIVERGENCIA MEDIDA — es la mitad del valor del tramo.** El conjunto se armaba aquí
-con **OTRO criterio** que el del escritor (`enr_persistResponses_`, quien de verdad decide qué se
-guarda):
-
-| | el asistente autorizaba | el escritor autoriza |
-|---|---|---|
-| tablas | **solo `enrPersons`** | el propio expediente **+ `enrPersons` + `enrEnrollments`** |
-| fila viva | `!deleted_at` **y** `is_active !== false` | **solo** `!deleted_at` |
-
-⇒ el asistente rechazaba con `UNAUTHORIZED` respuestas que el KMS **sí habría guardado**. Y
-`UNAUTHORIZED` **no está declarado en `RECHAZOS_DEFINITIVOS`** (`frontend/src/lib/rechazos.js`), así
-que la cola **lo reintentaba para siempre**: el cuestionario de esa familia en un bucle que no podía
-pasar nunca. Hoy hay **UN solo recorrido**, `enr_respondentesAutorizados_`, y es el del escritor.
-
-**Lo que hay que retener al tocar esto:**
-
-- **LA COMPROBACIÓN NO SE MOVIÓ.** La validación de forma (`assertValidUuid_`, KAL-5 capa 1) y el
-  rechazo con `UNAUTHORIZED` siguen **enteros y verbatim aquí**. Cambia de dónde salen los
-  identificadores, **no qué se hace con ellos** — y el control lo vigila con un ancla.
-- **El expediente sale del `resume_token`** (KAL-4) y el nombre de la tabla **no viaja**. La puerta
-  del KMS aplica el mismo plazo de 7 días y el mismo rechazo de sesión abandonada que
-  `requireResumeToken_`, que además ya corrió antes aquí.
-- **El orden se conserva**: token → código de un solo uso (`assertStepUpFresh_`, ②27) → la pregunta al
-  KMS → apuntar el trabajo. **Y si no hay respondents distintos del expediente, NO se pregunta** —ni
-  una llamada de más, igual que antes no había ni una lectura.
-- **FALLA CERRADO: lanza.** La lectura que sustituye lanzaba (`appsheetRequest_` lanza siempre y ahí
-  no había `try`). Un conjunto vacío rechazaría a **TODA** familia con un `UNAUTHORIZED` falso.
-- **⚠️ El criterio del escritor sigue siendo `!deleted_at` a secas, y es deliberado.** Apretarlo a
-  `sys_rowIsActiveLiveOptionalFlag_` **cambiaría qué se escribe** (dejaría de guardarse la respuesta
-  de un sujeto retirado solo por la bandera) — otra decisión, con su propia medición. Lo que este
-  tramo cierra es que hubiera **DOS** criterios; ahora se aprieta **en una línea**.
-- **Lo que este tramo NO cierra, y se dice:** un `respondent_id` genuinamente ajeno **sigue** dando
-  `UNAUTHORIZED`, que **sigue sin estar** en `RECHAZOS_DEFINITIVOS` ⇒ ese caso se reintentaría igual.
-  No es alcanzable desde una pantalla legítima (la hidratación no enseña a nadie de otra familia), y
-  declararlo toca la lista que gobierna **todas** las escrituras: se decide aparte, midiendo.
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
-ídem `appsheetRequestBatch_`): **58 → 57** sueltas, **1** en lote sin cambio. Y el camino vivo:
-**19 → 18**; en este manejador, **1 → 0**.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarLasRespuestas` — el manejador no vuelve a leer
-`enrPersons` de AppSheet · **sí** pregunta al KMS por el ayudante único · el ayudante existe y
-pregunta a la ruta declarada · y **TRES anclas**: sigue derivando el expediente del token, sigue
-exigiendo el código de un solo uso y sigue rechazando con `UNAUTHORIZED`, para que el control no
-pueda salir verde sobre un manejador vaciado. **Rojo demostrado SIETE veces**, cada una nombrando su
-caso (la del renombrado deja el control **CIEGO**).
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
-**21 afirmaciones** sobre los dos trozos reales extraídos del fuente y ejecutados con dobles,
-**demostradas no ciegas** con **ocho roturas** (ensanchar la proyección a la ficha entera · aceptar el
-expediente del cuerpo · degradar la lectura caída a conjunto vacío · volver al criterio viejo del
-asistente · quitar el filtro por expediente · que el escritor vuelva a armar el conjunto por su cuenta
-· quitar la declaración pública de la ruta · renombrar el manejador → *«medición CIEGA»*). **Y la
-medición se corrigió a sí misma:** su afirmación de «el escritor no vuelve a leer por su cuenta» era
-demasiado tosca — el escritor tiene **otra** lectura legítima de `enrPersons`, la que resuelve el
-iniciador de la sesión — y hubo que acotarla al recorrido real. **Quien toque este manejador, que lo
-mida.**
-
-### ②17 (2026-08-16) — las ETIQUETAS de los documentos: el envío queda a CERO lecturas, y el guarda del reintento llevaba un día roto
-
-**Eran las DOS ÚLTIMAS lecturas directas a AppSheet del camino del envío**, y enganchaban los
-documentos que la familia sube en el paso 6 —cuando todavía no existe ningún expediente de alumno—
-a los expedientes que acaban de nacer:
-
-| Qué leía | Qué pasaba |
-|---|---|
-| `recFiles` por `school_id` + `origin='WIZARD'` + `origin_reference = <el grupo>` | los documentos del paso 6 |
-| `recScopes` por `file_id` + `scope_type_code` | el guarda del reintento — **UNA CONSULTA POR FICHERO** |
-
-Las hacía **este** proceso, que es público y anónimo, con la credencial de AppSheet de la
-aplicación entera. **Ahora las etiquetas las compone el KMS**, en el mismo manejador que ya las
-escribía (`enr.wizardPersistSubmitSideEffects` → `enr_ambitosDelEnvio_`,
-`kis-app kms-server/enr/wizard-gateway.gs`), que ya tiene todo lo que hace falta: el grupo derivado
-del `resume_token` por su propia puerta (KAL-4) y los expedientes que él mismo acaba de
-materializar. **El asistente ya no manda `rec_scopes`.**
-
-⚠️ **Y LA PREMISA QUE BLOQUEÓ ESTE TRAMO CUATRO VUELTAS ERA FALSA.** Decía —aquí y en el JSDoc del
-KMS— que no se podía mover *«porque lleva dentro el literal `enr_admission_school` y DL-E48 prohíbe
-escribir a mano el tipo de expediente»*. **`enr_admission_school` en MINÚSCULAS no es un tipo de
-expediente**: es un `scope_type_code` de `recScopes`. El tipo de expediente es
-`ENR_ADMISSION_SCHOOL`, en mayúsculas y contra `sysEntityTypes`, y **no aparecía en ese trozo**. Es
-el precedente exacto de §"Un COMENTARIO del código no es criterio normativo" (`kis-app/CLAUDE.md`):
-un comentario no cierra una pregunta de diseño, y éste aplazó trabajo cuatro veces.
-
-⚠️ **Y EL GUARDA DEL REINTENTO ESTABA ROTO desde D78 (2026-08-15), un día.** Filtraba
-`scope_type_code = 'enr_admission_school'` — un ámbito **RETIRADO** (`is_deprecated: true` en
-`kis-app kms-server/config/rec-scope-type-templates.html`) —, mientras que el KMS escribe en ese
-campo el **TEMA** del documento (`rec_temaPrincipalDelFichero_`, DL-R16) y dice de quién es con el
-par canónico `(scope_entity_type_code, scope_target_id)`. ⇒ **el guarda no casaba NUNCA**, y un
-reenvío —el caso normal cuando el colegio pide corregir algo— **duplicaba las etiquetas de todos
-los documentos de la familia**. Hoy se pregunta lo que el guarda siempre quiso preguntar, en el
-vocabulario de hoy: **¿este documento ya está enganchado a un expediente de este grupo?** — que es
-exactamente el recorrido de `enr_getDocuments` (`enr/milestones.gs`), el lector canónico.
-
-**Lo que hay que retener al tocar esto:**
-
-- **EL CRITERIO NO SE MOVIÓ.** El filtro de los ficheros va **verbatim**, y `is_primary` lo sigue
-  llevando **la primera ficha de alumno y solo ella** — con el **orden de los ALUMNOS declarados**,
-  el mismo con el que `enr_persistSubmit_` construye `enrollment_ids`. Por eso el compositor recorre
-  `enrPersons` → `applicant` → su expediente, en vez de leer `enrEnrollments` y fiarse del orden en
-  que AppSheet devuelva las filas.
-- **DEGRADA, no lanza, y es deliberado.** Se llega aquí con el envío **YA materializado** y
-  `submitted_at` estampado: lanzar dejaría a la familia con la solicitud a medias y su reintento
-  chocando contra `NOT_EDITABLE` — el atasco que el bloque W1 documenta. El asistente lo tenía en un
-  `try` con «non-fatal» y **se conserva igual**. Lo peor que pasa es que los documentos queden sin
-  enganchar y el reenvío lo arregle.
-- **Menos viajes, no más**: el guarda costaba **una consulta por fichero**; ahora es **una sola**
-  lectura de etiquetas por envío.
-- **Las que lleguen en el cuerpo se IGNORAN, contadas y con ruido** (`rec_scopes_ignored`), igual
-  que las anotaciones de situación de D33 — y **se les sigue exigiendo pertenencia** aunque no se
-  escriban: un intento de colar el documento o el expediente de otra familia por una ruta pública es
-  justo lo que hay que poder ver. Medido: el **ÚNICO** llamante vivo de esa ruta en los dos
-  repositorios es este manejador, que en el mismo cambio deja de mandarlas.
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
-ídem `appsheetRequestBatch_`): **57 → 55** sueltas, **1** en lote sin cambio. El camino vivo:
-**18 → 16**; en este manejador, **2 → 0**.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarLasEtiquetasDelEnvio` — el manejador no
-vuelve a leer `recFiles`/`recScopes` · ya no manda `rec_scopes` · el ámbito retirado no reaparece
-escrito a mano · y **DOS anclas**: sigue llamando a `enr.wizardPersistSubmitSideEffects` y sigue
-mandándole los consentimientos, para que el control no salga verde sobre un manejador vaciado.
-**Rojo demostrado SIETE veces**, cada una nombrando su caso (la del renombrado deja el control
-**CIEGO**). **Y el control se corrigió a sí mismo:** el ancla de los consentimientos era
-`/consents\s*:/` y casaba el `?:` de `Array.isArray(p.consents) ? p.consents : []` ⇒ **salía VERDE
-con el ancla rota**; se acotó a la llamada real.
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
-**21 afirmaciones**, y la de más peso es que **ejecuta el bloque de ORO retirado y el compositor
-nuevo sobre LOS MISMOS datos y compara** — ternas idénticas y en el mismo orden cuando no hay
-etiquetas previas, y la **divergencia acreditada** cuando sí las hay (el oro no saltaba). **No
-ciega, demostrado con siete roturas**: quitar el guarda · `is_primary` en todas · relanzar en vez de
-degradar · volver al criterio viejo del ámbito retirado · invertir el orden · tomar el grupo del
-cuerpo en vez del token · renombrar el compositor → *«MEDICIÓN CIEGA»*. **Y la medición se corrigió
-a sí misma dos veces:** la rotura del orden **no se aplicaba** (era la rotura la que era débil, no
-la afirmación) y la del renombrado **reventaba** en vez de declararse ciega. **Quien toque este
-compositor, que lo mida.**
-
-### `③1` tramo (b) (2026-08-23) — el asistente llama a las acciones del KMS por su nombre CANÓNICO
-
-**El KMS renombró sus 32 acciones a lo que HACEN en el dominio el 2026-08-16 (DL-E55), y dejó una
-ventana de alias para que el asistente siguiera funcionando mientras tanto. Esa ventana llevaba una
-semana siendo lo único que sostenía los nombres viejos: el asistente no había migrado.** Ahora sí —
-**97 sustituciones** en `backend/Code.js`, de las cuales **37 son llamadas** (`kmsProxy_`) y **60
-comentarios** que nombraban la acción.
-
-| Antes | Ahora |
-|---|---|
-| `enr.wizardHydrate` | `enr.hydrateApplication` |
-| `enr.wizardSavePersons` · `…SaveHealth` · `…SaveRelations` | `enr.savePersons` · `enr.saveHealth` · `enr.saveRelations` |
-| `enr.wizardTouchSession` · `…AbandonSession` · `…CreateSession` | `enr.renewApplicationSession` · `enr.abandonApplicationSession` · `enr.createApplicationSession` |
-| `enr.wizardComprobarSubida` · `…PersistUpload` | `enr.comprobarSubidaDeDocumento` · `enr.persistUploadedDocument` |
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ NO SE RETIRÓ NI UN ALIAS, y no es pereza: es la barandilla.** Los dos proyectos se publican
-  por separado, así que mientras el paquete VIEJO del asistente siga vivo, un alias retirado deja
-  fuera a familias reales. Retirarlos es el tramo **(b2)** y va **después**, cuando se mida que
-  ninguno aparece ya en el rastro `[alias]`.
-- **⛔ `enr.wizardSaveStep` NO se renombra, y su propio registro dice por qué**: es la única cuyo
-  CONTENIDO habla de pantallas (viaja `step`, y el escritor decide por él) ⇒ se renombra cuando se
-  rediseñe lo que viaja, o se renombraría dos veces. Es el tramo (a), y sigue abierto.
-- **✅ `enr.wizardHuellaDeSimulacion` ya NO se queda fuera — se migró el 2026-08-23.** Se había
-  quedado sin alias porque **nació DESPUÉS del renombrado** (`0º.vicies.quinquies`) reusando la
-  convención vieja: *la convención se torció en cuanto nadie la vigilaba*. Hoy la acción se llama
-  **`enr.huellaDeSimulacion`**, el nombre viejo entra por el registro de alias del KMS
-  (`API_ALIASES`, `_api.gs`) exactamente igual que los otros 32, y este repositorio la llama por su
-  nombre canónico en sus **dos** llamantes (`backend/Code.js:2013` y `:8467`). ⛔ **Su alias tampoco
-  se retira**: eso sigue siendo la (b2), y va cuando se mida que ninguno aparece ya en el rastro.
-- **Sin cambio de comportamiento y sin tocar el KMS:** la precondición se midió **contra la
-  versión DESPLEGADA `@1479`** —346 ficheros leídos por la API de Apps Script, no el repositorio—:
-  los **32** nombres canónicos existen en `ROUTE_PERMISSIONS` y **los 32 son `public`**. Por eso
-  este cambio **no necesita desplegar el KMS**.
-- **Seguro de dejar COMMITEADO Y SIN PUBLICAR**: los dos nombres funcionan a la vez, así que el
-  asistente desplegado (con los viejos) y el commiteado (con los canónicos) son igual de válidos.
-
-⚠️ **LA BATERÍA NO PUEDE CUBRIR ESTO** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. Lo que lo cubre es una comprobación aparte que **cruza el código con la
-versión DESPLEGADA del KMS**: los **44** nombres que el asistente envía existen y son `public` en
-`@1479`. **Rojo demostrado dos veces**: un nombre inventado sale *«NO EXISTE en la versión
-desplegada»*, y volver una llamada a su alias viejo se cuenta y se nombra.
-
-⭐ **Y AL MEDIRLO APARECIÓ UN DEFECTO EN LA PROPIA RED, que es la parte que más valía del tramo.**
-`comprobar-verja-publica` ancla sus comprobaciones en el **nombre literal** de cada acción, así que
-el renombrado la dejó **ROJA con 13 infracciones** — bien hecho: se negó a afirmar lo que ya no
-podía verificar, en vez de pasar en verde y quedarse ciega. Se actualizaron sus **31 anclas** (17 en
-prosa, 12 en expresiones escapadas `enr\.wizard…` que la primera pasada NO tocó, y 2 escritas sin el
-prefijo `enr.`). **Quien renombre una acción tiene que mover las anclas EN EL MISMO CAMBIO.**
-
-⭐⭐ **Y una de esas anclas llevaba PREEXISTENTEMENTE rota, descubierta al exigirle el rojo.** La de
-la hidratación calculaba el cuerpo de `hydrateSession_` (`const vivo = cuerpoDe(…)`) y luego
-**afirmaba sobre el fichero ENTERO** (`.test(fuenteLimpia)`) ⇒ seguía verde mientras **cualquier**
-función del fichero llamara a la hidratación, aunque `hydrateSession_` hubiera dejado de hacerlo.
-Se midió: con la rotura dirigida a `hydrateSession_` (línea 9222) salía **VERDE**. Corregida a
-`.test(vivo)`, **la misma rotura sale ROJA** y una rotura en la OTRA función (`warmEntryBundle_`,
-línea 2063) **sigue sin dar falso rojo**. *(Esto NO lo causó el renombrado: se comprobó que el mismo
-agujero existía con los nombres viejos. Lo destapó exigir el rojo demostrado en vez de conformarse
-con el verde.)*
-
-### ②17 (2026-08-16) — LA PUERTA: la lectura más llamada del asistente, y la que se hacía DOS VECES en la misma petición
-
-**Eran CUATRO funciones repitiendo la MISMA lectura directa de `enrEnrollmentGroups`** —filtrada por
-`resume_token`, o por el identificador que ese token acababa de autorizar— desde este proceso, que es
-**público y anónimo**, con la credencial de AppSheet de la aplicación entera:
-
-| Quién | Qué era |
-|---|---|
-| `requireResumeToken_` | **el gate de TODA mutación**, y la lectura **más llamada** del asistente |
-| `assertGroupEditable_` | la **SEGUNDA lectura de la MISMA fila en la MISMA petición** |
-| `abandonSession_` | «empezar de nuevo» |
-| `reportUnsolicited_` | «esto no es mío» |
-
-Cruzaba la **fila ENTERA**, con **`magic_link_token`** —un secreto de portador— dentro, más
-`school_id`, `program_id`, `source_id`, `source_locale`, `preferred_language` y el bloque de
-auditoría. **Ahora la sirve el KMS** por `enr.wizardExpedienteDelToken` —la entrada del sexto tramo,
-**ampliada, no duplicada**— proyectada a **SIETE campos** (los cinco de antes más `abandoned_at` y
-`created_at`, ninguno dato personal) y por el lector **ÚNICO** `_expedienteDelToken_`.
-
-**Y la segunda lectura DESAPARECE, no se migra.** Se midió antes de tocar nada, contra
-`origin/main`: los **CINCO** llamantes de `assertGroupEditable_` van **inmediatamente precedidos** de
-`requireResumeToken_` (`saveStep_` `:4093/:4103` · `submitEnrollmentSession_` `:4216/:4226` ·
-`saveResponses_` `:5389/:5391` · `uploadDocument_` `:5710/:5716` · `saveNeae_` `:6336/:6341`) ⇒ la
-puerta deja la fila en una **memoria de EJECUCIÓN** (`_memoCabeceraEjecucion_`) y
-`assertGroupEditable_` la lee de ahí. **No es caché** —muere con la petición, cero riesgo de servir
-una fila vieja— y **no es un segundo resolvedor**: es esa misma fila, ya autorizada por el token.
-
-**Lo que hay que retener al tocar esto:**
-
-- **LA DECISIÓN NO SE MOVIÓ.** Los rechazos con sus **mensajes EXACTOS** (`resume_token abandoned`,
-  el de caducidad que arregló `①22`), el TTL de 7 días desde `created_at`, la exención de los
-  `submitted`, el memo de lectura `rtmemo_`, el **cross-group guard** y el **acuse silencioso
-  anti-enumeración** de `reportUnsolicited_` siguen **aquí, verbatim**. Cambia **de dónde sale la
-  fila**, no qué se hace con ella — y el control lo vigila con cuatro anclas.
-- **Eso obligó al MODO TOLERANTE, y está ACOTADO Y DECLARADO.** `tolerar_sesion_cerrada` hace que la
-  puerta del KMS acepte el token caducado o abandonado **y devuelva la fila**, para que el asistente
-  aplique SUS rechazos. Ensancha **SOLO qué token se acepta**, JAMÁS **qué expediente** (sigue
-  saliendo del token, KAL-4), sigue exigiendo el `service_token`, y un token **inexistente se
-  rechaza SIEMPRE**. **No es capacidad nueva**: `enr.wizardAbandonSession` ya acepta hoy esos mismos
-  tokens por la misma vía pública. Sin la bandera, los **tres llamantes del sexto tramo quedan
-  byte-idénticos**. Si la puerta del KMS rechazara antes, `requireResumeToken_` no podría distinguir
-  «caducado» de «no existe» y la familia con la solicitud caducada leería el mensaje equivocado.
-- **⛔ `assertGroupEditable_` FALLA CERRADO con el `NOT_FOUND` de siempre si la memoria no está, y
-  NUNCA vuelve a leer por identificador** —ni de AppSheet ni del KMS—: ahí el id llega como
-  **argumento**, así que un lector por id sería una puerta trasera a KAL-4.
-- **Los dos fallos NO pesan igual**, y el lector único gana un **tercer estado** para distinguirlos:
-  «el KMS **contestó** que ese token no vale» (`rechazo`) ⇒ el rechazo propio del manejador; «**no se
-  pudo preguntar**» (transporte) ⇒ **lanza `KMS_UNREACHABLE`**, nunca «tu enlace no vale». Decirle
-  eso a una familia legítima porque el KMS está caído es peor que el fallo. **`ok` no cambió de
-  valor** al añadirse `rechazo`, así que los tres llamantes del sexto tramo no ven diferencia.
-  `reportUnsolicited_` da su acuse silencioso en los dos casos, como ya hacía por su `catch`.
-
-⚠️ **Y una premisa del encargo era FALSA, medida:** decía que la lectura de `sendVerificationCode_`
-(`:4799`) filtra por un identificador **«que viene en el cuerpo (rama de alta)»**. **No.** Está en la
-rama **step-up**, y el identificador lo deriva `_resolveStepUpGroup_` **del bearer**. **Aun así NO
-entra**, por un motivo distinto: es el respaldo del respaldo y **solo se alcanza cuando NO hay
-`resume_token`** (camino de `signing_token`, `frontend/src/pages/steps/signingCommon.js:49`) — ahí no
-hay token del que derivar la cabecera ni memoria que reusar, así que quitarla dejaría a esa familia
-con `BAD_REQUEST` en lugar de su código.
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
-ídem `appsheetRequestBatch_`): **55 → 51** sueltas, **1** en lote sin cambio. El camino vivo:
-**16 → 12**.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarLaPuerta` — las cuatro no vuelven a leer
-`enrEnrollmentGroups` · las tres con token pasan por el lector único **y en modo tolerante** ·
-`assertGroupEditable_` no consulta por identificador y lee la memoria · la puerta la rellena · y
-**CUATRO anclas** (la puerta existe, valida la forma del token, aplica el TTL y conserva el
-cross-group guard) para que «ya no lee AppSheet» no salga verde sobre un gate vaciado. **Rojo
-demostrado NUEVE veces**, cada una nombrando su caso (la del renombrado deja el control **CIEGO**).
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
-**14 afirmaciones** sobre el manejador real extraído del fuente y ejecutado con dobles,
-**demostradas no ciegas** con **seis roturas** (ensanchar la proyección · tomar el expediente del
-cuerpo · quitarle el `service_token` al modo tolerante · tolerar siempre · aceptar el token
-inexistente · renombrar el manejador → *«MEDICIÓN CIEGA»*). **Quien toque esta puerta, que lo mida.**
-
-### ②17 (2026-08-19) — la cabecera se pedía DOS VECES por petición: la memoria estaba, y nadie la encontraba
-
-**No es un tramo de migración: es la memoria del duodécimo, que solo se indexaba por una clave
-que su único lector no tiene.** Medido en el registro real del asistente ya desplegado, con cada
-pregunta al KMS costando **13-31 s**:
-
-| Camino | Viajes a `enr.wizardExpedienteDelToken` |
-|---|---|
-| `hydrateSession` | t+410 ms (16,3 s) **y** t+43,3 s (18,1 s) |
-| `warmBundle` | t+878 ms **y** t+26,3 s |
-| `warmSession` | t+866 ms **y** t+19,5 s |
-
-La primera es **la puerta** (`requireResumeToken_`); la segunda, el punto que necesita la cabecera
-(`:8215`/`:8246`/`:8046`). **La misma fila, del mismo token, en la misma ejecución.** La memoria de
-EJECUCIÓN `_memoCabeceraEjecucion_` ya existía —la escribe la puerta— pero **se indexaba por
-identificador de expediente**, y `_expedienteDelToken_` recibe un **TOKEN** ⇒ no la encontraba nunca.
-Ahora la consulta antes de salir al KMS. **Medido ejecutando las funciones reales con dobles:
-2 → 1 viaje** en los tres caminos (la mutación ya estaba en 1).
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ LA CLAVE LLEVA LA MODALIDAD DENTRO** (`_memoCabeceraClave_`, `tok:<token>|estricto` ·
-  `|tolerarSesionCerrada`). La **fila** que devuelve el KMS es idéntica en los dos modos: lo que
-  cambia es **qué token se acepta**. Sin la modalidad en la clave, una cabecera obtenida **con**
-  tolerancia —la que se llevan `abandonSession_` y `reportUnsolicited_`, que operan a propósito
-  sobre sesiones cerradas— se le serviría a un llamante estricto, y ese llamante **dejaría de
-  rechazar un enlace caducado o abandonado**. Comprobado ejecutándolo: el estricto vuelve a
-  preguntar.
-- **La puerta archiva su fila bajo la clave ESTRICTA, y eso se demuestra, no se supone.** La pidió
-  en modo tolerante, pero justo ahí acaban de aplicarse los **tres** rechazos —token que no resuelve
-  · sesión abandonada · caducada a los 7 días salvo enviada— que son **verbatim** los tres de la
-  puerta estricta del KMS (`enr_resolveWizardSession_`, del que ese gate es espejo declarado).
-  **Si algún día se afloja uno de los tres, esa línea deja de ser cierta y se quita.**
-- **⛔ La rama que ROTA el enlace la OLVIDA** (`_olvidarCabeceraMemo_`, tras
-  `enr.wizardTouchSession` en las dos ramas de `sendMagicLink_`): la ficha guardada lleva dentro el
-  `resume_token` **viejo**, que a partir de ahí ya no resuelve. Hoy nadie la leería después de rotar
-  —es una barandilla para el camino futuro—, y se dice así.
-- **Sigue siendo memoria de EJECUCIÓN, no caché**: muere con la petición, no tiene plazo, y no puede
-  servir la fila de otra. **Solo se guarda el acierto** — un rechazo o una avería no se memorizan.
-- **`assertGroupEditable_` no cambia**: sigue leyendo por identificador de expediente y sigue
-  fallando cerrado con `NOT_FOUND` si no está (comprobado ejecutándolo).
-
-**Control**: `scripts/verja-publica.mjs` gana cuatro afirmaciones dentro de `comprobarLaPuerta` —la
-clave lleva la modalidad · `_expedienteDelToken_` consulta la memoria por su clave · la puerta la
-indexa también por token · la rama que rota la olvida—. **Rojo demostrado las cuatro**, cada una
-nombrando su caso.
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. Se **midió aparte**, ejecutando `requireResumeToken_`,
-`_expedienteDelToken_`, `_memoCabeceraClave_`, `_olvidarCabeceraMemo_` y `assertGroupEditable_`
-extraídos del fuente y corridos con dobles: **antes 2/2/2/1 viajes, después 1/1/1/1**, más las tres
-afirmaciones de seguridad de arriba. **Quien toque esta memoria, que lo mida.**
-
-### `0º.bis` (2026-08-20, DL-E57) — la PUERTA y la IDENTIDAD se piden en la MISMA pregunta al KMS
-
-**El tramo de arriba dedupó DOS pedidos de la MISMA cosa (la cabecera). Éste va un paso más allá:
-cuando la petición además necesita saber DE QUÉ TUTOR es el enlace —`n` del propio enlace, o
-`recovered_email` del cliente—, la puerta ya no manda esa pregunta a un SEGUNDO viaje al KMS.**
-Medido: `sendVerificationCode` (rama step-up) hacía **tres** viajes —`enr.wizardExpedienteDelToken`
-(la cabecera) · `enr.wizardTutorQueRecupera` (el tutor, re-resolviendo la MISMA sesión con el
-MISMO enlace) · `sys-public.sendAuthCode`—; el segundo desaparece. Lo mismo aplica a **cualquiera**
-de los TRECE manejadores de mutación que llevan el patrón `requireResumeToken_` +
-`assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId))` (②27) cuando el payload trae `n`.
-
-**`requireResumeToken_` lee `payload.n`/`payload.recovered_email`** (la misma precedencia `n` >
-`recovered_email` de `effectiveRecoveredEmail_`, nunca los dos a la vez) y se los pasa a
-`_expedienteDelToken_`, que ahora sabe llevarlos en el MISMO cuerpo que pide la cabecera
-(`enr.wizardExpedienteDelToken`, KMS). Si el KMS resuelve la identidad, **la archiva en
-`_TUTOR_MEMO_`** —la misma memoria y el mismo formato con que `_tutorQueRecupera_` archiva su
-propia respuesta— así que la primera llamada a `_tutorQueRecupera_` que corra después en esta
-MISMA ejecución (dentro de `effectiveRecoveredEmail_` → `resolveEmailFromLinkParam_`, invocada
-por `_identidadDelEnlace_`) encuentra el acierto y no paga un segundo viaje.
-
-**Sin discriminador, cero cambio: byte-idéntico.** Y **los dos fallos no se contagian** — si la
-identidad no se puede resolver, la cabecera (ya resuelta arriba, en el KMS) sigue viajando igual;
-el fallo de identidad va en su propio campo y nunca tumba la puerta.
-
-**Lo que NO se movió, y es lo que había que preservar**: la PRECEDENCIA de la identidad y el modo
-estricto de ②24.bis siguen viviendo **solo** en `effectiveRecoveredEmail_`/`_identidadDelEnlace_`
-— ninguna de las dos se tocó. La ruta combinada del KMS nunca ve `primary_email` (el respaldo
-«tutor 1») como discriminador: solo `n`/`recovered_email`, la identidad DECLARADA.
-
-⚠️ **Sin prueba automática (la batería nunca ejecuta `backend/Code.js` ni el KMS).** Medido con dos
-arneses efímeros fuera de los repositorios, extrayendo las funciones reales y ejecutándolas con
-dobles: **con `n` presente, 2 → 1 viaje al KMS**; sin discriminador, **1 viaje, cero cambio**; una
-relectura posterior de la cabecera (el patrón de `hydrateSession_`/`warmSession_`) sigue en
-**0 viajes extra** (memo-hit). Rojo demostrado (lado KMS): quitar el `try/catch` que aísla el
-fallo de identidad → la puerta entera se tumba · perder el guardia que fuerza la precedencia
-`n`>`correo` → `BAD_REQUEST` entero (el KMS rechaza los dos discriminadores juntos) · renombrar
-`enr_resolverIdentidadDeSesion_` → «NO ENCONTRADA» (medición ciega detectada). Detalle completo:
-`kis-app/docs/kms/decisions/enr.md` DL-E57.
-
-### ②17 (2026-08-16) — EL PULSO: la acción más llamada mientras la familia espera, y bajaba el catálogo de situaciones ENTERO
-
-**`getAdmissionState_` es una acción PÚBLICA del despachador anónimo**, y el cliente la dispara
-**repetidamente** mientras la familia mira la pantalla. Hacía TRES lecturas directas a AppSheet en un
-lote, con la credencial de la aplicación entera:
-
-| Qué leía | Para qué, de verdad |
-|---|---|
-| `enrEnrollments` del expediente | **UN campo**: `current_state_id`. Cruzaba la fila entera |
-| `enrPersons` del expediente | **la ficha COMPLETA de cada persona —MENORES INCLUIDOS**: nombre, fecha de nacimiento, documento— **solo para CONTAR tutores**, y solo cuando hay varios firmantes pendientes |
-| `sysStates_T` **SIN FILTRO** | el **catálogo de situaciones ENTERO**, de todas las máquinas de estados de todos los colegios, para quedarse con las de una |
-
-Y su respaldo, `buildAdmissionContext_`, **releía el catálogo por su cuenta** cuando el llamante no
-se lo pasaba. **Ahora lo sirve el KMS en UNA pregunta** —`enr.wizardEstadoDeLaAdmision`
-(`kis-app kms-server/enr/wizard-gateway.gs`)— y lo consume **UN SOLO ayudante**,
-`_pulsoDeLaAdmision_`, con memoria de EJECUCIÓN. De los expedientes sale **un campo**, de las
-personas **dos** y del catálogo **cuatro**.
-
-**Lo que hay que retener al tocar esto:**
-
-- **LA DECISIÓN NO SE MOVIÓ.** Elegir la situación **menos avanzada por `display_order`**,
-  `derivarPantallaAdmision_` (las tres derivaciones de pantalla que DL-E41 ★ACOTACIÓN dejó a
-  propósito de este lado), las Vías 1 y 2 del contexto de firma, `resolveSigningStatus_`, la memoria
-  `wz_adm_`, la gracia del enlace y la frescura del código de un solo uso: **todo sigue aquí**.
-  Cambia **de dónde salen las filas**, no qué se hace con ellas — y el control lo vigila con tres
-  anclas.
-- **El FILTRO del catálogo VIAJA con su lectura; la ELECCIÓN no.** Qué filas *son* el catálogo de
-  este expediente (colegio + máquina declarada + no borradas) es inseparable de la lectura, igual
-  que la guarda del tutor de la recuperación y que las dos comprobaciones de la subida.
-- **⛔ Y con ese filtro SALE EL LITERAL DEL DOMINIO de este camino.** El oro comparaba
-  `entity_type_code === 'ENR_ADMISSION_SCHOOL'` a mano — justo lo que DL-E48 prohíbe. Hoy el dominio
-  lo resuelve el KMS por su cadena declarada (`program_id → enrPrograms → enrProgramTypes`) y **sin
-  respaldo silencioso**: si el colegio no lo declara, `DOMAIN_NOT_DECLARED` nombrando el eslabón que
-  falta. Observable: el pulso da error en lugar de enseñar la situación de un campamento leída de la
-  máquina de admisión escolar. ⚠️ **NO era el último del fichero**: quedaban **CUATRO** ejecutables,
-  y las **tres del racimo de hitos y firma** salieron en el decimocuarto tramo (§"②17 — EL RACIMO DE
-  FIRMA"). **Re-medido el 2026-08-16 queda UNA**: `submitEnrollmentSession_:4676`.
-- **⚠️ FALLA CERRADO, y esto CORRIGE el oro.** `appsheetRequestBatch_` **nunca lanza** (devuelve
-  `{ok}` por elemento) ⇒ un fallo de AppSheet dejaba `enrollments = []` y `buildAdmissionContext_`
-  retornaba en su primera línea con **`editable: true`** y `state_code` vacío: el servidor afirmando
-  que la solicitud de una familia que **ya envió** se puede editar. *(Medido en el cliente: ese
-  `editable:true` **no** llega a desbloquear la pantalla, porque `WizardContext.jsx:1310` solo lo
-  aplica `if (data.state_code)`; lo que la familia **sí** observa es que la situación real de su
-  expediente y el puente a la firma **desaparecen en silencio**.)* Hoy lanza — y el cliente ya sabe
-  tratarlo: `.catch` + no avanza la versión ⇒ reintenta al tick siguiente **conservando lo que
-  tenía**.
-- **Las personas llegan YA filtradas** a quien sigue en la solicitud (el KMS aplica
-  `sys_rowIsActiveLiveOptionalFlag_`, el gemelo declarado de `wizardSoloVivas_`), así que aquí ya no
-  se cuela ese colador: llegan dos campos, no fichas.
-- **El diagnóstico de editor `manual_diagWizardSigningGate` le pasa el `resume_token`** que lee de la
-  cabecera. Sin él, `buildAdmissionContext_` falla cerrado — que es lo correcto: un catálogo que no
-  se pudo leer no puede pasar por «no hay situación».
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
-ídem `appsheetRequestBatch_`): **51 → 50** sueltas y **1 → 0** en lote. El camino vivo: **12 → 10**;
-en estos dos, **4 consultas → 0**.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarElPulsoDeLaAdmision` — los dos no vuelven a
-leer `enrEnrollments`/`enrPersons`/`sysStates_T` · los dos pasan por el lector único · el ayudante
-pregunta a la ruta declarada · el literal del dominio no reaparece · y **TRES anclas** (el expediente
-sigue saliendo del token, la frescura del código de un solo uso sigue computándose, y la situación se
-sigue eligiendo por `display_order`). **Rojo demostrado NUEVE veces**, cada una nombrando su caso (la
-del renombrado deja el control **CIEGO**).
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
-**18 afirmaciones** sobre el manejador real extraído del fuente y ejecutado con dobles,
-**demostradas no ciegas** con **cinco roturas** (ensanchar la proyección a la ficha entera · tomar el
-expediente del cuerpo · disfrazar de «no hay» un fallo de lectura · quitar la declaración pública de
-la ruta · renombrar el manejador → *«MEDICIÓN CIEGA»*). **Y la medición se corrigió a sí misma:** la
-rotura del expediente tomado del cuerpo salió **VERDE** al primer intento —la afirmación miraba solo
-la LONGITUD de la lista y el juego de pruebas tiene una fila por grupo—, y hubo que acotarla a **qué
-fila** vuelve. **Quien toque este manejador, que lo mida.**
-
-**Lo que apareció de paso, y se RETIRÓ en la vuelta siguiente:** `appsheetRequestBatch_` se quedó
-**sin ni un llamante** (éste era su último). Aquí no se tocó —quitarlo obligaba a mirar tres
-controles de seguridad, en un cambio que no iba de eso— y quedó anotado. **Se retiró entero el
-2026-08-16**: ver §"②17 — el transporte en LOTE se RETIRA".
-
-### ②17 (2026-08-16) — EL RACIMO DE FIRMA: había DOS lectores del mismo dato, y ya habían divergido en CUATRO puntos
-
-**`resolveSigningToken_` resolvía el token de firma con SEIS lecturas directas a AppSheet** desde
-este proceso, que es público y anónimo, con la credencial de la aplicación entera:
-
-| Quién | Qué leía |
-|---|---|
-| `resolveSigningToken_` | la fila del **firmante** buscada por el token (`sysSigningSessionSigners`) y su **sesión de firma** (`sysSigningSessions`) |
-| `isMilestoneCompleted_` | los **hitos** del expediente y el **catálogo de tipos de hito ENTERO, sin filtro** |
-| `isDurableSigningMilestoneCompleted_` | **los mismos dos**, otra vez |
-
-**Y su propio comentario se declaraba «espejo VERBATIM del lector canónico del KMS»** —
-`sys_resolveSigningToken_`. Eran **dos lectores del mismo dato**, que es exactamente el anti-patrón
-que §"Regla — refactors preservan el código probado" prohíbe. **Ahora lo resuelve el KMS** por
-`enr.resolveSigningToken` —ruta que **ya existía y ya estaba declarada `'public'`**— y lo consume
-**UN SOLO ayudante**, `_resolucionDelTokenDeFirma_`.
-
-⚠️ **Y EL BLOQUEO ESCRITO ERA FALSO, dos vueltas.** Decía que *«autentica por el propio token de
-firma ⇒ no hay token de recuperación del que derivar nada, y eso es otra decisión»*. Medido contra
-`origin/master`: la ruta del KMS **ya acepta ese bearer del cuerpo**, ya está declarada pública
-(*«token-gated; signer may be a family/external party»*) y su cabecera dice que la forma que
-devuelve está *«preserved for the wizard»*. **No hacía falta ninguna decisión: hacía falta el
-tramo.** Es el mismo precedente que el ámbito en minúsculas del undécimo — un comentario no cierra
-una pregunta de diseño.
-
-**⭐ Las CUATRO divergencias que cierra, todas a favor de la familia:**
-
-| # | Qué | Qué le pasaba a la familia |
-|---|---|---|
-| 1 | **El ancla de la sesión (DL-S105 §10)** — desde ese cambio la sesión cuelga del **EXPEDIENTE del alumno**, no de la solicitud. El KMS traduce con el lector único `enr_signingGroupIdForSession_`; el asistente usaba `session['entity_id']` **crudo** | al tutor que **ya consintió y ya revisó** se le volvía a pedir todo, **cada vez** |
-| 2 | **El tipo de expediente (DL-E48)** escrito a mano; el KMS usa la clase que la **propia sesión de firma ya lleva escrita** | en un campamento se buscaba el hito bajo una clase que no es la suya |
-| 3 | **`gdpr_blocked`** se devolvía `false` a pelo (*«deferred per roadmap §4.5»*); el KMS lo **calcula** contra el libro de consentimientos | *(hoy **no se nota**: medido, ese campo **no tiene ni un consumidor en el frontal**. Se dice para que nadie lo cuente como arreglo visible)* |
-| 4 | **El plazo y la invalidación por estado** — el KMS aplica el vencimiento de la sesión y el rol `INVALIDATES_SIGNING_TOKENS` del catálogo del colegio; aquí solo se miraban **tres códigos escritos a mano** | un token de una sesión vencida seguía valiendo |
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ `signing_url` SE RECORTA AQUÍ, en el CONSUMIDOR — y no es estilo.** El KMS **sí** lo
-  devuelve, y hace bien: esa ruta la usa también el panel del KMS, donde la URL es legítima. Pero
-  CLI 81 / S5 / KAL-NEW-1 cerró que **la resolución previa a la firma no revele la URL del
-  proveedor con solo el bearer**; copiarla desde aquí **reabriría esa mitigación**. Sigue llegando
-  solo por `initiateSigningSession_` (`session.signerUrls`) — medido: `Step11Sign.jsx` la lee de
-  ahí y **`resolveSigningToken` no tiene ni un llamante en el frontal**.
-- **La VALIDACIÓN DE FORMA se queda aquí, verbatim** (`assertValidSigningToken_`, P211: UUID v4 con
-  guiones **o** 32 hex sin guiones, que es como los emite el KMS). Rechazar la forma antes de gastar
-  un viaje es lo mismo que hacía antes de gastar una lectura — medido: con un token malformado **no
-  se pregunta al KMS**.
-- **⚠️ FALLA CERRADO NOMBRANDO, y esto CORRIGE el oro.** El bloque retirado convertía un fallo de
-  lectura de AppSheet en `{valid:false, reason:'INVALID'}` ⇒ la familia leía *«tu enlace de firma no
-  vale»* cuando la verdad era que la base de datos no contestaba. Hoy **lanza `KMS_UNREACHABLE`**.
-  Los dos caminos son igual de cerrados —ninguno deja pasar a nadie—, pero solo uno **nombra** el
-  problema. Mismo criterio que la puerta (duodécimo tramo), y el código ya es vecino del fichero:
-  `doPost` lo mapea uniforme como cualquier otro.
-- **NO viaja ningún identificador de expediente ni nombre de tabla**: el cuerpo lleva **un solo
-  campo**, el `signing_token`, que es la identidad de este camino (aquí no hay `resume_token` del
-  que derivar nada — quien firma llega por su propio token). El KMS resuelve firmante, sesión y
-  expediente server-side.
-
-**Retirados enteros**, por ser el segundo lector: **`isMilestoneCompleted_`** ·
-**`isDurableSigningMilestoneCompleted_`** · y **`manual_testSigningStepsFromMilestones`**, su único
-llamante que quedaba —y **caducado por dentro**: buscaba los consentimientos y la revisión bajo el
-ancla del firmante, que DL-E44 dejó como respaldo legado—. Con ellos salen del catálogo de tablas
-`MILESTONES` y `MILESTONE_TYPES` (medido: **0 usos**).
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
-ídem `appsheetRequestBatch_`): **50 → 44** sueltas, **0** en lote. Y lo que de verdad importa:
-**el camino vivo baja de 8 a DOS**.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarElRacimoDeFirma` — las cuatro tablas no
-vuelven · pasa por el lector único, que apunta a la ruta declarada · los dos ayudantes y su
-diagnóstico **no reaparecen** · `signing_url` no se copia · un KMS caído no se disfraza de token
-inválido · el literal del dominio no vuelve · y **DOS anclas** (sigue validando la forma del token,
-y `requireSigningToken_` sigue resolviendo y rechazando con `UNAUTHORIZED`). **Rojo demostrado ONCE
-veces**, cada una nombrando su caso; la del renombrado deja el control **CIEGO**.
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**, y **el acto de firmar está declarado fuera de cobertura a propósito**. El lado
-del KMS tampoco lo cubre ningún control, así que se **midió aparte**: **16 afirmaciones** sobre el
-manejador real extraído del fuente y ejecutado con dobles, **demostradas no ciegas** con **siete
-roturas** (devolver `signing_url` · disfrazar el transporte caído · mandar el expediente en la
-petición · volver a clavar `gdpr_blocked` en falso · preguntar antes de validar la forma · y el
-renombrado, que debe salir **«MEDICIÓN CIEGA»**). **Y la medición se corrigió a sí misma:** su
-rotura del renombrado **explotaba** en vez de declararse ciega —era la rotura la que era débil, no
-la afirmación—, y hubo que aplicarla al FUENTE, que es donde alguien renombraría de verdad.
-**Quien toque este manejador, que lo mida.**
-
-### 18.bis.35 (2026-08-16) — el paso 6 deja ELEGIR qué es el documento, y con dos tipos declarados estaba ROTO de punta a punta
-
-**Describir no es clasificar.** El paso 6 era un adjuntador genérico con una casilla de **texto
-libre** donde la familia *describía* el archivo, y esa descripción va a `recFiles.description`. Un
-texto no le asigna al papel **ni su nivel de confidencialidad ni sus etiquetas**, que es lo único
-que decide quién puede verlo (DL-R07) ⇒ todo lo que sube una familia caía en un cajón único y el
-reparto fallaba **en las dos direcciones**: la enfermera **no ve** un informe médico etiquetado de
-admisión, y **todo el que tenga admisión sí lo ve**.
-
-⛔ **Y no era solo alcance que faltaba: con DOS tipos declarados, adjuntar NO FUNCIONABA.** El KMS
-rechaza con `REC_TYPE_REQUIRED` la subida que no dice cuál (*«el trabajo tiene que decir cuál»*), y
-el asistente **no tenía forma de decirlo** ⇒ en cuanto el colegio marcase un segundo tipo como «lo
-aporta la familia», **ninguna familia podría adjuntar nada**. Hoy funciona solo porque hay
-exactamente uno marcado. **Por eso el orden obligado era: primero la pantalla, después los tipos.**
-
-**Lo que ya estaba, y por eso este tramo es pequeño** (medido contra `origin/master` del KMS): el
-KMS **ya mandaba las opciones** en las MISMAS listas que el asistente ya pide
-(`recTypesInterestedParty`, `enr_wizardFetchLookups`) y **ya aceptaba y validaba** el código
-elegido contra el catálogo (`enr_wizardPersistUpload`). El asistente **tiraba las dos cosas**: 0
-apariciones de `recTypesInterestedParty` y `rec_type_code` solo en comentarios. **No se abrió
-ninguna ruta nueva.**
-
-**Lo que hay que retener al tocar esto:**
-
-- **Se pregunta a partir del SEGUNDO tipo, y no es estilo.** Con **0** el servidor rechaza
-  nombrando qué configurar; con **1** lo asigna él (*«un desplegable de una opción no es
-  elección»*, DL-R16) y la pantalla no pregunta; **con 2 o más elige la familia**, y entonces su
-  respuesta es **obligatoria**.
-- **DEGRADA SIN ROMPER**: la lista arranca vacía y ningún fallo de lectura se propaga ⇒ un colegio
-  que no ha marcado ninguno, o una lectura que no llega, deja la pantalla **exactamente como estaba**
-  y la familia sigue adjuntando.
-- **Ni un código escrito a mano**, ni en la pantalla ni en el servidor. El asistente **solo
-  transporta** lo que contestó la familia: valida la FORMA (KAL-5 capa 1, la misma que un
-  identificador de fichero legible — el colegio puede dar de alta códigos con la forma que quiera) y
-  **quién es admisible lo dice el KMS** contra la lista viva. **Sin respaldo**: un respaldo escrito a
-  mano fue exactamente el defecto que `'OTHER'` causó.
-- **Se avisa DONDE la familia puede contestar**: con dos o más tipos, la pantalla no dispara la
-  subida sin respuesta — mandar megabytes a un rechazo seguro y devolver un código interno es peor.
-  **El servidor sigue siendo el suelo**; esto solo evita el viaje inútil.
-
-**Control**: la batería gana **cuatro afirmaciones** en `subir-documento` —que se pregunte · que las
-opciones salgan del **catálogo que manda el servidor** · que **ninguna** venga preseleccionada · y
-que la respuesta **viaje en la petición**—, y el simulado sirve **dos** tipos a propósito: con uno
-la pantalla no pinta el desplegable y la comprobación pasaría **en vacío**, que es peor que no
-tenerla. **Rojo demostrado dos veces**: quitándole a la pantalla el envío del tipo → **ROJO**
-nombrando el caso (*«rec_type_code recibido: undefined»*), y sustituyendo el catálogo por una lista
-escrita a mano → **ROJO en las cuatro**.
-
-⚠️ **LA MITAD DEL SERVIDOR NO TIENE RED, Y ESTÁ DEMOSTRADO — no supuesto.** Se rompió a propósito
-el paso del tipo en `uploadDocument_` (que el `rec_type_code` validado **no viaje** al KMS) y **la
-batería salió VERDE**, igual que los cuatro controles: corre contra un backend simulado que **nunca
-ejecuta `backend/Code.js`**, así que sus afirmaciones miden lo que manda **el navegador**, no lo que
-reenvía el servidor del asistente. **No se escribió una red para tapar el hueco** — y si alguien cree que hace falta, se PROPONE
-(§"La red es UNA": la decide Diego). **Quien toque `uploadDocument_`, que lo mida.**
-
-### ②17 (2026-08-16) — el transporte en LOTE se RETIRA: no era código muerto, era un escritor genérico esperando
-
-**`appsheetRequestBatch_` se quedó sin ni un llamante** cuando el decimotercer tramo (el pulso de
-la admisión) se llevó el último. Aquel tramo lo dejó **anotado y sin tocar**, con su motivo. Esta
-vuelta lo retira entero: **118 líneas fuera**, una lápida de once en su sitio.
-
-**Por qué no es solo limpieza, y es lo único que hay que retener:** este proceso es
-`ANYONE_ANONYMOUS`, y lo que quedaba dormido aquí **no era un lector**. Su firma admite
-`'Find'|'Add'|'Edit'|'Delete'` **sobre CUALQUIER tabla** —el nombre viaja como parámetro— y lee la
-credencial de AppSheet de las propiedades del proyecto. O sea: un **escritor genérico y completo**,
-listo para usar, dentro del mismo fichero cuyo invariante declarado es que **el asistente NO
-ESCRIBE NUNCA en AppSheet**. No había agujero —nadie lo llamaba y no estaba en el despachador—,
-pero un escritor que sobra en una superficie pública no se aparca: se quita (§"lo vestigial se
-ELIMINA en cuanto se detecta", `kis-app/CLAUDE.md`).
-
-**Lo que NO cambia, medido:** las **44** lecturas directas de `appsheetRequest_` siguen siendo 44
-(esto no era una lectura) y las de lote siguen en **0**. Se repite con
-`grep -c 'appsheetRequest_(' backend/Code.js` **menos 1**, la definición.
-
-**Su nombre SÍ se conserva en los tres controles**, y es deliberado: en
-`scripts/escrituras-directas.mjs` no es una exención que sobre —es la lista de transportes
-permitidos— y en `personas-quitadas.mjs` y `verja-publica.mjs` forma parte de lo que vigilan. **Un
-nombre que ya no existe en el código sigue valiendo para impedir que vuelva**; borrarlo de ahí sería
-aflojar tres controles a cambio de nada.
-
-**Control**: no se añade ninguna afirmación nueva —no hay comportamiento nuevo que afirmar—, pero
-**sí se comprobó que retirar el nombre del código NO deja ciega la vigilancia**: se rompió a
-propósito dos veces sobre el fichero ya retirado y `escrituras-directas` salió **ROJO las dos**,
-nombrando fichero y línea — una escritura con acción literal (`appsheetRequest_(…, 'Add', …)`) y un
-**transporte paralelo** (la URL de AppSheet montada a mano con `UrlFetchApp.fetch`). Restaurado,
-**VERDE**. Los **cuatro** controles siguen verdes y la batería, **23 de 23**.
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. Aquí no hace falta más: lo retirado **no tenía llamantes**, y eso se acredita
-con el `grep`, no con una prueba.
-
-### ②17 (2026-08-15) — la RECUPERACIÓN DEL ENLACE: la ficha de cada persona, MENORES INCLUIDOS, solo para saber quién es tutor
-
-**La rama pública de `sendMagicLink_` es la puerta por la que una familia vuelve a su solicitud**, y
-la alcanza **cualquiera desde internet con el correo que quiera** (`ANYONE_ANONYMOUS`). Hacía tres
-grupos de lecturas directas a AppSheet, **con la credencial de la aplicación entera**, todas
-filtradas por ese correo tecleado:
-
-| Qué leía | Qué cruzaba a este proceso |
-|---|---|
-| los expedientes cuyo **correo principal** casa | la fila **ENTERA**, con **`magic_link_token`** —un secreto de portador— más `school_id`, `program_id`, `source_id`, `requester_person_id`, `source_locale`, `updated_at`, `_RowNumber` y el bloque de auditoría |
-| **todas** las filas de `enrEmails` de ese buzón | las filas enteras, en **todos** sus expedientes |
-| las **personas** de los expedientes que casaran | la **ficha COMPLETA de cada una —MENORES INCLUIDOS**: nombre, fecha de nacimiento, documento— **solo para comprobar que el correo es de un tutor** |
-
-**Ahora lo sirve una entrada del KMS**, `enr.wizardRecuperacionDelCorreo`
-(`kis-app kms-server/enr/wizard-gateway.gs`), con los **mismos filtros**, y lo consume **UN SOLO
-ayudante**, `_recuperacionDelCorreo_`. De cada expediente salen **CINCO campos**
-(`enrollment_group_id`, `resume_token`, `preferred_language`, `submitted_at`, `created_at` — los que
-este fichero demuestra usar) y de los correos **un identificador opaco por expediente**, el `n` del
-enlace. **De las personas no sale ni un campo.**
-
-**Lo que hay que retener al tocar esto:**
-
-- **LA DECISIÓN NO SE MOVIÓ.** Preferir la lista del correo principal y caer a la del tutor solo si
-  aquélla está vacía · ordenar por antigüedad · renovar o no el enlace · mandar uno o la lista de
-  varios: todo eso sigue **aquí, verbatim**. Por eso la entrada devuelve **las dos listas por
-  separado**, nunca una ya elegida.
-- **La GUARDA del tutor SÍ viajó, porque es inseparable de su lectura.** «Solo mandar si el correo
-  casado es de un **tutor**, no de un menor» era la única razón por la que se leían las personas ⇒
-  se hace dentro del KMS, y así las fichas no cruzan. Mismo criterio que `enr.wizardComprobarSubida`:
-  **las guardas viajan con su lectura; las decisiones, no.**
-- **`findOpenGroupsByGuardianEmail_` se RETIRÓ entero** (72 líneas): su lógica es la que viajó, y
-  dejarlo sería un **segundo lector del mismo dato**. Tenía **un solo llamante**, medido.
-- **Los fallos NO pesan igual, y se conserva el criterio del oro.** Las lecturas de expedientes
-  **LANZAN** —el oro lo decía con todas las letras: *«devolver [] diría "esta familia no tiene
-  expediente" y el caller le abriría uno NUEVO»*—; la de correos **degrada** para el identificador
-  del enlace (sin `n` el enlace se manda igual) y **falla cerrado** si es la única vía que queda.
-- **Auth: solo `service_token`, y se dice así.** Aquí no hay `resume_token` del que derivar nada
-  (KAL-4): quien pide la recuperación es, por definición, quien **no tiene** el enlace. El alcance lo
-  acota la FORMA de la entrada —un correo, cinco campos y un identificador opaco—. Acotar por
-  cliente es `②18`.
-- **La anti-enumeración (WIZ-ENUM) no se toca:** la respuesta pública sigue siendo constante, y que
-  la entrada del KMS lance no crea oráculo — el `catch` de siempre lo convierte en el mismo acuse.
-
-⚠️ **Y ESTO CERRÓ UN AGUJERO REAL, medido el 2026-08-15.** La lectura de expedientes del lote de
-entrada degradaba a `null` (`lecturaEntrada[0].ok ? … : null`) y **no se distinguía de «no hay
-ninguno»**: si se caía y el buzón no casaba además por la vía del tutor —el caso normal del tutor 1,
-cuya fila de correo puede no existir todavía—, el asistente **abría un expediente NUEVO y le mandaba
-el enlace a un borrador vacío**. Ahora falla cerrado: mismo acuse, y **sin crear nada**.
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición;
-ídem `appsheetRequestBatch_`): **66 → 64** sueltas y **4 → 2** en lote. *(De las dos bajas de las
-sueltas, **una es una MENCIÓN en un comentario**, no una lectura: los puntos de lectura retirados
-son **una suelta y dos en lote**, que cubrían **cinco consultas** reales a AppSheet.)*
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarLaRecuperacionDelEnlace` — el manejador no
-vuelve a buscar expedientes por `primary_email` ni a leer `enrEmails` por un correo arbitrario · sí
-le pide las dos listas al KMS por el ayudante único · el ayudante pregunta a la entrada declarada ·
-**el lector viejo no reaparece** · y **dos anclas**: que el manejador siga existiendo y siga
-devolviendo el acuse constante, para que el control no salga verde afirmando ausencias sobre un
-manejador vaciado. **Rojo demostrado SIETE veces**, cada una nombrando su caso (dos dejando el
-control **CIEGO**).
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
-**21 afirmaciones** sobre el manejador real extraído del fuente y ejecutado con dobles,
-**demostradas no ciegas** con seis roturas (ensanchar la proyección a la fila entera · quitar la
-guarda del tutor · disfrazar de «no hay ninguno» la lectura por correo principal · quitarle el fallo
-cerrado a los correos · quitar el cinturón sobre el selector · renombrar el manejador → *«medición
-CIEGA»*, no verde). **Quien toque este manejador, que lo mida.**
-
-### ②17 (2026-08-15) — la CABECERA del expediente: tres copias de la misma lectura, y una cruzaba entera al navegador
-
-**Eran TRES lecturas y eran LA MISMA copiada tres veces** —
-`appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], { Filter: '"resume_token" = …' })`— en el camino
-de ENTRADA: la rama de `hydrateSession_` con el **candado puesto** (`pii_gated`), el **hint de
-identidad** del mismo manejador, y `warmSession_`, **cuyo propio comentario decía «VERBATIM de
-`hydrateSession_`»**. Las tres las hacía este proceso, que es público y anónimo, con la credencial
-de AppSheet de la aplicación entera.
-
-**Y la primera no se quedaba aquí: devolvía la fila ENTERA al navegador** como `group`, dentro del
-payload cuyo propósito declarado es *no cruzar datos personales antes del código de un solo uso*.
-Iba dentro **`magic_link_token`** —un secreto de portador— además de `program_id`, `source_id`,
-`school_id`, `preferred_language`, `created_at` y el bloque de auditoría entero.
-
-**Lo que se midió antes de tocar nada** (contra `origin/main`, 2026-08-15) y decidió la proyección:
-
-| Consumidor | Qué lee de verdad |
-|---|---|
-| cliente, rama con el candado | `enrollment_group_id` (`WizardContext.jsx:913`) · `resume_token` (`:914`) · `submitted_at` (`ResumePage.jsx:120`, solo registro). **`hydrateFromResume` RETORNA en `:946`** antes de tocar nada más |
-| `effectiveRecoveredEmail_` (respaldo paso 3) | `primary_email` |
-| `resolveGuardianForRecovery_` *(medición del sexto tramo; en el noveno dejó de leer nada — la cabecera solo alimenta ya el respaldo «tutor 1»)* | `primary_email` · `requester_person_id` · y `enrollment_group_id` |
-
-⇒ **CINCO campos.** La entrada del KMS es `enr.wizardExpedienteDelToken`
-(`kis-app kms-server/enr/wizard-gateway.gs`), y el asistente la consume por **UN SOLO ayudante**,
-`_expedienteDelToken_`.
-
-**Lo que hay que retener al tocar esto:**
-
-- **CERO lecturas de más**: la fila la devuelve **la propia puerta** del KMS (`s.group`), que ya la
-  lee por `resume_token` con el mismo filtro y el mismo criterio de fila viva. No se consulta nada
-  aparte — medido: **una sola consulta** por llamada.
-- **UN SOLO lector, y es la mitad del punto.** Antes había tres copias que podían divergir; ahora
-  hay uno. **PROHIBIDO escribir un segundo**: es la regresión que documenta §"Regla — refactors
-  preservan el código probado".
-- **El comportamiento ante fallo NO era el mismo en los tres, y se conserva tal cual**: la rama del
-  candado **LANZA** si no se pudo preguntar (`appsheetRequest_` lanzaba y ahí no había `try`), y el
-  hint de identidad y el precalentado **degradan a `null`** (su `try/catch` de siempre) ⇒ identidad
-  group-scoped, comportamiento previo exacto. Por eso el ayudante devuelve **`{ok, fila}`** y no un
-  simple `null`.
-- **`desired_start_date` dejó de normalizarse aquí, y no es un olvido**: en esa rama **no cruza**
-  (el cliente retorna antes), y su sede canónica es `enrEnrollments`, no la cabecera. La
-  normalización sigue viva en los otros cinco sitios que la usan.
-- **La puerta del KMS aplica el mismo plazo de 7 días y el mismo rechazo de sesión abandonada** que
-  `requireResumeToken_`, que además ya corrió antes en el asistente ⇒ cero cambio de comportamiento.
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_('` **menos 1**, la definición):
-**72 → 69** sueltas; las de lote se quedan en **4**.
-
-**Control**: `scripts/verja-publica.mjs` gana `comprobarLaEntradaDelExpediente` — los dos
-manejadores no vuelven a leer `enrEnrollmentGroups` de AppSheet · los tres puntos **sí** preguntan
-al KMS por el ayudante único · el ayudante existe y pregunta a la entrada declarada · y **dos
-anclas**: que los dos manejadores sigan existiendo y sigan resolviendo la identidad del enlace, para
-que el control no pueda salir verde afirmando ausencias sobre un fichero que ya no mide. **Rojo
-demostrado seis veces**, cada una nombrando su caso (incluidos los dos renombrados, que dejan el
-control CIEGO).
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. El lado del KMS tampoco lo cubre ningún control, así que se **midió aparte**:
-**14 afirmaciones sobre el manejador real**, extraído del fuente y ejecutado con dobles, y **la
-medición se demostró no ciega** rompiéndola cinco veces (ensanchar la proyección a la fila entera ·
-aceptar el expediente del cuerpo · disfrazar la lectura caída de «no hay expediente» · quitar la
-declaración pública de la ruta · renombrar el manejador → *«medición CIEGA»*, no verde).
-**Quien toque este manejador, que lo mida.**
-
-### resume_token URL clean + Referrer-Policy: no-referrer (KAL-7 cerrado 2026-05-30)
-
-Los magic-links emails llevan el `resume_token` (UUID v4, bearer secret de 7 días) en el path: `https://admissions.kaleide.org/#/resume/<token>`. Sin contramedidas, ese token se filtra por tres vías:
-
-1. **Historial del navegador** — visible para cualquier persona con acceso físico al dispositivo después.
-2. **Screen shares / screenshots** — la URL bar muestra el token al pleno.
-3. **Referer header** — si el wizard hace fetch a CDN/fonts/imagenes externas, el browser puede incluir el path completo en `Referer`.
-
-**Defensa aplicada** (commit del bundle 2026-05-30):
-- `frontend/src/pages/ResumePage.jsx` (+ análogamente `ReportUnsolicitedPage.jsx`): tras leer `useParams().token`, `window.history.replaceState(null, '', cleanUrl)` reemplaza el hash por `#/apply` antes de la llamada `resumeSession`. El token vive sólo en el closure del effect + en sessionStorage tras `hydrateFromResume` (para llamadas API subsiguientes).
-- `frontend/index.html` `<head>`: `<meta name="referrer" content="no-referrer">` desactiva el envío de Referer en CUALQUIER outbound request — fonts, iconos, fetches a la GAS, links externos.
-- Logs (`log.info`, `console.log`) ya no imprimen el token completo: sólo `token.slice(0,8) + '...'` (cross-ref KAL-11).
-
-Regla obligatoria para nuevos componentes que reciban un secret por path:
-1. **Strip el secret de la URL inmediatamente** en el `useEffect` antes de await.
-2. **Loguea sólo un preview** (`<first8>...`) — nunca el token completo.
-3. Si el secret debe persistir entre reloads, guárdalo en `sessionStorage` (vía WizardContext), no en la URL ni en `localStorage`.
-
-### Edit-lock post-submit — frontend gate + backend defensa P72 (CLI 26, 2026-06-01)
-
-**Bug reportado por Diego 2026-06-01**: el wizard permitía editar una solicitud ya enviada — tras `submitEnrollmentSession`, /confirmation mostraba "Ver mi solicitud" que linkea a `/apply`, y al volver al wizard el botón "Editar" en `LockedBanner` aparecía y permitía mutar campos. El KMS recibía la solicitud correctamente (estado RQ, email enviado), pero el wizard no bloqueaba al cliente tras el submit.
-
-**Root cause**: `setIsSubmitted` existía en `WizardContext` pero solo se llamaba desde `hydrateFromResume` (que solo corre en `needsHydration && resumeToken`, lo cual es false tras submit porque `stepData.email.verified=true` en memoria). El flujo submit → /confirmation → /apply NO recargaba página, así que `isSubmitted` seguía en false → `onUnlock={isSubmitted ? null : handleUnlock}` resolvía a `handleUnlock` → botón Edit visible.
-
-**Fix**:
-- **Frontend**: `Step7Review.handleSubmit` ahora llama `setIsSubmitted(true)` tras éxito de `submitEnrollmentSession`. `setIsSubmitted` exportado desde el provider. `WizardPage` ya tenía la lógica de bloqueo correcta condicionada a `isSubmitted`.
-- **Backend (defensa en profundidad)**: helper `assertGroupEditable_(enrollment_group_id)` en `backend/Code.js`, llamado al inicio de sus **CINCO** llamantes — `saveStep_`, `submitEnrollmentSession_`, `saveResponses_`, `uploadDocument_` y `saveNeae_`—, **siempre inmediatamente después de `requireResumeToken_`**. Si `submitted_at IS NOT NULL` o `abandoned_at IS NOT NULL`, throw con `err.code='NOT_EDITABLE'`. `doPost` mapea ese código a HTTP 200 + `{ok:false, error:{code:'NOT_EDITABLE', message}}` — patrón P72 silent reject estructurado, NUNCA HTTP 403. *(②17 duodécimo tramo, 2026-08-16: **ya no lee nada** — reusa la fila que la puerta acaba de validar, en la memoria de EJECUCIÓN, y falla cerrado con el mismo `NOT_FOUND` si no está. Ver §"②17 — LA PUERTA".)*
-
-**Estados editables canónicos (regla derivada)**: solamente cuando `submitted_at IS NULL` (≡ DRAFT) y `abandoned_at IS NULL`. La rama "reopen" (KMS transiciona enrollments a IN para pedir más info) ya está cubierta server-side: **`hydrateSession_`** —el camino VIVO— sobrescribe `submitted_at = null` en la respuesta cuando la fase del expediente es editable (busca `REOPEN-FIX` en `backend/Code.js`). Por tanto el modelo conceptual del wizard es:
-
-  - `submitted_at IS NULL`              → DRAFT (editable)
-  - `submitted_at IS NOT NULL`          → RQ/IN/etc (no editable, KMS-territory)
-  - reopen by KMS (fase editable)       → override de `hydrateSession_` → editable de nuevo
-
-*(②17, 2026-08-15: esto lo hacía ADEMÁS `resumeSession_`, que se retiró. Era un segundo lector de la
-misma hidratación y el frontal no lo llamaba; hoy la reapertura vive en **un solo sitio**.)*
-
-EDITABLE_STATES en frontend (`WizardContext.jsx`) está hardcoded como `['DRAFT', 'NEEDS_MORE_INFO']` para documentar la intención conceptual. TODO operativo: cuando `sysStateTransitions_T` exponga un flag `is_editable_by_family`, derivar la lista dinámicamente y dejar de mapear vía `submitted_at` booleano.
-
-**Test**: `manual_testApplicationEditRejectionOnSubmitted` en `backend/Code.js`. Diego rellena `RESUME_TOKEN_REAL` + `GROUP_ID` reales arriba del wrapper, ejecuta desde el editor GAS, y lee PASS/FAIL en Logs. Cubre 3 casos: DRAFT editable → forzar submitted_at → NOT_EDITABLE → limpiar submitted_at → editable de nuevo.
-
-### recognizeFamily — silent ack anti-enumeración (KAL-10 cerrado 2026-05-30)
-
-`recognizeFamily_` se invoca desde dos sitios:
-- **Dispatcher público** (action `recognizeFamily` en `doPost`): cualquiera con internet puede llamarlo.
-- **Internal call** desde `initEnrollmentSession_({...}, {internal: true})` — la familia acaba de introducir su email en la landing.
-
-Sin contramedidas, el caller público recibe `{matched: boolean, persons: [{personal_id, first_name, last_name}...]}` — enumera direcciones de familias existentes y devuelve sus nombres. Vector clásico de enumeration.
-
-**Defensa**: `recognizeFamily_` ahora distingue por `opts.internal`. El caller público (sin `internal: true`) recibe SIEMPRE `{matched: false, persons: []}` — shape constante, indistinguible entre "match" y "no match". El internal call sigue recibiendo el payload completo (con nombres) porque ese flujo ya validó que el caller es la familia (acaba de teclear su email + resolvió reCAPTCHA en el init).
-
-#### ②17 (2026-08-15) — este manejador ya NO lee las tablas maestras, y su ack ya no delata por TIEMPO
-
-**Aquí vivían las DOS ÚNICAS lecturas del asistente a las tablas MAESTRAS de personas del colegio**
-—`contactEmails` (todos los correos de contacto de todo el mundo) y `personalData_S` (el registro de
-personas del colegio ENTERO)—. Todo lo demás que este fichero lee directamente son tablas de
-admisión, de firma o de catálogo. **Se las pide al KMS**: `enr.wizardReconocerFamilia`
-(`kis-app kms-server/enr/wizard-gateway.gs`), que hace los **mismos dos filtros** —correo →
-`personal_id`s → personas— y **proyecta solo los tres campos** que la pantalla enseña
-(`Step2Persons.jsx:1123-1128`). La ficha entera de cada persona **ya no cruza** a este proceso, que
-es público y anónimo. **Sin respaldo a AppSheet**: dos lectores del mismo dato divergen; si el KMS
-no contesta, el reconocimiento queda vacío, que es lo que ya pasaba cuando la lectura fallaba.
-
-**Lo que este tramo NO cierra, y se dice:** la credencial de AppSheet **sigue en el asistente** (`②17`
-sigue abierta), y quien tenga el `service_token` puede preguntar correo a correo **sin el cupo de
-aquí** — acotar por cliente es `②18`.
-
-**Y el ack constante ya no delata por el RELOJ.** La respuesta pública era constante desde KAL-10,
-pero **se consultaba igual antes de devolverla**: encontrar costaba dos lecturas y no encontrar una,
-así que el tiempo decía lo que la respuesta callaba — el mismo defecto que se cerró en la
-recuperación del enlace (②2). Ahora **corta antes de preguntar**: misma verja, mismo cupo, misma
-respuesta y **el mismo tiempo**. **Ninguna familia lo nota**: esa acción pública **no tiene ni un
-llamante en la aplicación** (medido contra `origin/main` — el frontal solo lee `recognition` de la
-respuesta de `initEnrollmentSession`, `ConsentPage.jsx:68`).
-
-**Control**: `scripts/verja-publica.mjs` lo vigila con **tres** afirmaciones nuevas — el ack va antes
-de cualquier consulta · el ack constante sigue existiendo · el manejador no vuelve a leer
-`contactEmails`/`personalData_S` de AppSheet. **Rojo demostrado las tres**, cada una nombrando su
-caso. ⚠️ **La batería NO cubre esto**: corre contra un backend simulado que nunca ejecuta
-`backend/Code.js` — lo que hay que hacer al tocar este manejador es **medirlo**.
-
-El frontend nunca expone el payload de recognition fuera del banner de Step 2 (`Step2Persons.jsx`), que sólo se renderiza tras `initEnrollmentSession` con éxito (la familia ya dio su email). El leak de nombres queda confinado a esa única vía.
-
-Test: `manual_testRecognizeFamilyAntiEnum` en `backend/Code.js`. Verifica shape constante con email no existente + (comentado) instrucciones para verificar shape también constante con email real conocido.
-
-### sendMagicLink — ack constante anti-enumeración (WIZ-ENUM, audit 2026-07-27)
-
-`sendMagicLink_` rama `primary_email` es el **servicio público de recuperación** (la landing lo llama sin autenticación y el manifest es `ANYONE_ANONYMOUS`; **desde el 2026-08-09 esa rama SÍ tiene verja reCAPTCHA fail-closed** — ver §"Las CINCO puertas del asistente", que cerró el oráculo por TIEMPO que quedaba abierto). Antes devolvía `{sent:true}` con grupo y **lanzaba `'Enrollment group not found'`** sin él → dos respuestas distinguibles = **oráculo de existencia**: cualquiera podía preguntar email a email "¿esta familia está matriculando?".
-
-**Ahora la rama `primary_email` devuelve SIEMPRE la misma forma** — `_magicLinkConstantAck_()` → `{sent:true, warm_ticket:<uuid>}` — y todo el trabajo (buscar grupo, rotar token, enviar el enlace, crear la sesión nueva) es **best-effort silencioso**. Reglas derivadas, obligatorias para cualquier cambio futuro en este camino:
-
-1. **Nada de la respuesta puede depender de que el email exista** — ni un `throw`, ni un campo extra (`already_submitted`, ids del grupo, `recognition`), ni la **presencia** del `warm_ticket` (por eso el camino "sin grupo" mintea un **ticket señuelo** con 0 items; `warmBundle_` responde `{ok:true}` sin conteo de fases para no reabrir el oráculo por esa puerta).
-2. **La verja va primero y el rate-limit ANTES del lookup** (2026-08-09: la verja se puso por delante del cupo a propósito — así un sondeo que no la pasa tampoco puede agotarle el cupo de recuperación a una familia real; los dos rechazos devuelven el mismo ack, así que el orden no es distinguible). El cupo se consume exista o no el grupo, y **sus bloqueos no se surfacean**: `BLOCKED_BY_REPORT` delataría que ese email recibió un enlace alguna vez. El cupo se sigue APLICANDO (no se envía nada), solo no se cuenta.
-3. **La decisión recuperar-vs-crear vive SERVER-SIDE.** El cliente ya no puede ramificar (no hay señal): si el email no tiene grupo, `sendMagicLink_` delega en `initEnrollmentSession_` (verja reCAPTCHA **fail-closed** — sin token válido no se crea ni se envía nada). Por eso la landing manda el `recaptcha_token` **en la propia llamada a `sendMagicLink`** y ya no llama a `initEnrollmentSession` por su cuenta.
-4. La otra rama (uso interno "Guardar y seguir luego") entra por **`resume_token`** y sus errores **sí** se propagan (el asistente los muestra como toast): ahí no hay enumeración que proteger, porque quien llama ya ha demostrado ser de la familia. Ver §"Las CINCO puertas del asistente".
-
-Residual conocido (NO cerrado): el action público `initEnrollmentSession` sigue distinguiendo en su respuesta (`already_submitted` / `resumed` / creada), pero está **detrás de la verja reCAPTCHA fail-closed**. Test: `manual_testSendMagicLinkConstantAck`. Cross-ref: `kis-app/docs/kms/security/audit-2026-07-27.md` §C fila WIZ-ENUM + §KAL-10 (mismo patrón en `recognizeFamily_`).
-
-### La CACHÉ DE RECUPERACIÓN — la 2ª vez que se teclea un correo no se pregunta al KMS (2026-09-11)
-
-**Recuperar el enlace por correo pagaba SIEMPRE un viaje al KMS, y en este camino el gasto es
-el SALTO, no la consulta.** Medido con `manual_diagTimelineDelCorreo` sobre un envío real: el
-paso `kms_recuperacion_del_correo` costó **16,8 s**, y las otras dos llamadas del mismo
-recorrido **18,7 s** y **14,3 s** *haciendo trabajos completamente distintos* ⇒ **~15 s son el
-salto**. El manejador del KMS (`enr_wizardRecuperacionDelCorreo`) hace **2-4 lecturas ligeras**.
-
-**Por eso la copia vive AQUÍ**, en el almacén de servidor de este proceso: si viviera en el KMS
-habría que seguir yendo a preguntar. Y es admisible porque **ese almacén no se puede volcar
-desde la web** — medido contra `origin/main`: `doGet` devuelve `{status:'ok'}` y el
-`switch(action)` del `doPost` **no tiene ni una acción que lea `CacheService`/`PropertiesService`
-a granel** (0 usos de `getProperties()`/`getAll()`/`getKeys()` en todo el fichero).
-
-**Medido sobre `sendMagicLink_` REAL** (arnés efímero fuera del repositorio): 1ª recuperación
-**1 viaje**, 2ª **0**.
-
-**Lo que hay que retener al tocar esto:**
-
-- ⛔ **NUNCA se guarda ni se sirve una respuesta VACÍA.** Cuando no hay expediente,
-  `sendMagicLink_` **CREA uno nuevo**: un «no hay ninguno» guardado convertiría en permanente
-  el agujero que `enr_wizardRecuperacionDelCorreo` ya documenta (mandarle a una familia que ya
-  tiene su solicitud el enlace de un borrador vacío).
-- ⛔ **NI UNA ENTRADA CON UN TOKEN MUERTO — el SELLO por expediente.** Rotar el enlace mata el
-  viejo, así que una entrada rotada sería **peor que no tener caché**. Cada expediente lleva un
-  sello (`recu_sello_<grupo>`) que sube **en el sitio ÚNICO** donde este proceso ya declara que
-  cambió algo: `_olvidarCabeceraMemo_` — sus SIETE llamantes son rotar, abandonar, «esto no es
-  mío», el auto-abandono de sesiones paralelas, enviar y la limpieza de huérfanas. **Un segundo
-  sitio divergiría.**
-- ⛔ **Un sello AUSENTE es FALLO de caché, nunca acierto.** Sin esa regla, desalojar el sello
-  resucitaría una entrada vieja. Con ella, perder el sello, la entrada o las dos acaba en el
-  camino de siempre.
-- ⛔ **La caché NO regala la gracia que salta el código de un solo uso** (②27): esa gracia se
-  acuña SOLO sobre un token recién rotado, y rotar sigue siendo una llamada real al KMS.
-- **La entrada se escribe DESPUÉS del bucle de renovación**, con los tokens FINALES y los sellos
-  de después de los bumps — escribirla antes dejaría dentro el token que acaba de morir. Y
-  `created_at` se refresca en los que rotaron, por el mismo motivo que `_moverLaCopiaDeLaPuerta_`.
-- **La verja reCAPTCHA, su ORDEN, el cupo, KAL-4 y el ack constante (WIZ-ENUM) no se tocan.**
-  El correo se guarda **RESUMIDO**, jamás en claro (KAL-11).
-
-**El KMS la SIEMBRA al invitar** (`enr_sembrarRecuperacionEnAsistente_`), por el receptor
-firmado `sembrarRecuperacion_` — mismo gate y mismo molde que `notifyLiveStateChange_` (DL-S106), y
-compartiendo con la ruta pública **un solo recorrido** (`enr_recuperacionDelCorreoCore_`):
-sembrar con un recorrido propio sería sembrar una respuesta que puede diferir de la que este
-asistente recibiría preguntando.
-
-⚠️ **LÍMITES HONESTOS.** La **1ª** recuperación de un correo que nadie invitó sigue pagando el
-viaje (no hay nada que guardar todavía) · la entrada **vence en 6 h** —el techo de
-`CacheService`, no una decisión de diseño—, así que **el sembrado solo sirve dentro de esa
-ventana** y una familia invitada que pierde su correo suele volver días después ·
-`PropertiesService` (sin vencimiento) **NO se usa a propósito**: comparte el cupo de 500 KB con
-los secretos del proyecto y llenarlo arriesga romper la configuración — esa compensación la
-decide Diego · y **la cola de la que sale el correo (62-266 s) no se toca**.
-
-⚠️ **La batería NO cubre esto**: corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. **Quien toque esta cadena, que la mida** con un arnés efímero fuera del
-repositorio, y que **rompa a propósito** antes de darla por buena — al hacerlo aquí apareció que
-una rotura salía VERDE porque el arnés no ejecutaba el eslabón real (`_olvidarCabeceraMemo_`).
-
-### Las CINCO puertas del asistente: cuatro pasan por UNA verja, la quinta exige el token (②2 + ②12 + ②26)
-
-Este backend es `ANYONE_ANONYMOUS`: **todo lo que esté en el `switch(action)` del `doPost` lo
-puede invocar cualquiera desde internet, sin identificarse.** Son **cinco** las puertas que se
-alcanzan así, y no todas quieren la misma llave:
-
-- **CUATRO son anónimas por diseño** —la familia todavía no tiene con qué identificarse— y
-  **todas pasan por la misma verja reCAPTCHA**: **crear una solicitud**
-  (`initEnrollmentSession_`), **reconocer a la familia** (`recognizeFamily_`), **recuperar el
-  enlace** (`sendMagicLink_`, rama `primary_email`) y **pedir el código de un solo uso**
-  (`sendVerificationCode_`, **rama de alta**).
-- **LA QUINTA NO es anónima: exige el token de recuperación.** Es «Guardar y seguir luego»
-  (`sendMagicLink_`, rama `resume_token`), que se llama **desde dentro del asistente**, donde el
-  token ya existe.
-
-**La quinta (②26).** Entraba por el **identificador del expediente que venía en el cuerpo de la
-petición** y no pedía nada más: solo que tuviera forma de UUID. Y ese identificador **lo reparte
-el propio sistema** —`initEnrollmentSession` lo devuelve a cambio de un reCAPTCHA—, así que
-cualquiera podía, **hasta 5 veces por hora**: bombardear el buzón de esa familia, **rotarle el
-enlace vivo** bajo los pies de quien estuviera rellenando la solicitud, y **agotarle el cupo** (⇒
-su recuperación legítima de esa hora se rechaza). El **token no se filtra** en la respuesta ⇒ no
-había toma de control; lo que había era hostigamiento. **Ahora la rama exige `resume_token` y
-deriva el expediente de él con el gate canónico `requireResumeToken_`** (KAL-4: nunca del cuerpo),
-**antes del cupo y de cualquier lectura**. **Coste para las familias: NINGUNO** — el llamante real
-es el propio asistente (`WizardPage.jsx`, `handleSaveLater`), que ya tiene el token y lo manda
-igual que `saveStep` o `abandonSession`. Se pierden el respaldo por `application_id` y la
-comprobación de abandono escrita a mano: la primera **era** el agujero, y la segunda ya la hace el
-gate.
-
-**La cuarta (②12).** La rama de alta de `sendVerificationCode_` toma **el grupo Y el correo de
-destino del propio cuerpo de la petición** y solo pasaba por el cupo por-correo
-(`_checkMagicLinkRateLimit_`) ⇒ cualquiera mandaba un código de seis dígitos al buzón que
-quisiera: **bombardeo de correo y coste de reputación** del remitente. No es oráculo de
-existencia (el llamante ya conoce un identificador de grupo) y no escala como el de arriba,
-pero era la única entrada anónima que quedaba sin verja. Ahora lleva `_asegurarVerjaPublica_`
-—la forma que **lanza**, porque este manejador sí propaga el error al cliente— **antes del
-cupo**: un sondeo que no pasa la verja tampoco puede agotarle a una familia real su cupo de
-enlaces.
-
-**La rama step-up NO lleva verja, y es deliberado**: deriva grupo y correo del bearer (KAL-4,
-nunca del cuerpo), y su cliente (`StepUpGate` / `StepUpReverify`) no manda token de reCAPTCHA
-— ponérsela «por simetría» rompería la comprobación de identidad de las familias. El control
-lo afirma explícitamente.
-
-**Coste para las familias: NINGUNO.** Medido contra `origin/main` el 2026-08-09: los **dos**
-llamadores vivos de esa acción en el frontal (`StepUpGate.jsx:66`, `StepUpReverify.jsx:61`)
-pasan `stepup: true` ⇒ **cero** llegan a la rama de alta. Es un camino sin consumidor en la
-aplicación, pero **vivo en el despachador público**, que es exactamente lo que lo hacía
-peligroso. No se retiró porque su orfandad **fuera de este repositorio** no es acreditable, y
-poner la verja es reversible; el hallazgo queda anotado en la cola (`②12`).
-
-**El defecto que se cerró, medido contra `origin/main` el 2026-08-09.** Desde WIZ-ENUM
-(2026-07-27) la recuperación devuelve **la misma respuesta** exista o no la familia. Pero
-**el tiempo no era el mismo**: con expediente esa rama hace **dos viajes al KMS** —renovar el
-enlace (`enr.wizardTouchSession`) y mandar el correo (`sys-public.sendNotification`)— más las
-lecturas de AppSheet, y tarda **~46 s**; sin expediente se queda en **~7 s**. Cronometrando,
-cualquiera volvía a preguntar *«¿esta familia está matriculando?»* email a email — justo lo
-que el ack constante vino a cerrar. Y era **la única de las tres puertas de admisiones sin
-verja**.
-
-**Cómo se cerró, y por qué NO igualando tiempos.** Igualar obliga a retener cada petición
-~50 s, y Apps Script limita las **ejecuciones simultáneas**: unas pocas peticiones dejarían la
-ÚNICA puerta pública de admisiones sin atender. Habría sido cambiar un oráculo por una caída.
-Lo que se hace es **quitar el trabajo caro del camino de quien no pasa la verja**: la
-comprobación va **antes del primer viaje a AppSheet**, así que para un llamante sin token
-válido las dos situaciones responden igual de rápido y **no queda diferencia que cronometrar**.
-
-**Coste para las familias: NINGUNO, y está medido** — la portada ya calculaba y mandaba el
-token en **esta misma llamada** (`frontend/src/pages/LandingPage.jsx`, `grecaptcha.execute`),
-**crear** una solicitud ya exigía la misma verja (si no estuviera configurada, dar de alta
-estaría roto hoy), y la portada **no espera la respuesta**: pinta su pantalla genérica al
-instante (fire-and-forget).
-
-**Reglas para cualquier entrada pública NUEVA:**
-
-0. **Primero: ¿esta puerta tiene que ser anónima?** Si la llama el asistente **desde dentro de
-   la sesión de la familia**, la llave correcta **no es la verja: es el `resume_token`**, con
-   `requireResumeToken_` y el expediente derivado de él (KAL-4). La verja solo protege lo que
-   una familia tiene que poder hacer **antes** de tener token.
-1. **La decisión vive en UN solo sitio**, `_verjaPublicaVeredicto_` — fail-closed en sus cinco
-   formas (sin `RECAPTCHA_SECRET`, secreto vacío, sin token, puntuación insuficiente, fallo de
-   red al verificar). Antes estaba **copiada** en dos manejadores y **ausente** en otros dos;
-   dos copias divergen, una sola no. **Nunca se escribe una verja nueva**: se reutiliza ésta.
-2. **Se elige la forma según el contrato del manejador**: `_asegurarVerjaPublica_` **lanza**
-   (para los que propagan el error al cliente) · `_verjaPublicaVeredicto_` devuelve veredicto
-   (para los que **no pueden** propagarlo). En `sendMagicLink_` el rechazo **devuelve el mismo
-   ack constante**: un rechazo visible reabriría el oráculo por otra puerta.
-3. **La verja va ANTES del trabajo caro y del cupo**, no después: rechazar tarde deja el tiempo
-   delatando, y deja que un sondeo agote el cupo de una familia real.
-4. **Excepción declarada, con su motivo**: `case 'verifyRecaptcha'` del despachador **no es una
-   verja** — es el verificador crudo expuesto como acción, con consumidor vivo en
-   `frontend/src/pages/steps/Step7Review.jsx:259` (comprobación antes de enviar).
-
-**Control**: `node scripts/comprobar-verja-publica.mjs` — trabajo `verja-publica` de
-`.github/workflows/deploy.yml`; **`build` depende de él ⇒ en ROJO no se publica**. **Ejecuta**
-la verja real extraída del fuente (6 casos), comprueba las **cuatro** entradas anónimas y
-comprueba que la **quinta exige el token**, **antes del cupo**, y que `sendMagicLink_` **ya no
-lee el identificador del expediente del cuerpo** (si lo leyera, la puerta seguiría abierta).
-**Y, ya detrás del token (②27), comprueba la PARIDAD**: que los **13 manejadores de mutación** (la lista viva es `OBLIGADOS` de ese mismo módulo, no este documento)
-exigen el código de un solo uso, **tras** derivar el expediente del bearer y **antes** del trabajo
-caro (§"El token es la PRIMERA capa…"). **NO afirma** que la ventana de 10 min sea correcta ni que
-la marca sea del buzón que opera — eso es ②24 y vive en `_isStepUpFresh_`.
-**Rojo demostrado veintiuna veces** antes de darlo por bueno — cinco en ②27 (quitando el código de
-`retirarDelExpediente_` · quitándolo de `submitEnrollmentSession_` · exigiéndolo ANTES de derivar
-el expediente en `applyPaymentModality_` · poniendo el viaje al KMS por delante del código ·
-renombrando `assertStepUpFresh_`, que deja el control CIEGO en todos) y seis en ②2 (quitando la verja de
-la recuperación · poniéndola después del trabajo caro · haciendo que lance en vez de devolver el
-ack · ablandándola a fail-open · renombrándola, *«el control está CIEGO»* · y quitándola de
-`initEnrollmentSession_`), cinco en ②12 (quitando la verja de la rama de alta · poniéndola
-después del cupo · ablandando la verja compartida a fail-open · poniéndosela **también** a la
-rama step-up · renombrando el manejador, *«control CIEGO»*) y cinco en ②26 (quitando la
-exigencia del token · poniendo el cupo por delante · volviendo a leer el identificador del
-cuerpo · usando el memo de LECTURA del gate en una rama que ROTA el token · renombrando
-`sendMagicLink_`, *«control CIEGO en la quinta puerta»*).
-**Límite declarado** en la cabecera del módulo: es un detector por líneas, no un analizador
-sintáctico, y **no afirma que Google puntúe bien**.
-
-⛔ **Lo que este apartado decía que quedaba abierto —que quien saltara el anti-robot podía
-distinguir por TIEMPO si un correo tiene solicitud (~46 s frente a ~7 s)— está RETIRADO.** Decisión
-expresa de Diego, que lo devolvió **dos veces** (2026-08-16 y 2026-09-11): *«medir tiempos diferentes
-no es nada que pueda dar una pista de nada. Toda la idea es absurda.»* **No es un riesgo aceptado ni
-un residuo: no se considera un problema.** No se mide, no se reporta y **no condiciona ninguna
-publicación** — si al tocar este camino te parece que «los tiempos podrían separarse», **eso NO es un
-hallazgo**. Citas y motivo: `kis-app/docs/kms/pendiente-diego.md` **D50**.
-
-**Lo que SÍ sigue vigente y no se toca:** la respuesta de esta rama es **constante en su FORMA**
-(`_magicLinkConstantAck_`, con señuelo cuando no hay expediente) y la **verja anti-robot** sigue en
-las tres entradas públicas, fail-closed — encarece el sondeo masivo y protege el cupo de
-recuperación de las familias.
-
-### `0º.sexdecies` (2026-08-21) — tras subir un documento, la familia ya puede comprobar qué tipo declaró y de quién dijo que era
-
-**No era una carencia del servidor: el tipo SIEMPRE se guardó (DL-R16), y el comentario que decía
-lo contrario estaba caducado.** `Step6Documents.jsx` oculta a propósito los dos desplegables
-(«qué tipo» / «de quién») en cuanto el archivo queda subido — el servidor ya tiene la respuesta
-escrita, así que volver a preguntarla sería mentir—, pero hasta hoy no quedaba **nada** en su
-lugar. **Medido contra `origin/master` antes de tocar nada**: `enr_wizardHydrate` (KMS,
-`wizard-datalayer.gs`) YA proyectaba `rec_type_code` en cada documento de la hidratación —
-`seedRows()` y el re-sembrado de esta misma pantalla lo **tiraban**, copiando solo `file_id`,
-`file_name` y `description`. El comentario del propio fichero decía *«un archivo YA subido tiene
-su tipo escrito en el servidor y la hidratación no lo devuelve»* — falso, y exactamente el
-precedente de §"Un COMENTARIO del código no es criterio normativo" (`kis-app/CLAUDE.md`).
-
-**El dueño (DL-R17) sí faltaba de verdad.** «De quién es» vive en `recScopes`
-(`kis-app kms-server`), con el par canónico `('ENR_PERSON', person_id)` — la hidratación no lo
-proyectaba en absoluto, había que leerlo.
-
-**Lo construido:**
-
-- **KMS** (`kis-app kms-server/enr/wizard-datalayer.gs`, `enr_wizardHydrateCompute_`): sección
-  nueva `document_owners` — lee `recScopes` por **selector fino** (solo los `file_id` de ESTE
-  grupo; mismo patrón que la sección `responses`, nunca la tabla entera) y proyecta
-  `owner_person_ids` por documento. **Filtrado por DL-E49**: solo cuentan los `person_id` que ya
-  son visibles para el tutor que pregunta (él mismo + los menores) — el documento de OTRO tutor
-  no delata ni su identificador opaco, mismo criterio que el resto de la función.
-- **Asistente**: `Step6Documents.jsx` lleva ahora `rec_type_code` y `owner_person_ids` de la
-  hidratación a la fila, y pinta —una vez subido, en TEXTO, no en un formulario— «Tipo: X» y «De
-  quién: Y». Sin tipo resuelto no se pinta esa línea; `owner_person_ids` vacío se lee «De la
-  solicitud», la respuesta EXPLÍCITA de DL-R17 — nunca «no consta».
-- **Inmediatamente tras subir, en la MISMA sesión**, la línea de «de quién» solo se pinta si la
-  familia CONTESTÓ (SOLICITUD o una persona): sin respuesta, el reparto por defecto lo decide el
-  servidor (al tutor que sube) y el navegador no sabe a cuál — inventar «de la solicitud» ahí
-  sería mentir. Se completa sola con la próxima hidratación.
-
-**Textos nuevos**: `doc.type_summary` / `doc.owner_summary`, `es` y `en`.
-
-⚠️ **PUBLICADO SOLO EN PARTE, y por un motivo ajeno a este cambio.** El lado del asistente está
-publicado (`main`, CI). El lado del KMS está terminado, comprobado y commiteado
-(`kis-app@93e6554`) pero **SIN DESPLEGAR**: el proyecto de Apps Script del KMS llegó al tope de
-200 versiones (mismo bloqueo que `0º.terdecies`, `pendiente-diego.md` D88) — Diego tiene que
-liberar una versión antes de que `clasp deploy` pueda crear la siguiente. **Degrada sin romper
-mientras tanto**: `owner_person_ids` llega `undefined` de la hidratación real (el KMS desplegado
-es el de ayer) y la línea «De quién» sencillamente no se pinta — comprobado con la guarda
-`row.owner_person_ids !== undefined`. El tipo (`rec_type_code`) SÍ se ve ya, porque esa parte de
-la hidratación llevaba desplegada desde antes de esta vuelta.
-
-**Comprobado antes de publicar**: `kis-app/scripts/check-quality-gates.mjs` `VEREDICTO: VERDE`
-(25 gates, 0 inertes; sin cambios de `frontend/src/` en el KMS). Batería del asistente
-`VEREDICTO: VERDE` (28 de 28) y los dos controles de seguridad del repositorio
-(`comprobar-escrituras-directas.mjs`, `comprobar-selector-appsheet.mjs`) `VERDE`. La batería **no
-cubre** la proyección nueva del KMS (corre contra un backend simulado que nunca llama al KMS
-real) — se midió leyendo el código real contra `origin/master` (arriba: `rec_type_code` ya estaba,
-`owner_person_ids` no existía en absoluto antes de este cambio).
-
-### `0º.octies` (2026-08-21) — el PULSO no paga el viaje de la identidad cuando su valor no cambia el resultado
-
-**No es una avería: no se pierde ni un dato y no hay fuga. Es espera evitable en el latido más
-repetido del asistente**, el que el cliente dispara una y otra vez mientras la familia mira la
-pantalla. Registro real de Diego del **2026-08-20**: `getAdmissionState` tardó **31.467 ms** y su
-propio registro dice **`[WZCACHE] HIT adm`** —el dato **estaba guardado**— porque antes se habían
-pagado **29.086 ms** en `enr.wizardTutorQueRecupera`. **Una caché a la que hay que pagar 29 s para
-llegar no ahorra nada.**
-
-**La causa estructural, medida:** la caché del pulso (`wz_adm_`) vive **1800 s** y la memoria de la
-identidad (`idlinkd_`) **300 s** ⇒ pasados cinco minutos, cada pulso resolvía la identidad **desde
-cero** para servir una respuesta que ya tenía guardada.
-
-**El arreglo, en una línea: la identidad se resuelve PEREZOSAMENTE — solo cuando su valor puede
-cambiar el resultado.** `getAdmissionState_` ya no la calcula por adelantado; pasa un *thunk*, y
-`_leerMarcaStepUp_` lo invoca **únicamente si la marca guardada LLEVA buzón**. Cuando `marcada` está
-vacía (no hay marca, o es anterior a ②24), su regla `mismaPersona` vale `true` **sea cual sea** la
-identidad ⇒ calcularla no puede cambiar nada. **Es la MISMA comparación, byte a byte**: lo que se
-evita es el CÁLCULO de un dato que no se usa.
-
-**⛔ LA BARANDILLA, y no se afloja: la clave de la caché sigue llevando el buzón dentro.** Es una
-frontera de PRIVACIDAD ENTRE TUTORES (②24): en un expediente ya enviado el `resume_token` **no
-rota**, así que dos tutores comparten token, y sin el buzón en la clave a uno se le serviría la foto
-del otro. **Y no hacía falta tocarla**: `_wzN_` la construye con el `n`/`recovered_email` **CRUDOS**
-del payload, no con la identidad resuelta ⇒ **cero viajes** para armarla.
-
-**⛔ Y NO se toca al revés: pasar el buzón VACÍO sería MÁS PERMISIVO, no neutro.** `mismaPersona`
-deja pasar en cuanto uno de los dos lados no consta, así que hacerlo deshace el atado de ②24 y le da
-a un tutor la marca que se ganó otro — **una regresión de seguridad, no una optimización**. Por eso
-la identidad SÍ se resuelve, y se compara, en cuanto la marca lleva buzón.
-
-**Dónde muerde y dónde no, dicho sin adornar:** ahorra el viaje en **toda la parte del recorrido sin
-marca viva** —antes de que la familia teclee el código, y después de que caduque por inactividad—,
-que es buena parte de la vida del asistente. **Con una marca viva atada a un buzón NO ahorra nada**,
-y ése es exactamente el caso del registro de arriba: ahí la identidad decide, y saltársela es lo que
-la barandilla prohíbe.
-
-⚠️ **Una premisa del encargo resultó FALSA al medirla, y hay que decirlo:** decía que la unión de
-DL-E57 no alcanza al camino con memoria y que forzar la puerta viva convertiría **«dos viajes en
-UNO»**. **Hoy ese camino ya hace UN viaje**: con el memo del gate acertando son 0 (puerta) + 1
-(identidad); yendo por la puerta viva serían 1 (que trae las dos cosas) + 0. **Se cambia un viaje por
-otro, no se elimina ninguno** ⇒ **el arreglo (b) del encargo NO se hizo**, y no por falta de tiempo.
-El ahorro real está en no resolver lo que no se usa.
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. Se **midió aparte**, con un arnés efímero fuera del repositorio que extrae del
-fuente `getAdmissionState_`, `_leerMarcaStepUp_`, `_stepUpPersonaKey_`, `_huellaPaginaLimpia_`,
-`_huellaDePagina_` y `_wzN_` y los ejecuta con dobles de `CacheService` y del proxy al KMS: **6
-afirmaciones verdes** (caché caliente sin marca ⇒ **0 viajes**, antes 1 · la identidad se resuelve
-**una sola vez** cuando hace falta · dos tutores **no comparten foto** · una marca de otro buzón **no
-da fresco** · el pulso **no estira** la ventana · sin caché el camino vivo se recorre entero) y
-**CINCO rojos demostrados**: devolver la identidad por delante (**ROJO** en la (1), *«viajes 0→1»*) ·
-una clave que ignore el buzón (**ROJO** en la (3), *«tutor1 ve RQ y tutor2 ve RQ»*) · pasar el buzón
-vacío al lector (**ROJO** en la (4), *«fresh=true, debe ser false»*) · dejar que el pulso refresque
-(**ROJO** en la (5)) · renombrar lo medido, que sale **«MEDICIÓN CIEGA»** y no verde. **Y la medición
-se corrigió a sí misma**: su afirmación (6) contaba `_identidadDelEnlace_` en el camino vivo, que ese
-camino **nunca usó** — lo que de paso acredita que el cambio no le quita nada.
-
-**Manual, ayuda en pantalla y textos: ninguno toca.** La familia ve la misma pantalla y el mismo
-mensaje, solo que antes.
-
-### `0º.quindecies` (parcial, 2026-08-21) — el acierto de la caché de 300 s de la puerta ahora lleva la FICHA, no solo el identificador
-
-**Esto NO cierra `0º.quindecies` entera — cierra el primer hallazgo, el barato: la puerta del
-expediente se preguntaba dos veces dentro de la MISMA acción, sin necesidad, porque su propia
-caché de 5 minutos solo recordaba el identificador y no la ficha.**
-
-**Lo medido, con fichero y línea, contra `origin/main` antes de tocar nada.**
-`getAdmissionState_` (`backend/Code.js`) empieza llamando a `requireResumeTokenMemo_` — el memo
-de LECTURA de 300 s (`rtmemo_`, `CacheService`) que existe justamente para no pagar la puerta en
-cada latido. Cuando acierta, devuelve el identificador del expediente en menos de 1 ms — pero
-**solo el identificador**: la memoria de EJECUCIÓN que guarda la FICHA completa
-(`_memoCabeceraEjecucion_`, la de `②17` duodécimo tramo) **solo la rellena el camino EN VIVO**, no
-el acierto de caché. Un poco más abajo, en la MISMA petición, `getAdmissionState_` vuelve a pedir
-la ficha (`_expedienteDelToken_`, para saber de qué buzón es el enlace) — y como esa memoria de
-ejecución estaba vacía, **volvía a preguntarle al KMS por la misma ficha que el acierto de caché
-ya conocía**. Es exactamente el patrón que el registro real de Diego del 2026-08-20 muestra:
-`wizardTutorQueRecupera` (20,6 s) → `wizardEstadoDeLaAdmision` (33,1 s) → `wizardExpedienteDelToken`
-(12,45 s) — el tercer viaje era evitable.
-
-**El arreglo, en dos sitios, ambos del mismo mecanismo:** la caché de 300 s (`rtmemo_`) ahora
-guarda `{identificador, ficha}` en vez de solo el identificador — tanto cuando la escribe el
-camino de LECTURA (`requireResumeTokenMemo_`, tras un fallo de caché) como cuando la escribe
-CUALQUIER mutación en vivo (`requireResumeToken_`, el gate de `uploadDocument_`,
-`saveStep_`, etc. — que **nunca** usa el memo, valida siempre en vivo). Esto último importa
-porque en el caso REAL de Diego el vecino en esa ventana de 90 s era precisamente una mutación
-(`uploadDocument`), no otra lectura. Al acertar, el acierto **archiva la ficha** en la memoria de
-ejecución (`_memoCabeceraEjecucion_`, bajo la clave ESTRICTA — nunca la tolerante, mismo criterio
-que el camino vivo) para que una relectura posterior en esa MISMA petición no vuelva a preguntar.
-
-**Lo que NO se toca:** el TTL sigue siendo 300 s, sin invalidación explícita (el mismo lag
-aceptado de siempre para lecturas); el cross-group guard (KAL-4) sigue aplicándose sobre el
-acierto; y una entrada de caché con la forma VIEJA (de antes de este cambio, solo el
-identificador) se trata como un acierto sin ficha — degrada al comportamiento de ayer, nunca
-revienta. Nada de esto toca los handlers de MUTACIÓN, que siguen validando siempre en vivo
-(`requireResumeTokenMemo_` está prohibido ahí, y sigue estándolo).
-
-⚠️ **Lo que queda SIN tocar de `0º.quindecies`, y por qué se deja para otra vuelta:** (1) si las
-tres acciones simultáneas del cliente (subir, refrescar la ventana, el pulso) deberían dejar de
-dispararse a la vez — es un cambio de cliente, y éste era un cambio de servidor *(★ el pulso YA se
-resolvió — ver la sección siguiente; queda solo la colisión con «sigo aquí»)*; (2) el hallazgo
-de `simularCuotas` tardando 72 s para decir «no hay nada que simular» — es un camino distinto
-(`SIN_MODALIDADES`), sin relación con la puerta; (3) si el propio `enr.wizardComprobarSubida` +
-`enr.wizardPersistUpload` de la subida pueden fundirse en menos viajes. Los tres quedan anotados
-en `loop-backlog.md`, fila `0º.quindecies`, para que la próxima vuelta no los reinvente ni los dé
-por hechos.
-
-**Comprobado antes de publicar**: un arnés efímero fuera del repositorio que extrae del fuente
-`requireResumeTokenMemo_`, `requireResumeToken_`, `_expedienteDelToken_`, `_memoCabeceraEjecucion_`
-y `_memoCabeceraClave_` y los ejecuta con dobles de `CacheService` y del proxy al KMS —
-**11 afirmaciones verdes** (primera llamada 1 viaje · relectura en la misma ejecución 0 viajes ·
-acierto de caché 0 viajes de la puerta Y 0 de la relectura posterior · cross-group guard intacto ·
-una entrada vieja degrada sin reventar · una mutación deja la caché lista para el pulso que la
-siga, sin viaje ninguno de los dos) y **DOS rojos demostrados** contra la versión anterior del
-mismo fichero (sin el primer arreglo: la relectura de la cabecera tras un acierto de caché de
-LECTURA vuelve a costar 1 viaje · sin el segundo: la relectura tras un acierto que vino de una
-MUTACIÓN también vuelve a costar 1 viaje). `check-quality-gates.mjs` **VERDE** en el KMS (no se
-tocó nada ahí) y en el asistente `comprobar-escrituras-directas.mjs` + `comprobar-selector-appsheet.mjs`
-**VERDE**; el resultado de `npm run e2e:wizard` se registra en `EN-CURSO.md` del turno que
-publica.
-
-### `0º.quindecies` (tercera pieza, 2026-08-21) — el pulso ya no le pregunta nada a la puerta mientras un documento se está subiendo
-
-**Sigue sin cerrar `0º.quindecies` entera** — cierra el segundo de los tres hallazgos que quedaban
-anotados: de las **tres acciones simultáneas** que medían el choque (subir un documento ·
-«sigo aquí» · el pulso), el **pulso** deja de dispararse mientras hay una subida en vuelo. El
-choque entre la subida y «sigo aquí» **sigue sin tocarse**, y se explica más abajo por qué no era
-prudente resolverlo esta misma noche.
-
-**Lo medido, con fichero y línea, contra `origin/main` antes de tocar nada.** El pulso
-(`WizardPage.jsx`, el `setInterval` de 30 s) ya tenía una guarda —`if (pending) return`— para no
-disparar `getAdmissionState` mientras hay «algo en vuelo». Pero `pending` es `hasPendingSave`, que
-solo refleja la **cola de guardado de PASOS** (`enqueueSave`, `saveState==='saving'`). Subir un
-documento (`Step6Documents.jsx:114`, `gasCall('uploadDocument', …)`) es **otro canal**, directo,
-que **nunca pasa por esa cola** ⇒ la guarda no lo veía. Es exactamente el patrón del registro real
-de Diego citado arriba: mientras un documento de 90 KB tardaba 96 s en subir, el pulso siguiente
-disparó igual `getAdmissionState` y pagó su propia pregunta a la puerta del expediente **en
-paralelo** con la que ya estaba pagando la subida.
-
-**El arreglo, en tres sitios, todos del mismo mecanismo, y ninguno toca seguridad.**
-`WizardContext.jsx` gana un contador de EJECUCIÓN (`uploadsInFlightRef`, nunca persistido) con dos
-funciones — `beginUpload()`/`endUpload()` — y un lector, `hasUploadInFlight()`.
-`Step6Documents.jsx` los llama alrededor de CADA subida (`try/finally`, así que un fallo o un
-`return` anticipado —el caso del código de un solo uso caducado— también lo suelta).
-`WizardPage.jsx` añade una guarda más al `tick()` del pulso, **antes** de la primera llamada de
-red (`getLiveStateVersion`, la comprobación «ultra-ligera» que ya existía): si hay una subida en
-vuelo, el tick se salta entero, igual que con un guardado de paso pendiente.
-
-**Lo que NO se toca, y por qué es lo correcto:**
-- **La cola de guardado de pasos no se toca.** `hasPendingSave` sigue significando exactamente lo
-  mismo que significaba; la subida tiene su PROPIA señal, para no mezclar dos cosas que fallan por
-  motivos distintos.
-- **Ninguna puerta de seguridad se toca.** El contador es de CLIENTE y de EJECUCIÓN — decide
-  únicamente si el navegador dispara o no una pregunta de conveniencia (`getLiveStateVersion` /
-  `getAdmissionState`). La subida, cuando SÍ se dispara, sigue validando en vivo exactamente igual
-  que antes (KAL-4 + `assertStepUpFresh_`), byte por byte.
-- **El pulso no se queda apartado para siempre**: en cuanto la subida termina (éxito o fallo,
-  gracias al `finally`), la SIGUIENTE vez que algo dispare el latido (el `setInterval` de 30 s, o
-  que la familia vuelva a la pestaña) vuelve a preguntar con normalidad — demostrado en la red.
-
-⛔ **Lo que se MIDIÓ y se decidió NO tocar esta noche, con su motivo: la colisión entre subir un
-documento y «sigo aquí» (`refrescarVentanaDeInactividad_`).** Las dos son MUTACIONES que validan
-la puerta **siempre en vivo** (KAL-4 §"El token es la PRIMERA capa…") — ninguna puede usar la
-caché de 300 s sin romper ese invariante, así que no hay forma de fundir sus dos viajes sin tocar
-el modelo de seguridad. Y apartar «sigo aquí» mientras una subida está en vuelo —la salida que se
-consideró— **tiene un coste real y medido**: `uploadDocument_` **NO** extiende la ventana por
-diseño (comentario `SEC-STEPUP #55` en el propio código — un éxito de mutación no es lo mismo que
-actividad, para que nada la alargue en silencio), así que la ÚNICA vía que hoy reinicia el
-contador de 10 minutos cuando la familia hace clic mientras espera una subida larga es
-precisamente «sigo aquí». Apartarla ahí dejaría a una familia con un archivo grande en curso más
-expuesta a que la ventana caduque a mitad de subida — el efecto contrario al que Diego pidió
-(*«cada acción del usuario debe reiniciar el contador»*). Tocar esto exige su propia medición y su
-propio arnés sobre `_leerMarcaStepUp_`/`_extenderVentanaStepUp_`, con el mismo rigor que ya llevan
-②24 y el techo de 2 horas — no una decisión de una noche. Queda anotado, con esta razón exacta,
-para la próxima vuelta.
-
-**Comprobado antes de publicar**: `frontend/e2e/run-wizard.mjs`, camino `subir-documento` — dos
-afirmaciones NUEVAS que fuerzan la carrera de verdad: una subida deliberadamente lenta
-(`scenario.subidaDemoraMs`) se deja en vuelo, se fuerza el latido (`latirLaVentana`, el mismo
-evento `focus` que dispara la aplicación real) A MITAD de la subida y se comprueba que
-`getLiveStateVersion` **NO** sale; luego se espera a que la subida termine, se vuelve a forzar el
-latido, y se comprueba que **SÍ** sale (el apartado no se queda pegado). **Rojo demostrado**:
-comentando la guarda nueva en `WizardPage.jsx`, la primera afirmación cae nombrando el caso
-(*«el latido forzado a mitad de la subida SÍ disparó getLiveStateVersion»*) — restaurada, verde.
-Batería completa `VEREDICTO: VERDE` (28 de 28, mismo número de caminos — no se añadió ninguno
-nuevo, la comprobación vive dentro de `subir-documento`) y los dos controles de seguridad del
-repositorio, `VERDE`. **Solo frontend**: se publica solo al empujar a `main` (CI/Pages), sin tocar
-`backend/Code.js` ni el KMS. **Manual, ayuda en pantalla y textos: ninguno toca** — la familia ve
-exactamente la misma pantalla; es un ahorro de tiempo por dentro, sin ni un campo ni un mensaje
-nuevo.
-
-### `0º.quindecies` (cierre de la ficha, 2026-08-21) — los TRES hallazgos que quedaban, medidos, y ninguno con un arreglo seguro de una sola vuelta
-
-**Esto cierra la ficha `0º.quindecies` entera.** Los dos primeros ya estaban resueltos (la caché
-de la puerta con la ficha completa, y el pulso apartándose durante una subida). Quedaban tres
-hallazgos sin tocar y **ninguna salida estaba prescrita** — se midieron los tres, y los tres
-terminan sin código nuevo esta vuelta, con su motivo cada uno.
-
-**1 · El choque entre subir un documento y «sigo aquí» — MEDIDO: NO es raro, y el freno que
-hacía falta YA EXISTE.**
-
-Con un arnés efímero (fuera del repositorio) que reimplementa VERBATIM la condición de disparo de
-`touchActivity()` (`WizardContext.jsx:768-802` — `REFRESCO_UMBRAL_S = 300 s`, la mitad de los
-10 minutos de la ventana) sobre 200.000 instantes uniformes dentro de la ventana de step-up: **el
-50,0 % de la ventana está en la zona donde CUALQUIER clic dispara `refrescarVentana()`** — el
-resultado teórico exacto, porque el umbral es la mitad de la ventana. Rojo demostrado: con el
-umbral roto a 0 s la fracción cae a 0,00 %, confirmando que la medición mide lo que dice medir.
-
-⇒ **la colisión NO es un caso raro de la sesión de Diego: pasa siempre que la familia lleva más de
-5 minutos sin refrescar y hace clic para adjuntar un archivo** (el clic que abre el selector es
-exactamente el que dispara `touchActivity`, justo antes de que arranque la subida).
-
-**Y el debounce que el encargo proponía como salida —«si `refrescarVentana` ya está en vuelo,
-no lanzar una segunda petición»— YA ESTÁ CONSTRUIDO**: `if (refrescandoVentana.current) return;`
-(`WizardContext.jsx:775`), antes de disparar cualquier llamada nueva. No hay una segunda petición
-que evitar que no se evite ya.
-
-**Por qué no se toca nada más: las dos mutaciones validan SIEMPRE en vivo (KAL-4), y no pueden
-compartir la caché de 300 s sin romper ese invariante** — es la misma razón por la que la tercera
-pieza tampoco tocó esta colisión. `_leerMarcaStepUp_`/`_extenderVentanaStepUp_` son de las piezas
-más medidas y más frágiles del repositorio (②24, el techo de 2 horas): tocarlas sin un arnés del
-mismo rigor no es el trabajo de una vuelta. **Se cierra como «medida, sin arreglo esta vez»** —
-la salida que el propio encargo autorizaba cuando no hay nada seguro que hacer.
-
-**2 · Fundir los viajes de la subida dentro del KMS — CONFIRMADA la redundancia, encargo APARTE.**
-
-Leído el manejador real, `enr_wizardComprobarSubida` (`kis-app kms-server/enr/wizard-gateway.gs:1747`):
-su primera línea es `var s = enr_wizardGate_(payload);` — **sí re-resuelve la sesión desde cero**,
-la MISMA pregunta que la puerta (`enr.wizardExpedienteDelToken`) ya contestó unas líneas antes en
-el mismo `uploadDocument_`. Confirma la sospecha del encargo. La forma correcta, igual que
-`DL-E57`, es que la puerta acepte en el mismo cuerpo los datos que hoy pide `wizardComprobarSubida`
-(`enrollment_id` + `upload_idempotency_token`) y devuelva las dos respuestas en una — nunca al
-revés.
-
-**No se hace esta vuelta**: toca los DOS repositorios y es más grande que las piezas ya cerradas —
-exactamente el caso que el propio encargo preveía («trátalo como una entrada aparte si no cabe en
-la misma vuelta»). Queda **anotado aquí, con el fichero y la línea exactos**, para que la próxima
-vuelta no tenga que volver a medir esto.
-
-**3 · `simularCuotas` — 72 s para decir que no hay nada que simular — MEDIDO, y NO se toca dinero
-sin el arnés que le corresponde.**
-
-Leído `fin_previewTemplateSchedule`/`fin_previewTemplateScheduleBody_`
-(`kis-app kms-server/fin/template-preview.gs`): el enganche `SIN_MODALIDADES` no sale de una
-lectura de más que se pueda saltar — sale de que, **por diseño** (el guardarraíl anti-«segundo
-derivador» que la propia cabecera del fichero declara: *«NO hay matemática nueva aquí»*), el
-ensayo COMPONE VERBATIM los mismos resolvedores de producción que corren al instanciar de verdad,
-por cada ítem × cada modalidad candidata: variante, tarifa, ventana, calendario, motor de
-descuentos con sus políticas y sus escaleras. Es cara PORQUE reutiliza el camino real, a
-propósito, para que el ensayo y el cobro nunca diverjan.
-
-**Todas las lecturas DIRECTAS de este fichero están cubiertas por el prewarm/memo** ya declarado
-(`db_readMemoPrewarm_`, `template-preview.gs:156-170`) — medido con
-`grep -noE "db_find\(\s*'[A-Za-z0-9_]+'" kms-server/fin/template-preview.gs`: las ocho tablas que
-lee este fichero (`finProducts`, `finSubscriptionTemplateItems`, `finSubscriptionTemplates`,
-`finDiscountPolicies`, `finDiscountProductEligibility`, `finDiscountPolicyTiers`,
-`finVariantPrices`, `finPaymentModalities`, `sysTenantMilestones_T`) están **todas** en la lista de
-prewarm. El coste de los 72 s, por tanto, **no está aquí**: vive dentro de las funciones que este
-fichero LLAMA (`fin_resolveAutomaticPolicies_`, `fin_varianteYTarifaDePartida_`,
-`fin_declaracionesQueAlcanzanLaPlantilla_`, la cadena del evaluador `qb_evaluateCondition_`…),
-cada una con sus propias lecturas — trazarlas exige su propio inventario de tablas y su propio
-prewarm, en un fichero de OTRO módulo (`fin/discount-engine.gs` y el motor `qb*`).
-
-**No se toca esta vuelta, y el motivo es el mismo que rige todo el módulo `fin`**: es dinero, y
-`fin_previewTemplateSchedule` es de las piezas MÁS auditadas del repositorio precisamente porque
-compone el motor de facturación real — un atajo puesto sin el arnés que exige DL-071/DL-080/DL-082
-(rojos demostrados, comparación byte a byte contra el cobro real) arriesga exactamente el defecto
-que el guardarraíl del fichero existe para impedir: una segunda matemática que diverja de la
-primera. **Se cierra como investigación estructural, no como arreglo** — el sitio exacto donde
-seguir (las funciones llamadas, no este fichero) queda escrito para quien lo retome.
-
-**Con los tres hallazgos medidos y decididos, `0º.quindecies` queda CERRADA.** Su encargo
-(`prompts/cli-quindecies-lo-que-queda.md`) se elimina en el mismo cambio. **Sin código nuevo esta
-vuelta** ⇒ sin batería, sin muro de publicación, sin turno: no hay nada que desplegar.
-
-### `0º.quindecies` hallazgo (2) (2026-08-23) — subir un documento pasa de DOS viajes al KMS a UNO
-
-**No es una avería: el documento se subía y se guardaba bien. Es espera evitable en el camino más
-lento del asistente** — 96 s por un archivo de 90 KB, con la puerta del expediente abriéndose de
-más. Lo dejó **anotado con fichero y línea** el cierre de `0º.quindecies`, sin construir, porque
-toca los DOS repositorios.
-
-**Lo medido, y confirmado hoy antes de tocar nada:** `uploadDocument_` llamaba a la puerta
-(`requireResumeToken_` → `enr.wizardExpedienteDelToken`) y, unas líneas más abajo, a
-`enr.wizardComprobarSubida` — cuya **primera línea** es `var s = enr_wizardGate_(payload);`, o sea
-**re-resolver la sesión ENTERA desde cero** para contestar lo que la puerta acababa de contestar.
-
-**El molde es el de DL-E57, no uno nuevo.** El KMS saca el recorrido a
-`enr_comprobacionDeSubida_` —copiado **VERBATIM**: mismos filtros, mismo cinturón sobre el
-selector, mismo `UNAUTHORIZED`, mismo `catch` no-fatal de la idempotencia— y lo comparten **la
-ruta pública y la puerta**, exactamente como `enr_resolverIdentidadDeSesion_`. **PROHIBIDO
-escribir un segundo recorrido.**
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ SE PIDE POR SU NOMBRE, en el SEGUNDO ARGUMENTO del gate** —
-  `requireResumeToken_(p, { comprobarSubida: … })`— **y no se lee del payload.** Si se disparara al
-  ver un `upload_idempotency_token` suelto en el cuerpo, **cualquier** acción del asistente podría
-  provocar la búsqueda de idempotencia; así solo la provoca quien la nombra, que es
-  `uploadDocument_`. La diferencia con DL-E57 (que **sí** lee `n`/`recovered_email` del payload) es
-  deliberada: allí el discriminador ya viaja en toda petición legítima; aquí no.
-- **⛔ LA DECISIÓN NO SE MOVIÓ.** Los dos fallos se siguen pesando igual, unas líneas más abajo de
-  donde se pesaban: **fallo cerrado** si había `enrollment_id` (es una comprobación de ACCESO) y
-  **se sigue subiendo** si solo estaba en juego la idempotencia (como mucho se repite un
-  documento). El KMS **no propaga** el rechazo: va en `comprobacion_subida.code`, y la cabecera
-  sigue contestando bien — propagarlo dejaría al asistente sin poder distinguir «tu enlace no vale»
-  de «ese expediente no es tuyo», y la familia leería el mensaje equivocado.
-- **⛔ EL RESPALDO SE QUEDA, y no es cinturón de más: los dos proyectos se publican POR SEPARADO.**
-  Si el KMS todavía no devuelve `comprobacion_subida`, se pide **aparte** como siempre. **Nunca se
-  da por buena una comprobación de acceso que no se ha hecho.** Los dos órdenes de publicación son
-  seguros, medido: asistente primero ⇒ respaldo; KMS primero ⇒ byte-idéntico.
-- **⛔ La clave de la memoria lleva los DOS discriminadores** (`_memoSubidaClave_`: token +
-  expediente + marca). Una clave que solo mirara el token le serviría a una subida la respuesta de
-  otra — que es exactamente el defecto que la idempotencia existe para evitar. Y sigue siendo
-  memoria de **EJECUCIÓN**: muere con la petición, no tiene plazo.
-- **La forma del identificador NO se valida antes**: `assertValidUuid_` se queda donde estaba, en
-  su orden de siempre. Lo que se hace es **no plegar** lo que no tiene forma de UUID — así el orden
-  de los rechazos no cambia ni un ápice (hoy un `resume_token` malformado se rechaza ANTES que un
-  `enrollment_id` malformado, y así se queda).
-
-⚠️ **La batería NO cubre esto** — corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS. Se **midió aparte**, con un arnés efímero fuera de los dos
-repositorios que extrae del fuente REAL `enr_wizardExpedienteDelToken`,
-`enr_comprobacionDeSubida_`, `enr_wizardComprobarSubida`, `requireResumeToken_`,
-`_expedienteDelToken_`, `_memoSubidaClave_` y **`uploadDocument_` entero**, y los ejecuta con
-dobles: **14 afirmaciones verdes**, entre ellas que **la ruta y la puerta dan lo MISMO sobre los
-mismos datos** (un solo recorrido) y que **`uploadDocument_` de punta a punta pasa de 2 viajes a
-1** — la versión anterior se midió aparte contra `git show HEAD:backend/Code.js` y da **2**.
-**CINCO roturas ROJAS demostradas**: propagar el fallo en vez de aislarlo (*«U3 → "Unauthorized:
-resume_token not recognized"»*, el mensaje equivocado a una familia legítima) · adivinar la
-comprobación de una marca suelta del cuerpo · una clave sin discriminadores · tomar el atajo de la
-cabecera aun necesitando la comprobación · y **el renombrado, que sale «MEDICIÓN CIEGA»**, no
-verde. ⚠️ **Y la medición se corrigió a sí misma dos veces**: la rotura de «adivinar» salió
-**VERDE** al primer intento —faltaba la afirmación, no sobraba la rotura— y la del renombrado
-reventaba con una traza en vez de declararse ciega.
-
-**Control**: `scripts/verja-publica.mjs` gana dos afirmaciones —que `uploadDocument_` le pida la
-comprobación a la puerta y que **el respaldo siga estando**— **con rojo demostrado las dos**. Y su
-ancla KAL-4 pasa a aceptar el segundo argumento (`requireResumeToken_(p[,…])`) **sin dejar de caer**
-si el primero deja de ser el payload o si el gate desaparece.
-
-**Publicado**: KMS `@1479` y backend del asistente `@258`, los dos **acreditados leyendo el
-CONTENIDO de la versión desplegada** por la API de Apps Script — no el repositorio. **No toca
-`frontend/src/`** de ninguno de los dos ⇒ ni batería de tablas, ni paquete del CDN, ni bump de
-versión.
-
-**Manual, ayuda en pantalla y textos: ninguno toca** — la familia ve exactamente la misma pantalla
-y hace exactamente lo mismo; lo que cambia es cuánto espera.
-
-### `0º.septies` (2026-08-21) — el precalentado comprueba su freno ANTES de salir al KMS
-
-**No es una avería: no se pierde ni un dato y no hay fuga. Es tiempo tirado en el camino de entrada
-de la familia.** Medido en el registro real de Diego del **2026-08-20**: una **segunda** llamada de
-precalentado gastó **24.200 ms de servidor** —de ellos **22.023 ms** en el viaje
-`enr.wizardExpedienteDelToken` que hace la puerta— **para acabar contestando `RATE_LIMITED`**. El
-freno mira una memoria local y cuesta microsegundos; el que iba delante costaba 22 segundos.
-
-**Es el mismo criterio que ya rige en la verja pública** (§"Las CINCO puertas del asistente":
-*«la verja va ANTES del trabajo caro y del cupo»*). Aquí no hay oráculo que cerrar; el desperdicio
-es el mismo.
-
-**SON DOS CAPAS, y la de siempre NO SE TOCA:**
-
-| Capa | Llave | Dónde |
-|---|---|---|
-| **nueva** | el `resume_token`, **resumido** (`warmrltok_<sha256[0:40]>`) | **ANTES** de la puerta — el llamante ya lo trae, no cuesta viaje |
-| **la de siempre** | el expediente (`warmrl_<groupId>`) | **DESPUÉS** de la puerta, exactamente donde estaba |
-
-**⛔ Por qué la segunda no se sustituye por la primera, y está MEDIDO: el enlace ROTA.**
-`sendMagicLink_` lo renueva por `enr.wizardTouchSession`, y su cupo (`_checkMagicLinkRateLimit_`)
-permite **hasta 5 por hora y buzón** ⇒ con la llave por token **sola**, un enlace rotado abriría un
-hueco de freno. Con las dos capas **no hay hueco**: la nueva **solo puede AÑADIR cortes**, y en el
-peor caso (token recién rotado) el comportamiento es **el de siempre** — se paga el viaje y frena la
-de abajo. Nunca peor que antes; mucho mejor en el caso medido, que es el mismo token dos veces.
-
-**Lo que hay que retener al tocar esto:**
-
-- **KAL-4 INTACTA.** El expediente lo sigue derivando la puerta **del enlace**, jamás del cuerpo de
-  la petición. Lo que se movió es **el orden**, no la autoridad.
-- **La llave va RESUMIDA** (`sha256` truncado, el molde del memo de lectura del gate `rtmemo_`): el
-  `resume_token` es un secreto de portador y no se escribe en claro en ningún sitio (KAL-11).
-- **Token ausente o malformado ⇒ NO se frena aquí** (`_warmRateLimitTokenKey_` devuelve `null`) y la
-  puerta lo rechaza igual que siempre con `BAD_REQUEST`. Byte-idéntico al comportamiento previo.
-- **La respuesta no cambia**: un precalentado frenado sigue contestando **exactamente**
-  `{ ok:true, warmed:false, reason:'RATE_LIMITED' }` — el cliente lo trata como «no había nada que
-  calentar» y **no es un error** (recorrido `precalentado-sin-ruido` de la batería).
-- **El plazo de 120 s no se toca**, ni lo que hace el precalentado cuando SÍ calienta.
-- **Medido: el patrón está en UN solo sitio.** `warmBundle_` con `{resume_token}` es un passthrough
-  a `warmSession_` ⇒ hereda el arreglo sin tocarlo.
-
-⚠️ **La batería NO cubre esto** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js`**. Se **midió aparte**, con un arnés efímero fuera del repositorio que extrae del
-fuente `warmSession_` y `_warmRateLimitTokenKey_` y las ejecuta con dobles de `CacheService`, de la
-puerta y del proxy: **6 afirmaciones verdes** (con el freno puesto **cero** viajes al KMS · sin él
-calienta igual · el expediente del cuerpo no cambia nada · con el enlace **rotado** sigue frenando ·
-la llave no lleva el token en claro · un token basura da `BAD_REQUEST` como siempre) y **TRES rojos
-demostrados**: devolver el freno detrás del viaje (**ROJO** en la (1), *«viajes 2→3»*) · quitar la
-capa por expediente (**ROJO** en la (4)) · renombrar lo medido, que sale **«MEDICIÓN CIEGA»** y no
-verde. **Quien toque este manejador, que lo mida.**
-
-### `0º.vicies.semel` (2026-08-21) — el paso 7 ya no pide una firma tecleada que nadie leía
-
-**Decisión de Diego esa misma noche, literal:** *«Aquí sobra lo de la firma con el nombre completo,
-hay que quitarla, y las validaciones que la exigen también.»*
-
-**El campo «Firma electrónica — Escribe tu nombre completo como firma electrónica», debajo de los
-dos consentimientos del paso 7, se RETIRA entero.** Medido contra `origin/main` antes de tocar
-nada: el dato (`esignature`) viajaba en el envío y se tiraba — en el backend del asistente aparece
-**solo en un comentario** (`backend/Code.js:4860`, un `@param` de JSDoc, cero lecturas) y en el KMS
-**cero apariciones**. No se retira ninguna evidencia, porque no había evidencia: la firma que SÍ
-cuenta es la del paso 11 (Click & Sign), y **no se toca**, igual que los dos consentimientos de esta
-misma pantalla (que sí se registran en `sysConsentsLog`). Mientras tanto, un campo que nadie miraba
-**impedía enviar** si la familia no lo rellenaba — el defecto que esto cierra.
-
-**Retirado, todo en `frontend/src/pages/steps/Step7Review.jsx`:** el estado (`esig`/`setEsig`), la
-validación que bloqueaba el envío, la traza de depuración, el campo `esignature` del payload de
-envío y el bloque visible (etiqueta, instrucciones, casilla). Los cuatro textos
-(`step7.esig_label`/`esig_instructions`/`esig_placeholder`/`error.esig_required`) salen de los dos
-idiomas en `frontend/public/locales/{es,en}/translation.json` — no viven en `src/locales/` (ese
-directorio no existe en este repositorio). El estilo `.esig-field`, sin más usuarios, sale de
-`theme.css`. El encargo antiguo que proponía **reforzar la integridad** de este mismo campo
-(`docs/prompts/cli-kal-7-esignature-integrity-hash.md`, KAL-7/KAL-NEW-9) queda sin objeto — se
-elimina, y `docs/prompts/INDEX.md` se corrige para decir que el campo se retiró, no que espera un
-refuerzo.
-
-**Red**: `npm run e2e:wizard` — el camino compartido `conducirEnvio` (usado por tres recorridos)
-tecleaba en `.esig-field`, así que la batería formaba parte de la entrega. Se cambió la afirmación
-de *«se rellena el campo»* a *«el campo YA NO existe, y aun así se puede enviar»* — y el **rojo
-demostrado** salió solo, sin tener que romper nada a propósito: al correr la batería vieja contra
-el código ya cambiado, el camino `segundo-tutor-envia` cayó nombrando el caso exacto (*«la pantalla
-de revisión no ofrece el campo de firma manuscrita»*). Corregida la afirmación, **VEREDICTO: VERDE
-— 28 de 28**. Los cuatro controles del repositorio, VERDES.
-
-**Publicado**: solo `Kaleide-enrollment`, solo `frontend/` — no toca `backend/Code.js` ni el KMS.
-Se publica al empujar a `main` (GitHub Pages, con la batería como puerta en el CI).
-
-### `0º.vicies.quinquies` (2026-08-22) — al llegar al paso 7, la simulación de cuotas YA ESTÁ
-
-**NO ES UNA AVERÍA: es espera evitable en el paso más caro de mirar.** El paso 7 dispara
-`simularCuotas` para pintar el presupuesto de la familia, y ese cálculo compone el motor de
-descuentos real (DL-071/DL-080/DL-082) — la misma razón por la que `0º.quindecies` medía **72 s**
-en el peor caso y decidió NO tocar el motor. Este tramo no toca el motor tampoco: lo que hace es
-que, cuando la familia LLEGA al paso 7, el resultado **ya esté calentado de fondo**, con el
-precalentado que el asistente ya usa para todo lo demás.
-
-**El mandato de Diego, literal, y es el que fija el diseño:** *«Bien visto, sí, no hay que
-hardcodear, debe emanar de las configuraciones.»* y *«Si la familia marca una alergia, responde a
-una pregunta o cambia la dirección de la ficha NO hace falta recalcular. Sólo aquellos campos que
-puedan afectar a las condiciones de las tarifas de aplicación… son los que provocan el
-recálculo.»* — **prohibido** invalidar con «cualquier escritura del grupo» a secas
-(`_wzCacheInvalidate_` sin más es «correcto pero inútil»: recalcularía en cada guardado, que es
-justo el trabajo que se quiere evitar), y **prohibido** escribir a mano la lista de «campos que
-importan» — tiene que **salir del catálogo de condiciones del propio colegio**, el mismo que
-decide qué tarifa le aplica a un alumno.
-
-**El mecanismo: una HUELLA derivada del catálogo de elegibilidad, no de una lista escrita a mano.**
-`enr_huellaDeLaSimulacion_` (`kis-app kms-server/enr/wizard-gateway.gs`) recorre los vínculos de
-aplicabilidad de las plantillas de este programa (`qbConsumerConditions` →
-`qbConditions_T`/`qbConditionGroups_T`, el mismo catálogo que decide qué tarifa le toca a cada
-solicitante), reúne **qué campos de la ficha del alumno miran esas condiciones**
-(`qb_collectFieldPaths_`, un recorrido genérico y recursivo del árbol de la condición, nuevo en
-`kis-app kms-server/qb/evaluator.gs`) y con eso, más la definición exacta de cada condición
-(operador y valor — para que un centro que cambie un umbral, sin tocar ni un dato de familia,
-también recalcule), y el CONJUNTO de solicitantes declarados, compone un SHA-256. **Si el hash no
-cambia, la simulación de ayer sigue sirviendo. Si cambia, hay que recalcular.** Endpoint nuevo,
-barato de preguntar: `enr.huellaDeSimulacion` — de paso devuelve `preferred_modality_id`
-(gratis: la puerta ya carga la fila del grupo), para que servir una simulación cacheada nunca
-enseñe una modalidad de pago que la familia ya cambió.
-
-**El lado del asistente reutiliza el precalentado que YA EXISTE, no uno nuevo.** `_wzCacheKey_`
-gana un tercer tipo de caché declarado, `'sim'`, con el mismo molde de dos niveles que ya usan
-`'kms'`/`'mem'`: la escritura la hace un solo sitio,
-`_wzComputeYCachearSimulacion_(groupId, resumeToken)`, y una fase nueva de fondo,
-`_warmSimularCuotasPhase_`, **espejo declarado** de `_warmMembersDocsPhase_` (mismo patrón, mismo
-sitio del fichero). `warmBundle_` la dispara en los mismos dos caminos que ya calientan hoy: el de
-**ticket** (junto a `'kms'`/`'mem'`, en paralelo, sin ralentizar nada) y el **directo con solo
-`resume_token`** (el que usa `ResumePage.jsx`) — ahí, para no retrasar ni un milisegundo la
-hidratación que sí es urgente, se dispara **DESPUÉS** de que `warmSession_` haya terminado, nunca
-antes ni junto.
-
-**Y `simularCuotas_`, cuando la familia SÍ llega al paso 7, ya no recalcula a ciegas.** Dos
-niveles: si la versión de escritura del grupo no ha cambiado desde el último cálculo, sirve la
-caché tal cual — cero viajes. Si SÍ cambió (cualquier guardado del grupo la mueve), en vez de
-recalcular de inmediato **pregunta la huella barata** — y solo si la huella también cambió, hace el
-cálculo caro de verdad. Un cambio de alergia, de dirección o de una respuesta que el catálogo de
-tarifas no mira mueve la versión pero **no** la huella ⇒ la familia recibe la caché de siempre, sin
-pagar el motor.
-
-**El límite honesto, para que nadie lo sobrevenda:** la huella cubre las condiciones de
-**elegibilidad** — qué plantilla de tarifa le corresponde a cada solicitante, que es lo que decide
-la mayor parte de lo que la familia ve. **NO** entra en el árbol de condiciones propio del motor de
-DESCUENTOS (`fin_resolveAutomaticPolicies_` y compañía) — tocar eso es el mismo motor que
-`0º.quindecies` decidió no tocar sin su propio arnés, por ser dinero. Si un colegio algún día
-declara un descuento condicionado a un dato que la huella de elegibilidad no mira, ese caso
-recalcularía tarde — no es el caso de hoy, y queda escrito para quien lo mida.
-
-⚠️ **Sin prueba automática — la batería nunca ejecuta `backend/Code.js` ni el KMS real.** Medido
-con TRES arneses efímeros (fuera de los dos repositorios, no commiteados): uno sobre
-`qb_collectFieldPaths_`/`enr_condicionIdsDeLosVinculos_` (9 afirmaciones verdes, un rojo
-demostrado con un recorrido no-recursivo que se deja condiciones dentro de grupos anidados); uno
-sobre `enr_huellaDeLaSimulacion_` extraído del fuente real del KMS junto al evaluador (7
-afirmaciones — determinismo, un campo mirado por la condición cambia la huella, un campo AJENO no
-la cambia, un centro que cambia el umbral SÍ la cambia sin tocar datos de familia, sin condiciones
-declaradas no revienta, añadir un solicitante la cambia — y un rojo demostrado: si el hash deja de
-llevar el operador y el valor de la condición, un cambio de umbral deja de detectarse); y uno sobre
-`simularCuotas_`/`_warmSimularCuotasPhase_`/`_wzComputeYCachearSimulacion_` extraídos VERBATIM del
-`backend/Code.js` real (10 afirmaciones, y un rojo demostrado: una versión que se salta la
-comprobación de huella sirve datos caducados). **26 afirmaciones verdes en total, 3 rojos
-demostrados. Quien toque esta cadena, que lo mida.**
-
-**Comprobado antes de publicar**: `node --check backend/Code.js` OK ·
-`comprobar-escrituras-directas.mjs` VERDE · `comprobar-selector-appsheet.mjs` VERDE ·
-`npm run e2e:wizard` **VEREDICTO: VERDE — 28 de 28** (sin caminos nuevos: el cambio es invisible
-para la batería, que corre contra un backend simulado). Del lado del KMS,
-`node scripts/check-quality-gates.mjs` **VEREDICTO: VERDE — 25 gates, 0 inertes**.
-
-**Manual, ayuda en pantalla y textos: ninguno toca.** La familia ve exactamente la misma pantalla
-del paso 7 — solo que, la mayoría de las veces, ya está calculada cuando llega.
-
-### `0º.tricies` (2026-08-22) — el paso 7: un DESPLEGABLE de forma de pago, y el calendario completo también cuando NO hay ninguna
-
-**Decisión de Diego, literal, tras probar lo publicado (TERCERA pasada sobre esta pantalla):** *«No
-desglosa los devengos como te dije que tenía que hacer (igual que en el simulador del KMS para cada
-plantilla de suscripción), con fechas, etc. Y sigue sin dejar elegir la modalidad. Lo que ofrece son
-dos tarjetas, pero yo no quiero tarjetas, quiero un botón o desplegable que elija entre modalidades
-y las muestre con todos los conceptos (matrícula, fecha etc.)»*
-
-**Cómo queda la pantalla.** Por cada plan: con **dos o más** formas de pago, un **desplegable**
-—cada opción con su nombre, su número de pagos y su total—; con **una sola**, se dice cuál es y no
-se pregunta (*«un desplegable de una opción no es una elección»*, el mismo criterio que el tipo de
-documento del paso 6). Y **siempre, debajo, el calendario completo**: una fila por vencimiento con
-su concepto, su fecha legible y su importe. Cambiar de forma de pago **repinta al instante y sin ir
-al servidor** — todas vienen en la misma respuesta.
-
-**⛔ EL CASO QUE NO ES «una sola forma de pago» SINO NINGUNA, y por qué importa.** Un plan puede no
-admitir **ninguna** —permanencia, ampliación de horario: van por regla o a mano—, y el KMS lo
-devuelve con una forma particular: `fin_previewTemplateSchedule` simula con `candidates = [null]` +
-aviso `NO_MODALITIES_ADMITTED`, y `enr_proyectarSimulacionesDelEnsayo_` emite **UNA** modalidad con
-`modality_id`/`modality_code`/`designation` a **`null`** y su calendario entero. Con las tarjetas
-eso se pintaba **sin rótulo**; en la primera vuelta del selector, la línea salía **empezando por un
-« · » suelto** (`nombre` vacío + separador). Hoy, sin nombre se anuncia solo con su importe y su
-total, y su calendario se ve igual — que es lo único que le dice a esa familia qué y cuándo paga.
-
-⚠️ **Y UNA PREMISA DE LA FICHA ERA FALSA — medida contra `origin/main` antes de tocar nada.** Su
-segundo punto decía que *«la pantalla sigue pintando solo “Primer pago” (`m.cuotas[0].due_date`) y
-NUNCA pinta el calendario»*. **No era cierto**: `tablaDeDesglose` existía y se pintaba en los dos
-caminos —un plan y varios— desde `0º.vicies.sexies` (`7db4513`, 06:43), y la ficha se escribió
-después (07:46). Lo que **sí** era cierto y era el defecto: **seguían siendo tarjetas**, y el
-«Primer pago» era un resumen redundante teniendo el calendario debajo. Es §"Un COMENTARIO del
-código no es criterio normativo" (`kis-app/CLAUDE.md`) aplicado a una ficha de la cola.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ El asistente NO calcula dinero** (DL-080-A): `money()` divide entre 100 y formatea, y nada
-  más. El total sale del servidor (`net_cents`) y **no se recalcula en pantalla**.
-- **⛔ Elegir NO viaja a ningún sitio.** La marca vive solo en el navegador (`formaDePagoMarcada`,
-  `WizardContext`), decisión de Diego del 2026-08-21. La elección EN FIRME es la del paso 8
-  (`enr.wizardApplyModality`), **que no se toca** y se llama casi igual.
-- **Quién decide qué calendario se ve**: `modalidadMarcadaOPrimera` — la que la familia eligió en
-  ESE plan, si no la primera **disponible**. Un solo sitio; el desglose y el total lo comparten.
-- **Un solo formateador de fechas**, `utils/fechas.js` (`fechaLegible`). No se escribe otro.
-- **El simulador nunca puede impedir enviar**: vive fuera de `handleSubmit` y degrada en silencio.
-
-**Textos**: `step7.sim.modality_label` (es/en) y `breakdown_title` → «Calendario de pagos»; salen
-las claves que dejaron de leerse (`first_due` entre ellas, que se fue con las tarjetas).
-
-**Red**: `npm run e2e:wizard` **VEREDICTO: VERDE — 28 de 28**. Cinco afirmaciones nuevas repartidas
-en los dos recorridos del simulador, y **el doble sirve TRES planes a propósito**: uno con dos
-formas de pago (para que «elegir» no se compruebe en vacío), uno con **una** (comedor, 8
-vencimientos) y uno con **ninguna** (permanencia, `modality_id: null`). **Rojo demostrado**, cada
-uno nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| devolver los botones en vez del `<select>` | *«selector encontrado: false; las opciones eran ["BUTTON","BUTTON"]: han vuelto las tarjetas»* |
-| que el desglose ignore lo elegido | *«el desglose tenía 1 fila(s) y tras cambiar tiene 1»* |
-| quitar el separador condicional del rótulo | *«la línea leída fue "· 2 pago(s) de 250,00 € · Total: 500,00 €"»* |
-| filtrar por `modality_id` en el selector (el plan sin ninguna forma de pago pierde su línea) | *«la línea leída fue ""»* + *«se pintaron 2 opción(es)… se esperaba una por plan»* |
-| que la tabla se calle sin modalidad | *«se leyeron 0 fila(s) (se esperaban 2)»* |
-
-⚠️ **Solo FRONTAL: nada de esto ejerce `backend/Code.js` ni el KMS**, que es de donde salen los
-importes y los conceptos; la batería corre contra el backend simulado. Los cuatro controles del
-repositorio, VERDES. Se publica **solo al empujar a `main`** (CI/Pages) — sin `clasp`.
-
-**Manual y ayuda en pantalla: ninguno toca** (este repositorio no tiene manual de usuario; los
-únicos textos son los de `frontend/public/locales/`, ya actualizados).
-
-⚠️ **DOS MANOS HICIERON ESTA FICHA A LA VEZ, y se dice para que no se repita.** Una rutina la
-construyó y la empujó a las **08:16**; otra la reservó en `kis-app/docs/kms/EN-CURSO.md` a las
-**08:21**, cuando ya estaba en `main` — **la primera no la había reservado**. El trabajo duplicado
-se **descartó** en vez de forzarlo encima: lo que se conservó de la segunda vuelta es lo que la
-primera no cubría (el plan con `modality_id: null`, su rótulo y sus tres afirmaciones) y la
-corrección de la premisa falsa. **La reserva se escribe ANTES de la primera línea de código, no al
-ir a publicar.**
-
-### `0º.tricies.decies` (2026-08-22) — las preguntas del cuestionario se agrupan POR ALUMNO
-
-> ⭐ **AMPLIADA el 2026-09-20 — lee ANTES la entrada siguiente.** Lo de aquí sigue siendo cierto
-> DENTRO de un conjunto; lo que faltaba era el NIVEL. Desde el 2026-09-20 **manda el SUJETO y el
-> conjunto queda dentro**, así que dos frases de abajo YA NO describen la pantalla: la **Red** ya
-> no se mide por tarjeta sino en TODO el paso, y con dos hijos el nombre de cada uno se pinta **una
-> sola vez en el paso entero**, no una vez por conjunto.
-
-**Diego, cita literal:** *«tampoco salen agrupadas. Tienes que ir al alimón, mirando a quién le
-corresponden. Lo lógico es que dentro de cada pill, haya un área de agrupación por sujeto»*.
-
-**Medido:** `shared/QbSetRenderer/index.jsx` recorría las **PREGUNTAS** del conjunto y, **dentro de
-cada una**, `applicants.map(...)` ⇒ el orden natural era pregunta×sujeto: con dos hijos salía
-«primera de Jara · primera de Pepito · segunda de Jara…», y el nombre se repetía **en cada línea**.
-Ahora **`agruparPorSujeto_(set)`** reparte los elementos en BLOQUES y quien pinta recorre
-**sujeto → sus preguntas**, con el nombre **una sola vez**.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ LA CLAVE DE LA RESPUESTA NO SE TOCA** (`question_id__personKey`). Es la que guarda y recupera
-  lo que la familia contestó; romperla desvincula todo lo ya respondido.
-- **El bloque ocupa el sitio de su PRIMERA pregunta**, no el final del conjunto. Un conjunto que
-  mezcla preguntas de la solicitud con preguntas de alumno conserva así el orden en que el colegio
-  las declaró; empujar los grupos al final movería preguntas que hoy salen arriba. **Y todas las de
-  una misma audiencia caen en ese bloque** (el mapa `abierto`), aunque en el conjunto no vinieran
-  seguidas — el efecto es que una pregunta de alumno declarada después de una de la solicitud sube
-  al bloque de su audiencia. Con un conjunto homogéneo, que es el caso normal, no hay diferencia.
-- **Una pregunta SIN audiencia se pinta EXACTAMENTE como antes**: no tiene sujeto que agrupar.
-- **⛔ Aquí NO se decide de quién es una pregunta**: lo declara el catálogo
-  (`audience_category_id`) y llega ya resuelto. Solo se AGRUPA lo que llega.
-- **Las condiciones se siguen evaluando POR SUJETO**: una pregunta que no le aplica a un hijo no
-  sale **en su grupo**, y un grupo que se queda sin ninguna **no se pinta** — un encabezado con un
-  nombre y nada debajo confunde más que ayuda.
-- **Con UN solo alumno** el resultado es prácticamente el de antes: un encabezado y sus preguntas.
-
-**⚠️ El componente vive en los DOS repositorios y SOLO se tocó el del asistente, y hay un motivo
-MEDIDO.** La copia del KMS (`kis-app frontend/src/shared/qb-renderer/`) tiene **un solo
-consumidor** —`worlds/admin/qb/QbQuestionEditPage.jsx:939`, la **vista previa** de una pregunta— y
-se le pasa **exactamente UN alumno sintético** (`persons={[{…}]}`, `:942`) *(líneas RE-MEDIDAS el
-2026-09-20 contra `origin/master`; decían `:885`/`:888` y habían derivado)* ⇒ ahí no hay nada que
-agrupar y el cambio no se vería. Tocarlo además habría arrastrado el muro `e2e:tables`, **ese día
-ROJO en `origin/master` por un cambio ajeno**, sin ganar nada.
-
-**Red**: el recorrido del cuestionario con **DOS alumnos** y un conjunto con audiencia declarada
-(afirmaciones `(d.1)` el nombre una sola vez · `(d.2)` las preguntas de un mismo alumno seguidas ·
-`(d.3)` la respuesta de cada alumno viaja con SU identificador). ⚠️ Con un solo alumno, o con las
-preguntas generales del banco, **la comprobación pasaría en vacío**, que es peor que no tenerla.
-
-⚠️ **ESTA FICHA LA HICIERON DOS MANOS A LA VEZ, y se dice para que no se repita.** La rutina la
-tenía RESERVADA desde las 15:16; Diego se la encargó a mano a la sesión a las 15:52, que marcó la
-reserva como CEDIDA y empujó ese aviso — pero la rutina ya estaba en vuelo y **publicó primero**
-(`e7d21b8`). Se conservó **lo publicado** y se **descartó** el trabajo duplicado de la sesión (un
-`tramosDelConjunto_` que agrupaba solo tramos SEGUIDOS, con su propio camino de batería); de aquella
-vuelta solo sobrevive **esta documentación**, que la publicación no traía. Es el mismo desenlace que
-`0º.tricies.quater`. **La reserva se lee antes de la primera línea de código Y otra vez antes de
-publicar** — y aun así, cuando una mano ya está en vuelo, ceder tarde no evita el trabajo doble.
-
-### (2026-09-20) — el paso 5 agrupa POR HIJO: manda el sujeto y el conjunto queda dentro
-
-**Diego, 2026-09-20, tras publicarse la conversión del idioma viejo:** *«ya salen los hijos con las
-preguntas. Lo único que el wizard presenta las preguntas de forma caótica. Debería agrupar por
-sujeto, de tal forma que todas las preguntas de un hijo estén juntas.»*
-
-⛔ **NO era que faltara el agrupador: EXISTE, se llama y nadie lo revirtió. Lo que fallaba era el
-NIVEL.** Confirmado contra `origin/main` @ `9043421` antes de tocar nada: `agruparPorSujeto_`
-(`shared/QbSetRenderer/index.jsx`) solo recorre `set.items` y su acumulador `const abierto = {}` es
-**LOCAL a la llamada** ⇒ se reinicia en cada conjunto; y el paso pintaba **una tarjeta por
-conjunto**. Con cuatro conjuntos y dos hijos eso da
-`[higiene: Jara, Pepito][valores: …][antecedentes: Jara, Pepito]…`: **cada bloque ordenado por
-dentro y las preguntas de un mismo hijo repartidas por toda la pantalla.**
-
-**Cómo queda:** primero **lo que NO es de un hijo** —las preguntas de la solicitud y las del tutor,
-que se contestan una vez—, y después **una sección por cada hijo** con sus conjuntos dentro, cada
-uno con su título.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ CON UN SOLO HIJO LA PANTALLA NO CAMBIA, y eso NO es una promesa: está MEDIDO.** La rama de un
-  solo hijo es la de siempre, sin tocar (`if (!variosHijos)`), y el DOM del paso 5 con una familia
-  de un hijo salió **BYTE-IDÉNTICO** —2.710 bytes, `cmp` sin diferencia— entre el código de ayer y
-  el de hoy. El arnés que lo midió **distingue**: con la guarda rota (`> 0`) el DOM pasa a 2.794.
-  Sin nada que separar, una sección de primer nivel es ruido — mismo criterio que la pastilla.
-- **⛔ UN SOLO RECORRIDO, DOS PREGUNTAS.** `variosSujetos` (¿pastilla o línea gris?) y `variosHijos`
-  (¿manda el sujeto?) se derivan de **la MISMA pasada** sobre las piezas ya calculadas. Una segunda
-  cuenta, en otro sitio y con otro criterio, es exactamente cómo divergieron las dos formas del
-  encabezado en `0º.tricies.vicies.septies`.
-- **⛔ LA PASTILLA SE REUSA.** `CabeceraDeSujeto` + `.sujeto-bloque` siguen siendo el ÚNICO sitio
-  que decide cómo se ve un separador de sujeto: la sección de un hijo los MONTA, no copia su
-  aspecto. **Cero CSS nuevo.**
-- **⛔ LA CLAVE DE LA RESPUESTA NO SE TOCA** (`question_id__personKey`) y **de quién es cada
-  pregunta se sigue leyendo del catálogo**: aquí solo se AGRUPA lo que llega. `esAlumno` viaja en la
-  pieza para poder distinguir «de un hijo» de «del tutor» al repartir, no para decidir nada.
-- **⛔ NO SE ORDENA NADA.** El orden de los hijos es el de su primera aparición y el de los
-  conjuntos dentro de cada hijo, el de llegada. Hoy no hay ningún `sort` en el frontal y el
-  `display_order` ya viaja resuelto (`backend/Code.js:7543`): inventar aquí una ordenación sería un
-  segundo criterio sobre lo que el centro declara.
-- **Las condiciones se siguen evaluando POR SUJETO** y un hijo al que no le queda ninguna pregunta
-  **no se pinta** — de ahí que Jara salga con cinco preguntas y Pepito con cuatro en el catálogo
-  del robot: el conjunto «7 años o más» solo le entra a ella.
-- **Un conjunto que solo tenía preguntas de alumno YA NO pinta tarjeta propia**: sus preguntas viven
-  dentro de cada hijo, y una tarjeta con solo el título es ruido.
-
-**⚠️ EL GEMELO DEL KMS NO SE TOCÓ, y esta vez el motivo es MÁS FUERTE que en `0º.tricies.decies`:
-ese fichero NO TIENE este código.** Medido el 2026-09-20 contra `origin/master`:
-`kis-app frontend/src/shared/qb-renderer/index.jsx` son **235 líneas** con **CERO** apariciones de
-`agruparPorSujeto_`, `piezasDelConjunto_`, `CabeceraDeSujeto`, `.sujeto-bloque` o `data-qb-sujeto` —
-el agrupamiento nunca aterrizó allí. Y su **único** consumidor,
-`worlds/admin/qb/QbQuestionEditPage.jsx:939-948`, le pasa **un solo alumno sintético**
-(`persons={[{ person_type_id:'applicant', _uid:'preview', … }]}`, `:942`) y **un solo conjunto** ⇒
-no hay ni dos hijos ni dos conjuntos que agrupar, así que el cambio no se vería. **No se tocó.**
-
-**Red**: el recorrido `cuestionario-no-se-apaga`, que **ya se ejercita con DOS hijos y DOS
-conjuntos** — se amplió ahí, no se abrió uno nuevo. Sus afirmaciones `(d.*)` **dejan de medirse por
-tarjeta y pasan a medirse en TODO el paso**: hasta hoy se medían dentro de cada tarjeta a propósito
-(*«un mismo hijo aparece legítimamente una vez en cada conjunto»*), **y esa frase ERA el defecto
-dicho en voz alta** — medido así, el caso que Diego devolvió salía VERDE. Nuevas: `(d.1)` el nombre
-de cada hijo UNA sola vez en todo el paso · `(d.2)` sus preguntas seguidas (4 y 5) · `(d.1.bis)` los
-conjuntos dentro del hijo **con su título** · `(d.1.ter)` lo que no es de un hijo va delante ·
-`(e.2.bis)` reescrita (lo que vigilaba —un conjunto que cae a la línea gris— ya no puede ocurrir:
-el encabezado es uno por hijo para todo el paso) · `(e.3.bis)` con un solo hijo la pantalla sigue
-siendo la de siempre.
-
-**Rojo demostrado DOS veces**, cada una nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| devolver el agrupamiento al nivel de conjunto (el código de ayer) | *«los encabezados de sujeto, en orden, fueron ["RobotHijoE2E…","RobotHijoDosE2E…","RobotHijoE2E…"]: un nombre repetido significa que el hijo vuelve a salir más abajo…»* + `(d.2)` `[…4],[…4],[…1]` + `(d.1.bis)` sin títulos + `(e.2.bis.0)` 0 conjuntos dentro de un hijo |
-| quitar la guarda del hijo único (`> 1` → `> 0`) | *«las tarjetas de primer nivel fueron ["Preguntas del robot"] y se leyeron 2 conjunto(s) metidos dentro de un hijo: con un solo hijo se esperaban los DOS conjuntos del catálogo como tarjetas y ninguna sección por sujeto»* + `(e.3)` en rojo |
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS ⇒ afirma lo que PINTA el navegador, que es donde vive este defecto
-entero. **No se tocó ni una línea de servidor**, en ninguno de los dos repositorios.
-
-**Textos, manual y ayuda en pantalla: ninguno toca.** No hay ni una cadena nueva ni cambiada — el
-título del conjunto lo declara el centro y el nombre del hijo es el dato de la familia; los dos ya
-se pintaban. Este repositorio no tiene manual de usuario ni ayuda dentro de la aplicación: sus
-únicos textos son los de `frontend/public/locales/`.
-
-**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), **sin `clasp` y sin
-turno**.
-
-### `0º.tricies.sexdecies` (2026-08-22) — se VE dónde acaba un hermano y empieza el otro
-
-**Diego, 2026-08-22, cita literal:** *«es difícil visualmente separar un hermano del otro. La letra
-es muy pequeña, no hay un elemento (un pill) que claramente separe visualmente lo que corresponde a
-cada hermano»*. Pasa en **DOS sitios**: el cuestionario del paso 5 y la simulación de cuotas del
-paso 7.
-
-**Lo medido contra `origin/main` ANTES de tocar nada — las dos premisas de la ficha eran CIERTAS:**
-
-| Pantalla | Cómo se anunciaba el sujeto |
-|---|---|
-| cuestionario (`shared/QbSetRenderer/index.jsx:196`) | `<p>` **gris de 0.8rem** con un iconito |
-| cuotas (`Step7Review.jsx:526` y `:539`) | `<div>` en **negrita de 0.9rem**, sin icono |
-
-⇒ ninguno de los dos **ENCERRABA** nada, y **no se parecían entre sí**. Agrupar por alumno ya lo
-había hecho `0º.tricies.decies`; lo que faltaba era **verlo**.
-
-**UN SOLO SITIO decide cómo se ve un separador de sujeto** — `frontend/src/shared/CabeceraDeSujeto.jsx`
-con las clases `.sujeto-bloque` / `.sujeto-pastilla` de `theme.css`, consumido por **las dos**
-pantallas. Una pastilla teal (fondo, borde, esquinas redondeadas, 0.95rem/700, con su icono) sobre un
-área con borde izquierdo que encierra lo de ese hermano. **PROHIBIDO copiar el aspecto a mano en una
-tercera pantalla**: dos copias divergen, y eso es exactamente lo que acababa de pasar entre estas dos.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ NO se tocó la clave de la respuesta** (`question_id__personKey`), ni **qué** se pinta, ni de
-  quién es cada pregunta (lo declara el catálogo con `audience_category_id` y llega ya resuelto).
-  **Solo CÓMO se ve.** Y en el simulador, `money()` sigue dividiendo entre 100 y formateando: aquí no
-  se calcula dinero.
-- **⛔ CON UN SOLO SUJETO NO APARECE LA PASTILLA, y cada pantalla degrada a lo que YA tenía**: el
-  cuestionario vuelve a su línea gris de siempre (mismo elemento y mismo estilo en línea, byte-idéntico)
-  y el simulador **sigue sin pintar nada** (allí `nombre` ya era `''` con un solo solicitante, y su
-  llamante no monta el componente). Sin nada que separar, un separador grande es ruido.
-- **El cuestionario decide `destacado` DESPUÉS de evaluar las condiciones**: un sujeto al que no le
-  queda ninguna pregunta **no cuenta**. Por eso el render arma primero la lista de piezas EN ORDEN y
-  pinta después — el orden de salida es exactamente el de antes.
-- **⚠️ El componente del cuestionario vive en los DOS repositorios y SOLO se tocó el del asistente.**
-  La copia del KMS (`kis-app frontend/src/shared/qb-renderer/`) tiene un único consumidor —la vista
-  previa de una pregunta— al que se le pasa **UN alumno sintético**: ahí no hay nada que agrupar y el
-  cambio no se vería.
-
-**Textos: ninguno nuevo y ninguno cambiado.** El separador solo enseña el nombre de la persona.
-
-**Red**: `npm run e2e:wizard` **VEREDICTO: VERDE — 36 de 36**, y los cuatro controles del repositorio
-VERDES. Cinco afirmaciones nuevas en `cuestionario-no-se-apaga` —`(e.1)` la pastilla es legible (fondo
-propio, ≥15px, peso 700, medido sobre el **estilo calculado**, no sobre la clase: una clase que no
-exista en `theme.css` el navegador la ignora en silencio) · `(e.2)` el bloque tiene borde que lo
-encierra · `(e.3.0)` ancla + `(e.3)` con un solo alumno no hay pastilla— y cuatro en `simulador-paso7`
-—`(C.0)` ancla · `(C.1)` pastilla · `(C.2)` área · `(C.3)` nombre y no identificador—, más *«con un
-solo solicitante NO se pinta el separador»*. ⚠️ **El doble sirve DOS presupuestos**
-(`scenario.dosSolicitantes`) y **una familia de UN SOLO hijo** (`scenario.unSoloAlumno`) **a
-propósito**: sin esas dos palancas, la mitad de las afirmaciones pasaría **EN VACÍO**.
-
-**Rojo demostrado TRES veces**, cada una nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| devolver la línea gris de siempre (ignorar `destacado`) | *«los separadores leídos fueron [{"nombre":null,…}]: se esperaba, en cada alumno, un elemento con nombre, fondo propio, letra de al menos 15px y peso 700»* |
-| dejar la pastilla también con un solo alumno | *«pastillas=1 · línea de siempre=false: con un solo hijo no hay nada que separar»* |
-| quitar el borde del área en `theme.css` | *«los bordes de agrupación fueron [0,0]: sin un elemento que delimite el bloque, los dos presupuestos corren seguidos»* + el mismo rojo en el cuestionario |
-
-⚠️ **Y DOS cosas del ROBOT, no del producto.** (1) El recorrido del cuestionario salió **ROJO
-intermitente** por un «network/fetch error» de `warmBundle` **del propio robot** al tirar la página
-con una petición en vuelo — el patrón ya documentado en `0º.tricies.nonies`; se cerró **drenando la
-red antes de navegar Y al salir del recorrido**. (2) Hubo **UN rojo suelto de
-`ventana-por-inactividad`** cuyo mensaje no se llegó a capturar: **no se reprodujo en cuatro corridas
-completas posteriores con el cambio ni en dos sin él**, y ese recorrido está declarado sensible al
-reloj. **Queda anotado, no resuelto.**
-
-⚠️ **Lo que la red NO cubre:** la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS — afirma lo que pinta el navegador, que aquí es exactamente lo que la
-ficha pedía. **Publicación**: solo `frontend/`, al empujar a `main` (CI/Pages), sin `clasp`.
-
-### `0º.tricies.octies` (B) (2026-08-22) — un guardado que muere en la cola DEJA DE SER MUDO
-
-**Los guardados del asistente NO escriben: APUNTAN el trabajo.** `enr.wizardSaveStep` y sus
-hermanas contestan `{ok:true, queued:true}` y quien escribe es el trabajador de la cola del KMS,
-minutos después. Si ese trabajo muere, **el rechazo ocurre cuando la respuesta ya se dio** ⇒ no hay
-a quién decírselo ahí, y hasta hoy no se lo decía nadie: la pantalla se quedaba con «Esta sección
-está guardada y bloqueada», la familia avanzaba, rellenaba salud, contestaba el cuestionario — y el
-hijo que acababa de dar de alta no existía. **Es peor que ②24.sexies**, donde el asistente al menos
-puede contarlo en el momento.
-
-**Medido el 2026-08-22 contra datos reales:** Diego dio de alta un segundo alumno y el trabajo
-`ENR_PERSIST_PERSONS` murió tras 5 intentos con `AppSheet Add on enrPersons failed (HTTP 400):
-Column 'gender' doesn't support value: 'Prefer-not-to-say'` — el catálogo del producto y la columna
-de AppSheet declaran cosas distintas. **Esa causa es de Diego** (`pendiente-diego.md` D92); lo que
-esta pieza cierra es que **se vea**, sea cual sea el motivo.
-
-**Se PREGUNTA en el pulso que YA va y viene** —no se abre un viaje nuevo—:
-`enr.wizardEstadoDeLaAdmision` gana `guardados_sin_aterrizar`, que lee `sys_JobQueue` acotada por el
-`dedupe_key` `<grupo>:<paso>` que **todo** trabajo del asistente ya lleva (`enr_enqueuePersist_`), y
-el grupo sale del `resume_token` (KAL-4), nunca del cuerpo.
-
-**Lo que hay que retener al tocar esto:**
-
-- **La regla es «lo ÚLTIMO que se sabe de ese paso», no «alguna vez falló».** Por cada `dedupe_key`
-  se mira la fila más reciente y solo se avisa si ésa está en `Failed`. Sin eso el aviso sería
-  **PERMANENTE**: la fila fallida se queda en la cola para siempre (el dedupe solo colapsa
-  `Queued`/`Processing`), así que un fallo de ayer ya arreglado seguiría encendido y la familia
-  aprendería a ignorarlo. Con la regla **se apaga solo** en cuanto el paso vuelve a guardarse bien,
-  sin tocar ni una fila.
-- **⛔ Solo viajan CÓDIGOS DE PASO, jamás `error_msg`.** El motivo literal de AppSheet nombra la
-  columna y el valor rechazados: es diagnóstico para quien opera el colegio, no algo que se cruce al
-  navegador de una familia. Quien lo necesite lo lee con `manual_diagPorQueFallaronLosTrabajos`.
-- **El KMS AVISA en los DOS extremos: al MORIR el trabajo y al TERMINAR BIEN**, reusando
-  `enr_notifyWizardLiveState_` (que bumpa la versión del grupo, el mecanismo que ya gobierna el
-  pulso). Sin ese aviso la respuesta cacheada del pulso taparía el cambio **hasta la siguiente
-  escritura, que puede no llegar nunca**. ⛔ **NO toca la cola como mecanismo**: va DESPUÉS de la
-  marca terminal, no cambia ni los reintentos ni el estado, y es best-effort. Del payload sale
-  **un** campo: el identificador del expediente.
-
-  ⭐ **El aviso de que TERMINÓ BIEN llegó después, y es `0º.tricies.duodecies` (2026-08-22) — sin
-  él este trabajo estaba a medias.** Medido con datos reales: Diego arregló la causa (`pair_id`,
-  D97), volvió a guardar los vínculos, **el trabajo salió `Done` a las 17:39 — y el aviso rojo
-  siguió en pantalla**. La regla del aviso era correcta y no había que tocarla
-  (`enr_guardadosQueNoLlegaron_` ya toma **la fila más reciente** de cada paso y solo avisa si
-  **ésa** está en `Failed`, así que con el trabajo bueno delante ya no avisaba). **Lo que fallaba
-  es que nadie se enteraba de que se había arreglado**: el aviso solo salía al morir un trabajo, de
-  modo que el pulso seguía sirviendo su respuesta **cacheada** (`wz_adm_`, con el aviso dentro)
-  hasta que la versión del grupo cambiara por otra cosa. Hoy los **dos** motivos —`SAVE_OK` y
-  `SAVE_FAILED`— salen de **UN SOLO SITIO** en el KMS,
-  `sys_avisarAlAsistenteDelGuardado_(job, motivo)` (`kis-app kms-server/sys/job-queue.gs`): el
-  aviso estaba **copiado** dentro de `sys_jobQueue_markFailed_` y **ya había divergido una vez**
-  —existía solo para el fallo—, que es exactamente lo que §"Regla — refactors preservan el código
-  probado" prohíbe.
-
-  ⛔ **Y solo los PASOS DEL ASISTENTE**, con el MISMO filtro que ya usaba el fallo
-  (`enr_pasoDelTrabajo_`). No es cosmética: **el propio aviso es un trabajo de la cola**
-  (`CALL_WEBHOOK_ASYNC`), así que avisar por todo se realimentaría solo. Ese tipo devuelve `null`
-  en el mapa ⇒ el ciclo no puede cerrarse. **Cuánto tarda ahora en apagarse:** lo mismo que tarda
-  hoy en encenderse el del fallo — el aviso se encola y lo drena el bot de AppSheet al escribirse
-  la fila, con el disparador de 5 min como red. **Coste:** un trabajo de aviso por guardado
-  terminado, con `dedupe_key` `<grupo>:notify:<motivo>` ⇒ mientras uno esté pendiente, los
-  siguientes del mismo grupo y motivo **se colapsan en él**.
-- **«No se pudo mirar» NO es «todo está guardado»**, y son campos distintos
-  (`guardados_no_consultables`). Un KMS que aún no manda el campo, o caído, se lee como «no se pudo
-  mirar» y **conserva** lo que ya se sabía: apagar el aviso porque la consulta falló sería volver a
-  afirmar sin saber, que es el defecto entero por otra puerta.
-- **NO ofrece «Reintentar»** —el asistente no sabe por qué murió y volver a mandar lo mismo puede
-  morir igual— **y no se puede cerrar**: mientras el dato no esté guardado, el aviso es la verdad.
-  Lo que sirve es abrir ese paso y guardarlo otra vez.
-- **DEGRADA, no falla cerrado**: si la cola no se puede leer, el pulso sigue contestando la situación
-  del expediente, que es su trabajo.
-
-**Textos nuevos**: `guardado_no_llego.*` (título, cuerpo y los ocho nombres de paso), es y en.
-
-**Red**: el camino `guardado-muerto-se-dice` de la batería (5 afirmaciones). **Rojo demostrado
-CUATRO veces**: el aviso que nunca se pinta · el aviso que no nombra el paso · el «no se pudo mirar»
-tratado como «todo guardado» · el aviso que no se apaga nunca.
-
-⚠️ **LA MITAD DEL SERVIDOR NO TIENE RED, Y ESTÁ DEMOSTRADO — no supuesto.** Se rompió a propósito el
-paso del campo en `getAdmissionState_` y **la batería salió VERDE**: corre contra un backend simulado
-que **nunca ejecuta `backend/Code.js`** ni el KMS. Se midió aparte con un arnés efímero (fuera de los
-dos repositorios, no commiteado) que extrae del fuente `enr_guardadosQueNoLlegaron_`,
-`enr_pasoDelTrabajo_`, `sys_jobQueue_markFailed_` y `_pulsoDeLaAdmision_` y los ejecuta con dobles:
-**15 afirmaciones verdes** y **SIETE roturas rojas** (volver a «alguna vez falló» · disfrazar la cola
-ilegible de «todo guardado» · quitar el cinturón del prefijo · retirar el aviso al asistente ·
-arrastrar el payload en el aviso · dar por bueno un KMS sin el campo · y el renombrado, que sale
-**«MEDICIÓN CIEGA»**, no verde). **Quien toque esta cadena, que lo mida.**
-
-⚠️ **Y lo mismo vale para la mitad que apaga el aviso (`0º.tricies.duodecies`, 2026-08-22).** La
-del CLIENTE ya la cubre la afirmación **(4)** de `guardado-muerto-se-dice` —«el aviso se apaga SOLO
-cuando el paso vuelve a guardarse bien»—, que **simula** el cambio de versión del grupo
-(`scenario.liveVersion`); la del SERVIDOR, que es quien de verdad lo provoca, **la batería no puede
-cubrirla** porque nunca ejecuta el KMS. Se midió con otro arnés efímero (fuera de los repositorios,
-no commiteado) que extrae del fuente `sys_processJobQueue_`, `sys_jobQueue_markFailed_`,
-`sys_avisarAlAsistenteDelGuardado_` y `enr_pasoDelTrabajo_` y los ejecuta con dobles: **23
-afirmaciones verdes** y **CINCO roturas rojas** (no avisar al terminar bien → 6 rojas · quitar el
-filtro por paso → el aviso se realimenta · quitarle el best-effort → el trabajo YA HECHO vuelve a la
-cola y se repite · arrastrar el payload → datos de familia dentro del aviso · avisar también al
-reintentar), **más el renombrado, que sale «MEDICIÓN CIEGA»**. *(Y la medición se corrigió a sí
-misma: al renombrar reventaba con una traza en vez de declararse ciega, que es una forma de rojo que
-no informa.)* **Quien toque el aviso, que lo mida.**
-
-### `0º.tricies.quater` (2026-08-22) — «Sigo aquí» ya avisa de que el clic surtió efecto
-
-**Diego, 2026-08-22, cita literal:** *«Si le doy al botón de "sigo aquí" no hace nada. El contador
-sigue marcha atrás, no desaparece el mensaje... al llegar a cero se ha cerrado el mensaje pero no
-se ha bloqueado el wizard.»*
-
-**MEDIDO antes de tocar nada, con un arnés fuera del repositorio que reproduce
-`touchActivity`/`refrescarVentanaDeInactividad_` línea a línea, y confirmado después con la propia
-batería.** El encargo dejaba tres candidatos para la parte (A) y uno para (B); solo UNO de los
-cuatro resultó real:
-
-- **El clic SÍ viaja al servidor y SÍ extiende** — los cinco guardas de salida temprana de
-  `touchActivity` NUNCA bloquean dentro de la zona de aviso (los dos minutos), así que «no llega a
-  llamar» queda descartado.
-- **La causa real: cuando el techo está cerca, cada extensión se recorta contra él** —
-  `_extenderVentanaStepUp_` capa la nueva caducidad al techo, así que el contador crece por un
-  margen que a simple vista es imperceptible (sigue bajando casi igual, 1 s por 1 s) — y **hasta que
-  esa respuesta no vuelve, la pantalla no sabía decirlo**: `stepUpCierre` se queda con el valor de
-  la verificación original (normalmente `INACTIVIDAD`) y el botón se sigue ofreciendo como si fuera
-  a servir de algo.
-- **El «se lo traga en silencio» (fallos que no son `STEPUP_REQUIRED`) es real pero secundario**: no
-  era la causa de lo que Diego describió, pero se corrige igual, porque un clic que falla por un
-  corte de red tampoco puede quedarse mudo.
-- **(B) NO era un agujero de seguridad ni de código.** Medido y reconfirmado con la batería real:
-  el asistente **YA se bloqueaba** al agotar la ventana (`mustPassEntryGate` en `WizardPage.jsx`
-  cierra la puerta en cuanto `stepUpVerifiedUntil` llega a 0). Lo que faltaba era que el botón lo
-  avisara ANTES de que la familia se quedara mirando un contador que no se movía.
-
-**El arreglo, en `WizardContext.jsx` + `AvisoDeVentana.jsx`: el botón ACUSA RECIBO, siempre.**
-`touchActivity` gana dos señales de estado nuevas, `refrescoEnVuelo` y `refrescoUltimoFallo`
-(ninguna sustituye al mecanismo — solo lo hace VISIBLE): mientras el refresco está en vuelo el botón
-se deshabilita y dice «Comprobando…»; si la respuesta falla por algo que NO es `STEPUP_REQUIRED`, un
-aviso breve dice que no se pudo comprobar y que se seguirá intentando — **sin cerrar nada**, el
-mismo criterio de siempre («un fallo de red no puede echar a nadie de su solicitud»). Cuando la
-respuesta SÍ llega y el techo ya manda, `stepUpCierre` se actualiza como ya hacía y el aviso cambia
-solo a modo TECHO (oculta el botón, dice que se cierra por seguridad) — eso YA funcionaba; lo nuevo
-es que ahora, ANTES de esa confirmación, el clic deja de parecer mudo.
-
-⛔ **NO se alargó la ventana ni se subió el techo.** ⛔ **`assertStepUpFresh_` y el orden de las
-puertas no se tocaron.** ⛔ **El servidor sigue extendiendo, jamás creando** — nada de esto se tocó,
-en ningún lado.
-
-**Red**: `npm run e2e:wizard`, camino `ventana-por-inactividad`, FASE G nueva (cuatro afirmaciones,
-12-15): nace en modo INACTIVIDAD (no ya en TECHO, para probar la secuencia GRADUAL que describió
-Diego, no la que ya cubría la FASE F) · el botón se deshabilita EN EL ACTO al pulsarlo · tras clics
-sucesivos el techo SE NOTA (pasa a TECHO o el asistente se bloquea — nunca sigue exactamente igual)
-· agotado el techo sin más clics, el asistente SÍ se bloquea. **Rojo demostrado dos veces**:
-quitando el `disabled` del botón → **ROJO** nombrando el caso exacto (*«el botón nunca se marcó "en
-vuelo" tras el clic»*); dejando que `stepUpCierre` no se actualice nunca → **ROJO** (error de
-consola real: el servidor rechaza con `STEPUP_REQUIRED` porque el cliente sigue creyendo que puede
-extender). `VEREDICTO: VERDE — 29 de 29` con ambos arreglos restaurados. Los dos controles de
-seguridad del repositorio, VERDES.
-
-**Textos nuevos**: `stepup.aviso_comprobando` / `stepup.aviso_no_se_pudo`, `es` y `en`.
-
-**Publicado**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
-`main` (CI/Pages).
-
-### `2026-09-15-sigo-aqui-llega-tarde` — la identidad del enlace ya no caduca ANTES que la ventana a la que sirve
-
-**Diego, 2026-09-15:** *«el contador de tiempo no me dejaba darle (ponía comprobando). Luego me dejó
-y le dije que sí, que seguía ahí, pero al final me ha bloqueado y me ha dejado fuera.»* Con el aviso
-a **1:21** en su pantalla.
-
-⚠️ **NO era el mecanismo de la ventana, que hacía lo correcto: era ARITMÉTICA de plazos.**
-`refrescarVentanaDeInactividad_` resuelve **de qué buzón es el enlace** (`_identidadDelEnlace_`)
-ANTES de extender nada, y esa resolución tenía una memoria de **300 s** (`idlinkd_`/`idlinkr_`).
-La ventana dura **600 s** y el aviso sale a los **480 s** de no tocar nada ⇒ **quien pulsa «sigo
-aquí» tras estar parado SIEMPRE cae en fallo de memoria**, y eso cuesta un viaje al KMS de 20-30 s.
-Ése es el «Comprobando…» que no se iba. Y si el viaje tardaba más que lo que quedaba,
-`assertStepUpFresh_` ya no encontraba la marca **viva** ⇒ `STEPUP_REQUIRED` ⇒ **fuera**.
-
-**LAS DOS PIEZAS, y la segunda es gratis:**
-
-| Pieza | Qué hace |
-|---|---|
-| **`IDENTIDAD_MEMO_TTL_S_ = COPIA_PUERTA_TTL_S_`** (1800 s) | la memoria de la identidad deja de morir antes que la ventana a la que sirve |
-| **la identidad se resuelve PEREZOSAMENTE** en `refrescarVentanaDeInactividad_` | el MISMO patrón de `0º.octies`: se pasa un *thunk*, y `_leerMarcaStepUp_` solo lo invoca **si la marca guardada LLEVA buzón**. Es la MISMA comparación, byte a byte — lo que se evita es calcular un dato que no puede cambiar el resultado |
-
-**LOS NÚMEROS, medidos sobre las funciones REALES extraídas del fuente y ejecutadas con dobles:**
-
-| Caso | ANTES (`origin/main`) | DESPUÉS |
-|---|---|---|
-| parado 8 min y «sigo aquí» | **1 viaje al KMS** (20-30 s) | **0** |
-| a partir de cuántos minutos parado empezaba a costar | **5** (exactamente los 300 s) | **nunca dentro de la ventana de 10 min** |
-| espejo válido | 0 | 0 |
-| espejo invalidado por el propio guardado de la familia (**el caso normal**) | **1** | **0** |
-| sesión de ~2 h pulsando cada 5 min | **25 viajes** | **6** (refrescos de la copia de la puerta + identidad cada 30 min) |
-
-⛔ **POR QUÉ LA SALIDA FUE EL PLAZO Y NO EL ESPEJO, y esto lo decidió la medición.** La ficha dejaba
-tres salidas abiertas; la (2) era servir la identidad de la copia caliente (`_tutorQueRecupera_` ya
-la mira, `①97`). **Se midió y NO basta sola:** con el espejo válido acierta (0 viajes), pero **todo
-guardado de la familia bumpa la clase `hyd`** —está en TODOS los motivos de `WZ_CLASES_POR_MOTIVO_`—
-y **nada la vuelve a calentar dentro de la sesión** ⇒ en la secuencia real vuelve a 1 viaje. La (3)
-(congelar el contador) es cosmética y el propio encargo la declaraba insuficiente.
-
-⛔ **LA BARANDILLA QUE HUBO QUE COMPROBAR ANTES DE SUBIR EL PLAZO, y es la mitad del trabajo:** que
-`idlinkd_`/`idlinkr_` **no decidan nada que sí tenga que caducar.** Medido sobre los 20 puntos de
-llamada de `_identidadDelEnlace_`: lo único que guardan es **la CADENA del correo del enlace**. La
-traducción correo→persona **NO se memoriza ahí** (vive en `_TUTOR_MEMO_`, de EJECUCIÓN, que muere
-con la petición) ⇒ **quien ATRIBUYE** (`wizardTutorAtribuible_`, el libro de consentimientos, el
-dueño de un documento) **sigue preguntando en fresco** y sigue devolviendo `null` cuando ese tutor ya
-no existe (②24.bis). El KMS revalida `submitted_by_person_id` en cada proxy. Y **la clave lleva el
-`resume_token` dentro**: rotar el enlace deja la entrada vieja inalcanzable.
-
-⚠️ **EL LÍMITE HONESTO, escrito para que no sorprenda:** si un tutor **CAMBIA su correo**
-(`enr_addEmail_` actualiza la fila **en su sitio**, conservando el `email_id`), el código de un solo
-uso puede irse a la dirección anterior **hasta 30 min** — antes eran 5. **No abre nada** (ese buzón
-ya tenía el enlace, y la propia puerta lo acepta 30 min por decisión de Diego), se autocorrige, y es
-el precio de no echar de su solicitud a quien está delante. **En el otro sentido es MÁS indulgente
-que antes**: la marca guarda el resumen del buzón con el que NACIÓ, así que un correo editado a
-mitad de sesión ya no hace fallar la comparación a los 5 minutos.
-
-⛔ **Y NO SE SUBE MÁS.** Está atado **por NOMBRE** a `COPIA_PUERTA_TTL_S_`: el techo de 30 min lo
-fijó Diego (*«No pasa nada por que un enlace tarde 30 minutos en dejar de valer»*), y la identidad
-no puede sobrevivir a la copia de la puerta que la acredita.
-
-⛔ **Lo que NO se tocó, campo por campo:** la ventana de 10 min · el techo de 2 h · `assertStepUpFresh_`
-y el orden de las puertas · el atado de la marca a su buzón (②24) y a su página viva · que una
-**RECARGA** vuelva a pedir el código · que `_extenderVentanaStepUp_` **EXTIENDA y jamás CREE** · y
-que el contador que ve la persona salga del **servidor** (`step_up_restante_s`), nunca del navegador.
-⛔ **Y NO se toca al revés**: cuando la marca SÍ lleva buzón, la identidad se resuelve y se compara —
-pasarla vacía desharía el atado de ②24, que es una regresión de seguridad, no un ahorro.
-
-⚠️ **NINGUNA RED AUTOMÁTICA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend **simulado**
-que **nunca ejecuta `backend/Code.js`**, y su recorrido `ventana-por-inactividad` **comprime el
-reloj**, así que por construcción no puede ver un viaje de 30 s. Se **midió aparte**, con un arnés
-efímero fuera del repositorio que carga `backend/Code.js` ENTERO en un `vm` con dobles de Apps Script
-(reloj controlable, `CacheService` en memoria y `kmsProxy_` CONTADO): **14 afirmaciones verdes** y
-**CINCO roturas ROJAS demostradas** — devolver el plazo a 300 s (3 rojas) · pasar el buzón VACÍO al
-lector (②24 roja) · resucitar una ventana muerta · recalcular el techo al extender (2 rojas) · y el
-**renombrado**, que sale **«MEDICIÓN CIEGA»** y no verde.
-
-⚠️ **Y el arnés se corrigió a sí mismo TRES veces, que es lo que lo hace creíble:** sin reiniciar
-`_TUTOR_MEMO_` y `_memoCabeceraEjecucion_` entre peticiones simuladas **todo salía 0 viajes** (esas
-memorias son de EJECUCIÓN en GAS y viven toda la instancia del `vm`) · el doble de `CacheService`
-sin `putAll`/`getAll` hacía que `_espejoGuardarCopia_` fallara en silencio y el caso del espejo
-midiera el aire · y la rotura de «resucitar una ventana muerta» salía **VERDE** porque
-`assertStepUpFresh_` lanza ANTES y la entrada de caché caduca sola ⇒ hubo que llamar a
-`_extenderVentanaStepUp_` **directamente** sobre una marca con el `exp` pasado y su entrada todavía
-viva, que es la carrera real.
-
-**Control**: `node scripts/comprobar-verja-publica.mjs` sigue **VERDE**, y **se comprobó que no está
-ciego en esta zona**: inyectando `_extenderVentanaStepUp_(id)` en la rama del pulso de
-`getAdmissionState_` sale **ROJO** nombrando SEC-STEPUP #55. Los OCHO controles del repositorio,
-VERDES.
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla y
-lee exactamente lo mismo; lo que cambia es que «sigo aquí» contesta al instante y no la echa fuera.
-
-⚠️ **Lo que queda, y está en la cola** (`kis-app docs/kms/loop-backlog.md`,
-`2026-09-15-sigo-aqui-llega-tarde`): `requireSignerIdentity_` tiene **su propia** memoria —`sigid_`,
-también de **300 s**, con la misma estructura— y la usan los **CINCO** manejadores de firma
-(`saveBillingInfo_`, `applyPaymentModality_`, `submitGdprConsents_`, `confirmReview_`,
-`initiateSigningSession_`). **NO se tocó aquí**: memoriza el resultado de `requireResumeToken_`, o
-sea la PUERTA, así que subir su plazo exige medir antes qué se salta al acertar.
-
-### `0º.quadragies.ter` (2026-08-29) — el reparto no se siembra de una sección VACÍA
-
-**⛔ ES DINERO Y SE FIRMA.** El paso 8 daba por hablado al servidor **en cuanto la sección
-`billing_splits` LLEGABA** (`seededFromServer: !!src`) — **aunque llegara vacía**. Y la hidratación
-se arma **best-effort por sección** (`enr_wizardHydrateCompute_`: *«cualquier tabla/sección que falle
-degrada a su default … sin lanzar»*), así que una lectura caída la deja vacía sin que nadie proteste.
-
-⇒ el tutor veía **100/0** con **60/40 guardado**, y **firmaría un reparto distinto del pactado**.
-
-**⚠️ Y ERAN DOS SITIOS, NO UNO — está medido, no razonado.** Además de la guardia, **la lectura
-trataba una sección vacía como «ya lo tengo» y retornaba sin pedir nada** ⇒ el 60/40 que tenía que
-corregir la siembra **no llegaba a existir**. Con solo `seededFromServer` arreglado, el deslizador
-**seguía en 100** (rotura (a), abajo).
-
-**⛔ UN SOLO CRITERIO, consumido por los TRES sitios** — la lectura, la siembra y la revalidación:
-`traeAlgunReparto_(src)`, a nivel de módulo en `Step8Billing.jsx`. Escribirlo tres veces es
-exactamente cómo divergen, y aquí la divergencia se paga con el reparto que una familia firma.
-
-**⛔ Lo que NO se toca:** el asistente **no calcula dinero** (DL-080-A) — el importe lo proyecta el
-KMS y aquí solo se formatea · el IVA, la serie y la numeración, intactos (DL-066-LEAN) · un plan
-firmado sigue sin poder cambiarse sin acuerdo expreso · y **el camino normal es byte-idéntico**
-(afirmación (3): con la sección llena, el comportamiento no cambia).
-
-**Red**: camino NUEVO `reparto-no-se-siembra-de-vacio`, con el escenario que la ficha describe —
-`repartoDegradaEnLaHidratacion` deja la sección vacía mientras `getSavedBillingSplits` sigue trayendo
-el 60/40 real, que es lo que ocurre cuando esa sección degrada—. **TRES rojos demostrados**:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| arreglar **solo** `seededFromServer` | *«(1) … el deslizador vale 100 (se esperaba 60): la pantalla sembró de una sección vacía y ya no se deja corregir ⇒ el tutor firmaría un reparto distinto del pactado»* |
-| volver la guardia a `!!src` | el mismo rojo |
-| renombrar lo medido | *«MEDICIÓN CIEGA · … el recorrido NO puede medir lo que dice medir, así que NO puede salir verde»* |
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS. Afirma lo que pinta el navegador — que es donde vive este defecto. **No
-se tocó ni una línea de servidor.**
-
-### `0º.tricies.quintricies` (2026-08-29) — lo tecleado y sin guardar ya no muere con la página
-
-**Diego, 2026-08-26, sobre iPhone:** *«si cargo y luego cambio a otra app, se pierde el foco y se
-pierde la conexión de datos»*. **iOS descarta la página** cuando necesita memoria; al volver, se
-recarga desde cero.
-
-**Lo medido contra `origin/main` ANTES de tocar nada, y el defecto se reprodujo:**
-
-| Qué | Resultado |
-|---|---|
-| ¿algo dispara al ocultarse la pantalla? | **NADA** — cero `visibilitychange`/`pagehide` que hagan salir un guardado |
-| ¿dónde se encola un guardado de paso? | **UN solo sitio**: `WizardPage.handleNext` → `enqueueSave`, al pulsar Continuar |
-| ¿guardado por campo o por tiempo? | **no hay** |
-| ¿cuántos guardados salen mientras se teclea? | **CERO** *(afirmación del recorrido nuevo, verde ya antes del arreglo: la ventana es real)* |
-
-⇒ **todo lo tecleado en un paso vivía SOLO en la memoria del navegador hasta avanzar**: rellenar el
-paso de personas cinco minutos y cambiar de app podía costar los cinco minutos.
-
-**⛔ LA SALIDA NO ES GUARDAR EN EL NAVEGADOR, ES ENVIAR — y eso decide todo el diseño.** `KAL-7` lo
-dice con todas las letras: *«NADA de esto se persiste en sessionStorage (cero secretos/PII fuera de
-memoria)»*. Lo pendiente **SON** los datos personales de la familia ⇒ **PROHIBIDO** meterlos en
-`sessionStorage`/`localStorage`. Se **MANDAN** antes de que la página muera; nada nuevo se queda aquí.
-
-**⛔ `navigator.sendBeacon` DESCARTADO, y va escrito para que nadie lo reproponga:** no espera
-respuesta ⇒ **un rechazo se perdería**, y el guardado necesita LEER la respuesta (el identificador
-del trabajo, los rechazos). Un dato «enviado» que el servidor descartó en silencio es el mismo
-defecto con otra cara.
-
-**Las tres piezas, y ninguna es un oyente por pantalla:**
-
-| Pieza | Dónde |
-|---|---|
-| el paso **publica** cómo preguntarle lo tecleado | `registrarBorradorDelPaso` (`WizardContext`), en un `ref` — **memoria y nada más** |
-| **UN SOLO oyente** `visibilitychange`→`hidden` + `pagehide` | `WizardPage` |
-| el guardado sale por **el mismo camino de siempre** | `encolarGuardadoDelPaso`, sacado VERBATIM del cuerpo de `handleNext` |
-
-**⛔ Por qué hace falta que el paso publique:** lo tecleado vive en el estado local del paso
-(`Step2Persons`: `const [persons, setPersons]`) y **no llega al contexto hasta pulsar Continuar** —
-un oyente en `WizardPage` no puede verlo. **Añadir otro paso cuesta CUATRO líneas en ese paso**, sin
-tocar ni el contexto ni el oyente. Hoy lo publica **Personas**, que es el peor caso.
-
-**⛔ Lo que NO se toca:** el ORDEN FIFO de la cola (personas→vínculos: el vínculo necesita el
-identificador que estampa el de personas) — el disparo **entra por la cola, no la salta** · la
-ventana de inactividad (ocultar la pantalla **no es actividad** y no la extiende, lo vigila
-`comprobar-verja-publica.mjs`) · `rechazos.js` sigue siendo el único sitio que decide qué se
-reintenta · KAL-4, el código de un solo uso y la recarga, exactamente igual.
-
-**⚠️ Y no se vuelve una tormenta:** ocultar y volver varias veces no dispara N guardados — lo impide
-la huella de lo último mandado, además de `isStepDirty`, que es quien decide de verdad.
-
-**Red**: camino NUEVO `lo-tecleado-no-muere-con-la-pagina` (11 afirmaciones), con **dos anclas** por
-delante — que se llegue a Personas y que el paso admita escritura — y **una tercera que es nueva en
-esta casa**: una comprobación contra el FUENTE de que el mecanismo medido **existe con su nombre**,
-para que renombrarlo salga **CIEGO** en vez de rojo-a-secas. **CUATRO rojos demostrados**:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| el código de ayer (sin arreglo) | *«(1) … no salió ningún guardado al ocultar la pantalla (0 en total): lo tecleado vive solo en la memoria del navegador…»* |
-| tragarse el rechazo | *«(4) … al volver a la pantalla no hay ni un aviso del guardado rechazado: el tutor cree que guardó»* |
-| saltarse la cola (`independiente: true`) | *«(5) … 423 ms entre las dos (se esperan ≥4000…)»* — con cola: **6810 ms** |
-| renombrar lo medido | *«MEDICIÓN CIEGA · … el recorrido NO puede medir lo que dice medir, así que NO puede salir verde»* |
-
-⚠️ **Y la red se corrigió a sí misma DOS veces, que es el hallazgo de método:** el ancla usaba
-`input[type="text"]`, que **no casa** un `<input className="form-control">` sin ese atributo (devolvía
-0); y la afirmación (5) medía **el orden en que salen** las peticiones — que se conserva igual
-saltándose la cola, así que **la rotura (c) salía VERDE**. Lo que distingue FIFO es que **la segunda
-no sale hasta que la primera termina**, y hubo que frenar la escritura a 6 s porque con 2,5 s el hueco
-lo producían **las esperas del propio recorrido**, no la cola.
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS. Afirma lo que hace el NAVEGADOR — que es donde vive este defecto
-entero. **No se tocó ni una línea de servidor.**
-
-### `0º.tricies.nonies` (2026-08-22) — entrar por el enlace manda UN código, y la pantalla lo dice
-
-**Diego, 2026-08-22, cita literal:** *«cuando se carga el wizard desde un enlace, automáticamente
-envía un OTP y eso da error, porque la pantalla de carga permite enviar otro. No tiene sentido. Si
-acceder vía enlace automáticamente envía otp, debe informar de ello. Y si no, que no lo envíe y lo
-pide el usuario.»*
-
-**LA CAUSA, MEDIDA — y no era ninguno de los dos candidatos que traía la ficha.** `WizardPage`
-monta la verja (`StepUpGate`), que auto-envía el código, y **acto seguido su efecto de
-rehidratación pone `rehydrating=true`** —cierto porque la hidratación con el candado puesto vuelve
-sin `email.verified`, así que `needsHydration` es verdadero— ⇒ el padre devuelve el loader neutro y
-**la verja se DESMONTA**. Cuando la hidratación contesta (15-40 s), se monta una **SEGUNDA
-instancia con su estado local a cero**: «pulsa para recibir tu código», **casilla DESHABILITADA** y
-botón «Enviar» **LIBRE**, con el primer código ya volando al buzón. La familia no tenía más remedio
-que pulsar **solo para poder teclear**, y ese segundo envío **PISA al primero** en la caché del
-servidor (`cache.put(codeKey, code, 600)`, `backend/Code.js`) ⇒ el código que ya le había llegado
-deja de valer. **Ése es el «da error».**
-
-| Candidato de la ficha | Medido |
-|---|---|
-| el auto-envío FALLA y su `catch` desbloquea el botón | **NO**: el envío sale bien; el botón se libera por el remontaje, no por el fallo |
-| la verja se remonta ⇒ `autoSentRef` se reinicia y **auto-envía otra vez** | **NO**: `shouldAutoSend` ya es falso en la segunda instancia, porque `otpAutoSentForRecovery` persiste en `sessionStorage` |
-
-⇒ **lo que se perdía no era el freno del envío: era la MEMORIA de que ya se había enviado.**
-
-⚠️ **Y estaba MEDIDO Y ESCRITO desde el 2026-08-20, dentro de la propia batería** (cabecera de
-`codigo-sin-congelar`), declarado *«un DEFECTO del producto… queda ANOTADO aquí; no se arregla en
-este cambio»*. La ficha de la cola se escribió después sin recogerlo. Es §"Un COMENTARIO del código
-no es criterio normativo" (`kis-app/CLAUDE.md`) por la otra cara: **lo que sí estaba medido, no se
-leyó**.
-
-**De las dos salidas que Diego autoriza se elige CONSERVAR el auto-envío**, y el motivo es medido:
-la petición tarda ~77 s en aceptarse y el correo otros ~56 s de media, y ese envío **ya corre
-mientras el asistente rehidrata**. Quitarlo le sumaría todo eso a **toda** familia que entra por su
-enlace. El defecto no es que se auto-envíe: es que la pantalla lo olvidaba.
-
-**Cómo queda.** Al asentarse la pantalla, la verja dice «Te hemos enviado un código», la casilla
-está **lista para teclear** y «Reenviar» sigue **en su espera corta**, contando desde el envío real.
-Un solo código, y ninguna invitación a quemar otro.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ El hecho vive FUERA del componente, en `WizardContext` (`otpEnvioEntrada`), y es estado de
-  REACT — NUNCA `sessionStorage`.** La distinción es deliberada: una **RECARGA** debe volver a
-  «pulsa para enviar» (req. c de 2026-06-07, y la FASE A de `ventana-por-inactividad` lo afirma), y
-  eso solo se cumple si esto se pierde al recargar. `otpAutoSentForRecovery` responde a **otra**
-  pregunta —«¿ya auto-enviamos una vez en esta sesión recuperada?»— y por eso sí persiste. **No se
-  fusionan.**
-- **⛔ La marca CADUCA a los 10 minutos**, la vida del propio código en el servidor. Pasado eso,
-  decir «introduce el código que te hemos enviado» sería mentira —el que tiene ya no vale—, así que
-  la verja que reaparece tras la inactividad vuelve a pedir que se pulse. Fuera de la vigencia, el
-  comportamiento es **exactamente** el de antes de este cambio.
-- **La cuenta atrás se REANUDA, no se reinicia**: la segunda instancia arranca en los segundos que
-  quedaban. Sin eso, el remontaje regalaba un botón libre — y con él el segundo código.
-- **⛔ Y un fallo que llega TARDE también se pinta.** Es la otra mitad: la petición la dispara la
-  instancia 1, y cuando el servidor rechaza esa instancia **ya está desmontada**; su `.catch` sigue
-  corriendo pero sus `setErr`/`setEspera` no pintan nada, así que la instancia 2 se quedaba diciendo
-  «te hemos enviado un código» ante un envío que nunca salió. El fallo viaja por el contexto y la
-  verja viva lo adopta.
-- **Un fallo NUNCA cierra el camino de entrar**: no se borra lo tecleado ni se deshabilita la
-  casilla — la familia puede tener en la mano un código válido de un envío anterior.
-
-**Lo que NO se toca**: la ventana de 10 min, el techo de 2 h, `assertStepUpFresh_`, los dos cupos
-(`_checkStepUpCodeRateLimit_` 8/h por buzón), de dónde sale el buzón (KAL-4, siempre del token) y el
-«dispara y sigue» (clase #32 — el recorrido `codigo-sin-congelar` sigue verde). **Ni una línea de
-`backend/Code.js` ni del KMS.**
-
-**Textos: ninguno nuevo y ninguno cambiado.** La familia lee los mismos de siempre
-(`stepup.code_sent`, `stepup.gate_subtitle`) — lo que cambia es que ahora salen cuando son verdad.
-
-**Red**: `npm run e2e:wizard`, camino NUEVO `codigo-al-entrar-por-enlace` (10 afirmaciones).
-`VEREDICTO: VERDE — 34 de 34`. **ROJO DEMOSTRADO** corriéndolo contra el código sin arreglar: **seis
-afirmaciones en rojo**, cada una nombrando su caso —
-
-| Afirmación | Rojo obtenido |
-|---|---|
-| (2) la pantalla dice que ya se envió | *«la verja no muestra el aviso de «te hemos enviado un código» (aviso: null): con un código ya en vuelo, invita a pedir otro»* |
-| (3) la casilla está lista | *«la casilla del código está DESHABILITADA con un código ya enviado: la familia se ve obligada a pulsar «Enviar» solo para poder escribir, y ese segundo envío invalida el primero»* |
-| (4) «reenviar» en su espera corta | *«el botón quedó libre («Enviar código») justo después del auto-envío: se está invitando a la familia a quemar un segundo código»* |
-| (5) con ese código se entra | *«no se pudo ni teclear el código…»* |
-| (6) el fallo del auto-envío llega | *«la verja muestra error=null…»* |
-| (7) el fallo no cierra el camino | *«casilla DESHABILITADA…»* |
-
-⚠️ **El recorrido NO teclea a ciegas, y es deliberado**: con la casilla deshabilitada `page.fill`
-LANZA y el runner **descarta el camino entero** («el recorrido se rompió»), perdiendo justo las
-afirmaciones que nombran el defecto. Se comprueba antes de teclear.
-
-**Dos ajustes que son del ROBOT, no del producto** —el arreglo acelera los recorridos y destapó dos
-carreras suyas: irse de la página con un `fetch` a medias lo aborta y la aplicación registra un
-«network/fetch error» que no es suyo—. `codigo-sin-congelar` entra **dos veces** para partir de una
-verja que no auto-envía (mide el gesto del BOTÓN; el auto-envío lo mide el camino nuevo), y el
-drenado de `ventana-por-inactividad` exige un tramo de **quietud** antes de navegar y **reconfirma
-tras el margen**: con la ventana comprimida el asistente puede bloquearse en mitad de la espera,
-montar la verja y disparar su precalentado justo después de la última mirada. **Medido con una
-sonda, no supuesto**: se perdía en el pase «c».
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`**. Que el segundo envío pise al primero se acredita **leyendo el servidor real**
-(`cache.put(codeKey, code, 600)`), no con esta batería. Los cuatro controles del repositorio, VERDES.
-
-**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
-
-### `③70` (2026-08-22) — el paso 7 enseña la simulación TAMBIÉN con la solicitud ya enviada
-
-**Decisión de Diego, 2026-08-21, literal:** *«si una familia entra en el wizard se va a quedar en el
-paso 7, con todos los pasos previos bloqueados, y con el aviso de que la solicitud está enviada. A lo
-mejor lo que sí puede hacer en esta pantalla es consultar la simulación, ver los distintos planes o
-modalidades»*.
-
-**Lo medido antes de tocar nada, contra `origin/main`.** El bloque `SimulacionDeCuotas` se pintaba
-**SOLO en la rama «todavía no enviada»** del ternario de `Step7Review.jsx` (`:1176` el ternario,
-`:1211` la llamada — la ficha decía `~1045/~1080`, movidos desde entonces). En cuanto se estampa el
-envío, la familia que vuelve veía el cartel de «solicitud enviada», los pasos previos bloqueados y
-**ninguna cifra**. No fallaba: es que no se renderizaba.
-
-**El servidor SIEMPRE lo permitió ⇒ no se toca `backend/Code.js` ni el KMS.** `simularCuotas_` lleva
-**únicamente** `requireResumeToken_` —ni `assertGroupEditable_` ni código de un solo uso, a propósito,
-porque es una LECTURA— así que sigue contestando con la solicitud enviada. El cambio es de FRONTAL y
-de UNA pantalla.
-
-**Cómo queda.** El MISMO componente, con una bandera `soloLectura`: se ven las mismas cifras y el
-mismo calendario, y las formas de pago se enseñan **todas, en texto, una línea por cada una** (la que
-manda el calendario va en negrita) — **sin desplegable**. Un segundo componente que pintara lo mismo
-divergiría (§"Regla — refactors preservan el código probado"), así que no se escribe.
-
-⚠️ **UNA PREMISA DEL ENCARGO ERA FALSA, y se dice porque cambia el motivo del diseño.** Decía que
-dejar los controles de elegir haría que la familia *«pulsara y se llevara un error `NOT_EDITABLE`»*
-de `guardarModalidadPreferida_`. **Ese manejador NO EXISTE**: medido el 2026-08-22, cero apariciones
-en `backend/Code.js` y cero en el frontal — lo retiró entero `0º.vicies.sexies`, y desde entonces
-**marcar una forma de pago no viaja a ningún sitio** (vive en `formaDePagoMarcada`, del navegador).
-⇒ **no había ningún error que evitar.** Se mantiene igualmente el modo solo lectura, pero por el
-motivo CORRECTO, que sobrevive a la premisa: **honestidad**. Con la solicitud ya enviada, la elección
-que cuenta es la del paso 8 —la que se firma (DL-080-A)—, así que un control que invita a elegir
-prometería algo que esta pantalla no puede dar.
-
-**Lo que NO se toca:** `handleSubmit` (el bloque vive fuera, y un fallo suyo nunca puede impedir
-enviar) · el paso 8 y su elección en firme · el cálculo de dinero (`money()` divide entre 100 y
-formatea; los importes salen del motor del KMS) · el backend, en ninguno de los dos repositorios.
-
-**Texto nuevo**: `step7.sim.readonly_note`, `es` y `en` — dice que la pantalla es de consulta y que
-elegir vendrá después.
-
-**Red**: `npm run e2e:wizard`, camino NUEVO `simulador-tras-enviar` (10 afirmaciones, sobre
-`stage='enviada'`). Lleva un **ancla** deliberada —que la pantalla ofrezca «pedir corrección»— para
-que las tres afirmaciones siguientes no puedan pasar sobre la pantalla de antes de enviar y no medir
-nada. `VEREDICTO: VERDE — 31 de 31`. **Rojo demostrado DOS veces**, cada uno nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| no pintar el recuadro en la rama de enviada | *«la familia que ya envió VE la simulación de cuotas — no se pintó [data-testid="paso7-simulador"] con la solicitud enviada: la familia se queda sin ninguna cifra»* |
-| dejar salir el desplegable en solo lectura | *«con la solicitud enviada NO se ofrece elegir la forma de pago — se pintó el desplegable de elegir…»* |
-
-⚠️ **Lo que la red NO cubre:** la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni llama al KMS, así que afirma lo que pinta el navegador, **no** lo que permite
-el servidor. Que `simularCuotas_` siga sin exigir `assertGroupEditable_` se acredita **leyendo el
-código real**, no con esta batería. Los cuatro controles del repositorio, VERDES.
-
-**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
-
-### `①45` (2026-08-22) — el paso 2 recoge los IDIOMAS QUE HABLA cada persona
-
-**Diego, 2026-08-16, literal:** *«El wizard debería recoger el idioma o idiomas hablados por la
-familia como dato opcional.»* No era una avería —no se perdía nada, no había fuga—: era un dato
-que sencillamente no se preguntaba en ninguna parte. Sube por ser del proceso de admisión.
-
-**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada, porque es lo que hace este
-tramo pequeño: la fontanería estaba ENTERA y sin nadie que la usara.**
-
-| Pieza | Estado medido |
-|---|---|
-| `enrPersonLanguages` (persona × idioma, con `is_mother_tongue`) | existe y está viva |
-| **el KMS ya ESCRIBE** lo que se le mande en `persons[].languages[]` | `enr_persistPersons_`, `kis-app kms-server/enr/wizard-gateway.gs` — clave por identidad (persona+idioma) |
-| **la hidratación ya lo DEVUELVE** | `enr_wizardHydrateCompute_`, `wizard-datalayer.gs` → `attach('enrPersonLanguages','languages')` |
-| la ficha del personal ya lo pinta | `kis-app frontend/…/ApplicationDetailPage.jsx:168` |
-| **el asistente** | `languages` / `language_id` / `is_mother_tongue`: **CERO apariciones en todo `frontend/src`** |
-
-⇒ **no se tocó el KMS, ni una línea.** Lo único que faltaba era preguntarlo.
-
-**⛔ NO es el «idioma preferente» del centro (ficha `①44`), y confundirlos era el fallo a evitar.**
-Aquél responde a *«¿en qué idioma le hablamos?»* y se limita a lo que el centro sabe servir. **Éste
-responde a *«¿qué idiomas habla esta persona?»***: admite VARIOS, es OPCIONAL, y **no** está acotado
-a los idiomas en los que el sistema rinde — una familia habla francés aunque el KMS no hable
-francés. Y es dato **DE CADA PERSONA**, no del grupo: un tutor puede hablar francés y el alumno no.
-
-**Cómo queda la pantalla.** Debajo de nacionalidad y documento, en cada ficha de persona, una fila
-de casillas con el catálogo de idiomas. Marcar no es obligatorio: dejarlo en blanco **no impide
-avanzar ni dispara ningún aviso**.
-
-**⛔ LO YA DECLARADO NO SE PUEDE DESMARCAR, y es lo único no obvio de este tramo.** Los satélites de
-persona del KMS son **append-only** —el propio escritor lo dice: *«viva ⇒ no se toca
-(append-only)»*— y **`enrPersonLanguages` NO es una de las clases que la familia puede quitar**
-(`enr/retirada.gs` declara PERSONA · CORREO · TELEFONO · VINCULO · DOCUMENTO; los idiomas solo
-aparecen ahí como tabla que se ARRASTRA al quitar la persona entera). Dejar desmarcar un idioma ya
-guardado sería exactamente el defecto que `lib/quitar.js` existe para cerrar: **quitarlo de la
-pantalla y que vuelva al recargar**. Por eso vuelve marcado y **bloqueado** — la misma honestidad
-que el paso 6 con el tipo de un documento ya subido (`0º.sexdecies`).
-
-**⛔ LO QUE NO SE RECOGE, y por qué — se MIDIÓ antes de decidirlo, no se omitió.** La columna
-`is_mother_tongue` existe y el escritor la lee (`is_mother_tongue: !!l.is_mother_tongue`), **pero
-NO se pregunta**. Motivo medido: siendo la fila append-only, un dato que la familia marcara mal
-**no se podría corregir nunca** — un control que parece editable y está congelado desde el primer
-guardado promete lo que no puede dar. Al no mandarse, el KMS escribe `false`, que **no es una
-mentira**: quiere decir «la familia no la declaró», que es exactamente lo que pasó. El entregable
-de la ficha era la lista de idiomas hablados, y eso es lo que hay.
-
-**⚠️ Y un LÍMITE HONESTO más, medido:** la ficha del personal enseña el valor **EN CRUDO**
-(`l.language_id` → Diego lee `es`, no `Spanish`), porque `enrPersonLanguages` no trae columna de
-designación como sí trae la nacionalidad (`nationality_designation`). Resolverlo es del lado del
-KMS y **no se tocó**.
-
-**Dónde aterriza el dato:** `enrPersonLanguages`, una fila por persona e idioma, escrita por el KMS
-desde `persons[].languages[]` del guardado del paso 2 — **no se abrió ninguna ruta nueva ni un
-segundo camino de guardado**: el idioma viaja con la persona, en el guardado que ya existía.
-
-**Lo tocado, todo en `frontend/`:** `constants/languages.js` (catálogo curado ISO 639-1, molde de
-`countries.js`, con su nota de por qué no sale de un lookup: **el lookup no sirve idiomas**, medido)
-· `steps/Step2Persons.jsx` (el control, el `emptyPerson` y el paso al guardado, copiando el patrón
-de `nationality`) · `steps/personShape.js` (normalizar `languages` a `[]` — misma línea y mismo
-motivo que `ids`: sin ella el dirty-check marca el paso sucio en cada navegación y dispara guardados
-espurios) · los textos, en **los dos idiomas** (`field.languages`, `field.languages_help`,
-`field.languages_other`).
-
-**Red**: `npm run e2e:wizard`, camino NUEVO `idiomas-hablados` (14 afirmaciones). Lleva un **ancla**
-por delante —que el paso pinte alguna casilla de idioma— para que las demás no puedan pasar en
-vacío, y **el simulado sirve un idioma YA declarado en el tutor y ninguno en el alumno**: sin una
-fila ya guardada, la afirmación del bloqueo se comprobaría sobre nada. `VEREDICTO: VERDE — 32 de 32`.
-**Rojo demostrado TRES veces**, cada uno nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| que lo declarado no viaje en el guardado | *«los idiomas enviados para los alumnos fueron []: lo que la familia marcó no llega al expediente»* (+ cae la vuelta) |
-| quitar el bloqueo de lo ya declarado | *«la casilla de «es» del tutor volvió {"marcado":true,"bloqueado":false}: si se deja desmarcar, la familia lo quita de la pantalla y le vuelve al recargar»* |
-| que el control admita uno solo | *«las casillas quedaron […]: el control no admite más de uno»* + *«los idiomas enviados fueron ["fr"]»* |
-
-⚠️ **Lo que la red NO cubre:** la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni llama al KMS. Afirma lo que manda el navegador y lo que la pantalla pinta —
-**no** que la fila se escriba de verdad en `enrPersonLanguages`. Eso se acredita leyendo el escritor
-real (arriba, con su fichero), no con esta batería. Los cuatro controles del repositorio, VERDES.
-
-**Publicación**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Se publica al empujar a
-`main` (CI/Pages), sin `clasp`.
-
-### `0º.tricies.duodecies` (2026-08-22) — las opciones de «sexo» del paso 2 salen del CATÁLOGO
-
-**No era una avería visible: era que el asistente y el catálogo del producto podían decir cosas
-distintas, y ya lo habían hecho.** El catálogo Capa 2 `kis-app kms-server/config/person-gender-values.html`
-(DL-E51) promete en su propio comentario que *«si un día el colegio necesita otros valores, se añaden
-AQUÍ (una línea) y aparecen solos en la pantalla»*. **Para el asistente eso era FALSO.**
-
-**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
-
-| Pieza | Estado medido |
-|---|---|
-| el desplegable del paso 2 | **cuatro `<option>` escritos a mano** (`Step2Persons.jsx:583-586`) |
-| `enr_wizardFetchLookups` (`kis-app kms-server/enr/wizard-gateway.gs`) | servía alergias, dieta, médico, tipos de vínculo, programas y tipos de documento — **el sexo NO** |
-| el lector del catálogo | **YA EXISTÍA y estaba sin usar por esta vía**: `enr_valoresDeclarados_` (`enr/correccion-datos.gs`) |
-| `translateGender` (`utils/enumLabels.js`) | un **TERCER** sitio con la lista, en forma de mapa de códigos escrito a mano |
-| ¿el sexo impide avanzar? | **NO.** Nada en `handleNext` lo exige — es opcional, medido |
-
-**Lo construido, y no se abrió ninguna ruta nueva:** el KMS mete la lista en las MISMAS listas que
-el asistente ya pide, bajo **`genderValues`** (`{code, designation, label_key}`) y
-**`genderValuesReason`**; el asistente la consume con el molde probado de `Step6Documents` con
-`recTypesInterestedParty`. **Un solo lector en el KMS** —el mismo que sirve a la pantalla de
-corregir del colegio y a su puerta—, así que pantalla, asistente y servidor no pueden divergir.
-
-**LA ETIQUETA, en un solo sitio y con una sola regla** (`translateGender`, reescrita): la clave de
-traducción es la que **declara el catálogo** (`label_key`); sin texto para esa clave se pinta la
-`designation`; y sin catálogo delante —el resumen del paso 7, que solo conoce el valor guardado— se
-**deriva** la clave del código, porque el catálogo declara `label_key = 'gender.' + gender_code`.
-Las cuatro claves de texto pasan de `gender.m|f|nonbinary|prefer_not_to_say` a
-`gender.Male|Female|Non-binary|Prefer-not-to-say`, **en los dos idiomas**. ⚠️ **Límite honesto:** un
-valor cuyo `label_key` no siguiera esa forma se vería bien en el desplegable y **en crudo** en el
-resumen — nunca con una etiqueta equivocada.
-
-**⛔ EL RESPALDO YA NO EXISTE — se RETIRÓ el 2026-08-22, y su condición de retirada la traía escrita
-en su primera línea.** Hubo aquí una lista de cuatro valores en `Step2Persons.jsx`
-(`SEXO_RESPALDO_`), declarada como RESPALDO **y no modelo**, solo para la ventana de despliegue: el
-frontal sale por CI al empujar a `main` y el KMS se publica aparte, así que hubo un rato en que este
-asistente hablaba con un KMS que todavía no servía `genderValues`. Esa condición —*«en cuanto el KMS
-que sirve `genderValues` esté publicado»*— se cumplió, y lo vestigial se elimina en cuanto se
-detecta: una segunda lista aquí **es** la divergencia que este tramo vino a cerrar.
-
-**Y no bastaba con quitarlo, porque el hueco que tapaba es real.** Medido: **el sexo es OPCIONAL**
-(nada en `handleNext` lo exige) ⇒ sin respaldo, un catálogo que no llega dejaría un desplegable
-**vacío y MUDO**, la familia avanzaría y el dato se perdería para siempre sin un solo aviso. Por eso
-ahora hay **TRES** situaciones y no dos —**cargando** (aún no se sabe) · **con catálogo** · **sin
-catálogo**—, y la última **se dice al lado del campo** (`field.gender_unavailable`, los dos idiomas)
-con el desplegable **deshabilitado**: falla NOMBRANDO, nunca en silencio. Cubre las dos formas de no
-llegar: lista **vacía** y lectura **caída**.
-
-**Red**: el camino `sexo-desde-el-catalogo` gana una **FASE B** (3 afirmaciones) con la palanca
-`scenario.catalogoSexoVacio`, que el doble aplica en **los dos** sitios que sirven catálogos
-(`fetchLookups` y la hidratación) — aplicarla a uno solo la dejaría pasando en vacío. **Rojo
-demostrado dos veces**: devolviendo la lista escrita a mano (*«se pintaron ["Male","Female",…] sin
-catálogo del servidor: ha vuelto una lista escrita a mano»*) y quitando el aviso (*«el aviso leído
-fue null: con un desplegable vacío y sin aviso, la familia avanza y el dato se pierde sin que nadie
-diga nada»*). Batería completa `VEREDICTO: VERDE — 38 de 38`. ⚠️ **Y la red se corrigió a sí misma**:
-la FASE B salió roja la primera vez acusando a la pantalla, y era **falso** — lo que volvía era la
-caché de módulo de `api.js`, que sobrevive a un cambio de hash; se cierra tirando el contexto con
-`about:blank` antes de reentrar.
-
-**⛔ Lo que este tramo NO cierra, y es de Diego:** que el catálogo y la **columna**
-`enrPersons.gender` de AppSheet declaren los mismos cuatro valores. Hoy divergen —la columna rechaza
-la escritura ENTERA con HTTP 400 nombrando el valor, que es lo que tumbó el paso de personas de una
-familia real (`0º.tricies.octies`)— y el alta está en `pendiente-diego.md` **D92**.
-
-**Red**: `npm run e2e:wizard`, camino NUEVO `sexo-desde-el-catalogo` (10 afirmaciones), con un
-**ancla** por delante —que el desplegable exista— para que las demás no puedan pasar en vacío. **El
-doble sirve una lista DISTINTA de la escrita a mano, a propósito**: tres valores, sin `Male` (si
-apareciera, la pantalla estaría pintando su respaldo) y con `ZZ-E2E`, que no existe en ningún
-catálogo real y **no tiene traducción**, así que su etiqueta ha de caer a la `designation`.
-`VEREDICTO: VERDE — 34 de 34`. **Rojo demostrado** devolviendo el desplegable a la lista escrita a
-mano: cuatro afirmaciones en rojo, nombrando el caso —
-
-> *«se pintaron ["Male","Female","Non-binary","Prefer-not-to-say"], se esperaba ["Female","Non-binary","ZZ-E2E"]»* ·
-> *«apareció «Male», que el catálogo del servidor no sirve: la pantalla está pintando su respaldo»* ·
-> *«la opción de «ZZ-E2E» se leyó «undefined» (se esperaba «Valor E2E», la designación del catálogo)»*
-
-**Y el camino se corrigió a sí mismo**: en la primera vuelta el rojo era un **tiempo de espera
-agotado** de `selectOption` que **perdía las afirmaciones ya hechas** y no nombraba nada. Se
-comprueba que la opción existe **antes** de intentar elegirla.
-
-⚠️ **La batería NO cubre el lado del KMS** — corre contra un backend simulado que **nunca ejecuta
-`backend/Code.js` ni llama al KMS**. Se **midió aparte**, con un arnés efímero fuera de los dos
-repositorios que extrae del fuente real `ENR_CAMPOS_ENUMERADOS_`, `enr_valoresDeclarados_` y **la
-propia proyección de `enr_wizardFetchLookups`**, y los ejecuta con dobles: **10 afirmaciones verdes**
-(el catálogo real da sus cuatro valores · la convención `label_key === 'gender.' + código` se cumple
-en los cuatro · catálogo ilegible ⇒ cero valores + motivo **sin reventar la lista entera** · catálogo
-vacío ⇒ `CATALOGO_VACIO` · una fila sin designación, sin código o duplicada no se ofrece · la
-proyección son tres campos y nada más). **Rojo demostrado TRES veces**: renombrar el lector medido
-(sale **«MEDICIÓN CIEGA»**, no verde) · quitar la proyección del manejador · que el lector deje de
-descartar la fila sin designación. **Quien toque esta cadena, que lo mida.**
-
-**Manual y ayuda en pantalla: no aplican** — este repositorio no tiene manual de usuario ni ayuda
-dentro de la aplicación; sus únicos textos son los de `frontend/public/locales/`, ya actualizados.
-
-### `0º.septvicies` (2026-08-22) — el paso 3 manda UNA fila por vínculo, y el par de hermanos se sigue viendo
-
-**El KMS se convirtió al modelo de una sola fila el 2026-08-21 (DL-S45, Diego: *«Ok, pues una sola
-fila»*) y el asistente NO.** `handleNext` de `Step3Relations.jsx` empujaba, por cada par de hermanos
-**NUEVO**, la fila **invertida** además de la suya —comentario *«so both children can query their
-siblings»*—, y el escritor del KMS (`enr_upsertRelation_`, `kis-app kms-server/enr/staging.gs`)
-identifica la fila por la terna `(expediente, de quién, a quién)` ⇒ **la invertida caía en OTRA
-clave y nacía como fila NUEVA**. Resultado: **cada vínculo entre hermanos declarado por una familia
-nacía DUPLICADO**, y el KMS lo pintaba como *«Guardado en dos filas por el modelo anterior»* para
-algo creado ese mismo día. Ésa era la incoherencia entre los dos repositorios.
-
-**LO PRIMERO QUE SE MIDIÓ, porque era el riesgo real del tramo:** el empujón sostenía que «los dos
-hermanos puedan consultarse», así que quitarlo podía **hacer desaparecer el vínculo de la pantalla
-del otro hermano**. **Medido contra `origin/main` ANTES de tocar nada — y los dos lectores del
-asistente YA miran los dos extremos:**
-
-| Lector | Qué hace |
-|---|---|
-| `buildInitialRelations` (bloque `aa`) | casa el par con `a===idA&&b===idB` **o** `a===idB&&b===idA` (ídem `from`/`to`) |
-| las tarjetas `aa` que pinta la pantalla | se construyen **por pareja ÚNICA** de alumnos (`for j = i+1`), no por fila |
-
-⇒ **una sola fila, guardada en el sentido que sea, rellena la ÚNICA tarjeta que hay por pareja.**
-No hubo que arreglar ningún lector, y **no se escribió un segundo criterio** de «leer desde los dos
-extremos»: el que ya estaba es el bueno.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ NO se reintroduce el empujón.** Que el vínculo se vea desde los dos lados lo resuelve el
-  LECTOR, no una segunda fila — y el camino `vinculo-hermanos-una-sola-fila` de la batería lo
-  afirma con un vínculo guardado **al revés** a propósito.
-- **⛔ El plegado de `hydrateFromResume` SE QUEDA, y no es inercia.** Su comentario decía *«the
-  backend always inserts 2 rows per relation pair (forward + inverse)»* — **FALSO desde DL-S45**, y
-  corregido en el mismo cambio. Pero hay pares **REALES ya guardados en dos filas** (medido el
-  2026-08-22 con `manual_diagParejasDeVinculos`, solo lectura: **216 parejas con su espejo vivo**,
-  85 filas sueltas o en grupos de 3+, 0 duplicados literales, 0 contradicciones). Esas filas **no se
-  tocan** —son datos del colegio y retirarlas lo decide Diego—, así que la familia que vuelve sigue
-  recibiendo dos filas del mismo par: sin plegarlas, el `savedBaseline` tendría más entradas que las
-  que produce el paso 3 ⇒ **dirty-check positivo permanente y un guardado espurio por navegación**.
-- **`pair_id` ya no manda en ese plegado**: DL-S45 dejó de escribirlo, así que para todo lo creado
-  desde entonces la clave es la de **los dos extremos ORDENADOS**, que colapsa igual los dos
-  sentidos. El `pair_id` se conserva por delante solo para las filas viejas que lo llevan.
-- **El aviso rojo del paso 3 NO se tocó**: ya señalaba la tarjeta concreta desde
-  `0º.tricies.octies (D)` (`missingRelationTypeGa` / `missingRelationTypeAa`, cada uno con su
-  mensaje y su camino de batería, del mismo día). No había nada que hacer ahí.
-- **Ni una línea de `backend/Code.js` ni del KMS.** Los vínculos del asistente no pasan por su
-  servidor: viajan en el `saveStep` del paso y los escribe el KMS.
-
-**Red**: camino NUEVO `vinculo-hermanos-una-sola-fila` (7 afirmaciones, en dos fases: primero el
-LECTOR —el vínculo guardado en el sentido contrario se sigue viendo—, después el ESCRITOR —declarar
-el par manda UNA sola fila—). El doble sirve el vínculo **invertido y sin `pair_id`**, que es como
-lo escribe el KMS hoy; sin eso la fase del lector pasaría en vacío. **Rojo demostrado TRES veces**,
-cada uno nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| devolver el `push` de la inversa | *«se mandaron 2 fila(s) para la MISMA pareja de hermanos […]: el asistente está volviendo a escribir la inversa que DL-S45 derogó»* |
-| que el lector case un solo extremo | *«el desplegable del par de hermanos vale "" (se esperaba "rt_child"): el lector solo casa un extremo…»* |
-| que los pares dejen de ser únicos | *«se pintaron 2 tarjeta(s) para la misma pareja de hermanos»* + caen (6) y (7) |
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni llama al KMS ⇒ afirma lo que manda el navegador y lo que la pantalla pinta,
-**no** que la fila aterrice en `sysPersonRelations`. Y **eso último sigue SIN ACREDITAR por un
-motivo ajeno**: **D97** —quitarle el `Required` a `sysPersonRelations.pair_id`, que desde el
-2026-08-21 rechaza toda escritura de vínculo— **no consta aplicado** (`kis-app
-docs/kms/pendiente-diego.md` §D97 sigue sin marca de resuelto, aunque la ficha de la cola llegó a
-declarar lo contrario; el `Required` de una columna **no se lee** por la API de datos). Lo entregado
-aquí no dependía de eso, pero la persistencia de punta a punta sí.
-
-**Textos, manual y ayuda en pantalla: ninguno toca.** La familia ve exactamente la misma pantalla y
-declara exactamente lo mismo; lo que cambia es cuántas filas salen hacia el expediente.
-
-### `0º.tricies.quindecies` (2026-08-22) — las cuotas dejan de recalcularse cuando no ha cambiado nada, y el paso 6 dejaba de estar sucio para siempre
-
-**Diego, 2026-08-22, cita literal:** *«Las cuotas se siguen recalculando aunque no cambie
-absolutamente nada. Si navego hacia atrás desde el paso 7, vuelven a calcularse
-innecesariamente»*. Cada recálculo son **~89 s** de espera para la familia.
-
-**LO PRIMERO FUE INSTRUMENTAR, y de los cuatro candidatos que traía la ficha sobrevivieron
-dos — encadenados. Los números, todos medidos el 2026-08-22:**
-
-| Qué se midió | Antes | Después |
-|---|---|---|
-| llamadas a `simularCuotas` en un 7→6→7 **sin tocar nada** (batería) | **2** | **1** |
-| guardados encolados en ese mismo recorrido | **1** (`saveStep:documents`) | **0** |
-| viajes al KMS del recorrido real, lado servidor (arnés) | motor **1** · huella **1** | motor **1** · huella **0** |
-| ¿la huella es estable entre llamadas? | **SÍ** — el candidato (b) queda DESCARTADO |
-
-**Candidato (c)/(d) — CIERTO: el paso 7 se DESMONTA.** `WizardPage` pinta **un solo paso**
-(`STEP_COMPONENTS[currentStep]`), así que pulsar «Atrás» destruye `SimulacionDeCuotas` con su
-`useState`, y al regresar su efecto vuelve a disparar `simularCuotas`. El servidor **sí sabe
-no recalcular** —su caché de dos niveles acierta, medido aparte— pero la familia paga igual el
-viaje entero a Apps Script (decenas de segundos) y ve el recuadro volver a «cargando». **Eso es
-lo que él describe.**
-
-**Candidato (a) — CIERTO, y es LA CAUSA DE FONDO: el paso 6 salía SUCIO en cada pasada.** El
-KMS hidrata **cada documento con SEIS campos** —`file_id`, `rec_type_code`, `file_name`,
-`description`, `created_at`, `owner_person_ids` (`enr_wizardHydrateCompute_`,
-`kis-app kms-server/enr/wizard-datalayer.gs`)— y `uploadedDocs()` de `Step6Documents` producía
-**TRES** ⇒ `isStepDirty('documents', …)` daba positivo **siempre** y se encolaba un `saveStep`
-que la familia no pidió.
-
-⚠️ **Y ese guardado NO es inofensivo aunque el servidor no escriba nada** (`saveStep_`
-case `'documents'` es un **no-op declarado** — los documentos los guarda `uploadDocument_`):
-**bumpa la versión del grupo** (`_wzCacheInvalidate_`) ⇒ tira de golpe las cachés de
-**hidratación, admisión, miembros y la de la simulación**, así que el paso 7 se cae al nivel 2
-y vuelve a pagar. Y pasa por `assertStepUpFresh_`, así que **puede saltarle a la familia un
-`STEPUP_REQUIRED` por un guardado que nunca pidió**. Es exactamente la clase de defecto que ya
-documentan P89, `①45` y `0º.duodetricies` — la tercera vez que aparece en este repositorio.
-
-**Candidato (b) — FALSO: la huella es estable.** Se ejecutaron las funciones reales con dobles
-y la huella no se mueve entre llamadas; el nivel 2 acierta y **re-archiva** con la versión de
-ahora, así que la siguiente lectura vuelve al nivel 1. Lo único que la haría inestable es que
-cambie de verdad lo que el centro declaró o el sujeto de un solicitante — que es su trabajo.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ LA FORMA DE UN DOCUMENTO SALE DE UN SOLO SITIO**: `frontend/src/pages/steps/documentShape.js`,
-  hermano declarado de `personShape.js`. La usan **los dos lados** —el baseline de
-  `hydrateFromResume` y `uploadedDocs()` de `Step6Documents`—; dos definiciones divergirían y el
-  defecto volvería.
-- **⛔ Se proyecta SOLO el baseline, nunca `stepData.documents`**: `seedRows()` LEE de ahí
-  `rec_type_code` y `owner_person_ids` para enseñar de vuelta qué es cada archivo y de quién es
-  (`0º.sexdecies`). Por eso los dos campos **entran** en la forma en vez de recortarse — y de
-  paso se cierra una regresión que estaba viva: `persist()` (el «Atrás» del paso 6) los borraba
-  de `stepData`, así que volver al paso apagaba esas dos líneas de la pantalla.
-- **`created_at` se descarta a propósito**: la pantalla no lo produce ni lo usa, así que en el
-  baseline sería un campo fantasma que el envío nunca tendría.
-- **⛔ La memoria de la simulación NO es una caché con plazo**: es un `useRef` de `WizardContext`
-  que **muere con la pestaña** (jamás `sessionStorage`) y **se olvida sola** en tres momentos —
-  al encolar **CUALQUIER** guardado (**al ENCOLAR**, no al aterrizar: entre que sale y vuelve, el
-  paso 7 podría remontarse y servirse una foto de antes), al **subir la versión del grupo** (otro
-  tutor, o un trabajo del KMS que aterriza) y al **rehidratar**. **No se alargó ningún plazo**,
-  que la ficha lo prohíbe.
-- **⛔ Solo se memoriza lo que trae `huella`** — el **MISMO** criterio con el que el servidor
-  decide si su caché sirve (medido: sin huella, la suya no se puede usar). Una segunda lista de
-  códigos aquí divergiría de la del servidor. Un fallo (`NO_SE_PUDO_SIMULAR`, o el `catch` del
-  transporte) no trae huella ⇒ no se memoriza y el regreso reintenta.
-- **⛔ Ni la matemática ni el motor se tocan** (DL-080-A): `money()` sigue dividiendo entre 100 y
-  formateando, y los importes siguen saliendo enteros del KMS.
-
-**Y el doble de la batería pasa a reflejar el contrato real**, porque sin eso la red medía otra
-cosa: ahora `simularCuotas` devuelve `huella` (como el KMS) y la hidratación devuelve los seis
-campos del documento con la clave **`file_name`** — antes mandaba **`filename`**, una clave que
-el KMS **no usa**.
-
-**Red**: camino NUEVO `simulador-no-recalcula-al-navegar` (8 afirmaciones), con un **ancla** por
-delante —que el paso 7 pinte su simulador— para que las dos afirmaciones que importan no puedan
-pasar en vacío. `VEREDICTO: VERDE — 38 de 38`. **Rojo demostrado TRES veces**, cada uno
-nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| quitar la lectura del memo en `Step7Review` | *«se pidió 1 vez/veces más al regresar al paso 7 (total 2)»* |
-| dejar el baseline de documentos SIN normalizar | *«se encolaron 1 guardado(s) de documentos sin que la familia tocara el paso»* + vuelve la segunda llamada |
-| y además quitar el olvido al encolar | el guardado espurio sigue saliendo **y la simulación memorizada se sirve por encima de la escritura** (1 llamada) — la afirmación del guardado lo caza |
-
-⚠️ **Lo que la red NO cubre, y está DEMOSTRADO, no supuesto:** la batería corre contra un backend
-**simulado** que **nunca ejecuta `backend/Code.js`** ni el KMS. La caché de dos niveles del
-servidor se midió **aparte**, con un arnés efímero (fuera del repositorio, no commiteado) que
-extrae del fuente REAL `simularCuotas_`, `_wzComputeYCachearSimulacion_`, `_warmSimularCuotasPhase_`,
-`_wzCacheKey_`, `_wzCacheGetChunked_`/`_wzCachePutChunked_`, `_getLiveStateVersion_` y
-`_wzCacheInvalidate_` y los ejecuta con dobles de `CacheService` y del proxy al KMS: **9
-afirmaciones verdes** y **CUATRO rojos demostrados** (anular el nivel 1 · anular el nivel 2 ·
-quitar el re-archivo tras un acierto de nivel 2 · y el renombrado, que sale **«MEDICIÓN CIEGA»**,
-no verde). **Y la medición se corrigió a sí misma**: en su primera versión decía que la caché
-**nunca** acertaba, y era **falso** — al arnés le faltaba una constante de módulo
-(`_WZ_CACHE_KIND_V2_`), así que `_wzCacheKey_` lanzaba y el `catch` de `simularCuotas_` lo
-disfrazaba de «no había caché». Se descubrió instrumentando ese `catch`. **Quien toque esta cadena,
-que lo mida.**
-
-**Lo que queda ANOTADO y NO se hizo, con su motivo:** el camino barato del servidor —
-`enr_wizardHuellaDeSimulacion` (`kis-app kms-server/enr/wizard-gateway.gs`)— **no enciende el memo
-de lecturas** que su gemelo caro sí enciende (`enr_simularCuotasDelGrupo_`, con
-`db_readMemoEnable_`), aunque recorre un **subconjunto estricto** de ese mismo cierre ya auditado
-como lectura pura. Encenderlo lo abarataría, pero **el beneficio no se puede medir desde aquí** (hay
-que ejecutar contra AppSheet) y es KMS, que se publica aparte. Queda en la cola con su fichero y su
-función.
-
-### `0º.duodetricies` (2026-08-22) — editar un vínculo YA GUARDADO dejaba de escribirse EN SILENCIO
-
-**Un dato que la familia creía guardado y no lo estaba, sin ningún aviso que mirar.** Salió al
-medir `0º.septvicies`, no de un encargo.
-
-**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
-
-| Pieza | Qué dice |
-|---|---|
-| el ÚNICO escritor | `enr_persistRelations_` (`kis-app kms-server/enr/wizard-gateway.gs:3473`): `if (!r \|\| !r.person_id_a \|\| !r.person_id_b) return;` |
-| la hidratación del KMS | proyecta `guardian_person_id`/`applicant_person_id` **ENCIMA** de `from_person_id`/`to_person_id` (`enr/wizard-datalayer.gs:351`) — **ninguno de esos cuatro nombres es el que el escritor mira** |
-| el paso 3, rama de vínculo NUEVO | **SÍ** pone `person_id_a`/`person_id_b` (`Step3Relations.jsx:55`, `:73`) ⇒ los nuevos sí se guardaban |
-| el paso 3, rama de vínculo YA GUARDADO | `{ ...found }` — hereda lo que trajo la hidratación, **sin los dos identificadores** |
-
-⇒ la familia corregía «madre» por «tutora legal», o marcaba la custodia, le daba a continuar,
-**la pantalla no protestaba** y el cambio **no se escribía nunca**.
-
-**⚠️ NO es lo mismo que D97** (el `pair_id` obligatorio), que **rechaza la escritura entera y SÍ
-se ve** en pantalla. Éste **falla hacia el SILENCIO**, que es peor: no hay aviso rojo que mirar.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ SE REPONE EN UN SOLO SITIO, y no es el que parece.** Va en el normalizador de la
-  hidratación (`WizardContext.jsx`, `hydrateFromResume`), **el que ya existe para sembrar el
-  expediente con la MISMA forma que produce el paso 3** (el mismo bloque que normaliza los
-  booleanos y las personas, con su porqué escrito al lado). Desde ahí lo heredan **el
-  `savedBaseline`, `stepData` y el envío**, los tres a la vez.
-- **⛔ Reponerlos AL ENVIAR habría sido el error**: el `savedBaseline` se siembra de la
-  hidratación, así que el envío tendría dos campos MÁS que la referencia ⇒ **dirty-check positivo
-  permanente y un guardado espurio por sesión** — la clase de defecto que ese mismo comentario
-  lleva documentada desde P89. Y hacerlo en los dos lados serían **dos criterios sobre el mismo
-  dato**, que es lo que la regla del código-de-oro prohíbe.
-- **⛔ EL ORDEN ES PARTE DEL DATO: `a` = `from`, `b` = `to`, derivado de la PROPIA fila** y nunca
-  de las personas del bucle que la encontró. El escritor identifica la fila por la terna
-  `(expediente, a, b)` (`enr_upsertRelation_`), así que invertir los extremos **no actualiza: crea
-  una fila NUEVA** — justo el duplicado que DL-S45 vino a cerrar. Importa de verdad en el par
-  hermano↔hermano, que se casa en los dos sentidos.
-- **⛔ La guarda del servidor NO se toca.** Descartar una fila sin sujetos es una comprobación de
-  pertenencia legítima (KAL-4). Lo que estaba mal era **quién manda el dato**, no que se
-  comprobara. Sin ningún extremo reconocible la fila sale como entró y se descarta igual que hoy:
-  **no se inventa un identificador**.
-
-**⚠️ LO QUE ESTA VUELTA NO CIERRA, y su motivo:** que el descarte **se DIGA**. Medido: el trabajo
-sí lo cuenta y lo devuelve (`relations_discarded`, `enr_persistRelations_:3553`) y lo registra
-(`:3533`), pero eso vive en **la respuesta del trabajo de la cola**, que ocurre minutos después de
-que el asistente ya haya contestado ⇒ **no llega a la familia**. Y no lo cubre el aviso de
-`0º.tricies.octies (B)`, que solo mira los trabajos en `Failed`: un descarte **no** hace fallar el
-trabajo. Es `kms-server/enr/*`, **reservado por otra mano en este mismo turno**, así que **no se
-toca**: queda anotado en la ficha. Tras este arreglo el camino legítimo ya no produce descartes.
-
-**✅ Y de paso se cerró una contradicción que costaba trabajo: D97 SÍ ESTÁ APLICADO.** Se iba a
-escribir aquí *«no consta aplicado»* —lo que decían tres fichas de la cola— y al medirlo resultó que
-el repositorio **ya tenía la prueba**: al cerrar `0º.tricies.duodecies` se registró que **Diego quitó
-el «obligatorio» de `pair_id` y un trabajo de guardado de vínculos llegó a `Done` a las 17:39**, cosa
-imposible si AppSheet siguiera rechazando la escritura entera. Lo que faltaba era **la marca en
-`kis-app docs/kms/pendiente-diego.md` §D97**, puesta en el mismo cambio. ⚠️ **Y se dice cómo se
-sabe:** el `Required` de una columna **no se lee** por la API de datos, así que esto se acredita por
-la **consecuencia observable** (una escritura que antes se rechazaba y ahora aterriza), nunca mirando
-el esquema. ⇒ **la persistencia de los vínculos ya no está bloqueada.**
-
-**Red**: camino NUEVO `editar-vinculo-guardado` (6 afirmaciones). Usa la familia de **UN SOLO
-tutor** a propósito — es el único molde del simulado cuya hidratación trae los vínculos de todos
-los hijos con tipo y custodia ya puestos; con dos tutores el recorte de DL-E49 §2 deja al segundo
-hijo sin custodia y **el camino moriría en la validación del paso, sin medir nada** (pasó al primer
-intento, y por eso se dice). `VEREDICTO: VERDE — 37 de 37`. **Rojo demostrado DOS veces**, cada uno
-nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| quitar la reposición (el código de ayer) | *«la fila del vínculo editado salió como {…"from_person_id":…,"to_person_id":…,"relation_type_id":"rt_father"…}: sin los DOS identificadores, `enr_persistRelations_` la descarta EN SILENCIO»* — y la afirmación (6) **sigue verde**, que es lo que prueba que la edición SÍ llega al envío y solo le faltan los identificadores |
-| invertir los extremos (`a`=`to`, `b`=`from`) | *«la fila salió con a=bbbb… / b=aaaa… sobre from=aaaa… / to=bbbb…: invertir los extremos hace que el KMS cree una fila NUEVA en vez de actualizar la suya»* |
-
-⚠️ **Lo que la red NO cubre:** la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS ⇒ afirma **qué manda el navegador**, no que la fila aterrice en
-`sysPersonRelations`. El contrato del escritor se acredita **leyendo su código real** (arriba, con
-fichero y línea), no con esta batería.
-
-**Publicación**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Sale por CI/Pages al
-empujar a `main`, sin `clasp`. **Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve
-exactamente la misma pantalla y hace exactamente lo mismo; lo que cambia es que ahora su corrección
-llega entera al expediente.
-
-### `0º.duodetricies` (2026-09-06) — CINCO descartes que el KMS ya enviaba se trataban como éxito silencioso
-
-⚠️ **Mismo identificador que la ficha de arriba, dos entradas distintas** — venía así en la cola
-(§"Cómo se lee" de `kis-app/docs/kms/loop-backlog.md`: ocho identificadores están usados por DOS
-entradas y se distinguen por su título, no se renumeran.
-
-**El defecto: `codigoDelDescarte` (`frontend/src/lib/rechazos.js`) solo reconocía UNO de los SEIS
-descartes que el KMS ya envía.** El KMS apunta el trabajo del cuestionario/NEAE y contesta después
-con `estado:'hecho'` **aunque haya descartado a propósito** parte de lo que la familia escribió —o
-el lote entero—, sin que eso sea un fallo desde su punto de vista (hizo justo lo que su regla
-manda). El único que se traducía a un aviso era `fichas_de_otro_tutor_rechazadas_n` (DL-E49 §2,
-18.bis.84); los otros cinco devolvían `undefined` y el carril de guardado se apagaba como si todo
-hubiera entrado — la familia creía que su cuestionario se había guardado ENTERO cuando el KMS
-acababa de descartar parte de él, o el lote completo.
-
-**Los cinco, todos ya emitidos por el KMS y sin ninguna ruta nueva que abrir:**
-
-| Campo del descarte | De dónde sale | Alcance |
-|---|---|---|
-| `rechazadas_por_quien_puede_contestar` | `enr_persistResponses_` (DL-E49 §2) | per-respuesta |
-| `rechazadas_por_formato_no_declarado` | `enr_persistResponses_` (③51/DL-Q10) | per-respuesta |
-| `neae_vaciado_no_declarado` | `enr_persistNeae_` (`0º.vicies.nonies`) | per-persona |
-| `skipped_no_context` | `enr_persistResponses_` — falta `qbContexts` de `'ENROLLMENT'` | LOTE entero |
-| `skipped_no_initiator` | `enr_persistResponses_` — sin tutor iniciador resoluble | LOTE entero |
-
-**Lo que hay que retener al tocar esto:**
-
-- **Los cinco se añaden en `RECHAZOS_DEFINITIVOS`, UN SOLO SITIO** (`lib/rechazos.js`) — ni
-  `WizardContext.jsx` ni `SaveIndicator.jsx` se tocan: los dos ya preguntan a este fichero, que es
-  exactamente la herramienta que 18.bis.85 dejó construida para esto.
-- **Los cinco son DEFINITIVOS, no reintentables**: los tres per-respuesta dependen de QUIÉN
-  contesta o de CÓMO está declarado el tipo de pregunta — reenviar lo mismo lo rechaza igual. Los
-  dos de lote entero son de CONFIGURACIÓN del tenant — la familia no los puede arreglar, y
-  reintentar tampoco.
-- **Los textos de los dos de lote NO le piden nada a la familia** (`sin_contexto_de_tenant`,
-  `sin_iniciador_resoluble`): solo dicen que escriba a admisiones, porque no es un dato que ella
-  pueda corregir.
-- **`codigoDelDescarte` sigue devolviendo `undefined` ante lo no declarado**, así que un descarte
-  futuro que el KMS invente sigue tratándose como éxito hasta que alguien lo añada aquí — el fallo
-  hacia el lado seguro no cambia.
-
-**Red**: camino NUEVO `descartes-del-cuestionario-se-dicen` (batería del asistente), con **DIEZ
-afirmaciones** — dos por descarte (el texto propio sale · no se ofrece «Reintentar»). El doble del
-`estadoDelGuardado` gana `scenario.descarteTipo` para elegir cuál de los seis descartes conocidos
-simula, con el objeto TAL CUAL lo manda el KMS (no una forma inventada para el test).
-
-⚠️ **Y la red se corrigió a sí misma antes de darse por buena**: la primera versión de la
-afirmación `(b.1)` («formato_no_declarado») esperaba «no está bien **configurada**» y el propio
-texto que se acababa de escribir decía «no está bien **configurado**» (concuerda con «el tipo»,
-no con «la pregunta») — rojo real, del test, no del producto. Corregida la concordancia del
-regex, verde. `npm run e2e:wizard` **VEREDICTO: VERDE — 51 de 51**. Los ocho controles de
-seguridad del repositorio, VERDES.
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS. Afirma que el asistente **traduce correctamente** un descarte que
-el KMS ya manda — no que el KMS siga mandando esa forma exacta mañana; eso se acredita leyendo su
-código (arriba, con fichero y función).
-
-**Publicación**: solo `frontend/` — no toca `backend/Code.js` ni el KMS. Sale por CI/Pages al
-empujar a `main`, sin `clasp`. **Textos, manual y ayuda en pantalla: SÍ toca** — cinco textos
-nuevos, en `es` y `en` (`wizard.save_error.rechazadas_por_quien_contesta`,
-`.formato_no_declarado`, `.neae_vaciado_no_declarado`, `.sin_contexto_de_tenant`,
-`.sin_iniciador_resoluble`). No hay manual de usuario ni ayuda en pantalla en este repositorio.
-
-### `①27` pieza 9 · DL-R19 (2026-08-23) — la foto se comprime EN EL NAVEGADOR antes de subirla, y lo INMUTABLE no se toca
-
-**NO es una avería: el documento se subía bien. Es peso y espera en el camino más lento del
-asistente** — 96 s por 90 KB, medido en `0º.quindecies`; una foto de móvil de 4 MB viaja además
-como **~5,3 MB** de texto, porque lo que sube es el base64 (un tercio más).
-
-**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
-
-| Pieza | Estado medido |
-|---|---|
-| `Step6Documents.jsx` | mandaba el archivo **tal cual** (`fileToBase64` → `gasCall('uploadDocument')`); tope de 10 MB y **cero compresión** en los dos frontales |
-| `rec_resolveInterestedPartyType_` (KMS) | proyectaba **solo `{code, designation}`** ⇒ el navegador **no podía saber** si el tipo elegido es inmutable |
-| `recTypes_T.is_immutable` | **existe** — lo escriben `rec_upsertRecType` y las 13 plantillas de fábrica (`CUSTODY_ORDER`, `ACCIDENT_REPORT`… en `true`; `APPLICATION_DOCUMENTATION` en `false`) |
-
-⇒ sin ese dato, DL-R19 **no era aplicable**: comprimir sin él habría recomprimido un documento con
-valor probatorio, que es justo lo que la decisión prohíbe.
-
-**⛔ UN SOLO SITIO decide si un archivo se recomprime y cómo**: `frontend/src/lib/comprimirImagen.js`.
-Si mañana hay un segundo adjuntador, **llama aquí**; no se escribe una segunda regla. Sus cuatro
-barandillas están en la cabecera del módulo y ninguna es de estilo:
-
-1. **Solo con un `is_immutable === false` EXPLÍCITO se comprime.** Tres estados —sí · no · **no
-   consta**— y la ausencia se trata como **inmutable**.
-2. **Techo de 2400 px y calidad 0,85**: es la barandilla del OCR de DL-R19/DL-R18 escrita en
-   números, no prudencia genérica.
-3. **Solo JPEG y WebP, re-codificados EN SÍ MISMOS.** PDF no; **PNG tampoco** — pasarlo a JPEG
-   cambiaría extensión y tipo (dejarían de decir la verdad) y emborrona el texto de una captura.
-   Por eso `mimeType`/`filename` de la subida salen ya del archivo **que se sube**.
-4. **Nunca peor que el original**: sin ahorro real (≥80 %), sin poder descodificar (un HEIC), o ante
-   cualquier fallo ⇒ **se sube tal cual**. Esto no puede impedir que una familia suba su documento.
-
-**Quién es el tipo, con 1 y con 2+:** con dos o más lo eligió la familia (`row.rec_type_code`); con
-**uno** lo asigna el servidor y **es ése** (la pantalla no pregunta, DL-R16) ⇒ el navegador lo sabe
-en los dos casos. Con **ninguno** no hay tipo y no se comprime.
-
-**⛔ Lo que NO se toca:** el tope de 10 MB sigue mirando el archivo **que eligió la familia**, no el
-comprimido — subir el techo efectivo sería otro cambio, con su decisión. Y `assertStepUpFresh_`, la
-marca de idempotencia y KAL-4 siguen exactamente igual.
-
-**Red**: camino NUEVO `imagen-se-comprime-al-subir` (8 afirmaciones, con **ancla** por delante — sin
-un tipo corriente Y uno inmutable en el desplegable, las demás pasarían en vacío; por eso el simulado
-sirve **tres** tipos y el tercero es `CUSTODY_ORDER`, inmutable en el catálogo real).
-⛔ **El JPEG se fabrica DENTRO del navegador con un lienzo, no con un `Buffer` de Node**: unos bytes
-inventados no son descodificables ⇒ `comprimirImagen` devolvería el original por
-«no-se-pudo-descodificar» y la comprobación pasaría en vacío, que es peor que no tenerla.
-
-**Rojo demostrado DOS veces**, cada una nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| quitar la guarda de inmutabilidad (comprimirlo todo) | *«un tipo INMUTABLE se sube tal cual, sin recomprimir — se eligió una foto de 855813 bytes y viajaron 560343: un documento con valor probatorio recomprimido deja de ser el que se firmó (DL-R19)»* |
-| que `comprimirImagen` devuelva siempre el original | *«la foto viaja COMPRIMIDA cuando el tipo no es inmutable — … y viajaron 855813: sin compresión, la familia paga el camino más lento del asistente con el archivo entero»* |
-
-⚠️ **DOS lecciones del ROBOT, no del producto, que costaron ocho diagnósticos y se dejan escritas.**
-(1) **Un panel YA SUBIDO pierde su campo de archivo** —la zona de arrastre se sustituye por el bloque
-de «Subido»—, así que el recorrido toma **siempre el ÚLTIMO** campo de archivo de la página, nunca el
-primero. (2) **Elegir el tipo en el segundo panel no llega a React si la lista se está repintando**
-tras la subida anterior: se espera a que el número de paneles se ASIENTE y se reintenta el
-`selectOption` comprobando que el valor sobrevive a un repintado. Y la espera del segundo envío se
-hace **por la LLAMADA** (`uploadDocument`), con presupuesto de 60 s: el archivo inmutable viaja
-ENTERO a propósito, así que tarda más que el comprimido.
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS ⇒ afirma **lo que manda el navegador**, no que el KMS guarde los bytes
-comprimidos. La proyección de `is_immutable` se acredita **leyendo el código real** del KMS.
-
-**Publicación — los dos órdenes son seguros, y se midió:** asistente primero ⇒ `is_immutable` llega
-`undefined` y **no se comprime nada** (comportamiento de ayer); KMS primero ⇒ nada cambia hasta que
-el asistente lo consuma.
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla y
-hace exactamente lo mismo; lo que cambia es cuánto pesa lo que sube.
-
-### (2026-08-23) — el viaje del paso 2 que no escribía nada: RETIRADO
-
-**En CADA guardado del paso 2 el asistente hacía un viaje al KMS que no guardaba nada.**
-`persistSoleGuardianAttestation_` llamaba a `enr.persistSoleGuardianAttestation`, y ese manejador
-—desde DL-E49 §3 (2026-08-09)— solo exigía el token y devolvía `{ok:true, persisted:false}`. Su
-escritura vestigial (`enrEnrollmentGroups.sole_guardian_*`, **cero lectores**) ya se había quitado
-ese día; lo que quedó vivo fue **la cáscara**, y su propio comentario decía que retirar la llamada
-y la ruta era «una limpieza aparte, anotada en la cola». Ésta es esa limpieza.
-
-**Lo retirado, entero, en los DOS repositorios:** aquí, `persistSoleGuardianAttestation_` y su
-llamada en `saveStep_` (rama `persons`); en el KMS, `enr_wizardPersistAttestation`, su ruta
-`enr.persistSoleGuardianAttestation`, su permiso `'public'`, su alias `enr.wizardPersistAttestation`,
-su entrada en la puerta de llamadas entre proyectos y su paso en el robot (aparcado).
-
-**⛔ LA DECLARACIÓN NO SE PIERDE, y esto se midió ANTES de borrar nada.** Vive en el **libro de
-consentimientos** (`sysConsentsLog`, código `SOLE_GUARDIAN_ATTESTATION`) con su **texto exacto**,
-quién y cuándo — se escribe **al ENVIAR**, porque el libro se ancla al EXPEDIENTE y en el paso 2
-todavía no existe ninguno. El camino vivo es: `Step2Persons.jsx` → `updateStep('sole_guardian_attestation', …)`
-(estado del cliente) → `Step7Review.jsx` la arma en `consents` con su `consent_text_shown` →
-`CONSENT_TYPE_MAP` (`backend/Code.js`) la mapea al código del catálogo → `enr.persistSubmitSideEffects`.
-**Ninguno de esos cuatro eslabones pasaba por el manejador retirado.**
-
-**⛔ `p.sole_guardian_attestation` SIGUE viajando en el payload del guardado del paso 2** — lo que
-cambia es que el servidor del asistente **ya no lo lee**. No se tocó `Step2Persons.jsx`, ni
-`WizardPage.jsx` (que lo mete en `extra`), ni la validación que obliga a marcar la casilla.
-
-**⛔ EL ORDEN DE PUBLICACIÓN NO ES OPCIONAL: el ASISTENTE PRIMERO, el KMS DESPUÉS.** Los dos
-proyectos se publican por separado. Con el asistente publicado deja de llamarse la ruta, y entonces
-retirarla del KMS es inocuo. **Al revés no rompe a ninguna familia** —la llamada iba dentro de un
-`try/catch` best-effort que solo registraba el fallo— pero deja al asistente desplegado gastando un
-viaje que ya devuelve error. Se publica en ese orden y ya está.
-
-⚠️ **NINGUNA RED CUBRE ESTO, y se dice en vez de fingirlo.** La batería (`npm run e2e:wizard`) corre
-contra un backend **simulado** que **nunca ejecuta `backend/Code.js`** ni llama al KMS ⇒ no puede
-salir roja por esto. Lo que sí acredita es lo que importaba: el camino
-`declaraciones-tutor-unico` **sigue verde**, es decir la declaración se marca en el paso 2 y **llega
-al envío** dentro de `consents`. Que la ruta ya no exista en el KMS se acredita con `git grep`, no
-con una prueba.
-
-### ②17 (2026-08-23) — el CAMINO VIVO baja de DOS lecturas directas a UNA, y lo que las sostenía era un comentario CADUCADO
-
-**Quedaban DOS lecturas directas a AppSheet alcanzables desde internet** —`sendMagicLink_` y
-`sendVerificationCode_`—, las dos «con su motivo escrito para no moverse». **Uno de esos dos motivos
-era falso.**
-
-**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
-
-| Pieza | Estado medido |
-|---|---|
-| apariciones de `appsheetRequest_` en `backend/Code.js` | **46** (45 lecturas + la definición) |
-| de ésas, en el **camino vivo** | **DOS** — el resto vive en `manual_*` de editor y en `adminCleanupOrphanSessions`, que **no está en el despachador** |
-| los **cinco** campos que `sendMagicLink_` usa de esa fila (`primary_email`, `resume_token`, `submitted_at`, `enrollment_group_id`, `preferred_language`) | **YA los proyecta** `enr_wizardExpedienteDelToken` (`kis-app kms-server/enr/wizard-gateway.gs:2286`) |
-
-⇒ **no hubo que ampliar ninguna proyección ni abrir ninguna ruta nueva.**
-
-⚠️ **EL COMENTARIO QUE SOSTENÍA LA LECTURA DE `sendMagicLink_` LLEVABA UNA SEMANA CADUCADO.** Decía,
-con esas palabras, que se pagaba *«una lectura de más»* porque *«el gate ya bajó esta misma fila para
-validar el token, **pero no la devuelve**»*. **Dejó de ser cierto el 2026-08-16** (duodécimo tramo: la
-puerta empezó a archivar la fila en la memoria de EJECUCIÓN) **y del todo el 2026-08-19**, cuando esa
-memoria pasó a indexarse **también por TOKEN**, que es justo como la pide `_expedienteDelToken_`.
-⇒ sustituirla **cuesta CERO viajes**, no uno más. Es el precedente exacto de §"Un COMENTARIO del
-código no es criterio normativo" (`kis-app/CLAUDE.md`).
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ MODO ESTRICTO a propósito** (sin `tolerarSesionCerrada`): el gate ya aplicó sus tres rechazos, y
-  pedir tolerancia aquí serviría —o archivaría— la fila bajo **la otra clave**.
-- **Se distinguen los DOS fallos, mismo criterio que la puerta**: «el KMS **contestó** que el token no
-  vale» propaga ese motivo; «**no se pudo preguntar**» lanza `KMS_UNREACHABLE`. Confundirlos convertía
-  un KMS caído en *«tu enlace no vale»*. Esta rama **sí** propaga sus errores al cliente (WIZ-ENUM
-  regla 4), así que lanzar es lo correcto.
-- **⛔ SE ESCRIBIÓ SIN `else`, Y NO ES ESTILO — el control lo exigió, en ROJO.** La primera versión usó
-  un `if/else` anidado en `sendVerificationCode_` y `comprobar-verja-publica` salió **ROJO**
-  (*«el cupo o el trabajo caro ocurren ANTES de la verja»*): ese control parte el manejador en sus dos
-  ramas **por el PRIMER `} else {`** —límite declarado en su cabecera, es un detector por líneas— y el
-  anidado le movía el corte. **El propio código ya lo advertía** y la advertencia se ignoró. Se
-  corrigió **la forma, no el control**: *«la respuesta correcta es no darle una forma ambigua, no
-  aflojarlo»*.
-- **⛔ LA LECTURA DIRECTA DE `sendVerificationCode_` SE QUEDA, y cubre DOS casos sin otra vía**: el
-  camino de `signing_token` —que `signingCommon.js` declara «legacy» y que se alcanza cuando **no**
-  hay token de recuperación, donde `enr.expedienteDelToken` no sirve porque pide precisamente un
-  `resume_token`— y **un KMS que no contesta**, donde degrada exactamente como degradaba antes.
-
-**⛔ ②17 NO SE CIERRA, y hay que decirlo así: mientras esa línea exista, la credencial de AppSheet
-sigue haciendo falta en el asistente.** Moverla exige que el KMS sirva la cabecera desde un
-`signing_token` — otro tramo, y toca el otro repositorio.
-*(★ HECHO el 2026-09-12 — ver §"②17 — el ÚLTIMO respaldo directo se retira", más abajo: esa línea
-ya no existe.)*
-
-**Recuento, con la forma de repetirlo** (`grep -c 'appsheetRequest_(' backend/Code.js` **menos 1**):
-**45 → 44** lecturas; **0** en lote. Y lo que importa: **el camino vivo baja de DOS a UNA**.
-
-⚠️ **NINGUNA RED AUTOMÁTICA CUBRE ESTO** — la batería corre contra un backend **simulado** que **nunca
-ejecuta `backend/Code.js`**. Se **midió aparte**, con un arnés efímero fuera del repositorio que extrae
-del fuente REAL `_expedienteDelToken_`, `_memoCabeceraClave_`, `requireResumeToken_` **y los dos
-bloques tocados, literalmente**, y los ejecuta con dobles: **8 afirmaciones verdes** (tras la puerta,
-**0 viajes y 0 lecturas** · la fila trae los cinco campos · sin memoria, **1** viaje al KMS y **0** a
-AppSheet · un KMS caído no se disfraza · un token rechazado propaga su motivo · con `resume_token` el
-respaldo sale de la memoria · **sin** `resume_token` la lectura sigue ahí · con el KMS caído degrada
-como el oro). **CUATRO roturas ROJAS demostradas**: volver a AppSheet (*«lecturasAppsheet=1»*) ·
-disfrazar el KMS caído de «expediente no encontrado» · quitar el respaldo del camino legado ·
-**renombrar lo medido, que sale «MEDICIÓN CIEGA»**, no verde. ⚠️ **Y la medición se corrigió a sí
-misma dos veces**: no localizaba el segundo bloque (sus afirmaciones (6) y (7) medían **el aire**) y su
-primera rotura **reventaba con una traza** en vez de nombrar el caso.
-
-**Los OCHO controles VERDES** y `npm run e2e:wizard` **VEREDICTO: VERDE — 39 caminos**.
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla; lo
-que cambia es de dónde sale una fila y cuánta superficie pública queda apoyada en la credencial.
-
-### ②17 (2026-09-12) — el ÚLTIMO respaldo directo se retira
-
-**La lectura directa que quedaba de `sendVerificationCode_` —el camino de `signing_token` sin
-`resume_token`— apuntaba a una base que dejó de ser la buena.** El KMS migró su almacenamiento a
-PostgreSQL (`KMS_DATOS_EN_POSTGRES='true'`); esa lectura seguía preguntándole a AppSheet, así que
-había dejado de ser solo una concesión de seguridad **para convertirse en un defecto de
-corrección**: podía devolver datos de la base VIEJA, superseded.
-
-**Lo construido, en los dos repositorios, reusando lo ya auditado — sin escribir un segundo
-lector:**
-
-- **KMS** (`kis-app kms-server/enr/wizard-gateway.gs`): `enr_wizardExpedienteDelToken` gana un
-  **tercer modo**. Cuando la petición trae `signing_token` y **no** trae `resume_token`, delega en
-  la función nueva `enr_wizardGateDesdeFirma_`, que resuelve el expediente reusando **el mismo
-  recorrido auditado** de `enr.resolveSigningToken` (`enr_resolveSigningTokenInternal_` →
-  `sys_resolveSigningToken_`) y lee el grupo con el mismo criterio `!deleted_at` que ya usan
-  `staging.gs`/`wizard-datalayer.gs`/`wizard-firma.gs`. KAL-4 intacta: el
-  `enrollment_group_id` sale SIEMPRE del token, nunca del cuerpo — se comprobó pasando un id
-  inyectado en el payload y confirmando que se ignora.
-- **Asistente** (`backend/Code.js`): nuevo ayudante hermano `_expedienteDelTokenPorFirma_`,
-  deliberadamente mínimo (sin memoria de ejecución, sin los discriminadores de identidad/subida
-  que sí necesita `_expedienteDelToken_` — este camino es de un solo uso) que llama a
-  `enr.expedienteDelToken` con `{signing_token}` y devuelve el contrato `{ok, fila, rechazo,
-  motivo}` ya establecido por DL-E57. El fallback directo de `sendVerificationCode_` pasa a usar
-  este ayudante; **sin `signing_token` que preguntar, ya NO degrada a AppSheet** — se rechaza con
-  el mismo mensaje de siempre, porque servir un dato de la base vieja es menos honesto que
-  rechazar.
-
-**Medido antes y después, contra `origin/main`:** lecturas directas a AppSheet **44 → 43**
-(descontando la definición de `appsheetRequest_`); en el **camino vivo** (alcanzable desde
-internet, fuera de `manual_*` y de `adminCleanupOrphanSessions`), **1 → 0**. `②17` queda cerrada
-para el objetivo de "ninguna lectura directa alcanzable desde el proceso público" — lo que sigue
-abierto es otra cosa, `②18` (acotar el `service_token` por cliente).
-
-⚠️ **Se decidió NO conservar el viejo caso "(b) KMS-caído-con-resume_token degrada a AppSheet".**
-Ese degradado sigue siendo posible en teoría (un fallo de transporte tras intentar con
-`resume_token`), pero como AppSheet ya no es la base viva, degradar ahí serviría un dato
-potencialmente falso. Se prefiere el rechazo explícito, honesto, a una respuesta que podría
-mentir.
-
-⚠️ **Orden de publicación: KMS primero.** El asistente depende de que el tercer modo exista en el
-KMS; publicarlo al revés no rompe nada (el asistente seguía llamando al modo antiguo), pero deja
-sin sentido la actualización del asistente hasta que el KMS la sirva.
-
-⚠️ **Ninguna red automática cubre esto** — los 8 controles de CI de este repositorio no ejercitan
-`backend/Code.js` contra un KMS real, y `npm run e2e:wizard` corre contra un backend simulado. Se
-**midió con un arnés efímero** (fuera del repositorio, no commiteado) que extrae
-`enr_wizardGateDesdeFirma_` del fuente real del KMS y la ejecuta con dobles: **7 afirmaciones
-verdes** (token válido resuelve group+id+school · token inválido → UNAUTHORIZED · grupo ausente →
-UNAUTHORIZED · grupo BORRADO se descarta → UNAUTHORIZED · sin `school_id` cae al respaldo · KAL-4:
-el id del payload se ignora · `service_token` se verifica antes que el `signing_token`) y **2
-roturas ROJAS demostradas**: quitar el filtro `!deleted_at` (confirmado que SIN el filtro un grupo
-borrado se serviría igual — la rotura no mordía sin él) y renombrar la función medida, que sale
-**"MEDICIÓN CIEGA"** en vez de un falso verde. `check-quality-gates.mjs` del KMS: VERDE (27 gates).
-Los 8 controles de este repositorio: VERDES.
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia nunca alcanza este camino salvo
-por el enlace legado de `signing_token`; lo que cambia es de dónde sale el dato y que un KMS caído
-se rechaza en vez de arriesgar servir la base vieja.
-
-### `0º.tricies.vicies.semel` (2026-08-25) — «el enlace puede haber caducado» cuando NO ha caducado
-
-**Diego, 2026-08-25:** pidió su enlace, **tardó DOS MINUTOS** en llegarle, lo abrió, y el asistente
-le dijo *«No hemos podido cargar tu solicitud. El enlace puede haber caducado — introduce tu correo
-a continuación para recibir uno nuevo.»* **El enlace se acababa de emitir y duran SIETE DÍAS.**
-
-⛔ **El daño no era el texto: era la SALIDA que ofrecía.** Le decía que pidiera otro enlace ⇒ eso
-**ROTA el token** (el que tiene en la mano deja de valer) y le hace **volver a esperar los dos
-minutos** para chocar con lo mismo. Cada vuelta empeoraba su situación.
-
-**Lo medido contra `origin/main` y `origin/master` ANTES de tocar nada:**
-
-| Pieza | Estado medido |
-|---|---|
-| `ResumePage.jsx` | **UN SOLO `catch`** → `navigate('/?resume_error=1')`, sin ni una rama que distinga |
-| `requireResumeToken_` | sus **tres** rechazos —no reconocido · abandonado · caducado— lanzaban un `Error` **SIN `err.code`** |
-| `doPost` | sin `err.code` cae a su rama de **HTTP 500** con el motivo en una cadena suelta |
-| `gasCall` | corta en `if (!res.ok)` **ANTES** de leer el cuerpo ⇒ al navegador le llegaba `Network error: 500` |
-
-⚠️ **Y ASÍ SE DESMONTA UNA PREMISA DEL ENCARGO, que decía «el servidor YA distingue estos casos:
-léelos, no los inventes en el cliente».** El **KMS** sí los distingue; **lo que llegaba al navegador
-no**: los tres «el enlace no vale» eran, en el cliente, **byte a byte indistinguibles de un corte de
-red**. No había nada que leer — había que **darles un código**.
-
-**Lo construido, en tres piezas y ninguna es opcional:**
-
-1. **El servidor los NOMBRA** — `_errorDeEnlace_` (`backend/Code.js`, **un solo sitio**) acuña
-   `ENLACE_NO_VALIDO` · `ENLACE_ABANDONADO` · `ENLACE_CADUCADO`. ⛔ **No afloja nada**: mismos
-   rechazos, mismos mensajes, mismo orden; lo único que cambia es que salen por la rama
-   estructurada (`HTTP 200 + {ok:false, error:{code,message}}`, la forma canónica de esta casa) en
-   vez de por el 500 que el cliente ni parsea.
-2. **UN SOLO SITIO clasifica el fallo** — `frontend/src/lib/fallosDeEntrada.js`, con **tres** clases:
-   *el enlace no vale* (los tres códigos + `BAD_REQUEST`) · *no se pudo cargar* (sin código, o
-   `SIN_RESPUESTA`/`KMS_UNREACHABLE`) · *error nombrado* (cualquier otro código). ⛔ **NO se adivina
-   por el TEXTO del mensaje**: un mensaje se traduce, se sanea y se reescribe; un código no.
-3. **El fallo se queda EN LA PÁGINA, con el enlace vivo** — irse a la portada **era** el defecto de
-   fondo: allí el token ya no existe, así que la única salida que se podía ofrecer era «pide otro».
-   Hoy solo va a la portada la clase que lo merece.
-
-**Lo que ve la familia, caso por caso:**
-
-| Caso | Qué ve | Qué se le ofrece |
-|---|---|---|
-| **no se pudo cargar** | «No hemos podido cargar tu solicitud ahora mismo. **Tu enlace sigue siendo válido: no hace falta que pidas otro.**» | **Volver a intentarlo** con el MISMO enlace. ⛔ **NADA de pedir uno nuevo** |
-| **error nombrado** | el aviso del servidor, tal cual lo mandó | reintentar con el mismo enlace |
-| **el enlace no vale** | la portada, con su cartel de siempre | la casilla del correo para pedir otro — **la única salida que existe ahí** |
-
-**Y la carga YA NO SE RINDE A LA PRIMERA**: dos reintentos automáticos con espera creciente
-(1,5 s · 4 s) **y se dice en pantalla** («Seguimos cargando… lo estamos intentando otra vez»).
-⛔ Solo entra la clase de transporte: repetir una hidratación que el servidor ya rechazó **por su
-nombre** no la va a aceptar la segunda vez.
-
-⭐ **Y ESO ARREGLA TAMBIÉN LA TERCERA PIEZA DE LA FICHA —el segundo clic pedía código— SIN TOCAR LA
-PUERTA DE SEGURIDAD.** El intento que murió en el transporte **SÍ llegó al servidor** (por eso el
-correo salía igual), así que consumió la gracia del enlace y dejó la marca de step-up **atada a esta
-página viva** (`_markStepUpFresh_` con la huella `pv` que `api.js` acuña una vez por carga).
-Mientras no se recargue, esa marca sigue valiendo ⇒ **el reintento entra SIN pedir código**.
-
-⚠️ **LO QUE NO SE HIZO, y su motivo medido: NO se movió CUÁNDO se consume la gracia.**
-
-- **La ficha atribuía el consumo a `getAdmissionState_`, el pulso. Es FALSO**, y se midió: el pulso
-  solo lo llama `WizardPage.jsx`, que **únicamente se monta en `/apply`** — y en el camino de
-  recuperación no se llega ahí hasta que la hidratación tiene éxito. En un primer clic que falla,
-  **el único que consume la gracia es `hydrateSession_`**. El mecanismo que la ficha describe (se
-  gastó en el intento que falló) **es correcto**; el consumidor que nombra, no.
-- **Moverlo exige un ACUSE del cliente** —el servidor no puede saber si la respuesta llegó al
-  navegador—, y eso degrada el «UN SOLO USO» a «un solo uso **o** cualquier uso dentro de los 10
-  minutos» para una entrada que nunca acuse. La ficha lo prohíbe con todas las letras (*«NO se le
-  quita el un solo uso»*), es una **puerta de seguridad**, y **ninguna red de este repositorio
-  ejecuta `backend/Code.js`** para respaldarlo. Se deja escrito, medido, y sin tocar.
-
-**Lo que tarda de verdad, con números (medición ESTRUCTURAL, no en vivo).** La rama pública de
-`sendMagicLink_` encadena, **dentro de la petición que el navegador está esperando**: la verja
-reCAPTCHA (`:3363`) → `enr.recuperacionDelCorreo` (`:3402`) → `enr.renewApplicationSession`
-(`:3453`, **uno por expediente abierto**) → `sys-public.renderNotification` → el envío por Gmail →
-`sys-public.logNotificationSent` (`:3493`). ⇒ **CUATRO viajes al KMS + uno a Gmail + uno a Google,
-en serie**. Con las cifras que este repositorio ya tiene medidas —**12-31 s por viaje al KMS** y
-**40,6 s** el render del texto— eso cae de lleno en los **2 minutos** que Diego cronometró, y **el
-navegador se rinde a los ~40 s**. ⛔ **El arreglo de fondo NO es de esta ficha**: es
-`0º.tricies.vicies.bis` —sacar el envío del camino de la respuesta— y aquí solo se mide.
-
-**Red**: `npm run e2e:wizard`, camino NUEVO `enlace-no-ha-caducado` (13 afirmaciones, cuatro fases:
-transporte caído · el botón entra con el mismo enlace · el enlace muerto SÍ va a la portada · el
-error nombrado se dice). ⚠️ **El fallo de transporte se provoca MATANDO EL SOCKET**, no con un
-`{ok:false}`: lo que hay que reproducir es el fallo que **no deja respuesta que leer**, y un
-`{ok:false}` llega con cuerpo y con código y el cliente lo clasificaría por otra rama.
-
-⚠️ **Y una lección del ROBOT, medida, que costó dos corridas:** al matar el socket, **Chromium
-reintenta la petición por debajo** —cuatro peticiones al servidor para dos intentos de la página—,
-así que **un contador por PETICIÓN no dice cuántos intentos hizo la aplicación**. Quien acredita el
-reintento es lo que la familia VE: el aviso «seguimos cargando…», que solo se pinta cuando de verdad
-hay un reintento en marcha.
-
-**ROJO DEMOSTRADO tres veces**, cada una nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| devolver el `catch` único (todo a la portada) | *«la página SE FUE A LA PORTADA a decir que el enlace puede haber caducado y a pedir otro, con el enlace bueno todavía vivo (es el defecto entero: ha vuelto el `catch` único)»* |
-| que el clasificador ignore el código del servidor | *«(9) … el wizard no rebotó a la portada: la familia se queda sin la única salida que tiene»* + caen (10), (11) y (12) |
-| quitar el reintento automático | *«(5) … la pantalla nunca dijo «seguimos cargando»: o no reintentó, o reintentó en silencio»* |
-
-⚠️ **Lo que la red NO cubre, y se dice con esas palabras:** la batería corre contra un backend
-**simulado** que **nunca ejecuta `backend/Code.js`**. Que los tres rechazos lleven ya su código
-(`_errorDeEnlace_`) se acredita **leyendo ese código**, no aquí — y por eso **el servidor se publica
-ANTES que el frontal**: al revés, durante la ventana entre las dos publicaciones una familia con el
-enlace caducado de verdad se quedaría reintentando sin que nadie le ofrezca pedir otro.
-
-**Textos nuevos** (los DOS idiomas, `frontend/public/locales/{es,en}/translation.json`):
-`resume.stage.retrying` · `resume.fail.retry_title` / `retry_body` / `retry_btn` ·
-`resume.fail.named_title` / `named_body`. El de la portada (`landing.resume_error`) **no se toca**:
-ahí sigue siendo verdad.
-
-### `0º.tricies.vicies.quinquies` PIEZA 2 (2026-08-26) — la puerta del enlace se sirve de la copia TAMBIÉN al guardar
-
-**Decisión de Diego, 2026-08-26, literal:** *«No pasa nada por que un enlace tarde 30 minutos en
-dejar de valer, es razonable.»*
-
-**El número que lo motiva, medido contra el `/exec` REAL:** el asistente **sin** tocar el KMS
-responde en **4,0-4,4 s**; con **UNA** llamada al KMS, **32,1 s** y **60,6 s**; y el MISMO trabajo
-**dentro** del KMS cuesta **2,6 s** (la puerta) y **8,6 s** (las listas). ⇒ **entre 20 y 48 s se van
-en el SALTO**, no en trabajar — y la segunda medida salió PEOR que la primera, así que **no es
-arranque en frío**. Toda acción que ESCRIBE pagaba uno de esos saltos en `requireResumeToken_`.
-
-**Lo medido antes de tocar nada** (arnés efímero fuera del repositorio, funciones REALES extraídas
-del fuente + dobles), sobre una secuencia corriente —la familia abre su solicitud y guarda cuatro
-veces, cada guardado en su propia petición—:
-
-| | viajes de la puerta al KMS |
-|---|---|
-| `origin/main` (ayer) | **5** |
-| hoy | **1** |
-
-**Cómo queda.** `requireResumeToken_` consulta **primero** la copia (`rtmemo_`, la que ya existía) y
-solo va al KMS si no la hay. El plazo pasa de **300 s a 1800 s** (`COPIA_PUERTA_TTL_S_`), y con él la
-copia deja de servir solo a las LECTURAS: sirve también a las ESCRITURAS.
-
-**⛔ LO QUE NO SE AFLOJA, campo por campo — y el control lo vigila:**
-
-- **KAL-4 intacta**: el expediente sale de la ficha que resolvió **el token**, jamás del cuerpo; un
-  `enrollment_group_id` del cuerpo que no case se sigue rechazando.
-- **Los TRES rechazos siguen aplicándose** —no reconocido · abandonado · caducado a los 7 días salvo
-  enviada— y **por el MISMO juez** que el camino vivo: `_rechazosDelEnlace_`. Vivían **escritos
-  dentro** de `requireResumeToken_`; con dos caminos que tienen que rechazar lo mismo, dos copias del
-  criterio divergirían (§"Regla — refactors preservan el código probado"), así que hay **una**.
-- **La copia solo CONSERVA un «sí»; jamás lo CREA.** Se escribe **únicamente** en el camino vivo,
-  después de una validación que resolvió ⇒ un token que nunca resolvió no tiene entrada y se sigue
-  rechazando **en vivo**. `_cabeceraDeLaCopia_` **no escribe nada**, y el control lo comprueba.
-- **El código de un solo uso (②27) no se toca**, ni su orden: token → código → trabajo caro. El
-  atajo ocurre **antes** del código, exactamente donde ocurría la lectura viva.
-- **La verja pública (reCAPTCHA) y el ack constante no se rozan.**
-
-**⛔ CON `comprobarSubida` NO SE TOMA EL ATAJO, y no es cautela genérica.** Esa respuesta —¿el
-expediente de alumno es de esta familia? ¿este envío ya se guardó?— la contesta el KMS y **la copia
-no la tiene**: tomarla de aquí dejaría a `uploadDocument_` sin la comprobación de **ACCESO**, o
-desharía `0º.quindecies` hallazgo (2) partiéndola otra vez en dos viajes. **Subir un documento sigue
-exactamente igual que ayer.** ⚠️ Y la comprobación de esto es **por el GUARDIA que hay justo encima
-del atajo**, no por que la palabra salga en el cuerpo: con la versión laxa, la rotura «tomar el atajo
-también con `comprobarSubida`» salía **VERDE** — medido.
-
-**⚠️ LO QUE LA DECISIÓN DE DIEGO ACEPTA, escrito para que nadie se sorprenda: un enlace ROTADO o
-REVOCADO por el lado del COLEGIO puede seguir valiendo hasta 30 minutos.** Lo que el asistente SÍ
-olvida **en el acto** son los cambios que provoca **él mismo** — `_olvidarCabeceraMemo_` borra ahora
-también la copia, y lo llaman **rotar el enlace** (`sendMagicLink_`, ya lo hacía), **abandonar**
-(`abandonSession_`, el auto-abandono de sesiones paralelas, `reportUnsolicited_`, la limpieza de
-huérfanas) y **enviar la solicitud** (`submitEnrollmentSession_`). Sin eso, `assertGroupEditable_`
-—que lee la ficha que la puerta le deja— seguiría dejando escribir sobre una solicitud **ya enviada**
-o **abandonada** durante media hora.
-
-⭐ **Y DE PASO SE CERRÓ UNA DIVERGENCIA QUE YA ESTABA VIVA.** `requireResumeTokenMemo_` era un
-**segundo lector de la MISMA entrada**, con su propio guardia de KAL-4 copiado y **SIN los tres
-rechazos** (vivían solo en el camino vivo) ⇒ **devolvía el identificador de una sesión ABANDONADA sin
-protestar**. Hoy es un **delegante fino** de `requireResumeToken_`: una sola puerta. ⚠️ Su bloque de
-documentación decía con todas las letras *«NUNCA usar en handlers de mutación… esos validan SIEMPRE
-en vivo»* — **caducado desde esta decisión**, y reescrito en vez de conservado al lado.
-
-**Cuánto ocupa:** una entrada son **~370 bytes** (el tope de `CacheService` por entrada es 102.400 ⇒
-margen ×276), y la clave es **por TOKEN**, que es **por solicitud** ⇒ 40 solicitudes ≈ **15 KB**.
-**Qué pasa si la copia NO está:** el camino de hoy se recorre entero — medido.
-
-⚠️ **LA BATERÍA NO PUEDE CUBRIR ESTO, y no se le añadió un camino para aparentarlo**: corre contra un
-backend **simulado** que **nunca ejecuta `backend/Code.js`**, y este cambio es **invisible para el
-navegador** (misma pantalla, mismos textos, mismas llamadas — solo cambia cuánto se espera). Se
-**midió aparte**: **15 afirmaciones verdes** sobre las funciones reales con dobles, y **SEIS roturas
-ROJAS demostradas** — el código de AYER (sale **«MEDICIÓN CIEGA»**) · servir la copia **sin** los tres
-rechazos ni KAL-4 (4 rojas) · tomar el atajo también con `comprobarSubida` · que la copia **cree** un
-«sí» para un token que nunca resolvió · que olvidar deje viva la copia · y el **renombrado**, que sale
-«MEDICIÓN CIEGA» y no verde. **Quien toque esta puerta, que lo mida.**
-
-**Control**: `scripts/verja-publica.mjs` — **las anclas SE MOVIERON, no se aflojaron.** El control
-salió **ROJO con 4 infracciones** en cuanto los tres rechazos y el guardia de KAL-4 dejaron de estar
-escritos dentro de `requireResumeToken_` (bien: se negó a afirmar lo que ya no podía verificar), y
-hoy los busca donde viven —`_rechazosDelEnlace_` y `_puertaConLaCabecera_`—, más seis afirmaciones
-nuevas de la Pieza 2. **Rojo demostrado NUEVE veces**, cada una nombrando su caso; el renombrado del
-juez sale **CIEGO**.
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla y
-hace exactamente lo mismo; lo que cambia es cuánto espera. *(Este repositorio no tiene manual de
-usuario ni ayuda dentro de la aplicación: sus únicos textos son los de `frontend/public/locales/`.)*
-
-⛔ **LA PIEZA 1 NO SE HIZO, Y NO POR FALTA DE TIEMPO — SE PARÓ POR LO QUE EL PROPIO ENCARGO MANDA.**
-El repaso por tiempo que dejaría la copia hecha **antes** de que llegue la familia exige pedirle al
-KMS **la lista de solicitudes vivas UNA VEZ POR PASADA**. **Esa entrada NO EXISTE**, medido contra
-`origin/master` (`kms-server/_api.gs`): las cinco rutas que listan expedientes
-—`enr.listEnrollmentGroups`, `enr.listEnrollments`, `enr.listSolicitudes`, `enr.listApplications`,
-`enr.resumeSession`— piden **`ENR.ENROLLMENT.VIEW` / `ENR.ENROLLMENT.EDIT`**, o sea una persona
-identificada; **ninguna es `'public'`**, y las ~45 que sí lo son van todas **por token** (KAL-4). Y
-hay un **segundo** motivo, también medido: la copia de la hidratación se indexa **por solicitud Y por
-TUTOR** (`_wzCacheKey_('hyd', gidW + '_' + nW)`), así que un repaso necesitaría además el `n` de cada
-tutor; y **la forma de la verja CERRADA ni siquiera se cachea hoy** —`hydrateSession_` RETORNA en su
-rama `pii_gated` **antes** de llegar al bloque de la caché—, de modo que calentarla es **código
-nuevo**, no un disparador. ⇒ **abrir esa ruta es otro encargo y otro turno**, tal y como el encargo
-previene.
-
-### `0º.tricies.vicies.quinquies` PARTE (B) (2026-08-26) — rotar el enlace ya no deja la puerta fría
-
-**Decisión de Diego, 2026-08-26, literal:** *«Sobre el precalentado… que no tire todo lo
-precalentado (en caché) por una rotación de token.»*
-
-⚠️ **LA PREMISA DEL ENCARGO ERA FALSA, Y ES EL HALLAZGO PRINCIPAL DE ESTA VUELTA.** Decía que
-rotar el enlace **BUMPA la versión del grupo** y con ella se caen las cinco copias de esa
-solicitud —hidratación, admisión, miembros, documentos y simulación— **para los dos tutores**,
-porque *«`notifyLiveStateChange_` bumpa igual, así que el aviso del KMS al ESCRIBIR el token
-rotado las tira también»*. **Medido contra el código vivo, eso NO ocurre:**
-
-| Qué se midió | Resultado |
-|---|---|
-| ¿`enr_wizardTouchSession` (KMS, el que rota) avisa o bumpa? | **NO.** No llama a `enr_notifyWizardLiveState_` ni a `enr_bumpLiveStateVersion_` — escribe la fila y devuelve `{resume_token, renewed}` |
-| ¿quién bumpa en el asistente? | **solo dos**: `_wzCacheInvalidate_` y `notifyLiveStateChange_` |
-| los **ONCE** llamantes de `_wzCacheInvalidate_` | **TODOS escriben contenido** (`saveStep_`, `submitEnrollmentSession_`, `saveResponses_`, `uploadDocument_`, `saveNeae_`, `saveBillingInfo_`, `applyPaymentModality_`, `requestCorrection_`, `retirarDelExpediente_`, `submitGdprConsents_`, `confirmReview_`) — **ninguno es una rotación** |
-| ¿`sendMagicLink_` invalida? | **NO**, en ninguna de sus dos ramas |
-
-⇒ **las cinco copias van por `enrollment_group_id` y SOBREVIVEN a la rotación sin que nadie haga
-nada.** El propio código ya lo decía en su cabecera (*«La rotación del token deja de borrar nada»*)
-y era cierto. **La distinción «cambió el CONTENIDO» vs «cambió el ENLACE» que el encargo pedía
-construir YA ESTABA construida** — desde que las claves dejaron de llevar el token (V2.4).
-
-**⇒ LO QUE LA ROTACIÓN SÍ DEJABA FRÍO, Y ES LO QUE SE ARREGLA: la COPIA DE LA PUERTA**, que es la
-única que va **por TOKEN** (`rtmemo_<sha(token)>`, PIEZA 2). Un token recién acuñado no tiene
-historia, así que **la primera acción de la familia tras pedir un enlace limpio volvía a pagar el
-viaje en vivo al KMS** — **12-31 s medidos** (30,9 s en el registro de la PIEZA 2). Justo en el
-momento en que la familia acaba de pedir el enlace y entra.
-
-**Lo construido: `_moverLaCopiaDeLaPuerta_` — la copia se MUEVE al token nuevo, no se pierde.** Se
-llama desde las **DOS** ramas de `sendMagicLink_` (la interna de «guardar y seguir luego» y la
-pública de recuperación por correo), **ANTES** de que `_olvidarCabeceraMemo_` borre la vieja —
-leerla después de borrarla no devolvería nada.
-
-**⛔ Lo que hay que retener al tocar esto, y ninguna es opcional:**
-
-- **CONSERVA, JAMÁS CREA — y por eso NO se fabrica una ficha.** Solo traslada una entrada que **YA
-  existía**, escrita en su día por `requireResumeToken_` (su ÚNICO escritor) tras una validación
-  VIVA que resolvió y pasó los tres rechazos. **Sin copia previa no pasa nada** y el camino de hoy
-  se recorre entero: una copia ausente **nunca** puede dejar a una familia fuera de su solicitud.
-  ⚠️ Esto es lo que impide cubrir la rama pública «mejor»: allí **no hay puerta viva**, y armar la
-  ficha con la lista de `_recuperacionDelCorreo_` sería **crear un «sí»** — además, esa lista trae
-  **cinco** campos y **no incluye `abandoned_at`**, que es justo lo que `_rechazosDelEnlace_` mira.
-- **⛔ NO alarga el techo de 30 min que Diego fijó.** La entrada guarda ahora `exp`, el instante
-  **ABSOLUTO** en que ese «sí» caduca, y el traslado lo **hereda**: encadenar rotaciones no compra
-  ni un segundo. Sin `exp` (entrada escrita antes de este cambio) **no se traslada** — degrada al
-  comportamiento de ayer.
-- **⚠️ `created_at` SE REFRESCA, y es obligatorio.** El KMS lo reescribe al rotar (reinicia el
-  plazo de 7 días); conservar el viejo haría que `_rechazosDelEnlace_` rechazara por **CADUCADO un
-  enlace recién emitido**, dejando fuera a la familia justo después de pedirlo. La ficha trasladada
-  es **fiel a la fila**, no más permisiva.
-- **KAL-4 intacta**: el expediente sale de la ficha que resolvió el token viejo; el `groupId` que
-  recibe la función solo puede provocar que **NO** se traslade, nunca elegir otro expediente.
-- **Los tres rechazos siguen aplicándose** sobre la ficha trasladada, por el juez ÚNICO
-  `_rechazosDelEnlace_` — una sesión **abandonada** sigue rechazándose después de moverla.
-- **El código de un solo uso (②27) y su orden no se tocan**, ni la verja pública, ni el ack
-  constante, ni el bumpeo por escrituras de contenido: **los once siguen invalidando igual**.
-
-⚠️ **NINGUNA BATERÍA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend **simulado** que
-**nunca ejecuta `backend/Code.js`**. Se **midió aparte**, con un arnés efímero fuera del repositorio
-(no commiteado) que extrae del fuente REAL `requireResumeToken_`, `_moverLaCopiaDeLaPuerta_`,
-`_olvidarCabeceraMemo_`, `_cabeceraDeLaCopia_`, `_claveCopiaPuerta_`, `_rechazosDelEnlace_` y
-`_puertaConLaCabecera_` y los ejecuta con dobles de `CacheService`, del reloj y del proxy al KMS:
-**13 afirmaciones verdes**, y el **ANTES/DESPUÉS medido sobre las funciones reales** —contra
-`origin/main`, **1 viaje** al KMS tras rotar; con el cambio, **0**—. **CUATRO roturas ROJAS
-demostradas**: no heredar el `exp` (*«exp=… orig=…»* + el techo deja de cortar) · quitar el guardia
-de KAL-4 · no refrescar `created_at` (*«el enlace recién emitido NO sale caducado»*) · fabricar una
-ficha cuando no hay copia (*«sin copia previa no crea un «sí»»*). ⚠️ **Y la medición se corrigió a
-sí misma**: la afirmación de `created_at` salió **VERDE** con la rotura puesta —era la afirmación la
-que no medía nada (6,9 días + 20 min sigue siendo menos de 7)— y hubo que apretarla a 6,99 días.
-**Quien toque esta puerta, que lo mida.**
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
-lo que cambia es cuánto espera tras pedir un enlace nuevo.
-
-### `0º.tricies.vicies.quater` (2026-08-26) — abrir el asistente cuesta CUATRO viajes, no ocho
-
-**Diego, 2026-08-26, cita literal:** *«Es imposible presentar estos tiempos de carga a un cliente de
-mi escuela sin recibir numerosas quejas. Esto es inviable.»* Abandonó sin que la pantalla terminara
-de cargar. Y antes: *«llevamos meses tratando de optimizar la carga de una simple web que consulta
-muy pocos datos… seguimos con un sistema que no es usable»*.
-
-**El diagnóstico ya estaba medido (`0º.tricies.vicies.bis`) y cambia dónde hay que mirar: el tiempo
-NO se va en trabajar, se va en VIAJAR.** Cronometrado DENTRO del KMS frente a lo que ve el
-asistente: la puerta del expediente **4,8 s de trabajo / 66,0 s vistos**; las listas **15,0 s /
-73,0 s**; el pulso **0,8 s / 45,2 s**. ⇒ **~60 s por llamada se van en el salto**, no en la consulta.
-Meses de optimización habían estado quitando segundos del lado que ya era rápido.
-
-**⇒ La palanca es el NÚMERO de viajes.** Y abrir el asistente costaba **OCHO**.
-
-**LO PRIMERO FUE MEDIRLO, y el recuento reproduce el registro de Diego EXACTAMENTE** (recorrido
-nuevo `un-viaje-al-abrir`, contando las peticiones REALES del navegador, no lo que apunta el arnés):
-
-| | ANTES (`origin/main`) | DESPUÉS |
-|---|---|---|
-| viajes al abrir | **8** | **4** |
-| la secuencia | `hydrateSession · sendVerificationCode · warmSession · fetchLookups · fetchQuestions · hydrateSession · warmSession · warmBundle` | `hydrateSession · sendVerificationCode · warmSession · warmBundle` |
-| ¿la que PINTA compite? | — | **no**: sale sola y las otras tres arrancan después |
-
-**⛔ LA MEDICIÓN VA CON LA VERJA DEL CÓDIGO PUESTA, y no es un detalle de montaje.** Con la gracia
-del enlace viva el servidor devuelve la solicitud entera —catálogos incluidos— y el asistente no
-pide nada más: **el tropel no se produce y el recorrido pasaría EN VACÍO**. El caso de Diego es el
-otro: enlace sin gracia ⇒ el servidor contesta su rama cerrada (`pii_gated:true`, `persons:[]`,
-`lookups:{}`, `questions:null`) y **de ahí salían los cuatro viajes de más**.
-
-**Lo quitado, y por qué ninguno se echa de menos:**
-
-| Qué | Por qué sobraba |
-|---|---|
-| **la SEGUNDA `hydrateSession`** (`WizardPage`, efecto `needsHydration`) | con la verja cerrada devuelve **el mismo esqueleto vacío** que la primera acaba de traer. La hidratación de verdad ya existe en su sitio: el `onVerified` de la verja, que corre cuando la familia teclea el código — el único momento en que el servidor puede mandar sus datos |
-| **el SEGUNDO `warmSession`** | se caía solo: lo provocaba el remontaje de la verja que causaba esa rehidratación (`0º.tricies.nonies`), y el servidor lo rechazaba con `RATE_LIMITED` (`warmSession_`: 120 s por token Y por expediente). **Un viaje entero para que lo rechacen** |
-| **`fetchLookups` + `fetchQuestions`** | se pagaban **detrás de la verja**, para llenar los desplegables de unos pasos que la familia todavía no puede ver. Y **vienen dentro de la hidratación** (`primeLookups`/`primeQuestions`), así que al abrir la verja ya están en memoria |
-
-**⛔ Los catálogos se APLAZAN, no se retiran.** El respaldo se queda y se dispara **cuando el
-asistente pinta sus pasos de verdad** —verja abierta **Y** hidratación resuelta—: ahí las dos
-funciones encuentran su caché sembrada y **no salen a la red**. Se pagan solo si de verdad faltaban.
-Y se espera también a `rehydrating` a propósito: `mustPassEntryGate` se vuelve falso en cuanto la
-familia teclea el código, pero la hidratación que trae los catálogos tarda todavía en volver —
-disparar en ese hueco sería volver a pagarlos, esta vez compitiendo con la llamada que sí importa.
-
-**⛔ NINGUNA PUERTA DE SEGURIDAD SE TOCA, y se dice campo por campo:** no se adelanta **ni un dato de
-familia** (la respuesta que se deja de pedir venía VACÍA a propósito — el eje `pii_gated` queda
-exactamente igual) · la verja sigue saliendo cuando salía · el código de un solo uso sigue
-enviándose solo al abrir (afirmación (5)) · el expediente sigue derivándose del token (KAL-4) · el
-ack constante de la portada no se roza · y **ni una línea de `backend/Code.js` ni del KMS**.
-
-**⛔ LA CONDICIÓN VIVE EN UN SOLO SITIO**, `laVerjaVaASalir` (`WizardPage.jsx`), porque la miran tres
-consumidores: los dos efectos de montaje y el render. Es `mustPassEntryGate` **sin** `rehydrating`,
-y la ausencia es deliberada: uno de sus consumidores es justo el efecto que PONE `rehydrating` a
-true. Al montar, `rehydrating` vale `false`, así que en ese instante las dos condiciones valen lo
-mismo — el único instante en que los efectos la miran.
-
-**⚠️ POR QUÉ NO SE BAJA A TRES, medido y no estimado.** Los dos precalentados que quedan **no son
-el mismo**: `warmSession` es el único que calienta en la **RECARGA** (donde `ResumePage` no llega a
-montarse) y `warmBundle` el único que arranca la fase de la **simulación del paso 7**
-(`0º.vicies.quinquies`) en la entrada por el enlace. Fundirlos es tocar `backend/Code.js` y
-arriesga **DUPLICAR** ese arranque en el camino del ticket, que ya lo mintea por su cuenta. Y los
-dos son fuego-y-olvido: **no están en el camino que la familia espera**.
-
-**⚠️ Y DOS PREMISAS DEL ENCARGO RESULTARON FALSAS AL MEDIRLAS:**
-
-1. **«el aviso del KMS solo se dispara al FALLAR un trabajo, no al terminar bien»** — **FALSO desde
-   el 2026-08-22**. `kms-server/sys/job-queue.gs:587` dice `sys_avisarAlAsistenteDelGuardado_(job,
-   'SAVE_OK')`, y lo cerró `0º.tricies.duodecies`, que el propio encargo cita como si siguiera
-   abierta. ⇒ **la invalidación por los DOS lados YA ESTÁ ENTERA**: el KMS avisa al guardar bien, al
-   fallar, al cambiar de estado y en los cuatro escritores del asistente; el asistente lo recibe en
-   `notifyLiveStateChange_` y sube la versión del grupo, que descarta toda copia vieja.
-2. **«`fetchLookups`+`fetchQuestions` son catálogos iguales para todo el mundo»** — el propio Diego
-   ya lo había corregido (*«puede hacer sets específicos para familias concretas»*), y **por eso
-   aquí no se guarda ningún cuestionario por idioma**: lo único que se hace es **no pedirlo cuando
-   no se puede enseñar**. Qué conjuntos le tocan a cada familia se sigue resolviendo por familia,
-   siempre.
-
-**⛔ Lo que decía aquí — que la copia SIEMPRE CALIENTE «está a medias» — quedó SUPERADO el
-2026-09-12 (`①97`), PERO NO COMO SE ESCRIBIÓ PRIMERO.** Aquí llegó a decirse que lo resolvía un
-empuje del KMS en cada escritura (`ENR_PUSH_MIRROR`) más un repaso de 3 h suyo: **eso se retiró
-ENTERO el mismo día por decisión de Diego** —*«el sitio para instalarlo no es el KMS, es el Wizard
-(backend) […] y es el Wizard el que le va haciendo peticiones al KMS»*—. **Quien mantiene caliente
-la copia es EL DISPARADOR DE ESTE PROYECTO**: `espejoRefrescarCopias`, cada 30 min, que le pide al
-KMS `enr.copiasDeLasSolicitudesVivas` y archiva bajo la MISMA clave que lee la recuperación. Ver
-§"EL ESPEJO PERMANENTE" en `backend/Code.js`.
-
-**Y en este lado, la IDENTIDAD también se resuelve primero contra la copia.**
-`_tutorQueRecupera_` —el resolvedor ÚNICO, sin segundo lector— consulta la copia que ya escribe
-`hydrateSession_` (misma clave `wz_hyd_`, con **6 h de vida**, `ESPEJO_HYD_TTL_S_`) antes de
-preguntarle al KMS, y solo si su versión sigue vigente. Con un solo tutor no hay dos personas que
-confundir: la copia de un tutor **nunca** contiene los datos del otro (DL-E49 §2, filtrado en el
-propio KMS antes de servirla).
-
-**Límite honesto que sigue en pie:** la PRIMERA visita de un tutor cuya copia todavía no se calentó
-sigue pagando el viaje al KMS — eso es correcto, no hay nada que servir todavía.
-
-**Red**: recorrido NUEVO `un-viaje-al-abrir` (9 afirmaciones), con **ancla** por delante — que la
-verja llegue a salir — para que las demás no puedan pasar sobre una pantalla que no se montó.
-**Rojo demostrado CUATRO veces**, cada una nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| devolver la rehidratación detrás de la verja | *«salieron 6 peticiones al abrir: […, hydrateSession, warmSession, warmBundle]»* + *«hydrateSession salió 2 veces: la rehidratación de WizardPage vuelve a pagar el viaje para recibir el MISMO esqueleto cerrado»* |
-| devolver el precalentado ansioso de catálogos | *«fetchLookups salió 1 vez/veces y fetchQuestions 1: se están pagando los catálogos de unos pasos que la familia todavía no puede ver»* |
-| quitar la verja (el recorrido mediría el aire) | *«nunca apareció la casilla del código: la secuencia que este recorrido mide no llegó a darse»* + *«evidencia insuficiente: 0 elementos pintados»* |
-| *(y la comprobación de que el ANTES es real)* | contra `origin/main` el recorrido canta **8 viajes** y cae en tres afirmaciones |
-
-⚠️ **Y LA MEDICIÓN SE CORRIGIÓ A SÍ MISMA.** Se dio por hecho que el simulado escondía el defecto —
-servía catálogos en la respuesta CERRADA, divergiendo del contrato real (`lookups:{}`)— y **era
-falso**: corriendo el recorrido contra el código de ayer CON el simulado divergente salían **los
-ocho viajes igual**, porque `hydrateFromResume` RETORNA en su rama `pii_gated` **antes** de llegar a
-`primeLookups`. La divergencia se corrige igualmente —un simulado que miente sobre el contrato es
-una trampa para el siguiente— pero **no era lo que destapaba nada**, y decirlo al revés habría sido
-venderse un mérito que no existió.
-
-⚠️ **Lo que la red NO cubre, y se dice con esas palabras:** la batería corre contra un backend
-**simulado** que **nunca ejecuta `backend/Code.js`** ni el KMS. Afirma **el número de viajes**, que
-es una decisión del NAVEGADOR y es exactamente lo que esta ficha vino a contar. **NO afirma los
-SEGUNDOS**: el servidor simulado responde en milisegundos. Los segundos de arriba son los medidos
-por Diego y por las sondas del KMS (`0º.tricies.vicies.bis`), no los de este recorrido.
-
-**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
-lo que cambia es cuánto espera para verla.
-
-### `①97` RUMBO CORREGIDO (2026-09-12) — EL ESPEJO PERMANENTE: la copia vive en la `ScriptCache`, y la mantiene caliente UN DISPARADOR DE ESTE PROYECTO
-
-**Diego probó su solicitud de pruebas, recuperarla por el enlace salió mal, y corrigió el rumbo de
-las últimas 24 h.** Citas literales: *«Una copia permanentemente actualizada en el caché del backend
-del Wizard de los expedientes activos de la escuela (KiS). NI más ni menos.»* · *«el sitio para
-instalarlo [el disparador] no es el KMS, es el Wizard (backend). Se instala una vez y listo, y es el
-Wizard el que le va haciendo peticiones al KMS.»* · *«Se debe guardar en el caché de GAS. No son
-tantos datos, son unas cuantas filas de varias tablas.»*
-
-**EL MODELO, en una frase: el ASISTENTE TIRA; el KMS no empuja y no dispara nada.**
-
-| Pieza | Dónde |
-|---|---|
-| **el almacén** | la `ScriptCache` de ESTE proyecto, bajo `wz_hydv2_<expediente>_<email_id>` — la MISMA clave que lee la recuperación |
-| **el escritor ÚNICO** | `_espejoGuardarCopia_` (clave, sobre `{v,data}`, plazo). Lo usan los DOS que archivan: el disparador y el write-through del camino vivo |
-| **el disparador** | `espejoRefrescarCopias`, cada 30 min, instalado por `_asegurarDisparadorDelEspejo_` |
-| **de dónde salen los datos** | UNA lectura del KMS: `enr.copiasDeLasSolicitudesVivas` |
-
-**Por qué la copia va por (expediente × TUTOR) y no por expediente:** porque la hidratación **se
-recorta al tutor que mira** (DL-E49 §2) — la copia de un tutor **nunca** contiene los datos del
-otro. Por eso la lectura del KMS devuelve una copia por cada tutor con correo vinculado, y el `n`
-que viaja es el **`email_id`** de `enrEmails`: el MISMO identificador opaco que ya va en el `?n=` del
-magic-link, para que la clave coincida BYTE A BYTE con la que calcula `_wzN_` cuando esa familia
-entra por su enlace.
-
-⛔ **NO ADELANTA NI UN DATO A NADIE.** Esto SOLO GUARDA. Quién puede leer esa copia lo siguen
-decidiendo las puertas de siempre —el código de un solo uso (②27), KAL-4, el candado `pii_gated`—,
-que no se tocan.
-
-⛔ **EL ESCRITOR NUNCA BUMPA LA VERSIÓN DE CLASE, SOLO LA LEE.** La versión es POR GRUPO, no por
-tutor: bumparla al archivar invalidaría de golpe la copia de cualquier OTRO tutor del mismo
-expediente que ya estuviera caliente — justo lo contrario de lo que esto busca.
-
-#### ⛔ LAS TRES PIEZAS QUE SE RETIRARON, Y NINGUNA VUELVE
-
-1. **EL ALMACÉN DURABLE EN DRIVE** (construido la noche anterior; `_almacenDurableCarpeta_` /
-   `Guardar_` / `Leer_` / `BorrarClave_`, `_wzHydLeerConDurable_`, `manual_diagAlmacenDurable`).
-   **Y no era solo que sobrara: metía una lectura de DRIVE en el camino más caliente** — se llamaba
-   en CADA hidratación y en CADA resolución de identidad desde el espejo, así que con la
-   `ScriptCache` fría eso es abrir la carpeta de Drive (o **CREARLA**, si la propiedad no estaba)
-   más un `getFilesByName`, **dentro de la petición que una familia está esperando**. Y una copia
-   guardada en Drive **sobrevive al desalojo del caché pero también a `_wzCacheInvalidate_`**, que
-   solo sube la versión: el fichero se queda ahí, y lo único que impide servirlo viejo es que la
-   comprobación de versión lo descarta. Un almacén que solo es correcto porque otro control lo salva
-   es un almacén que sobra.
-   ⚠️ **La carpeta que llegó a crearse NO se borra desde el código**: puede llevar copias de
-   familias reales, y borrar datos del colegio lo decide Diego. Queda huérfana, sin ningún lector.
-2. **EL RECEPTOR `pushWarmHydrate_` y su `case` del despachador.** El KMS retiró sus DOS emisores,
-   así que se quedó sin nadie que lo llamara — y era una acción MÁS en el `switch(action)` de un
-   `doPost` `ANYONE_ANONYMOUS`. ⚠️ **El canal firmado NO se toca**: `verifySignedKmsNotice_` sigue
-   vivo con **dos** receptores (`notifyLiveStateChange_` y `sembrarRecuperacion_`), que son otra
-   cosa y siguen usándose.
-3. **En el KMS**, el empuje por cada escritura `enr*` (`ENR_PUSH_MIRROR`), el empuje del repaso de
-   3 h, y **el disparador con su autoinstalación desde `buildApiContext_`**.
-
-**⚠️ Y POR QUÉ EL DISPARADOR ESTABA MAL EN EL KMS — el motivo es MEDIBLE, no de gusto:** el KMS es
-`executeAs: USER_ACCESSING` y **los disparadores de Apps Script son POR IDENTIDAD**, así que aquella
-autoinstalación creaba uno **por cada persona que entraba al KMS**. **Este proyecto es
-`executeAs: USER_DEPLOYING`**: TODA ejecución —el `doPost` público incluido— corre bajo UNA sola
-identidad, la de quien publicó, de modo que `ScriptApp.getProjectTriggers()` devuelve siempre los
-mismos y el «si ya hay uno, no crees otro» funciona de verdad. **Es la diferencia que hace correcto
-aquí lo que allí era un defecto.**
-
-**Coste del enganche en `doPost`:** `ScriptApp.getProjectTriggers()` **NO** se llama en cada
-petición — solo cuando la marca de caché (`espejo_disparador_ok`, 6 h) no está. El resto pagan un
-`cache.get`.
-
-**Verify-first de aquella vuelta:** `clasp run` **NO pudo ejecutar ni una función contra este
-proyecto** (probado con `manual_testAppSheetEscape`, que ya existía y no depende de ningún scope
-nuevo: *«Unable to run script function»*) ⇒ **el disparador no se pudo instalar desde aquí a mano**,
-y por eso se instala solo en la primera petición que entre.
-
-✅ **ESO YA NO ES CIERTO (2026-09-14): `clasp run` contra este proyecto FUNCIONA.** Fallaba porque
-al proyecto le faltaba su proyecto de Google Cloud, y **Diego se lo asignó**. Comprobado ese día con
-la MISMA función que lo había desmentido: `clasp run manual_testAppSheetEscape` devuelve `null` (no
-retorna nada) en vez del error. ⇒ **una `manual_*` de este repositorio ya se puede ejecutar y leer
-desde un agente**, con `NODE_USE_ENV_PROXY=1` desde `backend/`, igual que en el KMS.
-
-⚠️ **Lo que SIGUE sin poder leerse desde fuera es el REGISTRO DE EJECUCIONES**: `clasp logs` exige un
-`projectId` declarado en `.clasp.json`, y **ni este proyecto ni el del KMS lo declaran**. Por eso una
-función que solo escriba con `Logger.log` no es medible desde aquí: lo que quiera leerse **se
-devuelve**, o se guarda y se devuelve (molde: `manual_trazaDelArranque`, §"EL INTERRUPTOR DE LA
-TRAZA").
-
-⚠️ **NINGUNA BATERÍA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend simulado que
-**nunca ejecuta `backend/Code.js`** ni llama al KMS. Se midió con un **arnés efímero fuera de los
-dos repositorios** que extrae del FUENTE REAL las funciones de los dos lados y las ejecuta con
-dobles: **24 afirmaciones verdes** y **SIETE roturas ROJAS demostradas** — archivar bajo una clave
-que la recuperación no lee · que el escritor bumpe la versión · que la lectura del KMS deje de
-exigir el `service_token` · que el KMS deje de descartar al tutor que la familia quitó · que el
-disparador se instale habiendo ya uno · que un KMS caído tumbe la vuelta · y el **renombrado**, que
-sale **«MEDICIÓN CIEGA»** y no verde. ⚠️ **Y el arnés se corrigió a sí mismo**: la rotura de la
-clave hacía **reventar** el arnés con una traza (`JSON.parse` de `undefined`) en vez de nombrar el
-caso — un rojo que no dice qué se rompió no es una medida. **Quien toque esta cadena, que la mida.**
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — no hay ningún cambio observable para la
-familia; lo que cambia es cuánto espera al entrar.
-
-### 2026-08-26 — «No hay programas de admisión» cuando SÍ los hay: el paso 1 confundía «no me han llegado» con «no existen»
-
-**Diego abrió su solicitud y el paso 1 le dijo *«No hay programas de admisión disponibles en este
-momento»*, con el botón de continuar en gris.** Palabras suyas: *«lo que es rotundamente falso»*.
-
-**MEDIDO ANTES DE TOCAR NADA, contra los datos reales** (`manual_diagPlazoDeInscripcion`, solo
-lectura, KMS): **`VERDE — 2 de 2 programas de admisión con el plazo abierto hoy`**
-(`ADMISSIONS_2026/2027` y `RENOVATIONS_2026/2027`, ninguno fuera de plazo, ninguno sin plazo
-declarado). ⇒ **el dato estaba bien y la pantalla mentía.**
-
-**La causa, leída en el código, son DOS y las dos convertían un silencio en una afirmación:**
-
-| Dónde | Qué hacía |
-|---|---|
-| `Step1Email.jsx`, `.catch(() => setPrograms([]))` | un **fallo de red** se contaba como una respuesta del colegio: lista vacía ⇒ «no hay programas» |
-| `api.js`, `primeLookups` | la hidratación con la verja del código cerrada devuelve **`lookups: {}`** a propósito; `{}` es «verdadero» en JavaScript ⇒ se sembraba en la caché como si fuera el catálogo bueno, y `fetchLookups` lo servía **sin ir a la red** |
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ SON TRES SITUACIONES, NO DOS**: *cargando* · *el colegio contestó* (y su lista puede estar
-  legítimamente vacía) · *no se pudo cargar*. La tercera **se dice** y se puede reintentar; **jamás**
-  se disfraza de la segunda.
-- **⛔ `Array.isArray(lookups.programs)`, no `|| []`.** Lo que acredita que el colegio CONTESTÓ es
-  que venga una **lista**, no que venga *algo*. La respuesta cerrada trae `{}` — no es una respuesta.
-- **⛔ Un catálogo VACÍO no se siembra** (`primeLookups` corta con `Object.keys(...).length === 0`).
-  Sembrarlo envenena la caché de ese idioma para toda la pestaña: la pantalla afirma «no hay
-  programas» **sin llegar a preguntar**.
-- **El botón de continuar sigue en gris sin programa, y es correcto**: sin programa no se puede
-  avanzar. Lo que cambia es que la familia entiende que es un problema de carga y tiene **por dónde
-  salir** (reintentar), en vez de creer que el colegio no ofrece plaza.
-- **⛔ NO se toca el filtro de plazo del KMS** (`enr_soloConPlazoAbierto_`, ①28): es correcto y hoy
-  no descarta nada. El defecto era del asistente.
-
-**Textos nuevos** (los dos idiomas): `step1.programs_failed` y `step1.programs_retry`.
-
-**Red**: camino NUEVO `programas-no-se-inventan` (7 afirmaciones, en dos fases: catálogos caídos ·
-reintento con los catálogos sanos), con **ancla** por delante —que el paso 1 pinte su etiqueta de
-programa— para que las demás no puedan pasar en vacío. El escenario `catalogosMode: 'caido'` se
-aplica **en los DOS sitios que sirven catálogos** (la hidratación y `fetchLookups`): aplicado a uno
-solo, la pantalla se sirve del otro y la comprobación mediría el aire.
-
-**Rojo demostrado** devolviendo el código de ayer — tres afirmaciones en rojo, y la primera nombra
-el caso con las palabras de Diego:
-
-> *«la pantalla dijo "no hay programas de admisión" con los catálogos CAÍDOS: eso es una afirmación
-> falsa sobre la configuración del colegio, y deja a la familia sin nada que hacer»*
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS. Afirma lo que la familia LEE. Que los dos programas estén con el
-plazo abierto se acredita con la sonda del KMS citada arriba, no con esta batería.
-
-**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp`.
-
-### `0º.tricies.vicies.decies` · `.septies` · `.sexies` (2026-08-26) — los redondeles que se pisaban, la pastilla que salía a medias y el paso 7 que echaba la culpa al colegio
-
-**Tres defectos de la MISMA pantalla del asistente, arreglados juntos. El primero DESTRUÍA datos de
-la familia; los otros dos mienten sobre lo que pasa.** Diego, el mismo día: *«Ahora mismo funciona
-casi todo»* — el listón era arreglar estos tres **sin romper nada**.
-
-#### 1 · ⛔⛔ SE PERDÍA LO QUE LA FAMILIA CONTESTABA — el grupo de redondeles no llevaba a la persona
-
-> Diego: *«si selecciono una respuesta de la primera pregunta, cuando selecciono una respuesta de la
-> segunda, se desactiva lo seleccionado en la primera. Parece como si considerase que las 4 primeras
-> preguntas son un mismo grupo, en vez de preguntas independientes.»*
-
-**La ficha lo traía identificado LEYENDO, no ejecutando, y por eso lo primero fue REPRODUCIRLO.** El
-atributo `name` de un redondel agrupa **en TODO el documento**, y `QuestionField` lo ponía solo por
-pregunta (`q_<question_id>`, `shared/QbSetRenderer/index.jsx`). Desde `0º.tricies.decies` cada
-pregunta de alumno se pinta **una vez por hijo** ⇒ **las dos copias de la misma pregunta eran UN SOLO
-grupo para el navegador**: marcar la de un hijo desmarcaba la del otro. Y **no se recuperaba solo**,
-que es lo que lo hacía destructivo: el redondel está gobernado por React
-(`checked={value === o.option_value}`), así que cuando el navegador desmarca por su cuenta React no
-ve cambio y no lo repone.
-
-**Reproducido antes de tocar el arreglo**, y el rojo lo dice con los nombres delante:
-
-> *«(f.2) contestar por un hermano NO desmarca lo que se contestó por el otro — … nombres de grupo:
-> `[["q_q-e2e-5","q_q-e2e-6"],["q_q-e2e-5","q_q-e2e-6"]]`»* — los MISMOS dos nombres en los dos hijos.
-
-⚠️ **Y al medirlo apareció que es PEOR de lo que la ficha describía, y también que el enunciado se
-queda corto en un punto.** Lo peor: tras contestar por el segundo hermano, la lectura del navegador
-dejaba **al primero marcado y al segundo SIN marcar** (`marcada:-1`) — pero el valor del segundo
-**sí** estaba guardado en el estado ⇒ la pantalla mentía en las dos direcciones. Lo que se queda
-corto: **dentro de un MISMO hijo, dos preguntas distintas NUNCA se pisaron** (nombres distintos), y
-la afirmación que lo comprueba —(f.1)— **ya salía verde antes del arreglo**. Se conserva igualmente
-como barandilla, pero el defecto es **entre hermanos**, no entre preguntas.
-
-**El arreglo, en una línea: `name={\`q_${question.question_id}__${respondentKey}\`}`.**
-⛔ **`respondentKey` NO es la clave de la respuesta**: es de quién es esta copia de la pregunta. La
-clave (`${question_id}__${personKey}`) se compone al pintar y **NO se toca** — es la que guarda y
-recupera lo contestado, y tocarla desvincularía todo lo ya respondido.
-
-#### 2 · La pastilla del alumno salía en unos bloques y en otros no
-
-> Diego, con captura: *«Jara se ve en pequeñito, pero en los paneles anteriores habíamos puesto un
-> pill más resaltado.»*
-
-**No era una regresión: era la regla de `0º.tricies.sexdecies` funcionando como se escribió, con el
-ALCANCE mal tomado.** `variosSujetos` se calculaba **DENTRO de cada conjunto**, así que un conjunto
-al que por sus condiciones solo le entra un alumno —el de la captura era «Voz del aplicante ≥7
-años», que por edad deja fuera al hermano pequeño— caía a la línea gris mientras el de al lado sacaba
-pastilla. **La misma pantalla con dos aspectos.**
-
-**Ahora se calcula a nivel de PASO**: las piezas de **todos** los conjuntos se computan antes de
-pintar ninguno (`piezasDelConjunto_`, sacada del cuerpo del componente **sin cambiar una línea de lo
-que decide**), y de ahí sale la cuenta.
-
-⛔ **SE CUENTAN SUJETOS DISTINTOS, NO BLOQUES**, y no es un detalle: con dos conjuntos y **un solo
-hijo** hay dos bloques —uno por conjunto— y sigue sin haber nada que separar. Contar bloques le
-pondría pastilla a una familia de un solo hijo, que es justo el caso que la regla protege y que
-**sigue protegido** (afirmación (e.3)).
-
-⛔ **UN SOLO SITIO decide el aspecto** (`shared/CabeceraDeSujeto.jsx` + `.sujeto-pastilla`): no se
-copia el estilo a mano. ⚠️ **El simulador del paso 7 usa el MISMO componente con su propia cuenta,
-que ya es por pantalla: NO SE TOCA.**
-
-#### 3 · El paso 7 decía «el colegio te informará» cuando lo que pasaba es que no llegó
-
-> Diego: *«Ahora no carga ninguna cuota en el wizard en el paso 7»*, con el recuadro diciéndole
-> *«Todavía no podemos mostrarte una simulación de las cuotas. El colegio te informará de los
-> importes cuando estudie tu solicitud.»* — y en su propio registro `simularCuotas` había SALIDO y el
-> navegador la había cortado a los **240.000 ms** sin respuesta.
-
-**No es que no hubiera cuotas: es que no llegaron.** La causa vivía en `Step7Review.jsx`: el `.catch`
-hacía `setSim({simulable:false, simulaciones:[]})` con el comentario *«Degrada y calla»* ⇒ un fallo de
-TRANSPORTE salía por la **misma puerta** que «este plan no admite cuotas», que es una respuesta
-legítima del servidor.
-
-**Mismo molde que el paso 1** (`programas-no-se-inventan`, publicado ese mismo día): **TRES
-situaciones, no dos** — *calculando* · *el servidor contestó* (y su respuesta puede ser legítimamente
-que no hay cuotas) · ***no se pudo calcular*, que se DICE y se puede reintentar**.
-
-- **⛔ Solo se memoriza lo que LLEGÓ.** Guardar un fallo en la memoria de la sesión dejaría el
-  simulador apagado el resto de la sesión y el botón de reintento no serviría de nada.
-- **⛔ NO se toca el motor** (DL-080-A): el asistente no calcula dinero, solo formatea lo que le llega.
-- **⛔ Un simulador caído NO puede impedir enviar la solicitud** — eso no cambia, y lo sigue
-  afirmando la mitad (B) de `simulador-paso7`.
-- El `vivo` del efecto se sustituye por **dos** guardas —seguir montado y ser la ÚLTIMA petición—
-  porque ahora la petición también la dispara el botón: una respuesta vieja no puede pisar a la nueva.
-
-⚠️ **ESTO NO HACE QUE LAS CUOTAS LLEGUEN.** Mientras `simularCuotas` tarde más de cuatro minutos, la
-familia seguirá sin verlas — eso lo cierra `0º.tricies.vicies.quinquies`, no esto. **Aquí solo se
-deja de mentir.**
-
-**Textos nuevos** (los dos idiomas): `step7.sim.failed` y `step7.sim.retry`.
-
-#### La red — y lo que el catálogo del robot NO podía ver hasta hoy
-
-El banco de preguntas del robot era **de TEXTO entero y de UN SOLO conjunto**, así que **no podía ver
-ninguno de los dos primeros defectos**: sin redondeles no hay grupos que pisarse, y con un solo
-conjunto calcular «¿hay más de un sujeto?» por conjunto y por paso da lo mismo. Ahora sirve **dos
-preguntas de redondeles de alumno** y **un segundo conjunto con condición `AGE GTE 7`**, y el segundo
-hijo **nace menor de 7** (`FIXTURE.applicant2Dob`) para que esa condición lo deje fuera de verdad.
-
-| Recorrido | Qué añade |
-|---|---|
-| `cuestionario-no-se-apaga` | (f.0/f.1/f.2) los redondeles · (e.2.bis.0/e.2.bis) la pastilla del conjunto con un solo hermano |
-| `cuotas-no-llegan-no-se-miente` (**NUEVO**) | las seis del paso 7, con reintento incluido |
-
-**ROJO DEMOSTRADO en los tres**, escribiendo la afirmación ANTES del arreglo y comprobando que
-**nombra el caso** (los mensajes literales, arriba en cada apartado).
-
-⛔ **EL FALLO DEL PASO 7 SE PROVOCA MATANDO EL SOCKET** (`scenario.simulacionCorta`), no con un
-`{ok:false}` ni con `scenario.simulacionFalla`: lo que hay que reproducir es el fallo que **no deja
-respuesta que leer**. `simulacionFalla` responde `simulable:false`, que es el servidor CONTESTANDO —
-el caso legítimo del que hay que distinguirse, y que sigue midiéndose en `simulador-paso7`.
-
-⚠️ **Y una lección del ROBOT, medida, que costó una corrida: con el contador a 1 el camino salía
-VERDE sin haber medido nada.** Al destruir el socket, **Chromium reintenta la petición por debajo**
-(el mismo hallazgo de `0º.tricies.vicies.semel`), y ese reintento invisible traía las cuotas. Se
-matan **todos** los intentos y se abre el paso a 0 justo antes del reintento de verdad.
-
-⚠️ **Lo que la red NO cubre, dicho con esas palabras:** la batería corre contra un backend
-**simulado** que **nunca ejecuta `backend/Code.js`** ni el KMS ⇒ afirma **lo que pinta el navegador**,
-que es exactamente donde viven los tres defectos. Ninguno de los tres toca servidor.
-
-⚠️ **El mismo componente vive en el KMS** (`kis-app frontend/src/shared/qb-renderer/`) y **NO se
-tocó**: su único consumidor es la vista previa de una pregunta, a la que se le pasa **UN alumno
-sintético** ⇒ ni las dos copias que se pisan ni el segundo conjunto llegan a existir allí. Mismo
-criterio que `0º.tricies.decies` y `0º.tricies.sexdecies`.
-
-**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), **sin `clasp` y sin
-turno**. Ninguno de los tres toca `backend/Code.js` ni el KMS.
-
-### `0º.tricies.novemtricies` §1-§3 (2026-08-27) — el asistente habla POR HIJO, y la firma se desbloquea con un HITO
-
-**Una solicitud lleva varios hijos y el colegio resuelve cada expediente por separado. El asistente
-no sabía hablar de eso — y lo que hacía en su lugar no lo decidió nadie.**
-
-**Lo medido contra `origin/main` ANTES de tocar nada:**
-
-| Hecho | Dónde |
-|---|---|
-| El servidor **SÍ** calculaba los hechos por hijo (`out.por_alumno`) desde el 24-08 | `backend/Code.js:3955` |
-| **Y NUNCA SALÍAN**: los tiraban **CINCO** listas blancas de campos escritas a mano | 4 en `backend/Code.js`, 1 en `WizardContext.jsx` |
-| La puerta 7→8 miraba `state_code`, que es el Estado del hijo **MENOS avanzado** (`sort(display_order)[0]`) | `WizardPage.jsx` ← `Code.js:3936` |
-
-⇒ con Jara `AD` (orden 6) y Pepito `WL` (orden 4) el resumen salía `WL` y **la familia NO podía
-firmar la matrícula de Jara**; si a Pepito lo **rechazaban** (`TD`, orden 10) el resumen salía `AD` y
-**sí** podía. **Rechazar a un hermano DESBLOQUEABA la firma y ponerlo en lista de espera la
-BLOQUEABA.**
-
-**Las CINCO proyecciones, con fichero y línea** (todas llevan ya `por_alumno` + `firma_desbloqueada`):
-
-| # | Sitio | Qué es |
-|---|---|---|
-| 1 | `backend/Code.js:2215` | la proyección del **hydrate** |
-| 2 | `backend/Code.js:5027` | el **pulso**, acierto de caché |
-| 3 | `backend/Code.js:5115` | el **pulso**, escritura de la caché |
-| 4 | `backend/Code.js:5135` | el **pulso**, retorno en vivo |
-| 5 | `frontend/src/context/WizardContext.jsx:1719` | el **camino ligero** del contexto |
-
-⛔ **En la #1 se DESCARTA el `signing_status` por hijo que manda el KMS**, y el porqué está escrito
-al lado: el pulso no sabe producirlo hoy (`resolveSigningStatus_` es de grupo y no acepta acotar a un
-expediente). **Que lo produzcan los dos, o no lo produzca ninguno.**
-
-**⛔ LA PUERTA NO EVALÚA NINGUNA REGLA: PREGUNTA SI UN HITO ESTÁ COMPLETO.** Corrección de Diego
-(2026-08-27): *«nada de eso debe ir por código, sino por configuración de hitos. Debe poderse generar
-por configuración.»*
+| `script.external_request` | no sensible | `UrlFetchApp`: AppSheet y el proxy al KMS |
+| `drive` (COMPLETO) | restringido | los documentos que sube la familia: carpeta por nombre + `getFileById` |
+| `script.scriptapp` | sensible | URL del servicio, `getOAuthToken()` y los disparadores |
+
+⛔ **Nunca se añade un permiso «por si acaso», y NUNCA uno RESTRINGIDO que la cuenta no pueda
+conceder**: deja la autorización a medias y `UrlFetchApp` empieza a fallar en todo. **`gmail.send`,
+`script.send_mail` y el servicio avanzado `Gmail` salieron el 2026-09-05 (D123) y no vuelven**: este
+proyecto ya no manda ningún correo. Si uno tiene que salir del buzón del colegio, el sitio es el KMS.
+
+⚠️ **El de Drive es el ancho a propósito y bajarlo a `drive.file` NO se acredita leyendo código**: la
+carpeta se busca **por nombre en todo el Drive** y los ficheros se abren **por identificador**,
+algunos creados antes bajo el permiso ancho. Equivocarse rompe TODA subida. Para bajarlo hay que
+**medirlo en ejecución**. Compruébalo contra `origin/main`, nunca contra el árbol:
+
+```bash
+git show origin/main:backend/appsscript.json
+git show origin/main:backend/Code.js | grep -cE "Gmail\.Users|MailApp\.|GmailApp\."   # 0
+```
+
+## Cómo se comporta el asistente — los invariantes de producto
+
+### El modelo de entrada: un flujo, una ruta, y la identidad sale del ENLACE
+
+**El asistente es UN flujo continuo de 11 pasos en UNA sola ruta (`/apply`).** `/sign` está
+**eliminada como ruta** (`App.jsx` → `<Navigate to="/apply" replace />`); los pasos 8-11 viven
+**inline** en `WizardPage`. ⛔ **Nunca reintroducir `/sign` como entrada, ni el split
+`/apply`-vs-`/sign`, ni tratar el `signing_token` como bearer de entrada.** El avance lo gobierna
+**solo el estado y los hitos**. Los dos bearer siguen vivos bajo el capó: `resume_token` (de GRUPO,
+gate `requireResumeToken_`) y `signing_token` (por firmante, `requireSigningToken_` contra
+`sysSigningSessionSigners`; forma P211: UUID v4 con guiones **o** 32 hex sin guiones).
+
+⛔ **NO EXISTE UN «EMAIL DE GRUPO».** Modelo canónico de Diego: *«No existe email de grupo. Cualquier
+tutor recupera con SU email personal. Los emails son los introducidos al acceder por primera vez — el
+de creación es el email personal del tutor que inicia. Identidad = solicitud + email.»*
+⇒ `enrEnrollmentGroups.primary_email` es un **ARTEFACTO Stage-1**: guarda el correo personal de quien
+inició, para encontrar la solicitud en `initEnrollmentSession_`. **No es un concepto independiente** y
+no representa a nadie. El resolvedor de identidad vive **en el KMS**
+(`enr_resolveGuardianFromEmail_`, con su respaldo por `requester_person_id` para la fila de `enrEmails`
+que nace sin `person_id`); aquí solo queda el cliente fino `resolveGuardianForRecovery_`.
+
+**IDENTITY-FROM-LINK (findings #47).** La identidad del tutor sale del **propio enlace**: el `n` del
+magic link lleva el **`email_id`** (PK de la fila de `enrEmails`) — opaco, sin datos personales, ya
+existente. Diego: *«Tienes herramientas y datos suficientes para resolver la identidad sabiendo el
+email con el que se solicita el link. No pienso crear un campo que solo sirve a uno de los tipos de
+programa.»*
+
+- ⛔ **`n` JAMÁS se cree a ciegas**: se busca **solo dentro del expediente del token** (KAL-4 por
+  construcción) y ha de resolver a tutor. ⛔ **No es un bearer**: no autoriza por sí solo.
+- ⛔ **NUNCA se reintroduce una columna dedicada** para la identidad de recuperación (vetada).
+- La gracia que salta el código se ancla al **`resume_token` recién rotado**, nunca a `n`.
+- `email_id` **no depende del tutor**: casa por el valor del correo, así que sigue habiendo `n` para
+  correos que no resuelven a tutor — cambiarlo dejaría enlaces sin `n`.
+
+### El enlace: SIEMPRE se rota, y el envío deja el clic sin viajes
+
+> **Diego, 2026-09-14, literal:** *«Como ya se está accediendo al backend para lanzar el envío del
+> email, aprovechas y refrescas el enlace para que sea nuevo… Además, aprovechas para mover el caché
+> y refrescarlo con los últimos datos de la BD de esa solicitud. El cliente hace click en el enlace
+> y, siempre que lo haga entre el envío y los siguientes 10 minutos, entra directamente sin
+> necesidad de OTP. El arranque desde el enlace es ultrarrápido porque los datos de esa solicitud
+> (todos ellos) ya están en la memoria del backend del wizard.»*
+
+⛔ **No hay margen: se rota siempre.** La gracia que salta el código **solo se acuña sobre un enlace
+recién rotado**, así que cualquier margen deja pidiendo el código la mayoría de los días.
+
+**El ENVÍO rehace la copia caliente** (`warmSession_({refrescar})`, las 12 secciones) y **deja el
+clic sin llamadas al KMS** (`_dejarElClicSinLlamadas_`, tras `sendViaKmsNotify_`): la puerta del
+expediente y el cuestionario quedan preparados. ⛔ **La puerta no se fabrica: SE LLAMA**
+(`requireResumeToken_`, que aplica los tres rechazos y KAL-4). **CONSERVA un «sí», jamás lo CREA.**
+Es **best-effort absoluto**: el correo ya salió, así que nada de ahí puede lanzar.
+
+⚠️ **El ÚNICO caso que no rota es el expediente YA ENVIADO** (el KMS lo rechaza por diseño, DL-E38:
+conserva su token vivo para volver a la firma); ahí la gracia se acuña sobre el token vivo. ⚠️ **Y lo
+que vuelve a costar, dicho:** el viaje de renovación (~19 s) está en el camino del correo, y los
+enlaces anteriores mueren al pedir uno nuevo. Las dos cosas las decide la especificación.
+
+### La copia caliente y el espejo
+
+**La copia de la solicitud vive en la `ScriptCache` de ESTE proyecto**, bajo
+`wz_hydv2_<expediente>_<email_id>`, con **UN escritor único** (`_espejoGuardarCopia_`) y un
+disparador propio (`espejoRefrescarCopias`, cada 30 min → `enr.copiasDeLasSolicitudesVivas`).
+
+- ⛔ **Va por (expediente × TUTOR), no por expediente**: la hidratación se recorta al tutor que mira
+  (DL-E49 §2), así que la copia de uno **nunca** contiene los datos del otro. El `n` que viaja es el
+  `email_id`, para que la clave case BYTE A BYTE con la que calcula `_wzN_` al entrar por el enlace.
+- ⛔ **El escritor NUNCA bumpa la versión de clase, solo la lee**: la versión es POR GRUPO, y bumparla
+  al archivar invalidaría la copia de cualquier otro tutor del mismo expediente.
+- ⛔ **Esto SOLO GUARDA.** Quién puede leerla lo siguen decidiendo las puertas de siempre —el código
+  de un solo uso, KAL-4, el candado `pii_gated`—, que no se tocan.
+- **Por qué el disparador vive AQUÍ y no en el KMS:** los disparadores de GAS son **por identidad**.
+  El KMS es `USER_ACCESSING` ⇒ allí se creaba uno **por cada persona que entraba**. Este proyecto es
+  `USER_DEPLOYING` ⇒ toda ejecución corre bajo una sola identidad y el «si ya hay uno, no crees otro»
+  funciona de verdad.
+- ⛔ **Retirados y no vuelven:** el almacén durable en Drive (metía una lectura de Drive en el camino
+  más caliente y sobrevivía a la invalidación) y el receptor `pushWarmHydrate_`. **El canal firmado
+  no se toca:** `verifySignedKmsNotice_` sigue vivo con **dos** receptores, `notifyLiveStateChange_`
+  y `sembrarRecuperacion_`.
+
+**La caché de recuperación** (la 2ª vez que se teclea un correo en `sendMagicLink_`): ⛔ **nunca se
+guarda ni se sirve una respuesta VACÍA** —un «no hay ninguno» guardado haría permanente el agujero de
+mandarle a quien ya tiene solicitud el enlace de un borrador vacío— · ⛔ **ni una entrada con un token
+muerto**: cada expediente lleva un **sello** (`recu_sello_<grupo>`) que sube en el sitio ÚNICO donde
+este proceso declara que algo cambió, `_olvidarCabeceraMemo_` · ⛔ **un sello AUSENTE es FALLO de
+caché, nunca acierto** · ⛔ **no regala la gracia** que salta el código · la entrada se escribe
+**DESPUÉS** del bucle de renovación, con los tokens finales · el correo se guarda **RESUMIDO**
+(KAL-11) · vence en **6 h**, el techo de `CacheService`.
+
+### La puerta del enlace: una copia de 30 min, y los tres rechazos en UN solo juez
+
+> Diego, 2026-08-26: *«No pasa nada por que un enlace tarde 30 minutos en dejar de valer, es
+> razonable.»*
+
+`requireResumeToken_` consulta **primero** la copia (`rtmemo_`, `COPIA_PUERTA_TTL_S_` = 1800 s) y solo
+va al KMS si no la hay — también en las ESCRITURAS. **Lo que no se afloja:**
+
+- **KAL-4 intacta**: el expediente sale de la ficha que resolvió el token.
+- **Los TRES rechazos** —no reconocido · abandonado · caducado a los 7 días salvo enviada— los aplica
+  el juez **ÚNICO** `_rechazosDelEnlace_`. Dos copias del criterio divergirían.
+- **La copia solo CONSERVA un «sí»; jamás lo CREA.** Se escribe únicamente en el camino vivo, tras
+  una validación que resolvió.
+- ⛔ **Con `comprobarSubida` NO se toma el atajo**: esa respuesta es una comprobación de ACCESO que la
+  copia no tiene.
+- **Rotar, abandonar, «esto no es mío», el auto-abandono, enviar y la limpieza de huérfanas llaman a
+  `_olvidarCabeceraMemo_`**, que borra también la copia. Sin eso, `assertGroupEditable_` dejaría
+  escribir media hora sobre una solicitud ya enviada.
+- **Rotar MUEVE la copia al token nuevo** (`_moverLaCopiaDeLaPuerta_`, antes de olvidar la vieja):
+  **hereda el `exp` absoluto** (encadenar rotaciones no compra un segundo) y **refresca `created_at`**
+  (el KMS lo reescribe al rotar; conservar el viejo rechazaría por caducado un enlace recién emitido).
+- **El pedido va COMBINADO** (DL-E57): con `n`/`recovered_email` presente, la puerta los lleva en el
+  MISMO cuerpo y archiva la identidad en `_TUTOR_MEMO_`. Sin discriminador, byte-idéntico. Los dos
+  fallos **no se contagian**: un fallo de identidad va en su campo y nunca tumba la puerta.
+
+⚠️ **Lo que la decisión acepta:** un enlace rotado o revocado **por el lado del colegio** puede seguir
+valiendo hasta 30 minutos.
+
+### El PULSO y los viajes
+
+- **Abrir el asistente cuesta CUATRO viajes** (`hydrateSession · sendVerificationCode · warmSession ·
+  warmBundle`), no ocho. La condición vive en UN solo sitio, `laVerjaVaASalir` (`WizardPage.jsx`).
+- ⛔ **Los catálogos se APLAZAN, no se retiran**: `fetchLookups`/`fetchQuestions` se disparan cuando
+  el asistente pinta sus pasos de verdad —verja abierta **Y** hidratación resuelta— y ahí encuentran
+  su caché sembrada.
+- **El pulso no se dispara mientras hay una subida en vuelo** (`uploadsInFlightRef` +
+  `hasUploadInFlight()`, con `try/finally` alrededor de cada subida). Es señal de CLIENTE: la subida,
+  cuando sí se dispara, sigue validando en vivo igual.
+- **La identidad se resuelve PEREZOSAMENTE en el pulso**, solo si la marca guardada lleva buzón.
+  ⛔ **La clave de su caché sigue llevando el buzón dentro** — es una frontera de privacidad entre
+  tutores: en un expediente ya enviado el token no rota, así que dos tutores lo comparten.
+- **El coste está en el SALTO, no en el trabajo**: ~15 s por viaje al KMS, con manejadores de 0,5-2 s
+  ⇒ lo que se mejora es **el NÚMERO de viajes**, nunca la consulta.
+
+### Lo que el asistente DICE, y lo que no puede afirmar
+
+- ⛔ **No puede decir «guardado»: el KMS ENCOLA.** `enr.saveResponses` contesta `{ok:true,
+  queued:true}` y escribe el trabajador después. Por eso se **PREGUNTA antes**
+  (`enr.wizardEstadoDeLasPartes`, lectura síncrona que ya existía) y, si ese tutor ya envió su parte,
+  se rechaza con `PARTE_YA_ENVIADA` sin encolar nada. **Degrada hacia GUARDAR**: un dato que no se
+  puede consultar no puede convertir esto en un asistente que se niega a guardar.
+- ⛔ **UN SOLO SITIO decide si un rechazo se reintenta**: `frontend/src/lib/rechazos.js`
+  (`RECHAZOS_DEFINITIVOS`). Lo leen los **dos** consumidores —el aviso, para explicarlo y esconder
+  «Reintentar»; la cola, para **no recordar** la escritura fallida—. **Falla hacia el lado seguro**:
+  lo no declarado se sigue reintentando, así que un corte de red nunca se convierte en trabajo
+  perdido. Un código nuevo se declara con **una línea ahí**, y **jamás se escribe una segunda lista**.
+  ⚠️ Y no basta con dejar de reintentar: mientras un rechazo definitivo esté en pie, la cola **repone
+  el aviso** en vez de caer a «todos los cambios guardados», y **en el mismo episodio** (un cartel ya
+  cerrado no se vuelve a abrir).
+- **Los DESCARTES del KMS se dicen** (`codigoDelDescarte`): `rechazadas_por_quien_puede_contestar`,
+  `rechazadas_por_formato_no_declarado`, `neae_vaciado_no_declarado`, `skipped_no_context`,
+  `skipped_no_initiator`, más las fichas de otro tutor. Los cinco son **definitivos** —dependen de
+  quién contesta o de la configuración del centro—; los dos de lote entero **no le piden nada a la
+  familia**: dicen que escriba a admisiones.
+- **Un guardado que MUERE en la cola deja de ser mudo**: se pregunta en el pulso que ya va y viene
+  (`guardados_sin_aterrizar`). La regla es **«lo ÚLTIMO que se sabe de ese paso»**, no «alguna vez
+  falló» —sin eso el aviso sería permanente, porque la fila fallida se queda en la cola para siempre—.
+  ⛔ **Solo viajan CÓDIGOS DE PASO, jamás `error_msg`** (nombra columna y valor rechazados: es
+  diagnóstico, no algo que cruce al navegador de una familia). **«No se pudo mirar» NO es «todo
+  guardado»** y son campos distintos. **No ofrece «Reintentar» y no se puede cerrar.**
+- ⛔ **Un fallo de TRANSPORTE no se disfraza de enlace caducado.** Los tres rechazos del servidor
+  llevan código (`_errorDeEnlace_`: `ENLACE_NO_VALIDO` · `ENLACE_ABANDONADO` · `ENLACE_CADUCADO`) y
+  salen por la rama estructurada (HTTP 200 + `{ok:false, error:{code,message}}`), nunca por un 500
+  que el cliente no parsea. **UN SOLO SITIO clasifica**: `frontend/src/lib/fallosDeEntrada.js`, con
+  **tres** clases —el enlace no vale · no se pudo cargar · error nombrado—. ⛔ **No se adivina por el
+  TEXTO**: un mensaje se traduce y se reescribe; un código no. La clase de transporte **se queda en
+  la página con el enlace vivo** y reintenta sola (1,5 s · 4 s, diciéndolo); solo «el enlace no vale»
+  va a la portada, que es donde está la única salida que le queda.
+- ⛔ **Los catálogos no se inventan.** Son **TRES** situaciones: *cargando* · *el colegio contestó* (y
+  su lista puede estar legítimamente vacía) · *no se pudo cargar*, **que se dice y se puede
+  reintentar**. Lo que acredita que contestó es que venga una **lista** (`Array.isArray`), no que
+  venga *algo* — la respuesta con el candado puesto trae `{}`, que en JavaScript es verdadero.
+  ⛔ **Un catálogo vacío no se siembra**: envenena la caché de ese idioma para toda la pestaña.
+- ⛔ **El asistente NO calcula dinero** (DL-080-A): `money()` divide entre 100 y formatea. El total
+  sale del servidor (`net_cents`) y **no se recalcula en pantalla**.
+
+### El iPhone no se lleva la sesión por delante
+
+Irse a otra app aborta las peticiones en vuelo. `gasCall` detecta el contexto de fondo
+(`isBackgroundContext_`: oculta ahora, o lo estuvo, o dentro de una gracia de 4 s tras volver —
+`visibilitychange` **y** `focus`, porque algunos webviews entregan uno sin el otro) y, si el fallo es
+de TRANSPORTE, **reintenta al volver a primer plano**.
+
+⛔ **SOLO lecturas idempotentes, lista EXPLÍCITA** (`LECTURAS_REINTENTABLES_AL_VOLVER`:
+`hydrateSession`, `getAdmissionState`, `simularCuotas`, `getLiveStateVersion`), **UNA vez**, y **NUNCA
+una escritura**: una escritura re-disparada por un cambio de visibilidad puede duplicar lo que el
+servidor ya recibió. Lo que no está en la lista no se reintenta — nunca al revés. ⛔ **Estos oyentes
+no llaman jamás a `touchActivity`**: no comparten una línea con la ventana de inactividad.
+
+**Y lo tecleado sin guardar no muere con la página.** ⛔ **La salida NO es guardar en el navegador, es
+ENVIAR**: lo pendiente **son datos personales**, así que `sessionStorage`/`localStorage` están
+prohibidos (KAL-7). ⛔ **`navigator.sendBeacon` DESCARTADO** y no se repropone: no espera respuesta, y
+el guardado necesita LEERLA — un dato «enviado» que el servidor descartó en silencio es el mismo
+defecto con otra cara. Tres piezas: el paso **publica** cómo preguntarle lo tecleado
+(`registrarBorradorDelPaso`, en un `ref`) · **UN SOLO oyente** `visibilitychange`→`hidden` +
+`pagehide` en `WizardPage` · el guardado sale por **el camino de siempre**
+(`encolarGuardadoDelPaso`), **entrando por la cola, no saltándola** (el orden FIFO importa: el vínculo
+necesita el identificador que estampa el paso de personas).
+
+### Lo que se PINTA — invariantes de pantalla
+
+- **El cuestionario agrupa POR HIJO**: primero lo que no es de un hijo (solicitud y tutor), y después
+  **una sección por hijo** con sus conjuntos dentro. ⛔ **Con UN solo hijo la pantalla no cambia** —
+  sin nada que separar, una sección de primer nivel es ruido. ⛔ **La clave de la respuesta no se
+  toca** (`question_id__personKey`): es la que guarda y recupera lo contestado. ⛔ **De quién es una
+  pregunta lo declara el catálogo** (`audience_category_id`): aquí solo se AGRUPA lo que llega.
+  ⛔ **No se ordena nada**: el `display_order` ya viaja resuelto. Las condiciones se evalúan **por
+  sujeto**, y un hijo sin preguntas no se pinta.
+- ⛔ **El `name` de un grupo de redondeles agrupa en TODO el documento**, así que lleva el sujeto
+  dentro (`q_${question_id}__${respondentKey}`). Sin eso, contestar por un hermano **desmarca** lo
+  contestado por el otro, y React no lo repone.
+- ⛔ **UN SOLO SITIO decide cómo se ve un separador de sujeto**: `frontend/src/shared/CabeceraDeSujeto.jsx`
+  + `.sujeto-bloque`/`.sujeto-pastilla`, usado por el cuestionario y por el simulador del paso 7.
+  **Prohibido copiar el aspecto a mano en una tercera pantalla.** Se cuentan **sujetos distintos en
+  todo el paso**, no bloques: con un solo hijo y dos conjuntos hay dos bloques y nada que separar.
+- **El gemelo del KMS** (`kis-app frontend/src/shared/qb-renderer/`) **no se toca**: su único
+  consumidor es la vista previa de una pregunta, con **un** alumno sintético y **un** conjunto.
+- **El paso 7**: un **desplegable** por plan (con dos o más formas de pago; con una se dice cuál es y
+  no se pregunta) y **siempre el calendario completo** debajo, una fila por vencimiento. Un plan puede
+  no admitir **ninguna** forma de pago (permanencia, ampliación de horario): llega con
+  `modality_id: null` y se anuncia solo con su importe. Cambiar de forma **repinta sin ir al
+  servidor**. ⛔ **Elegir aquí NO viaja a ningún sitio**: la marca vive en el navegador
+  (`formaDePagoMarcada`); la elección EN FIRME es la del paso 8. Un solo formateador de fechas
+  (`utils/fechas.js`) y un solo sitio decide qué calendario se ve (`modalidadMarcadaOPrimera`).
+  **El simulador nunca puede impedir enviar**: vive fuera de `handleSubmit` y degrada en silencio.
+- **Con la solicitud ya enviada el paso 7 SIGUE enseñando la simulación** (`③70`), en **solo lectura**
+  —las formas de pago en texto, sin desplegable—. El motivo es la honestidad: la elección que cuenta
+  es la del paso 8. El servidor siempre lo permitió (`simularCuotas_` no lleva `assertGroupEditable_`).
+- **La simulación no se recalcula al navegar**: se memoriza en un `useRef` de `WizardContext` que
+  **muere con la pestaña** (jamás `sessionStorage`) y se olvida en tres momentos —al **encolar**
+  cualquier guardado (no al aterrizar), al subir la versión del grupo, y al rehidratar—.
+  ⛔ **Solo se memoriza lo que trae `huella`**, el mismo criterio con el que el servidor decide si su
+  caché sirve. La huella (`enr.huellaDeSimulacion`) se deriva del **catálogo de condiciones del propio
+  colegio**, nunca de una lista de campos escrita a mano. ⚠️ **Límite honesto:** cubre las condiciones
+  de **elegibilidad**, no el árbol del motor de descuentos.
+- **El paso 6** enseña, una vez subido y en TEXTO, «Tipo: X» y «De quién: Y». Sin tipo resuelto no se
+  pinta esa línea, y `owner_person_ids` vacío se lee **«De la solicitud»** —la respuesta EXPLÍCITA de
+  DL-R17—, nunca «no consta». Inmediatamente tras subir, la línea de «de quién» solo sale si la
+  familia CONTESTÓ: sin respuesta el reparto lo decide el servidor y el navegador no sabe cuál.
+
+### Lo que se RECOGE — invariantes de datos
+
+- **El paso 6 deja ELEGIR qué es el documento.** Se pregunta **a partir del SEGUNDO tipo**: con 0 el
+  servidor rechaza nombrando qué configurar; con 1 lo asigna él (*«un desplegable de una opción no es
+  elección»*, DL-R16); con 2 o más elige la familia y su respuesta es **obligatoria**. ⛔ **Ni un
+  código escrito a mano**: el asistente valida la FORMA (KAL-5 capa 1) y **quién es admisible lo dice
+  el KMS** contra la lista viva. **Sin respaldo** — un respaldo escrito a mano fue exactamente el
+  defecto que causó `'OTHER'`.
+- **La foto se comprime EN EL NAVEGADOR** (`frontend/src/lib/comprimirImagen.js`, **el único sitio**),
+  con cuatro barandillas: ⛔ solo con `is_immutable === false` **explícito** (tres estados —sí · no ·
+  **no consta**— y la ausencia se trata como inmutable) · techo de **2400 px y calidad 0,85** (la
+  barandilla del OCR de DL-R19/DL-R18 en números) · **solo JPEG y WebP, re-codificados en sí mismos**
+  (PNG no: cambiarlo a JPEG haría mentir a la extensión y emborronaría una captura) · **nunca peor que
+  el original** (sin ahorro ≥20 %, sin poder descodificar, o ante cualquier fallo, se sube tal cual).
+  El tope de 10 MB mira el archivo **que eligió la familia**.
+- **Los IDIOMAS QUE HABLA cada persona** (`①45`) son de la PERSONA, admiten VARIOS, son opcionales y
+  **no** están acotados a los idiomas en los que el sistema rinde. ⛔ **Lo ya declarado no se puede
+  desmarcar**: `enrPersonLanguages` es append-only y no está entre las clases que la familia puede
+  quitar, así que dejar desmarcar sería quitarlo de la pantalla y que volviera al recargar. No se
+  recoge `is_mother_tongue`: siendo append-only, un error no se podría corregir nunca.
+- **Las opciones de «sexo» salen del CATÁLOGO** (`genderValues`, en las listas que ya se piden), con
+  **UN solo lector** en el KMS. La etiqueta se resuelve por el `label_key` que declara el catálogo;
+  sin texto para esa clave se pinta la `designation`. ⛔ **El respaldo se retiró**, así que un catálogo
+  que no llega deja el desplegable **deshabilitado y con aviso** (`field.gender_unavailable`): el sexo
+  es opcional, y sin aviso la familia avanzaría y el dato se perdería en silencio.
+- **Los PAÍSES son DOS preguntas sobre la MISMA lista**: *¿de qué país eres / dónde vives / dónde
+  estudiaste?* → la lista entera; *¿de qué país es este teléfono?* → **solo los que declaran prefijo**.
+  ⛔ Eso **no es un recorte por comodidad: es la definición** —un país sin prefijo no es una respuesta
+  válida— y **DL-E40 no se afloja**. El KMS sirve **una sola lista** con `dial` por fila; el CONSUMIDOR
+  decide (`paisesConPrefijo_` / `prefijosDe_`, los dos únicos sitios). ⛔ **El `dial` se normaliza a
+  solo dígitos** al cruzar la frontera: un `+` compondría `++34` y rompería la puerta para todos.
+  ⚠️ `constants/countries.js` sigue viva **como RESPALDO**: sin país no se compone el número, y un
+  conjunto cerrado vacío **desactiva DL-E40 en silencio**.
+- **Un vínculo es UNA fila** (DL-S45): ⛔ **no se reintroduce el empujón de la fila inversa** — que se
+  vea desde los dos lados lo resuelve el LECTOR, que ya casa el par en los dos sentidos. El plegado de
+  la hidratación **se queda**: hay pares reales guardados en dos filas, y sin plegarlos el dirty-check
+  daría positivo permanente. ⛔ **El orden es parte del dato** (`a`=`from`, `b`=`to`, derivado de la
+  propia fila): invertir los extremos **crea una fila nueva** en vez de actualizar.
+- ⛔ **Editar un vínculo ya guardado exige reponer `person_id_a`/`person_id_b`**, y se hace en **UN
+  solo sitio**: el normalizador de la hidratación (`hydrateFromResume`), de donde lo heredan el
+  baseline, `stepData` y el envío a la vez. Reponerlos al enviar daría dos campos más que la
+  referencia ⇒ guardado espurio por sesión. *(El KMS descarta en SILENCIO la fila sin los dos
+  identificadores — no hay aviso rojo que mirar.)*
+- ⛔ **La forma de un documento sale de un solo sitio**, `frontend/src/pages/steps/documentShape.js`
+  (hermano de `personShape.js`), usada por el baseline y por la pantalla. Dos definiciones divergen y
+  el paso queda «sucio» para siempre, encolando guardados que nadie pidió — y un guardado espurio
+  **bumpa la versión del grupo** y puede saltar un `STEPUP_REQUIRED`.
+- **El reparto de pagadores no se siembra de una sección VACÍA.** La hidratación se arma best-effort
+  por sección, así que una lectura caída la deja vacía sin protestar — y sembrar de ahí enseñaría
+  100/0 con 60/40 guardado, **firmando un reparto distinto del pactado**. Un solo criterio
+  (`traeAlgunReparto_`) para los tres sitios: la lectura, la siembra y la revalidación.
+- ⛔ **La declaración de tutor único vive en el LIBRO DE CONSENTIMIENTOS** (`sysConsentsLog`, código
+  `SOLE_GUARDIAN_ATTESTATION`), con su texto exacto, y se escribe **al ENVIAR** — el libro se ancla al
+  expediente, y en el paso 2 todavía no existe ninguno.
+
+### La firma: la desbloquea un HITO, no un código de estado
+
+> Diego, 2026-08-27: *«nada de eso debe ir por código, sino por configuración de hitos. Debe poderse
+> generar por configuración.»*
 
 ```
 firma_desbloqueada  ⟺  el hito «admisión resuelta» de ESTA solicitud está COMPLETO
                     Y  hay al menos UNA sesión de firma para este tutor
 ```
 
-El segundo requisito **no es una segunda regla: es un HECHO** — las sesiones se crean solo para los
-hijos admitidos, así que «hay algo que firmar» ⟺ «hay sesión». **`AD`, `TD` y `WL` ya no aparecen
-como criterio** ni en `backend/Code.js` ni en `frontend/src/`; lo único que queda es el respaldo
-declarado de la ventana de publicación (abajo).
-
-**Lo construido en el KMS — lo justo, y es capacidad del lenguaje, no un acomodo:**
-
-1. **`supports_guard: true` en `COMPLETE_MILESTONE`** (`config/sys-action-primitives.html:364`). Es
-   la «segunda aparición» que DL-S90 pide para ampliar el flag.
-2. **La evaluación del guard SUBE al dispatcher compartido** (`sys_guardBloquea_`,
-   `sys/scheduled-rules.gs`). ⚠️ **Sin esto, el flip solo habría sido peor que nada**: la PUERTA
-   (`GUARD_NOT_SUPPORTED`) vivía en el dispatcher y la EVALUACIÓN estaba **copiada dentro** de
-   `sys_dispatch_triggerTransition_` ⇒ el guard se habría **admitido y no evaluado**, y el hito se
-   completaría **SIEMPRE**, con hermanos sin resolver. ⛔ **No se copió dentro de
-   `completeMilestone`**: eso era el acomodo. El evaluador no se tocó — ya era genérico.
-   **Va DESPUÉS de la rama `subjects`** a propósito: el fan-out reentra por el mismo dispatcher una
-   vez por miembro, así que evaluar ahí es evaluar **por miembro**, que es la semántica declarada.
-3. **El hito viaja por el canal que YA existe**, `enr.datosDeFirma` → `admision_resuelta`
-   (`enr_admisionResuelta_`). **Falla CERRADO**: sin hito, o si no se puede leer, `false`.
-
-**⛔ ÚNICO cambio de orden observable, y se dice en vez de esconderlo:** para `TRIGGER_TRANSITION` el
-guard se evaluaba **después** de `MISSING_TARGET_STATE_CODE`; ahora va antes. **No es alcanzable por
-configuración** (`target_state_code` es `required` en el esquema del primitivo, así que una regla así
-no se puede guardar). Los otros dos rechazos previos salen byte-idénticos porque
-`sys_guardBloquea_` **no evalúa si el sujeto no se resuelve**: deja pasar al handler.
-
-**Lo que NO se tocó, y por qué:**
-
-- **`state_code` y `state_label`** — son el resumen conservador del que sale `editable`. Siguen
-  sirviendo para el rótulo y para saber si se puede editar; **lo que dejan de hacer es abrir la firma**.
-- **`derivarPantallaAdmision_`** — medido: `signing_available` es `!!signingContext` y `signing_ready`
-  es `signingStatus !== 'NOT_INITIATED'`; **ninguno mira el Estado que recibe**, así que cambiar sus
-  argumentos no arreglaba nada.
-- **La condición de la regla del correo y el `EXECUTE_HANDLER`** — son D119 y **siguen siendo decisión
-  de Diego**.
-
-**⚠️ LA LECTURA DEL KMS SALE DEL `if (admitido)`, y es obligatorio:** antes se pedía solo con algún
-hijo en `AD`, pero ahora la puerta DEPENDE del hito que trae esa misma lectura ⇒ dejarla dentro sería
-una dependencia circular y la puerta no se abriría nunca. Cuesta una llamada en el caso «enviada pero
-sin resolver»; la amortiguan la memoria de ejecución y la caché del pulso, que ya existían.
-
-**⛔ SEGURO DE PUBLICACIÓN, declarado en el código:** los tres artefactos se publican por separado, así
-que si `firma_desbloqueada` **no viene** el frontal cae al criterio de ayer — para no cerrarle la
-puerta a **ninguna** familia durante esa ventana. Un `false` **explícito** sí manda.
-
-**Textos nuevos** (los dos idiomas): `submitted.por_hijo.title` y `submitted.por_hijo.sin_nombre`.
-
-**Red**: camino NUEVO `hermanos-desiguales` (7 afirmaciones, tres fases), con **ancla** por delante.
-El doble sirve el contrato REAL: con un hermano en lista de espera, `state_code` es **`WL`** — ponerle
-`AD` haría que el recorrido pasara en vacío.
-
-⚠️ **Y DOS afirmaciones MEDÍAN EL AIRE hasta que se les exigió el rojo, que es el hallazgo de método
-de esta vuelta.** La primera versión buscaba `BTN_SIGUIENTE` (`button.btn-primary-kis`), y el paso 7
-con la solicitud enviada pinta **otros** botones primarios ⇒ encontraba uno siempre. La segunda lo
-acotó a `[data-testid="nav-siguiente"]`, y **tampoco valía**: ese botón existe **también** en los pasos
-de firma. Lo que no se puede fingir es **en qué paso aterriza la familia**, y es lo que se mide ahora.
-
-**Rojos demostrados**, cada uno nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| la puerta vuelve a `state_code === 'AD'` | *«el asistente se quedó en el paso 7: la puerta sigue mirando el Estado del hijo MENOS avanzado, así que un hermano en lista de espera bloquea la matrícula del que SÍ está admitido»* |
-| una proyección tira `por_alumno` | *«las líneas leídas fueron []: con dos hijos en situaciones distintas, el rótulo grande dice una sola y la familia no sabe de quién»* |
-| el hito se da por cumplido sin constar | *«se entró al paso 8 con el hito sin completar: un hito que no consta NO es un hito cumplido, y así se firma una matrícula con hermanos todavía sin resolver»* |
-
-⚠️ **Lo que la red NO cubre, con esas palabras:** la batería corre contra un backend **simulado** que
-**nunca ejecuta `backend/Code.js`** ni el KMS. Afirma lo que decide el navegador. **Las cuatro
-proyecciones del backend y la puerta del servidor no las cubre**, y tampoco el guard del KMS: los dos
-se midieron **aparte**, con arneses efímeros fuera de los repositorios que extraen las funciones
-REALES del fuente — 6 afirmaciones la puerta del asistente, 7 el guard del KMS — **demostrados no
-ciegos**: renombrar lo medido sale **«MEDICIÓN CIEGA»**, y con **el flag puesto pero la evaluación sin
-subir** el hito se completaría igual (ROJO).
-
-⛔ **§4 y §5 NO se hicieron en esta vuelta, y se parte por el §4 tal y como el encargo autoriza.**
-Queda sin construir: que la firma se abra para **TODOS** los admitidos en el mismo recorrido (los
-enlaces por sesión, el firmante por hijo, y la trampa del veredicto `COMPLETED` de grupo que **cierra
-el paso a la segunda matrícula**), y que los pasos 9 y 10 pasen a ser **por hijo**. §1-§3 dejan el
-asistente usable y son lo que rompía la prueba de Diego.
-
-### `0º.quinquagies` B (2026-09-05) — la copia se descarta POR DATO, no entera
-
-**Diego, 2026-09-05, literal:** *«La caché debe descartarse PARCIALMENTE para cada dato que se
-modifique bien desde el KMS … o bien desde el wizard.»*
-
-**Lo medido contra `origin/main` ANTES de tocar nada:** había **UNA sola versión por solicitud**
-(`livever_<gid>`) y **las CINCO clases la comparaban** (`hyd`, `adm`, `mem`, `doc`, `sim`) ⇒ una
-coma en un teléfono tiraba también la simulación de cuotas, que cuesta **~89 s** de recálculo
-porque compone el motor de facturación real.
-
-**Ahora cada clase lleva su contador** (`livever_<gid>__<clase>`, `_versionDeClase_`), y el motivo
-—que **ya viajaba en el aviso del KMS y solo se registraba en el log**— decide qué se tira, por el
-mapa **ÚNICO** `WZ_CLASES_POR_MOTIVO_`. El mismo mapa lo usan las dos puertas: el aviso del KMS
-(`notifyLiveStateChange_`) y las escrituras del propio asistente (`_wzCacheInvalidate_`, que gana un
-segundo argumento OPCIONAL). Dos mapas divergirían.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ EL GLOBAL SE CONSERVA Y SUBE SIEMPRE.** Es lo que lee el pulso del navegador
-  (`getLiveStateVersion`), que tiene que enterarse de **cualquier** cambio venga de donde venga.
-  Partirlo en cinco lo dejaría ciego. El global dice **«algo cambió»**; los de clase, **«QUÉ»**.
-- **⛔ FALLA DESCARTANDO DE MÁS, y con DOS cinturones independientes**: un motivo que no esté en el
-  mapa cae a las cinco clases (`_wzClasesDelMotivo_`), y **además** el propio `_bumpLiveStateVersion_`
-  vuelve a caer a las cinco si la lista llega vacía. **Medido**: quitando solo uno de los dos, la
-  rotura sale **VERDE** — hace falta quitar los dos para que muerda.
-- **⛔ `sim` SE TIRA CASI SIEMPRE, Y NO ES PEREZA.** La tentación era «un teléfono corregido no
-  mueve el presupuesto», y **es falso como criterio**: qué mira un filtro de aplicabilidad lo
-  DECLARA el centro (`qbConditions_T`, recorrido por `qb_collectFieldPaths_`), así que mañana puede
-  mirar la edad, el vínculo, una respuesta o un dato de salud. Y **lo que hay configurado hoy no es
-  la especificación**. Por eso `sim` solo sobrevive a lo que un filtro **no puede** consultar: los
-  PAPELES. ⇒ **el ahorro real, dicho sin adornar: subir un documento —el paso 6, el más repetido—
-  deja de tirar el presupuesto**; `doc` sobrevive a todo lo demás; `mem` al cuestionario, la salud,
-  los papeles y la facturación; y `adm` a casi todo.
-- **⛔ Los motivos que el KMS ya mandaba** (`STATE:<x>`, `BILLING`, `GDPR`, `REVIEW`, `SIGNING`,
-  `SAVE_OK`, `SAVE_FAILED`, `CHANGE`) **NO están en el mapa a propósito**: siguen tirándolo todo,
-  exactamente como ayer, hasta que se midan uno a uno.
-- **CUATRO manejadores del asistente siguen SIN motivo a propósito**, y cada uno lo dice en su
-  línea: `saveStep_` (escribe la clase que diga `step`, y ese mapa sería una **segunda** declaración
-  de qué escribe cada paso), `submitEnrollmentSession_` (toca casi todas a la vez),
-  `requestCorrection_` y `retirarDelExpediente_` (quita personas, correos, teléfonos, vínculos **y**
-  documentos en el mismo lote).
-- **Las entradas escritas ANTES de este cambio guardan la versión GLOBAL** ⇒ comparadas contra la de
-  su clase (que arranca en 0) **no casan: fallo de caché, nunca dato viejo**. Se recalcula una vez y
-  ya; no hay nada que migrar.
-
-⚠️ **LA BATERÍA NO PUEDE CUBRIR ESTO** — corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`**, y este cambio es invisible para el navegador (misma pantalla, mismas llamadas;
-solo cambia qué se recalcula). **No se le añadió un camino para aparentar cobertura.** Se **midió
-aparte**, con un arnés efímero fuera del repositorio que extrae del fuente REAL
-`_liveVersionKey_`, `_getLiveStateVersion_`, `_bumpLiveStateVersion_`, `_versionDeClase_`,
-`_claseVersionKey_`, `_wzClasesDelMotivo_` y los dos catálogos, y los ejecuta con un `CacheService`
-de mentira: **10 afirmaciones verdes** con el ANTES/DESPUÉS medido —subir un documento tiraba
-`["hyd","adm","mem","doc","sim"]` y ahora tira `["hyd","doc"]`— y **TRES roturas ROJAS demostradas**:
-quitar los **dos** cinturones del motivo desconocido · que el global deje de subir (*«el navegador no
-se entera de que algo cambió»*) · y el **renombrado**, que sale **«MEDICIÓN CIEGA»** y no verde.
-**Quien toque esta cadena, que lo mida.**
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
-lo que cambia es cuánto se recalcula por detrás.
-
-### `①84` (2026-09-09) — los PAÍSES son DOS preguntas, no una lista con dos usos
-
-**Diego, orden literal de `①83`:** *«Mira todos los catálogos que están hardcodeados en el wizard y
-arréglalo de una puta vez. No quiero ver ni un solo dato hardcodeado!!»*
-
-**Lo medido ANTES de tocar nada.** `constants/countries.js` tenía **118** países —los que declaran
-prefijo telefónico— y servía a **CUATRO** cosas a la vez: nacionalidad · país del colegio anterior ·
-país de la dirección · **y** el desplegable de país del TELÉFONO, más el conjunto **CERRADO** que
-valida el número (DL-E40). El KMS ya servía la lista buena y el asistente **ya consumía las tres
-primeras** desde el 2026-09-08 — pero el teléfono seguía en la lista estática.
-
-⇒ **el defecto que quedaba no era «faltan países»: era que había DOS lectores del mismo dato.** El
-día que el colegio declare el prefijo de un país nuevo, la nacionalidad lo ve y el teléfono NO.
-
-**La salida no es un híbrido: son dos preguntas distintas sobre la MISMA lista.**
-
-| La pregunta | Cuántos | Quién la hace |
-|---|---|---|
-| ¿de qué país eres / dónde vives / dónde estudiaste? | la lista ENTERA (250) | nacionalidad · dirección · colegio anterior |
-| ¿de qué país es este teléfono? (⇒ qué prefijo se compone) | **solo las que declaran `dial`** (118) | el desplegable del teléfono **y** el conjunto cerrado |
-
-⛔ **La segunda NO es un recorte de la primera por comodidad: es su DEFINICIÓN.** Un país sin
-prefijo declarado no es una respuesta válida — el sistema no sabría qué número componer. **DL-E40
-no se toca ni se afloja**: el conjunto sigue cerrado y sigue validando; lo único que cambia es de
-dónde sale.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ EL KMS SIRVE UNA SOLA LISTA, con `dial` por fila** (`enr_catalogoDePaises_`,
-  `kis-app kms-server/enr/wizard-gateway.gs`), y es deliberado: dos catálogos podrían divergir. El
-  CONSUMIDOR decide cuál de las dos preguntas hace — `paisesConPrefijo_` / `prefijosDe_`
-  (`Step2Persons.jsx`), **los dos únicos sitios** que lo deciden. No se escribe un tercero.
-- **`utils/phone.js` NO cambió de contrato**: su tercer argumento (`dialCodes`) ya era inyectable
-  desde siempre. Lo que cambió es **quién llama**: `Step2Persons` le pasa el conjunto del catálogo
-  en vez de dejar el valor por defecto.
-- **MEDIDO el 2026-09-09 contra la tabla real** (`manual_diagIsoAlpha2ConDialVsAsistente`): **250**
-  países con ISO, **118 con prefijo**, y esos 118 casan **EXACTO —en los dos sentidos—** con los 118
-  de la lista estática ⇒ el conjunto que se acepta **no se estrecha ni se ensancha**. Por eso la
-  parada obligatoria del encargo (*«si el conjunto que llega no cubre los prefijos que hoy acepta,
-  PARAS»*) **no se disparó**.
-- **⛔ El `dial` se NORMALIZA a solo dígitos al cruzar la frontera** (`Step2Persons`, en el `.map()`
-  de `fetchLookups`). El conjunto cerrado compara contra `pn.countryCallingCode` de
-  libphonenumber, que viene **sin `+`**, y el candidato se compone como `'+' + dial + nacional`: un
-  `+` o un espacio guardado en `phone_dial_code` rompería la puerta para **TODOS** los números (o
-  compondría `++34`). Un solo sitio lo limpia.
-- **⚠️ `constants/countries.js` SIGUE VIVA, a propósito — 15 usos en 3 ficheros, medidos.** Es el
-  RESPALDO de cuando el catálogo no llega. Aquí un hueco **no es cosmético**: sin país no se
-  compone el número, y un conjunto cerrado vacío **desactiva la puerta de DL-E40 EN SILENCIO**
-  (`validatePhone` degrada a E.164 puro con el conjunto vacío, por diseño). Retirarlo cambia lo que
-  ve una familia ⇒ **se PROPONE** (`kis-app docs/kms/loop-backlog.md` `①83`, punto 3), no se barre.
-  Es el mismo criterio que el desplegable del tipo de documento («sin catálogo, la lista legada
-  completa»).
-
-**Red**: camino NUEVO `paises-desde-el-catalogo`, **tres fases** — (A) catálogo servido · (B)
-catálogo **vacío** · (C) catálogo servido y **ningún** prefijo declarado. ⚠️ **El doble sirve una
-lista DISTINTA de la estática, a propósito**: `ZZ`/`QQ` no declaran prefijo (la nacionalidad SÍ los
-ofrece, el teléfono NO) y `XK` sí lo declara y **no existe** en la lista estática — sin esa
-diferencia el recorrido pasaría **en vacío** aunque la pantalla siguiera pintando su lista escrita a
-mano. **Rojo demostrado TRES veces**, cada uno nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| una sola lista para las cuatro cosas (el defecto entero) | *«las nacionalidades ofrecidas fueron [… sin ZZ/QQ]: … una familia cuya nacionalidad no tenga prefijo declarado no la puede seleccionar»* + la etiqueta y `XK` |
-| el teléfono ofrece la lista ENTERA (el híbrido arriesgado) | *«el desplegable del teléfono ofreció ["AF","ES","XK","ZZ","QQ"]: un país sin prefijo no es una respuesta válida…»* |
-| quitar el respaldo de `paisesConPrefijo_` | *«se pintaron 0 opciones ([]…): sin respaldo aquí el desplegable se queda vacío y el conjunto cerrado de DL-E40 se desactiva en silencio»* |
-
-⚠️ **Y LA MEDICIÓN SE CORRIGIÓ A SÍ MISMA DOS VECES, que es lo que más vale de esta vuelta.**
-(1) La afirmación del teléfono guardado leía `ph.phone_number` y **salía ROJA siempre, con el
-arreglo puesto y sin él**: el número viaja en **`value`** —`transformPersonForSave` quita el alias
-de pantalla—, o sea que medía un campo que **nunca existe**. (2) La afirmación «(B) sin catálogo el
-teléfono cae a la lista estática» **no podía fallar**: en (B) la lista llega vacía y la salva el
-respaldo de `paisesEfectivos`, así que romper el de `paisesConPrefijo_` **no ponía nada rojo**. Por
-eso existe la **fase (C)**, que es la única que lo ejercita.
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js` ni el KMS**. Que el KMS sirva de verdad 250 países con sus 118 prefijos **no lo
-acredita esto** — se acredita midiendo contra la tabla y leyendo el contenido DESPLEGADO.
-
-**Publicación**: solo `frontend/` — **no toca `backend/Code.js` ni el KMS**, así que no necesita
-turno ni `clasp`: sale por CI al empujar a `main`. **Textos, manual y ayuda en pantalla: ninguno
-toca** — la familia ve la misma pantalla, con más países donde tiene sentido y los mismos donde no.
-
-### `0º.tricies.quattuortricies` (2026-09-06) — el iPhone no se lleva la sesión por delante
-
-**Irse a otra app en iPhone aborta las peticiones en vuelo, y el asistente lo pintaba como un fallo
-suyo.** La mayor parte del daño YA estaba cerrada por otras fichas: lo tecleado y sin guardar ya se
-manda al ocultarse la pantalla (`0º.tricies.quintricies`) y un corte de transporte ya no dice «tu
-enlace puede haber caducado» (`0º.tricies.vicies.semel`, con su propio reintento de 3 intentos en
-`ResumePage`). **Lo que faltaba, específicamente, era el eje del KMS**: puertear el patrón
-`IOS-BACKGROUND-SESSION` de `kis-app frontend/src/lib/gas.js` — detectar que una petición murió
-mientras la pantalla estaba en segundo plano, y REINTENTAR al volver, sin que la familia tenga que
-pulsar nada.
-
-**Lo construido, en `frontend/src/api.js` — deliberadamente distinto del KMS, no una copia
-verbatim.** El KMS **nunca reintenta la operación fallida** — solo decide si dispara una sonda de
-sesión, porque su modo de fallo es «la sesión caducó» y una mutación que aterrizó pero perdió su
-respuesta no se puede repetir sin riesgo de duplicarla. Aquí el modo de fallo es otro (una pantalla
-de «no se pudo cargar»), así que la adaptación es: **SOLO se reintentan LECTURAS idempotentes**
-(`hydrateSession`, `getAdmissionState`, `simularCuotas`, `getLiveStateVersion` — lista explícita en
-`LECTURAS_REINTENTABLES_AL_VOLVER`; lo que no está en la lista, simplemente no se reintenta, nunca
-al revés), **UNA vez**, y **NUNCA una escritura**: `gasCall` distingue el contexto de fondo
-(`isBackgroundContext_`: oculta ahora, o lo estuvo, o dentro de una gracia de 4 s tras volver —
-`visibilitychange` **y** `focus`, porque algunos webviews de iOS entregan uno sin el otro) y, si el
-fallo es de TRANSPORTE (`err.transporte`, el socket se cerró bajo los pies — nunca el tope propio de
-240 s ni un HTTP de error, que son el servidor SÍ contestando) y la acción es de la lista, espera a
-que la pantalla vuelva a primer plano y repite **la misma llamada, una vez**.
-
-**Lo que NO se tocó, y es la mitad del valor:** la ventana de inactividad (estos listeners NUNCA
-llaman a `touchActivity`/`refrescarVentanaDeInactividad_` — no comparten ni una línea con ese
-mecanismo) · el tope propio de 240 s (`SIN_RESPUESTA`, que sigue siendo su propio camino, nunca se
-confunde con el corte de fondo) · KAL-4, el código de un solo uso y ningún gate de seguridad · y
-**la cola de guardado de pasos**, que sigue sin ningún reintento automático — una escritura que
-muere en el transporte se queda `error` y espera al botón «Reintentar» o al éxito de otra escritura,
-exactamente como antes.
-
-**Lo que este cambio NO arregla, y hay que decirlo:** una **recarga** sigue pidiendo el código de un
-solo uso siempre — la huella de página viva vive solo en memoria de JavaScript, por diseño
-(`0º` de la ventana de inactividad, 2026-08-20), y solo Diego puede reabrir esa puerta.
-
-**Red**: `npm run e2e:wizard`, camino NUEVO `el-iphone-no-se-lleva-la-sesion` (8 afirmaciones, dos
-fases). Fase A: una lectura (`hydrateSession`) muere en el transporte mientras la pantalla está
-OCULTA (99 kills, no 3 — Chromium reintenta la petición por debajo del socket destruido y un
-presupuesto pequeño se agota en ~1,5 intentos lógicos en vez de agotar los tres reales de
-`ResumePage`) ⇒ nunca se pinta el fallo, y al volver a primer plano la sesión se abre sola, sin
-pedir código. Fase B: una escritura (`saveStep`) muere de la misma forma (30 kills, no 1 — mismo
-motivo: con presupuesto 1 el reintento transparente del navegador puede tener éxito él solo y
-`gasCall` nunca ve el rechazo) ⇒ NO se repite al volver a primer plano.
-
-**Rojo demostrado CUATRO veces**, cada una nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| quitar el reintento de fondo (`gasCall` pasa directo a `_gasCallUnaVez`) | *«la pantalla no llegó a abrir la sesión tras volver a primer plano»* + no se pudo retroceder hasta Personas — sin el reintento de la lectura, `ResumePage` agota sus tres intentos propios (killed) y nada dispara uno nuevo al volver |
-| añadir `saveStep` a la lista de reintentables | *«salieron 1 saveStep de más al volver a primer plano: una escritura re-disparada por un cambio de visibilidad puede duplicar en el servidor lo que ya recibió»* |
-| — (barandilla de la ventana de inactividad) | `node scripts/comprobar-verja-publica.mjs` sigue **VERDE**: los nuevos listeners no comparten ni una línea con `touchActivity`/`refrescarVentanaDeInactividad_`, y ese control vigila `backend/Code.js`, no `frontend/src/api.js` — no hay código nuevo que pueda hacerlo caer |
-| renombrar `isBackgroundContext_` | *«MEDICIÓN CIEGA · no se encontró en el fuente: frontend/src/api.js :: isBackgroundContext_»* |
-
-⚠️ **Lo que la red NO cubre**: la batería corre contra un backend **simulado** que **nunca ejecuta
-`backend/Code.js`** ni el KMS — afirma lo que hace el NAVEGADOR, que es donde vive este mecanismo
-entero (es puramente de cliente). No se tocó ni una línea de servidor, en ningún repositorio.
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
-lo que cambia es que una petición que iOS abortó al cambiar de app se resuelve sola al volver, en
-vez de enseñar un fallo que no era suyo.
-
-**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), sin `clasp` y sin
-turno.
-
-### «El enlace entra sin esperar» (2026-09-14) — SIEMPRE se rota el enlace, y el envío rehace la copia caliente
-
-> **★ RETIRA ENTERO `③18.bis.15` (2026-09-11), que decía lo contrario** («si al enlace le queda
-> margen, NO se renueva»). Aquel tramo ahorraba el viaje de renovación (18,7 s de los 38 s del
-> correo) cuando al enlace le quedaban más de 2 de sus 7 días. **No vuelve.**
-
-**ESPECIFICACIÓN DE DIEGO, literal (2026-09-14) — no se discute** (*«no quiero otra cosa que no sea
-esto»* · *«me da igual cómo lo hagas»*):
-
-> * Como ya se está accediendo al backend para lanzar el envío del email, **aprovechas y refrescas
->   el enlace para que sea nuevo**, y se envía en el email.
-> * Además, aprovechas para **mover el caché y refrescarlo con los últimos datos de la BD** de esa
->   solicitud.
-> * El cliente hace click en el enlace y, **siempre que lo haga entre el envío y los siguientes 10
->   minutos, entra directamente sin necesidad de OTP**.
-> * El arranque desde el enlace es **ultrarrápido** porque los datos de esa solicitud (**todos
->   ellos**) ya están en la memoria del backend del wizard.
-
-**POR QUÉ CAÍA `③18.bis.15`, y es aritmética:** la gracia que salta el código de un solo uso **solo
-se acuña sobre un enlace recién rotado** (`_mintMagicLinkNonce_`, ver su cabecera). Con el margen de
-2 días sobre una vida de 7, **el enlace solo rotaba los 2 últimos días** ⇒ **cinco de cada siete
-días pedir el enlace acababa pidiendo el código**. Diego lo sufrió ese mismo día: *«Acabo de hacer
-click en el enlace recién refrescado y me ha vuelto a cerrar la verja.»* Y desde el 2026-09-13 el
-código **ni siquiera se auto-envía** (`shouldAutoSend={false}`, decisión suya), así que la verja
-cerrada le costaba además **pulsar, esperar un SEGUNDO correo y teclear**.
-
-**LAS DOS PIEZAS:**
-
-| Pieza | Dónde |
-|---|---|
-| **SIEMPRE se rota** — el margen y su ayudante se retiran; la gracia se acuña siempre | `sendMagicLink_`, las DOS ramas (la de token y la pública) |
-| **el ENVÍO rehace la copia** con lo que hay en la base AHORA, bajo la clave del clic | el ticket del envío lleva `r:1` → fase `kms` → `warmSession_({refrescar})` → `warmEntryBundle_(…,{refrescar})` |
-
-⛔ **NO SE ESCRIBIÓ NI UN MECANISMO NUEVO.** El precalentado ya existía y ya lo dispara el cliente
-justo después del envío (`LandingPage.jsx:91`, `WizardPage.jsx:715`); lo único que cambia es que
-ahora **rehace** la copia en vez de reusar la que hubiera, y que la archiva por el **escritor único**
-`_espejoGuardarCopia_`.
-
-**⛔ Y ESO CERRÓ UN TERCER ESCRITOR QUE YA HABÍA DIVERGIDO.** `warmEntryBundle_` archivaba la copia
-con un `put` propio **a 30 minutos**, mientras el espejo y el write-through del camino vivo la
-archivan a `ESPEJO_HYD_TTL_S_` (**6 h**). Una copia que caduca a los 30 min **deja de estar para el
-clic que llega después** — que es justo lo que ese precalentado existe para evitar.
-
-**⛔ UN ENVÍO DE ENLACE NO SE FRENA EN EL ANTI-ESTAMPIDA DEL PRECALENTADO, y esto lo destapó la
-medición, no el encargo.** Con una copia ya caliente de los últimos 120 s (una visita anterior, un
-clic al enlace viejo), `warmSession_` salía por `RATE_LIMITED` **sin rehacer nada** ⇒ el clic recibía
-la copia VIEJA. El pase que exime es **de un solo uso** y solo lo minta un envío ⇒ **como mucho UN
-refresco por envío**. ⛔ **El cupo de verdad —5 envíos por hora y buzón, `_checkMagicLinkRateLimit_`—
-NO se toca** y sigue corriendo antes, en `sendMagicLink_`. Y el freno **se sigue sellando**: el
-siguiente precalentado normal se frena igual.
-
-**⚠️ EL ÚNICO CASO QUE NO SE ROTA, dicho en vez de escondido: el expediente YA ENVIADO.** El KMS lo
-rechaza por diseño (`enr_wizardTouchSession` → `renewed:false, submitted:true`, DL-E38: las enviadas
-conservan su token vivo para volver a la firma). Ahí la gracia se acuña **sobre el token vivo** —
-exactamente como se venía haciendo desde siempre hasta el 2026-09-11, no una puerta nueva. Es el
-precio de que la familia que ya envió también entre sin código, que es lo que la especificación pide
-(*«siempre»*).
-
-**LO QUE NO SE TOCA, campo por campo:** la ventana de inactividad de 10 min y su techo de 2 h · que
-una **recarga** vuelva a pedir código (la huella de página viva sigue solo en memoria de JavaScript)
-· **KAL-4** (el expediente sale del enlace, jamás del cuerpo) · la **verja reCAPTCHA** y su orden ·
-el **cupo** de 5/hora · el **ack constante** de la rama pública (WIZ-ENUM) · los **tres rechazos**
-del enlace y su plazo de 7 días (`RESUME_TOKEN_TTL_MS_`, que sobrevive: lo mira
-`_rechazosDelEnlace_`) · y que la copia **no se sirva nunca a otro tutor** (DL-E49 §2 — la clave
-sigue siendo (expediente × tutor)).
-
-**⚠️ LO QUE VUELVE A COSTAR, y es deliberado:** el viaje de renovación (~19 s medidos) vuelve al
-camino del correo, y **los enlaces de correos anteriores vuelven a morir** en cuanto se pide uno
-nuevo. Las dos cosas las decide la especificación (*«ya se está accediendo al backend,
-aprovechas»*).
-
-⚠️ **NINGUNA RED AUTOMÁTICA CUBRE ESTO**: `npm run e2e:wizard` corre contra un backend **simulado**
-que **nunca ejecuta `backend/Code.js`**. Se **midió aparte**, con dos arneses efímeros fuera del
-repositorio que cargan `backend/Code.js` ENTERO en un `vm` con dobles de Apps Script (caché, reloj,
-`kmsProxy_` contado) y ejecutan el recorrido completo — envío → precalentado → clic — sobre la
-versión de AYER y la de HOY:
-
-| | ANTES (con margen) | DESPUÉS |
-|---|---|---|
-| ¿rota el enlace? | **no** | **sí** |
-| ¿se acuña la gracia? | **no** | **sí** |
-| el clic entra sin código | **NO** (verja cerrada, `pii_gated`) | **SÍ** |
-| catálogos y cuestionario en la respuesta del clic | **no** (`lookups:{}`) | **sí** |
-| peticiones del navegador para entrar | **5** | **2** |
-
-**CINCO afirmaciones verdes** y **DOS roturas ROJAS demostradas**: sin `refrescar`, el clic recibe
-la copia VIEJA · con la clave del precalentado cambiada, el clic vuelve a pagar la hidratación. Más
-la guarda de **MEDICIÓN CIEGA** (renombrar `warmEntryBundle_` ⇒ el arnés se niega a salir verde).
-**Quien toque esta cadena, que la mida.**
-
-**Textos, manual y ayuda en pantalla: ninguno toca** — la familia ve exactamente la misma pantalla;
-lo que cambia es que entra, y sin esperar.
-
-### `①86` (segunda cara, 2026-09-16) — una RESPUESTA PERDIDA no es un fallo del código
-
-**El registro COMPLETO de Diego (2026-09-16, 08:28–08:42): de ~21 llamadas, OCHO murieron en el
-segundo tramo del doble salto de Apps Script — un 38 %.** CINCO fueron **HTTP 404**
-(`warmBundle` 42.917 ms · `getLiveStateVersion` 35.234 ms · **`verifyEmail` 14.935 ms** ·
-`fetchQuestions` 22.763 ms · `refrescarVentana` 60.919 ms) y tres, el cuerpo de la comprobación de
-salud del propio asistente en vez de la respuesta.
-
-⭐ **EL CARRIL DE `①86` YA FUNCIONABA — medido en vivo:** las tres de la comprobación de salud
-entraron por él, reintentaron y volvieron rápido (7.353 ms / 7.172 ms). **El 404 es LA MISMA CLASE y
-se quedaba fuera**: `gasCall` lo trataba como «el servidor SÍ contestó», así que ni lo marcaba como
-transporte ni lo reintentaba, y la pantalla lo pintaba como un fallo del código. Este tramo
-**ENSANCHA esa puerta; no construye una segunda.**
-
-**⛔ EL ASISTENTE NO PUEDE EMITIR UN 404, y por eso la clasificación es legítima:** su `doPost`
-contesta siempre por `ContentService` y **no hay un solo `setResponseCode`** en su camino; las dos
-apariciones de `404` en `backend/Code.js` son códigos que LEE de otros servicios. Y la misma
-dirección contestó 200 varias veces en esos mismos minutos ⇒ lo puso el transporte de Google.
-
-**PIEZA 1 · `frontend/src/api.js` — qué estados entran en el carril, y por qué esos.**
-`esEstadoDeTransporte_(status)` con **`ESTADOS_DE_GOOGLE_ = {401, 403, 404, 408, 429}`** más
-**todo `>= 500`**. Son los que el asistente **no puede producir**: su `doPost` **captura y devuelve
-`{ok:false}` con HTTP 200** ante cualquier error propio, así que un código HTTP distinto de 200 solo
-puede venir de la infraestructura — `401`/`403` son la puerta de Google, `404` el `echo` que se
-perdió, `408`/`429` sus frenos, y `5xx` el transporte caído. Cuando casa, el error viaja con
-`transporte = true` + `saludDelAsistente = true` + `estadoHttp`, **y deliberadamente SIN `code`**:
-así `clasificarFalloDeEntrada` lo manda a «no se pudo cargar» ⇒ *«tu enlace sigue siendo válido»*.
-Lo que **no** casa (un 4xx que el asistente sí pudiera producir algún día) se comporta byte-idéntico
-a ayer.
-
-⛔ **NO se toca `clasificarFalloDeEntrada`**, ni se inventa un tercer estado, ni un código nuevo.
-⛔ **Y NO se usa el TIEMPO como señal**: los cinco 404 van de **14,9 s a 60,9 s**, y en la misma
-ventana hubo respuestas buenas de **31,0 · 36,8 · 40,3 · 29,4 y 23,4 s**. Un umbral por reloj
-clasificaría mal en las dos direcciones.
-
-**PIEZA 2 · `StepUpGate.jsx` — el código es de UN SOLO USO, así que NO se reintenta: se PREGUNTA.**
-`verifyEmail_` (`backend/Code.js`) hace `cache.remove(codeKey)` y estampa `_markStepUpFresh_`
-**ANTES de que su respuesta viaje**. Si esa respuesta muere, el servidor ACERTÓ y el navegador no se
-entera: **código gastado, marca de los 10 min puesta**, y el tutor reteclea contra *«Verification
-code expired or not found»*.
-
-⇒ **solo cuando el fallo es de TRANSPORTE** (`e.transporte === true`), la verja pregunta **UNA vez**
-con `getAdmissionState` —que ya devuelve `step_up_fresh` y `step_up_restante_s`
-(`backend/Code.js:6078-6079`)— pasándole el **MISMO `tokenPayload`** (KAL-4: el expediente lo deriva
-el servidor del bearer, nunca del cuerpo):
-
-| Lo que contesta | Qué hace la verja |
-|---|---|
-| **ventana ABIERTA** | ENTRA por `onVerified(restanteS, cierre)`, con el tiempo REAL del servidor. La familia no se entera de nada |
-| **ventana cerrada, o no se pudo preguntar** | dice que **NO SE PUDO COMPROBAR** — ⛔ no da el código por gastado, ⛔ no pide otro por su cuenta y ⛔ **no borra lo tecleado** |
-
-⛔ **Repetir `verifyEmail` con el mismo código choca contra su propio acierto Y quema uno de los
-CINCO intentos** del cupo anti-fuerza-bruta. ⛔ **Un fallo que NO es de transporte** —código
-incorrecto, caducado, `TOO_MANY_ATTEMPTS`— **es el servidor CONTESTANDO y hay que creerle**: se
-comporta EXACTAMENTE como antes de este cambio.
-
-**Y un solo argumento más en `WizardPage`**: `onVerified={(restanteS, cierre) => markStepUpFresh(restanteS, cierre)}`.
-Es **byte-idéntico en el camino normal** — `markStepUpFresh` cae a `STEPUP_WINDOW_MS` cuando
-`restanteS` no es > 0, así que `markStepUpFresh(undefined, undefined)` es lo de siempre.
-
-**Textos nuevos** (los dos idiomas): `stepup.err_no_se_pudo_comprobar`. **No dice que el código sea
-incorrecto** — dice que la respuesta no llegó y que se vuelva a pulsar el botón con el MISMO código.
-⚠️ Y **nombra el botón tal y como la familia lo lee** (`stepup.gate_enter`: «Acceder» en español,
-«Enter» en inglés), no una traducción inventada de su nombre.
-
-**Lo que NO se toca:** la ventana de 10 min y su techo de 2 h · KAL-4 · la verja reCAPTCHA · el cupo
-de 5 intentos y el de 8 códigos/hora · que una **RECARGA** vuelva a pedir el código · que el código
-**no se auto-envíe** (Diego, 2026-09-13) · y **`backend/Code.js`**, que no se toca ni una línea.
-
-**Red**: camino NUEVO `respuesta-perdida-no-es-un-fallo` (9 afirmaciones + ancla + guarda de
-**MEDICIÓN CIEGA**). El 404 lo provoca una palanca nueva del simulado,
-`scenario.estadoHttpEnVezDeRespuesta = { verifyEmail: { veces, status, trabajo } }`, hermana de
-`saludEnVezDeRespuesta`. ⛔ **`trabajo` DECIDE SI EL SERVIDOR HIZO SU TRABAJO, y los dos casos son
-reales** —desde el navegador no se puede saber si la ejecución llegó a correr—: con `true` se
-despacha y solo se sustituye lo que el navegador LEE (el código SE GASTA y la ventana SE ABRE); con
-`false` la petición muere sin efecto. ⛔ **El orden es B→A a propósito**: el simulado acuña la marca
-al despachar `verifyEmail`, así que la ventana solo está CERRADA mientras ningún `verifyEmail` se
-haya despachado — medir (A) primero dejaría (B) pasando en vacío.
-
-**Rojo demostrado TRES veces**, cada una nombrando su caso:
-
-| Rotura | Rojo obtenido |
-|---|---|
-| el código de ayer (el 404 no es transporte) | *«la verja muestra error="Network error: 404"»* + *«no salió ninguna getAdmissionState»* + *«lo que la familia vio fue «error:Network error: 404»: el servidor SÍ acertó (código gastado, marca de los 10 min puesta) y la pantalla la deja fuera de su propia solicitud»* |
-| reintentar `verifyEmail` a ciegas en vez de preguntar | *«salieron 2 verifyEmail y 1 sendVerificationCode: repetir el código choca con su propio acierto y quema uno de los CINCO intentos del cupo»* (+ se borra lo tecleado y la casilla queda DESHABILITADA) |
-| renombrar lo medido | **«MEDICIÓN CIEGA · no se encontró en el fuente: frontend/src/components/StepUpGate.jsx :: \bpreguntarSiLaVentanaYaEstaAbierta_\b»** |
-
-⚠️ **Y DOS afirmaciones se corrigieron a sí mismas, que es lo que las hace creíbles.**
-(1) «no dice que el código sea incorrecto» salió **ROJA con el arreglo puesto**: el texto correcto
-usa la palabra para NEGARLA (*«No es que sea incorrecto: la respuesta no llegó»*) ⇒ el criterio no
-podía ser «no menciona la palabra», sino **si le ECHA LA CULPA al código**.
-(2) «con la ventana ya abierta se ENTRA» **pasaba también con el código roto**: el PULSO
-(`getLiveStateVersion` → `getAdmissionState` → `hydrateSession`) rescata a la familia ~30 s después.
-⇒ hoy se mide como **CARRERA** —o entra, o se le echa la culpa al código— y se añade una afirmación
-más: que se entre **por la pregunta**, no porque el pulso la rescate media vuelta de reloj más tarde.
-
-⚠️ **LO QUE LA RED NO CUBRE, y hay que decirlo:** la batería corre contra un backend **simulado**
-que **nunca ejecuta `backend/Code.js`**. Afirma lo que hace el NAVEGADOR. **NO acredita que el
-código se gaste al acertar** — eso se acredita **leyendo `verifyEmail_`** (`cache.remove(codeKey)` +
-`_markStepUpFresh_` antes de responder), que es de donde sale el daño entero.
-
-⚠️ **Y lo que este tramo NO arregla:** que el segundo tramo del doble salto devuelva 404 sigue sin
-explicación —no se sabe por qué lo hace, ni si el servidor acertó en el caso de Diego—. Lo que se
-cierra es que **el asistente deje de contárselo a la familia como un fallo suyo**.
-
-**Publicación**: solo `frontend/` — se publica al empujar a `main` (CI/Pages), **sin `clasp` y sin
-turno**.
-
-### PII redaction en logs — backend + frontend (KAL-11 cerrado 2026-05-30)
-
-`Logger.log` persiste en Stackdriver (Google Cloud Logging) accesible al owner del proyecto. `console.log` y el DevLogger panel están visibles en cualquier screen share / pair-debug session. Logs con emails / UUIDs / resume_tokens en claro son tanto un pitfall RGPD como un vector de leak de bearer secrets.
-
-**Helpers canónicos**:
-- Backend `backend/Code.js` — `redact_(s)`: emails → `[EMAIL]`, UUIDs → `[UUID]`. Idempotente.
-- Frontend `frontend/src/logger.js` — `redact(s)` aplicado a message + `redactDeep(data)` aplicado al payload. Mismas regexes (RFC-light email, UUIDv4 canónico) — mantener en sync con backend.
-- `MAX_ENTRIES` del logger frontend reducido de 500 → 50 para minimizar backlog persistente.
-
-**Regla obligatoria**: cualquier `Logger.log` o `log.info/warn/error` que concatene una variable de usuario o un row de BD DEBE pasar por `redact_()` (backend) o por el push() del logger (frontend, redacta automáticamente). Las funciones de log frontend (`log.info`, `log.warn`, etc.) ya redactan sin esfuerzo del caller — pero NO usar `console.log` directo en código de feature (bypasa el redactor).
-
-Para tokens donde un prefix estable es útil para cross-referencing trace, usar `token.substring(0, 8) + '...'` (ej. `resolveSigningToken_`) — los 8 chars no son suficientes para reconstruir el token pero sí para correlar logs.
-
-Call-sites redactados 2026-05-30 (backend): `initEnrollmentSession_` auto-abandon, `sendMagicLink_` renew/failure, `reportUnsolicited_` abandon, `resumeSession_` unlock, `appsheetRequest_` HTTP trace (trimmed 600→200 chars), `[resolveSigningToken_]` NOT_FOUND/COMPLETED/valid, `adminUnblockEmail`, `adminCleanupOrphanSessions` summary + abandon, `fetchLookups_` row-level dumps colapsados a counts. Tests: `manual_testLogRedaction`.
-
-### Los permisos que declara el asistente — los cinco que hay, y por qué
-
-Este backend es `ANYONE_ANONYMOUS` **pero `executeAs: USER_DEPLOYING`**, así que **cada permiso del
-manifiesto lo consiente SOLO quien publica** —Diego— y pesa sobre TODO el proyecto. Ninguna familia
-ni ningún profesor ve jamás esa pantalla de permisos. **Eso es exactamente lo contrario del KMS**
-(`USER_ACCESSING` + `ANYONE`), donde el manifiesto lo consiente **cada usuario que entra**, y por
-eso hay cosas que aquí son baratas y allí no.
-
-La dirección correcta sigue siendo **retirar**, y **nunca se añade un permiso "por si acaso"**. Pero
-la razón de fondo es más fina que «un permiso de más tumba el proyecto»: lo que tumba el proyecto es
-un permiso **RESTRINGIDO** que la cuenta no pueda conceder — deja la autorización **a medias** y
-`UrlFetchApp` empieza a fallar en todo (mismo mecanismo que las dos prohibiciones del KMS,
-`kis-app/CLAUDE.md` §"RESTRICCIÓN DE DISEÑO — el KMS solo autoriza scopes SENSIBLES"). Un permiso
-**sensible** se pide de forma incremental y **no** envenena la concesión.
-
-`backend/appsscript.json` declara **TRES**, y ningún servicio avanzado:
-
-| Permiso | Nivel | Para qué, y quién lo usa |
-|---|---|---|
-| `script.external_request` | no sensible | `UrlFetchApp` — todo el tráfico saliente: AppSheet y el proxy al KMS (`kmsProxy_`) |
-| `drive` (Drive **COMPLETO**) | restringido | los documentos que sube la familia: `getOrCreateDriveFolder_` + `folder.createFile` y la lectura de vuelta `DriveApp.getFileById` |
-| `script.scriptapp` | sensible | `ScriptApp.getService().getUrl()`, `getOAuthToken()` (el bearer que abre la puerta del KMS) y los disparadores del proyecto |
-
-**★★ ERAN CINCO hasta el 2026-09-05 (D123): salieron `gmail.send`, `script.send_mail` y el servicio
-avanzado `Gmail`.** Este proyecto **ya no manda ningún correo** —se lo pide al KMS, que lo manda en
-nombre de la cuenta licenciada del centro— así que su transporte de correo, y con él sus dos
-permisos, sobraban. Lo vestigial se elimina en cuanto se detecta. Detalle en §"Email sending".
-
-**⚠️ Y AL REPUBLICAR, GOOGLE LE PEDIRÁ A DIEGO REAUTORIZAR**: cambian los permisos del proyecto.
-Concederlo es un clic, pero **hay que comprobar después que subir un documento sigue funcionando** —
-el permiso de Drive **NO se ha tocado** y sigue siendo el mismo de siempre, pero la reautorización
-es el momento en que un permiso mal concedido se notaría.
-
-**⛔ Y NO SE REINTRODUCE `gmail.send` «para una cosita»**: si un correo tiene que salir del buzón del
-colegio, el sitio es el KMS (allí el permiso sale de la cuenta licenciada, que lo concedió UNA vez
-el titular, y **no** del manifiesto que consiente cada familia).
-
-Compruébalo antes de afirmar nada, contra `origin/main` y **nunca** contra el árbol de trabajo:
-
-```bash
-git show origin/main:backend/appsscript.json                                  # los tres permisos
-git show origin/main:backend/Code.js | grep -cE "Gmail\.Users|MailApp\."     # 0 — este proyecto NO envía
-git show origin/main:backend/Code.js | grep -cE "^[^*/]*GmailApp\."           # 0 — GmailApp tampoco
-```
-
-**El de Drive es el ANCHO a propósito, y bajarlo a `drive.file` NO se puede acreditar desde el
-repositorio.** `getOrCreateDriveFolder_` busca la carpeta **por nombre en todo el Drive**
-(`DriveApp.getFoldersByName`, `Code.js:8244`), y la lectura de vuelta abre ficheros **por
-identificador** (`DriveApp.getFileById`, `:5925`) que pueden haberse creado antes, bajo el permiso
-ancho. Con `drive.file` la aplicación solo ve **lo que ella misma creó o abrió**: leyendo código no
-hay forma de saber si seguiría encontrando esa carpeta y esos ficheros, y equivocarse **rompe TODA
-subida de documento de una familia**. Para bajarlo hace falta **medirlo en ejecución** con el
-proyecto delante — publicar el permiso acotado y comprobar que una subida y su lectura de vuelta
-siguen funcionando —; hasta entonces se queda como está.
-
-### «Dos llamadas menos al entrar» (2026-09-14) — el ENVÍO deja el clic sin llamadas al KMS
-
-**NO es una avería: no se pierde ni un dato y no hay fuga. Es espera, en el sitio donde la familia
-de verdad espera.** MEDIDO en el clic REAL de Diego (2026-09-14 14:31 UTC,
-`manual_trazaDelArranque`, con `TRAZAR_ARRANQUE` encendida):
-
-| Llamada | Qué pregunta | kms | **salto** | pared |
-|---|---|---|---|---|
-| `enr.expedienteDelToken` | ¿este enlace vale? (la puerta) | 1.540 ms | **10.194 ms** | 11.734 ms |
-| `qb-public.resolveSetForConsumer` | el cuestionario | 453 ms | **10.656 ms** | 11.109 ms |
-
-⇒ **~23 s de espera para 2 s de trabajo**, y la hidratación ya acertaba de la copia caliente
-(`hyd=HIT`) ⇒ estas dos eran lo único que quedaba. **Afinar el motor no arregla nada: lo único que
-quita ese tiempo es NO HACER EL VIAJE.**
-
-**El arreglo, en una frase: los dos viajes se los come el ENVÍO, después de mandar el correo.**
-`_dejarElClicSinLlamadas_(token, lang)` se llama en los TRES puntos de envío de `sendMagicLink_`
-(la rama por token y las dos públicas, un expediente y varios), **justo después de
-`sendViaKmsNotify_`**.
-
-**Por qué ese sitio y no otro, y es la mitad del diseño:** la portada **no espera la respuesta** de
-`sendMagicLink` (§"Las CINCO puertas del asistente" — dispara y pinta su pantalla genérica al
-instante), y el correo **ya ha salido** cuando esto empieza. ⇒ **ni el correo tarda más ni la
-portada se queda esperando**; lo que se ahorra es el clic.
-
-**Lo que hay que retener al tocar esto:**
-
-- **⛔ LA PUERTA NO SE TOCA: SE LLAMA.** Aquí no se fabrica ninguna ficha ni se escribe la copia a
-  mano — se invoca **`requireResumeToken_`**, el mismo gate vivo de siempre, que aplica los TRES
-  rechazos por el juez único (`_rechazosDelEnlace_`), comprueba KAL-4 y escribe la copia con la
-  ficha COMPLETA (los siete campos que proyecta el KMS) y su techo de 30 min
-  (`COPIA_PUERTA_TTL_S_`). **CONSERVA un «sí», jamás lo CREA**: token que no resuelve, sesión
-  abandonada o enlace caducado ⇒ el gate LANZA y **no se escribe nada** (medido: afirmaciones 14,
-  15 y 16 del arnés).
-- **Si la copia ya se MOVIÓ** (`_moverLaCopiaDeLaPuerta_`, la familia que ya estaba trabajando),
-  esto **no cuesta ni un viaje**: el gate la sirve de ahí.
-- **⛔ EL CUESTIONARIO YA NO ES «IGUAL PARA TODOS»: VA POR PROGRAMA, Y LA CLAVE LO LLEVA
-  (D181, 2026-09-16).** ⚠️ **Aquí decía lo contrario, y desde D181 es FALSO** — el texto retirado
-  afirmaba que `fetchQuestions_` tiene *«EXACTAMENTE DOS ENTRADAS»* y que *«ni el expediente, ni el
-  tutor, ni el programa, ni una persona entran en la llamada»*, con lo que *«no hay ninguna dimensión
-  por familia que pudiera variar la respuesta»*. **El programa SÍ entra**: Diego decidió que las
-  preguntas se vinculen al programa (*«No es lo mismo la renovación que la nueva inscripción»*), así
-  que `fetchQuestions_` acepta un **TERCER** campo opcional, `program_id`, y lo reenvía al KMS dentro
-  del `receptor`. ⇒ **la respuesta puede variar entre dos solicitudes del mismo colegio**, y una copia
-  indexada solo por colegio+contexto+consumidor+idioma le serviría a una renovación el cuestionario de
-  una inscripción nueva — **peor que no filtrar**, porque ni se ve venir del servidor.
-- **⛔ POR ESO LA CLAVE LLEVA CINCO COSAS, no cuatro**: colegio · contexto · consumidor · idioma **y
-  programa** (`_claveCatalogoPreguntas_`, prefijo `wzqb_v2_`). Los dos que hoy son constantes se
-  quedan —el día que el asistente sirva a un segundo colegio, una clave sin `school_id` cruzaría
-  catálogos— y el programa es el que de verdad distingue. **El mismo criterio vale en el navegador**
-  (`frontend/src/api.js`, `_claveDelCatalogo(lang, programId)`, prefijo `kis_wizard_qcache_persist_v2_`):
-  las entradas `_v1_` se escribieron SIN programa, así que **se ABANDONAN** —no se leen nunca— y
-  `purgeQuestionsCache` las barre además por su prefijo viejo.
-- **⛔ EL ASISTENTE SOLO TRANSPORTA EL IDENTIFICADOR.** Viaja `program_id` y nada más: traducirlo a
-  sus dimensiones (`program_code` / `program_type_code`) lo hace el KMS leyendo `enrPrograms`
-  (`qb_programaDeclarado_`, `kis-app kms-server/qb/audience-resolver.gs`). **Ni un código de programa
-  escrito a mano en este repositorio** — lo vigila el recorrido `preguntas-por-programa`.
-- **⛔ SIN PROGRAMA NO SE INVENTA NADA**: la clave lleva `_` y el KMS resuelve el catálogo sin esa
-  dimensión, que es lo correcto — una regla cuya dimensión no viene en el sujeto **NO ES APLICABLE y
-  DEJA PASAR** (*default-open*), que es lo que hace que lo compartido se declare una sola vez. Es el
-  caso de la familia que todavía no ha elegido programa en el paso 1.
-- **⛔ Y QUÉ PROGRAMA ES ESTA SOLICITUD SE DECIDE EN UN SOLO SITIO**, `programaDeLaSolicitud`
-  (`frontend/src/context/WizardContext.jsx`), consumido por el paso 5, el repaso del paso 7 y el
-  precalentado. Tres derivaciones distintas son tres claves distintas, y eso **es** el defecto.
-  Su orden es `stepData.email` → `stepData.application`, **medido y no arbitrario**: la hidratación
-  siembra el programa SOLO en `application` y el paso 1, al CAMBIAR de programa, lo escribe SOLO en
-  `email` (su `onNext` encola el guardado pero no toca `stepData.application`). Al revés, cambiar de
-  programa dejaba la clave clavada en el hidratado — lo cazó en ROJO la batería.
-- **⛔ UN FALLO NO SE GUARDA**, y el criterio está COPIADO de `qb_core_catalogoImposible_`: un
-  catálogo con secciones y CERO preguntas es la forma exacta de una lectura a medias ⇒ no se
-  guarda (recalcula cada vez, sin ahorro, en vez de apagar el cuestionario del colegio media hora).
-  **CERO secciones SÍ se guarda**: es el colegio que aún no ha declarado cuestionario.
-- **⛔ El cupo público (②54) se comporta EXACTAMENTE igual que ayer** — se consume y se aplica antes
-  de nada. *(Se consideró poner la copia delante, porque ese cupo es COMPARTIDO por todas las
-  familias del colegio y cobrarle el peaje a quien no va a salir a la red es raro; **no se hizo**:
-  mover un cupo público no es de este encargo. Queda PROPUESTO.)*
-- **⛔ BEST-EFFORT ABSOLUTO**: el correo ya salió, así que nada de aquí puede lanzar. Un fallo se
-  traga, se registra redactado (KAL-11) y el clic se comporta como el de ayer.
-
-⚠️ **LÍMITE HONESTO del cuestionario: no hay invalidación** — igual que en el KMS, lo único que lo
-refresca es el plazo (`CATALOGO_PREGUNTAS_TTL_S_`, 30 min). Si el colegio edita una pregunta, su
-cambio puede tardar hasta media hora en verse por este camino, **encima** de la ventana de
-revalidación que el navegador ya tiene (`QCACHE_LS_REVALIDATE_MS`, 30 min). Es el mismo trato que el
-KMS ya aceptó para su caché de 40 min.
-
-⚠️ **Y desde D181, el programa que el asistente deja preparado sale de la CABECERA del expediente.**
-`_dejarElClicSinLlamadas_` lee el `program_id` que el KMS proyecta en `enr.expedienteDelToken` (su
-**octavo** campo, dado de alta ese mismo día — antes proyectaba SIETE y **el encargo daba por hecho
-que ya venía**: era falso, y hubo que ampliarlo). Con programa declarado, la copia que se deja
-preparada es la del cuestionario **filtrado**; sin él —una solicitud recién creada que todavía no ha
-elegido programa en el paso 1— se prepara la del catálogo sin esa dimensión, y esa familia paga el
-viaje una vez cuando elige. **Eso se dice, no se esconde.**
-
-**Red de la parte del NAVEGADOR (D181): el recorrido `preguntas-por-programa` de `npm run e2e:wizard`**
-(10 afirmaciones, dos fases, con **ancla** por delante y guarda de **MEDICIÓN CIEGA** contra el
-fuente). Sirve **DOS** programas a propósito (`scenario.variosProgramas`): con uno solo el paso 1 lo
-auto-elige, no hay nada que cambiar y las dos fases medirían el aire. **Rojo demostrado CUATRO
-veces**, cada una nombrando su caso — que la clave ignore el programa (*«no salió ninguna petición de
-fetchQuestions tras cambiar de programa: … se le está sirviendo, DE UNA COPIA, el cuestionario del
-programa anterior»*) · que el programa no llegue a la petición (*«llevó program_id=undefined»*) · el
-orden de derivación invertido (mismo rojo que el primero, y así se encontró) · y el **renombrado**,
-que sale **«MEDICIÓN CIEGA»** y no verde. ⚠️ **Y la red se corrigió a sí misma dos veces:** el paso 1
-de una solicitud ya guardada se recupera **PROTEGIDO tras su banner**, así que sin pulsar «Editar» el
-desplegable cambiaba de valor y «Continuar» no avanzaba — el recorrido se quedaba en el paso 1
-midiendo el aire; y los anclajes del fuente no llevaban `\b`, de modo que renombrar
-`_claveDelCatalogo` a `_claveDelCatalogoLoQueSea` seguía casando **por subcadena** y el recorrido
-salía VERDE con el mecanismo renombrado.
-
-⚠️ **NINGUNA BATERÍA CUBRE ESTO** — `npm run e2e:wizard` corre contra un backend **simulado** que
-**nunca ejecuta `backend/Code.js`**, y este cambio es invisible para el navegador (misma pantalla,
-mismos textos; solo cambia cuánto se espera). Se **midió aparte**, con un arnés efímero fuera del
-repositorio que extrae del FUENTE `fetchQuestions_`, `_dejarElClicSinLlamadas_`,
-`requireResumeToken_`, `_cabeceraDeLaCopia_`, `_claveCopiaPuerta_`, `_puertaConLaCabecera_`,
-`_rechazosDelEnlace_`, `_expedienteDelToken_` y los cuatro ayudantes del catálogo, y los ejecuta con
-dobles: **23 afirmaciones verdes** —entre ellas el ANTES/DESPUÉS de punta a punta: **2 viajes en el
-clic sin preparar, 0 con preparación**— y **SEIS roturas ROJAS demostradas**: el código de AYER
-(`fetchQuestions_` sin copia) · una clave que ignora el idioma · guardar el catálogo imposible ·
-escribir la copia de la puerta **a mano** en vez de por el gate vivo (cae en 5 afirmaciones, entre
-ellas las tres que impiden CREAR un «sí») · relanzar en vez de ser best-effort · y el **renombrado**,
-que sale **«MEDICIÓN CIEGA»** y no verde. ⚠️ Y el arnés **se corrigió a sí mismo**: su afirmación del
-catálogo imposible medía el guardia de LECTURA y salía VERDE con la escritura rota — se añadió
-`(7.bis)`, que mira el almacén.
-
-⚠️ **Lo que esto NO arregla, y se dice con números:** el **correo sigue tardando ~52 s** —
-`renewApplicationSession` **34.823 ms** (salto 33.525) y `sendNotification` **16.896 ms** (salto
-13.722), o sea **47 de los 52 s son salto**—. Este cambio **no lo toca** (va después del envío) y
-**no lo empeora**. Cerrarlo es otro trabajo.
-
-⚠️ **DÓNDE VIVE ESTO CUANDO EL ENLACE LO EMITA EL KMS.** Diego decidió el 2026-09-14 que emitir un
-enlace sea **UNA sola operación del KMS** y que el asistente pase a ser su cliente fino. Cuando eso
-se construya, `_dejarElClicSinLlamadas_` **se mueve con el resto del envío**: es un solo sitio, no
-decide nada —solo dice «deja lista la copia de ESTE token»— y **no hay que rediseñarla**.
-
-### EL INTERRUPTOR DE LA TRAZA — y por qué lo que se quiere leer se DEVUELVE, no se registra (D171, 2026-09-14)
-
-**La traza del arranque (`TRAZAR_ARRANQUE`) existe para medir dónde se van los 184 s del clic en el
-enlace de recuperación.** Está **apagada por defecto** y, apagada, el comportamiento es
-**byte-idéntico**. Se mueve con **TRES funciones sin argumentos** de `backend/Code.js`, visibles en
-el selector del editor y ejecutables con `clasp run`:
-
-| Función | Qué hace |
-|---|---|
-| `manual_trazarArranqueON` | pone `TRAZAR_ARRANQUE` a `'true'` **y tira lo capturado antes** (cada medición empieza en limpio) |
-| `manual_trazarArranqueOFF` | **BORRA** la propiedad — `_trazarActivo_()` exige `=== 'true'`, así que ausente y `'false'` son lo mismo para el camino vivo |
-| `manual_trazaDelArranque` | devuelve `{ok, encendida, n, lineas}` — lo capturado, **sin borrarlo** |
-
-⛔ **SIN ARGUMENTOS, y son TRES y no una: el botón «Ejecutar» del editor NO pasa parámetros**, así
-que una sola `manual_trazarArranque(valor)` recibiría `undefined` y apagaría la traza justo al querer
-encenderla. Y **ninguna acaba en guion bajo** (§"Funciones `manual_*` NUNCA con trailing
-underscore"): con él, GAS las vuelve invisibles en el selector, que es donde tienen que estar.
-
-**Las tres RELEEN la propiedad después de tocarla** y registran `encendida = true|false` por el
-lector único `_trazarArranqueEstadoReleido_`. **El «ok» de la escritura no acredita nada** — y aquí
-menos que nunca: la pantalla de propiedades del editor a veces no guarda y no lo dice.
-
-#### ⛔ LO QUE QUIERAS LEER DESDE FUERA, DEVUÉLVELO — el registro de ejecuciones NO se puede leer
-
-**`clasp logs` exige un `projectId` declarado en `.clasp.json`, y ni este proyecto ni el del KMS lo
-declaran** ⇒ **una función que solo escriba con `Logger.log` NO es medible desde un agente.** Ése es
-el motivo entero de que exista la tercera función: las líneas `[TRAZA]` se registran como siempre
-**y además se guardan**, para poder devolverlas.
-
-**Cómo se guarda, y cada punto es una barandilla, no un detalle** (`_trazaApunte_` ·
-`_trazaVolcar_` · `_trazaCapturada_` · `_trazaBorrarCapturada_`):
-
-1. ⛔ **No se compone ni un texto nuevo**: se guarda **la MISMA cadena** que ya se registraba
-   (nombres de acción, milisegundos, contadores, acierto/fallo de la copia). La garantía de que no
-   hay datos de familia es **estructural**, no una promesa — capturar no puede ampliar lo que la
-   traza enseña.
-2. ⛔ **Apagada, byte-idéntico**: `_trazaApunte_` solo se alcanza desde los `if (_trazarActivo_())`
-   que ya existían, y `_trazaVolcar_()` —lo único que se añade al camino de TODA petición, en el
-   `finally` de `doPost`— **retorna en su primera línea con el buffer vacío**. Ni una lectura de
-   propiedad, ni un viaje a la caché.
-3. ⛔ **El guardado NO falsea lo que mide**: se acumula **en memoria** durante la petición y se
-   vuelca **UNA vez al final**, con los `pared`/`kms`/`salto` y las sumas del resumen **ya
-   calculados**. El candado corto es por si dos peticiones del mismo clic vuelcan a la vez: sin él,
-   la última borraría las líneas de la otra.
-4. **Almacén: el que el proyecto YA usa** (`_wzCachePutChunked_`/`_wzCacheGetChunked_` sobre
-   `CacheService`), clave `traza_arranque_capturada`, **30 min**, últimas **300** líneas. No se
-   inventó ningún mecanismo nuevo.
-
-⚠️ **LÍMITE HONESTO**: si una ejecución muere por el tope de tiempo de Apps Script, su `finally` no
-corre y **SUS** líneas se pierden; las de las demás peticiones del mismo clic sí están. Y si el
-código de un solo uso no está fresco, `hydrateSession_` retorna antes (`pii_gated`) y **no hay
-resumen** — las líneas por llamada sí salen.
-
-**El orden de la medición, y solo un paso es de Diego:** un agente ejecuta
-`manual_trazarArranqueON` → **Diego hace UN clic en su enlace** → el agente ejecuta
-`manual_trazaDelArranque` y luego `manual_trazarArranqueOFF`.
-
+El segundo requisito **no es una segunda regla: es un HECHO** —las sesiones se crean solo para los
+admitidos—. ⛔ **`AD`, `TD` y `WL` ya no aparecen como criterio** en `backend/Code.js` ni en
+`frontend/src/`. Mirar `state_code` (el Estado del hijo **menos avanzado**) hacía que **rechazar a un
+hermano DESBLOQUEARA la firma y ponerlo en lista de espera la BLOQUEARA**.
+
+**El asistente habla POR HIJO**: `por_alumno` + `firma_desbloqueada` viajan en las **CINCO**
+proyecciones (la del hydrate, las tres del pulso —acierto de caché, escritura y retorno en vivo— y el
+camino ligero de `WizardContext`). Una lista blanca de campos que tire uno de los dos devuelve el
+rótulo grande a decir una sola situación. ⛔ **El `signing_status` por hijo que manda el KMS se
+descarta a propósito**: el pulso no sabe producirlo hoy ⇒ **que lo produzcan los dos, o ninguno**.
+`state_code`/`state_label` siguen sirviendo para el rótulo y para `editable`; lo que dejan de hacer es
+abrir la firma.
+
+⛔ **`signing_url` se recorta AQUÍ, en el consumidor**, aunque el KMS lo devuelva —esa ruta la usa
+también el panel del KMS—: CLI 81 / S5 / KAL-NEW-1 cerró que la resolución previa a la firma no revele
+la URL del proveedor con solo el bearer.
+
+⚠️ **Lo que NO está hecho (§4 y §5 de `0º.tricies.novemtricies`)**: que la firma se abra para **todos**
+los admitidos en el mismo recorrido (los enlaces por sesión, el firmante por hijo, y la trampa del
+veredicto `COMPLETED` de grupo, que **cierra el paso a la segunda matrícula**), y que los pasos 9 y 10
+pasen a ser por hijo.
+
+### Estados editables — y el edit-lock post-envío
+
+Editable ⟺ `submitted_at IS NULL` **y** `abandoned_at IS NULL`. La reapertura (el colegio devuelve el
+expediente) la resuelve **`hydrateSession_`**, que sobrescribe `submitted_at = null` cuando la fase es
+editable (busca `REOPEN-FIX`) — **en un solo sitio**. `assertGroupEditable_` es la defensa en
+profundidad de sus **CINCO** llamantes (`saveStep_`, `submitEnrollmentSession_`, `saveResponses_`,
+`uploadDocument_`, `saveNeae_`), siempre **inmediatamente después** de `requireResumeToken_`, con
+`err.code='NOT_EDITABLE'` mapeado a HTTP 200 + `{ok:false}` — rechazo estructurado al estilo **P72**,
+**nunca HTTP 403**.
+
+`EDITABLE_STATES` del frontal está escrito a mano como documentación de la intención. **TODO
+operativo:** cuando `sysStateTransitions_T` exponga `is_editable_by_family`, derivar la lista y dejar
+de mapear por el booleano de `submitted_at`.
+
+### La copia local del navegador se descarta POR DATO, no entera
+
+> Diego, 2026-09-05: *«La caché debe descartarse PARCIALMENTE para cada dato que se modifique bien
+> desde el KMS … o bien desde el wizard.»*
+
+Cada clase lleva su contador (`livever_<gid>__<clase>`; `hyd`, `adm`, `mem`, `doc`, `sim`) y el
+**motivo** —que ya viajaba en el aviso del KMS— decide qué se tira, por el mapa **ÚNICO**
+`WZ_CLASES_POR_MOTIVO_`, que usan las dos puertas (el aviso del KMS y las escrituras propias).
+
+⛔ **El contador GLOBAL se conserva y sube SIEMPRE**: es lo que lee el pulso del navegador, y partirlo
+en cinco lo dejaría ciego. El global dice «algo cambió»; los de clase, **QUÉ**. ⛔ **Falla descartando
+de más**, con DOS cinturones independientes (motivo desconocido → las cinco; lista vacía → las cinco).
+⛔ **`sim` se tira casi siempre y no es pereza**: qué mira un filtro de aplicabilidad lo DECLARA el
+centro, así que solo sobrevive a lo que un filtro **no puede** consultar — los papeles.
+
+### El cuestionario va POR PROGRAMA (D181)
+
+> Diego: *«No es lo mismo la renovación que la nueva inscripción.»*
+
+`fetchQuestions_` acepta un **tercer** campo opcional, `program_id`, y lo reenvía al KMS. ⛔ **La clave
+de la copia lleva CINCO cosas** —colegio · contexto · consumidor · idioma **y programa**— en los dos
+lados (`_claveCatalogoPreguntas_`, prefijo `wzqb_v2_`; `_claveDelCatalogo`, prefijo
+`kis_wizard_qcache_persist_v2_`); las entradas `_v1_` se **abandonan**. ⛔ **El asistente solo
+TRANSPORTA el identificador**: traducirlo a sus dimensiones lo hace el KMS. ⛔ **Sin programa no se
+inventa nada** (la familia que aún no ha elegido en el paso 1): el KMS resuelve sin esa dimensión, que
+es lo correcto — una regla cuya dimensión no viene **deja pasar**. ⛔ **Qué programa es esta solicitud
+se decide en UN solo sitio**, `programaDeLaSolicitud` (`WizardContext`), con orden
+`stepData.email` → `stepData.application`: al revés, cambiar de programa dejaba la clave clavada en el
+hidratado. ⚠️ **Límite honesto: no hay invalidación** — lo único que lo refresca es el plazo
+(`CATALOGO_PREGUNTAS_TTL_S_`, 30 min), encima de la ventana del navegador.
+
+### El asistente no cuenta a quien un tutor ya quitó
+
+**UN SOLO SITIO decide quién sigue en la solicitud**: `wizardFilaViva_` / `wizardSoloVivas_`, con el
+criterio copiado del lector probado del KMS — `!deleted_at && is_active !== false`. La única
+diferencia es que AppSheet devuelve el booleano como **TEXTO** (`'FALSE'`), así que comparar con
+`false` a secas no casa nunca. ⛔ **No se reparte `!p.deleted_at` a mano por los sitios de lectura: así
+nació la asimetría** que exigía teléfono a tutores ya retirados y tumbaba el envío entero.
 
 ## GAS conventions
 
-### Funciones `manual_*` NUNCA con trailing underscore (2026-05-30)
+**`manual_*` NUNCA con guion bajo final.** GAS trata como privada toda función que acabe en `_`: no
+aparece en el selector del editor y no se puede ejecutar a mano, que es justo el propósito de la
+convención. Los ayudantes privados de verdad **sí** lo llevan (`assertValidEmail_`,
+`requireResumeToken_`…). Comprobar con `grep -nE "^function manual_[a-zA-Z]+_\b"`.
 
-GAS trata cualquier función cuyo nombre termina en `_` como **privada**: no aparece en el selector de funciones del editor y no se puede ejecutar manualmente desde el IDE. Las funciones `manual_*` son por definición wrappers ejecutables a mano desde el editor — si llevan trailing `_`, se vuelven inalcanzables y el propósito de la convención se pierde.
+**Push vs deploy:** si el cambio es **solo** funciones `manual_*`, basta `clasp push --force` (el
+editor toma el código del Head). `clasp deploy` solo afecta a la URL pública, y su cuota diaria es
+limitada.
 
-- ✅ `function manual_testAppSheetEscape() {` — visible en el selector
-- ❌ `function manual_testAppSheetEscape_() {` — invisible, prohibido
+**`clasp run` contra este proyecto FUNCIONA** desde el 2026-09-14 (Diego le asignó su proyecto de
+Google Cloud). Se lanza con `NODE_USE_ENV_PROXY=1` desde `backend/`.
+⚠️ **Lo que NO se puede leer desde fuera es el REGISTRO DE EJECUCIONES**: `clasp logs` exige un
+`projectId` en `.clasp.json`, y no lo hay. ⇒ **lo que quieras leer, DEVUÉLVELO** — no lo escribas solo
+con `Logger.log`.
 
-Aplica a TODOS los archivos `.gs` del repo. Cualquier futuro CLI que añada un wrapper `manual_*` debe verificar con `grep -nE "^function manual_[a-zA-Z]+_\b"` que no introdujo trailing `_`.
+**El interruptor de la traza (D171).** `TRAZAR_ARRANQUE` está **apagada por defecto** y, apagada, el
+comportamiento es **byte-idéntico**. Tres funciones **sin argumentos** (el botón «Ejecutar» del editor
+no pasa parámetros, y una sola `manual_trazarArranque(valor)` recibiría `undefined` y apagaría la traza
+justo al querer encenderla): `manual_trazarArranqueON` · `manual_trazarArranqueOFF` ·
+`manual_trazaDelArranque`. Las tres **releen la propiedad después de tocarla** — el «ok» de la
+escritura no acredita nada. ⛔ **Lo capturado es la MISMA cadena que ya se registraba**: la garantía de
+que no hay datos de familia es estructural, no una promesa. Se vuelca **una vez al final** del
+`doPost`, para no falsear lo que mide.
 
-Helpers privados verdaderos (no llamables desde el editor, solo desde otras funciones del backend) SÍ usan trailing `_` per convención GAS — `assertValidEmail_`, `appsheetEscape_`, `requireResumeToken_`, etc. La convención solo prohíbe el sufijo en wrappers `manual_*`.
+## Regla — los refactors preservan el código probado
 
-Precedente: CLI 33-36 + CLI 46 + CLI 48 metieron trailing `_` en wrappers `manual_test*` por error en prompts; Diego renombró desde CLI local 2026-05-30 (commit `57c99aa`). Diego también renombró `adminCleanupOrphanSessions_` → `adminCleanupOrphanSessions` (commit `fd8858e`) por la misma razón.
+**Cuando se MUEVE o REESCRIBE algo que ya funciona, el código existente ES la especificación**: se
+copia verbatim (mismas tablas, mismos filtros, mismo mapeo), **no se rediseña el acceso a datos sobre
+la marcha**. Los docs codifican *decisiones*, no la *verdad de implementación* — qué columna exacta,
+qué valor de filtro—, y esa verdad vive en el código probado.
 
-### Push vs deploy para helpers manuales
+Obligatorio en todo encargo de refactor que mueva carga de datos:
 
-Cuando el cambio en `backend/Code.js` es **solo** funciones `manual_*` (tests, diagnostics, seeders ejecutados desde GAS editor):
-- ✅ Suficiente: `clasp push --force`. El editor GAS toma código de Head al ejecutar funciones.
-- ❌ Innecesario: `clasp deploy`. Solo afecta la URL pública de producción que sirve a usuarios externos del wizard. Los `manual_*` no se llaman desde esa URL.
+1. **Citar la fuente probada con `archivo:línea`.**
+2. **Ordenar copia-verbatim y PROHIBIR explícitamente inventar lógica de datos nueva.**
+3. **Puerta de pre-escritura**: pegar las líneas del lector actual ANTES de escribir el reemplazo. Si
+   no se encuentra, **PARAR y reportar** — no improvisar.
+4. **Prueba de caracterización** (`manual_*` que reporte conteos objetivos viejo-vs-nuevo).
 
-Esto ahorra cuota de deployments por día (limitada por GAS).
+⛔ **Anti-patrón estructural: nunca dejar DOS lectores del mismo dato.** La migración correcta mueve
+las lecturas exactas y BORRA la copia vieja en el mismo cambio.
 
-Para cambios que SÍ afectan la URL pública (refactor de dispatcher, nuevos endpoints, fixes de bugs en handlers públicos): clasp push + clasp deploy.
+*(Precedente DL-C, 2026-06-09: un refactor sustituyó un lector probado por un endpoint nuevo que
+filtraba por una columna **inexistente** en esa tabla → relaciones vacías y 68 s. La causa no fue «no
+leer los docs»: fue reinventar el acceso a datos en vez de copiar el lector.)*
 
-## Regla — refactors preservan el código probado (ancla de código-de-oro) (2026-06-09)
+## Wizard structure — los 11 pasos canónicos
 
-**Cuando se MUEVE o REESCRIBE algo que ya funciona** (consolidación, conversión a thin-client del KMS, dedup de lectores, etc.), **el código existente que funciona ES la especificación**: se copia verbatim (mismas tablas, mismos filtros, mismo mapeo de campos), NO se rediseña el acceso a datos sobre la marcha.
+1 Email · 2 Personas · 3 Vínculos · 4 Salud · 5 Cuestionario · 6 Documentos · 7 Revisión ·
+**8 S-BILLING** (datos fiscales + presupuesto real + modalidad de pago) · **9 S-GDPR** (los 7
+consentimientos + TSA, DL-E27) · **10 S-REVIEW** (Carta + Contrato + confirmación de lectura,
+DL-E28 §6) · **11 S-SIGN** (firma Click & Sign, DL-E28 §7-§13).
 
-**Obligatorio en TODO prompt de refactor que mueva carga de datos**:
-1. **Citar la fuente probada con `archivo:línea`** (el lector actual que funciona) como referencia canónica del prompt.
-2. **Ordenar copia-verbatim del acceso a datos + PROHIBIR explícitamente inventar lógica de datos nueva** (filtros/columnas/mapeo distintos).
-3. **Gate de pre-escritura**: el agente debe PEGAR las líneas del lector actual en su reporte ANTES de escribir el reemplazo; si no encuentra el lector, PARA y reporta — no improvisa.
-4. **Test de caracterización** (`manual_*` que reporte conteos objetivos viejo-vs-nuevo: nº de relaciones, nº de personas, latencia) siempre que el cambio toque carga de datos.
+**Anti-patrones — NO repetir:**
 
-**Por qué "lee la documentación" NO basta**: los docs codifican *decisiones* (qué token, qué flujo, qué modelo de auth), no la *verdad de implementación* (qué columna exacta, qué valor de filtro). Esa verdad vive en el código probado — copiarlo es la única garantía de paridad.
+- ⛔ **No inventar pasos** («Status», «Interview», «Decision», «Deposit», «Enrolled»). Si parece que
+  falta uno, comprobarlo primero contra el roadmap canónico.
+- ⛔ **No crear rutas nuevas** (`/track/:token` y similares). El seguimiento **no tiene ruta propia**.
+- ⛔ **No añadir endpoints solo-frontal** sin confirmar que están registrados en el `doPost`.
 
-**Anti-patrón estructural**: nunca dejar DOS lectores del mismo dato que puedan diverger. La migración correcta MUEVE las lecturas exactas y BORRA la copia vieja en el mismo cambio, sin alterar comportamiento.
-
-**Precedente — regresión DL-C (2026-06-09)**: existía `resumeSession_` (`Code.js:1870`) que leía relaciones de `sysPersonRelations` filtrando por `context_entity_id` + `context_entity_type_code='ENR_ADMISSION_SCHOOL'` y mapeaba `from_person_id → guardian_person_id` (`Code.js:1881-1882`), en un solo batch paralelo (`appsheetRequestBatch_`) — funcionaba. El refactor lo sustituyó por `hydrateSession_` → endpoint KMS nuevo `enr_wizardHydrate` que filtró por `enrollment_group_id` (columna **inexistente** en esa tabla) → relaciones vacías, y bajó tablas enteras → 68s. La causa NO fue "no leer docs": fue búsqueda parcial + reinvención del acceso a datos en vez de copiar el lector probado.
-
-Cross-ref: §"Wizard structure" (los lectores canónicos viven en `backend/Code.js`) + la regla equivalente en `kis-app/CLAUDE.md` (mismo principio anti-reinvención).
-
-## Wizard structure
-
-### Wizard steps canónicos — NO inventar (regla 2026-05-30)
-
-El wizard tiene **11 steps canónicos** (no inventar otros — ver anti-patrones abajo).
-
-> **★ ESTADO REAL POST-W2 (verificado 2026-06-11). Los 11 pasos son UN flujo único continuo en UNA sola ruta (`/apply`); `/sign` está ELIMINADA como ruta (`App.jsx:100` → Navigate /apply).** Los Steps 8-11 (Billing/GDPR/Review/Sign) se renderizan INLINE en `WizardPage` desde `frontend/src/pages/steps/Step8Billing..Step11Sign` (YA NO son placeholders; YA NO viven en un host `/sign` separado — la descripción de abajo de "host `/sign` + `SigningSteps.jsx` + placeholders en /apply" está SUPERSEDIDA). El avance 7→8 lo gobierna SOLO el estado (`canAdvanceToSigning`: AD + `signing_ready` + no COMPLETED; puente INLINE `enterSigning`, `WizardPage.jsx:379`). La entrada es ÚNICA: recuperación de magic-link per-guardian (a1) → último paso verificado + estado real (`submitted.real_state`/`body_by_state.*`) + avance state-driven (P215/P216/P217, todos construidos). NO reintroducir `/sign` ni el split de rutas. Cross-ref: ★ CANÓNICA DEFINITIVA en `kis-app/docs/kms/decisions/enr.md` + `reports/2026-06-11-w2-recovery.md` + §"Dos bearer tokens" arriba (nota POST-W2). El texto histórico de abajo se conserva como registro; leer SIEMPRE primero esta nota.
-
-> **ENMIENDA UX — DL-E38 + REFINADO recuperación única (2026-06-06, `kis-app/docs/kms/decisions/enr.md`): el wizard es UN flujo único continuo 1→11 de cara al usuario, con UNA sola entrada — el servicio de recuperación de magic link, per-guardian.** Lo que cambia respecto a la redacción previa de esta sección es **la capa UX/routing/entrada**, NO el modelo de seguridad. CLI 45 partió el wizard en dos rutas de entrada (`/apply` + `/sign`, cada una por su email) que el usuario percibía como **inconexas**; DL-E38 (y su refinado) corrigen esa percepción sin tocar la autorización: **una sola entrada de recuperación que va al email de un guardian concreto y resuelve `{guardian, grupo}` server-side** → editar (grupo, pre-AD) o firmar (per-guardian, post-AD) según estado. `/sign` queda como **host interno** de los Steps 8-11, alcanzado desde esa recuperación, no como email-solo separado. Las protecciones del **acto** de firma (single-use/TTL/binding, P222) viven en los endpoints de firma, NO en el token de entrada. Tres principios:
-> 1. **Resume → último paso verificado.** Recuperar una solicitud (magic-link por-guardian, o entrando sin link y recuperándola) lleva SIEMPRE al último paso en el que la familia estaba — no a un re-arranque ni a un banner muerto. `resumeSession_` (`Code.js:1101`) ya resuelve editabilidad real desde el estado (override `submitted_at=null` cuando las enrollments están en `IN`, `:1219-1231`); se extiende para devolver además el estado real + el contexto de firma del guardian (P215).
-> 2. **El Step 7 muestra el ESTADO REAL** ("Aprobada"/"En revisión"/etc., derivado de `sysStates_T` `ENR_ADMISSION_SCHOOL`), no el binario "enviada/no enviada" (P216). Coherente con §"Edit-lock post-submit" (editabilidad = estado, no flag).
-> 3. **Avance state-driven hacia la firma.** Si el expediente está **Aprobado (AD)** y la **firma está lista para ESE guardian** (`signing_token` emitido en `sysSigningSessionSigners`, milestone `SIGNING_INITIATED` completo), el **botón de avanzar del Step 7 se desbloquea** (lo GOBIERNA el estado) y continúa al Step 8 — el wizard resuelve el `signing_token` del guardian y navega a la firma sin depender SOLO del email (P217).
->
-> **REFINADO recuperación única (Diego 2026-06-06, posterior):** UNA sola entrada — el **servicio de recuperación de magic link, per-guardian**. El link de recuperación va al email de **un guardian concreto** → la **identidad de firma se deriva de QUÉ guardian recuperó** (server-side). El token de entrada resuelve `{guardian, grupo}` → editar (grupo, pre-AD) o firmar (per-guardian, post-AD) según estado. `/sign` = host interno alcanzado desde la recuperación, NO email-solo separado. Esto **supersede** el split de dos rutas de ENTRADA de CLI 45 y la framing previa "dos tokens bajo el capó, solo cambia el routing". 🟦 **Hallazgo + sub-decisión:** hoy el `resume_token` es **de GRUPO, no per-guardian** (`enrEnrollmentGroups.primary_email` único, `Code.js:828`; `sendMagicLink_`/`resumeSession_` group-scoped) → cambio concreto: pasar la recuperación a guardian-scoped; la mecánica (link per-guardian vs selección de firmante in-app) es sub-decisión abierta del build (P215), ambas preservando KAL-4 + P222.
->
-> **Lo que se PRESERVA de CLI 45 (sin cambios):** la **firma es por-firmante y legalmente vinculante**; los **dos tokens siguen bajo el capó** (`resume_token` sesión-de-grupo + `signing_token` por-firmante); el `enrollment_group_id` y el signer se derivan SIEMPRE **server-side del token, NUNCA del payload** (KAL-4 IDOR). La recuperación resuelve el contexto de firma del guardian server-side a partir del token de entrada, no de un email ni de un campo del cliente. Las protecciones del **acto** de firma (single-use/TTL/binding, P222) viven en los endpoints de firma, NO en el token de entrada. Cambia la **UX/entrada**, NO la identidad per-firmante.
->
-> Items de build: **P215** (recuperación backend devuelve estado real + disponibilidad de firma + contexto del guardian que recupera, per-guardian) · **P216** (frontend: una entrada → último paso verificado + estado real + avance state-driven) · **P217** (puente recuperación → firma, `/sign` host interno). Prerequisito **P211** (sin el fix del `signing_token` PackedUUID dashless la firma NI resuelve). Cross-ref DL-E37 («Acciones disponibles» locus de estado) + P200/P201 (emisión del `signing_token`) + P222 (protecciones del acto de firma).
-
-El roadmap §3 ola 4 ya describía el flujo; esta sección lo refleja (M5 readiness-2026-06-03; `Code.js:272`):
-
-- **Steps 1-7 (pre-AD) → ruta `/apply`** (continuación con `resume_token`, familia anónima): Email, Persons, Relations, Health, Questions, Documents, Review. Ya implementados.
-- **Steps 8-11 (firma, post-AD) → host `/sign?signing_token=…`** (`SigningWizardPage`, guardian firmante, autenticado con `signing_token` por-firmante, no `resume_token`). De cara al usuario es la **continuación del mismo flujo** (DL-E38), no una ruta inconexa; la ruta `/sign` es solo el **host técnico** de los Steps 8-11, no una experiencia separada — el avance hacia ella lo gobierna el estado, puenteado desde el Step 7 (P217):
-  - 8 S-BILLING: datos fiscales pagador (endpoint `enr.saveBillingInfo`). *(Nota: P49/`enrGroupBilling` CANCELADO 2026-06-03 — billing canónico via `finBillingParties`, refactor del handler en CLI 84.)*
-    - **★ AMPLIADO 2026-07-26 (DL-080-A) — el Step 8 muestra el PRESUPUESTO real y captura la MODALIDAD de pago.** Además del reparto entre pagadores, el paso pinta el presupuesto REAL del borrador de suscripción (partidas, fechas, importes, descuento, total) y un selector con el preview de cada modalidad activa del catálogo del tenant. Dos endpoints nuevos, ambos **proxies finos al KMS** (`getSubscriptionBudget_` → `enr.wizardGetSubscriptionBudget`, lectura; `applyPaymentModality_` → `enr.wizardApplyModality`, escritura con `_wzCacheInvalidate_`): el wizard **NO calcula dinero** — solo formatea `amount_cents/100` (un solo lector; los importes salen SIEMPRE del motor del KMS). KAL-4 intacta (grupo y suscripción los deriva el KMS del `resume_token`, nunca del payload) y **desde ②27 la escritura exige además el código de un solo uso, en paridad con `saveBillingInfo_` —su hermano de la misma pantalla— porque esto es dinero** (§"El token es la PRIMERA capa…"); la elección solo se admite en estado **borrador** (sobre una suscripción ya activa → `NOT_EDITABLE`, mensaje claro y selector deshabilitado). Degrada elegante si el tenant aún no tiene catálogo de modalidades (`modalities_available:false` → sin selector, sin bloquear el avance). Cross-ref: `kis-app/docs/kms/decisions/fin.md` DL-080 ★ CONSTRUIDO 2026-07-26 + DL-081 (la firma dispara `DRAFT→ACTIVA`) + DL-082.
-  - 9 S-GDPR: 7 consentimientos GDPR por guardian + TSA (DL-E27, endpoint `enr.submitGdprConsents`).
-  - 10 S-REVIEW: revisión Carta + Contrato + confirmación lectura (DL-E28 §6, endpoint `enr.confirmReview`).
-  - 11 S-SIGN: firma Click & Sign (DL-E28 §7-§13, endpoint `enr.initiateSigningSession`).
-
-Los nombres y propósito vienen de `docs/kms/plan/wizard-admissions-roadmap.md` líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28.
-
-**Dónde vive el código funcional de firma (CLI 45):** los Steps 8-11 funcionales se renderizan desde `frontend/src/pages/signing/SigningSteps.jsx` (host `/sign`). Los componentes homónimos bajo `/apply` (`frontend/src/pages/steps/Step8Billing.jsx`, etc.) son **placeholders** — NO contienen el trabajo funcional; no confundirlos al buscar la lógica de firma. *(Nota DL-E38: bajo el flujo continuo, el avance del Step 7 puentea al host `/sign`+`SigningSteps.jsx` cuando el estado lo gobierna (P217). El **merge total** de los Steps 8-11 dentro de `/apply` es una alternativa MAYOR que DL-E38 NO exige — el build elige entre "puente al `/sign` existente" (mínimo) o "merge de rutas" (mayor), cualquiera mientras preserve los dos tokens + la identidad por-firmante. Por eso los placeholders de `/apply` ya no se describen como "permanentes": su destino depende de la opción de build elegida.)*
-
-Los Steps 8-11 se desbloquean post-AD: la sesión de firma se inicia (automática al entrar en AD, DL-E37 + P200/P201), emite el `signing_token` por-firmante, y el avance se gobierna por estado (DL-E38: expediente Aprobado + firma lista para el guardian → botón del Step 7 desbloqueado → puente a la firma; P216/P217). Hasta entonces el Step 7 muestra el estado real del expediente (P216) y el avance permanece bloqueado.
-
-**Anti-patrones a NO repetir**:
-- NO inventar pasos como "Status", "Interview", "Decision", "Deposit", "Sign contract", "Enrolled". Si una sesión cloud cree que un step debería existir, primero verificar en el roadmap canónico.
-- NO crear ruta `/track/:token` separada — el seguimiento de solicitud NO tiene ruta propia. **(Excepción legítima: la firma usa el host `/sign?signing_token` — Steps 8-11 post-AD, CLI 45. Es el ÚNICO host de ruta distinto canónico del wizard; no confundirlo con rutas inventadas tipo `/track`. Nota DL-E38: `/sign` es el host TÉCNICO de los Steps 8-11, no un flujo separado de cara al usuario — la experiencia es UN wizard continuo 1→11; el avance hacia `/sign` lo gobierna el estado, puenteado desde el Step 7.)**
-- NO añadir endpoints frontend-only sin confirmar que están registrados en backend `doPost` dispatcher.
-
-Precedente: CLI 22 + CLI 28 + CLI 33-36 + Frontend-9-10 + Frontend-12 (2026-05-29/30) introdujeron steps inventados; CLI 59 corrigió 2026-05-30.
-
-**Endpoints backend borrados 2026-05-30 (CLI 60)**: getInterviewForEnrollment, getAdmissionDecisionForEnrollment, getReservationPaymentInfo, getSigningTokenFromResumeToken, getTrackingData — sus consumidores frontend (Step9Interview, Step10Decision, Step12Deposit, TrackApplicationPage, Step8Status) fueron borrados por CLI 59 al corregir el wizard a 11 steps canónicos. Cuando se implementen los endpoints reales canónicos (enr.saveBillingInfo P49, enr.submitGdprConsents DL-E27, enr.confirmReview DL-E28 §6, enr.initiateSigningSession DL-E28 §7-§13), se añadirán como nuevos cases en el dispatcher.
+El paso 8 pinta el presupuesto REAL y captura la modalidad por **proxies finos al KMS**
+(`enr.wizardGetSubscriptionBudget` lectura · `enr.wizardApplyModality` escritura, que **sí** exige el
+código de un solo uso: es dinero y se firma). Solo se admite en estado **borrador**; degrada elegante
+si el centro no tiene catálogo de modalidades.
 
 ## Deployment
 
-### El control de escrituras directas vive en ESTE repo, y muerde en su CI (2026-08-03)
+### Los OCHO controles de CI — ninguno es opcional
 
-**`node scripts/comprobar-escrituras-directas.mjs`** comprueba que `backend/Code.js` **no escribe
-(Add/Edit/Delete) DIRECTO a ninguna tabla de AppSheet** — el invariante de la §"★ El wizard NO
-escribe NINGUNA tabla AppSheet". No necesita `npm ci`, ni red, ni navegador (~1 s: solo lee
-ficheros), y **el trabajo `escrituras-directas` de `.github/workflows/deploy.yml` lo ejecuta en cada
-empujón a `main`; `build` depende de él ⇒ en ROJO no se publica**.
+`build` depende de los ocho ⇒ **en ROJO no se publica**. Todos `node scripts/<nombre>.mjs`, ~1 s, sin
+`npm ci`, sin red y sin navegador.
 
-**Por qué está aquí y no en el KMS.** Nació dentro de `kis-app/scripts/check-quality-gates.mjs`
-(gate `#wizard-no-direct-crosscutting-writes`) leyendo este repositorio como **hermano de checkout**.
-En la integración continua del KMS ese hermano **no existe** ⇒ el control se declaraba **INERTE** y
-**no comprobaba nada**: un control de seguridad que solo actúa si alguien tiene los dos repositorios
-clonados al lado. La salida perezosa era un credencial con acceso cruzado; la correcta es ésta —
-**el control se ejecuta donde vive el código que vigila**. El gate del KMS **importa este mismo
-fichero** (`scripts/escrituras-directas.mjs`) cuando tiene el hermano delante: **una sola
-implementación, dos invocadores**. Dos copias del mismo control divergen, y un control divergido
-miente.
+| Control | Qué vigila |
+|---|---|
+| `comprobar-escrituras-directas` | que este backend anónimo no escriba a ninguna tabla de AppSheet |
+| `comprobar-selector-appsheet` | que los filtros emitan `AND()`/`OR()` como FUNCIONES, no infijos |
+| `comprobar-personas-quitadas` | que no se cuente a quien un tutor ya quitó de la solicitud |
+| `comprobar-verja-publica` | las cinco puertas, el código de un solo uso de los 13 manejadores, y que cada tramo de `②17` siga preguntándole al KMS |
+| `comprobar-receptor-firmado` | que los **DOS** receptores firmados verifiquen la firma ANTES de mirar el contenido |
+| `comprobar-pantalla-del-cliente` | que las banderas de pantalla salgan de UN derivador y no se copien del KMS |
+| `comprobar-codigos-de-consentimiento` | que ningún consentimiento se registre con un código inventado |
+| `comprobar-que-el-wizard-no-escribe-estado` | que el asistente no fije el estado ni mande el correo del envío |
 
-**Cubre cuatro formas** (las tres primeras son agujeros medidos, no imaginados): escritura con acción
-literal · **acción en variable** (indemostrable ⇒ infracción por sí misma) · **herencia de exención**
-(una flecha asignada tras una función exenta heredaba su permiso) · **transporte paralelo** (la URL
-de AppSheet fuera de `appsheetRequest_`/`appsheetRequestBatch_`). Las tres primeras se demostraron en
-ROJO el 2026-08-03 antes de dar el trabajo por hecho. **Límite honesto declarado en la cabecera del
-módulo**: es un detector por líneas, no un analizador sintáctico — un `eval()` seguiría siendo
-invisible.
+⛔ **Si añades uno, actualizas esta tabla en el MISMO cambio.** El defecto que esta nota corrige es que
+seis entraron sin tocar ninguna instrucción, y durante días se corrían 2 de 8 creyendo haber pasado el
+muro.
 
-**Veredicto**: última línea, `VEREDICTO: VERDE|ROJO — <motivo>`, impresa **siempre** (también ante
-error fatal). Nunca se deduce del código de salida.
+**Por qué el infijo era grave, y no se afloja:** `[a] = "x" AND [b] = "y"` **no da error** en AppSheet:
+se queda con la **PRIMERA** condición y **descarta el resto en silencio** — medido, devolvía 23 filas
+de 21 familias distintas para un expediente que tenía 3. Un filtro *inválido* saltaría a la vista; éste
+no.
 
-### Los filtros a AppSheet: `AND`/`OR` son FUNCIONES, y el control lo vigila en CI (2026-08-03)
+**Y los controles son DETECTORES POR LÍNEAS, no analizadores sintácticos** — declarado en la cabecera
+de cada módulo. Un `eval()` o un alias seguirían siendo invisibles. **Un nombre que ya no existe en el
+código sigue valiendo para impedir que vuelva**: borrarlo de un control es aflojarlo a cambio de nada.
 
-**`node scripts/comprobar-selector-appsheet.mjs`** comprueba que el traductor de filtros de
-`backend/Code.js` (`wizardTraducirFiltro_`) emite `AND(a, b)` / `OR(a, b)` **como funciones**.
-Trabajo `selector-appsheet` en `.github/workflows/deploy.yml`; **`build` depende de él ⇒ en ROJO no
-se publica**. No necesita `npm ci`, ni red, ni navegador (~1 s).
-
-**El defecto que vigila, medido — no razonado.** El backend traducía `&&` con
-`.replace(/&&/g, 'AND')`, produciendo `[a] = "x" AND [b] = "y"`. En el lenguaje de expresiones de
-AppSheet eso **no da error**: se queda con la **PRIMERA** condición y **descarta el resto en
-silencio**. Medido contra AppSheet real el 2026-08-03, desde el repositorio hermano:
-
-| filtro | primera condición | resultado del infijo |
-|---|---|---|
-| `recFiles`: `school_id && origin_reference` | `school_id` (casa TODO) | **23 filas vivas de la escuela, 21 familias distintas**, para un expediente que tenía 3 |
-| recuperación: `primary_email && NOT(ISBLANK(submitted_at)) && ISBLANK(abandoned_at)` | el email (acota) | sin fuga, pero **las guardas se caen**: solo-email → 1 · con guardas infijas → 1 · con `AND()` → **0** |
-
-O sea: **fuga de documentos entre familias** por un lado, y por otro `initEnrollmentSession_`
-tratando como *«ya enviada»* un expediente **abandonado o sin enviar**. Un filtro *inválido*
-devolvería 0 y saltaría a la vista el primer día; éste devolvía de más o de menos sin quejarse —
-por eso vivió tanto.
-
-**Por qué un control aparte y no la batería.** `npm run e2e:wizard` corre contra un backend
-**simulado**: nunca llega a construir un Selector, así que **no puede salir roja por esto**.
-Declararla como red de este cambio habría sido decorar. Este control lee el traductor REAL del
-fuente, lo ejecuta aislado y afirma sobre lo que produce.
-
-**Se exigió ROJA antes de dar nada por hecho**, dos veces: cambiando el troceador por un
-`split('&&')` de texto plano (rojo: nombra el caso del `&&` dentro de comillas) y devolviendo la
-emisión al infijo (rojo: 5 de 7). También salió roja **por sí sola** cuando el traductor todavía no
-existía como función propia — una comprobación que no encuentra lo que dice medir no puede salir
-verde.
-
-**Lo que afirma y lo que no**: afirma la **FORMA** (funciones, paréntesis, comillas, sin `&&`/`||`
-sueltos fuera de comillas). **NO** afirma que el filtro devuelva las filas correctas — eso solo lo
-dice AppSheet, y se midió aparte. Cuando toques `wizardTraducirFiltro_` o añadas una forma de filtro
-nueva, **el caso se añade en el MISMO cambio** y se rompe a propósito antes de darlo por bueno.
-
-Cross-ref: `kis-app/docs/kms/loop-backlog.md` §"HALLAZGO GRAVE (2026-08-03)" (el mismo defecto en el
-KMS, arreglado y desplegado @1184) · §"No se toca lo que funciona…".
-
-### El asistente no cuenta a quien la familia ya quitó (2026-08-09)
-
-**`node scripts/comprobar-personas-quitadas.mjs`** — trabajo `personas-quitadas` en
-`.github/workflows/deploy.yml`; **`build` depende de él ⇒ en ROJO no se publica**. ~1 s, sin `npm
-ci`, sin red, sin navegador.
-
-**El defecto que vigila, MEDIDO sobre datos reales el 2026-08-09** (166 personas de `enrPersons`,
-contadas dentro de GAS, cero datos de familia fuera): **134 retiradas · 83 tutores retirados sin
-teléfono vivo · 57 de 67 expedientes BLOQUEADOS**. La familia puede quitar de su solicitud lo que
-ella misma añadió (`enr.wizardRetirar`, que estampa `deleted_at`); el KMS descarta a esas personas
-**en todas partes** y el asistente **no lo hacía en ninguna**. Resultado: la puerta del envío le
-exigía un teléfono E.164 a tutores que ya no estaban y **tumbaba el envío entero** aunque los que
-quedaban lo tuvieran todo correcto — `INVALID_PHONE` con todos los tutores vivos teniendo teléfono.
-Y no era solo la puerta: con la misma lista sin filtrar, el **firmante** de los consentimientos
-podía ser un tutor quitado, y la persona **reaparecía al recargar**.
-
-**El arreglo es UN SOLO SITIO que decide quién sigue en la solicitud** — `wizardFilaViva_` /
-`wizardSoloVivas_` (`backend/Code.js`, junto al catálogo de tablas), con el criterio **copiado**
-del lector probado del KMS (`kis-app kms-server/enr/retirada.gs:365-367`,
-`enr/wizard-gateway.gs:1523`): `!deleted_at && is_active !== false`. La única diferencia es que
-AppSheet le devuelve al asistente el booleano como **TEXTO** (`'FALSE'`), así que comparar con
-`false` a secas no casa nunca. **NO se reparte `!p.deleted_at` a mano por los sitios de lectura:
-así nació esta asimetría.**
-
-**Qué afirma el control, las dos cosas sobre el CÓDIGO REAL:** (a) **extrae del fuente** el ayudante
-y lo **ejecuta** con 12 casos (fecha, vacío, espacios, booleano, texto en ambas cajas, columna
-ausente, fila nula, y el colador entero) — no repite su lógica; (b) **ninguna** de las 33 lecturas
-de personas / teléfonos / correos / vínculos se salta el ayudante, ni directa ni en lote. Las
-exenciones (diagnósticos que SÍ deben ver a las retiradas) van declaradas **con su motivo escrito**
-en `scripts/personas-quitadas.mjs`.
-
-**Se exigió ROJA tres veces antes de darla por buena:** ablandando el criterio (3 casos rojos),
-quitando el colador de la puerta del envío (`Code.js:4433` señalada por línea y función), y
-renombrando el ayudante (rojo fatal: *«no puede medir lo que dice medir»*). **Límite honesto,
-declarado en la cabecera**: es un detector por líneas, no un analizador sintáctico — un `eval()` o
-un alias de `appsheetRequest_` seguirían siendo invisibles, igual que en `escrituras-directas.mjs`.
-
-**Por qué no basta la batería.** `npm run e2e:wizard` corre contra un backend **simulado**: el
-`backend/Code.js` real no se ejecuta ahí, así que **no puede salir roja por esto**. Su camino
-`quitar-de-la-solicitud` cubre la pantalla (quitar sale hacia el servidor, la persona desaparece,
-vuelve si el servidor dice que no) — que es otra cosa. Declarar la batería como red de este cambio
-habría sido decorar.
-
-### MANDATORY — MURO DE DEPLOY: batería del wizard VERDE antes de CUALQUIER publicación (2026-07-28)
-
-**`npm run e2e:wizard` (desde `frontend/`) debe terminar VERDE antes de publicar nada** — ni el frontend a GitHub Pages, ni el backend con `clasp deploy`. **Cambio sin batería verde = NO deploy.** Es el equivalente al muro del KMS (`kis-app/CLAUDE.md` §"MANDATORY — MURO DE DEPLOY"), y nace de la regla de los dos repos (§"No se toca lo que funciona sin una forma de comprobar que sigue funcionando").
+### MURO DE DEPLOY — la batería VERDE antes de CUALQUIER publicación
 
 ```bash
-cd frontend
-npm run e2e:wizard          # compila su propio bundle + recorre los 6 caminos
+cd frontend && npm run e2e:wizard
 ```
 
-- **Cómo se lee el resultado: la ÚLTIMA línea de stdout, `VEREDICTO: VERDE` o `VEREDICTO: ROJO — <motivo>`.** Es la única señal válida. **NO** basta "no vi ningún ✗" ni el código de salida cuando la salida pasa por una tubería (`| tail`, `| tee` devuelven el código del ÚLTIMO comando — así se coló un «error fatal» con exit 0 en el KMS el 2026-07-27). La batería imprime ese veredicto SIEMPRE, incluso ante error fatal, excepción no capturada o promesa no gestionada, y solo dice VERDE si recorrió TODOS los caminos declarados con 0 fallos.
-- **Prohibido repetir la batería hasta que salga verde**: un rojo se DIAGNOSTICA (cada camino imprime el detalle real: el paso donde aterrizó, los ms del avance, el payload que llegó), nunca se reintenta hasta pasar.
-- **Una ejecución con `E2E_FILTER` NO vale como muro** — la batería lo detecta y devuelve ROJO explícitamente ("ejecución PARCIAL").
-- **En CI ya es obligatorio**: `.github/workflows/deploy.yml` tiene un job `e2e` del que **depende** el job `build` → un push a `main` con la batería roja NO publica.
+**Cambio sin batería verde = NO deploy.** Se lee **la ÚLTIMA línea de stdout**: `VEREDICTO: VERDE` o
+`VEREDICTO: ROJO — <motivo>`. ⛔ **No basta «no vi ningún ✗» ni el código de salida** cuando la salida
+pasa por una tubería (`| tail`, `| tee` devuelven el código del ÚLTIMO comando). ⛔ **Prohibido repetir
+la batería hasta que salga verde**: un rojo se DIAGNOSTICA. ⛔ **Una corrida con `E2E_FILTER` NO vale
+como muro** — la batería lo detecta y devuelve ROJO («ejecución PARCIAL»).
 
-**Qué cubre** (`frontend/e2e/run-wizard.mjs`, Playwright headless contra el backend simulado de `e2e/mock-backend.mjs`): `alta-nueva` (portada → enlace enviado, UNA sola petición, el cliente NO decide recuperar-vs-crear) · `ack-indistinguible` (email conocido vs desconocido → misma pantalla y misma secuencia de llamadas; y con un servidor que delata, el cliente sigue sin ramificar — el guardarraíl del casi-incidente WIZ-ENUM) · `recuperar-aterrizar` (magic-link → aterriza en el paso donde estaba + token fuera de la barra, KAL-7) · `enlace-no-ha-caducado` (un fallo de TRANSPORTE en la carga NO dice «el enlace puede haber caducado» ni manda a rotar el token bueno: se queda en la página, reintenta sola y lo dice, y el botón entra con el MISMO enlace — mientras que un enlace que el servidor RECHAZA por su nombre sí lleva a la portada a pedir otro) · `guardar-paso` (avance optimista ≤200 ms medido EN LA PÁGINA + el `saveStep` lleva el valor nuevo + persiste al volver atrás) · `subir-documento` (bytes reales + confirmación visible) · `tramo-firma` (expediente admitido aterriza en el paso 8 y lo pinta) · `precalentado-sin-ruido` (pedir el enlace dos veces NO deja ni un error en la consola de la familia: el ticket del precalentado es de un solo uso y «no había nada que calentar» no es un fallo) · `precalentado-fallo-se-registra` (y un fallo DE VERDAD sí se registra) · `codigo-sin-congelar` (pedir el código de un solo uso NO congela la verja: el aviso de «enviado» y la casilla salen ANTES de que vuelva la petición, se puede teclear y entrar sin esperarla, «reenviar» se limita por RELOJ y no por el viaje, y un rechazo del servidor SUSTITUYE al aviso optimista sin cerrar el camino de entrar). **Estos dos van separados a propósito:** la declaración de error de consola vale para TODO el camino, así que juntos el segundo se tragaba el error del primero y la red no medía nada — medido rompiéndolo el 2026-08-15.
+**Cuando añadas o cambies un camino, la batería se amplía en el MISMO cambio. Y antes de dar por buena
+una afirmación nueva, RÓMPELA a propósito** y comprueba que sale ROJA nombrándola: una comprobación que
+nunca se ha visto fallar no es una red.
 
-**Qué NO cubre (deliberado y declarado):** el **acto de firmar** no se consuma — es irreversible y su lógica vive en el motor del KMS, no en el wizard. Está declarado en `NO_CUBIERTAS_PERMITIDAS`; el resto de afirmaciones no ejecutadas hacen ROJO. Tampoco cubre el **backend GAS** (`backend/Code.js`) ni el OTP/step-up real: la batería entra con la gracia del magic-link (`step_up_fresh:true`), que es el camino que recorre una familia que acaba de pedir su enlace.
+⚠️ **LO QUE LA BATERÍA NO CUBRE, y es la mitad del producto:** corre contra un **backend simulado que
+NUNCA ejecuta `backend/Code.js`** ni llama al KMS. Afirma lo que hace el NAVEGADOR. Todo lo del
+servidor —las puertas, las proyecciones, las memorias, la ventana real— **se mide aparte**, con un
+arnés efímero **fuera del repositorio** que extrae las funciones del fuente y las ejecuta con dobles.
+Y ese arnés **se rompe a propósito** antes de darlo por bueno: un renombrado debe salir **«MEDICIÓN
+CIEGA»**, no verde.
 
-**Datos y correos:** la batería **no manda ni un email y no toca ningún dato real**. Compila el bundle con `VITE_GAS_ENDPOINT=/__gas` y todo el tráfico muere en un servidor local; los datos son sintéticos en el dominio reservado `.invalid` (RFC 2606), que nunca puede ser el buzón de una familia. Todo lo externo (CDN, fuentes, reCAPTCHA, logo) se aborta en el navegador.
+Tampoco cubre el **acto de firmar** (irreversible, y su lógica vive en el motor del KMS): está
+declarado en `NO_CUBIERTAS_PERMITIDAS`; el resto de afirmaciones no ejecutadas hacen ROJO.
 
-**Cuando añadas o cambies un camino de la familia, la batería se amplía en el MISMO cambio.** Y antes de dar por buena una afirmación nueva, **rómpela a propósito** y comprueba que la batería sale ROJA nombrándola: una comprobación que nunca se ha visto fallar no es una red.
+**Datos y correos:** la batería **no manda ni un email y no toca ningún dato real**. Compila con
+`VITE_GAS_ENDPOINT=/__gas`, todo el tráfico muere en un servidor local, y los datos son sintéticos en
+el dominio reservado `.invalid` (RFC 2606).
+
+**Trampas del ROBOT que ya costaron sesiones** (son del robot, no del producto): irse de la página con
+un `fetch` a medias lo aborta y la aplicación registra un `network/fetch error` que no es suyo ⇒ se
+drena la red antes de navegar · **Chromium reintenta por debajo** una petición cuyo socket se mata, así
+que un contador por PETICIÓN no dice cuántos intentos hizo la aplicación · un panel YA SUBIDO pierde su
+campo de archivo ⇒ se toma el ÚLTIMO, no el primero · una palanca aplicada a un solo sirviente de
+catálogos deja la comprobación pasando **en vacío**.
 
 ### Publicación
 
-The wizard is served from a **fixed deployment URL**. `clasp push` only updates Head — users hit the deployment URL, which is frozen until redeployed.
+El asistente se sirve desde una **URL de despliegue fija**. `clasp push` solo actualiza el Head.
 
 ```bash
-# From backend/
+# desde backend/
 clasp push --force
 clasp deploy \
   --deploymentId AKfycbyzyAR6J3_2UAiE6tCyNHVawoGfMNNbZEaurp99cRI76IYbiqGVEeQQcTxsgAqUFnGk0w \
-  -d "<short description of the change>"
+  -d "<descripción corta del cambio>"
 ```
 
-**Never create a new deployment** — always update the existing one above. A new deployment yields a new URL and breaks `admissions.kaleide.org`.
+⛔ **Nunca crear un despliegue nuevo**: daría otra URL y rompería `admissions.kaleide.org`.
 
-### ⚠️ NO hay auto-despliegue del BACKEND — empujar a `main` NO publica `backend/Code.js` (medido 2026-08-02)
+⚠️ **NO hay auto-despliegue del BACKEND.** Un empujón a `main` dispara `e2e` → `build` → `deploy` **a
+GitHub Pages**: eso publica **el frontal y solo el frontal**. `deploy.yml` **no toca `clasp`**
+(`grep -c 'clasp' .github/workflows/deploy.yml` → 0). Un cambio en `backend/Code.js` empujado a `main`
+queda **en el repositorio y NO en la URL que usan las familias** hasta que alguien ejecuta los dos
+comandos de arriba.
 
-**Lo que CI hace de verdad en un empujón a `main`:** `e2e` (la batería del wizard) → `build` → `deploy` **a GitHub Pages**. Eso publica **el frontend y solo el frontend**.
+**Orden cuando el cambio toca los DOS proyectos:** se publica el que hace que el otro **degrade sin
+romper**. Si el asistente necesita algo nuevo del KMS, **el KMS va primero**; si el asistente deja de
+llamar a algo, **el asistente va primero**. Un alias del KMS **no se retira** mientras el paquete viejo
+del asistente siga vivo.
 
-**Lo que CI NO hace: NADA con `clasp`.** El backend GAS se publica **a mano**, con los dos comandos de §"Publicación" de aquí arriba. Un cambio en `backend/Code.js` empujado a `main` queda **en el repositorio y NO en la URL que usan las familias** hasta que alguien ejecuta ese `clasp push` + `clasp deploy`.
+### Smoke test — son DOS pasos
 
-Comprobado así, no supuesto:
-
-```bash
-ls .github/workflows/                                  # → solo deploy.yml
-grep -c 'clasp' .github/workflows/deploy.yml           # → 0
-```
-
-**Esta sección decía lo contrario hasta el 2026-08-02**: afirmaba que `deploy.yml` incluía un trabajo `backend-deploy` con `clasp push --force` + `clasp deploy` en cada empujón a `main`, y explicaba cómo dar de alta un secreto `CLASP_TOKEN` para alimentarlo. **Ese trabajo no existe en el fichero** (ni el secreto se usa en ninguna parte). Es la misma clase de error que la auditoría del 2026-08-01 (§"Regla: para AUDITAR o DECIDIR sobre el wizard…" en `kis-app/CLAUDE.md`): **documentación que declara existente un mecanismo que no está**. Aquí el daño era el simétrico y peor — invitaba a dar por publicado un cambio de backend que seguía sin salir, o a no ejecutar el despliegue "porque ya lo hace CI".
-
-Si algún día se quiere ese trabajo, se **construye y se ve funcionar** antes de describirlo aquí.
-
-### Smoke test technique — dos pasos (2026-05-29)
-
-GAS web apps devuelven una respuesta en **dos pasos**: la primera request al `/exec` recibe un HTTP 302 con `Location: https://script.googleusercontent.com/macros/echo?user_content_key=...`. El JSON real está en ese segundo URL. `curl -L` NO funciona correctamente porque convierte el POST a GET en el redirect y el endpoint echo devuelve una página de error de Google Drive en holandés. La técnica correcta para smoke tests desde CLI:
+GAS responde con un 302 a `script.googleusercontent.com/macros/echo`; el JSON real está en ese segundo
+URL. `curl -L` **no sirve** (convierte el POST en GET).
 
 ```bash
-# Paso 1: POST sin seguir redirects, captura la Location header
 LOCATION=$(curl -s -D - -o /dev/null -X POST "$GAS_URL" \
-  -H "Content-Type: text/plain" \
-  -d '{"action":"...","_hp":"","key":"value"}' \
+  -H "Content-Type: text/plain" -d '{"action":"...","_hp":"","key":"value"}' \
   --max-time 60 | grep -i '^location:' | tr -d '\r' | awk '{print $2}')
-
-# Paso 2: GET al echo URL
 curl -s "$LOCATION" --max-time 30
 ```
 
-Verificado: el deploy @92 (CLI 17) responde correctamente con este patrón. `admissions.kaleide.org` funciona OK desde browsers (manejan el redirect nativo).
+**Forma canónica del cuerpo:** el cuerpo ENTERO es el payload, con los parámetros al nivel superior
+(`{"action":"recognizeFamily","primary_email":"x@y.com","recaptcha_token":"..."}`). ⛔ **No hay
+anidación bajo `"payload"`** — quien la asume recibe «Missing X required». Los endpoints con verja no
+son probables por `curl` sin un token válido. *(Windows/Schannel: `--ssl-no-revoke` si la red bloquea
+OCSP.)*
 
-**Shape canónica del body** (verificado en `doPost` líneas 258 + 265): el body ENTERO es el payload — `const payload = JSON.parse(e.postData.contents); const action = payload.action;`. NO hay anidación bajo `"payload"`. Params a nivel top:
-```json
-{"action":"recognizeFamily","primary_email":"x@y.com","recaptcha_token":"..."}
-```
-NO esto (error común):
-```json
-{"action":"recognizeFamily","payload":{"email":"..."}}
-```
-Smoke tests que asumen anidación reciben "Missing X required" porque el dispatcher no encuentra el campo a nivel top.
+## Email sending — este proyecto NO envía ningún correo
 
-**Endpoints con verja reCAPTCHA** (no smoke-testeables desde curl sin token reCAPTCHA válido): `recognizeFamily_`, posiblemente otros. La defensa por capas detrás (KAL-5 assertValidEmail_/appsheetEscape_) se verifica vía `manual_testAppSheetEscape_` desde GAS editor, NO vía curl.
+> **D123, Diego, 2026-09-05, literal:** *«El wizard no hace envíos. El wizard solo y exclusivamente se
+> comunica como un control remoto del KMS y es el KMS el que hace los envíos de email.»*
 
-Windows Schannel: añade `--ssl-no-revoke` a curl si la red corporativa bloquea OCSP/CRL (no afecta a la seguridad — el cert simplemente no se puede comprobar si está revocado, no que esté revocado).
+Le **PIDE** al KMS que lo mande, por `sys-public.sendNotification` y `sys-public.sendAuthCode`, y eso
+vive en **UN solo sitio**: `_kmsPideQueEnvie_`. **Una sola llamada** — el registro en
+`sysNotificationLog` lo escribe quien envía, que es donde no puede perderse.
 
-## Email sending
+- **UN solo sitio firma** todas las llamadas de correo: `_kmsCorreoFirmado_`, con el canónico
+  `template_code\nrecipient\nJSON.stringify(context)\nnonce\ntimestamp`.
+- **El código de un solo uso va por OTRA ruta** (`sendAuthCode`), y la diferencia **no es opcional**:
+  esa ruta **no escribe en `sysNotificationLog`** (P253). ⛔ **No añadir su registro «por coherencia».**
+- **Falla cerrado en dos puntos**: sin `NOTIFY_HMAC_SECRET` → `NOTIFY_NOT_CONFIGURED`; si el KMS no
+  acepta el envío → `EMAIL_SEND_FAILED`, **nunca un `{ok:true}` sobre un correo que no salió**.
+- **La generación, caché y cupo del código** siguen aquí (son lógica de autenticación); lo que pasa por
+  el KMS es el texto **y el envío**.
 
-> **★★ ESTE PROYECTO NO ENVÍA NINGÚN CORREO — D123, 2026-09-05.** Decisión de Diego, literal:
-> *«El wizard no hace envíos. El wizard solo y exclusivamente se comunica como un control remoto del
-> KMS y es el KMS el que hace los envíos de email.»* Ni el texto ni el envío son suyos: le PIDE al
-> KMS que lo mande, por `sys-public.sendNotification` y `sys-public.sendAuthCode`, y ya está.
+**Lo que el asistente pide HOY son cinco avisos** (comprobar contra `origin/main`, nunca por un
+comentario: `git show origin/main:backend/Code.js | grep -oE "sendViaKmsNotify_\('[A-Z_]+'" | sort -u`):
+`WIZARD_MAGIC_LINK`, `WIZARD_MAGIC_LINK_MULTI`, `WIZARD_SESSION_STARTED`,
+`WIZARD_UNSOLICITED_REPORTED` y `WIZARD_OTP`.
+
+> **Diego, 2026-09-11:** *«Los únicos emails que debería mandar el wizard por petición propia a la API
+> del KMS deberían ser el magic link y el OTP. A partir de ahí, el resto de emails transaccionales van
+> asociados a cambios de estado y estos a su vez, mueven hitos que son los que deben enviar el email.»*
 >
-> **QUÉ CAMBIÓ RESPECTO A ①51 (2026-08-19), porque el motivo importa.** Entre esa fecha y hoy este
-> proyecto SÍ enviaba, con `sendAsAlias_` y `gmail.send`, **porque `MailApp` —lo único que el KMS
-> podía usar— no admite remitente** y su correo salía desde la cuenta que lo publicó
-> (`developer@kaleide.org`, que es lo que Diego recibía; el defecto que D45 cerró). **Ese motivo ya
-> no existe:** el KMS manda por la **API de Gmail en nombre de la CUENTA LICENCIADA** del centro
-> (DL-S110), desde el buzón que el centro DECLARA, con cascada **plantilla → módulo → centro →
-> la propia cuenta licenciada** (`sys_remitenteDeCorreo_`, `kis-app kms-server/sys/senders.gs`).
->
-> ⇒ **RETIRADOS de este proyecto**: `sendAsAlias_`, `_kmsRenderizarYEnviar_`, el permiso
-> `gmail.send`, el permiso `script.send_mail` y el servicio avanzado `Gmail`. ⛔ **No se
-> reintroducen**: si un correo tiene que salir del buzón del colegio, el sitio es el KMS. El texto
-> histórico de abajo (el `GmailApp` local con plantillas propias) sigue SUPERSEDIDO igualmente.
+> ⇒ **de los cinco, DOS son de salida.** `WIZARD_UNSOLICITED_REPORTED` se retira **en una sola
+> publicación** cuando Diego declare su hito y su aviso, **nunca antes** (dejaría a admisiones sin
+> enterarse). ⛔ **`WIZARD_SESSION_STARTED` NO se puede mover**: ocurre **antes** de que exista
+> expediente, y los hitos cuelgan del expediente. Es decisión de Diego —
+> `kis-app/docs/kms/decisions/sys.md` **DL-S69 §0** y `loop-backlog.md` **`①96`**.
 
-### Lo que el wizard manda HOY — la lista, y cómo se comprueba (medido 2026-08-08)
+⚠️ **Un nombre de plantilla dentro de un comentario NO es un envío.** Un `@param` obsoleto que nombraba
+`WIZARD_FAMILY_CONFIRMATION` hizo que **tres agentes distintos, en dos días**, le afirmaran a Diego que
+el asistente manda la confirmación a la familia; tuvo que desmentirlo tres veces.
 
-**Los pide el asistente; los MANDA el KMS (D123).** Son cuatro avisos + el código de un solo uso, y
-ninguno es la confirmación a la familia: `WIZARD_MAGIC_LINK` y `WIZARD_MAGIC_LINK_MULTI` (a la familia, el enlace para volver a su solicitud) · `WIZARD_SESSION_STARTED` y `WIZARD_UNSOLICITED_REPORTED` (a admisiones, internos) · `WIZARD_OTP` (el código de un solo uso, por `sendViaKmsAuthCode_`). **La confirmación de «solicitud recibida» y los avisos del expediente NO los manda el wizard: los gobierna el motor de avisos del KMS a partir de los hitos** (los dos correos del envío se retiraron del wizard el 2026-08-07 y hoy cuelgan de la entrada en RQ).
+## Autonomy — rama `main`
 
-> **★ 2026-09-11 — DECISIÓN DE DIEGO: de los cuatro, DOS son de salida.** Cita literal: *«Los únicos
-> emails que debería mandar el wizard por petición propia a la API del KMS deberían ser el magic link
-> y el OTP. A partir de ahí, el resto de emails transaccionales van asociados a cambios de estado y
-> estos a su vez, mueven hitos que son los que deben enviar el email.»*
->
-> **Lo que ya cambió (KMS publicado el 2026-09-11):** la lista cerrada del KMS
-> (`kms-server/sys/notify-public.gs`) **retiró `WIZARD_FAMILY_CONFIRMATION` y
-> `WIZARD_INTERNAL_NOTIFICATION`** — CERO llamantes desde agosto de 2026, medido contra `origin/main`.
-> Aquí solo quedaban en comentarios y en la expresión de `comprobar-que-el-wizard-no-escribe-estado.mjs`,
-> que vigila justamente que no vuelvan. **Nada que tocar en este repositorio por eso.**
->
-> **Lo que NO ha cambiado todavía, y por qué:** los CINCO códigos de arriba **siguen saliendo desde
-> aquí exactamente igual**. `WIZARD_UNSOLICITED_REPORTED` es el próximo en irse —el KMS ya deja
-> constancia del hecho como hito cuando `enr.abandonApplicationSession` recibe
-> `motivo: 'NO_SOLICITADO'`, pero **este repositorio aún no lo manda** y ninguna regla escucha—; se
-> retira en UNA sola publicación cuando Diego declare el hito y su aviso, **nunca antes** (dejaría a
-> admisiones sin enterarse). ⛔ **`WIZARD_SESSION_STARTED` NO se puede mover**: ocurre antes de que
-> exista expediente y los hitos cuelgan del expediente; el único punto de partida que serviría
-> (`ENTITY_CREATED_AT`) no tiene camino inmediato ⇒ llegaría hasta un día tarde. Es decisión de Diego.
-> Detalle, orden exacto y camino de clics: `kis-app/docs/kms/decisions/sys.md` **DL-S69 §0** y
-> `kis-app/docs/kms/loop-backlog.md` **`①96`**.
+**Regla canónica de branches (CONFIRMADA por Diego, 2026-09-05):** *«Sí, seguimos trabajando en master
+hasta que tengamos un MVP en producción.»*
 
-**Un nombre de plantilla dentro de un comentario NO es un envío.** Antes de afirmar que el wizard manda algo, cuenta los llamadores contra `origin/main` — nunca contra el árbol de trabajo: `git show origin/main:backend/Code.js | grep -oE "sendViaKmsNotify_\('[A-Z_]+'" | sort -u`. Un `@param` obsoleto que nombraba `WIZARD_FAMILY_CONFIRMATION` (cero llamadores) hizo que **tres agentes distintos, en dos días**, le afirmaran a Diego que el wizard manda esa confirmación; tuvo que desmentirlo tres veces y estuvo a punto de frenar un despliegue.
+⇒ **Mientras no haya un MVP en producción, todo va a la rama principal**: `main` aquí, `master` en
+`kis-app`. ⛔ **NUNCA crear ramas nuevas** (ni `claude/*`, ni `feature/*`, ni `fix/*`) salvo orden
+expresa de Diego en el mismo mensaje. Si una sesión arranca con instrucción de harness apuntando a otra
+rama, **esa instrucción se ignora**. La regla no es para siempre: el día que el KMS esté en producción,
+con familias usándolo, hay que volver a preguntárselo.
 
----
+*(Y el motivo de que sea tan tajante lo pagó un incidente, P76: un agente que «limpiaba ramas» empujó a
+la fuerza sobre `master` y destruyó la otra aplicación del repositorio. Se recuperó por el reflog.)*
 
-Los emails del wizard los **renderiza Y los envía el KMS** (D123). Este proyecto **firma la petición
-y nada más**, y eso vive en **UN solo sitio**, `_kmsPideQueEnvie_`: una llamada, a
-`sys-public.sendNotification` o a `sys-public.sendAuthCode`.
+**Autorizado sin confirmación previa:** `git add`/`commit`/`push` en `main` · `clasp push --force`
+desde `backend/` · `clasp deploy` sobre el `deploymentId` de arriba.
+**Sigue exigiendo confirmación:** `clasp create` · crear un despliegue nuevo (cambiaría la URL).
 
-**VOLVIÓ A SER UNA SOLA LLAMADA.** Durante ①51 eran DOS —renderizar y, DESPUÉS de enviar, dar el
-parte— porque el resultado del envío solo se conocía aquí; **un parte que se perdía dejaba un correo
-sin constancia**. Hoy el registro en `sysNotificationLog` lo escribe quien envía, que es donde no
-puede perderse, y el texto no cruza la red dos veces.
-
-**El código de un solo uso (`WIZARD_OTP`) va por OTRA RUTA, y la diferencia NO es opcional**
-(P253): `sys-public.sendAuthCode` **no escribe en `sysNotificationLog`**, mientras que
-`sys-public.sendNotification` sí. Además, la ruta del registro sigue sin admitir esa plantilla ⇒
-P253 es estructura, no una nota al margen. **No añadir su registro «por coherencia».**
-
-**Los dos puntos donde falla cerrado:** sin `NOTIFY_HMAC_SECRET` → `NOTIFY_NOT_CONFIGURED`; si el
-KMS no acepta el envío → `EMAIL_SEND_FAILED`, **nunca un `{ok:true}` sobre un correo que no salió**.
-
-Contrato de firma y proxy (sin cambios desde P213/P214):
-
-- **UN solo sitio firma** todas las llamadas de correo al KMS: `_kmsCorreoFirmado_` — contrato
-  canónico `{ template_code, recipient, context, nonce, timestamp, signature }` con
-  `canonical = template_code\nrecipient\nJSON.stringify(context)\nnonce\ntimestamp`, idéntico a
-  `notify-public.gs`. Antes ese cálculo estaba **copiado** en las dos funciones de envío; dos copias
-  del mismo cálculo divergen.
-- `sendViaKmsNotify_` y `sendViaKmsAuthCode_` **conservan su nombre y su firma**: los nueve puntos de
-  llamada del fichero no se han tocado en ninguna de las dos vueltas. Por dentro delegan en
-  `_kmsPideQueEnvie_`.
-- La **generación, cache y cupo del código** de un solo uso siguen aquí (lógica de auth); lo que pasa
-  por el KMS es el texto **y el envío**, nunca la decisión de emitir el código.
-- **`sys-public.sendNotification` y `sys-public.sendAuthCode` son a las que este proyecto vuelve a
-  llamar** — las mismas que usa TODO lo demás (el motor de avisos por hitos). ⚠️ Y
-  `sys-public.renderNotification` / `sys-public.logNotificationSent` **siguen existiendo en el KMS**
-  aunque este proyecto ya no las use: son públicas y otro consumidor podría necesitarlas; retirarlas
-  es otra decisión, con su propia medición.
-
-**Pre-requisito de Diego (una vez):** generar `NOTIFY_HMAC_SECRET` y copiarlo a las Script Properties de AMBOS GAS (wizard + KMS). El contenido/plantilla de cada email vive en el catálogo del KMS (`sysNotificationTemplates_T` + `locales/`), no en el wizard.
-
-Cross-ref: `kis-app/docs/kms/decisions/enr.md` (ENMIENDA del flujo + bug OTP RESUELTO) + `kis-app/docs/kms/operational-pending.md` fila "wizard-terminal" (DESPLEGADO @766/@185).
-
----
-
-**(Histórico — SUPERSEDIDO 2026-06-25, no aplica al wizard actual):** Transactional emails (application received, etc.) use `GmailApp.sendEmail` with `from: ADMISSIONS_EMAIL` so they appear from `admissions@kaleide.org` instead of the deploying account. This requires `admissions@kaleide.org` to be configured as a **"Send mail as" alias** in the deploying Gmail account (Settings → Accounts → Send mail as). Without the alias, Gmail silently falls back to the deploying account address.
-
-## Autonomy — main branch
-
-Diego has authorized Claude Code to proceed without prior confirmation for any git and clasp operation on `main`, mirroring the kis-app autonomy directive:
-
-- `git add`, `git commit`, `git push` on `main`
-- `clasp push --force` (from `backend/`)
-- `clasp deploy --deploymentId AKfycbyzyAR6J3_2UAiE6tCyNHVawoGfMNNbZEaurp99cRI76IYbiqGVEeQQcTxsgAqUFnGk0w -d "..."`
-
-Still requires confirmation:
-- `clasp create` (new GAS project)
-- Creating a new deployment (would change the URL)
+⛔ **Con dos manos sobre el mismo árbol, el pathspec va en el `commit`, no solo en el `add`:**
+`git commit -m "…" -- <rutas>`. Un `git add <ruta> && git commit -m` se lleva **el índice ENTERO**, con
+lo que otra mano haya dejado preparado.
