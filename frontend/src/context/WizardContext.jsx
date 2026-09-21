@@ -94,6 +94,15 @@ export const REFRESCO_UMBRAL_S = Math.round(STEPUP_WINDOW_MS / 2 / 1000);
 // contador ya se reinició y nunca se baja de este umbral.
 export const AVISO_ANTES_S = 120;
 
+// 2026-09-15/21 (`sigo-aqui-llega-tarde`) — EL BOTÓN NECESITA SU PROPIO PLAZO, más corto
+// que la ventana de aviso a la que sirve. `gasCall` no corta hasta los 240.000 ms, y un
+// viaje real medido llegó a tardar 60.919 ms muriendo en transporte: sin plazo propio el
+// botón se queda en «Comprobando…» mientras el reloj de `AVISO_ANTES_S` (120 s) sigue
+// bajando hacia cero, perdiendo la carrera contra la ventana que intenta salvar. 30 s deja
+// margen sobre el viaje típico (~15 s de salto GAS→KMS) sin fingir que fue seguro y sin
+// consumir la mitad del aviso.
+export const REFRESCO_SIGO_AQUI_TOPE_MS = 30 * 1000;
+
 // Wizard canónico — 11 steps per roadmap (docs/kms/plan/wizard-admissions-roadmap.md
 // líneas 17-27 + DL-E24 §3 + DL-E27 + DL-E28). NO inventar pasos extra.
 // #11 (catálogo único de nombres de pasos): la lista STEPS que vivía aquí duplicaba
@@ -963,6 +972,13 @@ export function WizardProvider({ children }) {
   // aquí solo se INFORMA, nunca se cierra el asistente por ello).
   const [refrescoEnVuelo, setRefrescoEnVuelo] = useState(false);
   const [refrescoUltimoFallo, setRefrescoUltimoFallo] = useState(false);
+  // Secuencia de la pulsación EN VUELO. No se aborta el viaje real (podría seguir
+  // extendiendo la ventana de verdad, y perderlo sin necesidad sería peor que esperar de
+  // más): lo que hace el plazo propio es dejar de BLOQUEAR el botón por él. Una pulsación
+  // posterior sube la secuencia, y la respuesta tardía de la anterior ya no toca el
+  // acuse de recibo (`refrescoEnVuelo`/`refrescandoVentana`) de la nueva — solo aplica su
+  // resultado sobre la ventana, que es siempre válido aunque llegue tarde.
+  const refrescoSeqRef = useRef(0);
   const touchActivity = useCallback(() => {
     const ahora = Date.now();
     setLastActivityAt(ahora);
@@ -979,15 +995,32 @@ export function WizardProvider({ children }) {
     refrescandoVentana.current = true;
     setRefrescoEnVuelo(true);
     setRefrescoUltimoFallo(false);
+    const miSeq = ++refrescoSeqRef.current;
+    const esLaVigente = () => refrescoSeqRef.current === miSeq;
+    const propioPlazo = setTimeout(() => {
+      // Sigue sin contestar pasado el plazo propio: se suelta el botón y se DICE que no
+      // se pudo comprobar a tiempo — nunca se da la ventana por perdida (eso solo lo
+      // decide STEPUP_REQUIRED) ni se inventa un «sí» que el servidor no ha dado.
+      if (!esLaVigente()) return;
+      refrescandoVentana.current = false;
+      setRefrescoEnVuelo(false);
+      setRefrescoUltimoFallo(true);
+      log.warn(`step-up: sin respuesta a los ${REFRESCO_SIGO_AQUI_TOPE_MS} ms propios — se libera el botón`);
+    }, REFRESCO_SIGO_AQUI_TOPE_MS);
     refrescarVentana(resumeTokenRef.current, {
       n: recoveryNonceRef.current, recoveredEmail: recoveredEmailRef.current,
     })
       .then((r) => {
+        clearTimeout(propioPlazo);
         const s = Number(r && r.step_up_restante_s) || 0;
         setStepUpVerifiedUntil(Date.now() + (s > 0 ? s * 1000 : STEPUP_WINDOW_MS));
         if (r && r.step_up_cierre) setStepUpCierre(r.step_up_cierre);
+        // Llegó tarde (después del plazo propio) pero SÍ cuadró: si nadie ha vuelto a
+        // pulsar desde entonces, se retira el aviso de «no se pudo» que el plazo dejó.
+        if (esLaVigente()) setRefrescoUltimoFallo(false);
       })
       .catch((e) => {
+        clearTimeout(propioPlazo);
         // El servidor dice que ya no hay ventana que estirar → se re-sincroniza el
         // espejo a «caducado» y el gate de entrada se cierra para TODA la UI, en vez de
         // dejar una pantalla abierta que el siguiente guardado va a rechazar igual.
@@ -999,9 +1032,15 @@ export function WizardProvider({ children }) {
         // Cualquier otro fallo (red, servidor caído) NO toca el espejo: un corte de red
         // no es motivo para echar a nadie de su solicitud. Pero SÍ se informa — antes se
         // tragaba en silencio y el clic parecía no haber hecho nada.
-        setRefrescoUltimoFallo(true);
+        if (esLaVigente()) setRefrescoUltimoFallo(true);
       })
-      .finally(() => { refrescandoVentana.current = false; setRefrescoEnVuelo(false); });
+      .finally(() => {
+        // Si ya hay una pulsación MÁS NUEVA en vuelo, su propio acuse de recibo manda:
+        // tocarlo aquí desbloquearía el botón por un viaje que no es el suyo.
+        if (!esLaVigente()) return;
+        refrescandoVentana.current = false;
+        setRefrescoEnVuelo(false);
+      });
   }, []);
 
   // Tras un verifyEmail({stepup:true}) OK → step-up fresco durante 10 min.

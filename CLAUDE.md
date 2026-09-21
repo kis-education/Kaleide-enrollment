@@ -285,6 +285,17 @@ re-acuñar con los datos del llamante permitiría que una recarga se estirara so
 `visibilitychange` ni `focus`: una pestaña que vuelve al primer plano **no es actividad**. Lo afirma
 `comprobar-verja-publica`.
 
+**El botón «sigo aquí» tiene SU PROPIO plazo, más corto que la ventana de aviso a la que sirve**
+(`REFRESCO_SIGO_AQUI_TOPE_MS`, 30 s, `WizardContext.jsx` → `touchActivity`): `gasCall` no corta
+hasta los 240 s, así que sin este plazo el botón podía quedarse en «Comprobando…» mientras el
+reloj de `AVISO_ANTES_S` (120 s) bajaba hacia cero — perdiendo la carrera contra la propia ventana
+que intentaba salvar. Al agotarse, **suelta el botón y avisa por el camino YA EXISTENTE**
+(`refrescoUltimoFallo`): nunca inventa un «sí» ni da la ventana por perdida — eso sigue
+decidiéndolo únicamente `STEPUP_REQUIRED`. El viaje real **no se aborta**: sigue en vuelo y, si
+vuelve tarde, aplica su resultado igual (extiende la ventana, o retira el aviso si al final
+cuadró). Una secuencia (`refrescoSeqRef`) evita que la respuesta tardía de una pulsación pise el
+acuse de recibo de una más nueva.
+
 **Los dos frenos:** con la ventana medio llena (`REFRESCO_UMBRAL_S`) no se llama —si sobra tiempo no
 hay nada que reiniciar, y la petición en vuelo al cambiar de pantalla producía un `network/fetch
 error` que no era de la familia—; y por encima, como mucho una llamada por minuto **salvo en los dos
