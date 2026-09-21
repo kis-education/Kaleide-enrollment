@@ -4162,6 +4162,8 @@ async function caminoLaSaludNoSeDisfrazaDeVacia(page, base) {
       await page.waitForTimeout(250)
     }
     const donde = await dondeEstoy(page)
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos
     if (!c.afirmar('se llega al paso de Salud pulsando «Atrás»', donde === 3,
       `se quedó en el índice ${donde}`)) return c
     await desbloquear(page)
