@@ -47,15 +47,47 @@ export default function AvisoDeVentana() {
   // vería una pantalla que ya no sirve: el primer guardado que intentase sería rechazado.
   // Es una REVOCACIÓN, nunca una extensión — solo actúa sobre lo que el espejo local ya
   // da por caducado, y el servidor sigue siendo quien manda.
+  //
+  // ★ 2026-09-22 (Diego, con captura del paso 4: contador 0:44 y botón en «Comprobando…»:
+  // *«Me sigue sacando aunque pulse que sigo aquí. No sé por qué no es inmediato.»*) —
+  // EL CERO NO ECHA A NADIE MIENTRAS HAY UNA PREGUNTA EN VUELO. Quien le echaba era su
+  // PROPIO navegador: el cartel sale a 120 s (`AVISO_ANTES_S`), el clic llega a los ~44 s
+  // y el viaje del «sigo aquí» cuesta lo que cuesta Apps Script (5.070 ms en un caso
+  // medido, 60.919 ms en otro), así que el reloj local llegaba a cero ANTES de que
+  // volviese la respuesta — cuando el servidor YA había escrito la marca nueva y venía a
+  // contestar `step_up_restante_s: 600`. Se revocaba el espejo y salía la verja sobre una
+  // ventana que estaba viva.
+  //
+  // La espera está ACOTADA POR CONSTRUCCIÓN: el botón tiene su propio plazo de 30 s
+  // (`REFRESCO_SIGO_AQUI_TOPE_MS`), que suelta `refrescoEnVuelo` pase lo que pase ⇒ como
+  // mucho la revocación se retrasa 30 s más allá del cero, nunca indefinidamente. Y en
+  // cuanto deja de haber pregunta en vuelo se decide con lo que haya: si la ventana se
+  // repuso, `restante` ya es > 0 y no se revoca nada; si no, se revoca como siempre.
+  //
+  // ⛔ ESTO NO AFLOJA NADA DEL SUELO. El servidor sigue siendo quien manda: toda mutación
+  // pasa por `assertStepUpFresh_`, y un `STEPUP_REQUIRED` sigue poniendo el espejo a cero
+  // por el `catch` que ya existe en `touchActivity`. Lo único que se retrasa es el espejo
+  // LOCAL, y solo mientras hay en vuelo la pregunta cuyo resultado lo decide.
   useEffect(() => {
+    if (refrescoEnVuelo) return;   // hay una pregunta en vuelo: su respuesta es quien decide
     if (restante !== null && restante <= 0) revokeStepUpFresh();
-  }, [restante, revokeStepUpFresh]);
+  }, [restante, refrescoEnVuelo, revokeStepUpFresh]);
 
   if (restante === null) return null;
-  if (restante <= 0 || restante > AVISO_ANTES_S) return null;
+  // Mientras se espera esa respuesta con el reloj ya en cero, el cartel NO se desmonta ni
+  // se queda enseñando un «0:00» mudo: sigue diciendo que se está comprobando, que es lo
+  // único cierto en ese instante. El botón ya lo dice por su lado (`aviso_comprobando`);
+  // lo que faltaba era que el TEXTO no afirmara un cero que todavía no está decidido.
+  const esperandoRespuesta = refrescoEnVuelo && restante <= 0;
+  if (restante <= 0 && !esperandoRespuesta) return null;
+  if (restante > AVISO_ANTES_S) return null;
 
-  const min = Math.floor(restante / 60);
-  const seg = restante % 60;
+  // Se capa a cero: con una pregunta en vuelo `restante` puede haber pasado de cero, y un
+  // reloj en negativo («-1:-3») no lo lee nadie. Ese caso no pinta el reloj, pero el valor
+  // se calcula igualmente y no puede quedar en una forma que no signifique nada.
+  const restanteAPintar = Math.max(0, restante);
+  const min = Math.floor(restanteAPintar / 60);
+  const seg = restanteAPintar % 60;
   const reloj = `${min}:${String(seg).padStart(2, '0')}`;
 
   // ★ 2026-08-20 (Diego: *«es importante avisar que se va a cerrar por seguridad»*) — DOS avisos,
@@ -73,6 +105,7 @@ export default function AvisoDeVentana() {
     <div
       data-testid="aviso-ventana"
       data-cierre={porTecho ? 'TECHO' : 'INACTIVIDAD'}
+      data-esperando={esperandoRespuesta ? '1' : '0'}
       role="status"
       style={{
         position: 'fixed', left: 16, right: 16, bottom: 16, zIndex: 1080,
@@ -87,7 +120,9 @@ export default function AvisoDeVentana() {
         style={{ color: '#8a6d00', fontSize: '1.2rem' }}
       />
       <span style={{ flex: 1, minWidth: 200, fontSize: '0.9rem', color: '#5f4b00' }}>
-        {t(porTecho ? 'stepup.aviso_techo' : 'stepup.aviso_ventana', { reloj })}
+        {esperandoRespuesta
+          ? t('stepup.aviso_esperando')
+          : t(porTecho ? 'stepup.aviso_techo' : 'stepup.aviso_ventana', { reloj })}
         {/* 0º.tricies.quater — cuando el techo está a punto de alcanzarse el clic SÍ
             extiende, pero por un margen que a simple vista es imperceptible (el número
             sigue bajando casi igual), y hasta que esa respuesta no vuelve la pantalla

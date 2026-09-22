@@ -432,7 +432,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, refrescoDemoraMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -888,7 +888,17 @@ function startServer() {
           // guardado disparado al ocultarse la pantalla ENTRA POR LA COLA y no la adelanta.
           // Sin eso, la comprobación del orden pasaría en vacío.
           : (payload && payload.action === 'saveStep')
-          ? Number(scenario.saveStepDemoraMs || 0) : 0
+          ? Number(scenario.saveStepDemoraMs || 0)
+          // 2026-09-22 (`sigo-aqui-pierde-la-carrera`) — el «sigo aquí» puede pedir SU PROPIA
+          // demora. Es la única forma honesta de reproducir el caso de Diego: el viaje del
+          // refresco cuesta lo que cuesta Apps Script (5.070 ms en un caso medido, 60.919 ms
+          // en otro) y el reloj LOCAL llega a cero antes de que vuelva la respuesta. ⚠️ El
+          // manejador se despacha AL RECIBIR la petición (la demora solo retrasa la
+          // RESPUESTA), así que la marca del servidor queda extendida desde el primer
+          // instante — que es exactamente lo que pasa de verdad y lo que hace que el defecto
+          // sea «el cliente se echa a sí mismo con la ventana ya viva».
+          : (payload && payload.action === 'refrescarVentana')
+          ? Number(scenario.refrescoDemoraMs || 0) : 0
         setTimeout(() => responder(out), LATENCY + extra)
       })
       return
@@ -9595,6 +9605,31 @@ async function caminoVentanaPorInactividad(page, base) {
   const c = new Camino('ventana-por-inactividad')
   scenario.stage = 'hasta_preguntas'
 
+  // ── MEDICIÓN CIEGA · lo que la FASE H mide tiene que EXISTIR CON SU NOMBRE ───────────
+  // Una comprobación que mira por un nombre que ya no está no sale roja: sale VERDE sin
+  // haber mirado nada, que es el peor de los resultados. Se comprueba contra el FUENTE.
+  const FUENTES_VENTANA = [
+    ['frontend/src/components/AvisoDeVentana.jsx', /if \(refrescoEnVuelo\) return;/],
+    ['frontend/src/components/AvisoDeVentana.jsx', /\besperandoRespuesta\b/],
+    ['frontend/src/components/AvisoDeVentana.jsx', /data-esperando/],
+    ['frontend/src/components/AvisoDeVentana.jsx', /stepup\.aviso_esperando/],
+    ['frontend/src/context/WizardContext.jsx', /\bsincronizarVentanaStepUp\b/],
+    ['frontend/src/context/WizardContext.jsx', /\bREFRESCO_SIGO_AQUI_TOPE_MS\b/],
+    ['frontend/src/pages/WizardPage.jsx', /sincronizarVentanaStepUp\(data && data\.step_up_restante_s/],
+    ['frontend/public/locales/es/translation.json', /"stepup\.aviso_esperando"/],
+    ['frontend/public/locales/en/translation.json', /"stepup\.aviso_esperando"/],
+  ]
+  const ausentesVentana = []
+  for (const [rel, re] of FUENTES_VENTANA) {
+    let txt = ''
+    try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+    if (!re.test(txt)) ausentesVentana.push(`${rel} :: ${re.source}`)
+  }
+  if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+    ausentesVentana.length === 0,
+    `no se encontró en el fuente: ${ausentesVentana.join(' · ')} — el recorrido NO puede medir lo ` +
+    `que dice medir, así que NO puede salir verde`)) return c
+
   if (REAL) {
     // Contra el sistema de verdad la ventana son 10 minutos de reloj y el código llega a
     // un buzón que este arnés no lee. No se afloja nada para que la prueba pase.
@@ -9630,6 +9665,9 @@ async function caminoVentanaPorInactividad(page, base) {
     scenario.ventanaViva = false
     scenario.ventanaMs = 0
     scenario.techoMs = 0
+    scenario.refrescoDemoraMs = 0
+    scenario.liveVersion = 1
+    scenario.hidratacionRechazada = null
   }
 
   /** ¿Está el asistente abierto (pasos pintados) o cerrado tras la verja del código? */
@@ -9995,6 +10033,152 @@ async function caminoVentanaPorInactividad(page, base) {
         seBloqueoTrasTecho,
         'llegó a modo TECHO y el contador a cero, pero el asistente se quedó abierto: la pantalla prometía un bloqueo que no ejecutaba')
     }
+
+    // ══ FASE H · EL «SIGO AQUÍ» NO PIERDE LA CARRERA CONTRA SU PROPIO RELOJ ════════════
+    // Diego, 2026-09-22, con captura del paso 4 (contador 0:44, botón en «Comprobando…»):
+    // *«Me sigue sacando aunque pulse que sigo aquí. No sé por qué no es inmediato.»*
+    //
+    // Quien le echaba era su PROPIO navegador, con la ventana YA extendida en el servidor:
+    // el cartel sale a 120 s, el clic llega a los ~44 s y el viaje cuesta lo que cuesta
+    // Apps Script (5.070 ms medidos en un caso, 60.919 ms en otro) ⇒ el reloj local llegaba
+    // a cero ANTES que la respuesta y `AvisoDeVentana` revocaba el espejo sin mirar si había
+    // una pregunta en vuelo. `scenario.refrescoDemoraMs` reproduce exactamente esa carrera.
+    //
+    // ⚠️ El reloj se COMPRIME, el mecanismo no (mismo motivo escrito en la cabecera del
+    // camino): lo que se afirma es la DECISIÓN del navegador, no los segundos del viaje.
+    const avisoH = () => page.evaluate(() => {
+      const el = document.querySelector('[data-testid="aviso-ventana"]')
+      if (!el) return null
+      return { cierre: el.getAttribute('data-cierre'),
+               esperando: el.getAttribute('data-esperando'),
+               texto: el.innerText.trim(),
+               haySigo: !!el.querySelector('[data-testid="aviso-ventana-sigo"]') }
+    })
+    const pulsarSigoAqui = () => page.evaluate(() => {
+      const b = document.querySelector('[data-testid="aviso-ventana-sigo"]')
+      if (b && !b.disabled) b.click()
+    })
+
+    // ── H.1 · con el clic EN VUELO y el reloj en cero, la verja NO se monta ───────────
+    scenario.refrescoDemoraMs = 0
+    scenario.techoMs   = 600000   // el techo lejísimos: aquí manda la INACTIVIDAD
+    scenario.ventanaMs = 12000
+    if (!c.afirmar('la familia entra por octava vez, para medir la carrera del «sigo aquí»',
+      await entrarConElCodigo('h'), 'el asistente no se pintó en el octavo pase')) return c
+    if (!c.afirmar('sale el aviso de los dos minutos, con su botón',
+      await page.waitForFunction(() => !!document.querySelector('[data-testid="aviso-ventana-sigo"]'),
+        null, { timeout: 15000 }).then(() => true).catch(() => false),
+      'no salió el aviso con botón: sin él no hay carrera que medir')) return c
+
+    // El servidor devolverá la ventana ENTERA (por encima del umbral del aviso), y tardará
+    // MÁS de lo que queda de reloj: el cero local llega primero, que es el caso de Diego.
+    scenario.ventanaMs = 130000
+    scenario.refrescoDemoraMs = 20000
+    await pulsarSigoAqui()
+
+    const llegoACero = await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-testid="aviso-ventana"]')
+        return !!(el && el.getAttribute('data-esperando') === '1')
+      }, null, { timeout: 25000 }).then(() => true).catch(() => false)
+    const enCero = llegoACero ? await pantalla() : null
+    const carteEnCero = llegoACero ? await avisoH() : null
+    c.afirmar('(16) con el «sigo aquí» EN VUELO y el reloj ya en cero, la verja NO se monta',
+      llegoACero && !!enCero && enCero.hayPasos && !enCero.hayVerja,
+      llegoACero
+        ? `el asistente se cerró con la pregunta todavía en vuelo (pasos=${enCero && enCero.pasos}, verja=${enCero && enCero.hayVerja}): es el navegador echando a la familia de una ventana que el servidor ya había extendido`
+        : 'el reloj nunca llegó a cero con el clic en vuelo: esta fase no llegó a medir la carrera')
+    c.afirmar('(16.bis) y el cartel NO se queda enseñando un cero mudo: dice que se está comprobando',
+      !!carteEnCero && carteEnCero.esperando === '1' && !/\d:\d\d/.test(carteEnCero.texto)
+        && carteEnCero.texto.length > 0,
+      `el cartel en ese instante decía «${carteEnCero && carteEnCero.texto}»: con el reloj en cero y la respuesta sin llegar, un contador a cero afirma algo que todavía no está decidido`)
+
+    // ── H.2 · cuando la respuesta llega con ventana, se sigue dentro y el cartel se va ──
+    const siguioDentro = await page.waitForFunction(
+      () => !document.querySelector('[data-testid="aviso-ventana"]')
+            && !!document.querySelector('.wizard-step')
+            && !document.querySelector('input[autocomplete="one-time-code"]'),
+      null, { timeout: 25000 }).then(() => true).catch(() => false)
+    const trasVolver = await pantalla()
+    c.afirmar('(17) al volver la respuesta con ventana, la familia SIGUE dentro y el cartel se retira',
+      siguioDentro && trasVolver.hayPasos && !trasVolver.hayVerja && !trasVolver.hayAviso,
+      `tras volver el refresco la pantalla estaba pasos=${trasVolver.hayPasos} verja=${trasVolver.hayVerja} aviso=${trasVolver.hayAviso}: el clic surtió efecto en el servidor y el navegador no se enteró`)
+
+    // ── H.3 · si el refresco MUERE, el plazo propio de 30 s SÍ cierra ─────────────────
+    // La revocación se RETRASA, no se anula. `REFRESCO_SIGO_AQUI_TOPE_MS` son 30 s: pasados,
+    // `touchActivity` suelta el botón pase lo que pase y el cero vuelve a echar el candado.
+    scenario.ventanaMs = 9000
+    scenario.refrescoDemoraMs = 0
+    if (!c.afirmar('la familia entra por novena vez, para medir que el retraso está ACOTADO',
+      await entrarConElCodigo('i'), 'el asistente no se pintó en el noveno pase')) return c
+    if (!c.afirmar('vuelve a salir el aviso con su botón',
+      await page.waitForFunction(() => !!document.querySelector('[data-testid="aviso-ventana-sigo"]'),
+        null, { timeout: 15000 }).then(() => true).catch(() => false),
+      'no salió el aviso con botón en el noveno pase')) return c
+    // Una respuesta que NO va a llegar a tiempo de decidir nada (38 s > los 30 s del plazo).
+    scenario.refrescoDemoraMs = 38000
+    await pulsarSigoAqui()
+    const cerroPeseAlVuelo = await page.waitForFunction(
+      () => !!document.querySelector('input[autocomplete="one-time-code"]'),
+      null, { timeout: 40000 }).then(() => true).catch(() => false)
+    c.afirmar('(18) si el refresco muere y se agota el plazo propio de 30 s, el asistente SÍ se cierra',
+      cerroPeseAlVuelo,
+      'con el refresco sin contestar el asistente se quedó abierto indefinidamente: esperar a la respuesta no puede convertirse en no cerrar nunca — la revocación se retrasa, no se anula')
+    scenario.refrescoDemoraMs = 0
+
+    // ── H.4 · el modo TECHO llegado POR EL PULSO retira el botón ──────────────────────
+    // ⚠️ AISLADO A PROPÓSITO: el pulso encadena una re-hidratación (DL-E63) que TAMBIÉN
+    // trae `step_up_cierre`, así que sin aislarla esta afirmación pasaría en vacío — pasaría
+    // igual aunque el pulso siguiera tirando lo que `getAdmissionState` le dice. Cómo se
+    // aísla, más abajo: se RECHAZA esa re-hidratación y el rechazo se DECLARA.
+    scenario.ventanaMs = 20000
+    scenario.techoMs   = 26000    // el techo por delante de la ventana ⇒ NACE en INACTIVIDAD
+    if (!c.afirmar('la familia entra por décima vez, con el techo por delante',
+      await entrarConElCodigo('j'), 'el asistente no se pintó en el décimo pase')) return c
+    const naceJ = await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-testid="aviso-ventana"]')
+        return el ? { cierre: el.getAttribute('data-cierre'),
+                      haySigo: !!el.querySelector('[data-testid="aviso-ventana-sigo"]') } : null
+      }, null, { timeout: 20000 }).then(h => h.jsonValue()).catch(() => null)
+    if (!c.afirmar('(19) nace en INACTIVIDAD y con botón — el techo todavía no obliga',
+      !!naceJ && naceJ.cierre === 'INACTIVIDAD' && naceJ.haySigo === true,
+      `el aviso nació como ${JSON.stringify(naceJ)}: si ya nace en TECHO esta afirmación pasaría en vacío`)) return c
+
+    // El servidor pasa a modo TECHO sin que vuelva ningún «sigo aquí»: el refresco extiende
+    // (y CAPA contra el techo, que es lo que lo pone en TECHO) pero su respuesta tarda tanto
+    // que no puede ser ella quien lo cuente. Quien tiene que contarlo es el PULSO.
+    scenario.ventanaMs = 600000       // el refresco capará contra el techo ⇒ exp = techo
+    scenario.refrescoDemoraMs = 25000 // …y su `.then` no llega a tiempo de decidir nada
+    await pulsarSigoAqui()
+    await page.waitForTimeout(600)
+    // El AISLAMIENTO: se RECHAZA la re-hidratación que el pulso encadena. Con ella viva,
+    // `hydrateFromResume` llama a `markStepUpFresh(restante, cierre)` (`WizardContext.jsx`,
+    // rama `if (data.step_up_fresh)`) y traería el cierre por su cuenta ⇒ la afirmación (20)
+    // pasaría igual aunque el pulso siguiera tirando lo que `getAdmissionState` le dice.
+    // ⚠️ Medido antes de elegir esta vía: la rama `tecleando` del propio pulso NO servía aquí
+    // porque esta pantalla no tiene ni un campo (`{todos:0, candidatos:0, pasos:11}` — los
+    // once `.wizard-step` son la navegación, no el formulario).
+    // El rechazo se DECLARA como error de consola esperado, y esa declaración es la que
+    // acredita que el aislamiento ocurrió: si no llega, el camino cae.
+    c.esperarErrorConsola(/gasCall hydrateSession: server returned ok=false/,
+      'la re-hidratación que el pulso encadena se rechaza a propósito para aislar QUIÉN aplica el modo de cierre')
+    scenario.hidratacionRechazada = 'KMS_NOT_CONFIGURED'
+    scenario.liveVersion = 11         // el KMS bumpa la versión ⇒ el pulso pide el DETALLE
+    await latirLaVentana(page)
+    const trasElPulso = await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-testid="aviso-ventana"]')
+        return (el && el.getAttribute('data-cierre') === 'TECHO')
+          ? { cierre: 'TECHO', haySigo: !!el.querySelector('[data-testid="aviso-ventana-sigo"]') }
+          : null
+      }, null, { timeout: 15000 }).then(h => h.jsonValue()).catch(() => null)
+    c.afirmar('(20) una respuesta con `step_up_cierre: TECHO` llegada POR EL PULSO retira el botón',
+      !!trasElPulso && trasElPulso.haySigo === false,
+      `tras el latido el aviso estaba ${JSON.stringify(trasElPulso)}: el pulso está tirando el \`step_up_cierre\` que el servidor ya le manda, así que el cartel sigue ofreciendo quedarse cuando el techo ya lo ha vaciado de sentido`)
+    scenario.hidratacionRechazada = null
+    scenario.refrescoDemoraMs = 0
+    scenario.liveVersion = 1
 
     // El camino termina con el asistente BLOQUEADO, o sea con la verja recién montada y su
     // precalentado (`warmSession`) en vuelo. Cerrar el contexto ahí lo ABORTA y la aplicación

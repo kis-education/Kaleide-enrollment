@@ -317,6 +317,30 @@ comprobación sería una segunda fuente de verdad. **El botón acusa recibo siem
 refresco está en vuelo se deshabilita y dice «Comprobando…»; si falla por algo que **no** es
 `STEPUP_REQUIRED`, lo dice y **no cierra nada**.
 
+⛔ **Y EL CERO NO ECHA A NADIE MIENTRAS HAY UNA PREGUNTA EN VUELO.** El cartel sale a 120 s y el
+viaje del «sigo aquí» cuesta lo que cuesta Apps Script, así que el reloj LOCAL llegaba a cero antes
+que la respuesta y `AvisoDeVentana` revocaba el espejo **con la ventana ya extendida en el
+servidor** — quien echaba a la familia era su propio navegador. Hoy el efecto de revocación **sale
+sin hacer nada mientras `refrescoEnVuelo`**, y decide en cuanto deja de serlo: si la ventana se
+repuso no revoca, y si no, revoca como siempre. **La espera está ACOTADA por construcción** por el
+plazo propio del botón (`REFRESCO_SIGO_AQUI_TOPE_MS`, 30 s), que lo suelta pase lo que pase.
+Mientras espera, el cartel **no enseña un «0:00» mudo**: dice que se está comprobando
+(`stepup.aviso_esperando`, los dos idiomas). ⛔ **No afloja NADA del suelo**: toda mutación sigue
+pasando por `assertStepUpFresh_` y un `STEPUP_REQUIRED` sigue poniendo el espejo a cero; lo único
+que se retrasa es el espejo LOCAL, y solo mientras vuela la pregunta que lo decide.
+
+**El PULSO deja de tirar lo que el servidor ya le dice.** `getAdmissionState` devuelve
+`step_up_restante_s` y `step_up_cierre`, y el pulso los descartaba ⇒ `stepUpCierre` solo se movía
+en la hidratación, al teclear el código o cuando volvía un «sigo aquí»; si ninguno volvía, el
+cartel seguía ofreciendo el botón con el techo ya alcanzado. Hoy los aplica
+`sincronizarVentanaStepUp` (`WizardContext.jsx`). ⛔ **NI UN VIAJE MÁS** —se aprovecha la respuesta
+que ya llega; el pulso sigue siendo de dos etapas— y ⛔ **NO desliza la ventana** (SEC-STEPUP #55):
+el sincronizador **SOLO puede ACORTAR** (toma el mínimo entre lo que el espejo creía y
+`ahora + restante_s`) y **sin espejo vivo no resucita nada**. ⚠️ **Límite honesto:** el detalle solo
+se pide cuando SUBE la versión del expediente, así que con una solicitud quieta el modo de cierre
+puede seguir tardando en corregirse; traerlo por la llamada barata tocaría el servidor y está
+**propuesto, no construido**.
+
 ⛔ **La caducidad se capa al techo** (`min(ahora + 10 min, techo)`): cerca del final la ventana se
 recorta sola y el refresco acaba devolviendo 0 ⇒ `STEPUP_REQUIRED`. **UN SOLO CORTE** en el extensor
 (`if (nuevaExp <= ahora) return 0;`).

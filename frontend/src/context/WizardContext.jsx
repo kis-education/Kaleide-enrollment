@@ -1075,6 +1075,47 @@ export function WizardProvider({ children }) {
     });
   }, []);
 
+  // ★ 2026-09-22 — SINCRONIZAR el espejo con lo que el servidor YA está diciendo en una
+  // lectura que de todas formas iba a llegar (`getAdmissionState`, desde el pulso).
+  //
+  // El defecto que cierra: `step_up_restante_s` y `step_up_cierre` viajan en esa respuesta
+  // y el pulso los TIRABA. `stepUpCierre` solo se actualizaba en `markStepUpFresh`
+  // (hidratación / verificación del código) y en el `.then` del refresco ⇒ si ningún «sigo
+  // aquí» volvía, el cartel seguía ofreciendo el botón aunque el techo de 2 h ya lo hubiera
+  // vaciado de sentido: prometiendo algo que no puede dar, que es justo lo que el modo
+  // TECHO existe para evitar.
+  //
+  // ⛔ NO ES DESLIZAR LA VENTANA (SEC-STEPUP #55), y por eso SOLO PUEDE ACORTAR:
+  //   · el tope que se aplica es `ahora + restante_s`, medido cuando la respuesta LLEGA;
+  //   · se toma el MÍNIMO con lo que el espejo ya creía, así que esta función jamás puede
+  //     hacer que el espejo afirme más tiempo del que afirmaba antes — ni más del que el
+  //     servidor acaba de decir. Sin ese mínimo, una respuesta que tardase en volver
+  //     movería el vencimiento hacia adelante por el mero hecho de haber viajado.
+  //   · con el espejo ya a cero NO se resucita nada: se sale sin tocarlo.
+  // Quien EXTIENDE sigue siendo `refrescarVentana` («sigo aquí»), y quien lo autoriza sigue
+  // siendo el servidor; `getAdmissionState_` LEE la marca y jamás llama a
+  // `_extenderVentanaStepUp_` — lo vigila `comprobar-verja-publica.mjs`.
+  //
+  // ⛔ Y NO SE FUERZA NINGUNA LLAMADA NUEVA: se aprovecha la respuesta que ya llega. El
+  // pulso es de dos etapas a propósito (`getLiveStateVersion` barato; el detalle solo
+  // cuando la versión sube), y pedir el detalle por el reloj reabriría lo que `0º.octies`
+  // cerró.
+  //
+  // ⚠️ LÍMITE HONESTO: como el detalle solo se pide cuando SUBE la versión del expediente,
+  // con una solicitud quieta el modo de cierre puede seguir tardando en corregirse. Traerlo
+  // por la llamada barata (`getLiveStateVersion`) tocaría el servidor y NO es de este
+  // cambio.
+  const sincronizarVentanaStepUp = useCallback((restanteS, cierre) => {
+    if (cierre) setStepUpCierre(cierre);
+    const s = Number(restanteS);
+    if (!Number.isFinite(s)) return;              // el servidor no lo dijo → no se inventa
+    const tope = Date.now() + Math.max(0, s) * 1000;
+    setStepUpVerifiedUntil(prev => {
+      if (!prev) return prev;                     // sin espejo vivo no se resucita nada
+      return Math.min(prev, tope);                // SOLO acorta — nunca estira
+    });
+  }, []);
+
   // True si el step-up sigue fresco. ★ SEC-STEPUP: ventana DURA (no deslizante):
   // `stepUpVerifiedUntil` se fija una sola vez en markStepUpFresh (OTP/gracia) y
   // caduca a los 10 min sin extensión por uso — espejo EXACTO del servidor. Función
@@ -1907,6 +1948,7 @@ export function WizardProvider({ children }) {
       formaDePagoMarcada, setFormaDePagoMarcada, // 0º.vicies.sexies: la marca del paso 7, solo en el navegador
       leerSimulacionMemo, guardarSimulacionMemo, olvidarSimulacionMemo, // 0º.tricies.quindecies: la simulación del paso 7 sobrevive al desmontaje
       isStepUpFresh, markStepUpFresh, revokeStepUpFresh, touchActivity, // DL-E39 step-up PII-primero + #30 espejo revocable
+      sincronizarVentanaStepUp,                         // 2026-09-22: el pulso deja de tirar lo que el servidor ya dice (SOLO acorta)
       stepUpVerifiedUntil,                              // 2026-08-20: hasta cuándo, para el aviso de los dos minutos
       stepUpCierre,                                     // 2026-08-20: QUÉ lo cierra — 'INACTIVIDAD' | 'TECHO'
       refrescoEnVuelo, refrescoUltimoFallo,             // 0º.tricies.quater: el «sigo aquí» acusa recibo

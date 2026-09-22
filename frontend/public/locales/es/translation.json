@@ -514,6 +514,7 @@
   "stepup.aviso_ventana": "¿Sigues ahí? Por seguridad, la sesión se bloqueará en {{reloj}} y tendrás que pedir un código nuevo.",
   "stepup.aviso_sigo_aqui": "Sigo aquí",
   "stepup.aviso_comprobando": "Comprobando…",
+  "stepup.aviso_esperando": "Estamos comprobando si la sesión puede seguir abierta… No cierres esta página.",
   "stepup.aviso_no_se_pudo": "No hemos podido comprobarlo. Sigue tocando la pantalla y lo intentaremos de nuevo.",
   "stepup.gate_enter": "Acceder",
   "stepup.send_code": "Enviar código",

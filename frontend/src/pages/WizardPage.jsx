@@ -49,6 +49,7 @@ export default function WizardPage() {
     loadDocument,                               // STEP10-VIEWER: cache de docs del contexto
     billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2
     markStepUpFresh, revokeStepUpFresh, // #30: espejo local revocable (lock proactivo)
+    sincronizarVentanaStepUp,           // 2026-09-22: el pulso aplica el reloj y el modo de cierre que el servidor ya manda
     isStepUpFresh, recoveredViaMagicLink,
     otpAutoSentForRecovery, markOtpAutoSentForRecovery, // OTP-TRIGGER
     // `0º.tricies.nonies`: el hecho «ya se pidió el código» vive en el contexto porque la
@@ -275,6 +276,20 @@ export default function WizardPage() {
             .then(data => {
               log.info('[DBG pulse] getAdmissionState', { state_code: data && data.state_code, signing_ready: data && data.signing_ready, signing_status: data && data.signing_status, has_ctx: !!(data && data.signing_context) });
               refreshAdmissionState(data);     // SOLO slice admisión/firma — nunca datos/nav
+              // ★ 2026-09-22 — y el RELOJ de la ventana, que hasta hoy se TIRABA.
+              // `getAdmissionState` ya devuelve `step_up_restante_s` y `step_up_cierre`
+              // resueltos por el servidor, y aquí solo se aplicaba `refreshAdmissionState`
+              // ⇒ `stepUpCierre` únicamente se movía en la hidratación, al teclear el
+              // código o cuando volvía un «sigo aquí»: si ninguno volvía, el cartel seguía
+              // ofreciendo el botón aunque el techo de 2 h ya lo hubiera vaciado de
+              // sentido. Con esto, el modo TECHO llega en cuanto haya cualquier lectura de
+              // admisión.
+              // ⛔ NI UN VIAJE MÁS: se aprovecha la respuesta que YA llega. El pulso sigue
+              // siendo de dos etapas (`getLiveStateVersion` barato; el detalle solo cuando
+              // la versión sube), que es lo que `0º.octies` cerró.
+              // ⛔ NO desliza la ventana: el sincronizador SOLO puede ACORTAR el espejo
+              // local (ver `sincronizarVentanaStepUp` en WizardContext). Leer no extiende.
+              sincronizarVentanaStepUp(data && data.step_up_restante_s, data && data.step_up_cierre);
               setLiveVersion(v);               // avanza la baseline (no re-disparar el mismo cambio)
               // ── DL-E63 · y AHORA los DATOS, no solo el bloque de admisión ──────────────
               // Hasta hoy el latido era mudo y solo refrescaba admisión/firma (su propio

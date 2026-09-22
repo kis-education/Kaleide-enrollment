@@ -514,6 +514,7 @@
   "stepup.aviso_ventana": "Still there? For your security, this session will lock in {{reloj}} and you will need a new code.",
   "stepup.aviso_sigo_aqui": "I'm still here",
   "stepup.aviso_comprobando": "Checking…",
+  "stepup.aviso_esperando": "We are checking whether this session can stay open… Please don't close this page.",
   "stepup.aviso_no_se_pudo": "We couldn't check that. Keep using the page and we'll try again.",
   "stepup.gate_enter": "Enter",
   "stepup.send_code": "Send code",
