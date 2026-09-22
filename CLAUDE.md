@@ -94,14 +94,22 @@ se lo pide** (por el canal firmado que ya existe — no se abre un tercero).
 `recFiles`, `recScopes`) y las de ciclo de vida de la sesión (`enr.createApplicationSession`,
 `enr.renewApplicationSession`, `enr.abandonApplicationSession`, `enr.persistSubmitEnrollments`).
 **Excepción editor-only (P1-C allowlist)**: `manual_testApplicationEditRejectionOnSubmitted` +
-`manual_repairRequesterEmailLink` — no alcanzables desde el despachador público. El control
+`manual_repairRequesterEmailLink` — no alcanzables desde el despachador público, y **desde el
+2026-09-22 ni siquiera están en el proyecto**: viven en `backend/_manual.gs`, que no viaja. El control
 `comprobar-escrituras-directas` FALLA ante cualquier escritura nueva fuera de esa lista.
+⚠️ **Y ese control mira `backend/Code.js`, no `_manual.gs`** — lo mismo vale para
+`comprobar-personas-quitadas`, cuyo recuento de lecturas vigiladas bajó de **12 a 1** al mudarse las
+sondas. No es un agujero nuevo (lo mudado no es alcanzable desde internet **y ahora tampoco está
+arriba**), pero **se dice en vez de callarlo**: el día que una sonda vuelva a `Code.js`, vuelve a
+vigilarse; mientras esté en `_manual.gs`, no.
 
 ### ②17 — CERRADA: ninguna lectura directa a AppSheet es alcanzable desde internet
 
-**Medido el 2026-09-12 contra `origin/main`: quedan 43 lecturas directas (`appsheetRequest_`) y
-CERO en el camino vivo.** Las 43 viven **todas** en funciones `manual_*` de editor y en
-`adminCleanupOrphanSessions`, que **no está en el despachador**. Se recuenta con
+**Medido el 2026-09-12: quedaban 43 lecturas directas (`appsheetRequest_`) y CERO en el camino vivo**
+— todas en funciones `manual_*` de editor y en `adminCleanupOrphanSessions`, que **no está en el
+despachador**. **★ RE-MEDIDO el 2026-09-22, tras sacar las sondas del proyecto: en `backend/Code.js`
+quedan DOS, las dos dentro de `adminCleanupOrphanSessions`; las otras 41 se fueron con las sondas a
+`backend/_manual.gs`, que NO viaja** ⇒ ni siquiera están en el proyecto desplegado. Se recuenta con
 `grep -c 'appsheetRequest_(' backend/Code.js` **menos 1** (la definición); `appsheetRequestBatch_`
 se retiró entero — era un escritor genérico dormido en una superficie pública.
 
@@ -819,9 +827,28 @@ aparece en el selector del editor y no se puede ejecutar a mano, que es justo el
 convención. Los ayudantes privados de verdad **sí** lo llevan (`assertValidEmail_`,
 `requireResumeToken_`…). Comprobar con `grep -nE "^function manual_[a-zA-Z]+_\b"`.
 
-**Push vs deploy:** si el cambio es **solo** funciones `manual_*`, basta `clasp push --force` (el
-editor toma el código del Head). `clasp deploy` solo afecta a la URL pública, y su cuota diaria es
-limitada.
+⛔ **LAS SONDAS `manual_*` NO VIAJAN AL PROYECTO (2026-09-22).** Las 51 viven en
+`backend/_manual.gs`, que está en `backend/.claspignore` ⇒ **`clasp push` NO las sube y el despliegue
+no las lleva**. Apps Script ANALIZA EL PROYECTO ENTERO en cada ejecución, y eran **2.497 líneas, el
+17,1 % de `Code.js`**, que **ninguna familia invoca jamás** (medido: 74 apariciones de sus nombres
+fuera de su definición y **las 74 son TEXTO**; CERO llamadas). ⚠️ **Lo que eso vale, sin adornar:
+entre 0,3 y 0,7 s por llamada** — real y gratis, **y NO es lo que hace esperar a una familia**: eso
+son los VIAJES al KMS.
+
+**Para ejecutar una sonda, el ciclo de TRES órdenes** (el detalle, en la cabecera de `_manual.gs`):
+comentar la línea de `.claspignore` y `clasp push --force` · `clasp run manual_<la que toque>` ·
+restaurarla y **volver a subir**. ⛔ **La tercera NO es opcional y termina LEYENDO EL HEAD**: ahora
+que el fichero vive APARTE, `clasp push` **no borra del Head** lo que ya está arriba.
+
+⛔ **Y ANTES DE ESCRIBIR UNA `manual_*` NUEVA, pregúntate quién la va a llamar.** Sonda de
+diagnóstico → `_manual.gs`. **Tubería** que algo invoca por su NOMBRE (un disparador, un guion de
+publicación) → **tiene que viajar**, y va en un fichero de módulo aunque lleve el prefijo. Los dos
+nombres de disparador de este proyecto —`espejoRefrescarCopias` (①97) y el absorbente
+`wizardWarmTrigger`— **no son `manual_*` y se quedan en `Code.js`**: un disparador guarda el NOMBRE y,
+si desaparece del proyecto, **falla en silencio**.
+
+**Push vs deploy** (para lo que SÍ viaja): `clasp push --force` sube el Head; `clasp deploy` sobre el
+`deploymentId` de siempre es lo único que llega a las familias, y su cuota diaria es limitada.
 
 **`clasp run` contra este proyecto FUNCIONA** desde el 2026-09-14 (Diego le asignó su proyecto de
 Google Cloud). Se lanza con `NODE_USE_ENV_PROXY=1` desde `backend/`.
@@ -833,7 +860,8 @@ con `Logger.log`.
 comportamiento es **byte-idéntico**. Tres funciones **sin argumentos** (el botón «Ejecutar» del editor
 no pasa parámetros, y una sola `manual_trazarArranque(valor)` recibiría `undefined` y apagaría la traza
 justo al querer encenderla): `manual_trazarArranqueON` · `manual_trazarArranqueOFF` ·
-`manual_trazaDelArranque`. Las tres **releen la propiedad después de tocarla** — el «ok» de la
+`manual_trazaDelArranque`. ⛔ **Las tres viven en `_manual.gs` y NO están en el proyecto**: medir un
+arranque empieza por subirlas con el ciclo de tres órdenes de arriba, y **termina bajándolas**. Las tres **releen la propiedad después de tocarla** — el «ok» de la
 escritura no acredita nada. ⛔ **Lo capturado es la MISMA cadena que ya se registraba**: la garantía de
 que no hay datos de familia es estructural, no una promesa. Se vuelca **una vez al final** del
 `doPost`, para no falsear lo que mide.

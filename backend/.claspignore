@@ -1,0 +1,23 @@
+# LO QUE NO SE SUBE AL PROYECTO DE APPS SCRIPT DEL ASISTENTE.
+#
+# Apps Script ANALIZA EL PROYECTO ENTERO en cada ejecucion, y `_manual.gs` son 2.497 lineas
+# de sondas de diagnostico —el 17,1 % de `Code.js` antes de sacarlas— que NINGUNA familia
+# invoca jamas. Medido el 2026-09-22 contra `origin/main`: 51 funciones `manual_*`, 74
+# apariciones de sus nombres fuera de su definicion y LAS 74 SON TEXTO (mensajes de registro
+# y comentarios); CERO llamadas desde el codigo vivo.
+#
+# Se parseaban en las ~120 peticiones por hora del pulso y en todas las del camino vivo.
+# Lo que vale, sin adornar: entre 0,3 y 0,7 s por llamada (proporcional a lo que se quita,
+# por el precedente MEDIDO del KMS: sacar su 21 % bajo el tiempo un 19,4 %).
+#
+# COMO VUELVEN cuando hay que diagnosticar — el ciclo de TRES ordenes:
+#   1) comentar la linea `_manual.gs` de aqui abajo
+#      cd backend && NODE_USE_ENV_PROXY=1 clasp push --force
+#   2) NODE_USE_ENV_PROXY=1 clasp run manual_<la sonda que toque>
+#   3) descomentarla y VOLVER A SUBIR
+#
+# OJO — LA TRAMPA, Y AQUI ES NUEVA: mientras las sondas vivian DENTRO de `Code.js`, encoger
+# ese fichero las quitaba del Head solo con subirlo. Ahora viven APARTE, y `clasp push` NO
+# BORRA del Head un fichero que ya esta arriba (medido en el KMS). Por eso el paso (3)
+# termina SIEMPRE LEYENDO EL HEAD y comprobando que `_manual.gs` no esta — nunca por el «ok».
+_manual.gs
