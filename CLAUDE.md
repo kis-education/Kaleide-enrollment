@@ -545,6 +545,35 @@ disparador propio (`espejoRefrescarCopias`, cada 30 min → `enr.copiasDeLasSoli
   no se toca:** `verifySignedKmsNotice_` sigue vivo con **dos** receptores, `notifyLiveStateChange_`
   y `sembrarRecuperacion_`.
 
+**★ 2026-09-22 — EL REPASO CALIENTA TAMBIÉN LA PUERTA, LA IDENTIDAD Y EL CUESTIONARIO.** Todo lo que
+hace falta para ENTRAR lo preparaba el ENVÍO (`_dejarElClicSinLlamadas_`) y **vence a los 30 min**
+—la copia de la puerta, la memoria de identidad y el catálogo de preguntas—, y hasta hoy **nadie las
+rehacía**: el repaso archivaba **solo la hidratación** (6 h). Por eso el clic inmediato cuesta **0**
+llamadas al KMS y el de media hora después las paga **todas a la vez**, a 9,3-13,2 s de suelo cada
+una. Ahora las rehace el mismo repaso (`_espejoCalentarLaPuerta_` por copia ·
+`_espejoCalentarElCuestionario_` al cerrar la vuelta). **Medido con arnés sobre las funciones
+REALES: a los 35 min, 3 → 1 viaje** (el que queda es el correo del código, que no es evitable);
+**peor caso con una escritura por medio, 4 → 3**; y el clic inmediato **0 → 0, byte-idéntico**.
+
+- ⛔ **CONSERVA un «sí», JAMÁS lo CREA**, y por el juez **ÚNICO**: sobre la ficha que llega se vuelve a
+  aplicar `_rechazosDelEnlace_` y, si rechaza, **no se archiva NADA** — ni la puerta ni la identidad.
+- ⛔ **La MISMA clave y la MISMA forma que el camino vivo** (`_claveCopiaPuerta_`, sobre
+  `{gid, fila, exp}`), con la **proyección de OCHO campos** de `enr.expedienteDelToken` — nunca la
+  fila cruda, que lleva `magic_link_token`. Una clave distinta no la lee nadie; una forma distinta la
+  lee mal `_cabeceraDeLaCopia_`.
+- ⛔ **NINGÚN plazo de seguridad se toca**: `COPIA_PUERTA_TTL_S_` tal cual, la gracia de 10 min tal
+  cual, la ventana de step-up tal cual. Lo que cambia es que la copia **se rehace cada 30 min**, no
+  que dure más. **CERO exposición nueva**: el `resume_token` ya viaja dentro de esa copia.
+- ⛔ **La identidad se siembra SOLO en `idlinkd_`** (la DECLARADA), nunca en `idlinkr_` (el respaldo
+  «tutor 1», ②⑤.bis), y **la clave la calcula UN SOLO SITIO**, `_claveIdLinkMemo_`, que es el mismo
+  que la lee. ⚠️ **Y se dice sin adornar: hoy NO ahorra ni un viaje** — medido con y sin ella en los
+  tres escenarios — porque `_identidadDesdeElEspejo_` ya contesta desde la copia de la hidratación, y
+  porque el camino completo de `hydrateSession_` llama a `effectiveRecoveredEmail_` **directamente**,
+  saltándose el memo. Se deja porque es la misma escritura que hace el camino vivo, con el mismo
+  plazo; **quien la retire, que lo mida y lo escriba aquí.**
+- ⛔ **Best-effort absoluto**: nada de esto puede romper la vuelta ni tocar su cursor. El catálogo se
+  prepara **después** de dejar el cursor escrito.
+
 **La caché de recuperación** (la 2ª vez que se teclea un correo en `sendMagicLink_`): ⛔ **nunca se
 guarda ni se sirve una respuesta VACÍA** —un «no hay ninguno» guardado haría permanente el agujero de
 mandarle a quien ya tiene solicitud el enlace de un borrador vacío— · ⛔ **ni una entrada con un token
@@ -835,6 +864,14 @@ se decide en UN solo sitio**, `programaDeLaSolicitud` (`WizardContext`), con ord
 `stepData.email` → `stepData.application`: al revés, cambiar de programa dejaba la clave clavada en el
 hidratado. ⚠️ **Límite honesto: no hay invalidación** — lo único que lo refresca es el plazo
 (`CATALOGO_PREGUNTAS_TTL_S_`, 30 min), encima de la ventana del navegador.
+
+**★ 2026-09-22 — y el repaso del espejo lo mantiene caliente**, una vez por **(PROGRAMA × idioma)** y
+no por familia: se deduplican las combinaciones de la vuelta y, **si la copia ya está**, se
+RE-ESCRIBE para refrescar su plazo **sin viajar al KMS y sin gastar el cupo público** (②⑤④, que es
+compartido por todo el colegio); solo cuando falta se pide por el camino vivo. ⛔ **Sin programa
+declarado no se prepara nada** — sería escribir una clave que el clic no lee — y **un catálogo
+IMPOSIBLE no se guarda**, por el criterio que ya existe (`_catalogoDePreguntasDeLaCopia_` /
+`_guardarCatalogoDePreguntas_`, copiado a su vez de `qb_core_catalogoImposible_` del KMS).
 
 ### El asistente no cuenta a quien un tutor ya quitó
 

@@ -1699,14 +1699,30 @@ function _identidadDelEnlace_(p, groupId, opts) {
  * @returns {string|null}
  * @private
  */
+
+/**
+ * ⭐ 2026-09-22 — **UN SOLO SITIO CALCULA LA CLAVE DE ESA MEMORIA.** Vivía escrita dentro de
+ * `_idLinkMemo_` y ahora la miran DOS: el camino vivo y el repaso del espejo, que deja la
+ * identidad preparada para el clic (`_espejoCalentarLaPuerta_`). ⛔ Escribirla dos veces es
+ * exactamente cómo divergen — y aquí divergir significa **archivar la identidad bajo una
+ * clave que el camino vivo no lee**, o sea pagar el trabajo y no ahorrar ni un viaje.
+ *
+ * ⛔ El PREFIJO es parte de la clave (②⑤.bis: `idlinkd_` declarada · `idlinkr_` con respaldo):
+ * compartirla contamina los dos modos y el fallo sale intermitente.
+ * @private
+ */
+function _claveIdLinkMemo_(prefijo, token, n, correo, groupId) {
+  var crudo = [String(token || '').trim(), n || '', correo || '', groupId].join('|');
+  var dig = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, crudo, Utilities.Charset.UTF_8);
+  return prefijo + dig.map(function (b) {
+    var v = (b + 256) % 256; return (v < 16 ? '0' : '') + v.toString(16);
+  }).join('');
+}
+
 function _idLinkMemo_(p, groupId, prefijo, calcular) {
   var memoKey = null;
   try {
-    var crudo = [String(p.resume_token || '').trim(), p.n || '', p.recovered_email || '', groupId].join('|');
-    var dig = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, crudo, Utilities.Charset.UTF_8);
-    memoKey = prefijo + dig.map(function (b) {
-      var v = (b + 256) % 256; return (v < 16 ? '0' : '') + v.toString(16);
-    }).join('');
+    memoKey = _claveIdLinkMemo_(prefijo, p.resume_token, p.n, p.recovered_email, groupId);
     var hit = CacheService.getScriptCache().get(memoKey);
     if (hit) return hit === '-' ? null : hit;
   } catch (e) { /* la memoria NUNCA rompe el camino vivo */ }
@@ -11895,6 +11911,202 @@ function _asegurarDisparadorDelEspejo_() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2026-09-22 — EL ESPEJO CALIENTA TAMBIÉN LA PUERTA, LA IDENTIDAD Y EL CUESTIONARIO
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// ⛔ EL PROBLEMA, MEDIDO Y CON LAS DOS SITUACIONES SEPARADAS (Diego, 2026-09-22: *«cuando
+//    abro el enlace generado inmediatamente tras pedir el magic link, entra en un plazo de
+//    tiempo razonable. Pero si pasa el tiempo … entonces es cuando tarda una barbaridad»*):
+//
+//      · CLIC INMEDIATO — `_dejarElClicSinLlamadas_` corre DENTRO del propio envío y deja
+//        listas la PUERTA, la IDENTIDAD y el CUESTIONARIO ⇒ **0 llamadas al KMS**.
+//      · A LOS 30 MINUTOS — esas tres vencen (`COPIA_PUERTA_TTL_S_`, `IDENTIDAD_MEMO_TTL_S_`,
+//        `CATALOGO_PREGUNTAS_TTL_S_`) y **NADIE LAS REHACÍA**: el repaso del espejo archivaba
+//        **solo la hidratación** (`wz_hydv2_`, 6 h). ⇒ el clic las pagaba TODAS a la vez, y
+//        cada una es un viaje con **suelo medido de 9,3-13,2 s** que no es la consulta
+//        (PostgreSQL contesta en 3-124 ms) ni la red.
+//
+// ⇒ **LA PALANCA ES NO HACER LA LLAMADA**, y el repaso YA CORRE cada 30 min y YA RECIBE todo
+//    lo necesario: `enr_wizardHydrate` devuelve `group: s.group` y `enr_resolveWizardSession_`
+//    devuelve **la fila ENTERA de `enrEnrollmentGroups`, sin proyección ninguna** ⇒ cada copia
+//    que el espejo ya archiva lleva dentro `resume_token`, `abandoned_at`, `created_at`,
+//    `submitted_at` y `program_id` — justo lo que necesitan el juez de los tres rechazos, la
+//    clave de la copia de la puerta y el catálogo de preguntas.
+//
+// ⛔ **CERO EXPOSICIÓN NUEVA**: el `resume_token` YA ESTÁ dentro de esa copia. Lo que se
+//    escribe aquí es una PROYECCIÓN de ocho campos —la MISMA que devuelve
+//    `enr.expedienteDelToken`—, nunca la fila cruda con `magic_link_token`.
+// ⛔ **CERO PLAZO DE SEGURIDAD TOCADO**: ni `COPIA_PUERTA_TTL_S_`, ni la gracia de 10 min, ni
+//    la ventana de step-up. Lo que cambia es que la copia **se rehace cada 30 min**, no que
+//    dure más.
+
+/**
+ * 2026-09-22 — deja preparadas LA PUERTA y LA IDENTIDAD para el clic de UN (expediente ×
+ * tutor), a partir de la copia que el espejo acaba de archivar.
+ *
+ * ⛔ **LAS CUATRO BARANDILLAS, y ninguna es negociable:**
+ *
+ * 1. **CONSERVA un «sí», JAMÁS lo CREA.** La copia que llega del KMS **es** una sesión que el
+ *    KMS acaba de resolver EN VIVO (`enr_wizardGate_` aplica los tres rechazos y **lanza** si
+ *    fallan), así que archivarla conserva. **Pero se vuelven a aplicar aquí igualmente**, con
+ *    el juez ÚNICO `_rechazosDelEnlace_` sobre la ficha que llega: si rechaza, **no se archiva
+ *    NADA** — ni la puerta ni la identidad. ⛔ PROHIBIDO escribir un segundo juez y prohibido
+ *    archivar sin pasar por él.
+ * 2. **La MISMA clave y la MISMA forma que el camino vivo**: `_claveCopiaPuerta_(token)` y el
+ *    sobre `{gid, fila, exp}` que escribe `requireResumeToken_`, con su `exp` ABSOLUTO. Una
+ *    clave distinta no la lee nadie; una forma distinta la lee mal `_cabeceraDeLaCopia_`.
+ * 3. **El techo NO se alarga**: `COPIA_PUERTA_TTL_S_` tal cual, y el `exp` se calcula igual
+ *    que en el camino vivo (ahora + el techo), sobre una ficha que el KMS acaba de resolver.
+ * 4. **Best-effort absoluto**: un fallo aquí no puede romper la vuelta del espejo ni tocar su
+ *    cursor. Todo va en `try`, nunca propaga.
+ *
+ * ⛔ **LA IDENTIDAD NO SE INVENTA NI SE RESUELVE AQUÍ.** Quien la resuelve es
+ * `_identidadDesdeElEspejo_`, el ayudante que YA EXISTE y que ya es el primer intento de
+ * `_tutorQueRecupera_`: se le pregunta por la copia RECIÉN archivada (así su comprobación de
+ * versión acierta por construcción) y solo se archiva lo que él contesta con certeza. Si
+ * devuelve `null` —sin fila que case, sin `person_id`, versión vieja— **no se archiva
+ * identidad** y el clic la resolverá por su camino de siempre.
+ *
+ * ⛔ **SOLO `idlinkd_` (la identidad DECLARADA), NUNCA `idlinkr_`** (②24.bis): lo que trae la
+ * copia es el `email_id` del enlace, que es identidad declarada; el respaldo «tutor 1» es otra
+ * cosa y no se siembra jamás — atribuirlo por adelantado sería justo lo que ②24.bis separó.
+ *
+ * ⚠️ **QUÉ VENTANA ABRE LA IDENTIDAD, DICHO SIN ADORNAR:** se archiva con
+ * `IDENTIDAD_MEMO_TTL_S_`, **el MISMO plazo con el que la escribe el camino vivo**, y esa
+ * memoria nunca ha mirado la versión del expediente (su cabecera lo declara: caduca sola y se
+ * invalida al rotar el enlace). ⇒ esto es exactamente equivalente a que el tutor hubiera hecho
+ * una llamada en el instante en que corrió el repaso. **NO alarga la tolerancia a 6 h**, que es
+ * otra cosa y es decisión de Diego (propuesta 2 de la ficha).
+ *
+ * @param {GoogleAppsScript.Cache.Cache} cache
+ * @param {{enrollment_group_id:string, n:string, payload:Object}} copia  la que acaba de
+ *        archivar `_espejoGuardarCopia_` (y que por tanto ya está en la caché).
+ * @returns {{puerta:boolean, identidad:boolean, motivo:?string}}
+ * @private
+ */
+function _espejoCalentarLaPuerta_(cache, copia) {
+  var res = { puerta: false, identidad: false, motivo: null };
+  try {
+    var g = copia && copia.payload && copia.payload.group;
+    if (!g || typeof g !== 'object') { res.motivo = 'SIN_FICHA'; return res; }
+
+    var token = g['resume_token'] ? String(g['resume_token']).trim() : '';
+    if (!token) { res.motivo = 'SIN_ENLACE'; return res; }
+    try { assertValidUuid_(token, 'resume_token'); }
+    catch (eT) { res.motivo = 'ENLACE_CON_FORMA_MALA'; return res; }
+
+    // KAL-4 en profundidad: el expediente de la ficha tiene que ser el MISMO bajo el que se
+    // archivó la copia. Si no casan, no se archiva nada — nunca se elige por el sobre.
+    var gid = String((copia && copia.enrollment_group_id) || '');
+    if (!gid || gid !== String(g['enrollment_group_id'] || '')) {
+      res.motivo = 'EXPEDIENTE_NO_CASA'; return res;
+    }
+
+    // La MISMA proyección de OCHO campos que devuelve `enr.expedienteDelToken` — ni uno más.
+    // La fila cruda lleva `magic_link_token` y no tiene por qué cruzar a esta copia.
+    var fila = {
+      enrollment_group_id: gid,
+      resume_token:        g['resume_token']        || null,
+      primary_email:       g['primary_email']       || null,
+      requester_person_id: g['requester_person_id'] || null,
+      submitted_at:        g['submitted_at']        || null,
+      abandoned_at:        g['abandoned_at']        || null,
+      created_at:          g['created_at']          || null,
+      program_id:          g['program_id']          || null,
+    };
+
+    // BARANDILLA 1 — EL JUEZ ÚNICO. Si rechaza, NO se archiva nada.
+    var rechazo = _rechazosDelEnlace_(fila);
+    if (rechazo) { res.motivo = 'RECHAZADO:' + (rechazo.code || '?'); return res; }
+
+    // BARANDILLAS 2 y 3 — misma clave, misma forma, mismo techo que `requireResumeToken_`.
+    cache.put(
+      _claveCopiaPuerta_(token),
+      JSON.stringify({ gid: gid, fila: fila, exp: Date.now() + (COPIA_PUERTA_TTL_S_ * 1000) }),
+      COPIA_PUERTA_TTL_S_);
+    res.puerta = true;
+
+    // LA IDENTIDAD — por el ayudante que YA existe, sobre la copia recién archivada.
+    var n = copia.n ? String(copia.n).trim() : '';
+    if (!n) { res.motivo = 'SIN_N'; return res; }
+    var ident = _identidadDesdeElEspejo_(gid, n, '');
+    if (!ident || !ident.correo) { res.motivo = 'IDENTIDAD_NO_RESUELTA'; return res; }
+    // ⛔ La clave la calcula EL MISMO sitio que la lee (`_claveIdLinkMemo_`). Y `recovered_email`
+    // va VACÍO a propósito: el clic que llega por el enlace manda `{resume_token, n}` y todavía
+    // no conoce su correo (lo recibe EN la hidratación), así que ésa es la clave que se lee.
+    cache.put(_claveIdLinkMemo_('idlinkd_', token, n, '', gid), ident.correo,
+      IDENTIDAD_MEMO_TTL_S_);
+    res.identidad = true;
+  } catch (e) {
+    res.motivo = 'ERROR';
+    try { Logger.log(redact_('[_espejoCalentarLaPuerta_] non-fatal — ' + ((e && e.message) || e))); } catch (_eL) {}
+  }
+  return res;
+}
+
+// Tope de combinaciones (programa × idioma) por vuelta: un colegio con muchos programas no
+// puede comerse el presupuesto de la vuelta con el catálogo. Lo que sobre se prepara en la
+// siguiente — el repaso vuelve cada 30 min.
+var ESPEJO_CUESTIONARIOS_POR_VUELTA_ = 8;
+
+/**
+ * 2026-09-22 — deja preparado EL CATÁLOGO DE PREGUNTAS de las combinaciones que la vuelta del
+ * espejo ha visto.
+ *
+ * ⚠️ **UNA PREMISA DEL ENCARGO ERA FALSA Y SE CORRIGE AQUÍ: el catálogo YA NO es
+ * tenant-estático.** Desde **D181 (2026-09-16)** depende del **PROGRAMA** de la solicitud
+ * (Diego: *«No es lo mismo la renovación que la nueva inscripción. Las preguntas son
+ * diferentes.»*), y la clave lo lleva dentro (`_claveCatalogoPreguntas_`, `v2`). ⇒ **no es
+ * "una vez por idioma": es una vez por (PROGRAMA × idioma)**, deduplicada por vuelta. Preparar
+ * el catálogo SIN programa sería peor que no preparar: dejaría escrita la copia de una clave
+ * que el clic no va a leer.
+ *
+ * ⛔ **NI UN VIAJE SI YA ESTÁ CALIENTE.** Si la copia existe se RE-ESCRIBE tal cual para
+ * refrescar su plazo (`_guardarCatalogoDePreguntas_`), sin llamar al KMS y **sin consumir el
+ * cupo público** (②54, que es COMPARTIDO por todas las familias del colegio: un repaso de fondo
+ * no puede gastárselo). Solo cuando NO hay copia se pide por el camino vivo (`fetchQuestions_`),
+ * que ya la guarda él.
+ *
+ * ⛔ **UN CATÁLOGO IMPOSIBLE NO SE GUARDA** — el criterio NO se reinventa: lo aplican
+ * `_catalogoDePreguntasDeLaCopia_` (que devuelve `null`) y `_guardarCatalogoDePreguntas_` (que
+ * se niega a escribirlo), copiados a su vez de `qb_core_catalogoImposible_` del KMS.
+ *
+ * ⛔ **Best-effort y con presupuesto**: nunca propaga, respeta el reloj de la vuelta y tiene un
+ * tope de combinaciones para que un colegio con muchos programas no se coma la vuelta entera.
+ *
+ * @param {Object} pendientes  mapa `clave → {program_id, lang}` acumulado en la vuelta.
+ * @param {function():boolean} seAcaboElTiempo
+ * @returns {{preparados:number, refrescados:number, pedidos:number, omitidos:number}}
+ * @private
+ */
+function _espejoCalentarElCuestionario_(pendientes, seAcaboElTiempo) {
+  var res = { preparados: 0, refrescados: 0, pedidos: 0, omitidos: 0 };
+  var claves = Object.keys(pendientes || {});
+  for (var i = 0; i < claves.length; i++) {
+    if (i >= ESPEJO_CUESTIONARIOS_POR_VUELTA_ || seAcaboElTiempo()) {
+      res.omitidos += (claves.length - i); break;
+    }
+    var c = pendientes[claves[i]];
+    try {
+      var yaEsta = _catalogoDePreguntasDeLaCopia_('ENROLLMENT', c.lang, c.program_id);
+      if (yaEsta) {
+        // Está caliente: se refresca SU PLAZO sin viaje y sin tocar el cupo público. Sin
+        // esto, el catálogo (30 min) y el repaso (30 min) derivan y el clic lo paga igual.
+        if (_guardarCatalogoDePreguntas_('ENROLLMENT', c.lang, c.program_id, yaEsta)) {
+          res.refrescados++; res.preparados++;
+        }
+        continue;
+      }
+      fetchQuestions_({ context_code: 'ENROLLMENT', language: c.lang, program_id: c.program_id });
+      res.pedidos++; res.preparados++;
+    } catch (e) {
+      try { Logger.log(redact_('[_espejoCalentarElCuestionario_] non-fatal — ' + ((e && e.message) || e))); } catch (_eL) {}
+    }
+  }
+  return res;
+}
+
 /**
  * ①97 — **EL DISPARADOR**. Pide al KMS las copias de recuperación de todas las solicitudes
  * vivas del colegio y las archiva en la `ScriptCache` de este proyecto.
@@ -11912,11 +12124,20 @@ function _asegurarDisparadorDelEspejo_() {
  *
  * ⛔ **NI UN DATO PERSONAL EN EL LOG** (KAL-11): solo conteos y el expediente truncado.
  *
+ * ★ 2026-09-22 — **Y NO SOLO LA HIDRATACIÓN.** Con cada copia archivada se dejan también
+ * preparadas **la PUERTA y la IDENTIDAD** de ese (expediente × tutor)
+ * (`_espejoCalentarLaPuerta_`), y al cerrar la vuelta **el CUESTIONARIO** de cada (programa ×
+ * idioma) que se haya visto (`_espejoCalentarElCuestionario_`). Son las tres cosas que venían
+ * caducando a los 30 min sin que nadie las rehiciera, y cada una era un viaje al KMS con suelo
+ * medido de 9,3-13,2 s en el clic de la familia. Ver el bloque de arriba.
+ *
  * @returns {{vueltas:number, copias:number, archivadas:number, grupos_totales:number,
+ *            puertas:number, identidades:number, cuestionarios:number,
  *            desde:number, siguiente_desde:?number, corte_por_tiempo:boolean, error:?string}}
  */
 function espejoRefrescarCopias() {
   var out = { vueltas: 0, copias: 0, archivadas: 0, grupos_totales: 0,
+              puertas: 0, identidades: 0, cuestionarios: 0,
               desde: 0, siguiente_desde: null, corte_por_tiempo: false, error: null };
   var t0 = Date.now();
   var cache = CacheService.getScriptCache();
@@ -11925,6 +12146,8 @@ function espejoRefrescarCopias() {
   var desde = 0;
   try { desde = Math.max(0, Number(cache.get(ESPEJO_CURSOR_KEY_)) || 0); } catch (_eC) { desde = 0; }
   out.desde = desde;
+  // ★ 2026-09-22 — (programa × idioma) vistos en esta vuelta, deduplicados (D181).
+  var cuestionariosPendientes = {};
 
   try {
     while (true) {
@@ -11941,6 +12164,25 @@ function espejoRefrescarCopias() {
         if (!c || !c.enrollment_group_id || !c.n || !c.payload) continue;
         if (_espejoGuardarCopia_(cache, String(c.enrollment_group_id), String(c.n), c.payload)) {
           out.archivadas++;
+          // ★ 2026-09-22 — LA PUERTA Y LA IDENTIDAD, sobre la copia que ACABA de archivarse
+          // (por eso va aquí dentro y no antes: `_identidadDesdeElEspejo_` la lee de vuelta).
+          // Best-effort absoluto: no puede romper la vuelta ni tocar el cursor.
+          var cal = _espejoCalentarLaPuerta_(cache, c);
+          if (cal.puerta) out.puertas++;
+          if (cal.identidad) out.identidades++;
+          // El cuestionario se deja para el final de la vuelta: es por (PROGRAMA × idioma),
+          // no por familia (D181), así que se deduplica en vez de pedirse una vez por copia.
+          try {
+            var gP = c.payload && c.payload.group;
+            var progP = (gP && gP['program_id']) ? String(gP['program_id']) : '';
+            if (progP) {
+              // El idioma se deriva EXACTAMENTE como en el camino vivo del envío
+              // (`sendMagicLink_`: `grp.preferred_language || 'es'`) — si aquí se derivara de
+              // otra forma, se prepararía una clave que el clic no lee.
+              var langP = (gP && gP['preferred_language']) ? String(gP['preferred_language']) : 'es';
+              cuestionariosPendientes[progP + '|' + langP] = { program_id: progP, lang: langP };
+            }
+          } catch (_eQ) { /* best-effort */ }
         }
       }
       var sig = (r.siguiente_desde === 0 || r.siguiente_desde) ? Number(r.siguiente_desde) : null;
@@ -11954,6 +12196,17 @@ function espejoRefrescarCopias() {
 
   out.siguiente_desde = desde || null;
   try { cache.put(ESPEJO_CURSOR_KEY_, String(desde || 0), ESPEJO_GUARDA_S_); } catch (_eP) {}
+
+  // ★ 2026-09-22 — EL CUESTIONARIO, UNA VEZ POR (PROGRAMA × IDIOMA) Y NO POR FAMILIA.
+  // Va FUERA del bucle a propósito — es por programa, no por familia (D181) — y **después de
+  // dejar el cursor escrito**: es best-effort y no puede cambiar por dónde sigue la vuelta
+  // siguiente ni impedir que el cursor se guarde.
+  try {
+    var rQ = _espejoCalentarElCuestionario_(cuestionariosPendientes, function() {
+      return Date.now() - t0 > ESPEJO_PRESUPUESTO_MS_;
+    });
+    out.cuestionarios = rQ.preparados;
+  } catch (_eQ2) { /* best-effort: nunca toca la vuelta */ }
   Logger.log('[espejoRefrescarCopias] ' + JSON.stringify(out));
   return out;
 }
