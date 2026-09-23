@@ -523,6 +523,42 @@ conserva su token vivo para volver a la firma); ahí la gracia se acuña sobre e
 que vuelve a costar, dicho:** el viaje de renovación (~19 s) está en el camino del correo, y los
 enlaces anteriores mueren al pedir uno nuevo. Las dos cosas las decide la especificación.
 
+#### ⛔ Pero ROTAR Y ENVIAR SON UNA SOLA COSA: o pasa entera o no pasa
+
+> **El invariante:** *una familia NUNCA se queda sin enlace válido por un correo que no salió.* Si
+> el envío no se acepta, la solicitud queda **exactamente como estaba**, con el enlace que la
+> familia ya tenía, funcionando.
+
+**Lo que pasaba hasta el 2026-09-23:** se rotaba primero y se mandaba después, así que un
+`EMAIL_SEND_FAILED` dejaba el enlace de la familia YA MUERTO y el nuevo **solo dentro del correo que
+no salió** — ni se podía deshacer ni reenviar. En la rama pública, además, el `catch` de WIZ-ENUM se
+lo tragaba y la pantalla decía «te lo hemos mandado».
+
+⛔ **EL CRITERIO VIVE EN UN SOLO SITIO**, `_conLosEnlacesRotados_`: las DOS ramas de
+`sendMagicLink_` —la portada y «Guardar y seguir luego»— pasan por ahí, y ahí es donde se decide
+que un envío que no se acepta repone TODO lo que esta petición rotó. ⛔ **Y la ESCRITURA no está
+aquí:** reponer es del KMS (`enr.reponerEnlaceAnterior` → `enr_reponerTokenDelGrupo_`, su único
+escritor), porque este proceso no escribe tablas (P1-A/P1-B).
+
+- ⛔ **Dentro de `enviar` va SOLO el envío.** Lo de después —dejar el clic sin llamadas, el ticket
+  de calentamiento— ocurre con el correo YA fuera: reponer por un fallo de ahí le mandaría a la
+  familia un correo con un enlace muerto, que es peor que el defecto que esto cierra.
+- ⛔ **La rama pública no cambia ni un byte de lo que DEVUELVE** —el ack constante de WIZ-ENUM
+  sigue igual, y el `catch` que lo da sigue en pie—: lo que cambia es lo que DEJA ESCRITO.
+- ⛔ **Con N enlaces en UN correo se reponen LOS N.** Uno solo dejaría a la misma familia dentro de
+  una solicitud y fuera de otra.
+- **La copia de la puerta VUELVE con él** (`_moverLaCopiaDeLaPuerta_`, al revés) y se OLVIDA la del
+  token nuevo — con ella se va el sello del expediente, que es lo que impide que la caché de
+  recuperación quede **con un token muerto** dentro.
+- ⛔ **`created_at` NO se repone**, y es deliberado: la rotación lo dejó en AHORA y eso solo puede
+  beneficiar a quien tiene el enlace repuesto (7 días desde ya). Reponerlo exigiría que alguien de
+  fuera dijera qué fecha poner, y una fecha futura dejaría un enlace vivo para siempre.
+- ⛔ **Reponer es best-effort y NUNCA lanza**: el error que importa es el del envío. **Y si la
+  reposición tampoco se puede, no se calla** — se registra nombrando el caso, sin un solo dato
+  personal, en los dos lados.
+
+**Red:** `scripts/servidor/el-enlace-viejo-no-muere-hasta-que-salga-el-nuevo.mjs`.
+
 ### La copia caliente y el espejo
 
 **La copia de la solicitud vive en la `ScriptCache` de ESTE proyecto**, bajo
@@ -1104,7 +1140,9 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | Control | Qué protege |
 |---|---|
 | `el-catalogo-de-preguntas.mjs` | que un catálogo guardado **no se pueda quedar clavado para siempre**: el refresco sin viaje sigue ahorrando, el techo obliga a releer, un viaje fallido no se lleva la copia, y el camino público sigue sirviéndose de ella |
+| `el-catalogo-se-entera-cuando-el-colegio-lo-cambia.mjs` | que una pregunta editada en el KMS llegue a la copia del asistente y que **nadie se quede sin cuestionario**: la copia vieja no se borra hasta que llega la nueva |
 | `la-copia-se-actualiza-al-escribir.mjs` | la **regla 3** de Diego: que una escritura del tutor deje la copia caliente **rehecha con lo que el KMS confirma**, y que jamás se archive como buena una copia con un dato que el KMS no ha confirmado |
+| `el-enlace-viejo-no-muere-hasta-que-salga-el-nuevo.mjs` | que **una familia nunca se quede sin enlace válido por un correo que no salió**: el envío que sale deja el enlace rotado, el que falla lo deja como estaba (las dos ramas, y los N de un correo multi), y el ack constante de la rama pública no cambia según si el correo salió |
 
 **Se corren solos desde el 2026-09-23**: el lanzador `node scripts/comprobar-el-servidor.mjs`
 descubre **todos** los `*.mjs` de esa carpeta, los ejecuta y junta sus veredictos; es el **noveno

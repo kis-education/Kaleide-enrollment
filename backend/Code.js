@@ -4262,6 +4262,9 @@ function sendMagicLink_(p) {
     // nuevo server-side (CSPRNG) y lo persiste; si no pudo persistir (P72) devuelve
     // renewed:false con el token vivo (mismo fallback que el batch multi histórico).
     let tokenToSend = grp.resume_token;
+    // ⛔ `2026-09-23-el-enlace-se-sustituye-antes-de-mandarlo` — lo que esta petición ROTA
+    // de verdad, para poder deshacerlo si el correo no sale. Ver `_conLosEnlacesRotados_`.
+    const rotaciones = [];
     // ★ «El enlace entra sin esperar» (2026-09-14) — **SIEMPRE SE RENUEVA.** El margen de
     // `③18.bis.15` se retiró entero (ver la lápida junto a `RESUME_TOKEN_TTL_MS_`): cada envío
     // rota el enlace y manda el nuevo, que es lo que hace que la gracia de los 10 minutos se
@@ -4285,6 +4288,7 @@ function sendMagicLink_(p) {
       // El olvido DEFENSIVO del token nuevo se conserva tal cual cuando no se ha movido
       // nada; si se movió, borrarlo tiraría justo la copia que acabamos de trasladar.
       if (!movida) _olvidarCabeceraMemo_(tokenToSend, groupId);
+      if (rotado) rotaciones.push({ token_viejo: p.resume_token, token_nuevo: tokenToSend, grupo_id: groupId });
       if (touch && touch.renewed) {
         // KAL-11: redact group_id UUID before persisting to Stackdriver.
         Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
@@ -4312,15 +4316,20 @@ function sendMagicLink_(p) {
     // desde dentro del wizard) → isFirstApp false (sin bloque GDPR).
     const resumeUrlP1 = RESUME_BASE_URL + tokenToSend + (nEmailId ? '?n=' + nEmailId : '');
     _trazaPaso_(trazaInterna, 'armar_el_enlace', { n_expedientes: 1 });
-    sendViaKmsNotify_('WIZARD_MAGIC_LINK', destEmail, {
-      family_name:      '',
-      resume_url:       resumeUrlP1,
-      report_url:       REPORT_BASE_URL + tokenToSend,
-      gdpr_block:       _kmsRenderGdprBlock_(false),
-      admissions_email: ADMISSIONS_EMAIL,
-      // TIMELINE — viaja al KMS y acaba en la fila del trabajo. Cero datos de familia.
-      _traza:           _trazaParaElKms_(trazaInterna, 'WIZARD_MAGIC_LINK'),
-      lang:             langP1,
+    // ⛔ ROTAR Y ENVIAR SON UNA SOLA COSA (2026-09-23): si el correo no se acepta, el
+    // enlace que la familia tiene en la mano VUELVE a valer. El error se sigue propagando
+    // —esta rama SÍ los propaga (WIZ-ENUM regla 4)—, solo que ya no deja a nadie fuera.
+    _conLosEnlacesRotados_(rotaciones, function () {
+      return sendViaKmsNotify_('WIZARD_MAGIC_LINK', destEmail, {
+        family_name:      '',
+        resume_url:       resumeUrlP1,
+        report_url:       REPORT_BASE_URL + tokenToSend,
+        gdpr_block:       _kmsRenderGdprBlock_(false),
+        admissions_email: ADMISSIONS_EMAIL,
+        // TIMELINE — viaja al KMS y acaba en la fila del trabajo. Cero datos de familia.
+        _traza:           _trazaParaElKms_(trazaInterna, 'WIZARD_MAGIC_LINK'),
+        lang:             langP1,
+      });
     });
     // SPEC-WIZ-WARMUP-V2: ticket para que el frontend dispare warmBundle fire-and-forget
     // con el token NUEVO (que solo viaja por email). Identidad warm = la del click real.
@@ -4474,6 +4483,9 @@ function sendMagicLink_(p) {
       // grupo sigue en UN batch paralelo (read-only, PERF 2026-06-12 intacta).
       const sorted = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
       const newTokens = {};   // group_id → token nuevo persistido por el KMS
+      // ⛔ `2026-09-23-el-enlace-se-sustituye-antes-de-mandarlo` — lo que esta petición ROTA
+      // de verdad, para poder deshacerlo si el correo no sale. Ver `_conLosEnlacesRotados_`.
+      const rotaciones = [];
       // TIMELINE — cada renovación es UN viaje al KMS más, y son N (uno por expediente sin
       // enviar). Es justo el tramo que crece con el número de solicitudes de esa familia, así
       // que se cuenta aparte y con su número: sin eso, «tardó mucho» no dice si fue un viaje
@@ -4500,6 +4512,8 @@ function sendMagicLink_(p) {
           if (touch && touch.resume_token && !movidaG) _olvidarCabeceraMemo_(touch.resume_token, g.enrollment_group_id);
           if (touch && touch.renewed && touch.resume_token) {
             newTokens[g.enrollment_group_id] = touch.resume_token;
+            rotaciones.push({ token_viejo: g.resume_token, token_nuevo: touch.resume_token,
+                              grupo_id: g.enrollment_group_id });
           } else {
             // KAL-11: redact group_id UUID.
             Logger.log(redact_('sendMagicLink_: token not renewed for group ' + g.enrollment_group_id + ' (KMS fallback — keeps live token)'));
@@ -4565,15 +4579,21 @@ function sendMagicLink_(p) {
         // WIZARD-TERMINAL P3: contenido gobernado por el KMS. isFirstApp false (recuperación).
         const resumeUrlR = RESUME_BASE_URL + grps[0].resume_token + (nEmailId ? '?n=' + nEmailId : '');
         _trazaPaso_(trazaCorreo, 'armar_el_enlace', { n_expedientes: 1 });
-        sendViaKmsNotify_('WIZARD_MAGIC_LINK', p.primary_email, {
-          family_name:      '',
-          resume_url:       resumeUrlR,
-          report_url:       REPORT_BASE_URL + grps[0].resume_token,
-          gdpr_block:       _kmsRenderGdprBlock_(false),
-          admissions_email: ADMISSIONS_EMAIL,
-          lang:             lang,
-          // TIMELINE — viaja al KMS y acaba en la fila del trabajo. Cero datos de familia.
-          _traza:           _trazaParaElKms_(trazaCorreo, 'WIZARD_MAGIC_LINK'),
+        // ⛔ ROTAR Y ENVIAR SON UNA SOLA COSA (2026-09-23): si el correo no se acepta, el
+        // enlace que la familia tiene en la mano VUELVE a valer. ⚠️ Lo que esta rama
+        // DEVUELVE no cambia ni un byte —el `catch (eSend)` de abajo sigue dando el ack
+        // constante de WIZ-ENUM—: lo que cambia es lo que DEJA ESCRITO.
+        _conLosEnlacesRotados_(rotaciones, function () {
+          return sendViaKmsNotify_('WIZARD_MAGIC_LINK', p.primary_email, {
+            family_name:      '',
+            resume_url:       resumeUrlR,
+            report_url:       REPORT_BASE_URL + grps[0].resume_token,
+            gdpr_block:       _kmsRenderGdprBlock_(false),
+            admissions_email: ADMISSIONS_EMAIL,
+            lang:             lang,
+            // TIMELINE — viaja al KMS y acaba en la fila del trabajo. Cero datos de familia.
+            _traza:           _trazaParaElKms_(trazaCorreo, 'WIZARD_MAGIC_LINK'),
+          });
         });
         // SPEC-WIZ-WARMUP-V2: ticket de warm con el token (renovado o vivo) del grupo.
         // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
@@ -4596,14 +4616,19 @@ function sendMagicLink_(p) {
         // el resto del contenido (saludo, footer) lo gobierna el KMS. El report link usa el
         // primer token (reportUnsolicited_ bloquea el email, no la sesión — cualquiera vale).
         _trazaPaso_(trazaCorreo, 'armar_los_enlaces', { n_expedientes: grps.length });
-        sendViaKmsNotify_('WIZARD_MAGIC_LINK_MULTI', p.primary_email, {
-          family_name:        '',
-          resume_links_block: _kmsRenderResumeLinksBlock_(grps.map(g => g.resume_token), nEmailIds, lang),
-          report_url:         REPORT_BASE_URL + grps[0].resume_token,
-          admissions_email:   ADMISSIONS_EMAIL,
-          // TIMELINE — viaja al KMS y acaba en la fila del trabajo. Cero datos de familia.
-          _traza:             _trazaParaElKms_(trazaCorreo, 'WIZARD_MAGIC_LINK_MULTI'),
-          lang:               lang,
+        // ⛔ ROTAR Y ENVIAR SON UNA SOLA COSA (2026-09-23) — y aquí son N enlaces en UN
+        // correo: si ese correo no se acepta, se reponen LOS N. Uno solo repuesto dejaría a
+        // la misma familia dentro de una solicitud y fuera de otra.
+        _conLosEnlacesRotados_(rotaciones, function () {
+          return sendViaKmsNotify_('WIZARD_MAGIC_LINK_MULTI', p.primary_email, {
+            family_name:        '',
+            resume_links_block: _kmsRenderResumeLinksBlock_(grps.map(g => g.resume_token), nEmailIds, lang),
+            report_url:         REPORT_BASE_URL + grps[0].resume_token,
+            admissions_email:   ADMISSIONS_EMAIL,
+            // TIMELINE — viaja al KMS y acaba en la fila del trabajo. Cero datos de familia.
+            _traza:             _trazaParaElKms_(trazaCorreo, 'WIZARD_MAGIC_LINK_MULTI'),
+            lang:               lang,
+          });
         });
         // SPEC-WIZ-WARMUP-V2: UN ticket que cubre los N grupos (warmBundle los recorre).
         // WIZ-ENUM: misma forma de respuesta que el camino "sin grupo".
@@ -5649,6 +5674,94 @@ function _moverLaCopiaDeLaPuerta_(tokenViejo, tokenNuevo, groupId) {
       JSON.stringify({ gid: groupId, fila: filaNueva, exp: entrada.exp }), restanteS);
     return true;
   } catch (e) { return false; }   // best-effort: mover no puede tumbar el envío del enlace
+}
+
+/**
+ * ⛔ `2026-09-23-el-enlace-se-sustituye-antes-de-mandarlo` — **EL ÚNICO SITIO de este
+ * proceso que decide qué pasa con el enlace cuando el correo no sale.**
+ *
+ * **El invariante, y es lo único que esto consigue:** *una familia NUNCA se queda sin
+ * enlace válido por un correo que no salió.* Rotar y enviar son UNA sola cosa: o pasa
+ * entera o no pasa. Si el envío no se acepta, la solicitud queda **exactamente como
+ * estaba**, con el enlace que la familia ya tenía, funcionando.
+ *
+ * **Lo que pasaba hasta hoy**, medido el 2026-09-23: se rotaba primero y se mandaba
+ * después, así que un `EMAIL_SEND_FAILED` dejaba el enlace de la familia YA MUERTO y el
+ * nuevo **solo dentro del correo que no salió** — ni se podía deshacer ni reenviar. En la
+ * rama pública, además, el `catch` de WIZ-ENUM se lo tragaba y la pantalla decía «te lo
+ * hemos mandado».
+ *
+ * ⛔ **UN SOLO SITIO, a propósito.** Las dos ramas de `sendMagicLink_` —la pública y la de
+ * «Guardar y seguir luego»— pasan por aquí. Escribir este `try/catch` dos veces sería
+ * escribir la misma decisión dos veces, que es justo el defecto que la casa paga una y
+ * otra vez. **Y la ESCRITURA no está aquí**: reponer es del KMS
+ * (`enr.reponerEnlaceAnterior` → `enr_reponerTokenDelGrupo_`), que es el único que escribe
+ * tablas — este proceso no escribe ninguna (P1-A/P1-B).
+ *
+ * ⚠️ **Dentro de `enviar` va SOLO el envío.** Lo que viene después (dejar el clic sin
+ * llamadas, el ticket de calentamiento) ocurre con el correo YA fuera: reponer por un
+ * fallo de ahí le mandaría a la familia un correo con un enlace muerto, que es peor que
+ * el defecto que esto cierra.
+ *
+ * @param {Array<{token_viejo:string, token_nuevo:string, grupo_id:string}>} rotaciones
+ *   las rotaciones que SÍ persistieron en esta petición (`renewed:true`). Vacío ⇒ no hay
+ *   nada que deshacer y esto es transparente.
+ * @param {function():*} enviar  lo que manda el correo. Si lanza, se repone TODO lo rotado
+ *   y **el error se propaga tal cual** — quien lo trate decide qué enseñar.
+ * @returns {*} lo que devuelva `enviar`.
+ * @private
+ */
+function _conLosEnlacesRotados_(rotaciones, enviar) {
+  try {
+    return enviar();
+  } catch (eEnvio) {
+    (rotaciones || []).forEach(function (r) { _reponerElEnlace_(r); });
+    throw eEnvio;
+  }
+}
+
+/**
+ * Deshace UNA rotación cuyo correo no salió. Llamado SOLO desde `_conLosEnlacesRotados_`.
+ *
+ * ⛔ **Best-effort absoluto y NUNCA lanza**: el error que de verdad importa es el del
+ * envío, y una excepción aquí lo taparía.
+ *
+ * ⛔ **Y si la reposición TAMPOCO se puede, no se calla** — es lo peor que puede pasar:
+ * esa solicitud se queda sin enlace ninguno. Se registra nombrando el caso, sin un solo
+ * dato personal (`redact_`, KAL-11).
+ *
+ * **La copia de la puerta VUELVE con él** (`_moverLaCopiaDeLaPuerta_`, el mismo ayudante
+ * que la trajo al rotar): conserva un «sí» que ya existía, jamás lo crea. Y se OLVIDA la
+ * del token nuevo, que a partir de aquí no resuelve — con ella se va el sello del
+ * expediente, que es lo que invalida la caché de recuperación: sin eso quedaría guardada
+ * una entrada **con un token muerto**, que es justo lo que esa caché tiene prohibido.
+ * @private
+ */
+function _reponerElEnlace_(r) {
+  if (!r || !r.token_viejo || !r.token_nuevo || !r.grupo_id) return false;
+  var repuesto = false;
+  try {
+    var res = kmsProxy_('enr.reponerEnlaceAnterior', {
+      resume_token:   r.token_nuevo,     // KAL-4: el expediente sale del token, no del cuerpo
+      token_anterior: r.token_viejo,
+    });
+    repuesto = !!(res && res.repuesto);
+  } catch (e) {
+    repuesto = false;
+  }
+  try {
+    if (repuesto) _moverLaCopiaDeLaPuerta_(r.token_nuevo, r.token_viejo, r.grupo_id);
+  } catch (e2) { /* best-effort */ }
+  try { _olvidarCabeceraMemo_(r.token_nuevo, r.grupo_id); } catch (e3) { /* best-effort */ }
+  if (!repuesto) {
+    Logger.log(redact_('[_reponerElEnlace_] ⛔ EL ENLACE NO SE PUDO REPONER — el correo no '
+      + 'salió y el KMS no repuso el anterior: esta solicitud se ha quedado SIN enlace '
+      + 'válido. expediente=' + r.grupo_id));
+  } else {
+    Logger.log(redact_('[_reponerElEnlace_] enlace repuesto tras un envío que no se aceptó. '
+      + 'expediente=' + r.grupo_id));
+  }
+  return repuesto;
 }
 
 /**
