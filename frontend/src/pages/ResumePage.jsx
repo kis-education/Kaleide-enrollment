@@ -197,7 +197,22 @@ export default function ResumePage() {
             // La ÚNICA clase en la que pedir otro enlace es la salida correcta: el que la
             // familia tiene no la va a llevar a ninguna parte. La portada ya trae el cartel
             // y la casilla del correo (`landing.resume_error`).
-            navigate('/?resume_error=1', { replace: true });
+            //
+            // ★ `2026-09-23-un-solo-cartel-para-cuatro-causas` — Y SE LLEVA EL CÓDIGO. El
+            // servidor distingue TRES causas («se emitió otro más nuevo», «la cerraste» y
+            // «caducó de verdad»), cada una con SU salida; aquí se tiraba `err.code` y la
+            // portada solo podía pintar un texto para todas — el que nombra la causa que
+            // casi nunca es y manda a hacer justo lo que mata el enlace.
+            //
+            // ⛔ Viaja el CÓDIGO DE MÁQUINA y NADA MÁS: ni `err.message` (un mensaje se
+            // traduce y se reescribe; un código no), ni el token, ni el correo (KAL-7 ·
+            // KAL-11). La portada lo casa contra una LISTA BLANCA
+            // (`lib/cartelDelEnlace.js`) y jamás lo pinta.
+            const codigo = (err && err.code) ? String(err.code) : '';
+            navigate(
+              codigo ? `/?resume_error=1&resume_code=${encodeURIComponent(codigo)}` : '/?resume_error=1',
+              { replace: true },
+            );
             return;
           }
           // Las otras dos se quedan AQUÍ, con el token vivo, y ofrecen reintentar.

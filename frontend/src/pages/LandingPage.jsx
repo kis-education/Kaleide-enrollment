@@ -9,6 +9,7 @@ import LegalFooter from '../components/LegalFooter';
 import PrivacyPolicyModal from '../components/PrivacyPolicyModal';
 import { useSearchParams } from 'react-router-dom';
 import { CONSENT_TEXTS } from '../consentTexts';
+import { claveDelCartelDelEnlace } from '../lib/cartelDelEnlace';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
@@ -30,6 +31,12 @@ export default function LandingPage() {
   }, []);
 
   const resumeError = searchParams.get('resume_error') === '1';
+  // ★ `2026-09-23-un-solo-cartel-para-cuatro-causas` — CUÁL de las causas, no «alguna».
+  // `ResumePage` manda el CÓDIGO de máquina con el que el servidor rechazó el enlace; el
+  // mapa (`lib/cartelDelEnlace.js`, UN SOLO SITIO) lo traduce a su texto.
+  // ⛔ Nunca se pinta lo que venga en la dirección: es una lista blanca, y lo que no esté
+  // en ella —o no venga nada— cae al texto de hoy, byte a byte.
+  const claveDelCartel = claveDelCartelDelEnlace(searchParams.get('resume_code'));
 
   const [email,       setEmail]       = useState(searchParams.get('email') || '');
   const [emailErr,    setEmailErr]    = useState('');
@@ -150,7 +157,7 @@ export default function LandingPage() {
       {resumeError && (
         <div style={{ background: '#fff3ec', borderBottom: '2px solid #f37021', padding: '14px 24px', display: 'flex', alignItems: 'center', gap: 10, color: '#18222e' }}>
           <i className="bi bi-exclamation-triangle-fill" style={{ color: '#f37021', fontSize: '1.1em' }} />
-          <span>{t('landing.resume_error')}</span>
+          <span data-testid="landing-resume-error">{t(claveDelCartel)}</span>
         </div>
       )}
 

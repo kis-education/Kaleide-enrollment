@@ -709,6 +709,15 @@ valiendo hasta 30 minutos.
   TEXTO**: un mensaje se traduce y se reescribe; un código no. La clase de transporte **se queda en
   la página con el enlace vivo** y reintenta sola (1,5 s · 4 s, diciéndolo); solo «el enlace no vale»
   va a la portada, que es donde está la única salida que le queda.
+  ⛔ **Y esa clase YA NO habla con una sola voz:** `ResumePage` se lleva a la portada el **CÓDIGO de
+  máquina** (`?resume_code=`, y **nada más** — ni el mensaje, ni el token, ni el correo), y la portada
+  lo casa contra una **LISTA BLANCA que vive en UN SOLO SITIO**,
+  `frontend/src/lib/cartelDelEnlace.js`: las tres causas dicen **qué pasó y cuál es su salida**
+  —«se emitió uno más nuevo, busca el último correo» · «la cerraste, empieza otra» · «caducó de
+  verdad, pide uno nuevo»— y **lo que no esté en el mapa cae al texto de hoy, byte a byte**. Dar de
+  alta una causa es **una línea** de ese mapa más su par de textos. ⚠️ `BAD_REQUEST` está en el
+  conjunto pero **este camino no lo emite** (un token con forma mala lanza SIN código) ⇒ **no tiene
+  texto a propósito**.
 - ⛔ **Los catálogos no se inventan.** Son **TRES** situaciones: *cargando* · *el colegio contestó* (y
   su lista puede estar legítimamente vacía) · *no se pudo cargar*, **que se dice y se puede
   reintentar**. Lo que acredita que contestó es que venga una **lista** (`Array.isArray`), no que

@@ -38,9 +38,17 @@
 
 /**
  * Códigos con los que el SERVIDOR dice «este enlace no sirve». Los tres primeros los acuña
- * `_errorDeEnlace_` (`backend/Code.js`, un solo sitio); `BAD_REQUEST` es el token que ni
- * siquiera tiene forma de UUID (`assertValidUuid_`), que es el mismo caso desde el punto de
- * vista de la familia: ese enlace no la va a llevar a su solicitud.
+ * `_errorDeEnlace_` (`backend/Code.js`, un solo sitio) y son los únicos que este camino
+ * emite de verdad.
+ *
+ * ⚠️ `BAD_REQUEST` está declarado aquí, pero **ESTE CAMINO NUNCA LO EMITE**, y el comentario
+ * que decía lo contrario mandaba a escribirle un texto que nadie leería jamás. MEDIDO el
+ * 2026-09-23 contra `origin/main`: un token sin forma de UUID hace saltar
+ * `assertValidUuid_` (`backend/Code.js:401`), que lanza un `Error` **SIN `code`** ⇒ llega al
+ * navegador sin código y `clasificarFalloDeEntrada` lo manda a `NO_SE_PUDO_CARGAR`, no aquí.
+ * Se conserva en el conjunto porque, si algún día un manejador de este camino lo acuñara, la
+ * familia tendría que ver la salida de «el enlace no vale»; lo que NO se hace es darle texto
+ * propio en `lib/cartelDelEnlace.js` mientras nadie lo emita.
  */
 const ENLACE_MUERTO = new Set([
   'ENLACE_NO_VALIDO',

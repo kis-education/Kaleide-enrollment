@@ -11241,6 +11241,98 @@ async function caminoEnlaceNoHaCaducado(page, base) {
       llamadas('hydrateSession').length === 1,
       `se registraron ${llamadas('hydrateSession').length} intentos: repetir una hidratación que el servidor ya rechazó por su nombre no la va a aceptar la segunda vez`)
 
+    // ── C.bis · `2026-09-23-un-solo-cartel-para-cuatro-causas` — CUÁL DE LAS CUATRO ──────
+    //
+    // ⛔ EL DEFECTO QUE ESTO VIGILA: la portada enseñaba UN SOLO texto para las tres causas
+    // que el servidor sí distingue, y ese texto nombra la que aritméticamente casi nunca es
+    // («puede haber caducado» — los enlaces duran SIETE días) y ofrece la salida que ROTA el
+    // enlace bueno. A un tutor cuyo enlace murió porque ya se emitió uno más nuevo se le
+    // mandaba a repetir justo lo que lo mató.
+    //
+    // Se mide la CADENA ENTERA, no el mapa: el servidor rechaza con su código → `ResumePage`
+    // lo lleva a la portada → la portada lo casa contra la lista blanca. Un eslabón roto en
+    // cualquiera de los tres sale aquí.
+    //
+    // ⚠️ El sufijo `?e2e=` va ANTES del hash a propósito: sin él, dos entradas seguidas al
+    // mismo enlace serían navegación del mismo documento y una fase podría medir el cartel
+    // que dejó la anterior — es decir, medir el aire.
+    const cartelDeLaPortada = async (codigo) => {
+      calls = []
+      scenario.hidratacionRechazada = codigo
+      await page.goto(`${base}/?e2e=${++_cargaPortada}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+        { waitUntil: 'domcontentloaded', timeout: 30000 })
+      const llego = await page.waitForFunction(
+        () => !!document.querySelector('[data-testid="landing-resume-error"]'),
+        null, { timeout: LATENCY * 4 + 20000 },
+      ).then(() => true).catch(() => false)
+      if (!llego) return { llego: false, texto: '', hash: await page.evaluate(() => window.location.hash) }
+      return {
+        llego: true,
+        ...(await page.evaluate(() => ({
+          texto: (document.querySelector('[data-testid="landing-resume-error"]').textContent || '').replace(/\s+/g, ' ').trim(),
+          hash:  window.location.hash,
+        }))),
+      }
+    }
+
+    // El texto de HOY, MEDIDO en vivo: la portada sin ningún código. Es el respaldo con el
+    // que tiene que seguir cayendo lo que no esté en la lista blanca.
+    await page.goto(`${base}/?e2e=${++_cargaPortada}#/?resume_error=1`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const hoySinCodigo = await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="landing-resume-error"]'),
+      null, { timeout: LATENCY * 2 + 20000 },
+    ).then(() => page.evaluate(() => (document.querySelector('[data-testid="landing-resume-error"]').textContent || '').replace(/\s+/g, ' ').trim()))
+     .catch(() => '')
+
+    if (!hoySinCodigo) {
+      c.fallos.push('(11.bis.0) ANCLA: la portada no pinta su cartel ni con `resume_error=1` a secas ⇒ las afirmaciones de C.bis medirían el aire')
+      return c
+    }
+    c.afirmar('(11.bis.0) ANCLA — sin código, la portada sigue pintando el cartel de HOY',
+      /No hemos podido cargar tu solicitud/.test(hoySinCodigo),
+      `el cartel sin código decía: ${hoySinCodigo.slice(0, 200)}`)
+
+    // Qué tiene que leer el tutor en cada caso. El fragmento es lo que hace la afirmación
+    // DISCRIMINANTE: no basta con «salió un texto», tiene que salir EL SUYO.
+    const CARTELES = [
+      { codigo: 'ENLACE_NO_VALIDO',  fragmento: /se emitió uno más nuevo/i,       porque: 'se emitió un enlace más nuevo ⇒ hay que buscar el ÚLTIMO correo, no pedir otro' },
+      { codigo: 'ENLACE_ABANDONADO', fragmento: /se cerró desde el asistente/i,   porque: 'esa solicitud se cerró ⇒ hay que empezar una nueva' },
+      { codigo: 'ENLACE_CADUCADO',   fragmento: /duran 7 días/i,                  porque: 'los 7 días de verdad ⇒ ahí sí, pedir uno nuevo' },
+    ]
+
+    const leidos = []
+    for (const cartel of CARTELES) {
+      const r = await cartelDeLaPortada(cartel.codigo)
+      leidos.push({ codigo: cartel.codigo, texto: r.texto })
+      c.afirmar(`(11.bis.1·${cartel.codigo}) el tutor lee SU causa, no una sola para todas`,
+        r.llego && cartel.fragmento.test(r.texto),
+        `${r.llego ? `la portada decía: ${r.texto.slice(0, 220)}` : `el cartel no llegó a pintarse; el hash quedó en "${r.hash}"`} — tenía que decir que ${cartel.porque}`)
+      c.afirmar(`(11.bis.2·${cartel.codigo}) el CÓDIGO viaja a la portada — no se pinta el texto de siempre`,
+        r.llego && r.texto !== hoySinCodigo,
+        'la portada enseñó el cartel genérico: `ResumePage` está tirando `err.code` otra vez, o el mapa no lo reconoce')
+    }
+
+    // ⛔ LA AFIRMACIÓN QUE DE VERDAD DISCRIMINA: dos causas distintas no pueden leerse igual.
+    // Es la que se pone ROJA si alguien hace que dos códigos apunten a la misma clave de
+    // texto, que es exactamente el defecto que esto cierra (un cartel para varias causas).
+    const distintos = new Set(leidos.map(l => l.texto))
+    c.afirmar('(11.bis.3) las TRES causas dicen cosas DISTINTAS — un cartel por causa, no uno para todas',
+      distintos.size === leidos.length,
+      `se leyeron ${distintos.size} textos distintos para ${leidos.length} códigos: ${JSON.stringify(leidos.map(l => `${l.codigo} → ${l.texto.slice(0, 70)}`))}`)
+
+    // ⛔ LISTA BLANCA: lo que NO está en el mapa cae al texto de hoy, byte a byte. Se usa
+    // `BAD_REQUEST` porque está declarado en `ENLACE_MUERTO` (`lib/fallosDeEntrada.js`) —así
+    // que llega hasta la portada— y NO tiene texto propio a propósito: el camino real nunca
+    // lo emite (un token con forma mala lanza SIN código y cae en «no se pudo cargar»).
+    const desconocido = await cartelDeLaPortada('BAD_REQUEST')
+    c.afirmar('(11.bis.4) un código que el mapa no conoce enseña el texto de HOY, byte a byte',
+      desconocido.llego && desconocido.texto === hoySinCodigo,
+      `${desconocido.llego ? `la portada decía: ${desconocido.texto.slice(0, 220)}` : 'el cartel no llegó a pintarse'} — se esperaba exactamente: ${hoySinCodigo.slice(0, 220)}`)
+    c.evidencia.elementos += leidos.length + 1
+
+    scenario.hidratacionRechazada = null
+
     // ── D · ERROR NOMBRADO: se dice ÉSE, y se deja reintentar ───────────────────────────
     calls = []
     scenario.hidratacionRechazada = 'KMS_NOT_CONFIGURED'
