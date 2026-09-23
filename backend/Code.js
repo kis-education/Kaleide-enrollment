@@ -2371,6 +2371,119 @@ function _wzCacheInvalidate_(resumeToken, motivo) {
 }
 
 /**
+ * ⛔ REGLA 3 (Diego, 2026-09-23) — CUANDO EL TUTOR ESCRIBE, EL ASISTENTE **ACTUALIZA** SU
+ * COPIA; HASTA HOY SOLO LA TIRABA.
+ *
+ * Cita literal: *«Si alguien desde el UI del wizard modifica algo de esa solicitud se
+ * actualiza en el backend del wizard y, cuando sea necesario, se le manda al KMS.»* La
+ * segunda mitad estaba hecha (se le manda al KMS); la primera no: los once escritores
+ * llamaban a `_wzCacheInvalidate_`, que SUBE LA VERSIÓN y ahí se acaba — la copia vieja
+ * queda marcada y el tutor que acaba de escribir paga el viaje entero la próxima vez que
+ * el asistente la necesita. **Invalidar NO es actualizar.**
+ *
+ * ⛔ **EL MOLDE NO SE INVENTA: SE COPIA DE `enr_notifyWizardLiveState_` (KMS), que ya hace
+ * esto para el otro lado — BUMPA PRIMERO, ARCHIVA DESPUÉS.** Aquí el bump ya ocurrió: lo
+ * hizo `_wzCacheInvalidate_` al PRINCIPIO del manejador, antes de salir hacia el KMS (y ahí
+ * se queda: moverlo dejaría servir algo viejo si la escritura revienta a medias). Esto es
+ * la segunda mitad, y por eso se llama al FINAL.
+ *
+ * ⛔⛔ **LA BARANDILLA QUE MANDA SOBRE LA VELOCIDAD — Y ES LA RAZÓN DE QUE ESTO NO SE APLIQUE
+ * EN LOS ONCE SITIOS: EL ASISTENTE ENCOLA.** Seis de los once escritores le piden al KMS que
+ * APUNTE el trabajo (`{ok:true, queued:true}`) y contestan antes de que nada se haya escrito
+ * — la cola tarda entre 62 y 266 s (medido, `kis-app/CLAUDE.md`). Rehacer la copia ahí
+ * traería del KMS **la foto de ANTES del cambio** y la archivaría **sellada con la versión de
+ * AHORA**: lo viejo servido como nuevo, y el tutor viendo desaparecer lo que acaba de
+ * escribir. Por eso:
+ *
+ *   **SI EL KMS NO HA CONFIRMADO LA ESCRITURA, NO SE REHACE NADA** — se deja exactamente el
+ *   comportamiento de hoy (marcada vieja, viaje al entrar), que es lento pero HONESTO.
+ *
+ * Y la confirmación **NO se decide por una lista de nombres escrita a mano**: se LEE de lo
+ * que contestó el KMS. `queued === true` ⇒ no ha escrito. Un manejador nuevo que encole
+ * hereda la guarda sin que nadie se acuerde de añadirlo a ninguna lista.
+ *
+ * ⛔ **LA COPIA SALE SIEMPRE DEL KMS, JAMÁS DE LO QUE EL TUTOR TECLEÓ.** Parchear la copia
+ * con lo que se acaba de mandar sería gratis y sería mentira: el KMS DESCARTA filas
+ * (`rechazadas_por_quien_puede_contestar`, `rechazadas_por_formato_no_declarado`,
+ * `neae_vaciado_no_declarado`…) y esos descartes son DEFINITIVOS — la familia estaría viendo
+ * como guardado algo que el colegio rechazó.
+ *
+ * ⛔ **NI UN ESCRITOR NUEVO, NI UNA CACHÉ NUEVA, NI UN CANAL NUEVO.** Se pide por la MISMA
+ * acción que usa el camino vivo cuando falla la copia (`enr.hydrateApplication`), se archiva
+ * con el escritor ÚNICO (`_espejoGuardarCopia_`) y bajo la clave EXACTA que calcula
+ * `hydrateSession_` — la del tutor QUE OPERA, porque la copia va por (expediente × TUTOR) y
+ * nunca lleva los datos del otro (DL-E49 §2). Se archiva el payload **CRUDO** del KMS, igual
+ * que el write-through del camino vivo: las adaptaciones (preguntas, fechas, reapertura) las
+ * aplica `hydrateSession_` a los dos orígenes por igual.
+ *
+ * ⛔ **UNA ESCRITURA POR MEDIO CANCELA EL ARCHIVO.** Entre que se pide la copia y se archiva
+ * puede haber entrado otro guardado (y su bump). `_espejoGuardarCopia_` sella con la versión
+ * QUE HAYA AHORA, así que archivar entonces sellaría como nueva una copia anterior a ese otro
+ * cambio. Se mira la versión antes y después: si se movió, **no se archiva** y la copia queda
+ * marcada vieja — que es el comportamiento de hoy, nunca un dato incorrecto servido.
+ *
+ * ⛔ **SOLO GUARDA.** Quién puede LEER la copia no cambia ni un ápice: el código de un solo
+ * uso (②27), KAL-4, el candado de datos personales y el recorte por tutor siguen igual. Y es
+ * **best-effort absoluto**: la escritura del tutor YA está hecha y nada de aquí puede
+ * tumbarla — cualquier fallo se registra y se devuelve la respuesta del KMS tal cual.
+ *
+ * @param {Object} p                 el cuerpo del manejador (token, `n`, `recovered_email`, idioma).
+ * @param {*}      respuestaDelKms   lo que contestó el KMS a la escritura. `queued:true` ⇒ no confirmada.
+ * @returns {{rehecha:boolean, motivo:string}} solo para el registro y para la red de comprobación.
+ * @private
+ */
+function _wzCopiaAlDia_(p, respuestaDelKms) {
+  var fuera = function (motivo) { return { rehecha: false, motivo: motivo }; };
+  try {
+    var token = (p && p.resume_token) ? String(p.resume_token).trim() : '';
+    if (!token) return fuera('SIN_ENLACE');
+
+    // ⛔ LA BARANDILLA, ANTES DE NADA: sin confirmación del KMS no se rehace nada.
+    if (!respuestaDelKms || typeof respuestaDelKms !== 'object') return fuera('SIN_RESPUESTA');
+    if (respuestaDelKms.queued === true) return fuera('ENCOLADA');
+
+    var gid = requireResumeTokenMemo_({ resume_token: token });
+    if (!gid) return fuera('SIN_EXPEDIENTE');
+
+    // La clave se calcula con el `n`/`recovered_email` CRUDOS del cuerpo, EXACTAMENTE como la
+    // calcula `hydrateSession_`. Una clave distinta no la lee nadie.
+    var clave = _wzCacheKey_('hyd', gid + '_' + _wzN_(p && p.n, p && p.recovered_email));
+
+    var vAntes = _versionDeClase_(gid, 'hyd');
+    var pedidaEn = new Date().toISOString();
+
+    // El MISMO resolvedor de identidad que usa el camino vivo (`effectiveRecoveredEmail_`),
+    // con la cabecera que la puerta de este mismo manejador ya dejó en memoria.
+    var effRecovered = null;
+    try {
+      effRecovered = effectiveRecoveredEmail_(
+        token, p && p.recovered_email, p && p.n, _expedienteDelToken_(token).fila);
+    } catch (eId) { effRecovered = null; }
+
+    var data = kmsProxy_('enr.hydrateApplication', {
+      resume_token:    token,
+      recovered_email: effRecovered || null,
+      language:        (p && p.language) ? String(p.language).trim() : null,
+    });
+    if (!data || typeof data !== 'object') return fuera('SIN_COPIA');
+
+    // Otro guardado se coló mientras pedíamos: lo que traemos ya no es lo último.
+    if (_versionDeClase_(gid, 'hyd') !== vAntes) return fuera('OTRA_ESCRITURA_POR_MEDIO');
+
+    if (!_espejoGuardarCopia_(CacheService.getScriptCache(), gid, null, data,
+          { claveYa: clave, calculadaEn: pedidaEn })) {
+      return fuera('NO_ARCHIVADA');
+    }
+    Logger.log('[_wzCopiaAlDia_] copia rehecha tras escribir — grupo=' +
+      String(gid).slice(0, 8) + '…');
+    return { rehecha: true, motivo: 'REHECHA' };
+  } catch (e) {
+    try { Logger.log(redact_('[_wzCopiaAlDia_] non-fatal — ' + ((e && e.message) || e))); } catch (_eL) {}
+    return fuera('ERROR');
+  }
+}
+
+/**
  * WIZARD-CACHE — transporte en LOTE al KMS (UrlFetchApp.fetchAll): GAS no tiene fetch
  * paralelo entre llamadas kmsProxy_ secuenciales; fetchAll sí concurre los pulls de
  * documentos del warm. URL/bearer/envelope/parse VERBATIM de kmsProxy_ (mismo
@@ -6337,6 +6450,11 @@ function saveStep_(p) {
   // helper from a legacy flow; no current frontend caller invokes it, and the
   // canonical state-machine API lives in KMS — so gating it too is correct.
   assertGroupEditable_(enrollmentGroupId);
+  // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
+  // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
+  // ahora traería la foto de ANTES del cambio y la archivaría sellada como nueva. Se queda
+  // marcada vieja —el tutor paga el viaje— hasta que el KMS avise o el repaso la rehaga:
+  // lento, pero honesto (§`_wzCopiaAlDia_`).
   // `0º.quinquagies` B — SIN motivo A PROPÓSITO: escribe LA CLASE QUE DIGA `step`, y declarar ese mapa aquí sería una segunda
   // declaración de qué escribe cada paso —la primera vive en el escritor del KMS— que un día
   // diría otra cosa. Sin motivo se tiran las cinco: exactamente lo de ayer.
@@ -6858,7 +6976,7 @@ function submitEnrollmentSession_(p) {
   // El CORREO de ese acuse NO se encadena aqui: cuelga del paso «la parte de un tutor esta
   // enviada» y lo declara el centro en su pantalla de avisos (DL-E44 §4), igual que los dos
   // correos del envio que se retiraron de este mismo fichero el 2026-08-07.
-  return {
+  var respuestaDelEnvio = {
     submitted:           true,
     enrollment_group_id: enrollmentGroupId,
     enrollment_ids:      enrollmentIds,
@@ -6876,6 +6994,23 @@ function submitEnrollmentSession_(p) {
     consentimientos_registrados: consentRows.length,
     consentimiento_sin_firmante: !signerPersonId,
   };
+
+  // ⭐ REGLA 3 — LA COPIA AL DÍA, Y AQUÍ ES DONDE MÁS SE NOTA.
+  //
+  // El envío escribe SIN ENCOLAR (`enr.persistSubmitEnrollments` + `enr.persistSubmitSideEffects`,
+  // los dos síncronos): cuando llegamos aquí, los expedientes están materializados, el envío
+  // sellado y los consentimientos escritos. La copia se puede rehacer de verdad.
+  //
+  // Y el tutor NO está esperando esta respuesta: el paso 7 es «dispara y navega»
+  // (`Step7Review`), así que el viaje que esto cuesta **no lo paga nadie** — mientras que lo
+  // que ahorra sí lo pagaba: lo siguiente que hace el asistente es hidratar para pintar los
+  // pasos 8-11.
+  //
+  // ⛔ Va DESPUÉS de componer la respuesta y ANTES de devolverla, y es best-effort: el envío ya
+  // está hecho y nada de esto puede tocarlo. Se le pasa `respuestaDelEnvio` porque la guarda de
+  // `_wzCopiaAlDia_` lee la confirmación de lo que contestó el KMS, no de una lista de nombres.
+  _wzCopiaAlDia_(p, respuestaDelEnvio);
+  return respuestaDelEnvio;
 }
 
 /**
@@ -7869,6 +8004,11 @@ function saveResponses_(p) {
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   // ②24: y la marca tiene que ser DEL BUZÓN que opera, no de cualquiera del expediente.
   assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
+  // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
+  // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
+  // ahora traería la foto de ANTES del cambio y la archivaría sellada como nueva. Se queda
+  // marcada vieja —el tutor paga el viaje— hasta que el KMS avise o el repaso la rehaga:
+  // lento, pero honesto (§`_wzCopiaAlDia_`).
   _wzCacheInvalidate_(p && p.resume_token, 'RESPUESTAS'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const { respondent_id, respondent_type_category_id, responses } = p;
@@ -8211,6 +8351,11 @@ function uploadDocument_(p) {
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
   assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
+  // ⛔ REGLA 3 — el KMS SÍ escribe esto sin encolar, y aun así **la copia no se rehace aquí,
+  // por COSTE**: los papeles se suben de uno en uno y seguidos, así que cada copia rehecha se
+  // la lleva por delante el bump de la subida siguiente — N viajes al KMS de los que N-1 se
+  // tiran, y todos ellos DENTRO de la espera del tutor (este manejador ya paga 2-3 viajes).
+  // Lo que el paso 6 necesita después no es la hidratación, es el simulador del paso 7.
   _wzCacheInvalidate_(p && p.resume_token, 'DOCUMENTOS'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   const { base64, mimeType } = p;
@@ -8885,6 +9030,11 @@ function saveNeae_(p) {
   // buzón. KAL-4: enrollmentGroupId derivado del token, nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
   assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
+  // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
+  // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
+  // ahora traería la foto de ANTES del cambio y la archivaría sellada como nueva. Se queda
+  // marcada vieja —el tutor paga el viaje— hasta que el KMS avise o el repaso la rehaga:
+  // lento, pero honesto (§`_wzCopiaAlDia_`).
   _wzCacheInvalidate_(p && p.resume_token, 'SALUD'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   const neaeData = Array.isArray(p && p.neae) ? p.neae
@@ -10055,6 +10205,11 @@ function saveBillingInfo_(p) {
   // resolver (dos lectores del mismo dato divergen; y aquí además costaría lecturas).
   assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
+  // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
+  // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
+  // ahora traería la foto de ANTES del cambio y la archivaría sellada como nueva. Se queda
+  // marcada vieja —el tutor paga el viaje— hasta que el KMS avise o el repaso la rehaga:
+  // lento, pero honesto (§`_wzCopiaAlDia_`).
   _wzCacheInvalidate_(p && p.resume_token, 'FACTURACION'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   return kmsProxy_('enr.saveBillingInfoQueued', Object.assign({}, sctx.identity, {
@@ -10165,10 +10320,15 @@ function applyPaymentModality_(p) {
   assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   _wzCacheInvalidate_(p && p.resume_token, 'FACTURACION'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
-  return kmsProxy_('enr.applyPaymentModality', Object.assign({}, sctx.identity, {
+  // REGLA 3 — `enr_wizardApplyModality` re-deriva el plan y lo escribe SIN ENCOLAR, así que
+  // su respuesta acredita el cambio. Y aquí importa el doble: el tutor sigue al paso 9, que
+  // rehidrata — sin esto pagaría el viaje entero justo después de elegir cómo paga.
+  var respModalidad = kmsProxy_('enr.applyPaymentModality', Object.assign({}, sctx.identity, {
     subscription_id: subscriptionId,
     modality_id:     modalityId,
   }));
+  _wzCopiaAlDia_(p, respModalidad);    // bumpado arriba, archivado aquí (§`_wzCopiaAlDia_`)
+  return respModalidad;
 }
 
 /**
@@ -10279,10 +10439,14 @@ function requestCorrection_(p) {
   // `0º.quinquagies` B — SIN motivo A PROPÓSITO: completa una marca del expediente; qué copias mueve depende de lo que el colegio
   // pida corregir. Sin medirlo, se tiran las cinco.
   _wzCacheInvalidate_(p.resume_token);       // WIZARD-CACHE: nunca stale tras un write
-  return kmsProxy_('enr.requestCorrection', {
+  // REGLA 3 — el KMS ESCRIBE AQUÍ SIN ENCOLAR (`enr_wizardRequestCorrection`, síncrono), así
+  // que cuando contesta el cambio YA está en la base: la copia se puede rehacer de verdad.
+  var respCorreccion = kmsProxy_('enr.requestCorrection', {
     resume_token: String(p.resume_token),
     note: p.note ? String(p.note).slice(0, 500) : null,
   });
+  _wzCopiaAlDia_(p, respCorreccion);   // bumpado arriba, archivado aquí (§`_wzCopiaAlDia_`)
+  return respCorreccion;
 }
 
 /**
@@ -10345,7 +10509,10 @@ function retirarDelExpediente_(p) {
     e.code = 'BAD_REQUEST';
     throw e;
   }
-  return kmsProxy_('enr.retirarDeLaSolicitud', {
+  // REGLA 3 — `enr_wizardRetirar` retira FILA A FILA y SIN ENCOLAR: cuando contesta, lo
+  // quitado ya no está. La copia se rehace con lo que el KMS ve ahora, no con lo que
+  // pedimos quitar — que es la diferencia entre actualizar y adivinar.
+  var respRetirada = kmsProxy_('enr.retirarDeLaSolicitud', {
     resume_token: String(p.resume_token),
     retirar: lote.map(function (it) {
       return {
@@ -10354,6 +10521,8 @@ function retirarDelExpediente_(p) {
       };
     }),
   });
+  _wzCopiaAlDia_(p, respRetirada);     // bumpado arriba, archivado aquí (§`_wzCopiaAlDia_`)
+  return respRetirada;
 }
 
 /**
@@ -10430,6 +10599,11 @@ function submitGdprConsents_(p) {
     throw new Error('consents must be a non-empty array');
   }
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
+  // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
+  // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
+  // ahora traería la foto de ANTES del cambio y la archivaría sellada como nueva. Se queda
+  // marcada vieja —el tutor paga el viaje— hasta que el KMS avise o el repaso la rehaga:
+  // lento, pero honesto (§`_wzCopiaAlDia_`).
   _wzCacheInvalidate_(p && p.resume_token, 'FIRMA'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   // GATE-B modo conservador: pasamos el array consents[] tal cual sin
@@ -10463,6 +10637,11 @@ function confirmReview_(p) {
   // ②24: y a nombre del buzón que opera.
   assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
+  // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
+  // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
+  // ahora traería la foto de ANTES del cambio y la archivaría sellada como nueva. Se queda
+  // marcada vieja —el tutor paga el viaje— hasta que el KMS avise o el repaso la rehaga:
+  // lento, pero honesto (§`_wzCopiaAlDia_`).
   _wzCacheInvalidate_(p && p.resume_token, 'FIRMA'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   // DL-E44 §2 (2026-06-12): reenviar accepted[] al KMS — antes se descartaba aquí

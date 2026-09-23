@@ -583,6 +583,54 @@ caché, nunca acierto** · ⛔ **no regala la gracia** que salta el código · l
 **DESPUÉS** del bucle de renovación, con los tokens finales · el correo se guarda **RESUMIDO**
 (KAL-11) · vence en **6 h**, el techo de `CacheService`.
 
+### Cuando el tutor ESCRIBE, la copia se REHACE — pero solo con el KMS confirmando (regla 3)
+
+> Diego, 2026-09-23: *«Si alguien desde el UI del wizard modifica algo de esa solicitud se
+> actualiza en el backend del wizard y, cuando sea necesario, se le manda al KMS.»*
+
+Los **ONCE** escritores llaman a `_wzCacheInvalidate_`, que **solo SUBE LA VERSIÓN**. Eso marca la
+copia vieja y deja al tutor pagando el viaje entero. **Invalidar NO es actualizar.** La segunda
+mitad la pone `_wzCopiaAlDia_(p, respuestaDelKms)`, con el molde copiado del KMS
+(`enr_notifyWizardLiveState_`): **bumpa primero** —lo hace el propio `_wzCacheInvalidate_` al
+principio del manejador, y ahí se queda— y **archiva después**, al final.
+
+⛔ **LA BARANDILLA MANDA SOBRE LA VELOCIDAD: si el KMS no ha CONFIRMADO, no se rehace nada.** Seis
+de los once escritores le piden al KMS que APUNTE el trabajo y contestan antes de que se escriba
+nada (la cola tarda 62-266 s). Rehacer ahí traería **la foto de ANTES** sellada con la versión de
+AHORA. La confirmación **se LEE de lo que contestó el KMS** (`queued === true` ⇒ no confirmada),
+nunca de una lista de nombres: un manejador nuevo que encole hereda la guarda solo.
+
+⛔ **La copia sale SIEMPRE del KMS, jamás de lo que el tutor tecleó.** Parchearla sería gratis y
+sería mentira: el KMS DESCARTA filas y esos descartes son DEFINITIVOS. ⛔ **Ni escritor nuevo, ni
+caché nueva, ni canal nuevo**: se pide con `enr.hydrateApplication` (la acción que ya usa el camino
+vivo) y se archiva con `_espejoGuardarCopia_` bajo la clave EXACTA de `hydrateSession_`, la del
+tutor QUE OPERA (la copia va por expediente × TUTOR, DL-E49 §2). ⛔ **Una escritura por medio
+cancela el archivado** (se compara la versión de `hyd` antes y después). ⛔ **Solo guarda**: quién
+puede leerla no cambia, y es best-effort absoluto.
+
+**Dónde SÍ se rehace hoy — los cuatro que el KMS escribe SIN encolar:** el ENVÍO
+(`submitEnrollmentSession_`, y ahí sale gratis: el paso 7 es «dispara y navega», así que nadie
+espera ese viaje, y lo siguiente que hace el asistente es hidratar los pasos 8-11) · la forma de
+pago (`applyPaymentModality_`) · pedir ayuda (`requestCorrection_`) · quitar algo
+(`retirarDelExpediente_`).
+
+**Dónde NO, y por qué:** los SEIS que el KMS ENCOLA —`saveStep_`, `saveResponses_`, `saveNeae_`,
+`saveBillingInfo_`, `submitGdprConsents_`, `confirmReview_`— porque sería deshonesto; y
+`uploadDocument_`, que el KMS sí escribe síncrono, **por COSTE**: los papeles se suben seguidos, así
+que cada copia rehecha se la lleva el bump del siguiente (N viajes, N-1 tirados) y todos dentro de
+la espera del tutor.
+
+⚠️ **Lo que queda de la regla 3 sin cubrir, dicho sin adornar:** para esos seis, la copia solo se
+rehace cuando el KMS avisa (regla 2) o cuando el repaso de 30 min pasa por ahí. Y **el aviso del KMS
+NO sale para casi ninguna escritura del asistente**: su despachador único de la cola
+(`enr_writeFromPersistJob_`, `kis-app kms-server/enr/wizard-gateway.gs`) **no llama** a
+`enr_avisarCambioDeDatosDeSolicitud_` — solo lo hacen, de rebote, los ayudantes de
+`enr/staging.gs` que escriben personas y vínculos. **Cerrar eso es trabajo del KMS, no de aquí.**
+
+**Red:** `node scripts/servidor/la-copia-se-actualiza-al-escribir.mjs` — carga `backend/Code.js`
+REAL en un `vm` con dobles (sin red, sin navegador, sin datos reales) y ejecuta las funciones de
+verdad. **No está en la integración continua**: se lanza a mano.
+
 ### La puerta del enlace: una copia de 30 min, y los tres rechazos en UN solo juez
 
 > Diego, 2026-08-26: *«No pasa nada por que un enlace tarde 30 minutos en dejar de valer, es
