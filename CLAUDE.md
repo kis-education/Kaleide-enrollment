@@ -1018,9 +1018,32 @@ nunca se ha visto fallar no es una red.
 ⚠️ **LO QUE LA BATERÍA NO CUBRE, y es la mitad del producto:** corre contra un **backend simulado que
 NUNCA ejecuta `backend/Code.js`** ni llama al KMS. Afirma lo que hace el NAVEGADOR. Todo lo del
 servidor —las puertas, las proyecciones, las memorias, la ventana real— **se mide aparte**, con un
-arnés efímero **fuera del repositorio** que extrae las funciones del fuente y las ejecuta con dobles.
-Y ese arnés **se rompe a propósito** antes de darlo por bueno: un renombrado debe salir **«MEDICIÓN
-CIEGA»**, no verde.
+arnés que extrae las funciones del fuente y las ejecuta con dobles. Y ese arnés **se rompe a
+propósito** antes de darlo por bueno: un renombrado debe salir **«MEDICIÓN CIEGA»**, no verde.
+
+### ⛔⛔ Y ESE ARNÉS YA NO SE TIRA — se guarda en `scripts/servidor/` (Diego, 2026-09-23)
+
+> *«si arregla las cosas, adelante»* — autorización expresa, sobre la propuesta de dejar de tirarlos.
+> Está recogida como **segunda excepción** en `kis-app/CLAUDE.md` §"La red es UNA", junto a la
+> prohibición que excepciona: **esto no abre una clase de calidad nueva, deja de DESTRUIR la que ya
+> se escribe.**
+
+**Lo que lo motiva, MEDIDO el 2026-09-23:** `backend/Code.js` tiene **208 funciones** y **solo 3** las
+ejecuta algún control (`wizardFilaViva_`, `wizardSoloVivas_` y la verja) — **6 de los 8 leen líneas,
+no ejecutan**. Y en el histórico de este fichero **«arnés efímero» aparece 54 veces**: 54 arreglos del
+servidor comprobados **una vez**, con un instrumento **que se tiró**. ⇒ **205 de 208 funciones no
+tienen nada que las vigile** después del día en que se arreglaron, y por eso el cambio siguiente las
+rompe sin que nadie se entere hasta que Diego lo ve en pantalla.
+
+⇒ **Quien arregle algo del servidor GUARDA su arnés** en `scripts/servidor/<lo-que-protege>.mjs`:
+ejecutable solo (`node scripts/servidor/<el-suyo>.mjs`), **sin red, sin navegador, sin `npm ci`**, con
+**última línea** `VEREDICTO: VERDE` o `VEREDICTO: ROJO — <motivo>` como los ocho controles, y **con
+sus roturas demostradas dentro**, incluida la guarda de **«MEDICIÓN CIEGA»**.
+
+⛔ **NO es una campaña y NO se reconstruyen los 54**: se conserva **el que se escriba a partir de
+ahora**. ⛔ **No sustituye a la batería** (ésa mide el navegador) **ni a la prueba manual de Diego**,
+que sigue siendo la red del producto. ⛔ **Y no se afloja para que pase**: un arnés que estorba se
+arregla o se retira **diciéndolo**, nunca se deja pasando en vacío.
 
 Tampoco cubre el **acto de firmar** (irreversible, y su lógica vive en el motor del KMS): está
 declarado en `NO_CUBIERTAS_PERMITIDAS`; el resto de afirmaciones no ejecutadas hacen ROJO.
