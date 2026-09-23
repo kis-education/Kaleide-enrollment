@@ -2595,3 +2595,454 @@ function manual_medirUmbralDeBytesConFicheroReal() {
   Logger.log(JSON.stringify(out, null, 2));
   return out;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 2026-09-23 — QUÉ CUESTIONARIO SE ESTÁ SIRVIENDO DE VERDAD, Y CON QUÉ PERSONAS
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// SOLO LECTURA. No escribe ni una clave de caché, no toca el cupo público y no llama a
+// `fetchQuestions_` (que SÍ escribiría la copia y gastaría el cupo ②54, compartido por todo
+// el colegio). Lee la copia con el MISMO lector del camino vivo,
+// `_catalogoDePreguntasDeLaCopia_`, así que lo que devuelve es literalmente lo que el paso 5
+// recibiría hoy.
+//
+// ⛔ CERO DATOS PERSONALES (KAL-11): códigos, conteos, booleanos y prefijos de 8 caracteres.
+// Ni un nombre, ni un correo, ni una fecha de nacimiento, ni un enunciado de pregunta.
+//
+// Separa las DOS explicaciones de `2026-09-23-el-paso-5-no-agrupa-por-hijo`:
+//   (A) los alumnos no llegan  → `personas_por_tipo` sin `applicant` en la copia servida.
+//   (B) las preguntas no dicen de quién son → el catálogo trae `repeat_over_person_type_id`
+//       nulo Y `audience_category_id` que no es `participant`.
+
+/**
+ * Diagnostic — qué catálogo de preguntas hay HOY en la copia del asistente, y qué personas
+ * lleva la copia de la solicitud que el clic serviría. Solo lectura.
+ */
+function manual_diagQueCuestionarioSeEstaSirviendo() {
+  var out = {
+    diag: 'manual_diagQueCuestionarioSeEstaSirviendo',
+    cuando: new Date().toISOString(),
+    solicitudes: [],
+    combinaciones: [],
+    catalogos: [],
+    resumen: {},
+    error: null
+  };
+  var cache = CacheService.getScriptCache();
+  var combos = {};
+
+  // ── §A · LAS SOLICITUDES VIVAS, tal y como las ve el repaso del espejo ────────────────
+  // Mismo camino que `espejoRefrescarCopias` (lectura), pero SIN archivar nada.
+  try {
+    var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', { desde: 0, cuantas: 25 }) || {};
+    var copias = r.copias || [];
+    out.resumen.grupos_totales = r.grupos_totales || 0;
+    out.resumen.copias_leidas = copias.length;
+
+    for (var i = 0; i < copias.length; i++) {
+      var c = copias[i] || {};
+      var gid = c.enrollment_group_id ? String(c.enrollment_group_id) : '';
+      var pl = c.payload || {};
+      var g = pl.group || {};
+      var prog = g['program_id'] ? String(g['program_id']) : '';
+      var lang = g['preferred_language'] ? String(g['preferred_language']) : 'es';
+
+      // Personas de la copia que ACABA de mandar el KMS, por tipo declarado. Solo conteos.
+      var porTipoKms = {};
+      var pers = pl.persons || [];
+      for (var j = 0; j < pers.length; j++) {
+        var t = (pers[j] && pers[j]['person_type_id']) ? String(pers[j]['person_type_id']) : '(sin tipo)';
+        porTipoKms[t] = (porTipoKms[t] || 0) + 1;
+      }
+
+      // Y las de la copia YA ARCHIVADA en este proyecto — la que el clic sirve de verdad.
+      var porTipoCopia = null;
+      var copiaPresente = false;
+      try {
+        var clave = _wzCacheKey_('hyd', gid + '_' + _wzN_(c.n, null));
+        var crudo = _wzCacheGetChunked_(cache, clave);
+        if (crudo) {
+          copiaPresente = true;
+          var sobre = JSON.parse(crudo);
+          var dat = (sobre && sobre.data) || {};
+          var pc = dat.persons || [];
+          porTipoCopia = {};
+          for (var k = 0; k < pc.length; k++) {
+            var t2 = (pc[k] && pc[k]['person_type_id']) ? String(pc[k]['person_type_id']) : '(sin tipo)';
+            porTipoCopia[t2] = (porTipoCopia[t2] || 0) + 1;
+          }
+        }
+      } catch (eC) { porTipoCopia = { error: String((eC && eC.message) || eC).slice(0, 120) }; }
+
+      out.solicitudes.push({
+        grupo8: gid.slice(0, 8),
+        programa_declarado: !!prog,
+        programa8: prog ? prog.slice(0, 8) : null,
+        lang: lang,
+        personas_kms_por_tipo: porTipoKms,
+        copia_archivada_presente: copiaPresente,
+        personas_copia_por_tipo: porTipoCopia
+      });
+
+      if (prog) combos[prog + '|' + lang] = { program_id: prog, lang: lang };
+    }
+  } catch (e) {
+    out.error = String((e && e.message) || e).slice(0, 300);
+  }
+
+  // ── §B · EL CATÁLOGO QUE HAY EN LA COPIA, por combinación (PROGRAMA × idioma) ─────────
+  var claves = Object.keys(combos);
+  out.resumen.combinaciones = claves.length;
+  for (var m = 0; m < claves.length; m++) {
+    var cb = combos[claves[m]];
+    out.combinaciones.push({ programa8: cb.program_id.slice(0, 8), lang: cb.lang });
+    var ficha = {
+      programa8: cb.program_id.slice(0, 8),
+      lang: cb.lang,
+      copia_presente: false,
+      sets: [],
+      preguntas_totales: 0,
+      por_audiencia: {},
+      por_repeat_over: {}
+    };
+    try {
+      var cat = _catalogoDePreguntasDeLaCopia_('ENROLLMENT', cb.lang, cb.program_id);
+      if (cat) {
+        ficha.copia_presente = true;
+        var sets = cat.sets || [];
+        for (var s = 0; s < sets.length; s++) {
+          var st = sets[s] || {};
+          var items = st.items || [];
+          var fichaSet = {
+            set8: st.set_id ? String(st.set_id).slice(0, 8) : null,
+            designacion: st.designation || null,   // configuración del centro, no dato personal
+            preguntas: items.length,
+            detalle: []
+          };
+          for (var q = 0; q < items.length; q++) {
+            var qq = (items[q] && items[q].question) || null;
+            if (!qq) { fichaSet.detalle.push({ q8: null, nota: 'item sin question' }); continue; }
+            var aud = qq['audience_category_id'];
+            var rep = qq['repeat_over_person_type_id'];
+            var audTxt = (aud === undefined) ? '(ausente)' : (aud === null ? '(null)' : String(aud));
+            var repTxt = (rep === undefined) ? '(ausente)' : (rep === null ? '(null)' : String(rep));
+            fichaSet.detalle.push({
+              q8: qq['question_id'] ? String(qq['question_id']).slice(0, 8) : null,
+              audience_category_id: audTxt,
+              repeat_over_person_type_id: repTxt
+            });
+            ficha.preguntas_totales++;
+            ficha.por_audiencia[audTxt] = (ficha.por_audiencia[audTxt] || 0) + 1;
+            ficha.por_repeat_over[repTxt] = (ficha.por_repeat_over[repTxt] || 0) + 1;
+          }
+          ficha.sets.push(fichaSet);
+        }
+      }
+    } catch (eB) { ficha.error = String((eB && eB.message) || eB).slice(0, 200); }
+    out.catalogos.push(ficha);
+  }
+
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
+/**
+ * Diagnostic — la MISMA medida de arriba, devuelta como TEXTO plano en líneas.
+ * `clasp run` imprime los objetos anidados como `[Object]`, así que lo que hay que leer
+ * desde fuera tiene que salir aplanado. Sigue siendo SOLO LECTURA: llama a la sonda de
+ * arriba y solo le da forma. ⛔ CERO datos personales (KAL-11).
+ */
+function manual_diagQueCuestionarioSeEstaSirviendoTexto() {
+  var o = manual_diagQueCuestionarioSeEstaSirviendo();
+  var L = [];
+  L.push('== ' + o.cuando + ' == error=' + o.error);
+  L.push('resumen: ' + JSON.stringify(o.resumen));
+  (o.solicitudes || []).forEach(function(s) {
+    L.push('SOLICITUD ' + s.grupo8 + ' lang=' + s.lang + ' prog=' + s.programa8 +
+      ' copiaArchivada=' + s.copia_archivada_presente +
+      ' | personasKMS=' + JSON.stringify(s.personas_kms_por_tipo) +
+      ' | personasCOPIA=' + JSON.stringify(s.personas_copia_por_tipo));
+  });
+  (o.catalogos || []).forEach(function(c) {
+    L.push('CATALOGO prog=' + c.programa8 + ' lang=' + c.lang + ' presente=' + c.copia_presente +
+      ' preguntas=' + c.preguntas_totales +
+      ' | porAudiencia=' + JSON.stringify(c.por_audiencia) +
+      ' | porRepeatOver=' + JSON.stringify(c.por_repeat_over) +
+      (c.error ? (' | error=' + c.error) : ''));
+    (c.sets || []).forEach(function(st) {
+      L.push('  SET ' + st.set8 + ' preguntas=' + st.preguntas + ' « ' + st.designacion + ' »');
+      var porPar = {};
+      (st.detalle || []).forEach(function(d) {
+        var par = d.audience_category_id + ' / ' + d.repeat_over_person_type_id;
+        porPar[par] = (porPar[par] || 0) + 1;
+      });
+      L.push('      aud/repeat: ' + JSON.stringify(porPar));
+    });
+  });
+  var texto = L.join('\n');
+  Logger.log(texto);
+  return texto;
+}
+
+/**
+ * Diagnostic — COMPARA, conjunto a conjunto, lo que hay GUARDADO en la copia del asistente
+ * con lo que el KMS contesta AHORA para la misma combinación (programa × idioma).
+ *
+ * ⛔ SOLO LECTURA: llama al KMS por el transporte único (`kmsProxy_`) **sin pasar por
+ * `fetchQuestions_`**, así que NO escribe la copia y NO gasta el cupo público ②54 (que es
+ * compartido por todas las familias del colegio). ⛔ CERO datos personales (KAL-11): códigos,
+ * conteos y la designación del conjunto, que es configuración del centro.
+ *
+ * Contesta la pregunta que separa las dos causas: un conjunto que sale SIN CUERPO ¿lo sirve
+ * así el KMS (⇒ configuración del centro), o solo lo tiene así la copia guardada (⇒ una
+ * lectura a medias que se quedó clavada)?
+ */
+function manual_diagElCatalogoGuardadoContraElVivo() {
+  var L = [];
+  try {
+    var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', { desde: 0, cuantas: 25 }) || {};
+    var combos = {};
+    (r.copias || []).forEach(function(c) {
+      var g = (c && c.payload && c.payload.group) || {};
+      var prog = g['program_id'] ? String(g['program_id']) : '';
+      if (!prog) return;
+      var lang = g['preferred_language'] ? String(g['preferred_language']) : 'es';
+      combos[prog + '|' + lang] = { program_id: prog, lang: lang };
+    });
+
+    Object.keys(combos).forEach(function(k) {
+      var cb = combos[k];
+      L.push('== prog=' + cb.program_id.slice(0, 8) + ' lang=' + cb.lang + ' ==');
+
+      var guardado = _catalogoDePreguntasDeLaCopia_('ENROLLMENT', cb.lang, cb.program_id);
+      var receptor = { locale: cb.lang, program_id: cb.program_id };
+      var vivo = fetchQuestions_adaptKmsResponse_(kmsProxy_('qb-public.resolveSetForConsumer', {
+        consumer_code: 'ADMISSIONS_WIZARD',
+        context_code:  'ENROLLMENT',
+        receptor:      receptor,
+        school_id:     SCHOOL_ID,
+      }), cb.lang);
+
+      var porSet = {};
+      function contar(cat, donde) {
+        ((cat && cat.sets) || []).forEach(function(st) {
+          var id = st.set_id ? String(st.set_id).slice(0, 8) : '(sin id)';
+          if (!porSet[id]) porSet[id] = { designacion: st.designation || null, guardado: null, vivo: null };
+          porSet[id].designacion = porSet[id].designacion || st.designation || null;
+          porSet[id][donde] = ((st.items || []).length);
+        });
+      }
+      contar(guardado, 'guardado');
+      contar(vivo, 'vivo');
+
+      L.push('  sets guardado=' + ((guardado && guardado.sets) || []).length +
+             '  sets vivo=' + ((vivo && vivo.sets) || []).length);
+      Object.keys(porSet).forEach(function(id) {
+        var f = porSet[id];
+        L.push('  SET ' + id + ' guardado=' + f.guardado + ' vivo=' + f.vivo +
+               (f.guardado === f.vivo ? '  (igual)' : '  ⚠ DISTINTO') + ' « ' + f.designacion + ' »');
+      });
+    });
+  } catch (e) {
+    L.push('ERROR: ' + String((e && e.message) || e).slice(0, 300));
+  }
+  var texto = L.join('\n');
+  Logger.log(texto);
+  return texto;
+}
+
+/**
+ * Diagnostic — ¿el conjunto que sale sin cuerpo se vacía por el PROGRAMA (D181) o viene
+ * vacío de todas formas? Pregunta al KMS la MISMA combinación con programa y SIN programa,
+ * y compara conjunto a conjunto. ⛔ SOLO LECTURA (no toca la copia ni el cupo público ②54)
+ * y CERO datos personales.
+ */
+function manual_diagElConjuntoVacioEsDelPrograma() {
+  var L = [];
+  try {
+    var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', { desde: 0, cuantas: 25 }) || {};
+    var combos = {};
+    (r.copias || []).forEach(function(c) {
+      var g = (c && c.payload && c.payload.group) || {};
+      var prog = g['program_id'] ? String(g['program_id']) : '';
+      if (!prog) return;
+      combos[prog + '|' + (g['preferred_language'] || 'es')] =
+        { program_id: prog, lang: String(g['preferred_language'] || 'es') };
+    });
+    Object.keys(combos).forEach(function(k) {
+      var cb = combos[k];
+      function pedir(conPrograma) {
+        var receptor = { locale: cb.lang };
+        if (conPrograma) receptor.program_id = cb.program_id;
+        return fetchQuestions_adaptKmsResponse_(kmsProxy_('qb-public.resolveSetForConsumer', {
+          consumer_code: 'ADMISSIONS_WIZARD',
+          context_code:  'ENROLLMENT',
+          receptor:      receptor,
+          school_id:     SCHOOL_ID,
+        }), cb.lang);
+      }
+      var con = pedir(true), sin = pedir(false);
+      var porSet = {};
+      function contar(cat, donde) {
+        ((cat && cat.sets) || []).forEach(function(st) {
+          var id = st.set_id ? String(st.set_id).slice(0, 8) : '(sin id)';
+          if (!porSet[id]) porSet[id] = { d: st.designation || null, con: null, sin: null };
+          porSet[id][donde] = ((st.items || []).length);
+        });
+      }
+      contar(con, 'con'); contar(sin, 'sin');
+      L.push('== prog=' + cb.program_id.slice(0, 8) + ' lang=' + cb.lang + ' ==');
+      L.push('  sets CON programa=' + ((con && con.sets) || []).length +
+             '  SIN programa=' + ((sin && sin.sets) || []).length);
+      Object.keys(porSet).forEach(function(id) {
+        var f = porSet[id];
+        L.push('  SET ' + id + ' conPrograma=' + f.con + ' sinPrograma=' + f.sin +
+               (f.con === f.sin ? '  (igual)' : '  ⚠ LO VACÍA EL PROGRAMA') + ' « ' + f.d + ' »');
+      });
+    });
+  } catch (e) { L.push('ERROR: ' + String((e && e.message) || e).slice(0, 300)); }
+  var texto = L.join('\n');
+  Logger.log(texto);
+  return texto;
+}
+
+/**
+ * Diagnostic — QUÉ CONDICIONES lleva cada pregunta del catálogo servido. Son configuración
+ * del centro (tipo de condición, operador y valor declarado), no datos de nadie.
+ * ⛔ SOLO LECTURA y CERO datos personales (KAL-11): ni una fecha de nacimiento, ni un nombre.
+ *
+ * Para qué: un conjunto cuyas preguntas TODAS exigen una edad puede dejar fuera a un hermano
+ * entero. Si NINGÚN conjunto condiciona por edad, los dos hermanos tienen preguntas y la
+ * pantalla tiene que agrupar por hijo.
+ */
+function manual_diagQueCondicionesLlevanLasPreguntas() {
+  var L = [];
+  try {
+    var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', { desde: 0, cuantas: 25 }) || {};
+    var combos = {};
+    (r.copias || []).forEach(function(c) {
+      var g = (c && c.payload && c.payload.group) || {};
+      var prog = g['program_id'] ? String(g['program_id']) : '';
+      if (!prog) return;
+      combos[prog + '|' + (g['preferred_language'] || 'es')] =
+        { program_id: prog, lang: String(g['preferred_language'] || 'es') };
+    });
+    Object.keys(combos).forEach(function(k) {
+      var cb = combos[k];
+      var cat = _catalogoDePreguntasDeLaCopia_('ENROLLMENT', cb.lang, cb.program_id);
+      L.push('== prog=' + cb.program_id.slice(0, 8) + ' lang=' + cb.lang +
+             ' copia=' + (!!cat) + ' ==');
+      ((cat && cat.sets) || []).forEach(function(st) {
+        var items = st.items || [];
+        var conCond = 0, tipos = {};
+        items.forEach(function(it) {
+          var q = it && it.question;
+          var cs = (q && q.conditions) || [];
+          if (cs.length) conCond++;
+          cs.forEach(function(cd) {
+            var tipo = String((cd && (cd.condition_type || cd.condition_type_code ||
+                         cd.type || cd.kind)) || '(sin tipo)');
+            var op = String((cd && (cd.condition_operator || cd.operator)) || '');
+            var val = String((cd && (cd.condition_value != null ? cd.condition_value :
+                        (cd.value != null ? cd.value : ''))));
+            var et = tipo + ' ' + op + ' ' + val;
+            tipos[et] = (tipos[et] || 0) + 1;
+          });
+        });
+        L.push('  SET ' + (st.set_id ? String(st.set_id).slice(0, 8) : '?') +
+               ' preguntas=' + items.length + ' conCondicion=' + conCond +
+               ' | ' + JSON.stringify(tipos) + ' « ' + st.designation + ' »');
+      });
+    });
+  } catch (e) { L.push('ERROR: ' + String((e && e.message) || e).slice(0, 300)); }
+  var texto = L.join('\n');
+  Logger.log(texto);
+  return texto;
+}
+
+/**
+ * Diagnostic — ¿los DOS hermanos siguen VIVOS en la copia que sirve el clic? Aplica a las
+ * personas de la copia archivada el MISMO juez del camino vivo (`wizardSoloVivas_`), que es
+ * lo que decide quién sigue en la solicitud. ⛔ SOLO LECTURA y solo conteos (KAL-11).
+ */
+function manual_diagCuantosHermanosVivosLlevaLaCopia() {
+  var L = [];
+  try {
+    var cache = CacheService.getScriptCache();
+    var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', { desde: 0, cuantas: 25 }) || {};
+    (r.copias || []).forEach(function(c) {
+      var gid = c && c.enrollment_group_id ? String(c.enrollment_group_id) : '';
+      if (!gid) return;
+      var pl = c.payload || {};
+      function porTipo(lista) {
+        var o = {};
+        (lista || []).forEach(function(p) {
+          var t = (p && p['person_type_id']) ? String(p['person_type_id']) : '(sin tipo)';
+          o[t] = (o[t] || 0) + 1;
+        });
+        return o;
+      }
+      var crudasKms = pl.persons || [];
+      var vivasKms = wizardSoloVivas_(crudasKms);
+      var linea = 'GRUPO ' + gid.slice(0, 8) + ' n=' + String(c.n || '').slice(0, 8) +
+        ' | KMS crudas=' + JSON.stringify(porTipo(crudasKms)) +
+        ' vivas=' + JSON.stringify(porTipo(vivasKms));
+      try {
+        var crudo = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', gid + '_' + _wzN_(c.n, null)));
+        if (crudo) {
+          var dat = (JSON.parse(crudo) || {}).data || {};
+          var cp = dat.persons || [];
+          linea += ' | COPIA crudas=' + JSON.stringify(porTipo(cp)) +
+                   ' vivas=' + JSON.stringify(porTipo(wizardSoloVivas_(cp)));
+        } else { linea += ' | COPIA ausente'; }
+      } catch (e2) { linea += ' | COPIA error'; }
+      L.push(linea);
+    });
+  } catch (e) { L.push('ERROR: ' + String((e && e.message) || e).slice(0, 300)); }
+  var texto = L.join('\n');
+  Logger.log(texto);
+  return texto;
+}
+
+/**
+ * Diagnostic — los dos últimos datos del servidor que pueden tumbar la agrupación por hijo,
+ * y el cupo público. ⛔ SOLO LECTURA (no incrementa el cupo) y solo conteos y booleanos.
+ *
+ *  (1) ¿Cada persona de la copia lleva `person_id`? La pantalla agrupa por
+ *      `person_id || _uid`: si los dos hermanos llegaran SIN identificador, los dos caerían
+ *      en la misma casilla y la pantalla creería que hay UN solo hijo.
+ *  (2) ¿Está gastado el cupo público del catálogo (②54)? Con el cupo agotado, la revalidación
+ *      del navegador falla y el asistente se queda pintando el catálogo VIEJO que ese
+ *      navegador tenga guardado (hasta 30 días, `QCACHE_LS_MAXAGE_MS`).
+ */
+function manual_diagLoQuePuedeTumbarLaAgrupacion() {
+  var L = [];
+  try {
+    var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', { desde: 0, cuantas: 25 }) || {};
+    (r.copias || []).forEach(function(c) {
+      var pl = (c && c.payload) || {};
+      var con = 0, sin = 0, idsDistintos = {};
+      (pl.persons || []).forEach(function(p) {
+        var id = p && p['person_id'] ? String(p['person_id']) : '';
+        if (id) { con++; idsDistintos[id] = 1; } else { sin++; }
+      });
+      L.push('GRUPO ' + String(c.enrollment_group_id || '').slice(0, 8) +
+        ' personas conPersonId=' + con + ' sinPersonId=' + sin +
+        ' identificadoresDistintos=' + Object.keys(idsDistintos).length);
+    });
+  } catch (e) { L.push('ERROR personas: ' + String((e && e.message) || e).slice(0, 200)); }
+
+  try {
+    var cache = CacheService.getScriptCache();
+    ['es-es', 'es', 'en', 'en-gb'].forEach(function(idioma) {
+      var k = 'catrl_preguntas_' + SCHOOL_ID + '_' + idioma;
+      var v = cache.get(k);
+      L.push('CUPO ②54 ' + idioma + ' = ' + (v === null || v === undefined ? '(sin cuenta esta hora)' : v) +
+             ' de 300');
+    });
+  } catch (e2) { L.push('ERROR cupo: ' + String((e2 && e2.message) || e2).slice(0, 200)); }
+
+  var texto = L.join('\n');
+  Logger.log(texto);
+  return texto;
+}

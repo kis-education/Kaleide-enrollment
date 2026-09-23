@@ -862,16 +862,36 @@ inventa nada** (la familia que aún no ha elegido en el paso 1): el KMS resuelve
 es lo correcto — una regla cuya dimensión no viene **deja pasar**. ⛔ **Qué programa es esta solicitud
 se decide en UN solo sitio**, `programaDeLaSolicitud` (`WizardContext`), con orden
 `stepData.email` → `stepData.application`: al revés, cambiar de programa dejaba la clave clavada en el
-hidratado. ⚠️ **Límite honesto: no hay invalidación** — lo único que lo refresca es el plazo
-(`CATALOGO_PREGUNTAS_TTL_S_`, 30 min), encima de la ventana del navegador.
+hidratado. ⚠️ **Límite honesto: no hay invalidación** — lo único que lo refresca son DOS plazos: el de la copia
+(`CATALOGO_PREGUNTAS_TTL_S_`, 30 min) y, por encima, el **techo** del refresco de fondo
+(`CATALOGO_PREGUNTAS_TECHO_S_`, 2 h — abajo). Y encima de los dos, **la ventana del navegador**, que
+guarda su propio catálogo hasta **30 días** (`QCACHE_LS_MAXAGE_MS`, `frontend/src/api.js`) y dentro de
+los primeros 30 min lo sirve **sin red**: quien mire una pantalla rara mire también ahí, porque un
+catálogo viejo del NAVEGADOR no lo cura nada de lo del servidor.
 
-**★ 2026-09-22 — y el repaso del espejo lo mantiene caliente**, una vez por **(PROGRAMA × idioma)** y
-no por familia: se deduplican las combinaciones de la vuelta y, **si la copia ya está**, se
+**★ El repaso del espejo lo mantiene caliente**, una vez por **(PROGRAMA × idioma)** y no por
+familia: se deduplican las combinaciones de la vuelta y, **si la copia ya está Y le queda TECHO**, se
 RE-ESCRIBE para refrescar su plazo **sin viajar al KMS y sin gastar el cupo público** (②⑤④, que es
-compartido por todo el colegio); solo cuando falta se pide por el camino vivo. ⛔ **Sin programa
-declarado no se prepara nada** — sería escribir una clave que el clic no lee — y **un catálogo
-IMPOSIBLE no se guarda**, por el criterio que ya existe (`_catalogoDePreguntasDeLaCopia_` /
-`_guardarCatalogoDePreguntas_`, copiado a su vez de `qb_core_catalogoImposible_` del KMS).
+compartido por todo el colegio); cuando falta —o cuando **se acabó el techo**— se pide por el camino
+vivo. ⛔ **Sin programa declarado no se prepara nada** — sería escribir una clave que el clic no lee —
+y **un catálogo IMPOSIBLE no se guarda**, por el criterio que ya existe
+(`_catalogoDePreguntasDeLaCopia_` / `_guardarCatalogoDePreguntas_`, copiado a su vez de
+`qb_core_catalogoImposible_` del KMS).
+
+⛔ **EL TECHO (`CATALOGO_PREGUNTAS_TECHO_S_`, 2 h) NO ES UN ADORNO: sin él, lo que se guardó una vez
+se quedaba PARA SIEMPRE.** El refresco sin viaje se construyó el 2026-09-22 para ahorrar el salto al
+KMS y **se llevó por delante la única cura automática que había** —que el catálogo caducara solo a los
+30 min y la siguiente lectura lo trajera bien—. Hoy un viaje de verdad deja una marca con su propio
+plazo; mientras viva, el repaso refresca sin viaje; cuando caduca, **vuelve a preguntar** saltándose la
+copia a propósito (`fetchQuestions_(…, {sinCopia:true})`, segundo argumento **que el despachador
+público no puede poner**: llama con uno solo). ⛔ **La copia NO se borra antes de pedir**: si el viaje
+falla, lo guardado sigue en pie. Medido con el control de abajo: en 10 h, **19 refrescos sin viaje y 5
+lecturas de verdad**, contra **23 y 1** antes del techo.
+
+⚠️ **Y esto es un PARCHE, dicho sin adornar.** La causa de fondo es que **nadie le avisa al asistente
+cuando el colegio toca una pregunta**: el catálogo es configuración del centro y **no tiene ninguna de
+las tres reglas del modelo** que las SOLICITUDES sí tienen (el KMS rehace y MANDA la copia cuando el
+dato cambia). Por eso existe este temporizador hecho a mano. **Que el KMS avise es otra ficha.**
 
 ### El asistente no cuenta a quien un tutor ya quitó
 
@@ -985,6 +1005,24 @@ si el centro no tiene catálogo de modalidades.
 | `comprobar-pantalla-del-cliente` | que las banderas de pantalla salgan de UN derivador y no se copien del KMS |
 | `comprobar-codigos-de-consentimiento` | que ningún consentimiento se registre con un código inventado |
 | `comprobar-que-el-wizard-no-escribe-estado` | que el asistente no fije el estado ni mande el correo del envío |
+
+### `scripts/servidor/` — los controles que EJECUTAN el servidor, y NO están en CI todavía
+
+**Los ocho de arriba LEEN LÍNEAS; éstos EJECUTAN las funciones de `backend/Code.js`** con dobles en
+memoria (sin red, sin navegador, sin `npm ci`), y terminan con la misma última línea
+(`VEREDICTO: VERDE` / `ROJO — <motivo>`). Nacen de una autorización expresa de Diego (2026-09-23,
+*«si arregla las cosas, adelante»*) para **dejar de tirar los arneses efímeros**: el servidor tiene
+**208 funciones** y solo **3** las ejecutaba algún control, así que cada arreglo se comprobaba una vez
+con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie se enterara.
+
+| Control | Qué protege |
+|---|---|
+| `el-catalogo-de-preguntas.mjs` | que un catálogo guardado **no se pueda quedar clavado para siempre**: el refresco sin viaje sigue ahorrando, el techo obliga a releer, un viaje fallido no se lleva la copia, y el camino público sigue sirviéndose de ella |
+
+⛔ **Se ejecutan a mano** (`node scripts/servidor/<el-tuyo>.mjs`): **el lanzador común y su entrada en
+CI son OTRO encargo**, y no se tocan `.github/workflows/` desde aquí. ⛔ **Y cada uno lleva dentro sus
+roturas demostradas**: se rompe el fuente a propósito y se exige que el control lo NOMBRE —un renombre
+tiene que salir **«MEDICIÓN CIEGA»**, nunca verde—. Un control que no se ha visto fallar no es una red.
 
 ⛔ **Si añades uno, actualizas esta tabla en el MISMO cambio.** El defecto que esta nota corrige es que
 seis entraron sin tocar ninguna instrucción, y durante días se corrían 2 de 8 creyendo haber pasado el

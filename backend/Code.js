@@ -7279,6 +7279,67 @@ function _guardarCatalogoDePreguntas_(contextCode, lang, programId, valor) {
   } catch (e) { return false; }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// EL TECHO DEL REFRESCO SIN VIAJE (2026-09-23) — un catálogo se sostiene por su plazo,
+// NUNCA indefinidamente
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ ESTO ES UN PARCHE, Y SE DICE: tapa el síntoma, no la causa. La causa es que **nadie le
+// avisa al asistente cuando el colegio toca una pregunta** — el catálogo es configuración del
+// centro y no tiene el aviso que las SOLICITUDES sí tienen (`notifyLiveStateChange_`). Por eso
+// existe este temporizador hecho a mano. El arreglo de fondo —que el KMS avise— es OTRA ficha.
+//
+// **Qué se rompió el 2026-09-22 (`@297`)**: el repaso del espejo, al encontrar el catálogo ya
+// caliente, lo RE-ESCRIBE tal cual para refrescarle el plazo y **sin volver a preguntar**.
+// Cada 30 minutos y sin tope ⇒ **lo que se guardó una vez se quedaba PARA SIEMPRE**. Antes de
+// eso caducaba solo a los 30 min y la siguiente lectura lo traía bien: el refresco se
+// construyó para ahorrar viajes y se llevó por delante la única cura automática que había.
+//
+// **Qué se pone, y es lo mínimo**: un TECHO. Un viaje de verdad deja una marca con su propio
+// plazo (`CATALOGO_PREGUNTAS_TECHO_S_`); mientras esa marca viva, el repaso puede refrescar
+// sin viaje (el ahorro se conserva); cuando caduca, el repaso **vuelve a preguntar de verdad**.
+//
+// ⛔ **El techo lo hace cumplir la propia caducidad de la marca, no una cuenta guardada**: sin
+// aritmética que pueda salir mal, y **si la marca falta por lo que sea, se pide el viaje** —
+// falla hacia la cura, nunca hacia el atasco.
+//
+// ⛔ **NO se ensancha `_catalogoDePreguntasImposible_`**: ese criterio está copiado VERBATIM del
+// KMS (`qb_core_catalogoImposible_`) y dos criterios sobre lo mismo divergen.
+//
+// **Por qué DOS HORAS y no seis** (el techo de `CacheService`): quien paga el viaje aquí es el
+// repaso de fondo, no una familia, así que un techo más corto sale gratis en espera y solo
+// cuesta llamadas de fondo. Con el repaso cada 30 min, dos horas dejan **tres refrescos sin
+// viaje de cada cuatro** —el ahorro que `@297` vino a dar— y **acotan en 2 h** lo que un
+// catálogo malo puede durar. En cupo público (②54, 300 por hora e idioma, COMPARTIDO por todo
+// el colegio) son **12 llamadas al día por (programa × idioma)**: el 0,17 % de una sola hora.
+var CATALOGO_PREGUNTAS_TECHO_S_ = 7200;
+
+/** La marca de «aquí hubo un viaje de verdad». Vive al lado del catálogo, con su propio plazo
+ *  (el TECHO), y su sola PRESENCIA es la respuesta: no se guarda ninguna fecha ni contador.
+ *  @private */
+function _claveViajeDelCatalogo_(contextCode, lang, programId) {
+  return _claveCatalogoPreguntas_(contextCode, lang, programId) + '_viaje';
+}
+
+/** Deja la marca de viaje. Best-effort: un fallo aquí solo adelanta el viaje siguiente. @private */
+function _marcarViajeDelCatalogo_(contextCode, lang, programId) {
+  try {
+    CacheService.getScriptCache().put(
+      _claveViajeDelCatalogo_(contextCode, lang, programId), '1', CATALOGO_PREGUNTAS_TECHO_S_);
+    return true;
+  } catch (e) { return false; }
+}
+
+/** ¿Queda techo? `false` ⇒ toca viaje de verdad. ⛔ Ante cualquier duda devuelve `false`:
+ *  pedir de más cuesta una llamada de fondo; pedir de menos deja un catálogo malo clavado.
+ *  @private */
+function _quedaTechoDelCatalogo_(contextCode, lang, programId) {
+  try {
+    return !!CacheService.getScriptCache().get(
+      _claveViajeDelCatalogo_(contextCode, lang, programId));
+  } catch (e) { return false; }
+}
+
 /**
  * Fetches a question set with all translations, options, and conditions.
  *
@@ -7291,7 +7352,7 @@ function _guardarCatalogoDePreguntas_(contextCode, lang, programId, valor) {
  * @param {Object} p - { context_code, language, program_id? } (legacy: context_designation)
  * @returns {Object} Nested question set structure
  */
-function fetchQuestions_(p) {
+function fetchQuestions_(p, opciones) {
   const raw = p.context_code != null ? p.context_code : p.context_designation;
   if (raw == null || raw === '') throw new Error('Missing context_code');
   if (typeof raw !== 'string') {
@@ -7336,8 +7397,16 @@ function fetchQuestions_(p) {
   // puerta pública, solo evita el viaje. *(Se consideró ponerla delante, para que una copia
   // local no gaste un cupo que es COMPARTIDO por todas las familias del colegio; no se hizo:
   // mover un cupo público no es de este encargo. Queda PROPUESTO.)*
-  var deLaCopia = _catalogoDePreguntasDeLaCopia_(contextCode, lang, programId);
-  if (deLaCopia) return deLaCopia;
+  //
+  // ⛔ `opciones.sinCopia` SOLO lo pone el repaso de fondo cuando se le acabó el techo
+  // (`CATALOGO_PREGUNTAS_TECHO_S_`, arriba). **No se puede pedir desde internet**: el
+  // despachador público llama `fetchQuestions_(payload)` con UN solo argumento, así que este
+  // segundo nunca llega del cuerpo de la petición. Si llegara, saltarse la copia sería una
+  // forma de hacer viajar al KMS a voluntad.
+  if (!(opciones && opciones.sinCopia)) {
+    var deLaCopia = _catalogoDePreguntasDeLaCopia_(contextCode, lang, programId);
+    if (deLaCopia) return deLaCopia;
+  }
 
   // ── Q05-S5 (DL-Q05): proxy thin a KMS qb-public.resolveSetForConsumer ────
   // El motor reusable vive en kis-app/kms-server/qb/qb-core.gs y se expone
@@ -7368,6 +7437,9 @@ function fetchQuestions_(p) {
   // Se guarda lo que ACABA de resolver el camino vivo — jamás un fallo (el `kmsProxy_`
   // lanza y no llegamos aquí) ni un catálogo imposible (`_guardarCatalogoDePreguntas_`).
   _guardarCatalogoDePreguntas_(contextCode, lang, programId, catalogo);
+  // Y la marca del TECHO: aquí, y SOLO aquí, ha habido un viaje de verdad. A partir de este
+  // momento el repaso de fondo puede refrescar sin viaje hasta que esta marca caduque.
+  _marcarViajeDelCatalogo_(contextCode, lang, programId);
   return catalogo;
 }
 
@@ -12062,11 +12134,16 @@ var ESPEJO_CUESTIONARIOS_POR_VUELTA_ = 8;
  * el catálogo SIN programa sería peor que no preparar: dejaría escrita la copia de una clave
  * que el clic no va a leer.
  *
- * ⛔ **NI UN VIAJE SI YA ESTÁ CALIENTE.** Si la copia existe se RE-ESCRIBE tal cual para
- * refrescar su plazo (`_guardarCatalogoDePreguntas_`), sin llamar al KMS y **sin consumir el
- * cupo público** (②54, que es COMPARTIDO por todas las familias del colegio: un repaso de fondo
- * no puede gastárselo). Solo cuando NO hay copia se pide por el camino vivo (`fetchQuestions_`),
- * que ya la guarda él.
+ * ⛔ **NI UN VIAJE SI YA ESTÁ CALIENTE — PERO CON TECHO** (2026-09-23). Si la copia existe **y
+ * le queda techo** (`CATALOGO_PREGUNTAS_TECHO_S_`, 2 h), se RE-ESCRIBE tal cual para refrescar
+ * su plazo (`_guardarCatalogoDePreguntas_`), sin llamar al KMS y **sin consumir el cupo
+ * público** (②54, COMPARTIDO por todas las familias del colegio: un repaso de fondo no puede
+ * gastárselo). **Cuando el techo se acaba se pregunta de verdad**, saltándose la copia
+ * (`fetchQuestions_(…, {sinCopia:true})`) — sin eso, lo que se guardó una vez se quedaba PARA
+ * SIEMPRE, que es justo lo que `@297` rompió sin querer. Y cuando NO hay copia, como siempre:
+ * se pide por el camino vivo, que ya la guarda él.
+ *
+ * ⛔ **La copia NO se borra antes de pedir**: si el viaje falla, lo guardado sigue en pie.
  *
  * ⛔ **UN CATÁLOGO IMPOSIBLE NO SE GUARDA** — el criterio NO se reinventa: lo aplican
  * `_catalogoDePreguntasDeLaCopia_` (que devuelve `null`) y `_guardarCatalogoDePreguntas_` (que
@@ -12081,7 +12158,7 @@ var ESPEJO_CUESTIONARIOS_POR_VUELTA_ = 8;
  * @private
  */
 function _espejoCalentarElCuestionario_(pendientes, seAcaboElTiempo) {
-  var res = { preparados: 0, refrescados: 0, pedidos: 0, omitidos: 0 };
+  var res = { preparados: 0, refrescados: 0, pedidos: 0, por_techo: 0, omitidos: 0 };
   var claves = Object.keys(pendientes || {});
   for (var i = 0; i < claves.length; i++) {
     if (i >= ESPEJO_CUESTIONARIOS_POR_VUELTA_ || seAcaboElTiempo()) {
@@ -12090,15 +12167,23 @@ function _espejoCalentarElCuestionario_(pendientes, seAcaboElTiempo) {
     var c = pendientes[claves[i]];
     try {
       var yaEsta = _catalogoDePreguntasDeLaCopia_('ENROLLMENT', c.lang, c.program_id);
-      if (yaEsta) {
-        // Está caliente: se refresca SU PLAZO sin viaje y sin tocar el cupo público. Sin
-        // esto, el catálogo (30 min) y el repaso (30 min) derivan y el clic lo paga igual.
+      if (yaEsta && _quedaTechoDelCatalogo_('ENROLLMENT', c.lang, c.program_id)) {
+        // Está caliente Y le queda techo: se refresca SU PLAZO sin viaje y sin tocar el cupo
+        // público. Sin esto, el catálogo (30 min) y el repaso (30 min) derivan y el clic lo
+        // paga igual.
         if (_guardarCatalogoDePreguntas_('ENROLLMENT', c.lang, c.program_id, yaEsta)) {
           res.refrescados++; res.preparados++;
         }
         continue;
       }
-      fetchQuestions_({ context_code: 'ENROLLMENT', language: c.lang, program_id: c.program_id });
+      // Sin copia, o con la copia pero SIN TECHO: se pregunta de verdad. Con techo agotado se
+      // pide saltándose la copia a propósito (`sinCopia`) — si no, `fetchQuestions_` devolvería
+      // la copia vieja y el techo no serviría de nada. ⛔ La copia NO se borra antes: si el
+      // viaje falla, lo guardado sigue en pie y la familia no se queda sin cuestionario.
+      if (yaEsta) res.por_techo++;
+      fetchQuestions_(
+        { context_code: 'ENROLLMENT', language: c.lang, program_id: c.program_id },
+        yaEsta ? { sinCopia: true } : null);
       res.pedidos++; res.preparados++;
     } catch (e) {
       try { Logger.log(redact_('[_espejoCalentarElCuestionario_] non-fatal — ' + ((e && e.message) || e))); } catch (_eL) {}
