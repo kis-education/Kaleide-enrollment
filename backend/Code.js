@@ -4363,7 +4363,13 @@ function sendMagicLink_(p) {
     // pueda acuñar sobre un token RECIÉN ROTADO en todo expediente rotable.
     // ⛔ La regla de las ENVIADAS no se toca y sigue mandando ella: `!grp.submitted_at`.
     if (!grp.submitted_at) {
-      const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: grp.resume_token });
+      // ★ D213 — SE LE DICE AL KMS DE QUÉ TUTOR ES EL ENLACE QUE RENUEVA. Sin esto el KMS
+      // solo puede tocar la casilla de la ficha, y el enlace del otro tutor se quedaría
+      // apuntando a un valor que ya nadie tiene ⇒ la cancelación de D213, otra vez. El
+      // `nEmailId` ya está resuelto aquí arriba, ANTES de rotar, y es el mismo que va en el `?n=`.
+      const touch = kmsProxy_('enr.renewApplicationSession', {
+        resume_token: grp.resume_token, n: nEmailId || undefined,
+      });
       tokenToSend = (touch && touch.resume_token) || grp.resume_token;
       // ⛔ ②17 (2026-08-19) — AQUÍ SE ROTA EL ENLACE, así que la cabecera que la puerta dejó
       // en la memoria de EJECUCIÓN queda CADUCA: lleva dentro el `resume_token` VIEJO, que a
@@ -4380,7 +4386,7 @@ function sendMagicLink_(p) {
       // El olvido DEFENSIVO del token nuevo se conserva tal cual cuando no se ha movido
       // nada; si se movió, borrarlo tiraría justo la copia que acabamos de trasladar.
       if (!movida) _olvidarCabeceraMemo_(tokenToSend, groupId);
-      if (rotado) rotaciones.push({ token_viejo: p.resume_token, token_nuevo: tokenToSend, grupo_id: groupId });
+      if (rotado) rotaciones.push({ token_viejo: p.resume_token, token_nuevo: tokenToSend, grupo_id: groupId, n: nEmailId || null });
       if (touch && touch.renewed) {
         // KAL-11: redact group_id UUID before persisting to Stackdriver.
         Logger.log(redact_('sendMagicLink_: renewed token for group ' + grp.enrollment_group_id));
@@ -4574,6 +4580,11 @@ function sendMagicLink_(p) {
       // original (mismo fallback que el batch histórico). La lectura de enrEmails por
       // grupo sigue en UN batch paralelo (read-only, PERF 2026-06-12 intacta).
       const sorted = rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      // ★ D213 — DE QUÉ TUTOR ES CADA ENLACE QUE SE VA A RENOVAR. Es el MISMO mapa que compone
+      // el `?n=` del correo, unas líneas más abajo; se lee aquí porque la renovación va ANTES.
+      // ⛔ Sin esto el KMS solo tocaría la casilla de la ficha, y **la recuperación desde la
+      // portada —que es el camino principal— seguiría cancelando el enlace del otro tutor**.
+      const nPorExpediente = recuperacion.identificadorDeCorreo || {};
       const newTokens = {};   // group_id → token nuevo persistido por el KMS
       // ⛔ `2026-09-23-el-enlace-se-sustituye-antes-de-mandarlo` — lo que esta petición ROTA
       // de verdad, para poder deshacerlo si el correo no sale. Ver `_conLosEnlacesRotados_`.
@@ -4590,7 +4601,9 @@ function sendMagicLink_(p) {
         if (g.submitted_at) return; // submitted: send existing token, do not renew
         const _tRenov = Date.now();
         try {
-          const touch = kmsProxy_('enr.renewApplicationSession', { resume_token: g.resume_token });
+          const touch = kmsProxy_('enr.renewApplicationSession', {
+            resume_token: g.resume_token, n: nPorExpediente[g.enrollment_group_id] || undefined,
+          });
           _renovaciones.push(Date.now() - _tRenov);
           // ⛔ ②17 (2026-08-19) — misma rotación, mismo olvido que en la rama de arriba.
           // ★ PARTE (B) — ídem: mover antes de olvidar. Esta rama NO tiene puerta viva, así
@@ -4605,7 +4618,8 @@ function sendMagicLink_(p) {
           if (touch && touch.renewed && touch.resume_token) {
             newTokens[g.enrollment_group_id] = touch.resume_token;
             rotaciones.push({ token_viejo: g.resume_token, token_nuevo: touch.resume_token,
-                              grupo_id: g.enrollment_group_id });
+                              grupo_id: g.enrollment_group_id,
+                              n: nPorExpediente[g.enrollment_group_id] || null });
           } else {
             // KAL-11: redact group_id UUID.
             Logger.log(redact_('sendMagicLink_: token not renewed for group ' + g.enrollment_group_id + ' (KMS fallback — keeps live token)'));
@@ -5836,6 +5850,9 @@ function _reponerElEnlace_(r) {
     var res = kmsProxy_('enr.reponerEnlaceAnterior', {
       resume_token:   r.token_nuevo,     // KAL-4: el expediente sale del token, no del cuerpo
       token_anterior: r.token_viejo,
+      // ★ D213 — DE QUIÉN es el enlace que se repone. Sin esto el KMS repondría la casilla de la
+      // ficha y dejaría la ranura de ese tutor apuntando al enlace nuevo, el que NADIE recibió.
+      n:              r.n || undefined,
     });
     repuesto = !!(res && res.repuesto);
   } catch (e) {

@@ -263,13 +263,17 @@ const ROTURAS = [
   { nombre: 'se vuelve al orden viejo: rotar, mandar, y si no sale no reponer nada',
     romper: (f) => f.replace(
       '    (rotaciones || []).forEach(function (r) { _reponerElEnlace_(r); });\n', '') },
+  // ⚠️ D213 (2026-09-23) — las dos mutilaciones se ACTUALIZARON: el apunte de la rotación lleva
+  // ahora también el `?n=` del tutor (sin él, la reposición no sabría de quién es el enlace).
+  // Sin actualizarlas, el arnés cantaba «MEDICIÓN CIEGA», que es exactamente para lo que está.
   { nombre: 'la rama pública deja de apuntar lo que rotó (no habría qué reponer)',
     romper: (f) => f.replace(
       "            rotaciones.push({ token_viejo: g.resume_token, token_nuevo: touch.resume_token,\n"
-      + "                              grupo_id: g.enrollment_group_id });\n", '') },
+      + "                              grupo_id: g.enrollment_group_id,\n"
+      + "                              n: nPorExpediente[g.enrollment_group_id] || null });\n", '') },
   { nombre: 'la rama interna deja de apuntar lo que rotó',
     romper: (f) => f.replace(
-      "      if (rotado) rotaciones.push({ token_viejo: p.resume_token, token_nuevo: tokenToSend, grupo_id: groupId });\n", '') },
+      "      if (rotado) rotaciones.push({ token_viejo: p.resume_token, token_nuevo: tokenToSend, grupo_id: groupId, n: nEmailId || null });\n", '') },
   { nombre: 'se repone con el token NUEVO en vez de con el que la familia tenía',
     romper: (f) => f.replace(
       '      token_anterior: r.token_viejo,', '      token_anterior: r.token_nuevo,') },

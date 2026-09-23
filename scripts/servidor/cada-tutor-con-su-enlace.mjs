@@ -114,6 +114,22 @@ function cargar (fuente) {
   ctx._recuperacionDeLaCache_ = () => null
   ctx._guardarRecuperacionEnCache_ = () => {}
   ctx._mintMagicLinkNonce_ = () => {}
+  ctx._verjaPublicaVeredicto_ = () => ({ ok: true })
+  ctx._checkMagicLinkRateLimit_ = () => {}
+  ctx._checkMagicLinkRateLimitIp_ = () => {}
+  ctx._mintWarmTicket_ = () => '77777777-7777-4777-8777-777777777777'
+  ctx._moverLaCopiaDeLaPuerta_ = () => false
+  ctx._olvidarCabeceraMemo_ = () => {}
+  ctx._kmsRenderResumeLinksBlock_ = () => ''
+  ctx.initEnrollmentSession_ = () => ({ warm_ticket: 'x' })
+  // La recuperación por correo: UN expediente, y el `?n=` de ESTE buzón en él (el de B).
+  ctx._recuperacionDelCorreo_ = () => ({
+    porCorreoPrincipal: [{ enrollment_group_id: GID, resume_token: TOK_A, primary_email: MAIL_B,
+      submitted_at: null, abandoned_at: null, created_at: '2026-09-20T00:00:00.000Z',
+      preferred_language: 'es' }],
+    porTutor: [],
+    identificadorDeCorreo: { [GID]: N_B },
+  })
   ctx._dejarElClicSinLlamadas_ = () => {}
   ctx._kmsRenderGdprBlock_ = () => ''
   ctx.sendViaKmsNotify_ = () => ({ sent: true })
@@ -235,6 +251,33 @@ function afirmaciones (fuente) {
     }
   }
 
+  // 6 — ⛔ LOS DOS CAMINOS QUE EMITEN LE DICEN AL KMS DE QUÉ TUTOR ES EL ENLACE.
+  //     El de la PORTADA es el principal, y es justo el que no lleva `?n=` en su petición:
+  //     si no se lo dijera, el KMS solo tocaría la casilla de la ficha y **la recuperación
+  //     desde la portada seguiría cancelando el enlace del otro tutor**.
+  {
+    const s = cargar(fuente)
+    s.ctx.sendMagicLink_({ primary_email: MAIL_B, recaptcha_token: 'x' })
+    const renov = s.kms.filter((v) => v.accion === 'enr.renewApplicationSession')
+    if (renov.length !== 1) {
+      fallos.push('portada: se pidieron ' + renov.length + ' renovaciones en vez de 1')
+    } else if (renov[0].cuerpo.n !== N_B) {
+      fallos.push('⛔ la recuperación DESDE LA PORTADA renueva el enlace sin decir de qué tutor es ('
+        + JSON.stringify(renov[0].cuerpo.n) + ') ⇒ el otro tutor se sigue quedando fuera')
+    }
+    // Y si el correo NO sale, la reposición también dice de quién es.
+    const t = cargar(fuente)
+    t.ctx.sendViaKmsNotify_ = () => { const e = new Error('no salió'); e.code = 'EMAIL_SEND_FAILED'; throw e }
+    t.ctx.sendMagicLink_({ primary_email: MAIL_B, recaptcha_token: 'x' })
+    const rep = t.kms.filter((v) => v.accion === 'enr.reponerEnlaceAnterior')
+    if (rep.length !== 1) {
+      fallos.push('portada, correo que no sale: se pidieron ' + rep.length + ' reposiciones en vez de 1')
+    } else if (rep[0].cuerpo.n !== N_B) {
+      fallos.push('la reposición no dice de qué tutor es el enlace que repone ⇒ la ranura de ese '
+        + 'tutor se queda con el enlace que NADIE recibió')
+    }
+  }
+
   return { ciego: false, fallos }
 }
 
@@ -256,6 +299,12 @@ const ROTURAS = [
     romper: (f) => f.replace(
       "  cache.put(\n    donde.clave,",
       "  cache.put(\n    _claveMarcaStepUp_(enrollmentGroupId, 'otra'),") },
+  { nombre: 'la portada renueva sin decir de qué tutor es el enlace',
+    romper: (f) => f.replace(
+      "            resume_token: g.resume_token, n: nPorExpediente[g.enrollment_group_id] || undefined,",
+      "            resume_token: g.resume_token,") },
+  { nombre: 'la reposición deja de decir de qué tutor es',
+    romper: (f) => f.replace("      n:              r.n || undefined,", "") },
   { nombre: 'el `?n=` deja de viajar al KMS',
     romper: (f) => f.replace(
       "  if (cuerpo.resume_token && !cuerpo.n && _N_DE_LA_PETICION_) cuerpo.n = _N_DE_LA_PETICION_;",
@@ -294,6 +343,7 @@ try {
       console.log('  ✓ ⛔ un enlace SIN `?n=` sigue entrando, y quien acredita con él tampoco se queda fuera')
       console.log('  ✓ «sigo aquí» extiende la ventana DE QUIEN PULSA y no toca la del otro')
       console.log('  ✓ ⛔ al KMS se le dice de QUÉ TUTOR es el enlace que renueva, y no se pisa lo que el llamante declara')
+      console.log('  ✓ ⛔ la recuperación DESDE LA PORTADA —el camino principal— dice de qué tutor es, al renovar y al reponer')
       console.log('  ✓ ejecutado sobre `backend/Code.js` REAL, en un vm con dobles: sin red, sin navegador, sin datos reales')
     }
   }
