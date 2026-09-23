@@ -1219,6 +1219,21 @@ GitHub Pages**: eso publica **el frontal y solo el frontal**. `deploy.yml` **no 
 queda **en el repositorio y NO en la URL que usan las familias** hasta que alguien ejecuta los dos
 comandos de arriba.
 
+⛔ **Y LA CARA B, que cuesta cupo: un cambio que NO toca `backend/` NO se despliega.** El empujón a
+`main` ya lo ha publicado entero. `clasp deploy` sobre un `backend/` idéntico gasta **una versión del
+cupo diario** para publicar el mismo servidor, y el cupo es limitado. **Se comprueba antes de
+desplegar, y la orden es literal:**
+
+```bash
+git diff origin/main...HEAD -- backend/     # vacío ⇒ NO se despliega el asistente
+```
+
+⚠️ **Y la excepción, que es de verdad:** si el frontal nuevo **necesita** algo del servidor que
+todavía no está arriba, entonces el cambio SÍ toca `backend/` y va el ciclo completo. El orden entre
+los dos sigue siendo el de abajo: primero el que hace que el otro degrade sin romper.
+*(Medido el 2026-09-23: el `@301` salió **byte-idéntico** al `@300` porque el cambio era solo de
+frontal.)*
+
 **Orden cuando el cambio toca los DOS proyectos:** se publica el que hace que el otro **degrade sin
 romper**. Si el asistente necesita algo nuevo del KMS, **el KMS va primero**; si el asistente deja de
 llamar a algo, **el asistente va primero**. Un alias del KMS **no se retira** mientras el paquete viejo
