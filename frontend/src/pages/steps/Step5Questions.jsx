@@ -11,7 +11,12 @@ import * as log from '../../logger';
 export default function Step5Questions({ onNext, onBack, locked, onUnlock, savePending }) {
   const { t, i18n }  = useTranslation();
   const { enrollmentGroupId, resumeToken, stepData, updateStep, enqueueSave, recoveryNonce,
-          programaDeLaSolicitud } = useWizard();   // D181 — las preguntas van por programa
+          programaDeLaSolicitud,
+          // ★ 2026-09-23 — sube cuando el latido descubre que el colegio cambió una pregunta.
+          // Va en las dependencias de la carga de abajo: así el cuestionario se vuelve a pedir
+          // aunque esta pantalla YA esté montada. Sin esto, quien está mirando el paso 5 no se
+          // entera hasta navegar fuera y volver.
+          catalogoRevision } = useWizard();   // D181 — las preguntas van por programa
 
   // WIZARD-PERF-CACHE-SKELETON: paint instantáneo (stale-while-revalidate). Si hay
   // catálogo en sessionStorage (mismo idioma, no expirado) lo mostramos sin spinner
@@ -58,7 +63,10 @@ export default function Step5Questions({ onNext, onBack, locked, onUnlock, saveP
     // D181: el PROGRAMA entra en las dependencias — si el tutor lo cambia en el paso 1,
     // el cuestionario que se pinta tiene que volver a resolverse, no quedarse con el del
     // programa anterior.
-  }, [i18n.language, intento, programaDeLaSolicitud]); // eslint-disable-line
+    // ★ 2026-09-23: y `catalogoRevision` — el latido descubrió que el colegio cambió una
+    // pregunta. ⛔ Esto NO borra lo pintado: `readQuestionsCacheSync` sigue sirviendo lo que
+    // hay mientras la revalidación viaja, así que la pantalla nunca se queda en blanco.
+  }, [i18n.language, intento, programaDeLaSolicitud, catalogoRevision]); // eslint-disable-line
 
   // ── DBG-SESSION (bug 2): qué llega al render. audience_category_id + has_q por
   // pregunta + nº de hijos/tutores + claves de respuesta (prefijos 8 chars) son

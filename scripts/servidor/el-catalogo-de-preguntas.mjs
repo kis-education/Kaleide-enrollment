@@ -46,6 +46,12 @@ const NECESARIAS = [
   '_claveCatalogoPreguntas_', '_catalogoDePreguntasImposible_',
   '_catalogoDePreguntasDeLaCopia_', '_guardarCatalogoDePreguntas_',
   '_espejoCalentarElCuestionario_', 'fetchQuestions_',
+  // 2026-09-23 — el escritor del catálogo apunta ahora su combinación en un índice, y la
+  // puerta pública devuelve el catálogo con su versión puesta. No son de lo que este control
+  // mide (el TECHO), pero SÍ son funciones que las de arriba llaman: sin ellas el montaje
+  // reventaría con un `ReferenceError` y este arnés saldría mudo en vez de rojo.
+  '_versionDelCatalogo_', '_conVersionDelCatalogo_',
+  '_claveIndiceDelCatalogo_', '_combinacionesDelCatalogo_', '_apuntarCombinacionDelCatalogo_',
 ];
 // Las del TECHO. Que estén o no se decide por el SITIO DONDE SE USA, nunca por la definición.
 const DEL_TECHO = ['_claveViajeDelCatalogo_', '_marcarViajeDelCatalogo_', '_quedaTechoDelCatalogo_'];
@@ -77,6 +83,11 @@ function montar(src) {
   const conTecho = cuerpoEspejo.includes('_quedaTechoDelCatalogo_');
   let constantes = 'var CATALOGO_PREGUNTAS_TTL_S_ = ' + (constante(src, 'CATALOGO_PREGUNTAS_TTL_S_') || 0) + ';\n';
   if (!constante(src, 'CATALOGO_PREGUNTAS_TTL_S_')) throw new Ciega('falta CATALOGO_PREGUNTAS_TTL_S_');
+  // Las del ÍNDICE de combinaciones (2026-09-23): el escritor del catálogo las usa.
+  for (const n of ['CATALOGO_INDICE_TTL_S_', 'CATALOGO_COMBINACIONES_TOPE_']) {
+    if (!constante(src, n)) throw new Ciega('falta ' + n);
+    constantes += 'var ' + n + ' = ' + constante(src, n) + ';\n';
+  }
   let techoS = null;
   if (conTecho) {
     const sinDefinir = DEL_TECHO.filter(n => !extraer(src, n));
@@ -94,6 +105,7 @@ function montar(src) {
     get: k => { const e = almacen.get(k); if (!e) return null; if (e.expira <= estado.reloj) { almacen.delete(k); return null; } return e.v; },
     put: (k, v, ttl) => { almacen.set(k, { v, expira: estado.reloj + ttl * 1000 }); },
     putAll: (o, ttl) => { for (const k of Object.keys(o)) almacen.set(k, { v: o[k], expira: estado.reloj + ttl * 1000 }); },
+    remove: k => { almacen.delete(k); },
     getAll: ks => { const o = {}; for (const k of ks) { const v = cache.get(k); if (v != null) o[k] = v; } return o; },
   };
 

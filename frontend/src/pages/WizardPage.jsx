@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import * as log from '../logger';
-import { gasCall, prefetchLookups, prefetchQuestions, prefetchDocuments, identidadDelEnlace } from '../api';
+import { gasCall, prefetchLookups, prefetchQuestions, prefetchDocuments, identidadDelEnlace,
+         elCatalogoCambioEnElColegio } from '../api';
 import LangToggle from '../components/LangToggle';
 import SaveIndicator from '../components/SaveIndicator';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -60,6 +61,7 @@ export default function WizardPage() {
     reviewConfirmed, // input del mapeo central (catalog.stepEditMode)
     preguntarPorLosGuardados, // 18.bis.84 — «apuntado» no es «guardado»: se vuelve a preguntar
     programaDeLaSolicitud, // D181 — las preguntas van por programa: el precalentado usa su clave
+    setCatalogoRevision,   // 2026-09-23 — el colegio cambió una pregunta: el paso 5 vuelve a pedir
   } = useWizard();
   const { message: toastMsg, showToast } = useToast();
   const [saving,            setSaving]            = useState(false);
@@ -240,11 +242,11 @@ export default function WizardPage() {
   // que `preguntar` (18.bis.84): el efecto de abajo se monta UNA sola vez (deps `[]`), así que
   // cualquier función capturada en el cierre se quedaría con la versión del primer render y
   // escribiría sobre un estado viejo.
-  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, recoveryNonce, hasPendingSave, liveVersion, preguntar: preguntarPorLosGuardados, hidratar: hydrateFromResume, avisar: setAvisoDelColegio, idioma: i18n.language };
+  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, recoveryNonce, hasPendingSave, liveVersion, preguntar: preguntarPorLosGuardados, hidratar: hydrateFromResume, avisar: setAvisoDelColegio, idioma: i18n.language, programa: programaDeLaSolicitud, revisarCatalogo: setCatalogoRevision };
   const pulseInFlightRef = useRef(false);
   useEffect(() => {
     const tick = () => {
-      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer, preguntar, hidratar, avisar, idioma } = pulseRef.current;
+      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer, preguntar, hidratar, avisar, idioma, programa, revisarCatalogo } = pulseRef.current;
       if (!rt || !gid) return;                            // sin sesión → nada que sincronizar
       if (pending) return;                                // save en vuelo → saltar este tick
       // 0º.quindecies (segunda pieza, 2026-08-21) — subir un documento es OTRO canal (directo
@@ -266,8 +268,29 @@ export default function WizardPage() {
       if (pulseInFlightRef.current) return;               // ya hay un pulse en vuelo → no solapar
       pulseInFlightRef.current = true;
       // ── Etapa 1 — detección de cambio ULTRA-LIGERA (solo la versión, sin AppSheet/KMS).
-      gasCall('getLiveStateVersion', { enrollment_group_id: gid })
+      // ★ 2026-09-23 — LA COMBINACIÓN DEL CATÁLOGO VIAJA EN LA LLAMADA QUE YA VA.
+      // ⛔ NI UN VIAJE MÁS: son dos campos en el cuerpo de la etapa BARATA del pulso, la que
+      // ya late cada ~30 s. El servidor contesta con la versión que él tiene guardada para
+      // esa (programa × idioma), leída de su propia copia — no va al KMS.
+      gasCall('getLiveStateVersion', { enrollment_group_id: gid, cat_lang: idioma, cat_prog: programa || undefined })
         .then(verRes => {
+          // ── EL COLEGIO CAMBIÓ UNA PREGUNTA ──────────────────────────────────────────
+          // ⛔ **NO BORRA NADA Y NO PUEDE DEJAR EL PASO 5 EN BLANCO**: solo saca del plazo de
+          // frescura lo guardado, para que la próxima vez que el paso se monte revalide. Lo
+          // viejo se sigue pintando hasta que llegue lo nuevo. Va ANTES del corte por versión
+          // de abajo a propósito: un cambio de CATÁLOGO no mueve la versión de ninguna
+          // SOLICITUD, así que si esto colgara de ese `if` no se enteraría nunca.
+          try {
+            if (verRes && verRes.catalogo_v &&
+                elCatalogoCambioEnElColegio(idioma, programa, verRes.catalogo_v) && revisarCatalogo) {
+              // ⛔ Y SE LE DICE AL PASO 5, que puede estar montado AHORA MISMO. Marcar la copia
+              // para revalidar no basta: `fetchQuestions` solo decide cuando el paso se monta,
+              // así que un tutor MIRANDO el cuestionario no se enteraría hasta navegar fuera y
+              // volver — que es exactamente lo que le pasa a Diego al editar una pregunta.
+              // Esto NO pinta nada por su cuenta: sube un contador y el paso vuelve a pedir.
+              revisarCatalogo(n => n + 1);
+            }
+          } catch (e) { log.warn('WizardPage: la versión del catálogo no se pudo aplicar', { message: e && e.message }); }
           const v = (verRes && Number(verRes.version)) || 0;
           if (v <= (Number(knownVer) || 0)) return; // sin cambios → NO leer detalle
           // ── Etapa 2 — la versión subió → fetch de DETALLE del liveState.

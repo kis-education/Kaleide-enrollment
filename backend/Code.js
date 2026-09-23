@@ -7399,6 +7399,112 @@ function _catalogoDePreguntasDeLaCopia_(contextCode, lang, programId) {
   } catch (e) { return null; }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// LA VERSIÓN DEL CATÁLOGO, Y QUÉ COMBINACIONES HAY GUARDADAS (2026-09-23)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// Dos piezas pequeñas que hacen falta para que el aviso del KMS sirva de algo:
+//
+// 1 · **LA VERSIÓN.** El navegador ya derivaba una (`_catalogVersion`, FNV-1a de 32 bits sobre
+//     `sets`, `frontend/src/api.js`) pero **solo DESPUÉS de haberse traído el catálogo entero**
+//     — o sea, justo cuando ya no sirve para decidir si traérselo. Su propio fichero lleva
+//     escrito un `TODO(Diego)` pidiendo que el servidor la exponga barata. Esto es eso.
+//     ⛔ **El cálculo está COPIADO VERBATIM del navegador**, mismo algoritmo y mismo campo
+//     (`sets`), para que los dos lados digan el MISMO número sobre el mismo catálogo. Dos
+//     versiones distintas del mismo dato no comparan nada.
+//
+// 2 · **EL ÍNDICE.** `CacheService` no sabe listar sus claves, así que sin esto el aviso del
+//     KMS no tendría a qué combinación rehacer. Lo escribe **el escritor ÚNICO del catálogo**
+//     (`_guardarCatalogoDePreguntas_`) y no hay un segundo sitio que lo toque.
+//     · Va **MÁS RECIENTE PRIMERO**: el aviso rehace por ese orden, así que lo que de verdad
+//       se está sirviendo se corrige antes que lo que nadie mira.
+//     · Está **ACOTADO** (`CATALOGO_COMBINACIONES_TOPE_`): un colegio con muchos programas no
+//       puede hacer crecer esto sin límite.
+//     · **No lleva ni un dato de familia**: contexto, idioma e identificador de programa.
+//     · Vence a las **6 h** (el techo de `CacheService`), por encima del plazo del propio
+//       catálogo: si el índice se pierde, el aviso no rehace nada y el catálogo sigue
+//       curándose por su plazo — se degrada a lo de ayer, nunca a una pantalla en blanco.
+var CATALOGO_INDICE_TTL_S_ = 21600;
+var CATALOGO_COMBINACIONES_TOPE_ = 24;
+
+/** La versión de un catálogo. COPIA VERBATIM de `_catalogVersion` del navegador. @private */
+function _versionDelCatalogo_(valor) {
+  try {
+    var str = JSON.stringify((valor && valor.sets) || []);
+    var h = 0x811c9dc5;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return ('00000000' + h.toString(16)).slice(-8);
+  } catch (e) { return ''; }
+}
+
+/**
+ * Devuelve el catálogo con su versión puesta (`catalog_version`).
+ *
+ * ⛔ **La versión se calcula SOLO sobre `sets`**, así que añadir este campo NO la cambia: el
+ * número que dice el servidor y el que deriva el navegador de los mismos `sets` son el MISMO.
+ * Si algún día dejaran de serlo, el navegador se creería un cambio que no hubo y revalidaría
+ * de más — molesto, nunca incorrecto.
+ * @private
+ */
+function _conVersionDelCatalogo_(valor) {
+  try {
+    if (!valor || typeof valor !== 'object') return valor;
+    valor.catalog_version = _versionDelCatalogo_(valor);
+  } catch (e) { /* best-effort: sin versión el navegador deriva la suya, como ayer */ }
+  return valor;
+}
+
+/**
+ * La versión del catálogo que ESTE servidor tiene guardado para esa combinación, sin viajar a
+ * ningún sitio (es una lectura de su propia copia). `null` si no consta — y «no consta» NO es
+ * «no cambió»: el que pregunta no debe concluir nada de un `null`.
+ * @private
+ */
+function _versionGuardadaDelCatalogo_(contextCode, lang, programId) {
+  try {
+    var v = _catalogoDePreguntasDeLaCopia_(contextCode, lang, programId);
+    if (!v) return null;
+    return _versionDelCatalogo_(v) || null;
+  } catch (e) { return null; }
+}
+
+/** La clave del índice de combinaciones. Una sola por colegio. @private */
+function _claveIndiceDelCatalogo_() {
+  return 'wzqb_v2_' + SCHOOL_ID + '_combinaciones';
+}
+
+/** Las combinaciones guardadas, más reciente primero. `[]` si no consta. @private */
+function _combinacionesDelCatalogo_() {
+  try {
+    var crudo = CacheService.getScriptCache().get(_claveIndiceDelCatalogo_());
+    if (!crudo) return [];
+    var v = JSON.parse(crudo);
+    return Array.isArray(v) ? v : [];
+  } catch (e) { return []; }
+}
+
+/**
+ * Apunta esta combinación como la más reciente. Best-effort: si falla, el aviso del KMS
+ * rehará una combinación de menos y el plazo la cura igual.
+ * @private
+ */
+function _apuntarCombinacionDelCatalogo_(contextCode, lang, programId) {
+  try {
+    var yo = { c: String(contextCode || ''), l: String(lang || ''), p: String(programId || '') };
+    var lista = _combinacionesDelCatalogo_().filter(function (x) {
+      return !(x && x.c === yo.c && x.l === yo.l && x.p === yo.p);
+    });
+    lista.unshift(yo);
+    if (lista.length > CATALOGO_COMBINACIONES_TOPE_) lista = lista.slice(0, CATALOGO_COMBINACIONES_TOPE_);
+    CacheService.getScriptCache().put(_claveIndiceDelCatalogo_(), JSON.stringify(lista),
+      CATALOGO_INDICE_TTL_S_);
+    return true;
+  } catch (e) { return false; }
+}
+
 /** Guarda el catálogo. Best-effort: un fallo aquí NO puede tocar la respuesta. @private */
 function _guardarCatalogoDePreguntas_(contextCode, lang, programId, valor) {
   try {
@@ -7408,9 +7514,14 @@ function _guardarCatalogoDePreguntas_(contextCode, lang, programId, valor) {
         ' secciones y CERO preguntas. Suele ser una lectura a medias, no un colegio sin cuestionario.');
       return false;
     }
-    return _wzCachePutChunked_(CacheService.getScriptCache(),
+    var guardado = _wzCachePutChunked_(CacheService.getScriptCache(),
       _claveCatalogoPreguntas_(contextCode, lang, programId), JSON.stringify(valor),
       CATALOGO_PREGUNTAS_TTL_S_);
+    // El ÍNDICE se apunta aquí, en el escritor ÚNICO, y solo si la escritura salió bien:
+    // apuntar una combinación que no se llegó a guardar haría que el aviso del KMS fuera a
+    // rehacer algo que no existe. Best-effort — nunca cambia lo que devuelve esta función.
+    if (guardado) _apuntarCombinacionDelCatalogo_(contextCode, lang, programId);
+    return guardado;
   } catch (e) { return false; }
 }
 
@@ -7540,7 +7651,7 @@ function fetchQuestions_(p, opciones) {
   // forma de hacer viajar al KMS a voluntad.
   if (!(opciones && opciones.sinCopia)) {
     var deLaCopia = _catalogoDePreguntasDeLaCopia_(contextCode, lang, programId);
-    if (deLaCopia) return deLaCopia;
+    if (deLaCopia) return _conVersionDelCatalogo_(deLaCopia);
   }
 
   // ── Q05-S5 (DL-Q05): proxy thin a KMS qb-public.resolveSetForConsumer ────
@@ -7575,7 +7686,12 @@ function fetchQuestions_(p, opciones) {
   // Y la marca del TECHO: aquí, y SOLO aquí, ha habido un viaje de verdad. A partir de este
   // momento el repaso de fondo puede refrescar sin viaje hasta que esta marca caduque.
   _marcarViajeDelCatalogo_(contextCode, lang, programId);
-  return catalogo;
+  // ★ 2026-09-23 — LA VERSIÓN VIAJA CON EL CATÁLOGO. Es lo que pedía el `TODO(Diego)` de
+  // `frontend/src/api.js`: hasta hoy el navegador solo podía derivarla DESPUÉS de traerse el
+  // catálogo entero, que es justo cuando ya no sirve para decidir si traérselo.
+  // ⛔ Se pone DESPUÉS de guardar, no antes: lo que se guarda es el catálogo tal cual llegó
+  // del KMS, sin campos que este proceso le haya añadido.
+  return _conVersionDelCatalogo_(catalogo);
 }
 
 // ⛔ AQUÍ VIVÍAN `manual_diagQbRenderShape` y `manual_diagFetchQuestions`, Y NO VUELVEN A
@@ -11394,6 +11510,96 @@ function verifySignedKmsNotice_(p, expectedAction) {
   return { ok: true, event: event };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// EL CATÁLOGO DEL COLEGIO CAMBIÓ — y aquí se REHACE, no solo se tira (2026-09-23)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// Diego, 2026-09-23: *«Si alguien en el KMS modifica algún dato de esa solicitud, se le manda
+// al backend del wizard.»* · *«⛔ Invalidar NO es actualizar: subir el número de versión marca
+// la copia vieja y deja al tutor pagando el viaje entero. Rehacerla es MANDAR el contenido.»*
+//
+// El catálogo de preguntas es **configuración del COLEGIO**, no «la solicitud», y por eso se
+// había quedado fuera de esas reglas: vivía de un temporizador hecho a mano. Ahora el KMS
+// avisa (`enr_avisarCambioDeCatalogoDePreguntas_`) y esto lo rehace.
+//
+// ⛔ **QUIÉN REHACE, Y POR QUÉ ESTE LADO — el número que lo decidió** (medido contra el
+// despliegue vivo, 2026-09-23): el asistente guarda un catálogo por **(programa × idioma ×
+// contexto)**; hoy son **SEIS** combinaciones (2 programas × 2 idiomas, más la clave «sin
+// programa» de la solicitud que aún no ha elegido) de **35.687–43.578 bytes** cada una ⇒ unos
+// **240 KB**, al borde del techo de 250.000 por copia que el KMS ya tiene. Y **dos de las seis
+// no son derivables desde el KMS**: la clave «sin programa» no sale de `enrPrograms`. Por eso
+// el KMS manda el AVISO (~200 bytes) y el contenido lo rehace **el lado que sabe cuáles hay**,
+// leyéndolas de su propio índice (`_combinacionesDelCatalogo_`).
+//
+// ⛔⛔ **NADIE SE QUEDA SIN CUESTIONARIO. ES LA BARANDILLA QUE MANDA SOBRE LA VELOCIDAD.**
+// Aquí **NO se borra ni una copia**. Se pide la nueva y, solo si llega, `fetchQuestions_` la
+// sustituye. Si el viaje falla —o si no da tiempo a todas— **lo guardado sigue en pie y el
+// tutor sigue viendo su cuestionario**: un catálogo viejo es peor que uno nuevo, pero una
+// pantalla en blanco es peor que los dos.
+//
+// ⛔ **PRESUPUESTO, porque al otro lado hay alguien esperando.** Esto corre dentro del POST que
+// hace el trabajador de la cola del KMS, así que no puede durar lo que quiera: rehace las que
+// quepan en `CATALOGO_AVISO_PRESUPUESTO_MS_`, **por orden de más reciente** (las que de verdad
+// se están sirviendo), y a las que no le dio tiempo **les quita la marca del techo** para que
+// el repaso de fondo —que vuelve cada 30 min— las rehaga él. Peor caso: 30 min, en vez de las
+// 2 h 30 min de antes.
+//
+// ⛔ **Ningún plazo de seguridad se toca**: ni el código de un solo uso, ni KAL-4, ni la verja,
+// ni el cupo público ②54 (quien viaja aquí es el propio servidor, no una familia).
+var CATALOGO_AVISO_PRESUPUESTO_MS_ = 20 * 1000;
+
+/**
+ * Rehace el catálogo del colegio tras el aviso del KMS.
+ * @returns {{combinaciones:number, rehechas:number, destechadas:number}}
+ * @private
+ */
+function _catalogoCambioEnElColegio_(motivo) {
+  var out = { combinaciones: 0, rehechas: 0, destechadas: 0 };
+  var t0 = Date.now();
+  try {
+    var combis = _combinacionesDelCatalogo_();
+    out.combinaciones = combis.length;
+    if (!combis.length) return out;   // no consta ninguna ⇒ nada que rehacer; el plazo la cura
+
+    // El rehacedor es el que YA existe (`_espejoCalentarElCuestionario_`), con `forzar`: es el
+    // único que sabe no borrar antes de pedir. ⛔ No se escribe un segundo.
+    var pendientes = {};
+    for (var i = 0; i < combis.length; i++) {
+      var c = combis[i];
+      if (!c || c.c !== 'ENROLLMENT') continue;   // hoy solo hay este contexto
+      pendientes[c.p + '|' + c.l] = { program_id: c.p, lang: c.l };
+    }
+    var r = _espejoCalentarElCuestionario_(pendientes, function () {
+      return Date.now() - t0 > CATALOGO_AVISO_PRESUPUESTO_MS_;
+    }, { forzar: true });
+    out.rehechas = r.preparados || 0;
+
+    // Lo que no dio tiempo: se le quita el techo, NO la copia. Sin techo, el repaso de fondo
+    // vuelve a preguntar de verdad en su siguiente vuelta; con la copia intacta, mientras
+    // tanto el tutor sigue viendo su cuestionario.
+    if (r.omitidos) {
+      var claves = Object.keys(pendientes);
+      for (var j = claves.length - r.omitidos; j < claves.length; j++) {
+        var q = pendientes[claves[j]];
+        if (!q) continue;
+        try {
+          CacheService.getScriptCache().remove(
+            _claveViajeDelCatalogo_('ENROLLMENT', q.lang, q.program_id));
+          out.destechadas++;
+        } catch (_eD) { /* best-effort */ }
+      }
+    }
+  } catch (e) {
+    try { Logger.log(redact_('[_catalogoCambioEnElColegio_] non-fatal — ' + ((e && e.message) || e))); } catch (_eL) {}
+  }
+  try {
+    Logger.log('[_catalogoCambioEnElColegio_] motivo=' + String(motivo || '?') +
+      ' combinaciones=' + out.combinaciones + ' rehechas=' + out.rehechas +
+      ' destechadas=' + out.destechadas + ' ms=' + (Date.now() - t0));
+  } catch (_eL2) {}
+  return out;
+}
+
 function notifyLiveStateChange_(p) {
   p = p || {};
   // DL-S106 — VERIFICAR ANTES DE MIRAR. Ni un solo campo del contenido se toca hasta que la
@@ -11402,6 +11608,20 @@ function notifyLiveStateChange_(p) {
   // autenticación (está en el `switch(action)` del doPost `ANYONE_ANONYMOUS`).
   const v = verifySignedKmsNotice_(p, 'notifyLiveStateChange');
   if (!v.ok) return { ok: false, reason: 'UNAUTHORIZED' };
+
+  // ★ 2026-09-23 — EL MISMO RECEPTOR ATIENDE LAS DOS COSAS QUE EL COLEGIO PUEDE CAMBIAR.
+  // ⛔ **NO es un tercer receptor**: es éste, con la MISMA firma, la MISMA ventana y la MISMA
+  // no-repetición, ya pasadas arriba. Lo único que cambia es que el aviso DECLARA su alcance.
+  // Un aviso de CATÁLOGO no cuelga de ningún expediente (es configuración del colegio), así
+  // que aquí no hay grupo que exigir — y por eso este trozo va ANTES de exigirlo.
+  // ⛔ El alcance se lee EXPLÍCITO. Lo que no lo declare es un aviso de solicitud, igual que
+  // ayer: byte-idéntico, sin una rama nueva en su camino.
+  if (v.event.alcance === 'CATALOGO') {
+    const rCat = _catalogoCambioEnElColegio_(v.event.reason);
+    return { ok: true, catalogo: true, combinaciones: rCat.combinaciones,
+             rehechas: rCat.rehechas, destechadas: rCat.destechadas };
+  }
+
   const groupId = v.event.enrollment_group_id;
   try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { ok: false, reason: 'BAD_REQUEST' }; }
   // `0º.quinquagies` B — el motivo YA VIAJABA y solo se registraba en el log. Ahora DECIDE
@@ -11686,6 +11906,52 @@ function acunarGraciaDeEnlace_(p) {
 }
 
 /**
+ * ★ 2026-09-23 — LA VERSIÓN DEL CATÁLOGO, EN LA LLAMADA BARATA QUE YA LATE CADA 30 s.
+ *
+ * ⛔ **NI UN VIAJE MÁS** (mismo criterio que `step_up_restante_s`): se aprovecha la respuesta
+ * que ya llega, y lo que cuesta calcularla es una lectura de la copia de ESTE servidor.
+ *
+ * Cerraba esto: el navegador guarda el catálogo hasta **30 días** y solo lo revalida cada 30
+ * min **preguntando el catálogo entero** — una llamada que en este asistente cuesta 18-25 s y
+ * a veces muere. Mientras muera, su copia puede mentir durante días sin que nada lo desmienta.
+ * Ahora se entera **sin pedir el catálogo**.
+ *
+ * ⛔ **VIAJA EN `getLiveStateVersion` Y NO EN `getAdmissionState`, Y ESTO ES EL PUNTO ENTERO.**
+ * El pulso tiene DOS etapas: la barata (ésta, cada ~30 s) y el detalle, que **solo se pide
+ * cuando la versión de la SOLICITUD sube**. Un cambio de catálogo no mueve la versión de
+ * ninguna solicitud ⇒ puesta en el detalle, esta versión no llegaría nunca cuando hace falta.
+ * Se midió antes de moverla, y por eso está aquí.
+ *
+ * ⛔ **NO SE GUARDA EN NINGUNA COPIA**: se lee en fresco. Una versión cacheada diría «no ha
+ * cambiado nada», que es exactamente el defecto que esto viene a cerrar.
+ *
+ * ⛔ **CERO exposición nueva**: el catálogo es contenido PÚBLICO del colegio (`fetchQuestions`
+ * lo sirve sin token a cualquiera), así que su versión no dice nada que no se pudiera ya
+ * pedir. Y esta acción ya contestaba sin token.
+ *
+ * ⛔ **`null` NO es «no cambió»**: es «aquí no consta». El navegador no concluye nada de un
+ * `null` y se queda con lo que tenga — nunca se queda sin cuestionario por esto.
+ *
+ * ⛔ **Ni un dato personal**: entran un idioma y un identificador de programa (configuración
+ * del centro), sale un número de ocho dígitos hexadecimales.
+ * @private
+ */
+function _versionDelCatalogoParaElPulso_(p) {
+  try {
+    if (!p || !p.cat_lang) return null;
+    var lang = String(p.cat_lang).trim();
+    if (!/^[A-Za-z-]{2,16}$/.test(lang)) return null;          // KAL-5 capa 1: la FORMA
+    var prog = '';
+    if (p.cat_prog != null && p.cat_prog !== '') {
+      var crudo = String(p.cat_prog).trim();
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(crudo)) return null;
+      prog = crudo;
+    }
+    return _versionGuardadaDelCatalogo_('ENROLLMENT', lang, prog);
+  } catch (e) { return null; }
+}
+
+/**
  * DL-A.5 (Opción A §2) — Cheap-poll: devuelve SOLO la versión liveState del grupo. Lee el
  * ScriptCache (efímero), SIN tocar AppSheet ni el KMS — diseñado para llamarse con alta
  * frecuencia (on-focus + intervalo). El frontend solo hace el fetch de detalle del
@@ -11695,13 +11961,17 @@ function acunarGraciaDeEnlace_(p) {
  * es un entero no sensible (cuenta de cambios); el bump exige el secreto del KMS, así que
  * la lectura abierta no es un vector (no expone datos). assertValidUuid_ por higiene.
  *
- * @param {Object} p — { enrollment_group_id }
- * @returns {{version:number}}
+ * @param {Object} p — { enrollment_group_id, cat_lang?, cat_prog? }
+ * @returns {{version:number, catalogo_v:?string}}
  */
 function getLiveStateVersion_(p) {
   const groupId = p && p.enrollment_group_id;
-  try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { version: 0 }; }
-  return { version: _getLiveStateVersion_(groupId) };
+  // ★ 2026-09-23 — la versión del CATÁLOGO viaja aunque el expediente no se pueda resolver:
+  // son dos cosas distintas (una es del colegio, la otra de la solicitud) y una respuesta que
+  // se calla la primera por un fallo de la segunda dejaría al navegador sin enterarse.
+  var catalogoV = _versionDelCatalogoParaElPulso_(p);
+  try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { version: 0, catalogo_v: catalogoV }; }
+  return { version: _getLiveStateVersion_(groupId), catalogo_v: catalogoV };
 }
 
 // ─── Promotion logic ──────────────────────────────────────────────────────────
@@ -12336,8 +12606,13 @@ var ESPEJO_CUESTIONARIOS_POR_VUELTA_ = 8;
  * @returns {{preparados:number, refrescados:number, pedidos:number, omitidos:number}}
  * @private
  */
-function _espejoCalentarElCuestionario_(pendientes, seAcaboElTiempo) {
+function _espejoCalentarElCuestionario_(pendientes, seAcaboElTiempo, opciones) {
   var res = { preparados: 0, refrescados: 0, pedidos: 0, por_techo: 0, omitidos: 0 };
+  // ★ 2026-09-23 — `forzar`: el KMS acaba de decir que el colegio tocó una pregunta, así que
+  // el refresco SIN VIAJE (que solo renueva el plazo de lo guardado) sería exactamente lo
+  // contrario de lo que hace falta. Con `forzar` se pregunta de verdad, saltándose la copia.
+  // ⛔ **No es un segundo rehacedor**: es ÉSTE, que es el que ya sabe no borrar antes de pedir.
+  var forzar = !!(opciones && opciones.forzar);
   var claves = Object.keys(pendientes || {});
   for (var i = 0; i < claves.length; i++) {
     if (i >= ESPEJO_CUESTIONARIOS_POR_VUELTA_ || seAcaboElTiempo()) {
@@ -12346,7 +12621,7 @@ function _espejoCalentarElCuestionario_(pendientes, seAcaboElTiempo) {
     var c = pendientes[claves[i]];
     try {
       var yaEsta = _catalogoDePreguntasDeLaCopia_('ENROLLMENT', c.lang, c.program_id);
-      if (yaEsta && _quedaTechoDelCatalogo_('ENROLLMENT', c.lang, c.program_id)) {
+      if (!forzar && yaEsta && _quedaTechoDelCatalogo_('ENROLLMENT', c.lang, c.program_id)) {
         // Está caliente Y le queda techo: se refresca SU PLAZO sin viaje y sin tocar el cupo
         // público. Sin esto, el catálogo (30 min) y el repaso (30 min) derivan y el clic lo
         // paga igual.
@@ -12359,7 +12634,9 @@ function _espejoCalentarElCuestionario_(pendientes, seAcaboElTiempo) {
       // pide saltándose la copia a propósito (`sinCopia`) — si no, `fetchQuestions_` devolvería
       // la copia vieja y el techo no serviría de nada. ⛔ La copia NO se borra antes: si el
       // viaje falla, lo guardado sigue en pie y la familia no se queda sin cuestionario.
-      if (yaEsta) res.por_techo++;
+      // Con `forzar` esto NO es «se acabó el techo»: es «el colegio lo cambió». Se cuentan
+      // aparte para que el registro no mienta sobre por qué se viajó.
+      if (yaEsta) { if (forzar) res.forzados = (res.forzados || 0) + 1; else res.por_techo++; }
       fetchQuestions_(
         { context_code: 'ENROLLMENT', language: c.lang, program_id: c.program_id },
         yaEsta ? { sinCopia: true } : null);

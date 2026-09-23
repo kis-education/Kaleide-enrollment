@@ -4236,6 +4236,200 @@ async function caminoLaSaludNoSeDisfrazaDeVacia(page, base) {
 }
 
 /**
+ * el-catalogo-cambio-en-el-colegio — 2026-09-23 · EL NAVEGADOR SE ENTERA SIN PEDIR EL
+ * CATÁLOGO, Y NUNCA SE QUEDA EN BLANCO POR ENTERARSE.
+ *
+ * ── El defecto que cierra ─────────────────────────────────────────────────────────────
+ * Medido el 2026-09-23: el navegador guarda el cuestionario hasta **30 días**
+ * (`QCACHE_LS_MAXAGE_MS`) y solo lo revalida **cada 30 min pidiendo el catálogo entero** —
+ * una llamada que en este asistente cuesta 18-25 s y a veces muere. Mientras muera, su copia
+ * puede mentir días enteros: Diego podía editar una pregunta y no verla en su pantalla. El
+ * propio `frontend/src/api.js` llevaba escrito un `TODO(Diego)` pidiendo exactamente esto.
+ *
+ * ── Qué mide ──────────────────────────────────────────────────────────────────────────
+ * · (a) con la versión del servidor IGUAL a la guardada, NO se vuelve a pedir el catálogo
+ *   (si se pidiera siempre, esto sería un latido caro cada 30 s por familia).
+ * · (b) cuando la versión CAMBIA, sale UNA petición de `fetchQuestions` — el navegador se
+ *   enteró **sin** que nadie le mandara el catálogo.
+ * · (c) ⛔⛔ **Y EL PASO 5 NO SE QUEDA NUNCA EN BLANCO**: mientras la revalidación viaja, las
+ *   preguntas que había siguen pintadas. Es la barandilla que manda sobre la velocidad —
+ *   un catálogo viejo es peor que uno nuevo, pero una pantalla en blanco es peor que los dos.
+ *
+ * ⛔ **CUÁL DE LAS DOS MUERDE, dicho sin adornar** (comprobado rompiendo el producto a
+ * propósito, 2026-09-23): **(c) NO basta**. Con el paso ya montado, las preguntas viven en
+ * el estado de React, así que borrar la copia del navegador no se nota — (c) siguió VERDE
+ * sobre un producto roto. **La que muerde es (d)**: catálogo caído + volver a entrar, que es
+ * cuando la copia decide el pintado. Sustituir el marcar-para-revalidar por un «lo tiro todo»
+ * deja (d) en **0 preguntas**. (c) se queda porque cuesta cero y cubre el caso contrario
+ * —que alguien vacíe el estado al enterarse—, pero no se cuenta como la red.
+ *
+ * ⚠️ Lo que NO cubre: la batería corre contra un backend SIMULADO que nunca ejecuta
+ * `backend/Code.js` ni el KMS. Que el KMS mande el aviso y que el servidor del asistente
+ * rehaga su copia se mide aparte, ejecutando el código real:
+ * `scripts/servidor/el-catalogo-se-entera-cuando-el-colegio-lo-cambia.mjs`.
+ */
+async function caminoElCatalogoCambioEnElColegio(page, base) {
+  const c = new Camino('el-catalogo-cambio-en-el-colegio')
+  scenario.stage = 'hasta_preguntas'
+  scenario.preguntasMode = 'ok'
+  scenario.catalogoV = undefined
+
+  try {
+    // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────
+    // Sin esto, retirar el mecanismo dejaría este recorrido diciendo «no salió ninguna
+    // petición» — cierto, y VERDE sobre un producto que ya no hace nada.
+    const FUENTES = [
+      ['frontend/src/api.js',               /\bexport function elCatalogoCambioEnElColegio\b/],
+      ['frontend/src/pages/WizardPage.jsx', /\belCatalogoCambioEnElColegio\(idioma, programa, verRes\.catalogo_v\)/],
+      ['frontend/src/pages/WizardPage.jsx', /cat_lang: idioma/],
+    ]
+    const ausentes = []
+    for (const [rel, re] of FUENTES) {
+      let txt = ''
+      try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+      if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+    }
+    if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+      ausentes.length === 0,
+      `no se encontró en el fuente: ${ausentes.join(' · ')} — el recorrido NO puede medir lo que ` +
+      `dice medir, así que NO puede salir verde`)) return c
+
+    if (REAL) {
+      c.noCubierta('el-navegador-se-entera-del-cambio-de-catalogo',
+        'exige que el colegio edite una pregunta de verdad y que la versión del catálogo cambie entre dos latidos; contra el sistema real eso deja configuración tocada. En modo simulado sí se cubre, con `scenario.catalogoV`.')
+      return c
+    }
+
+    const preguntas = []
+    const onReq = (req) => {
+      if (!/\/__gas/.test(req.url()) || req.method() !== 'POST') return
+      try {
+        const p = JSON.parse(req.postData() || '{}')
+        if (p.action === 'fetchQuestions') preguntas.push(p)
+        if (p.action === 'getLiveStateVersion') c.evidencia.elementos = (c.evidencia.elementos || 0) + 1
+      } catch { /* cuerpo raro */ }
+    }
+    page.on('request', onReq)
+
+    try {
+      if (!await entrarPorElEnlace(c, page, base)) return c
+      if (!await irAPreguntas(c, page)) return c
+      await page.waitForTimeout(LATENCY + 600)
+
+      const vistaInicial = await page.evaluate(sondaPreguntas)
+      if (!c.afirmar('(ancla) el paso 5 arranca con preguntas pintadas',
+        vistaInicial.preguntas >= 1,
+        `el paso 5 pintó ${vistaInicial.preguntas} preguntas: sin nada pintado, lo de abajo mide el aire`)) return c
+
+      // ── (a) EL LATIDO CON LA MISMA VERSIÓN NO PIDE NADA ───────────────────────────
+      // El servidor simulado empieza a declarar SU versión. Es la MISMA que la guardada,
+      // porque el navegador la deriva del mismo catálogo con el mismo algoritmo (el
+      // servidor real copia `_catalogVersion` verbatim). Si el navegador se creyera un
+      // cambio aquí, pagaría el catálogo entero en cada latido.
+      scenario.catalogoV = await page.evaluate(() => {
+        // La MISMA función que usa el producto, leída de su propia copia guardada.
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i)
+          if (k && k.indexOf('kis_wizard_qcache_persist_v2_') === 0) {
+            try { return JSON.parse(localStorage.getItem(k)).v } catch { /* sigue */ }
+          }
+        }
+        return null
+      })
+      if (!c.afirmar('(ancla) el navegador guardó el catálogo CON su versión',
+        !!scenario.catalogoV,
+        'no hay ninguna entrada `kis_wizard_qcache_persist_v2_` con `v`: sin versión guardada ' +
+        'no hay nada que comparar y el mecanismo entero no puede funcionar')) return c
+
+      // ⛔ EL LATIDO SE PROVOCA, NO SE ESPERA: el pulso corre cada 30 s (`WizardPage.jsx`),
+      // así que esperar tres segundos mediría el aire y saldría VERDE sin haber pasado nada.
+      // `latirLaVentana` dispara el MISMO camino que usa el producto (el `focus`).
+      const antesDeIgual = preguntas.length
+      await latirLaVentana(page)
+      await page.waitForTimeout(LATENCY + 1200)
+      c.afirmar('(a) con la MISMA versión el navegador no vuelve a pedir el catálogo',
+        preguntas.length === antesDeIgual,
+        `salieron ${preguntas.length - antesDeIgual} petición(es) de fetchQuestions sin que la ` +
+        `versión cambiara: sería el catálogo entero (18-25 s) en cada latido, por familia`)
+
+      // ── (b) LA VERSIÓN CAMBIA ⇒ SE REVALIDA ──────────────────────────────────────
+      // Es lo que pasa cuando el colegio edita una pregunta: el KMS avisa, el servidor del
+      // asistente rehace su copia, y su versión deja de coincidir con la del navegador.
+      const antesDeCambio = preguntas.length
+      scenario.catalogoV = 'deadbeef'
+      await latirLaVentana(page)
+      await page.waitForTimeout(LATENCY + 2500)
+
+      // ⛔⛔ (c) PRIMERO LA BARANDILLA, Y VA ANTES DE NADA: enterarse no puede vaciar la
+      // pantalla. Se mira mientras la revalidación está en vuelo o recién llegada.
+      const vistaDurante = await page.evaluate(sondaPreguntas)
+      c.afirmar('(c) ⛔ el paso 5 NO se queda en blanco al enterarse del cambio',
+        vistaDurante.preguntas >= 1 && !vistaDurante.diceNoHayPreguntas,
+        `tras saber que el catálogo cambió, el paso 5 pintó ${vistaDurante.preguntas} preguntas ` +
+        `(dice-no-hay=${vistaDurante.diceNoHayPreguntas}): el navegador BORRÓ su copia en vez de ` +
+        `marcarla para revalidar. Una pantalla en blanco es peor que un catálogo viejo — es la ` +
+        `barandilla que manda sobre la velocidad`)
+
+      // Y la revalidación tiene que haber salido: si no, el navegador no se enteró de nada.
+      // Se vuelve a entrar al paso para forzar el montaje, que es cuando `fetchQuestions`
+      // decide — el producto no pide el catálogo desde el latido, y eso es deliberado.
+      if (preguntas.length === antesDeCambio) {
+        await irAPreguntas(c, page).catch(() => {})
+        await page.waitForTimeout(LATENCY + 1200)
+      }
+      c.afirmar('(b) cuando la versión CAMBIA, el navegador vuelve a pedir el catálogo',
+        preguntas.length > antesDeCambio,
+        `la versión del servidor pasó a 'deadbeef' y no salió ni una petición de fetchQuestions: ` +
+        `el navegador sigue sirviéndose de su copia de hasta 30 DÍAS y no se entera de que el ` +
+        `colegio editó una pregunta`)
+
+      // ── (d) ⛔⛔ LA BARANDILLA DE VERDAD, Y ESTA ES LA QUE MUERDE ──────────────────
+      // (c) mira la pantalla YA montada, donde las preguntas viven en el estado de React:
+      // ahí ni borrando la copia se ve nada. El caso que de verdad deja a un tutor sin
+      // cuestionario es el que la ficha describe — **la revalidación MUERE** («9-13 s y a
+      // veces muere») — y se nota al MONTAR el paso, que es cuando la copia decide si se
+      // arranca con preguntas o con un esqueleto. Así que: catálogo CAÍDO + volver a entrar.
+      // Con la copia conservada, el tutor sigue viendo su cuestionario. Si alguien cambiara
+      // el marcar-para-revalidar por un BORRAR, aquí se queda en blanco.
+      c.esperarErrorConsola(/gasCall fetchQuestions: server returned ok=false/,
+        'el catálogo se tumba a propósito para comprobar que la copia conservada sigue pintando')
+      scenario.preguntasMode = 'caido'
+      scenario.catalogoV = 'cafe1234'
+      await latirLaVentana(page)
+      await page.waitForTimeout(LATENCY + 1200)
+      // Se sale del paso y se vuelve: así el paso 5 se MONTA de nuevo y su pintado inicial
+      // lo decide la copia guardada (`readQuestionsCacheSync`), no el estado de React que ya
+      // tenía las preguntas dentro.
+      const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+      if (atras) { await atras.click(); await page.waitForTimeout(LATENCY + 400) }
+      const seguir = [...await page.$$('button.btn-primary-kis')].filter(Boolean)
+      if (seguir[0]) { await seguir[0].click(); await page.waitForTimeout(LATENCY + 1200) }
+      const vistaCaido = await page.evaluate(sondaPreguntas)
+      c.afirmar('(d) ⛔ con la revalidación MUERTA, el tutor SIGUE viendo su cuestionario',
+        vistaCaido.preguntas >= 1 && !vistaCaido.diceNoHayPreguntas,
+        `con el catálogo caído y la versión cambiada, el paso 5 pintó ${vistaCaido.preguntas} ` +
+        `preguntas (dice-no-hay=${vistaCaido.diceNoHayPreguntas}): enterarse de un cambio le ` +
+        `quitó el cuestionario a la familia. La copia se MARCA para revalidar, NUNCA se borra — ` +
+        `una pantalla en blanco es peor que un catálogo viejo`)
+      scenario.preguntasMode = 'ok'
+
+      const vistaFinal = vistaCaido
+      c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, vistaFinal.preguntas)
+      c.afirmar('(c.bis) y al terminar sigue habiendo cuestionario',
+        vistaFinal.preguntas >= 1,
+        `el paso 5 acabó con ${vistaFinal.preguntas} preguntas: la revalidación se llevó por ` +
+        `delante lo que había`)
+    } finally {
+      page.off('request', onReq)
+      scenario.catalogoV = undefined
+    }
+  } catch (e) {
+    c.afirmar('el recorrido termina sin reventar', false, String((e && e.message) || e))
+  }
+  return c
+}
+
+/**
  * EL CUESTIONARIO NO SE APAGA EN SILENCIO — defecto 3 de la definición de hecho.
  *
  * Lo que rompía a la familia: el servidor convertía CUALQUIER fallo del catálogo en
@@ -11677,6 +11871,10 @@ const CAMINOS = [
     minLlamadas: 1, minElementos: 1 },
   // Defecto 3 de la definición de hecho: el cuestionario se apagaba entero, en silencio
   // y durante media hora, por un fallo pasajero del servidor. Ver el camino.
+  // 2026-09-23 — el colegio edita una pregunta y el navegador se entera SIN pedir el catálogo
+  // (la versión viaja en el latido barato), y enterarse no puede dejar el paso 5 en blanco.
+  { nombre: 'el-catalogo-cambio-en-el-colegio', fn: caminoElCatalogoCambioEnElColegio,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'cuestionario-no-se-apaga', fn: caminoCuestionarioNoSeApaga, minLlamadas: 1, minElementos: 2 },
   // Cola 18.quater — la familia pide corregir su solicitud ya enviada.
   { nombre: 'pedir-correccion',    fn: caminoPedirCorreccion,    minLlamadas: 2, minElementos: 11 },

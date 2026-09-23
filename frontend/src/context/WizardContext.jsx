@@ -248,6 +248,13 @@ export function WizardProvider({ children }) {
   // trae datos nuevos. `colision` distingue el caso que DL-E63 §3 pide cazar: que el cambio del
   // colegio llegue mientras la familia tiene algo suyo sin guardar. No bloquea nada.
   const [avisoDelColegio, setAvisoDelColegio] = useState(null);   // null | {colision:boolean}
+  // ★ 2026-09-23 — LA REVISIÓN DEL CATÁLOGO: un contador que sube cuando el latido descubre
+  // que el colegio cambió una pregunta. El paso 5 lo lleva en las dependencias de su carga,
+  // así que **vuelve a pedir el cuestionario aunque la pantalla ya esté montada** — sin esto,
+  // un tutor que está MIRANDO el paso 5 no se entera hasta que navega fuera y vuelve, que es
+  // justo lo que le pasa a Diego cuando edita una pregunta y se queda mirando.
+  // ⛔ No guarda el catálogo ni decide nada: es una señal. Quién puede leer qué no cambia.
+  const [catalogoRevision, setCatalogoRevision] = useState(0);
   // ⭐ DL-E63 — cuántas veces se ha hidratado esta sesión. Sube en CADA `hydrateFromResume`.
   // Sirve de `key` del paso montado: los pasos siembran su estado local UNA vez (`seedRows`),
   // así que refrescar `stepData` **no bastaba** para que la familia viera el cambio del colegio
@@ -1915,6 +1922,7 @@ export function WizardProvider({ children }) {
       programaDeLaSolicitud,           // D181 — el programa de ESTA solicitud, en un solo sitio
       debeReenviar, setDebeReenviar,   // DL-E49 §8 — «has cambiado datos: vuelve a enviar»
       avisoDelColegio, setAvisoDelColegio,   // DL-E63 — «el colegio ha actualizado datos»
+      catalogoRevision, setCatalogoRevision,   // 2026-09-23 — el colegio cambió una pregunta
       hidratacionSeq,                        // DL-E63 — key del paso montado
       enrollmentGroupId, setEnrollmentGroupId,
       resumeToken,   setResumeToken,

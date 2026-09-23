@@ -517,8 +517,61 @@ function _persistQuestions(key, data) {
   // versión. Best-effort: quota/serialización fallan → silencioso (la cache de
   // sesión/módulo basta; comportamiento idéntico al actual).
   try {
-    localStorage.setItem(QCACHE_LS_PREFIX + key, JSON.stringify({ data, v: _catalogVersion(data), storedAt: Date.now() }));
+    // ★ 2026-09-23 — LA VERSIÓN LA DICE EL SERVIDOR CUANDO LA DICE (`catalog_version`), que es
+    // lo que pedía el `TODO(Diego)` de arriba. El hash derivado aquí se queda como RESPALDO y
+    // da el MISMO número (el servidor lo calcula con el mismo algoritmo sobre los mismos
+    // `sets`), así que un paquete viejo hablando con un servidor nuevo —o al revés— sigue
+    // comparando bien. Sin `catalog_version` el comportamiento es byte-idéntico al de ayer.
+    const v = (data && typeof data.catalog_version === 'string' && data.catalog_version)
+      || _catalogVersion(data);
+    localStorage.setItem(QCACHE_LS_PREFIX + key, JSON.stringify({ data, v, storedAt: Date.now() }));
   } catch { /* quota/serialization → silencioso */ }
+}
+
+/**
+ * ★ 2026-09-23 — EL COLEGIO CAMBIÓ UNA PREGUNTA Y ESTE NAVEGADOR SE ENTERA SIN PEDIR NADA.
+ *
+ * El pulso (`getAdmissionState`) trae ahora `catalogo_v`: la versión que el servidor del
+ * asistente tiene guardada para esta (programa × idioma). Si no coincide con la que guarda
+ * este navegador, lo que hay aquí está viejo.
+ *
+ * ⛔⛔ **NO SE BORRA NADA. ES LA BARANDILLA QUE MANDA.** Borrar la copia dejaría el paso 5 en
+ * blanco hasta que llegara el catálogo nuevo —18-25 s en este asistente, y a veces no llega—,
+ * y **una pantalla en blanco es peor que un catálogo viejo**. Lo único que se hace es marcar
+ * la entrada como FUERA de su ventana de frescura: `readQuestionsCacheSync` la sigue pintando
+ * al instante y `fetchQuestions` deja de cortocircuitar, así que revalida en cuanto el paso se
+ * monte. Cuando el catálogo nuevo llegue, `_persistQuestions` lo sustituye; si no llega, el
+ * tutor sigue con el suyo.
+ *
+ * ⛔ **Un `catalogo_v` ausente o vacío NO significa «no cambió»: significa «no consta»** (el
+ * servidor puede no tener copia de esa combinación). Ahí no se toca nada.
+ *
+ * ⛔ **Y no se toca la cache de MÓDULO ni la de sesión**: son las que dan el pintado
+ * instantáneo dentro de esta pestaña. Lo que caduca es la ventana de revalidación, nada más.
+ *
+ * @param {string} lang
+ * @param {?string} programId
+ * @param {?string} vServidor  la versión que dice el servidor (`catalogo_v` del pulso)
+ * @returns {boolean} true si se marcó para revalidar
+ */
+export function elCatalogoCambioEnElColegio(lang, programId, vServidor) {
+  if (!vServidor || typeof vServidor !== 'string') return false;   // «no consta» ≠ «no cambió»
+  const key = _claveDelCatalogo(lang, programId);
+  try {
+    const persisted = _readPersistedQuestions(key);
+    if (!persisted || !persisted.v) return false;
+    if (persisted.v === vServidor) return false;                   // al día: nada que hacer
+    // Fuera de la ventana de frescura, pero ENTERA y legible: se sigue pintando.
+    localStorage.setItem(QCACHE_LS_PREFIX + key, JSON.stringify({
+      data: persisted.data, v: persisted.v,
+      storedAt: Date.now() - QCACHE_LS_REVALIDATE_MS - 1,
+    }));
+  } catch { return false; }
+  // Y la cache de MÓDULO sí se suelta: es la que hace que `fetchQuestions` conteste sin mirar
+  // nada. Soltarla no borra ninguna copia — `readQuestionsCacheSync` sigue pintando desde
+  // sessionStorage/localStorage — pero obliga a que la próxima llamada revalide de verdad.
+  try { delete _questionsCache[key]; } catch { /* ignore */ }
+  return true;
 }
 
 /** Purga toda la cache de preguntas (módulo + sessionStorage + localStorage persistente). Llamado por clearSession. */

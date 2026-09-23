@@ -936,10 +936,38 @@ público no puede poner**: llama con uno solo). ⛔ **La copia NO se borra antes
 falla, lo guardado sigue en pie. Medido con el control de abajo: en 10 h, **19 refrescos sin viaje y 5
 lecturas de verdad**, contra **23 y 1** antes del techo.
 
-⚠️ **Y esto es un PARCHE, dicho sin adornar.** La causa de fondo es que **nadie le avisa al asistente
-cuando el colegio toca una pregunta**: el catálogo es configuración del centro y **no tiene ninguna de
-las tres reglas del modelo** que las SOLICITUDES sí tienen (el KMS rehace y MANDA la copia cuando el
-dato cambia). Por eso existe este temporizador hecho a mano. **Que el KMS avise es otra ficha.**
+⚠️ **ESTO ERA UN PARCHE, Y SU CAUSA YA ESTÁ CERRADA (2026-09-23).** El catálogo es configuración del
+centro y **no tenía ninguna de las tres reglas** que las SOLICITUDES sí tienen; por eso existía este
+temporizador hecho a mano. Hoy **el KMS avisa**: sus once rutas de escritura del catálogo están
+DECLARADAS en un solo sitio (`QB_RUTAS_QUE_TOCAN_EL_CATALOGO_`, `kis-app kms-server/enr/wizard-warm.gs`)
+y el aviso viaja por el **MISMO canal firmado y el MISMO receptor** (`notifyLiveStateChange`, con
+`alcance:'CATALOGO'` y sin expediente — el catálogo no cuelga de ninguno). **Cero receptores nuevos.**
+
+⛔ **Lo que llega es la VERSIÓN, no el contenido, y la elección lleva su número delante** (medido
+contra el despliegue vivo el 2026-09-23): aquí se guarda un catálogo por **(programa × idioma ×
+contexto)** — hoy **SEIS** (2 programas × 2 idiomas, más la clave «sin programa») de
+**35.687-43.578 bytes** ⇒ **≈240 KB**, al borde del techo de 250.000 por copia del KMS; y **dos de las
+seis no son derivables desde el KMS** (la clave «sin programa» no sale de `enrPrograms`). El aviso
+pelado son **~200 bytes**, y **este lado sí sabe qué combinaciones tiene calientes**
+(`_combinacionesDelCatalogo_`, el índice que escribe el escritor ÚNICO del catálogo). ⇒ **rehace él**,
+con `_catalogoCambioEnElColegio_` → el rehacedor que YA existía (`_espejoCalentarElCuestionario_` con
+`{forzar:true}`), 20 s de presupuesto y **más reciente primero**; lo que no cabe **pierde su techo** y
+lo coge el repaso de 30 min.
+
+⛔⛔ **Y NADIE SE QUEDA SIN CUESTIONARIO: aquí no se borra ni una copia.** Se pide la nueva y solo si
+llega sustituye a la vieja. **Una pantalla en blanco es peor que un catálogo viejo**, y esa barandilla
+manda sobre la velocidad.
+
+**El NAVEGADOR se entera sin pedir el catálogo**: `getLiveStateVersion` —la etapa BARATA del pulso, la
+que late cada 30 s pase lo que pase— devuelve `catalogo_v`. ⛔ **No va en `getAdmissionState`**: ése
+solo se pide cuando sube la versión de la SOLICITUD, y un cambio de catálogo no la mueve, así que ahí
+no llegaría nunca. Con una versión distinta el navegador **marca su copia para revalidar y suelta la
+de módulo; jamás borra nada** (`elCatalogoCambioEnElColegio`, `frontend/src/api.js`), y el paso 5 la
+lleva en las dependencias de su carga para enterarse **aunque ya esté montado**. Cierra el
+`TODO(Diego)` que ese fichero llevaba escrito.
+
+⚠️ **El techo de 2 h y `_catalogoDePreguntasImposible_` SIGUEN EN PIE**: se retiran cuando esto esté
+medido funcionando en producción, no antes.
 
 ### El asistente no cuenta a quien un tutor ya quitó
 

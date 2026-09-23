@@ -1158,7 +1158,13 @@ export function createDispatcher(scenario, record) {
     // 0º.tricies.octies (B) eso incluye la muerte de un guardado — sin ese aviso la familia
     // no se enteraria hasta la siguiente escritura, que puede no llegar nunca. `scenario.
     // liveVersion` deja que el recorrido simule ese bump.
-    getLiveStateVersion: () => ({ ok: true, version: Number(scenario.liveVersion) || 1 }),
+    // ★ 2026-09-23 — Y LA VERSIÓN DEL CATÁLOGO, que el servidor real resuelve de su propia
+    // copia y devuelve por AQUÍ (`getLiveStateVersion_`) y no en el detalle: un cambio de
+    // catálogo no mueve la versión de ninguna SOLICITUD, así que en el detalle no llegaría
+    // nunca. `scenario.catalogoV` deja que el recorrido simule que el colegio editó una
+    // pregunta. `undefined` ⇒ «no consta», que es como se comporta un servidor sin copia.
+    getLiveStateVersion: () => ({ ok: true, version: Number(scenario.liveVersion) || 1,
+                                  catalogo_v: scenario.catalogoV }),
     abandonSession:      () => ({ ok: true, abandoned: true }),
     // Cola 18.quater — la familia pide corregir. `correccionMode` decide qué contesta
     // el KMS: 'ok' (marca completada) o 'no_declarada' (el colegio aún no la declaró).
