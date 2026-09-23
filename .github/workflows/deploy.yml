@@ -199,6 +199,34 @@ jobs:
       - name: Cuatro entradas anónimas pasan por UNA verja; la quinta exige el token
         run: node scripts/comprobar-verja-publica.mjs
 
+  # CONTROL QUE EJECUTA EL SERVIDOR — los ocho de arriba LEEN LÍNEAS y la batería corre
+  # contra un backend SIMULADO que nunca ejecuta `backend/Code.js`. Medido el 2026-09-23: el
+  # servidor tiene 208 funciones y solo 3 las ejecutaba algún control, y «arnés efímero» sale
+  # 54 veces en el histórico de CLAUDE.md — 54 arreglos comprobados UNA vez con un instrumento
+  # que se tiró. Desde el 2026-09-23 (Diego: «si arregla las cosas, adelante») el arnés se
+  # guarda en `scripts/servidor/` y este trabajo los lanza TODOS.
+  #
+  # El lanzador descubre la carpeta solo: un arnés nuevo entra sin tocar este fichero. Si NO
+  # encuentra ninguno sale ROJO — un control que no mide nada no puede decir VERDE. El molde
+  # de un arnés vive en `scripts/servidor/LEEME.md`.
+  #
+  # `build` depende de él ⇒ en ROJO no se publica. Sin `npm ci`, sin navegador, sin red.
+  arneses-del-servidor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      # Sin tubería: el veredicto se lee de la última línea, pero es el código de salida el
+      # que hace fallar el trabajo, y una tubería devolvería el del último comando.
+      - name: Los arneses que EJECUTAN el servidor del asistente
+        run: node scripts/comprobar-el-servidor.mjs
+
   # MURO DE DEPLOY — la batería del wizard tiene que estar VERDE antes de publicar.
   # Regla de los dos repos (CLAUDE.md §"No se toca lo que funciona sin una forma de
   # comprobar que sigue funcionando"): el 2026-07-27 un cambio de seguridad estuvo a
@@ -236,7 +264,7 @@ jobs:
         working-directory: frontend
 
   build:
-    needs: [e2e, escrituras-directas, selector-appsheet, personas-quitadas, receptor-firmado, pantalla-del-cliente, codigos-de-consentimiento, no-escribe-estado, verja-publica]
+    needs: [e2e, escrituras-directas, selector-appsheet, personas-quitadas, receptor-firmado, pantalla-del-cliente, codigos-de-consentimiento, no-escribe-estado, verja-publica, arneses-del-servidor]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -1038,9 +1038,9 @@ si el centro no tiene catálogo de modalidades.
 
 ## Deployment
 
-### Los OCHO controles de CI — ninguno es opcional
+### Los NUEVE controles de CI — ninguno es opcional
 
-`build` depende de los ocho ⇒ **en ROJO no se publica**. Todos `node scripts/<nombre>.mjs`, ~1 s, sin
+`build` depende de los nueve ⇒ **en ROJO no se publica**. Todos `node scripts/<nombre>.mjs`, ~1 s, sin
 `npm ci`, sin red y sin navegador.
 
 | Control | Qué vigila |
@@ -1053,10 +1053,11 @@ si el centro no tiene catálogo de modalidades.
 | `comprobar-pantalla-del-cliente` | que las banderas de pantalla salgan de UN derivador y no se copien del KMS |
 | `comprobar-codigos-de-consentimiento` | que ningún consentimiento se registre con un código inventado |
 | `comprobar-que-el-wizard-no-escribe-estado` | que el asistente no fije el estado ni mande el correo del envío |
+| `comprobar-el-servidor` | **el lanzador**: descubre y ejecuta TODOS los arneses de `scripts/servidor/`, los únicos que EJECUTAN el servidor en vez de leer sus líneas — y sale **ROJO si no encuentra ninguno** |
 
-### `scripts/servidor/` — los controles que EJECUTAN el servidor, y NO están en CI todavía
+### `scripts/servidor/` — los arneses que EJECUTAN el servidor
 
-**Los ocho de arriba LEEN LÍNEAS; éstos EJECUTAN las funciones de `backend/Code.js`** con dobles en
+**Los ocho primeros LEEN LÍNEAS; éstos EJECUTAN las funciones de `backend/Code.js`** con dobles en
 memoria (sin red, sin navegador, sin `npm ci`), y terminan con la misma última línea
 (`VEREDICTO: VERDE` / `ROJO — <motivo>`). Nacen de una autorización expresa de Diego (2026-09-23,
 *«si arregla las cosas, adelante»*) para **dejar de tirar los arneses efímeros**: el servidor tiene
@@ -1066,15 +1067,26 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | Control | Qué protege |
 |---|---|
 | `el-catalogo-de-preguntas.mjs` | que un catálogo guardado **no se pueda quedar clavado para siempre**: el refresco sin viaje sigue ahorrando, el techo obliga a releer, un viaje fallido no se lleva la copia, y el camino público sigue sirviéndose de ella |
+| `la-copia-se-actualiza-al-escribir.mjs` | la **regla 3** de Diego: que una escritura del tutor deje la copia caliente **rehecha con lo que el KMS confirma**, y que jamás se archive como buena una copia con un dato que el KMS no ha confirmado |
 
-⛔ **Se ejecutan a mano** (`node scripts/servidor/<el-tuyo>.mjs`): **el lanzador común y su entrada en
-CI son OTRO encargo**, y no se tocan `.github/workflows/` desde aquí. ⛔ **Y cada uno lleva dentro sus
-roturas demostradas**: se rompe el fuente a propósito y se exige que el control lo NOMBRE —un renombre
-tiene que salir **«MEDICIÓN CIEGA»**, nunca verde—. Un control que no se ha visto fallar no es una red.
+**Se corren solos desde el 2026-09-23**: el lanzador `node scripts/comprobar-el-servidor.mjs`
+descubre **todos** los `*.mjs` de esa carpeta, los ejecuta y junta sus veredictos; es el **noveno
+control** y `build` depende de él. ⇒ **un arnés nuevo entra con dejarlo ahí**, sin tocar
+`.github/workflows/`. **El molde —qué es un arnés aquí y qué tiene que imprimir— vive en UN solo
+sitio: `scripts/servidor/LEEME.md`.**
 
-⛔ **Si añades uno, actualizas esta tabla en el MISMO cambio.** El defecto que esta nota corrige es que
-seis entraron sin tocar ninguna instrucción, y durante días se corrían 2 de 8 creyendo haber pasado el
-muro.
+⛔ **El lanzador sale ROJO si no encuentra ninguno**: un control que no mide nada no puede decir
+VERDE. Y **se comprueba a sí mismo antes de juzgar a nadie** (ejecuta un arnés sintético de cada color
+y exige distinguirlos): si su lectura del veredicto se afloja, **todos los rojos se volverían verdes
+en silencio**.
+
+⛔ **Y cada arnés lleva dentro sus roturas demostradas**: se rompe el fuente a propósito y se exige
+que lo NOMBRE —un renombre tiene que salir **«MEDICIÓN CIEGA»**, nunca verde—. Un control que no se ha
+visto fallar no es una red.
+
+⛔ **Si añades un control de CI, actualizas la tabla de arriba en el MISMO cambio** (un arnés de
+`scripts/servidor/` va en ÉSTA). El defecto que esta nota corrige es que seis entraron sin tocar
+ninguna instrucción, y durante días se corrían 2 de 8 creyendo haber pasado el muro.
 
 **Por qué el infijo era grave, y no se afloja:** `[a] = "x" AND [b] = "y"` **no da error** en AppSheet:
 se queda con la **PRIMERA** condición y **descarta el resto en silencio** — medido, devolvía 23 filas
@@ -1123,8 +1135,13 @@ rompe sin que nadie se entere hasta que Diego lo ve en pantalla.
 
 ⇒ **Quien arregle algo del servidor GUARDA su arnés** en `scripts/servidor/<lo-que-protege>.mjs`:
 ejecutable solo (`node scripts/servidor/<el-suyo>.mjs`), **sin red, sin navegador, sin `npm ci`**, con
-**última línea** `VEREDICTO: VERDE` o `VEREDICTO: ROJO — <motivo>` como los ocho controles, y **con
+**última línea** `VEREDICTO: VERDE` o `VEREDICTO: ROJO — <motivo>` como los demás controles, y **con
 sus roturas demostradas dentro**, incluida la guarda de **«MEDICIÓN CIEGA»**.
+
+**Y se ejecutan SOLOS**: `node scripts/comprobar-el-servidor.mjs` los descubre todos y es el **noveno
+control de CI**, del que `build` depende ⇒ con dejar el tuyo en esa carpeta entra, sin tocar
+`.github/workflows/`. **El molde completo vive en `scripts/servidor/LEEME.md`** — ése es el sitio
+donde se escribe, no aquí.
 
 ⛔ **NO es una campaña y NO se reconstruyen los 54**: se conserva **el que se escriba a partir de
 ahora**. ⛔ **No sustituye a la batería** (ésa mide el navegador) **ni a la prueba manual de Diego**,
