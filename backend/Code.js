@@ -1478,7 +1478,64 @@ function _resolveStepUpGroup_(p) {
  * @param {string} [huellaPagina]    - huella de la página viva (`_huellaDePagina_`), o ''.
  * @private
  */
-function _markStepUpFresh_(enrollmentGroupId, reason, personaEmail, huellaPagina) {
+/**
+ * ★ D213 (2026-09-23) — **LA MARCA DEL CÓDIGO ES DE UN TUTOR, NO DEL EXPEDIENTE.**
+ *
+ * Hasta hoy la clave era `stepup_ok_<expediente>`: **UNA ranura para los dos tutores**. El
+ * VALOR ya llevaba el buzón desde ②24 —así que la marca de uno no SERVÍA para el otro—,
+ * pero la ranura era la misma, así que **en cuanto el tutor B tecleaba su código, la marca
+ * de A se pisaba y a A lo echaban de su propia solicitud**. Es el mismo daño que D213 cierra
+ * en el enlace, en la ventana de los 10 minutos.
+ *
+ * El discriminador es el `?n=` del enlace —el `email_id` del buzón de ese tutor—, que viaja
+ * en el cuerpo de la petición y **no cuesta ni una lectura ni un viaje al KMS**: resolver
+ * aquí el buzón habría devuelto el defecto de `2026-09-15-sigo-aqui-llega-tarde`, que es
+ * pagar 20-30 s justo cuando alguien dice «sigo aquí» con el contador en dos minutos.
+ *
+ * ⛔ **NO CONCEDE NADA NUEVO, y se puede decir campo por campo:** la comparación del VALOR
+ * —buzón (②24), huella de página, caducidad y techo— no se toca ni un byte. Esto solo decide
+ * **en qué ranura se mira**. Un `n` distinto lleva a una ranura distinta, donde no hay marca
+ * ⇒ se pide el código: falla CERRADO.
+ * ⛔ **Y sin `?n=` es la clave de siempre**, así que ningún camino que hoy funcione deja de
+ * funcionar — incluidos los enlaces en circulación que no lo llevan.
+ *
+ * @param {Object} p cuerpo de la petición
+ * @returns {string} el discriminador ya normalizado, o '' si no consta.
+ * @private
+ */
+function _discriminadorDeMarca_(p) {
+  var n = (p && p.n) ? String(p.n).trim().toLowerCase() : '';
+  return /^[a-f0-9-]{8,64}$/.test(n) ? n : '';
+}
+
+/**
+ * La clave de la marca de step-up. UN SOLO SITIO la construye —emisión, lectura y
+ * extensión—: si divergieran, la marca que se acuña no se podría leer nunca.
+ * @private
+ */
+function _claveMarcaStepUp_(enrollmentGroupId, disc) {
+  return 'stepup_ok_' + enrollmentGroupId + (disc ? '|' + disc : '');
+}
+
+/**
+ * Devuelve la clave DONDE ESTÁ la marca de este tutor: la suya si la tiene, y si no la de
+ * siempre (la del expediente).
+ *
+ * ⛔ El orden es lo que hace que esto no rompa nada: quien ya tenía marca bajo la clave
+ * vieja la sigue encontrando, y quien tiene la suya no la puede perder porque el otro
+ * teclee su código.
+ * @private
+ */
+function _claveConLaMarca_(cache, enrollmentGroupId, disc) {
+  var propia = _claveMarcaStepUp_(enrollmentGroupId, disc);
+  if (!disc) return { clave: propia, val: cache.get(propia) };
+  var val = cache.get(propia);
+  if (val) return { clave: propia, val: val };
+  var vieja = _claveMarcaStepUp_(enrollmentGroupId, '');
+  return { clave: vieja, val: cache.get(vieja) };
+}
+
+function _markStepUpFresh_(enrollmentGroupId, reason, personaEmail, huellaPagina, disc) {
   var persona = _stepUpPersonaKey_(personaEmail);
   var huella  = _huellaPaginaLimpia_(huellaPagina);
   // ★ 2026-08-20 — la marca nace con su TECHO ABSOLUTO al lado (cuarto campo). El techo se
@@ -1488,11 +1545,17 @@ function _markStepUpFresh_(enrollmentGroupId, reason, personaEmail, huellaPagina
   var techo = ahora + STEPUP_TECHO_MS;
   var exp = Math.min(ahora + STEPUP_INACTIVITY_MS, techo);
   var ttl = Math.ceil((exp - ahora) / 1000);
-  CacheService.getScriptCache().put(
-    'stepup_ok_' + enrollmentGroupId,
-    String(exp) + '|' + persona + '|' + huella + '|' + String(techo),
-    ttl
-  );
+  var valor = String(exp) + '|' + persona + '|' + huella + '|' + String(techo);
+  var cacheMarca = CacheService.getScriptCache();
+  // ★ D213 — la marca nace en LA RANURA DE ESTE TUTOR (ver `_claveMarcaStepUp_`), que es lo
+  // que impide que el otro se la pise al teclear el suyo.
+  cacheMarca.put(_claveMarcaStepUp_(enrollmentGroupId, disc), valor, ttl);
+  // ⛔ Y TAMBIÉN EN LA DE SIEMPRE, y no es duplicar por duplicar: hay caminos del cliente que
+  // no mandan `?n=`, y sin esto quien acredita su buzón con `n` y luego guarda sin él se
+  // quedaría sin marca ⇒ código otra vez. Esa ranura es la de ayer y se comporta como ayer:
+  // la escribe el último que teclea, y el VALOR sigue diciendo de quién es, así que no
+  // concede nada a nadie. La ranura propia es la que ya no se puede perder.
+  if (disc) cacheMarca.put(_claveMarcaStepUp_(enrollmentGroupId, ''), valor, ttl);
   Logger.log(redact_('[DBG stepup] mint reason=' + (reason || '?') + ' group=' + enrollmentGroupId +
                      ' persona=' + (persona || '(sin identificar)') +
                      ' pagina=' + (huella || '(sin huella)') +
@@ -1551,9 +1614,12 @@ function _huellaDePagina_(p) {
  * @returns {number} segundos que quedan tras extender, o 0 si no se extendió nada.
  * @private
  */
-function _extenderVentanaStepUp_(enrollmentGroupId) {
+function _extenderVentanaStepUp_(enrollmentGroupId, disc) {
   var cache = CacheService.getScriptCache();
-  var val = cache.get('stepup_ok_' + enrollmentGroupId);
+  // ★ D213 — se extiende LA MISMA ranura que se leyó: la de este tutor si la tiene, y si no
+  // la de siempre. Escribir en otra dejaría la marca viva sin estirar y al tutor fuera.
+  var donde = _claveConLaMarca_(cache, enrollmentGroupId, disc);
+  var val = donde.val;
   if (!val) return 0;
   var partes = String(val).split('|');
   var ahora = Date.now();
@@ -1577,7 +1643,7 @@ function _extenderVentanaStepUp_(enrollmentGroupId) {
   if (nuevaExp <= ahora) return 0;
   var ttl = Math.ceil((nuevaExp - ahora) / 1000);
   cache.put(
-    'stepup_ok_' + enrollmentGroupId,
+    donde.clave,
     String(nuevaExp) + '|' + persona + '|' + huella + '|' + (techo ? String(techo) : ''),
     ttl
   );
@@ -1968,8 +2034,9 @@ function _consumeMagicLinkNonce_(resumeToken, expectedGroupId) {
  * @returns {{fresh: boolean, restante_s: number}}
  * @private
  */
-function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina) {
-  const val = CacheService.getScriptCache().get('stepup_ok_' + enrollmentGroupId);
+function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina, disc) {
+  // ★ D213 — se mira PRIMERO la ranura de este tutor y, si no tiene, la de siempre.
+  const val = _claveConLaMarca_(CacheService.getScriptCache(), enrollmentGroupId, disc).val;
   if (!val) {
     Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=false no_mark'));
     return { fresh: false, restante_s: 0, cierre: 'INACTIVIDAD' };
@@ -2040,8 +2107,8 @@ function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina) {
  * @param {string} [huellaPagina]
  * @private
  */
-function _isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina) {
-  return _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina).fresh;
+function _isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina, disc) {
+  return _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina, disc).fresh;
 }
 
 /**
@@ -2052,8 +2119,8 @@ function _isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina) {
  * @throws {Error & {code:'STEPUP_REQUIRED'}}
  * @private
  */
-function assertStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina) {
-  if (!_isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina)) {
+function assertStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina, disc) {
+  if (!_isStepUpFresh_(enrollmentGroupId, personaEmail, huellaPagina, disc)) {
     var err = new Error('Step-up re-verification required');
     err.code = 'STEPUP_REQUIRED';
     Logger.log(redact_('[assertStepUpFresh_] reject group=' + enrollmentGroupId));
@@ -2103,8 +2170,10 @@ function refrescarVentanaDeInactividad_(p) {
     return _identidadValor;
   };
   const pagina  = _huellaDePagina_(p);
-  assertStepUpFresh_(enrollmentGroupId, persona, pagina);
-  const restante = _extenderVentanaStepUp_(enrollmentGroupId);
+  // ★ D213 — la ranura de ESTE tutor (el `?n=` de su enlace). Sin coste: no resuelve nada.
+  const discMarca = _discriminadorDeMarca_(p);
+  assertStepUpFresh_(enrollmentGroupId, persona, pagina, discMarca);
+  const restante = _extenderVentanaStepUp_(enrollmentGroupId, discMarca);
   if (!restante) {
     // Carrera con la caducidad entre el gate y la escritura: se falla cerrado, no se crea.
     var err = new Error('Step-up re-verification required');
@@ -2113,7 +2182,7 @@ function refrescarVentanaDeInactividad_(p) {
   }
   // Tras extender, el límite que manda puede haber cambiado de INACTIVIDAD a TECHO (la
   // ventana ya viene recortada por el techo): se vuelve a LEER en vez de suponerlo.
-  const tras = _leerMarcaStepUp_(enrollmentGroupId, persona, pagina);
+  const tras = _leerMarcaStepUp_(enrollmentGroupId, persona, pagina, discMarca);
   return { ok: true, step_up_fresh: true, step_up_restante_s: restante,
            step_up_cierre: tras.cierre };
 }
@@ -2993,6 +3062,15 @@ function doPost(e) {
   try {
     const payload = JSON.parse(e.postData.contents);
     _dbgStart_(payload); // DBG-TRACE: cronología server-side si _dbg:true
+    // ★ D213 (2026-09-23) — EL `?n=` DE ESTA PETICIÓN, EN UN SOLO SITIO.
+    // Con un enlace POR TUTOR, el KMS necesita saber DE QUIÉN es el enlace para poder
+    // encontrar la solicitud cuando la casilla de la ficha ya lleva el del otro tutor. El
+    // `n` viaja en el cuerpo de casi todas las peticiones del asistente, pero NO en todos
+    // los cuerpos que este proceso compone hacia el KMS ⇒ se recuerda aquí, una vez, y lo
+    // añade `kmsProxy_` a lo que manda. ⛔ Es un DISCRIMINADOR, nunca un permiso: el
+    // expediente lo siguen derivando el token y la puerta (KAL-4), y un `n` que no case
+    // con su ranura deniega igual.
+    _N_DE_LA_PETICION_ = (payload && payload.n) ? String(payload.n).trim() : '';
 
     // Honeypot guard — bots fill hidden fields, humans don't
     if (payload._hp && payload._hp !== '') {
@@ -4073,6 +4151,20 @@ var _TRAZA_CARGA_MS_ = Date.now();
 
 /** Instante de entrada a `doPost` (lo estampa `doPost`). Null si se llega por otra vía. */
 var _TRAZA_DOPOST_MS_ = null;
+
+/**
+ * ★ D213 (2026-09-23) — EL `?n=` DE LA PETICIÓN QUE SE ESTÁ ATENDIENDO.
+ *
+ * Con el enlace POR TUTOR, el KMS necesita el `?n=` para encontrar la solicitud cuando
+ * la casilla de la ficha ya lleva el enlace del OTRO tutor. Lo escribe `doPost` (un solo
+ * sitio) y lo lee `kmsProxy_` para acompañar a todo cuerpo que lleve enlace.
+ *
+ * ⛔ NO ES UN PERMISO y no autoriza nada: el expediente lo siguen derivando el token y la
+ * puerta (KAL-4). Vive en el ámbito del guion, así que una ejecución de Apps Script
+ * empieza siempre con el valor vacío — no se arrastra entre peticiones.
+ * @private
+ */
+var _N_DE_LA_PETICION_ = '';
 
 /**
  * @private Abre una traza de tiempos. NUNCA lanza.
@@ -6358,7 +6450,7 @@ function getAdmissionState_(p) {
   let stepUpCierre = 'INACTIVIDAD';
   if (stepUpFresh) {
     // La gracia CREA la marca ⇒ aquí el buzón hace falta SIEMPRE (es a quien queda atada).
-    _markStepUpFresh_(id, 'GRACE', identidadDelBuzon(), paginaViva);
+    _markStepUpFresh_(id, 'GRACE', identidadDelBuzon(), paginaViva, _discriminadorDeMarca_(p));
     stepUpRestanteS = Math.ceil(STEPUP_INACTIVITY_MS / 1000);
   } else {
     // ⛔ EL PULSO ES UNA LECTURA — REPORTA la frescura vigente y lo que le queda, y NUNCA
@@ -6368,7 +6460,7 @@ function getAdmissionState_(p) {
     // estira la ventana es `refrescarVentanaDeInactividad_`, y lo dispara la ACTIVIDAD
     // REAL de una persona, no un temporizador. NO llamar aquí a `_markStepUpFresh_` ni a
     // `_extenderVentanaStepUp_`.
-    const marca = _leerMarcaStepUp_(id, identidadDelBuzon, paginaViva);
+    const marca = _leerMarcaStepUp_(id, identidadDelBuzon, paginaViva, _discriminadorDeMarca_(p));
     stepUpFresh = marca.fresh;
     stepUpRestanteS = marca.restante_s;
     stepUpCierre = marca.cierre;
@@ -6582,7 +6674,7 @@ function saveStep_(p) {
   // KAL-4: enrollmentGroupId ya viene de requireResumeToken_ (token), no payload.
   if (p.step === 'persons' || p.step === 'relations' || p.step === 'health') {
     // ②24 — la puerta pregunta por el BUZÓN que opera: la marca de otro tutor no vale.
-    assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
+    assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p), _discriminadorDeMarca_(p));
   }
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana en un save (eso era
   // P-STEPUP-SLIDING — convertía 10 min en infinitos por uso → bypass del gate en
@@ -6706,7 +6798,7 @@ function submitEnrollmentSession_(p) {
   // `saveStep_`: identidad del enlace (②24) + ventana DURA de 10 min (SEC-STEPUP #55).
   // El cliente comprueba la frescura ANTES de navegar (Step7Review) para que la familia
   // pueda re-verificar donde sí hay pantalla para hacerlo; esto es el suelo del servidor.
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p), _discriminadorDeMarca_(p));
 
   // `0º.quinquagies` B — SIN motivo A PROPÓSITO: materializa los expedientes, estampa el envío y engancha los papeles: toca casi
   // todas las clases a la vez. Tirarlas todas no es un descuido, es lo correcto.
@@ -7398,7 +7490,7 @@ function verifyEmail_(p) {
   // llamada se quedara sin la huella, el atado no existiría para el camino principal y todo
   // lo demás sería decorativo.
   if (isStepUp) {
-    _markStepUpFresh_(enrollmentGroupId, 'OTP', personaEmail, _huellaDePagina_(p));
+    _markStepUpFresh_(enrollmentGroupId, 'OTP', personaEmail, _huellaDePagina_(p), _discriminadorDeMarca_(p));
   }
 
   // No DB write — `email_confirmed` columns are removed in DL-E15. The
@@ -8232,7 +8324,7 @@ function saveResponses_(p) {
   // DL-E39 step-up gate: las respuestas del cuestionario son PII del expediente.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   // ②24: y la marca tiene que ser DEL BUZÓN que opera, no de cualquiera del expediente.
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p), _discriminadorDeMarca_(p));
   // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
   // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
   // ahora traería la foto de ANTES del cambio y la archivaría sellada como nueva. Se queda
@@ -8579,7 +8671,7 @@ function uploadDocument_(p) {
   // DL-E39 step-up gate: subir documentos del expediente es PII sensible.
   // enrollmentGroupId viene del resume_token (KAL-4), nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p), _discriminadorDeMarca_(p));
   // ⛔ REGLA 3 — el KMS SÍ escribe esto sin encolar, y aun así **la copia no se rehace aquí,
   // por COSTE**: los papeles se suben de uno en uno y seguidos, así que cada copia rehecha se
   // la lleva por delante el bump de la subida siguiente — N viajes al KMS de los que N-1 se
@@ -8930,7 +9022,7 @@ function getDocument_(p) {
   // DL-E39 step-up gate: servir el documento en CLARO (bytes) revela PII.
   // groupId ya viene del token (resume_token o signing_token), nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
-  assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId), _huellaDePagina_(p));
+  assertStepUpFresh_(groupId, _identidadDelEnlace_(p, groupId), _huellaDePagina_(p), _discriminadorDeMarca_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   const fileId = p.file_id;
@@ -9258,7 +9350,7 @@ function saveNeae_(p) {
   // resume_token filtrado podía escribir/enriquecer NEAE sin probar posesión del
   // buzón. KAL-4: enrollmentGroupId derivado del token, nunca del payload.
   // ②24: la marca tiene que ser del buzón que opera.
-  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p));
+  assertStepUpFresh_(enrollmentGroupId, _identidadDelEnlace_(p, enrollmentGroupId), _huellaDePagina_(p), _discriminadorDeMarca_(p));
   // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
   // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
   // ahora traería la foto de ANTES del cambio y la archivaría sellada como nueva. Se queda
@@ -10033,9 +10125,14 @@ function kmsProxy_(action, payload) {
     throw err;
   }
 
+  const cuerpo = Object.assign({ service_token: serviceToken }, payload || {});
+  // ★ D213 — el `?n=` de ESTA petición acompaña a todo cuerpo que lleve enlace y no lo
+  // traiga ya. Sin enlace no se pone (no habría con qué casarlo) y lo que el llamante
+  // declara MANDA (nunca se pisa). ⛔ Cero campos nuevos hacia el KMS cuando no hay `n`.
+  if (cuerpo.resume_token && !cuerpo.n && _N_DE_LA_PETICION_) cuerpo.n = _N_DE_LA_PETICION_;
   const envelope = {
     action:    action,
-    payload:   Object.assign({ service_token: serviceToken }, payload || {}),
+    payload:   cuerpo,
     requestId: generateUuid_(),
   };
   if (_trazarActivo_()) envelope.payload._trazar = true;
@@ -10432,7 +10529,7 @@ function saveBillingInfo_(p) {
   // enrollment_group_id derivado del token (KAL-4), nunca del payload.
   // ②24: el buzón ya lo resolvió `requireSignerIdentity_` — se reusa, no se vuelve a
   // resolver (dos lectores del mismo dato divergen; y aquí además costaría lecturas).
-  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p), _discriminadorDeMarca_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
   // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
@@ -10546,7 +10643,7 @@ function applyPaymentModality_(p) {
   // pagos a una familia sin acreditar el buzón. Puerta copiada literal de
   // `saveBillingInfo_`: el buzón ya lo resolvió `requireSignerIdentity_` y se REUSA (dos
   // lectores del mismo dato divergen, y aquí además costaría lecturas).
-  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p), _discriminadorDeMarca_(p));
   _wzCacheInvalidate_(p && p.resume_token, 'FACTURACION'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
   // REGLA 3 — `enr_wizardApplyModality` re-deriva el plan y lo escribe SIN ENCOLAR, así que
@@ -10721,7 +10818,7 @@ function retirarDelExpediente_(p) {
   // los OCHO manejadores que ya la llevaban, copiada literal de `saveStep_`: identidad del enlace
   // (②24 — la marca es del buzón que operó, la de otro tutor no vale) y ventana DURA de
   // 10 min sin extensión por uso (SEC-STEPUP finding #55).
-  assertStepUpFresh_(grupoDeQuitar, _identidadDelEnlace_(p, grupoDeQuitar), _huellaDePagina_(p));
+  assertStepUpFresh_(grupoDeQuitar, _identidadDelEnlace_(p, grupoDeQuitar), _huellaDePagina_(p), _discriminadorDeMarca_(p));
   // NO se añade `assertGroupEditable_` aquí, y es deliberado: el KMS ya exige el borrador
   // y contesta con un `{bloqueado:'YA_ENVIADA', mensaje:…}` ESCRITO PARA LA FAMILIA
   // (kis-app kms-server/enr/retirada.gs) que la pantalla enseña tal cual. Un `throw`
@@ -10783,7 +10880,7 @@ function retirarDelExpediente_(p) {
 function avisarATutor_(p) {
   p = p || {};
   var grupoDelAviso = requireResumeToken_(p);   // KAL-4 — primero, y el KMS lo re-valida.
-  assertStepUpFresh_(grupoDelAviso, _identidadDelEnlace_(p, grupoDelAviso), _huellaDePagina_(p));
+  assertStepUpFresh_(grupoDelAviso, _identidadDelEnlace_(p, grupoDelAviso), _huellaDePagina_(p), _discriminadorDeMarca_(p));
   return kmsProxy_('enr.avisarATutorDeLaSolicitud', {
     resume_token: String(p.resume_token),
     person_id:    p.person_id ? String(p.person_id).slice(0, 64) : '',
@@ -10822,7 +10919,7 @@ function submitGdprConsents_(p) {
   // persistir consentimientos GDPR (legalmente vinculantes). Paridad con
   // initiateSigningSession_. Grupo derivado del token (KAL-4), nunca del payload.
   // ②24: y a nombre del buzón que opera — la marca de un tutor no firma por el otro.
-  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p), _discriminadorDeMarca_(p));
 
   if (!Array.isArray(p.consents) || !p.consents.length) {
     throw new Error('consents must be a non-empty array');
@@ -10864,7 +10961,7 @@ function confirmReview_(p) {
   // confirmar la revisión (evidencia del acto de firma). Paridad con
   // initiateSigningSession_. Grupo derivado del token (KAL-4), nunca del payload.
   // ②24: y a nombre del buzón que opera.
-  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
+  assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p), _discriminadorDeMarca_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
   // ⛔ REGLA 3 — **AQUÍ NO SE REHACE LA COPIA, Y NO ES UN OLVIDO**: el KMS ENCOLA esta
   // escritura (`{ok:true, queued:true}`) y contesta antes de escribir nada. Pedirle la copia
@@ -10938,7 +11035,7 @@ function initiateSigningSession_(p) {
   // enrollment_group_id derivado de la identidad (KAL-4), nunca del payload.
   // ②24: y a nombre del buzón que opera — nadie inicia la firma del otro con la marca
   // que se ganó él. El buzón ya lo resolvió el gate de identidad: se reusa.
-  if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p));
+  if (!createOnly) assertStepUpFresh_(sctx.enrollment_group_id, sctx.identity && sctx.identity.recovered_email, _huellaDePagina_(p), _discriminadorDeMarca_(p));
   // ★ SEC-STEPUP (finding #55): NO re-extender la ventana por uso (P-STEPUP-SLIDING retirado — convertía 10 min en infinitos → bypass del PII-gate en recarga).
 
   // IP forense (best-effort): adjunta client_ip a la metadata del acto si el
@@ -11303,8 +11400,9 @@ function hydrateSession_(p) {
   // ②24 — la marca es del buzón que operó, no del expediente entero (un solo resolvedor).
   const personaEmail = _identidadDelEnlace_(p, groupId);
   const paginaViva = _huellaDePagina_(p);
-  if (graceOk) _markStepUpFresh_(groupId, 'GRACE', personaEmail, paginaViva);
-  const marcaStepUp = _leerMarcaStepUp_(groupId, personaEmail, paginaViva);
+  const discMarcaHyd = _discriminadorDeMarca_(p);   // ★ D213 — la ranura de este tutor
+  if (graceOk) _markStepUpFresh_(groupId, 'GRACE', personaEmail, paginaViva, discMarcaHyd);
+  const marcaStepUp = _leerMarcaStepUp_(groupId, personaEmail, paginaViva, discMarcaHyd);
   const stepUpFresh = marcaStepUp.fresh;
   // 2026-08-20 — el cliente necesita saber CUÁNTO le queda, no solo si está fresco: con
   // el booleano a secas su espejo local echaba su propia cuenta de 10 min y divergía de

@@ -280,6 +280,7 @@ una RECARGA pide código SIEMPRE.** La marca lleva **CUATRO** campos:
 |---|---|---|
 | la huella de página viva | `api.js` → `pv` · `_huellaDePagina_` | identificador acuñado **en memoria de JavaScript y solo ahí**; una recarga lo pierde |
 | la marca | `_markStepUpFresh_` / `_leerMarcaStepUp_` | los cuatro campos |
+| **de qué tutor es la marca** | `_claveMarcaStepUp_` (D213) | la clave lleva el `?n=` del enlace |
 | el «sigo aquí» | `refrescarVentanaDeInactividad_` | **EXTIENDE, jamás CREA** |
 | el tiempo restante | `step_up_restante_s` en pulso e hidratación | el cliente **no echa su propia cuenta** |
 
@@ -288,6 +289,14 @@ enlace (KAL-4), la marca **viva** (sobre una caducada lanza `STEPUP_REQUIRED` �
 acreditar el buzón), que **case el buzón** y que **case la huella**. Al extender **conserva buzón,
 huella y techo VERBATIM**: recalcular el techo lo empujaría hacia adelante y dejaría de existir; y
 re-acuñar con los datos del llamante permitiría que una recarga se estirara sola.
+
+⛔ **Y LA MARCA ES DE UN TUTOR, NO DEL EXPEDIENTE** (D213, 2026-09-23). La clave era
+`stepup_ok_<expediente>` a secas: **una sola ranura para los dos tutores**, así que en cuanto uno
+tecleaba su código **al otro lo echaban**. Hoy es `stepup_ok_<expediente>|<?n=>`, y se escribe
+**también** en la de siempre para los enlaces sin `?n=`; al leer se mira primero la propia.
+⛔ **No concede nada nuevo**: la comparación del VALOR —buzón, huella de página, caducidad y techo—
+no cambia, y una ranura sin marca pide el código. ⛔ **El discriminador es el `?n=` del cuerpo, NO el
+buzón resuelto**: resolverlo aquí devolvería el defecto de `2026-09-15-sigo-aqui-llega-tarde`.
 
 ⛔ **NINGÚN TEMPORIZADOR lo llama.** Solo eventos de una persona (`pointerdown`, `keydown`). Nada de
 `visibilitychange` ni `focus`: una pestaña que vuelve al primer plano **no es actividad**. Lo afirma
@@ -474,8 +483,8 @@ git show origin/main:backend/Code.js | grep -cE "Gmail\.Users|MailApp\.|GmailApp
 **eliminada como ruta** (`App.jsx` → `<Navigate to="/apply" replace />`); los pasos 8-11 viven
 **inline** en `WizardPage`. ⛔ **Nunca reintroducir `/sign` como entrada, ni el split
 `/apply`-vs-`/sign`, ni tratar el `signing_token` como bearer de entrada.** El avance lo gobierna
-**solo el estado y los hitos**. Los dos bearer siguen vivos bajo el capó: `resume_token` (de GRUPO,
-gate `requireResumeToken_`) y `signing_token` (por firmante, `requireSigningToken_` contra
+**solo el estado y los hitos**. Los dos bearer siguen vivos bajo el capó: `resume_token` (**de un TUTOR**
+desde D213 —ver §"El enlace: SIEMPRE se rota…"—, gate `requireResumeToken_`) y `signing_token` (por firmante, `requireSigningToken_` contra
 `sysSigningSessionSigners`; forma P211: UUID v4 con guiones **o** 32 hex sin guiones).
 
 ⛔ **NO EXISTE UN «EMAIL DE GRUPO».** Modelo canónico de Diego: *«No existe email de grupo. Cualquier
@@ -666,6 +675,27 @@ NO sale para casi ninguna escritura del asistente**: su despachador único de la
 **Red:** `node scripts/servidor/la-copia-se-actualiza-al-escribir.mjs` — carga `backend/Code.js`
 REAL en un `vm` con dobles (sin red, sin navegador, sin datos reales) y ejecuta las funciones de
 verdad. **No está en la integración continua**: se lanza a mano.
+
+### ⛔ El enlace es DE UN TUTOR: pedir el suyo no mata el del otro (D213, 2026-09-23)
+
+> Diego: *«Lo que sí importa es que los padres no se cancelen unos a otros al pedir enlaces.»*
+
+El enlace vivía en **una sola casilla de la ficha de la solicitud** ⇒ **el que pedía el suyo mataba
+el del otro en ese instante**. Hoy el enlace de cada tutor vive en **su ranura**
+(`sysTenantUserSecrets_T`, `ENR.WIZARD_RESUME_TOKEN`, cifrado), **en el KMS**, y la casilla de la
+ficha guarda **el último emitido** — que es por donde siguen entrando los enlaces **sin `?n=`**.
+
+**De este lado lo único que cambia son dos cosas, y ninguna decide nada:**
+
+1. **el `?n=` de la petición acompaña a todo cuerpo que lleve enlace** (`kmsProxy_`, un solo sitio,
+   escrito por `doPost` en `_N_DE_LA_PETICION_`): sin él el KMS no puede saber **de quién** es el
+   enlace que renueva, y volvería a haber uno solo para los dos. ⛔ Es un DISCRIMINADOR, nunca un
+   permiso: el expediente lo siguen derivando el enlace y la puerta (KAL-4), y lo que el llamante
+   declara **manda**;
+2. **la ventana de diez minutos** pasa a ser del tutor (§"②24", arriba).
+
+⛔ **El modelo entero vive en `kis-app/docs/kms/decisions/enr.md` DL-E68**, no aquí.
+**Red:** `node scripts/servidor/cada-tutor-con-su-enlace.mjs`.
 
 ### La puerta del enlace: una copia de 30 min, y los tres rechazos en UN solo juez
 
@@ -1139,6 +1169,7 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 
 | Control | Qué protege |
 |---|---|
+| `cada-tutor-con-su-enlace.mjs` | **D213**: que lo que hace un tutor no eche al otro — ni su enlace ni su ventana de diez minutos; que un enlace sin `?n=` siga entrando; y que al KMS se le diga de QUÉ tutor es el enlace que renueva |
 | `el-catalogo-de-preguntas.mjs` | que un catálogo guardado **no se pueda quedar clavado para siempre**: el refresco sin viaje sigue ahorrando, el techo obliga a releer, un viaje fallido no se lleva la copia, y el camino público sigue sirviéndose de ella |
 | `el-catalogo-se-entera-cuando-el-colegio-lo-cambia.mjs` | que una pregunta editada en el KMS llegue a la copia del asistente y que **nadie se quede sin cuestionario**: la copia vieja no se borra hasta que llega la nueva |
 | `la-copia-se-actualiza-al-escribir.mjs` | la **regla 3** de Diego: que una escritura del tutor deje la copia caliente **rehecha con lo que el KMS confirma**, y que jamás se archive como buena una copia con un dato que el KMS no ha confirmado |
