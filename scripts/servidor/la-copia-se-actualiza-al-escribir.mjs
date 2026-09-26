@@ -108,6 +108,9 @@ const NOMBRES_QUE_CONDUCE = ['_wzCopiaAlDia_', '_wzCacheInvalidate_', '_espejoGu
 
 function afirmaciones (fuente) {
   const fallos = []
+  // `2026-09-23-un-arnes-que-no-afirma-nada-pasa` — cuántas afirmaciones REALES corrió
+  // esta pasada, contadas EN EJECUCIÓN (no en el fuente).
+  let total = 0
   const { ctx, cache, viajes } = cargar(fuente)
 
   // 0 — MEDICIÓN CIEGA: lo que este arnés conduce tiene que EXISTIR con ese nombre.
@@ -120,14 +123,18 @@ function afirmaciones (fuente) {
   // 1 — CON EL KMS CONFIRMANDO, LA COPIA SE REHACE.
   ctx._wzCacheInvalidate_(TOKEN)                 // el bump que hace el manejador al empezar
   const r1 = ctx._wzCopiaAlDia_(p, { ok: true }) // ...y el archivado del final
+  total++
   if (!r1 || r1.rehecha !== true) fallos.push('con el KMS confirmando, la copia NO se rehizo (' + (r1 && r1.motivo) + ')')
+  total++
   if (!cache.has(clave + '_meta')) fallos.push('la copia no quedó bajo la clave que lee el camino vivo')
 
   // 2 — Y EL CAMINO VIVO LA LEE: la hidratación de después NO viaja al KMS.
   viajes.length = 0
   const hid = ctx.hydrateSession_({ resume_token: TOKEN, n: N, language: 'es' })
   const viajesTrasRehacer = viajes.filter((a) => a === 'enr.hydrateApplication').length
+  total++
   if (viajesTrasRehacer !== 0) fallos.push('tras rehacer, la hidratación siguió viajando al KMS (' + viajesTrasRehacer + ')')
+  total++
   if (!hid || !hid.group || hid.group.enrollment_group_id !== GID) fallos.push('la hidratación servida desde la copia no trae el expediente')
 
   // 3 — ⛔ LA BARANDILLA: SI EL KMS ENCOLA, NO SE REHACE NADA.
@@ -135,10 +142,13 @@ function afirmaciones (fuente) {
   const clave3 = b.ctx._wzCacheKey_('hyd', GID + '_' + b.ctx._wzN_(N, null))
   b.ctx._wzCacheInvalidate_(TOKEN)
   const r3 = b.ctx._wzCopiaAlDia_(p, { ok: true, queued: true })
+  total++
   if (!r3 || r3.rehecha !== false || r3.motivo !== 'ENCOLADA') {
     fallos.push('con la escritura ENCOLADA se rehízo la copia: se serviría la foto de ANTES sellada como nueva')
   }
+  total++
   if (b.cache.has(clave3 + '_meta')) fallos.push('con la escritura ENCOLADA quedó una copia archivada')
+  total++
   if (b.viajes.length !== 0) fallos.push('con la escritura ENCOLADA se gastó un viaje al KMS')
 
   // 4 — LA COPIA SALE DEL KMS, NO DE LO QUE EL TUTOR MANDÓ. El dato que el KMS DESCARTA no
@@ -149,9 +159,11 @@ function afirmaciones (fuente) {
   c.ctx._wzCopiaAlDia_({ resume_token: TOKEN, n: N, language: 'es',
                          persons: [LO_QUE_MANDO_EL_TUTOR] }, { ok: true })
   const guardado = leerTroceado(c.cache, clave4)
+  total++
   if (guardado && JSON.stringify(guardado).indexOf('p-que-el-kms-descarta') !== -1) {
     fallos.push('la copia archivada lleva un dato que el KMS NO confirmó — se serviría como bueno algo descartado')
   }
+  total++
   if (!guardado || !guardado.data || !Array.isArray(guardado.data.persons)
       || guardado.data.persons.length !== 1 || guardado.data.persons[0].person_id !== 'p-viva') {
     fallos.push('la copia archivada no es, tal cual, la que devolvió el KMS')
@@ -164,9 +176,11 @@ function afirmaciones (fuente) {
   d.ctx._wzCacheInvalidate_(TOKEN)
   d.ctx.kmsProxy_ = () => { d.ctx._bumpLiveStateVersion_(GID, ['hyd']); return COPIA_DEL_KMS() }
   const r5 = d.ctx._wzCopiaAlDia_(p, { ok: true })
+  total++
   if (!r5 || r5.rehecha !== false || r5.motivo !== 'OTRA_ESCRITURA_POR_MEDIO') {
     fallos.push('con otra escritura por medio se archivó igual (motivo=' + (r5 && r5.motivo) + ')')
   }
+  total++
   if (d.cache.has(clave5 + '_meta')) fallos.push('con otra escritura por medio quedó una copia archivada')
 
   // 6 — LOS VIAJES DEL RECORRIDO, con y sin la pieza. Sin rehacer, la hidratación de después
@@ -177,11 +191,12 @@ function afirmaciones (fuente) {
   e.viajes.length = 0
   e.ctx.hydrateSession_({ resume_token: TOKEN, n: N, language: 'es' })
   const viajesSinLaPieza = e.viajes.filter((a) => a === 'enr.hydrateApplication').length
+  total++
   if (viajesSinLaPieza !== 1) {
     fallos.push('la medición de referencia no cuadra: sin rehacer, la hidratación debería costar 1 viaje y costó ' + viajesSinLaPieza)
   }
 
-  return { ciego: false, fallos, viajes: { sin: viajesSinLaPieza, con: viajesTrasRehacer } }
+  return { ciego: false, fallos, total, viajes: { sin: viajesSinLaPieza, con: viajesTrasRehacer } }
 }
 
 /** Reensambla el sobre troceado, igual que `_wzCacheGetChunked_`. */
@@ -216,9 +231,10 @@ const ROTURAS = [
 ]
 
 let motivo = null
+let base = null
 try {
   const fuente = readFileSync(join(RAIZ, 'backend/Code.js'), 'utf8')
-  const base = afirmaciones(fuente)
+  base = afirmaciones(fuente)
 
   if (base.ciego) {
     motivo = base.fallos.join(' · ')
@@ -255,6 +271,7 @@ try {
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)
 } finally {
-  console.log(motivo ? `VEREDICTO: ROJO — ${motivo}` : 'VEREDICTO: VERDE')
+  const total = base && !base.ciego ? base.total : 0
+  console.log(motivo ? `VEREDICTO: ROJO — ${motivo}` : `VEREDICTO: VERDE — ${total} afirmaciones`)
   process.exitCode = motivo ? 1 : 0
 }

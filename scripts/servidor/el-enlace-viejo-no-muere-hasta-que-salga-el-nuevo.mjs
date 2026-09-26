@@ -154,6 +154,9 @@ const NOMBRES_QUE_CONDUCE = ['sendMagicLink_', '_conLosEnlacesRotados_', '_repon
 
 function afirmaciones (fuente) {
   const fallos = []
+  // `2026-09-23-un-arnes-que-no-afirma-nada-pasa` — cuántas afirmaciones REALES corrió
+  // esta pasada, contadas EN EJECUCIÓN (no en el fuente).
+  let total = 0
 
   // 0 — MEDICIÓN CIEGA: lo que este arnés conduce tiene que EXISTIR con ese nombre.
   const sonda = cargar(fuente, {})
@@ -164,7 +167,9 @@ function afirmaciones (fuente) {
   // 1 — EL CORREO SALE ⇒ el enlace queda ROTADO y NO se repone nada.
   const a = cargar(fuente, {})
   const ackSale = a.ctx.sendMagicLink_({ primary_email: CORREO, recaptcha_token: 'x' })
+  total++
   if (a.correos.length !== 1) fallos.push('pública, correo que SALE: se pidió ' + a.correos.length + ' correo(s) en vez de 1')
+  total++
   if (reposiciones(a.kms).length !== 0) {
     fallos.push('pública, correo que SALE: se repuso el enlace igualmente — la rotación buena se estaría deshaciendo')
   }
@@ -173,13 +178,16 @@ function afirmaciones (fuente) {
   const b = cargar(fuente, { elCorreoNoSale: true })
   const ackNoSale = b.ctx.sendMagicLink_({ primary_email: CORREO, recaptcha_token: 'x' })
   const rep = reposiciones(b.kms)
+  total++
   if (rep.length !== 1) {
     fallos.push('pública, correo que NO SALE: se pidieron ' + rep.length + ' reposiciones en vez de 1 '
       + '⇒ la familia se queda sin enlace ninguno')
   } else {
+  total++
     if (rep[0].cuerpo.token_anterior !== VIEJO_A) {
       fallos.push('pública: se repuso «' + rep[0].cuerpo.token_anterior + '» y no el enlace que la familia tenía')
     }
+  total++
     if (rep[0].cuerpo.resume_token !== NUEVO_A) {
       fallos.push('pública: la reposición no se pide sobre el token RECIÉN ROTADO (KAL-4: el expediente sale del token)')
     }
@@ -197,10 +205,12 @@ function afirmaciones (fuente) {
   const tapado = (r) => JSON.stringify(r && Object.keys(r).sort().reduce((o, k) => {
     o[k] = (k === 'warm_ticket') ? '<ticket>' : r[k]; return o
   }, {}))
+  total++
   if (tapado(ackSale) !== tapado(ackNoSale)) {
     fallos.push('pública: la respuesta CAMBIA según si el correo salió (' + tapado(ackSale)
       + ' vs ' + tapado(ackNoSale) + ') — eso reabre el oráculo de enumeración')
   }
+  total++
   if (!FORMA_UUID.test(String(ackSale && ackSale.warm_ticket))
       || !FORMA_UUID.test(String(ackNoSale && ackNoSale.warm_ticket))) {
     fallos.push('pública: el `warm_ticket` no tiene la misma forma en los dos casos — '
@@ -214,6 +224,7 @@ function afirmaciones (fuente) {
   })
   c.ctx.sendMagicLink_({ primary_email: CORREO, recaptcha_token: 'x' })
   const repN = reposiciones(c.kms)
+  total++
   if (repN.length !== 2) {
     fallos.push('pública con DOS expedientes y un solo correo que no sale: se repusieron ' + repN.length
       + ' de 2 — la familia quedaría dentro de una solicitud y fuera de otra')
@@ -223,7 +234,9 @@ function afirmaciones (fuente) {
   // 5 — EL CORREO SALE ⇒ rotado, sin reponer, y el error NO se inventa.
   const d = cargar(fuente, {})
   const r5 = d.ctx.sendMagicLink_({ resume_token: VIEJO_A })
+  total++
   if (!r5 || r5.sent !== true) fallos.push('interna, correo que SALE: no contestó `sent:true`')
+  total++
   if (reposiciones(d.kms).length !== 0) fallos.push('interna, correo que SALE: se repuso el enlace igualmente')
 
   // 6 — ⛔ EL CORREO NO SALE ⇒ se repone Y el error SE PROPAGA (esta rama sí los propaga).
@@ -231,11 +244,13 @@ function afirmaciones (fuente) {
   let lanzo = null
   try { e.ctx.sendMagicLink_({ resume_token: VIEJO_A }) } catch (err) { lanzo = err }
   const repI = reposiciones(e.kms)
+  total++
   if (repI.length !== 1) {
     fallos.push('interna, correo que NO SALE: se pidieron ' + repI.length + ' reposiciones en vez de 1')
   } else if (repI[0].cuerpo.token_anterior !== VIEJO_A) {
     fallos.push('interna: se repuso «' + repI[0].cuerpo.token_anterior + '» y no el enlace que la familia tenía')
   }
+  total++
   if (!lanzo || lanzo.code !== 'EMAIL_SEND_FAILED') {
     fallos.push('interna: el fallo del envío dejó de propagarse (' + (lanzo && lanzo.code) + ') — '
       + 'quien pulsó «guardar y seguir luego» creería que su correo salió')
@@ -250,12 +265,13 @@ function afirmaciones (fuente) {
   }
   let lanzo7 = null
   try { f.ctx.sendMagicLink_({ resume_token: VIEJO_A }) } catch (err) { lanzo7 = err }
+  total++
   if (!lanzo7 || lanzo7.code !== 'EMAIL_SEND_FAILED') {
     fallos.push('con la reposición también caída, el error que se ve ya no es el del envío ('
       + (lanzo7 && lanzo7.message) + ') — se estaría tapando la causa')
   }
 
-  return { ciego: false, fallos }
+  return { ciego: false, fallos, total }
 }
 
 // ── Las ROTURAS DEMOSTRADAS: cada una tiene que poner ROJA su afirmación ─────────────────
@@ -284,9 +300,10 @@ const ROTURAS = [
 ]
 
 let motivo = null
+let base = null
 try {
   const fuente = readFileSync(join(RAIZ, 'backend/Code.js'), 'utf8')
-  const base = afirmaciones(fuente)
+  base = afirmaciones(fuente)
 
   if (base.ciego) {
     motivo = base.fallos.join(' · ')
@@ -323,6 +340,7 @@ try {
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)
 } finally {
-  console.log(motivo ? `VEREDICTO: ROJO — ${motivo}` : 'VEREDICTO: VERDE')
+  const total = base && !base.ciego ? base.total : 0
+  console.log(motivo ? `VEREDICTO: ROJO — ${motivo}` : `VEREDICTO: VERDE — ${total} afirmaciones`)
   process.exitCode = motivo ? 1 : 0
 }

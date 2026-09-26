@@ -155,6 +155,10 @@ const _claveEsperada = (gid, disc) => 'stepup_ok_' + gid + (disc ? '|' + disc : 
 
 function afirmaciones (fuente) {
   const fallos = []
+  // `2026-09-23-un-arnes-que-no-afirma-nada-pasa` — cuántas afirmaciones REALES corrió
+  // esta pasada, contadas EN EJECUCIÓN (no en el fuente): un `total` que se quedara a
+  // cero por una excepción tapada o un renombrado tiene que poder DECIRLO.
+  let total = 0
 
   // 0 — MEDICIÓN CIEGA: lo que este arnés conduce tiene que EXISTIR con ese nombre.
   const sonda = cargar(fuente)
@@ -166,10 +170,12 @@ function afirmaciones (fuente) {
     const s = cargar(fuente)
     s.ctx._markStepUpFresh_(GID, 'OTP', MAIL_A, PAGINA_A, N_A)
     s.ctx._markStepUpFresh_(GID, 'OTP', MAIL_B, PAGINA_B, N_B)
+    total++
     if (!s.ctx._isStepUpFresh_(GID, MAIL_A, PAGINA_A, N_A)) {
       fallos.push('el tutor B acreditó su buzón y a A LO ECHARON de su propia solicitud '
         + '(la marca sigue siendo una sola por expediente) — es justo lo que D213 cierra')
     }
+    total++
     if (!s.ctx._isStepUpFresh_(GID, MAIL_B, PAGINA_B, N_B)) {
       fallos.push('el tutor B acreditó su buzón y su propia ventana no quedó abierta')
     }
@@ -179,6 +185,7 @@ function afirmaciones (fuente) {
   {
     const s = cargar(fuente)
     s.ctx._markStepUpFresh_(GID, 'OTP', MAIL_B, PAGINA_B, N_B)
+    total++
     if (s.ctx._isStepUpFresh_(GID, MAIL_A, PAGINA_A, N_A)) {
       fallos.push('A pasa la puerta con la ventana que se ganó B — el atado al buzón de ②24 se ha aflojado')
     }
@@ -188,12 +195,14 @@ function afirmaciones (fuente) {
   {
     const s = cargar(fuente)
     s.ctx._markStepUpFresh_(GID, 'OTP', MAIL_A, PAGINA_A, '')
+    total++
     if (!s.ctx._isStepUpFresh_(GID, MAIL_A, PAGINA_A, '')) {
       fallos.push('un enlace SIN `?n=` ya no puede acreditar su buzón — y los hay en circulación')
     }
     // Y quien acredita CON `n` y luego guarda sin él tampoco se queda fuera.
     const t = cargar(fuente)
     t.ctx._markStepUpFresh_(GID, 'OTP', MAIL_A, PAGINA_A, N_A)
+    total++
     if (!t.ctx._isStepUpFresh_(GID, MAIL_A, PAGINA_A, '')) {
       fallos.push('quien acreditó su buzón con `?n=` se queda fuera en cuanto una llamada no lo manda')
     }
@@ -205,9 +214,11 @@ function afirmaciones (fuente) {
     s.ctx._markStepUpFresh_(GID, 'OTP', MAIL_A, PAGINA_A, N_A)
     s.ctx._markStepUpFresh_(GID, 'OTP', MAIL_B, PAGINA_B, N_B)
     const r = s.ctx.refrescarVentanaDeInactividad_({ resume_token: TOK_A, n: N_A, pv: PAGINA_A })
+    total++
     if (!r || r.step_up_fresh !== true || !(r.step_up_restante_s > 0)) {
       fallos.push('«sigo aquí» dejó de extender la ventana del tutor que pulsa (' + JSON.stringify(r) + ')')
     }
+    total++
     if (!s.ctx._isStepUpFresh_(GID, MAIL_B, PAGINA_B, N_B)) {
       fallos.push('«sigo aquí» de A se llevó por delante la ventana de B')
     }
@@ -215,6 +226,7 @@ function afirmaciones (fuente) {
     // ventana de A se quedó sin estirar y que la escritura fue a parar a donde no la lee nadie.
     const esperadas = [_claveEsperada(GID, N_A), _claveEsperada(GID, N_B), _claveEsperada(GID, '')]
     const sobrantes = [...s.cache.keys()].filter((k) => k.indexOf('stepup_ok_') === 0 && esperadas.indexOf(k) === -1)
+    total++
     if (sobrantes.length) {
       fallos.push('«sigo aquí» escribió en una ranura que nadie lee (' + sobrantes.join(', ')
         + ') ⇒ la ventana del tutor que pulsa no se está estirando')
@@ -228,6 +240,7 @@ function afirmaciones (fuente) {
     // Se llama al `kmsProxy_` REAL: lo que se mide es el CUERPO que compone, no la respuesta.
     try { s.kmsProxyReal('enr.renewApplicationSession', { resume_token: TOK_A }) } catch (e) { /* cortado */ }
     const c1 = s.cuerposAlKms[0]
+    total++
     if (!c1) {
       fallos.push('MEDICIÓN CIEGA — no se llegó a ver el cuerpo que `kmsProxy_` manda al KMS')
     } else if (c1.n !== N_B) {
@@ -239,6 +252,7 @@ function afirmaciones (fuente) {
     const t = cargar(fuente)
     t.ctx._N_DE_LA_PETICION_ = N_B
     try { t.kmsProxyReal('enr.reponerEnlaceAnterior', { resume_token: TOK_B, n: N_A }) } catch (e) { /* cortado */ }
+    total++
     if (t.cuerposAlKms[0] && t.cuerposAlKms[0].n !== N_A) {
       fallos.push('el `?n=` que el llamante declara se está pisando con el de la petición')
     }
@@ -246,6 +260,7 @@ function afirmaciones (fuente) {
     const u = cargar(fuente)
     u.ctx._N_DE_LA_PETICION_ = N_B
     try { u.kmsProxyReal('enr.recuperacionDelCorreo', { correo: MAIL_A }) } catch (e) { /* cortado */ }
+    total++
     if (u.cuerposAlKms[0] && u.cuerposAlKms[0].n) {
       fallos.push('se está mandando el `?n=` en cuerpos que no llevan enlace')
     }
@@ -259,6 +274,7 @@ function afirmaciones (fuente) {
     const s = cargar(fuente)
     s.ctx.sendMagicLink_({ primary_email: MAIL_B, recaptcha_token: 'x' })
     const renov = s.kms.filter((v) => v.accion === 'enr.renewApplicationSession')
+    total++
     if (renov.length !== 1) {
       fallos.push('portada: se pidieron ' + renov.length + ' renovaciones en vez de 1')
     } else if (renov[0].cuerpo.n !== N_B) {
@@ -270,6 +286,7 @@ function afirmaciones (fuente) {
     t.ctx.sendViaKmsNotify_ = () => { const e = new Error('no salió'); e.code = 'EMAIL_SEND_FAILED'; throw e }
     t.ctx.sendMagicLink_({ primary_email: MAIL_B, recaptcha_token: 'x' })
     const rep = t.kms.filter((v) => v.accion === 'enr.reponerEnlaceAnterior')
+    total++
     if (rep.length !== 1) {
       fallos.push('portada, correo que no sale: se pidieron ' + rep.length + ' reposiciones en vez de 1')
     } else if (rep[0].cuerpo.n !== N_B) {
@@ -278,7 +295,7 @@ function afirmaciones (fuente) {
     }
   }
 
-  return { ciego: false, fallos }
+  return { ciego: false, fallos, total }
 }
 
 // ── Las ROTURAS DEMOSTRADAS: cada una tiene que poner ROJA su afirmación ─────────────────
@@ -312,9 +329,10 @@ const ROTURAS = [
 ]
 
 let motivo = null
+let base = null
 try {
   const fuente = readFileSync(join(RAIZ, 'backend/Code.js'), 'utf8')
-  const base = afirmaciones(fuente)
+  base = afirmaciones(fuente)
 
   if (base.ciego) {
     motivo = base.fallos.join(' · ')
@@ -350,6 +368,9 @@ try {
 } catch (e) {
   motivo = 'error fatal — ' + (e && e.message)
 } finally {
-  console.log(motivo ? ('VEREDICTO: ROJO — ' + motivo) : 'VEREDICTO: VERDE')
+  // `2026-09-23-un-arnes-que-no-afirma-nada-pasa` — el lanzador rechaza un VERDE sin
+  // esto, o con CERO: un arnés que mide nada no puede decir verde.
+  const total = base && !base.ciego ? base.total : 0
+  console.log(motivo ? ('VEREDICTO: ROJO — ' + motivo) : ('VEREDICTO: VERDE — ' + total + ' afirmaciones'))
   process.exitCode = motivo ? 1 : 0
 }

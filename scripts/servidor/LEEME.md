@@ -14,14 +14,43 @@ dejarlo aquí, entra.
 
 | Exigencia | Si no |
 |---|---|
-| La **ÚLTIMA línea con texto** es `VEREDICTO: VERDE` o `VEREDICTO: ROJO — <motivo>` | ROJO: «su última línea no es un veredicto» |
+| La **ÚLTIMA línea con texto** es `VEREDICTO: VERDE — N afirmaciones` o `VEREDICTO: ROJO — <motivo>` | ROJO: «su última línea no es un veredicto» |
 | El **código de salida** no contradice esa línea (VERDE ⇒ 0) | ROJO: «dice VERDE y termina con código N» |
 | **Termina** (tope de 180 s; los de hoy tardan ~1 s) | ROJO: «no terminó y se cortó» |
 | Escribe **algo** | ROJO: «no escribió ni una línea» |
+| Un **VERDE** declara **cuántas afirmaciones corrió**, y son **≥ 1** | ROJO: «dice VERDE sin declarar cuántas afirmaciones corrió» / «con CERO» |
 
 ⛔ **El veredicto se imprime SIEMPRE**, también ante un error fatal del propio arnés — `try/finally`,
 nunca un `process.exit` a mitad. Un arnés que revienta en silencio sale con código 0 y CI lo da por
 bueno: ése es el verde falso que todo esto viene a impedir.
+
+### ⛔ `2026-09-23-un-arnes-que-no-afirma-nada-pasa` — EL VERDE CUENTA LO QUE MIDIÓ
+
+**Un arnés que se quedó sin afirmaciones —una excepción tapada, un renombrado que un `catch` se
+tragó, un refactor que vació el cuerpo— seguía diciendo VERDE.** Las otras cuatro exigencias de
+arriba no lo cazan: terminó, escribió algo, su código de salida es 0 y su última línea empieza por
+`VERDE`. Por eso el VERDE tiene que llevar **cuántas afirmaciones corrió de verdad, contadas EN
+EJECUCIÓN** (nunca contando líneas del fuente: eso mediría lo que el arnés DICE que comprueba, no
+lo que comprobó ESTA vez):
+
+```
+VEREDICTO: VERDE — 13 afirmaciones
+VEREDICTO: VERDE — 13 afirmaciones: lo que sea que quieras contar además, tal cual hacías antes.
+```
+
+**Cómo se cuenta, según tu forma:**
+
+- **Si ya usas un `afirmar(nombre, condicion, porque)` compartido** (mira
+  `el-catalogo-de-preguntas.mjs`): un `let total = 0` fuera de la función y `total++` en su
+  primera línea. Cada llamada —pase o falle— es una afirmación, y eso incluye las de las
+  roturas demostradas: son afirmaciones también.
+- **Si comprueba con `if (condición_de_fallo) fallos.push(mensaje)` a pelo** (mira
+  `cada-tutor-con-su-enlace.mjs`): un `total++` justo antes de cada `if` de ésos, uno por
+  cada check independiente — un `if`/`else if` que decide ENTRE mensajes de la MISMA
+  comprobación cuenta como UNA, no como dos.
+
+**El motivo del ROJO no necesita esto**: ya nombra qué falló, y eso ya prueba que algo se
+ejecutó. Es el VERDE el que puede mentir en silencio, y es el único que se exige.
 
 ## Lo que un arnés ES aquí
 

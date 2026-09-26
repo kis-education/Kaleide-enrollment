@@ -172,7 +172,12 @@ function Date_now() { return Date.now(); }
 // ── Las afirmaciones ────────────────────────────────────────────────────────────────────
 const fallos = [];
 const notas  = [];
+// `2026-09-23-un-arnes-que-no-afirma-nada-pasa` — cuántas afirmaciones REALES corrió esta
+// pasada, contadas EN EJECUCIÓN: un `total` que se quedara a cero por una excepción tapada
+// o un renombrado tiene que poder DECIRLO en el propio veredicto.
+let total = 0;
 function afirmar(nombre, condicion, porque) {
+  total++;
   if (condicion) { notas.push('  ✓ ' + nombre); return true; }
   fallos.push(nombre + ' — ' + porque);
   notas.push('  ✗ ' + nombre + '\n      ' + porque);
@@ -439,9 +444,9 @@ try {
     console.log('VEREDICTO: ROJO — ' + fallos[0] + (fallos.length > 1 ? ' (y ' + (fallos.length - 1) + ' más)' : ''));
     salida = 1;
   } else {
-    console.log('VEREDICTO: VERDE — una pregunta editada en el KMS llega a la copia del asistente, ' +
-      'la versión viaja en el latido barato para que el navegador se entere sin pedir el catálogo, ' +
-      'y si el aviso falla nadie se queda sin cuestionario.');
+    console.log('VEREDICTO: VERDE — ' + total + ' afirmaciones: una pregunta editada en el KMS ' +
+      'llega a la copia del asistente, la versión viaja en el latido barato para que el navegador ' +
+      'se entere sin pedir el catálogo, y si el aviso falla nadie se queda sin cuestionario.');
   }
 } catch (eFatal) {
   console.log('VEREDICTO: ROJO — el propio arnés reventó: ' + ((eFatal && eFatal.message) || eFatal));

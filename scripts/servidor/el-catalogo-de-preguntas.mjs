@@ -151,7 +151,12 @@ function fetchQuestions_adaptKmsResponse_() { return __catalogoDelKms(); }
 // ── Las afirmaciones ────────────────────────────────────────────────────────────────────
 const fallos = [];
 const notas  = [];
+// `2026-09-23-un-arnes-que-no-afirma-nada-pasa` — cuántas afirmaciones REALES corrió esta
+// pasada, contadas EN EJECUCIÓN: un `total` que se quedara a cero por una excepción tapada
+// o un renombrado tiene que poder DECIRLO en el propio veredicto.
+let total = 0;
 function afirmar(nombre, condicion, porque) {
+  total++;
   if (condicion) { notas.push('  ✓ ' + nombre); return true; }
   fallos.push(nombre + ' — ' + porque);
   notas.push('  ✗ ' + nombre + '\n      ' + porque);
@@ -324,6 +329,6 @@ if (fallos.length) {
   console.log('VEREDICTO: ROJO — ' + fallos[0] + (fallos.length > 1 ? ' (y ' + (fallos.length - 1) + ' más)' : ''));
   process.exit(1);
 }
-console.log('VEREDICTO: VERDE — el catálogo guardado no se puede quedar clavado: el refresco sin ' +
-  'viaje ahorra, el techo obliga a releer, un viaje fallido no se lleva la copia y el camino ' +
-  'público sigue sirviéndose de ella.');
+console.log('VEREDICTO: VERDE — ' + total + ' afirmaciones: el catálogo guardado no se puede ' +
+  'quedar clavado: el refresco sin viaje ahorra, el techo obliga a releer, un viaje fallido no ' +
+  'se lleva la copia y el camino público sigue sirviéndose de ella.');

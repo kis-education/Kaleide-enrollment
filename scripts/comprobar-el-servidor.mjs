@@ -30,6 +30,11 @@
  *   2. Que su código de salida **no contradiga** su propia línea. Un arnés que dice VERDE y sale
  *      con código distinto de 0 está roto: se dice, no se elige la mitad que conviene.
  *   3. Que **termine**. Un arnés colgado dejaría el trabajo de CI girando; hay tope y se NOMBRA.
+ *   4. **`2026-09-23-un-arnes-que-no-afirma-nada-pasa`** — que un VERDE **declare cuántas
+ *      afirmaciones corrió** (`VERDE — N afirmaciones`) y que N sea **al menos 1**. Sin esto, un
+ *      arnés que se quedó sin afirmaciones —una excepción tapada, un renombrado que un `catch`
+ *      se tragó, un refactor que vació el cuerpo— seguía diciendo VERDE: exactamente el verde
+ *      falso que el resto de este lanzador existe para impedir, una capa más arriba.
  *
  * ⛔ **SI NO ENCUENTRA NINGUNO, SALE ROJO.** Un control que no mide nada no puede decir VERDE:
  * ése es justo el verde falso que esto viene a impedir.
@@ -95,6 +100,14 @@ function ultimaLineaConTexto(salida) {
  * El juicio, en UNA función pura — para poder comprobarlo sin lanzar nada.
  * Devuelve `null` si está VERDE, o el motivo del ROJO.
  */
+// `2026-09-23-un-arnes-que-no-afirma-nada-pasa` — un VERDE tiene que DECLARAR cuántas
+// afirmaciones corrió, y ese número tiene que ser ≥ 1. Sin esto, un arnés que se quedó sin
+// afirmaciones —una excepción tapada, un renombrado que un `catch` se tragó, un refactor que
+// vació el cuerpo— sigue diciendo VERDE, y es exactamente el verde falso que el resto de este
+// lanzador existe para impedir, una capa más abajo. Forma exigida: `VERDE — <N> afirmaciones`
+// (con lo que quiera venir detrás, dos puntos y una frase incluidos).
+const CUENTA_DE_AFIRMACIONES_RE = /^VERDE\s*—\s*(\d+)\s+afirmaci/i
+
 function juzgar({ arranco, colgado, codigo, ultima }) {
   if (!arranco) return 'no se pudo ejecutar'
   if (colgado) return 'no terminó en ' + Math.round(TOPE_MS / 1000) + ' s y se cortó'
@@ -108,6 +121,14 @@ function juzgar({ arranco, colgado, codigo, ultima }) {
     return 'veredicto que no se entiende (' + JSON.stringify(ultima.slice(0, 160)) + ')'
   }
   if (codigo !== 0) return 'dice VERDE y termina con código ' + codigo + ': se contradice a sí mismo'
+  const cuenta = CUENTA_DE_AFIRMACIONES_RE.exec(cuerpo)
+  if (!cuenta) {
+    return 'dice VERDE sin declarar cuántas afirmaciones corrió (falta «— N afirmaciones» en su ' +
+      'propio veredicto): un arnés que no dice cuánto midió no puede decir verde'
+  }
+  if (Number(cuenta[1]) < 1) {
+    return 'dice VERDE con CERO afirmaciones: un arnés que mide nada no puede decir verde'
+  }
   return null
 }
 
@@ -136,7 +157,8 @@ try {
   // verdad (spawn + captura + juicio), más los casos que no se pueden fabricar con un proceso.
   const sintetico = (cuerpo) => ['-e', cuerpo]
   const cegueras = []
-  const verdeReal = juzgar(lanzar(sintetico("console.log('ruido');console.log('VEREDICTO: VERDE')")))
+  const verdeReal = juzgar(lanzar(sintetico(
+    "console.log('ruido');console.log('VEREDICTO: VERDE — 3 afirmaciones')")))
   if (verdeReal !== null) cegueras.push('no reconoce un VERDE de verdad (' + verdeReal + ')')
   const rojoReal = juzgar(lanzar(sintetico(
     "console.log('VEREDICTO: ROJO — motivo sintético');process.exit(1)")))
@@ -145,14 +167,21 @@ try {
   if (revientaReal === null) cegueras.push('deja pasar por VERDE un arnés que revienta sin veredicto')
   const mudoReal = juzgar(lanzar(sintetico('process.exit(0)')))
   if (mudoReal === null) cegueras.push('deja pasar por VERDE un arnés que no escribe nada')
-  const mentiroso = juzgar({ arranco: true, colgado: false, codigo: 1, ultima: 'VEREDICTO: VERDE' })
+  const mentiroso = juzgar({ arranco: true, colgado: false, codigo: 1, ultima: 'VEREDICTO: VERDE — 3 afirmaciones' })
   if (mentiroso === null) cegueras.push('deja pasar un VERDE que se contradice con su código de salida')
-  const colgadoCaso = juzgar({ arranco: true, colgado: true, codigo: -1, ultima: 'VEREDICTO: VERDE' })
+  const colgadoCaso = juzgar({ arranco: true, colgado: true, codigo: -1, ultima: 'VEREDICTO: VERDE — 3 afirmaciones' })
   if (colgadoCaso === null) cegueras.push('deja pasar por VERDE un arnés que hubo que cortar')
+  // `2026-09-23-un-arnes-que-no-afirma-nada-pasa` — el mismo fallo que este lanzador existe
+  // para impedir, una capa más arriba: un VERDE que no dice cuánto midió, o que dice CERO.
+  const verdeSinContar = juzgar(lanzar(sintetico("console.log('VEREDICTO: VERDE')")))
+  if (verdeSinContar === null) cegueras.push('deja pasar por VERDE un arnés que no declara cuántas afirmaciones corrió')
+  const verdeConCero = juzgar(lanzar(sintetico("console.log('VEREDICTO: VERDE — 0 afirmaciones')")))
+  if (verdeConCero === null) cegueras.push('deja pasar por VERDE un arnés que declara CERO afirmaciones')
   if (cegueras.length) {
     decir('el lanzador no sabe ver un rojo: ' + cegueras.join(' · '))
   } else {
-    console.log('  ✓ autocomprobación: distingue VERDE, ROJO, reventado, mudo, mentiroso y colgado')
+    console.log('  ✓ autocomprobación: distingue VERDE, ROJO, reventado, mudo, mentiroso, colgado, ' +
+      'VERDE sin contar y VERDE con CERO afirmaciones')
 
     // Los arneses de verdad.
     let ficheros
