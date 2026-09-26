@@ -592,6 +592,49 @@ const QUESTIONS = {
 };
 
 /**
+ * `2026-09-23-un-conjunto-a-cero-pinta-un-recuadro-vacio` — DOS conjuntos sin NINGUNA
+ * pieza que pintar, por las dos vías que Diego distinguió: uno con CERO preguntas
+ * declaradas (el caso real, `Preguntas básicas de admisión KIS`) y otro CON preguntas
+ * cuyas condiciones las descartan todas para cualquier solicitante (`AGE GTE 99`, que
+ * ningún hijo del banco alcanza). Los dos tienen que dejar de pintar recuadro — título
+ * incluido — y el criterio NO puede ser `items.length === 0`, porque el segundo SÍ
+ * tiene items.
+ *
+ * ⛔ Viven FUERA de `QUESTIONS` a propósito: solo se añaden con `scenario.conjuntoVacio`
+ * (`catalogoConEscenario_`, abajo). Metidos en el catálogo por defecto, cada camino que
+ * ya cuenta tarjetas/conjuntos del paso 5 (hay varios) tendría que aprender de ellos sin
+ * necesitarlo para lo que mide.
+ */
+const CONJUNTO_SIN_PREGUNTAS = {
+  set_id: 'set-e2e-vacio', set_code: 'E2E_VACIO', context_id: 'ctx-e2e',
+  designation: 'Conjunto vacío (E2E)', description: '', is_active: true,
+  is_default_for_context: false, items: [],
+};
+const CONJUNTO_QUE_SUS_CONDICIONES_VACIAN = {
+  set_id: 'set-e2e-vaciado-por-condicion', set_code: 'E2E_VACIADO_POR_CONDICION',
+  context_id: 'ctx-e2e', designation: 'Conjunto vaciado por condición (E2E)', description: '',
+  is_active: true, is_default_for_context: false,
+  items: [{
+    set_id: 'set-e2e-vaciado-por-condicion', question_id: 'q-e2e-vaciado-por-condicion',
+    display_order: 0,
+    question: {
+      question_id: 'q-e2e-vaciado-por-condicion', question_code: 'e2e_vaciado_por_condicion',
+      response_type_id: 'TEXT', response_type_code: 'TEXT',
+      is_required: false, audience_category_id: 'participant',
+      question_text: 'Nadie debería llegar a ver esto', help_text: '', placeholder_text: '',
+      options: [],
+      conditions: [{ kind: 'AGE', operator: 'GTE', value: 99 }],
+    },
+  }],
+};
+
+/** El catálogo que sirve el banco, con los dos conjuntos vacíos SOLO si el escenario lo pide. */
+function catalogoConEscenario_(scenario) {
+  if (!scenario || !scenario.conjuntoVacio) return QUESTIONS;
+  return { ...QUESTIONS, sets: [...QUESTIONS.sets, CONJUNTO_SIN_PREGUNTAS, CONJUNTO_QUE_SUS_CONDICIONES_VACIAN] };
+}
+
+/**
  * DL-E49 §2 — espejo del recorte del SERVIDOR real (`enr_wizardPersonasVisiblesParaTutor_`,
  * kis-app/kms-server/enr/wizard-datalayer.gs, + su gemelo `buildResumeSessionData_` del
  * wizard). Sin esto el mock devolvería SIEMPRE el grupo entero — que es justo el defecto
@@ -649,7 +692,7 @@ function recortarPorTutorE2E_(data, viewerN) {
  *   (que es lo que hace aterrizar en Documentos); con lista, el paso queda por visitado y
  *   el aterrizaje se va a Revisión, igual que en el sistema real.
  */
-export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision, dosHermanosAdmitidos, sesionFirmaActivaHijo, aterrizarEnGdpr) {
+export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision, dosHermanosAdmitidos, sesionFirmaActivaHijo, aterrizarEnGdpr, conjuntoVacio) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -672,7 +715,7 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
     // Por eso el modo de fallo aquí no siembra vacío — no manda catálogo.
     ...(preguntasMode === 'caido'
       ? { questions_no_disponible: true }
-      : { questions: QUESTIONS }),
+      : { questions: catalogoConEscenario_({ conjuntoVacio }) }),
     billing_splits: { payers: [], per_participant: [] },   // lo sobrescribe el despachador (ver `hydrateSession`)
     live_version:   1,
     admission:      null,
@@ -1029,7 +1072,7 @@ export function createDispatcher(scenario, record) {
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
         scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos,
-        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr);
+        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr, scenario.conjuntoVacio);
       // ⚠️ EL DOBLE NO PUEDE CONTRADECIRSE A SÍ MISMO (medido el 2026-08-27): la hidratación
       // decía SIEMPRE «sin reparto guardado» mientras `getSavedBillingSplits` devolvía 60/40.
       // En el servidor real las dos salen de la MISMA fuente (`billing_splits` de la
@@ -1131,7 +1174,7 @@ export function createDispatcher(scenario, record) {
     getAdmissionState: (p) => {
       const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
         scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos,
-        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr);
+        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr, scenario.conjuntoVacio);
       const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
       // 0º.tricies.octies (B) — los pasos cuyo ÚLTIMO guardado murió en la cola del KMS.
       // Copia declarada del contrato real (`enr_guardadosQueNoLlegaron_`): CÓDIGOS de paso,
@@ -1222,7 +1265,7 @@ export function createDispatcher(scenario, record) {
       : { ok: true, ...lookupsSegunEscenario_(scenario) }),
     fetchQuestions: () => (scenario.preguntasMode === 'caido'
       ? { ok: false, error: { code: 'E2E_QUESTIONS_DOWN', message: 'catálogo caído (simulado)' } }
-      : { ok: true, ...QUESTIONS }),
+      : { ok: true, ...catalogoConEscenario_(scenario) }),
 
     // ── Guardado de pasos ────────────────────────────────────────────────────
     saveStep: (p) => {

@@ -432,7 +432,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, refrescoDemoraMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, refrescoDemoraMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false, conjuntoVacio: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -4897,6 +4897,71 @@ async function caminoCuestionarioNoSeApaga(page, base) {
     // se abortaría y contaría como error de consola de un camino que ya terminó.
     await esperarSilencioDeRed(15000, 800)
   } finally {
+    scenario.unSoloAlumno = false
+  }
+  return c
+}
+
+/**
+ * UN CONJUNTO SIN NADA QUE PINTAR NO PINTA RECUADRO — ni su título, ni su tarjeta vacía.
+ *
+ * Diego, 2026-09-23, sobre «Preguntas básicas de admisión KIS» con CERO preguntas
+ * declaradas: «De momento se queda a cero preguntas» — es un estado DELIBERADO y
+ * permanente, no un descuido a corregir en la pantalla. ⇒ la familia no puede ver un
+ * recuadro con un título y nada debajo, para siempre.
+ *
+ * DOS causas producen la MISMA pantalla rota, y las DOS se cubren aquí: un conjunto sin
+ * NINGUNA pregunta declarada, y un conjunto CON preguntas que sus condiciones descartan
+ * TODAS para este solicitante (`AGE GTE 99`, que ningún hijo del banco alcanza nunca). El
+ * criterio correcto es «las piezas que quedan tras evaluar», no `items.length === 0` —
+ * por eso hacen falta los DOS casos: con solo el primero, comprobar `items.length` bastaría
+ * y la afirmación no distinguiría un criterio del otro.
+ *
+ * Se mide CON DOS HIJOS y CON UNO SOLO: la rama que reparte por sujeto (varios hijos) ya
+ * tenía la guarda (`if (!piezas.length) return null`, `QbSetRenderer`); la rama de un solo
+ * hijo NO la tenía — es la que este camino existe para cazar. Sin el segundo caso, esta
+ * comprobación habría pasado en vacío mientras el defecto seguía vivo.
+ */
+async function caminoConjuntoVacioNoPintaRecuadro(page, base) {
+  const c = new Camino('conjunto-vacio-no-pinta-recuadro')
+  scenario.stage = 'hasta_preguntas'
+  scenario.conjuntoVacio = true
+  const TITULO_VACIO = 'Conjunto vacío (E2E)'
+  const TITULO_VACIADO_POR_CONDICION = 'Conjunto vaciado por condición (E2E)'
+  try {
+    for (const [etiqueta, unSolo] of [['con dos hijos', false], ['con un solo hijo', true]]) {
+      scenario.unSoloAlumno = unSolo
+      // Sesión LIMPIA: la caché de MÓDULO de `api.js` sobrevive a un cambio de hash, así
+      // que hace falta tirar el contexto entero para que el paso 5 pida el catálogo de
+      // verdad en cada vuelta del bucle (mismo motivo que el resto de este fichero).
+      await esperarSilencioDeRed(15000, 800)
+      await page.evaluate(() => { try { sessionStorage.clear(); localStorage.clear() } catch {} })
+      await page.goto('about:blank')
+      if (!await entrarPorElEnlace(c, page, base)) return c
+      if (!await irAPreguntas(c, page)) return c
+      await page.waitForTimeout(LATENCY + 900)
+
+      const vista = await page.evaluate(sondaPreguntas)
+      const titulos = await page.evaluate(() =>
+        [...document.querySelectorAll('.kis-card > h3')].map(h => (h.textContent || '').trim()))
+      const textoCompleto = await page.evaluate(() => document.body.textContent || '')
+
+      c.evidencia.elementos = Math.max(c.evidencia.elementos || 0, vista.preguntas)
+      c.afirmar(`(${etiqueta}) el resto del cuestionario sigue pintando preguntas de verdad`,
+        vista.preguntas >= 1,
+        `${etiqueta}: se pintaron ${vista.preguntas} preguntas — sin ninguna, lo de abajo pasaría en vacío`)
+      c.afirmar(`(${etiqueta}) el conjunto SIN NINGUNA PREGUNTA no pinta ni su título`,
+        !titulos.includes(TITULO_VACIO) && !textoCompleto.includes(TITULO_VACIO),
+        `${etiqueta}: títulos de primer nivel pintados = ${JSON.stringify(titulos)}`)
+      c.afirmar(`(${etiqueta}) el conjunto que sus CONDICIONES vacían tampoco pinta título`,
+        !titulos.includes(TITULO_VACIADO_POR_CONDICION) && !textoCompleto.includes(TITULO_VACIADO_POR_CONDICION),
+        `${etiqueta}: títulos de primer nivel pintados = ${JSON.stringify(titulos)}`)
+    }
+    // Y también al SALIR: la vuelta siguiente del bucle navega, y una petición de ésta a
+    // medias se abortaría y contaría como error de consola de un camino ya terminado.
+    await esperarSilencioDeRed(15000, 800)
+  } finally {
+    scenario.conjuntoVacio = false
     scenario.unSoloAlumno = false
   }
   return c
@@ -11968,6 +12033,10 @@ const CAMINOS = [
   { nombre: 'el-catalogo-cambio-en-el-colegio', fn: caminoElCatalogoCambioEnElColegio,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   { nombre: 'cuestionario-no-se-apaga', fn: caminoCuestionarioNoSeApaga, minLlamadas: 1, minElementos: 2 },
+  // `2026-09-23-un-conjunto-a-cero-pinta-un-recuadro-vacio` — un conjunto sin nada que
+  // pintar (cero preguntas, o condiciones que las descartan todas) no pinta recuadro,
+  // ni con un hijo ni con dos.
+  { nombre: 'conjunto-vacio-no-pinta-recuadro', fn: caminoConjuntoVacioNoPintaRecuadro, minLlamadas: 2, minElementos: 2 },
   // Cola 18.quater — la familia pide corregir su solicitud ya enviada.
   { nombre: 'pedir-correccion',    fn: caminoPedirCorreccion,    minLlamadas: 2, minElementos: 11 },
   // Paso 7 · el simulador de cuotas — y que un simulador caído NO impide enviar.

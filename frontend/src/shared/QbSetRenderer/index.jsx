@@ -271,16 +271,25 @@ export default function QbSetRenderer({
   if (!variosHijos) {
     return (
       <>
-        {sets.map((set, si) => (
-          <div key={set.set_id} className="kis-card">
-            {set.designation && (
-              <h3 style={TITULO_DEL_CONJUNTO}>{set.designation}</h3>
-            )}
-            {(piezasPorConjunto[si] || []).map(pieza => (
-              pieza.tipo === 'general' ? pintarGeneral(pieza) : bloqueDeSujeto(pieza)
-            ))}
-          </div>
-        ))}
+        {sets.map((set, si) => {
+          const piezas = piezasPorConjunto[si] || [];
+          // Un conjunto sin ninguna pieza QUE PINTAR —ni preguntas declaradas, ni
+          // preguntas que sobrevivan a sus condiciones para este solicitante— no pinta
+          // recuadro: ni su título, ni su tarjeta vacía. Mismo criterio que la rama de
+          // varios hijos de abajo (`if (!piezas.length) return null;`); antes de esto
+          // divergían y ésta era la única que dejaba pasar el recuadro vacío.
+          if (!piezas.length) return null;
+          return (
+            <div key={set.set_id} className="kis-card">
+              {set.designation && (
+                <h3 style={TITULO_DEL_CONJUNTO}>{set.designation}</h3>
+              )}
+              {piezas.map(pieza => (
+                pieza.tipo === 'general' ? pintarGeneral(pieza) : bloqueDeSujeto(pieza)
+              ))}
+            </div>
+          );
+        })}
       </>
     );
   }
