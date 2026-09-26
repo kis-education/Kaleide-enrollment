@@ -41,10 +41,18 @@ const { casosMal, casosRevisados, lecturasCrudas, lecturasRevisadas, motivoFatal
 
 if (motivoFatal) { veredicto(false, motivoFatal); process.exit(1) }
 
+// ⛔ 2026-09-26: la ÚNICA lectura directa de estas tablas vivía dentro de
+// `adminCleanupOrphanSessions`, hoy DESACTIVADA (early return, sin leer ni escribir nada —
+// ver `kis-app/docs/kms/loop-backlog.md` `2026-09-23-la-limpieza-de-huerfanas-decide-con-la-base-vieja`).
+// Con ella fuera, `backend/Code.js` YA NO tiene ningún camino que lea PERSONS/PHONES/EMAILS/
+// PERSON_RELATIONS fuera del proxy al KMS — es un estado MEJOR que antes, no un fallo del
+// detector: el bucle (B) sigue corriendo línea a línea y seguiría encontrando y nombrando
+// cualquier lectura nueva que se salte `wizardSoloVivas_`, exista una hoy o no.
+const CERO_ES_ESPERADO_DESDE = '2026-09-26'
 if (lecturasRevisadas === 0) {
-  veredicto(false, 'no se encontró NI UNA lectura de personas/teléfonos/correos en backend/Code.js — ' +
-    'la comprobación no está mirando lo que dice mirar, y en vacío NO es verde')
-  process.exit(1)
+  console.log(`(B) 0 lecturas directas de PERSONS/PHONES/EMAILS/PERSON_RELATIONS en backend/Code.js — ` +
+    `es el estado esperado desde ${CERO_ES_ESPERADO_DESDE} (la única viva se desactivó con su función). ` +
+    'Si reaparece una lectura de estas tablas sin pasar por wizardSoloVivas_, esta misma comprobación la encontrará y saldrá ROJA.\n')
 }
 
 if (casosMal.length) {
@@ -72,6 +80,10 @@ if (casosMal.length || lecturasCrudas.length) {
   veredicto(false,
     `${casosMal.length} caso(s) del criterio y ${lecturasCrudas.length} lectura(s) sin colar — ` +
     'el asistente vuelve a contar a gente que la familia quitó, y la puerta del envío le pedirá el teléfono')
+} else if (lecturasRevisadas === 0) {
+  veredicto(true,
+    `los ${casosRevisados} casos del criterio salen bien y hoy no queda ninguna lectura directa de ` +
+    `personas/teléfonos/correos/vínculos que vigilar (cero desde ${CERO_ES_ESPERADO_DESDE} — arriba dice por qué)`)
 } else {
   veredicto(true,
     `los ${casosRevisados} casos del criterio salen bien y las ${lecturasRevisadas} lecturas de ` +

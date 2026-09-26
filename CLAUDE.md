@@ -109,8 +109,21 @@ vigilarse; mientras esté en `_manual.gs`, no.
 — todas en funciones `manual_*` de editor y en `adminCleanupOrphanSessions`, que **no está en el
 despachador**. **★ RE-MEDIDO el 2026-09-22, tras sacar las sondas del proyecto: en `backend/Code.js`
 quedan DOS, las dos dentro de `adminCleanupOrphanSessions`; las otras 41 se fueron con las sondas a
-`backend/_manual.gs`, que NO viaja** ⇒ ni siquiera están en el proyecto desplegado. Se recuenta con
-`grep -c 'appsheetRequest_(' backend/Code.js` **menos 1** (la definición); `appsheetRequestBatch_`
+`backend/_manual.gs`, que NO viaja** ⇒ ni siquiera están en el proyecto desplegado.
+
+**★★ RE-MEDIDO el 2026-09-26: en `backend/Code.js` quedan CERO** (`grep -c 'appsheetRequest_(' backend/Code.js`
+→ 1, y esa única línea es la propia DEFINICIÓN de `appsheetRequest_`, sin un solo llamante).
+`adminCleanupOrphanSessions` decidía qué expediente abandonar leyendo `appsheetRequest_` — AppSheet,
+la base VIEJA desde `KMS_DATOS_EN_POSTGRES=true` — mientras ABANDONABA de verdad contra PostgreSQL
+(`kmsProxy_`); una lista construida sobre esa foto vieja podía marcar como «abierto» un expediente
+que en PostgreSQL ya estaba ENVIADO, y `enr.abandonApplicationSession` le mataría el enlace real a
+una familia sin que nadie se enterase (`kis-app/docs/kms/loop-backlog.md`
+`2026-09-23-la-limpieza-de-huerfanas-decide-con-la-base-vieja`). **MEDIDO antes de desactivarla**
+(`ScriptApp.getProjectTriggers()`): el único disparador instalado era `espejoRefrescarCopias` — CERO
+apuntaba a esta función, así que no había avería viva. Hoy la función devuelve
+`{disabled:true, reason:'STALE_DATA_SOURCE_APPSHEET'}` sin leer ni escribir nada; el cuerpo original
+vive en `git log -p -- backend/Code.js`. **Sigue pendiente decidir** si se elimina del todo o se
+reescribe contra una ruta del KMS — eso no es de este tramo. `appsheetRequestBatch_`
 se retiró entero — era un escritor genérico dormido en una superficie pública.
 
 ⛔ **Lo que sigue ABIERTO es otra cosa, `②18`:** el `service_token` que autentica al asistente frente

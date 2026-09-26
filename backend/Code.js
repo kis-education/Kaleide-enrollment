@@ -12390,98 +12390,36 @@ function adminUnblockEmail() {
   return { ok: true, email: email };
 }
 
+/**
+ * ⛔ DESACTIVADA el 2026-09-26 (`kis-app/docs/kms/loop-backlog.md`
+ * `2026-09-23-la-limpieza-de-huerfanas-decide-con-la-base-vieja`). Decidía qué expediente
+ * abandonar leyendo `appsheetRequest_` — AppSheet, que desde `KMS_DATOS_EN_POSTGRES=true` es
+ * la base VIEJA y ya no recibe escrituras — mientras que ABANDONA de verdad contra PostgreSQL
+ * (vía `kmsProxy_`). Una lista construida sobre una foto vieja puede marcar como «abierto» un
+ * expediente que en PostgreSQL ya está ENVIADO o ya fue abandonado por su propia familia, y
+ * `enr.abandonApplicationSession` mataría su enlace real sin que nadie se entere.
+ *
+ * MEDIDO antes de tocar nada (2026-09-26, `ScriptApp.getProjectTriggers()` vía
+ * `manual_diagDisparadoresDelProyecto`): el único disparador instalado hoy es
+ * `espejoRefrescarCopias` — CERO apunta a esta función, así que no hay una avería viva. Pero
+ * sigue invocable a mano (editor, `clasp run`) y un disparador futuro puesto sin mirar este
+ * fichero la reactivaría en silencio.
+ *
+ * ⇒ **ESTADO AL QUE HAY QUE LLEGAR, sin decidir todavía cuál** (la ficha lo deja como
+ * DECISIÓN, no como código): o se ELIMINA (si de verdad no la usa nadie), o se reescribe para
+ * leer del KMS por una ruta de API — nunca `appsheetRequest_` directo (P1-A/P1-B). Mientras
+ * tanto, NO SE EJECUTA: se corta aquí, antes de leer ni escribir nada. El cuerpo original
+ * —agrupar por correo, quedarse con el más avanzado, abandonar el resto vía `kmsProxy_`— vive
+ * entero en `git log -p -- backend/Code.js` (búscalo por `adminCleanupOrphanSessions`); no se
+ * reconstruye aquí para no dejar ~90 líneas inalcanzables junto al código vivo.
+ *
+ * @returns {{ ok: boolean, disabled: true, reason: string }}
+ */
 function adminCleanupOrphanSessions() {
-  const now = new Date();
-  const CUTOFF_MS = 30 * 24 * 60 * 60 * 1000;
-  const all = appsheetRequest_(T.ENROLLMENT_GROUPS, 'Find', [], {}) || [];
-  const open = all.filter(g => !g.submitted_at && !g.abandoned_at);
-
-  // Group by email to detect duplicates
-  const byEmail = {};
-  open.forEach(g => {
-    const k = (g.primary_email || '').toLowerCase().trim();
-    if (!k) return;
-    (byEmail[k] = byEmail[k] || []).push(g);
-  });
-
-  const toAbandon = [];
-  const kept = [];
-
-  // Pre-fetch person counts for all candidate sessions in a few batched
-  // queries (mirrors the live policy heuristic — see initEnrollmentSession_
-  // for rationale: person count is a cheap proxy for progress, with
-  // updated_at as tiebreaker).
-  const personCountByGroup = {};
-  const allCandidateIds = open.map(g => g.enrollment_group_id);
-  // AppSheet Filter syntax tolerates fairly long OR expressions, but split
-  // into chunks of 50 to stay safe.
-  for (let i = 0; i < allCandidateIds.length; i += 50) {
-    const chunk = allCandidateIds.slice(i, i + 50);
-    try {
-      const filter = chunk.map(id => '"enrollment_group_id" = "' + appsheetEscape_(id) + '"').join(' || ');
-      const rows = wizardSoloVivas_(appsheetRequest_(T.PERSONS, 'Find', [], { Filter: filter }));
-      rows.forEach(r => {
-        const k = r.enrollment_group_id;
-        personCountByGroup[k] = (personCountByGroup[k] || 0) + 1;
-      });
-    } catch (e) {
-      Logger.log('adminCleanupOrphanSessions: person count chunk ' + i + ' failed: ' + e.message);
-    }
-  }
-
-  Object.keys(byEmail).forEach(email => {
-    // Sort: most progressed first (person count), then most-recently-updated.
-    const sessions = byEmail[email].slice().sort((a, b) => {
-      const ac = personCountByGroup[a.enrollment_group_id] || 0;
-      const bc = personCountByGroup[b.enrollment_group_id] || 0;
-      if (bc !== ac) return bc - ac;
-      const au = new Date(a.updated_at || a.created_at || 0).getTime();
-      const bu = new Date(b.updated_at || b.created_at || 0).getTime();
-      return bu - au;
-    });
-    // Keep the most progressed; mark every other one as abandoned.
-    // Edge: if the keeper is itself older than 30 days (by updated_at),
-    // abandon it too — covers the "abandoned long ago" case.
-    sessions.forEach((s, i) => {
-      const lastTouched = new Date(s.updated_at || s.created_at).getTime();
-      if (i === 0 && (now.getTime() - lastTouched) <= CUTOFF_MS) {
-        kept.push(s);
-      } else {
-        toAbandon.push(s);
-      }
-    });
-  });
-
-  let actuallyAbandoned = 0;
-  const failures = [];
-  toAbandon.forEach(s => {
-    try {
-      // P1-B: escritura portada al KMS (enr.abandonApplicationSession). KAL-4: el grupo lo
-      // deriva el KMS del resume_token de la PROPIA fila leída (nunca un id suelto).
-      kmsProxy_('enr.abandonApplicationSession', { resume_token: s.resume_token });
-      // ★ `0º.tricies.vicies.quinquies` — ídem (§`COPIA_PUERTA_TTL_S_`).
-      _olvidarCabeceraMemo_(s.resume_token, s.enrollment_group_id);
-      // KAL-11: redact group_id (UUID) and email before persisting to Stackdriver.
-      Logger.log(redact_('abandoned: ' + s.enrollment_group_id + ' email=' + s.primary_email) + ' age_days=' + Math.round((now - new Date(s.created_at)) / 86400000));
-      actuallyAbandoned++;
-    } catch (e) {
-      Logger.log(redact_('FAILED to abandon ' + s.enrollment_group_id + ': ' + e.message));
-      failures.push({ id: s.enrollment_group_id, error: e.message.slice(0, 200) });
-    }
-  });
-
-  const summary = {
-    scanned:    open.length,
-    toAbandon:  toAbandon.length,   // intended
-    abandoned:  actuallyAbandoned,  // succeeded
-    failed:     failures.length,
-    kept:       kept.length,
-    failures:   failures,
-  };
-  // KAL-11: summary.failures contains per-row {id: enrollment_group_id, error}.
-  // Redact the UUIDs before persisting to Stackdriver.
-  Logger.log(redact_('adminCleanupOrphanSessions summary: ' + JSON.stringify(summary)));
-  return summary;
+  Logger.log('adminCleanupOrphanSessions: DESACTIVADA — decide con appsheetRequest_ (AppSheet, ' +
+             'base vieja); no se ejecuta. Ver kis-app/docs/kms/loop-backlog.md ' +
+             '2026-09-23-la-limpieza-de-huerfanas-decide-con-la-base-vieja.');
+  return { ok: false, disabled: true, reason: 'STALE_DATA_SOURCE_APPSHEET' };
 }
 
 // === MANUAL TESTS ===

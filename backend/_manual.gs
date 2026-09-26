@@ -3046,3 +3046,30 @@ function manual_diagLoQuePuedeTumbarLaAgrupacion() {
   Logger.log(texto);
   return texto;
 }
+
+/**
+ * `2026-09-23-la-limpieza-de-huerfanas-decide-con-la-base-vieja` — LO PRIMERO que la ficha pide:
+ * comprobar si hay un disparador instalado que llame a `adminCleanupOrphanSessions` (decide
+ * leyendo AppSheet, la base VIEJA desde KMS_DATOS_EN_POSTGRES=true). Solo lectura, sin datos
+ * personales: nombre de función + tipo de evento del disparador, nada más.
+ */
+function manual_diagDisparadoresDelProyecto() {
+  var L = [];
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    L.push('total_disparadores=' + triggers.length);
+    triggers.forEach(function(t) {
+      var fn = t.getHandlerFunction();
+      var tipo = String(t.getEventType());
+      var fuente = String(t.getTriggerSource());
+      L.push('disparador: funcion=' + fn + ' tipo=' + tipo + ' fuente=' + fuente);
+    });
+    var apunta = triggers.some(function(t) { return t.getHandlerFunction() === 'adminCleanupOrphanSessions'; });
+    L.push('APUNTA_A_adminCleanupOrphanSessions=' + apunta);
+  } catch (e) {
+    L.push('ERROR=' + String((e && e.message) || e).slice(0, 300));
+  }
+  var texto = L.join('\n');
+  Logger.log(texto);
+  return texto;
+}
