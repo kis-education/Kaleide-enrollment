@@ -1283,6 +1283,12 @@ catálogos deja la comprobación pasando **en vacío**.
 
 ### Publicación
 
+⛔ **Y antes de publicar, las cuatro reglas de NO GASTAR DE MÁS** (Diego, 2026-09-26: *«que se
+hagan bien las cosas, pero no que se consuma de más sin necesidad»*) — **declaradas en UN solo
+sitio**, `kis-app/CLAUDE.md` §"⛔ NO SE GASTA DE MÁS": una publicación para lo que toca lo mismo ·
+lo ya medido no se re-mide · un agente por zona · lo voluminoso a un fichero. **El ahorro no sale
+de comprobar menos.**
+
 El asistente se sirve desde una **URL de despliegue fija**. `clasp push` solo actualiza el Head.
 
 ```bash
