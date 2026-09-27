@@ -2034,14 +2034,8 @@ function _consumeMagicLinkNonce_(resumeToken, expectedGroupId) {
  * @returns {{fresh: boolean, restante_s: number}}
  * @private
  */
-function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina, disc) {
-  // ★ D213 — se mira PRIMERO la ranura de este tutor y, si no tiene, la de siempre.
-  const val = _claveConLaMarca_(CacheService.getScriptCache(), enrollmentGroupId, disc).val;
-  if (!val) {
-    Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=false no_mark'));
-    return { fresh: false, restante_s: 0, cierre: 'INACTIVIDAD' };
-  }
-  // El valor guardado es «<caducidad>|<huella del buzón>|<huella de la página viva>».
+function _parseValorMarcaStepUp_(val) {
+  // El valor guardado es «<caducidad>|<huella del buzón>|<huella de la página viva>|<techo>».
   // Una marca ANTERIOR a ②24 es solo el número, y una anterior al 2026-08-20 no trae la
   // tercera parte: las dos se leen igual y el campo que falta queda vacío (comodín).
   const partes = String(val).split('|');
@@ -2053,6 +2047,46 @@ function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina, disc) 
   // escribiera una caducidad por encima del techo, aquí se cierra igual. Marca sin techo (la
   // de antes de este cambio) ⇒ manda solo `exp`, como ayer.
   const techo = partes.length > 3 ? Number(partes[3]) : 0;
+  return { exp: exp, marcada: marcada, paginaMarcada: paginaMarcada, techo: techo };
+}
+
+/**
+ * Deriva SOLO el modo de cierre ('TECHO' | 'INACTIVIDAD') de una marca de step-up, sin
+ * resolver identidad ni huella de página — es lo que hace que se pueda llamar desde el
+ * pulso BARATO (`getLiveStateVersion_`) sin pagar el viaje de 20-30 s al KMS que sí paga
+ * `_leerMarcaStepUp_` cuando la marca lleva buzón (0º.octies).
+ *
+ * Comparte el parseo con `_leerMarcaStepUp_` (`_parseValorMarcaStepUp_`) a propósito: dos
+ * lectores del mismo valor que calcularan `cierre` cada uno a su manera divergirían.
+ *
+ * ⛔ **NO acredita frescura.** Solo dice, SI hay marca, cuál de los dos límites la cerraría.
+ * El booleano de si la ventana sigue viva sigue siendo `_isStepUpFresh_`/`getAdmissionState`.
+ *
+ * @param {string} enrollmentGroupId
+ * @param {string} disc - `_discriminadorDeMarca_(p)`, para mirar la ranura del tutor correcto
+ *        y no filtrar el modo de cierre de OTRO tutor del mismo expediente (②24).
+ * @returns {?string} 'TECHO' | 'INACTIVIDAD' | null si no hay marca que leer.
+ * @private
+ */
+function _cierreDeLaMarcaBarato_(enrollmentGroupId, disc) {
+  const val = _claveConLaMarca_(CacheService.getScriptCache(), enrollmentGroupId, disc).val;
+  if (!val) return null;
+  const partes = _parseValorMarcaStepUp_(val);
+  return (partes.techo && partes.exp >= partes.techo) ? 'TECHO' : 'INACTIVIDAD';
+}
+
+function _leerMarcaStepUp_(enrollmentGroupId, personaEmail, huellaPagina, disc) {
+  // ★ D213 — se mira PRIMERO la ranura de este tutor y, si no tiene, la de siempre.
+  const val = _claveConLaMarca_(CacheService.getScriptCache(), enrollmentGroupId, disc).val;
+  if (!val) {
+    Logger.log(redact_('[DBG stepup] read group=' + enrollmentGroupId + ' fresh=false no_mark'));
+    return { fresh: false, restante_s: 0, cierre: 'INACTIVIDAD' };
+  }
+  const partes = _parseValorMarcaStepUp_(val);
+  const exp = partes.exp;
+  const marcada = partes.marcada;
+  const paginaMarcada = partes.paginaMarcada;
+  const techo = partes.techo;
   // ★ 0º.octies — el buzón que opera solo se RESUELVE si la marca lleva uno con el que comparar
   // (ver la cabecera). Sin `marcada`, `mismaPersona` es `true` pase lo que pase aquí.
   const persona = marcada
@@ -12189,8 +12223,20 @@ function _versionDelCatalogoParaElPulso_(p) {
  * es un entero no sensible (cuenta de cambios); el bump exige el secreto del KMS, así que
  * la lectura abierta no es un vector (no expone datos). assertValidUuid_ por higiene.
  *
- * @param {Object} p — { enrollment_group_id, cat_lang?, cat_prog? }
- * @returns {{version:number, catalogo_v:?string}}
+ * ★ 2026-09-27 — TAMBIÉN el MODO DE CIERRE de la ventana de step-up
+ * (`2026-09-22-el-modo-de-cierre-tarda-con-la-solicitud-quieta`). Con una solicitud QUIETA
+ * (nadie escribe, la versión no sube) el detalle de `getAdmissionState` no se pedía nunca, y
+ * `step_up_cierre` se quedaba con el valor de la última vez que sí se pidió — el cartel podía
+ * seguir ofreciendo «sigo aquí» después de que el TECHO de 2 h ya lo hubiera vaciado de
+ * sentido. **Es una lectura de ScriptCache más** (`_cierreDeLaMarcaBarato_`), de la MISMA
+ * naturaleza que la que ya hace `_getLiveStateVersion_` dos líneas más abajo — NO toca
+ * AppSheet ni el KMS, y NO resuelve identidad (0º.octies): por eso puede ir en la etapa
+ * BARATA sin deshacerla. ⛔ **Lleva el discriminador del enlace (`p.n`)**: sin él se leería la
+ * ranura genérica y podría enseñarle a un tutor el modo de cierre de la marca de OTRO tutor
+ * del mismo expediente (②24) — la misma barandilla de siempre, aplicada aquí también.
+ *
+ * @param {Object} p — { enrollment_group_id, cat_lang?, cat_prog?, n? }
+ * @returns {{version:number, catalogo_v:?string, step_up_cierre:?string}}
  */
 function getLiveStateVersion_(p) {
   const groupId = p && p.enrollment_group_id;
@@ -12198,8 +12244,9 @@ function getLiveStateVersion_(p) {
   // son dos cosas distintas (una es del colegio, la otra de la solicitud) y una respuesta que
   // se calla la primera por un fallo de la segunda dejaría al navegador sin enterarse.
   var catalogoV = _versionDelCatalogoParaElPulso_(p);
-  try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { version: 0, catalogo_v: catalogoV }; }
-  return { version: _getLiveStateVersion_(groupId), catalogo_v: catalogoV };
+  try { assertValidUuid_(groupId, 'enrollment_group_id'); } catch (e) { return { version: 0, catalogo_v: catalogoV, step_up_cierre: null }; }
+  var cierre = _cierreDeLaMarcaBarato_(groupId, _discriminadorDeMarca_(p));
+  return { version: _getLiveStateVersion_(groupId), catalogo_v: catalogoV, step_up_cierre: cierre };
 }
 
 // ─── Promotion logic ──────────────────────────────────────────────────────────

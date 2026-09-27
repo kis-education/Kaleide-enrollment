@@ -130,6 +130,13 @@ function _wzCacheGetChunked_(cache, key) {
   if (!cache.get(key + '_meta')) return null; return cache.get(key + '_0');
 }
 function _checkPublicCatalogRateLimit_() { __cupo(); }
+// ★ 2026-09-27 — getLiveStateVersion_ (una de las NECESARIAS) también lee el modo de
+// cierre de la ventana de step-up, y ese camino es AJENO a este control (es del cartel
+// «sigo aquí», no del catálogo). Se DEJAN STUBEADAS a propósito para no reventar por un
+// ReferenceError al extraer su cuerpo verbatim: lo que este control mide del catálogo no
+// depende de lo que devuelvan.
+function _discriminadorDeMarca_() { return ''; }
+function _cierreDeLaMarcaBarato_() { return null; }
 function kmsProxy_() { __viaje(); return {}; }
 function fetchQuestions_adaptKmsResponse_() { return __catalogoDelKms(); }
 function Date_now() { return Date.now(); }

@@ -343,10 +343,12 @@ export default function WizardPage() {
       pulseInFlightRef.current = true;
       // ── Etapa 1 — detección de cambio ULTRA-LIGERA (solo la versión, sin AppSheet/KMS).
       // ★ 2026-09-23 — LA COMBINACIÓN DEL CATÁLOGO VIAJA EN LA LLAMADA QUE YA VA.
-      // ⛔ NI UN VIAJE MÁS: son dos campos en el cuerpo de la etapa BARATA del pulso, la que
-      // ya late cada ~30 s. El servidor contesta con la versión que él tiene guardada para
-      // esa (programa × idioma), leída de su propia copia — no va al KMS.
-      gasCall('getLiveStateVersion', { enrollment_group_id: gid, cat_lang: idioma, cat_prog: programa || undefined })
+      // ★ 2026-09-27 — Y TAMBIÉN EL MODO DE CIERRE DE LA VENTANA DE STEP-UP (`n` incluido,
+      // ②24: sin discriminador se leería la ranura de OTRO tutor). Son TRES campos en el
+      // cuerpo de la etapa BARATA, la que ya late cada ~30 s — el servidor los lee todos de
+      // ScriptCache, sin tocar AppSheet ni el KMS.
+      // ⛔ NI UN VIAJE MÁS.
+      gasCall('getLiveStateVersion', { enrollment_group_id: gid, cat_lang: idioma, cat_prog: programa || undefined, n: rn || undefined })
         .then(verRes => {
           // ── EL COLEGIO CAMBIÓ UNA PREGUNTA ──────────────────────────────────────────
           // ⛔ **NO BORRA NADA Y NO PUEDE DEJAR EL PASO 5 EN BLANCO**: solo saca del plazo de
@@ -365,6 +367,17 @@ export default function WizardPage() {
               revisarCatalogo(n => n + 1);
             }
           } catch (e) { log.warn('WizardPage: la versión del catálogo no se pudo aplicar', { message: e && e.message }); }
+          // ── EL MODO DE CIERRE, aunque la solicitud esté QUIETA ──────────────────────
+          // ⛔ Va ANTES del corte por versión de abajo, por el MISMO motivo que el catálogo:
+          // un cambio de modo (INACTIVIDAD → TECHO) no mueve la versión del expediente —lo
+          // decide el reloj de la marca, no una escritura—, así que si colgara de ese `if`
+          // no llegaría nunca mientras nadie toque la solicitud. `sincronizarVentanaStepUp`
+          // SOLO puede acortar el espejo local y solo actúa si `cierre` viene con valor
+          // (`null` cuando no hay marca ⇒ no toca nada) — no se manda `restanteS` aquí: ese
+          // sigue viniendo SOLO de `getAdmissionState`, para no inventar un segundero.
+          try {
+            if (verRes && verRes.step_up_cierre) sincronizarVentanaStepUp(undefined, verRes.step_up_cierre);
+          } catch (e) { log.warn('WizardPage: el modo de cierre barato no se pudo aplicar', { message: e && e.message }); }
           const v = (verRes && Number(verRes.version)) || 0;
           if (v <= (Number(knownVer) || 0)) return; // sin cambios → NO leer detalle
           // ── Etapa 2 — la versión subió → fetch de DETALLE del liveState.

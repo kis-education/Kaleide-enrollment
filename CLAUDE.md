@@ -358,10 +358,24 @@ cartel seguía ofreciendo el botón con el techo ya alcanzado. Hoy los aplica
 `sincronizarVentanaStepUp` (`WizardContext.jsx`). ⛔ **NI UN VIAJE MÁS** —se aprovecha la respuesta
 que ya llega; el pulso sigue siendo de dos etapas— y ⛔ **NO desliza la ventana** (SEC-STEPUP #55):
 el sincronizador **SOLO puede ACORTAR** (toma el mínimo entre lo que el espejo creía y
-`ahora + restante_s`) y **sin espejo vivo no resucita nada**. ⚠️ **Límite honesto:** el detalle solo
-se pide cuando SUBE la versión del expediente, así que con una solicitud quieta el modo de cierre
-puede seguir tardando en corregirse; traerlo por la llamada barata tocaría el servidor y está
-**propuesto, no construido**.
+`ahora + restante_s`) y **sin espejo vivo no resucita nada**.
+
+**★ 2026-09-27 — Y CON UNA SOLICITUD QUIETA, TAMBIÉN.** El detalle (`getAdmissionState`) solo se
+pide cuando SUBE la versión del expediente, así que con una solicitud quieta —nadie escribe nada—
+el modo de cierre podía quedarse tardando en corregirse hasta que el techo ya lo hubiera vaciado de
+sentido. Se cerró llevando el modo por la llamada BARATA (`getLiveStateVersion`, que late cada
+~30 s pase lo que pase): `_cierreDeLaMarcaBarato_` (`backend/Code.js`) lee la MISMA marca de
+ScriptCache que `_leerMarcaStepUp_` —comparten el parseo (`_parseValorMarcaStepUp_`), para que dos
+lectores del mismo valor no puedan divergir— y devuelve SOLO `'TECHO'`/`'INACTIVIDAD'`/`null`, sin
+resolver identidad (0º.octies): es lo que hace que se pueda llamar sin pagar el viaje de 20-30 s al
+KMS que sí paga `_leerMarcaStepUp_` cuando la marca lleva buzón. ⛔ **NI UN VIAJE MÁS** —es una
+lectura de ScriptCache más, de la misma naturaleza que la que ya hace `_getLiveStateVersion_`— y
+⛔ **lleva el discriminador del enlace (`p.n`)**, o filtraría el modo de cierre de OTRO tutor del
+mismo expediente (②24). El cliente (`WizardPage.jsx`) llama a `sincronizarVentanaStepUp(undefined,
+verRes.step_up_cierre)` en la etapa barata, ANTES del corte por versión —igual que ya hacía con
+`catalogo_v`—, así que el modo llega aunque la versión nunca suba. **No manda `restante_s` por
+ahí**: ese sigue viniendo solo de `getAdmissionState`, para no inventar un segundero por la vía
+barata. Red: `ventana-por-inactividad`, afirmación (20).
 
 ⛔ **La caducidad se capa al techo** (`min(ahora + 10 min, techo)`): cerca del final la ventana se
 recorta sola y el refresco acaba devolviendo 0 ⇒ `STEPUP_REQUIRED`. **UN SOLO CORTE** en el extensor
