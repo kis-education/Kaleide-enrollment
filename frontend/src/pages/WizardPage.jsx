@@ -25,6 +25,9 @@ import { pedirConfirmacion } from '../components/ConfirmDialog';
 // FIRST_SIGNING_INDEX (primer paso savePolicy:'act') sustituye el 7 hardcodeado.
 import { STEP_CATALOG, STEP_COMPONENTS, FIRST_SIGNING_INDEX, stepEditMode } from './steps/catalog';
 import { hermanosConSituacion as hermanosConSituacionPura } from '../lib/hermanos';
+// ★ CLI 22 — UN SOLO SITIO decide de qué CLASE es un fallo de entrada. Este fichero NO
+// escribe un segundo criterio y NO adivina por el texto del mensaje: pide el veredicto.
+import { clasificarFalloDeEntrada } from '../lib/fallosDeEntrada';
 import SigningChildrenBanner from '../components/SigningChildrenBanner';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
@@ -67,6 +70,10 @@ export default function WizardPage() {
   const [saving,            setSaving]            = useState(false);
   const [sendingMagicLink,  setSendingMagicLink]  = useState(false);
   const [rehydrating,       setRehydrating]       = useState(false);
+  // ★ CLI 22 (2026-09-27) — el fallo de la rehidratación de DESPUÉS del código. Vive en
+  // estado LOCAL a propósito: muere con la pantalla y no toca nada del contexto (ni la
+  // ventana de los diez minutos, ni la marca de frescura, que el tutor ACABA de ganarse).
+  const [falloPostCodigo,   setFalloPostCodigo]   = useState(null);
 
   // ⛔⛔ `0º.tricies.vicies.quater` (2026-08-26) — ¿VA A SALIR LA VERJA DE DATOS PERSONALES?
   //
@@ -226,6 +233,73 @@ export default function WizardPage() {
   const verifiedSessionEmail =
     (stepData?.email?.verified && stepData.email.primary_email) ? stepData.email.primary_email : null;
   const effectiveRecoveredEmail = recoveredEmail || verifiedSessionEmail || undefined;
+
+  /**
+   * ★ CLI 22 (2026-09-27) — LA REHIDRATACIÓN DE DESPUÉS DEL CÓDIGO, EN UN SOLO SITIO.
+   *
+   * ── El defecto que cierra ────────────────────────────────────────────────────────────
+   * El tutor tecleaba su código de un solo uso, la rehidratación que trae sus datos moría,
+   * y el `.catch` SOLO LO REGISTRABA: no navegaba, no pintaba aviso, no dejaba reintentar.
+   * El `finally` ponía `rehydrating=false` y el formulario se dibujaba con `stepData`
+   * VACÍO. Eso era el «cuestionario en blanco» que el tutor se encontraba, sin una sola
+   * palabra que le dijera qué había pasado ni qué podía hacer.
+   *
+   * ── La asimetría que esto termina ────────────────────────────────────────────────────
+   * El MISMO fallo en la hidratación de RECARGA sí actúa, y en la entrada por ENLACE sí se
+   * clasifica (`ResumePage`). Este tercer camino era el único que se lo tragaba.
+   *
+   * ⛔ LA CLASE NO SE DECIDE AQUÍ: se le PIDE a `lib/fallosDeEntrada.js`, que es el único
+   * sitio donde vive ese criterio. Un segundo clasificador divergiría del primero — en este
+   * repositorio ya ha pasado cuatro veces — y adivinar por el TEXTO del mensaje es peor
+   * todavía: un mensaje se traduce y se reescribe; un código no.
+   *
+   * ⛔ LA VENTANA DE LOS DIEZ MINUTOS NO SE TOCA. El tutor acaba de acreditar su buzón: un
+   * fallo de CARGA no puede costarle teclear el código otra vez. Aquí no se llama a
+   * `revokeStepUpFresh` ni se borra ninguna marca de frescura.
+   *
+   * ⛔ Y NO SE AÑADE UN SEGUNDO REINTENTO AUTOMÁTICO: `hydrateSession` ya está en
+   * `LECTURAS_REINTENTABLES_AL_VOLVER` (`api.js`), así que `gasCall` reintenta UNA vez por
+   * su cuenta al volver al primer plano. Lo que falta aquí es DECÍRSELO a la familia y
+   * dejarla reintentar cuando quiera, con el MISMO enlace.
+   *
+   * ⚠️ ESTO NO ARREGLA POR QUÉ MUERE ESA LLAMADA. El porqué sigue abierto en su ficha y
+   * necesita una entrada tardía real para medirse. Lo que se cierra aquí es que la pantalla
+   * MIENTA mientras tanto.
+   */
+  const hidratarTrasElCodigo = () => {
+    setFalloPostCodigo(null);
+    // CLI IMPL-E: marcar rehydrating=true/false como el hydrate de reload (efecto
+    // needsHydration) para que el loader neutro de WIZARD-GATE-ORDER cubra TAMBIÉN este
+    // tramo. Sin esto, entre markStepUpFresh() (mustPassEntryGate→false) y la resolución
+    // del hydrate (~17-44s) se renderizaba el formulario con stepData VACÍO.
+    setRehydrating(true);
+    gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, n: recoveryNonce || undefined, language: i18n.language })
+      .then(data => { hydrateFromResume(data); log.success('WizardPage: rehydrate post step-up OK'); })
+      .catch(err => {
+        const clase = clasificarFalloDeEntrada(err);
+        log.error('WizardPage: rehydrate post step-up failed', { message: err.message, code: err.code || null, clase });
+        if (clase === 'ENLACE_NO_VALE') {
+          // La ÚNICA clase en la que pedir otro enlace es la salida correcta: el que el
+          // tutor tiene no lo va a llevar a ninguna parte. Es el camino que YA existe para
+          // esta clase (`ResumePage`), con el mismo destino y la misma carga.
+          //
+          // ⛔ Viaja el CÓDIGO DE MÁQUINA y NADA MÁS: ni `err.message`, ni el token, ni el
+          // correo (KAL-7 · KAL-11). La portada lo casa contra su LISTA BLANCA
+          // (`lib/cartelDelEnlace.js`) y jamás lo pinta.
+          const codigo = (err && err.code) ? String(err.code) : '';
+          navigate(
+            codigo ? `/?resume_error=1&resume_code=${encodeURIComponent(codigo)}` : '/?resume_error=1',
+            { replace: true },
+          );
+          return;
+        }
+        // Las otras dos se quedan AQUÍ, con el enlace vivo y la ventana intacta, y ofrecen
+        // reintentar. ⛔ NO se manda a la portada: echarlo de ahí es el daño que esto corrige
+        // (pedir otro enlace ROTA el que tiene en la mano, y lleva a chocar con lo mismo).
+        setFalloPostCodigo({ clase, mensaje: (err && err.message) || '' });
+      })
+      .finally(() => setRehydrating(false));
+  };
 
   // DL-B §2 — liveState desacoplado, cheap-poll de DOS ETAPAS (Opción A). El poll de
   // DETECCIÓN-DE-CAMBIO (getLiveStateVersion) es ULTRA-LIGERO: solo lee un contador del
@@ -890,16 +964,12 @@ const handleNext = async (stepKey, data, extra = null) => {
           // pre-step-up). Tras el OTP el backend marcó el grupo fresco (verifyEmail
           // stepup:true) → re-hidratamos para cargar la PII del expediente ahora
           // permitida. Sin esto el stepData quedaría vacío tras pasar el gate.
-          // CLI IMPL-E: marcar rehydrating=true/false como el hydrate de reload
-          // (efecto needsHydration arriba) para que el loader neutro de
-          // WIZARD-GATE-ORDER cubra TAMBIÉN este tramo. Sin esto, entre
-          // markStepUpFresh() (mustPassEntryGate→false) y la resolución del
-          // hydrate (~17-44s) se renderizaba el formulario con stepData VACÍO.
-          setRehydrating(true);
-          gasCall('hydrateSession', { resume_token: resumeToken, recovered_email: effectiveRecoveredEmail, n: recoveryNonce || undefined, language: i18n.language })
-            .then(data => { hydrateFromResume(data); log.success('WizardPage: rehydrate post step-up OK'); })
-            .catch(err => log.error('WizardPage: rehydrate post step-up failed', { message: err.message }))
-            .finally(() => setRehydrating(false));
+          //
+          // ★ CLI 22 — el viaje y lo que se hace con su fallo viven en UN SOLO SITIO,
+          // `hidratarTrasElCodigo` (arriba), que es el mismo que usa el botón de
+          // «volver a intentarlo». Dos copias de este `catch` divergirían, y la que se
+          // quedara atrás volvería a dejar el cuestionario en blanco sin decir nada.
+          hidratarTrasElCodigo();
         }}
         /* ⛔ 2026-09-13 (Diego, FIRME) — el código NO se auto-envía al entrar por el enlace.
            La verja muestra el botón «Enviar código» y la familia lo pulsa una vez. Motivo:
@@ -916,6 +986,47 @@ const handleNext = async (stepKey, data, extra = null) => {
         onEnvioPedido={marcarOtpEntradaPedido}
         onEnvioFallido={marcarOtpEntradaFallido}
       />
+    );
+  }
+
+  /**
+   * ★ CLI 22 (2026-09-27) — LA PANTALLA DEL FALLO DE DESPUÉS DEL CÓDIGO.
+   *
+   * Antes de esto el formulario se pintaba VACÍO y en silencio. Lo que se enseña aquí es lo
+   * mismo que ya enseña `ResumePage` para las dos clases que se quedan en la página, con SUS
+   * MISMOS textos (`resume.fail.*`): dicen exactamente lo que hay que decir —«tu enlace
+   * sigue siendo válido: no hace falta que pidas otro»— y ya están en los dos idiomas.
+   *
+   * ⛔ AQUÍ NO SE OFRECE PEDIR OTRO ENLACE, y no es un olvido: pedirlo ROTA el token y deja
+   * muerto el que el tutor tiene. La única clase en la que pedir otro es la salida correcta
+   * —el enlace muerto de verdad— ni siquiera llega hasta aquí: se fue a la portada.
+   *
+   * ⛔ VA DESPUÉS de `mustPassEntryGate` a propósito: si mientras el tutor mira este aviso
+   * se le agota la ventana de los diez minutos, manda la verja, no esta pantalla.
+   */
+  if (falloPostCodigo) {
+    const esNombrado = falloPostCodigo.clase === 'ERROR_NOMBRADO';
+    return (
+      <div style={{ textAlign: 'center', padding: '80px 24px 0' }} data-testid="poscodigo-fallo">
+        <div className="kis-card" style={{ maxWidth: 520, margin: '0 auto', textAlign: 'left' }}>
+          <h2 style={{ fontSize: '1.15rem', marginBottom: 12 }}>
+            <i className="bi bi-exclamation-triangle-fill" style={{ color: '#f37021', marginRight: 8 }} />
+            {t(esNombrado ? 'resume.fail.named_title' : 'resume.fail.retry_title')}
+          </h2>
+          <p style={{ color: 'var(--muted)' }} data-testid="poscodigo-fallo-cuerpo">
+            {t(esNombrado ? 'resume.fail.named_body' : 'resume.fail.retry_body')}
+          </p>
+          {esNombrado && falloPostCodigo.mensaje && (
+            <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }} data-testid="poscodigo-fallo-motivo">{falloPostCodigo.mensaje}</p>
+          )}
+          <button
+            type="button"
+            className="btn-kis"
+            data-testid="poscodigo-reintentar"
+            onClick={hidratarTrasElCodigo}
+          >{t('resume.fail.retry_btn')}</button>
+        </div>
+      </div>
     );
   }
 

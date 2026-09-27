@@ -9839,6 +9839,273 @@ async function caminoRespuestaPerdida(page, base) {
 }
 
 /**
+ * post-codigo-no-se-traga-el-fallo — CUANDO LA CARGA DE DESPUÉS DEL CÓDIGO FALLA, LA
+ * PANTALLA LO DICE. Antes dejaba el cuestionario VACÍO y se callaba.
+ *
+ * ── El defecto, medido contra `origin/main` el 2026-09-27 ──────────────────────────────
+ * El tutor teclea su código de un solo uso, la verja se abre, y `WizardPage` pide sus datos
+ * (`hydrateSession`). Si ese viaje moría, el `.catch` SOLO LO REGISTRABA —no navegaba, no
+ * pintaba aviso, no dejaba reintentar— y el `finally` ponía `rehydrating=false`: el
+ * formulario se dibujaba con `stepData` VACÍO. El tutor se encontraba un cuestionario en
+ * blanco, sin una palabra de qué había pasado ni de qué podía hacer.
+ *
+ * La asimetría era el molde: el MISMO fallo en la hidratación de RECARGA sí actúa, y en la
+ * entrada por ENLACE sí se CLASIFICA (`ResumePage` → `lib/fallosDeEntrada.js`). Solo este
+ * tercer camino se lo tragaba.
+ *
+ * ── Qué se afirma, una fase por CLASE ─────────────────────────────────────────────────
+ * (A) TRANSPORTE (un 404 que el asistente no puede emitir, así que lo puso la plataforma)
+ *     ⇒ se QUEDA en la página con el enlace vivo, lo DICE, y deja reintentar. ⛔ No manda a
+ *     la portada: echarlo de ahí ROTA el enlace bueno que el tutor tiene en la mano.
+ * (B) EL ENLACE NO VALE (el servidor lo rechaza por su nombre) ⇒ el camino que ya existe
+ *     para esa clase: la portada, CON el código de máquina para que pinte SU cartel.
+ * (C) UN ERROR NOMBRADO ⇒ se dice ÉSE, y también se deja reintentar.
+ *
+ * ⛔ Y LA QUE DE VERDAD DUELE SI SE ROMPE: la ventana de los diez minutos NO SE TOCA. El
+ * tutor acaba de acreditar su buzón; un fallo de CARGA no puede costarle teclear el código
+ * otra vez. Si tras el fallo reaparece la verja, este recorrido cae.
+ *
+ * ⚠️ ESTO NO CUBRE POR QUÉ MUERE ESA LLAMADA — sigue abierto en su ficha y necesita una
+ * entrada tardía real para medirse. Lo que se cubre es que la pantalla deje de mentir.
+ */
+async function caminoPostCodigoNoSeTragaElFallo(page, base) {
+  const c = new Camino('post-codigo-no-se-traga-el-fallo')
+  scenario.stage = 'hasta_preguntas'
+
+  if (REAL) {
+    // Contra el sistema de verdad no se puede tumbar la carga a voluntad sin romperle la
+    // corrida a los caminos que vienen detrás, y el código llega a un buzón que este arnés
+    // no lee. No se afloja la verja para que pase.
+    c.noCubierta('post-codigo-transporte', 'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('post-codigo-enlace-no-vale', 'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('post-codigo-error-nombrado', 'ver NO_CUBIERTAS_SOLO_REAL')
+    return c
+  }
+
+  // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────────────
+  // Si alguien renombra o retira el mecanismo, las afirmaciones de abajo caerían diciendo
+  // «no salió el aviso» — cierto, pero sin nombrar que el recorrido ya no sabe qué mira. Se
+  // comprueba contra el FUENTE: si no está, sale CIEGO, no rojo-a-secas.
+  const FUENTES = [
+    ['frontend/src/pages/WizardPage.jsx',    /\bhidratarTrasElCodigo\b/],
+    ['frontend/src/pages/WizardPage.jsx',    /\bclasificarFalloDeEntrada\b/],
+    ['frontend/src/pages/WizardPage.jsx',    /data-testid="poscodigo-fallo"/],
+    ['frontend/src/pages/WizardPage.jsx',    /data-testid="poscodigo-reintentar"/],
+    ['frontend/src/lib/fallosDeEntrada.js',  /export function clasificarFalloDeEntrada\b/],
+  ]
+  const ausentes = []
+  for (const [rel, re] of FUENTES) {
+    let txt = ''
+    try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+    if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+  }
+  if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+    ausentes.length === 0,
+    `no se encontró en el fuente: ${ausentes.join(' · ')} — el recorrido NO puede medir lo que ` +
+    `dice medir, así que NO puede salir verde`)) return c
+
+  // Los tres son deliberados: la carga muere en el transporte (A) y el servidor la rechaza
+  // por su nombre (B y C). Si alguno NO llega a ocurrir, el camino cae.
+  c.esperarErrorConsola(/gasCall hydrateSession: HTTP 404/,
+    'el transporte devuelve 404 a propósito, para comprobar que la pantalla deja de callárselo')
+  c.esperarErrorConsola(/WizardPage: rehydrate post step-up failed/,
+    'la pantalla registra el fallo con su CLASE — sin eso no habría con qué diagnosticar')
+  c.esperarErrorConsola(/gasCall hydrateSession: server returned ok=false/,
+    'escenario deliberado: el servidor rechaza el enlace por su nombre (fases B y C)')
+
+  // Lo que se había pedido JUSTO ANTES de pulsar «Entrar». Las cuentas de después se miden
+  // contra esto y no contra cero: la entrada por el enlace ya gasta su propia hidratación
+  // (la de `ResumePage`) y su propio código, y compararlas con cero mediría otra cosa.
+  const antes = { hydrate: 0, codigo: 0, enlace: 0 }
+
+  const limpiar = () => {
+    scenario.piiGated = false
+    scenario.otpSuperado = false
+    scenario.hidratacionRechazada = null
+    scenario.estadoHttpEnVezDeRespuesta = null
+  }
+
+
+  /**
+   * Entra por el enlace, pide el código y lo teclea, y pulsa «Entrar» con el fallo YA
+   * armado. Devuelve `false` si la secuencia no llegó a darse — medir después de eso sería
+   * medir el aire.
+   *
+   * ⚠️ El sufijo `?e2e=` va ANTES del hash a propósito: sin él, dos entradas seguidas al
+   * mismo enlace serían navegación del MISMO documento y una fase mediría lo que dejó la
+   * anterior.
+   */
+  const entrarYTeclear = async (armarElFallo) => {
+    scenario.piiGated = true
+    scenario.otpSuperado = false
+    await page.evaluate(() => { try { sessionStorage.clear() } catch { /* sandbox */ } })
+    await page.goto(`${base}/?e2e=${++_cargaPortada}#/resume/${DATOS.resumeToken}?n=${DATOS.emailId}`,
+      { waitUntil: 'domcontentloaded', timeout: 30000 })
+    const hayVerja = await page.waitForSelector('input[autocomplete="one-time-code"]',
+      { timeout: LATENCY * 3 + 20000 }).then(() => true).catch(() => false)
+    if (!hayVerja) return false
+    // La verja se remonta al rehidratar: se espera a que la pantalla quede quieta antes de
+    // tocarla, o se mediría la instancia que va a morir.
+    await page.waitForTimeout(LATENCY * 2 + 2500)
+    const pidio = await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="stepup-reenviar"]')
+      if (!b || b.disabled) return false
+      b.click(); return true
+    })
+    if (!pidio) return false
+    const lista = await page.waitForFunction(
+      () => { const i = document.querySelector('input[autocomplete="one-time-code"]'); return !!(i && !i.disabled) },
+      null, { timeout: LATENCY + 8000 }).then(() => true).catch(() => false)
+    if (!lista) return false
+    await page.fill('input[autocomplete="one-time-code"]', '123456')
+    // ⛔ El fallo se arma AQUÍ, no antes: la hidratación de `ResumePage` ya ha pasado, así
+    // que lo que caiga a partir de ahora es la del POST-CÓDIGO y solo ella.
+    antes.hydrate = llamadas('hydrateSession').length
+    antes.codigo  = llamadas('sendVerificationCode').length
+    antes.enlace  = llamadas('sendMagicLink').length
+    armarElFallo()
+    return await page.evaluate(() => {
+      const b = [...document.querySelectorAll('button.btn-primary-kis')].find(x => !x.disabled)
+      if (!b) return false
+      b.click(); return true
+    })
+  }
+
+  /** Lo que el tutor VE cuando la carga de después del código se cae. */
+  const pantalla = () => page.evaluate(() => ({
+    hash:    window.location.hash,
+    texto:   (document.body.textContent || '').replace(/\s+/g, ' ').trim(),
+    fallo:   !!document.querySelector('[data-testid="poscodigo-fallo"]'),
+    cuerpo:  (document.querySelector('[data-testid="poscodigo-fallo-cuerpo"]') || {}).textContent || '',
+    motivo:  !!document.querySelector('[data-testid="poscodigo-fallo-motivo"]'),
+    boton:   !!document.querySelector('[data-testid="poscodigo-reintentar"]'),
+    // Si reaparece, es que se le ha vuelto a pedir el código: la ventana se ha tocado.
+    verja:   !!document.querySelector('input[autocomplete="one-time-code"]'),
+    // La casilla del correo de la PORTADA: si aparece, se fue a pedir otro enlace.
+    correo:  !!document.querySelector('input[type="email"]'),
+    // El cuestionario en blanco: el defecto ENTERO, si vuelve.
+    pasos:   document.querySelectorAll('.wizard-step').length,
+  }))
+
+  /** Espera a que la pantalla se decida: o el aviso, o la portada, o el formulario. */
+  const esperarDesenlace = () => page.waitForFunction(() => (
+    !!document.querySelector('[data-testid="poscodigo-fallo"]')
+    || /resume_error=1/.test(window.location.hash + window.location.search)
+    || !!document.querySelector('.wizard-step')
+  ), null, { timeout: LATENCY * 6 + 45000 }).then(() => true).catch(() => false)
+
+  try {
+    // ══ FASE A · TRANSPORTE: un 404 que el asistente NO PUEDE emitir ══════════════════
+    // `trabajo:false`: la petición muere sin llegar a despacharse. Desde el navegador no se
+    // puede saber si el servidor llegó a correr, y las dos caras son reales.
+    calls = []
+    // ⚠️ `veces: 2`, y NO es un adorno: `hydrateSession` está en
+    // `LECTURAS_REINTENTABLES_AL_VOLVER` (`api.js`), así que `gasCall` REINTENTA UNA VEZ por
+    // su cuenta y con `veces:1` el segundo intento entraba — medido: la secuencia salía
+    // `verifyEmail · hydrateSession/404 · hydrateSession` y el formulario se pintaba bien.
+    // Lo que este recorrido mide es qué pasa cuando MUERE DE VERDAD, o sea también el
+    // reintento. ⛔ Y no se toca ese reintento: lo que sobra es un SEGUNDO encima.
+    if (!c.afirmar('ANCLA · se entra por el enlace, se pide el código y se teclea',
+      await entrarYTeclear(() => {
+        scenario.estadoHttpEnVezDeRespuesta = { hydrateSession: { veces: 2, status: 404, trabajo: false } }
+      }),
+      'nunca se llegó a teclear el código en la verja: la secuencia que este recorrido mide no se dio')) return c
+
+    await esperarDesenlace()
+    await page.waitForTimeout(400)
+    const a = await pantalla()
+    // La palanca es un CONTADOR: si algún intento no llegó a gastarse, se suelta aquí para
+    // que no se lo coma la fase siguiente.
+    scenario.estadoHttpEnVezDeRespuesta = null
+    c.evidencia.elementos = (a.fallo ? 1 : 0) + (a.boton ? 1 : 0)
+    c.evidencia.llamadas  = calls.length
+
+    if (!c.afirmar('(1) la pantalla DICE que no se pudo cargar — no deja el cuestionario en blanco',
+      a.fallo,
+      a.pasos > 0
+        ? 'se pintó el formulario con los datos VACÍOS y sin una palabra: ES EL DEFECTO ENTERO, ha vuelto el `.catch` que solo registra'
+        : `no salió el aviso ni el formulario; el hash quedó en "${a.hash}" y la pantalla decía: ${a.texto.slice(0, 200)}`)) return c
+
+    c.afirmar('(2) el fallo de transporte NO manda a la portada a pedir otro enlace',
+      !/resume_error=1/.test(a.hash) && !a.correo,
+      `el hash quedó en "${a.hash}"${a.correo ? ' y salió la casilla del correo' : ''}: pedir otro enlace ROTA el que el tutor tiene en la mano`)
+
+    c.afirmar('(3) y NO dice que el enlace pueda haber caducado',
+      !/caducad|expired/i.test(a.cuerpo) && /sigue siendo válido|still valid/i.test(a.cuerpo),
+      `el aviso decía: ${String(a.cuerpo).slice(0, 200)}`)
+
+    c.afirmar('(4) se le ofrece REINTENTAR con el mismo enlace',
+      a.boton, 'no se pintó el botón «Volver a intentarlo»: el tutor se queda mirando un aviso sin salida')
+
+    c.afirmar('(5) ⛔ la ventana de los diez minutos NO se toca: no se le vuelve a pedir el código',
+      !a.verja && llamadas('sendVerificationCode').length === antes.codigo,
+      `${a.verja ? 'la verja del código volvió a salir' : `salieron ${llamadas('sendVerificationCode').length - antes.codigo} peticiones de código DESPUÉS de teclearlo`}: el tutor ACABA de acreditar su buzón, y un fallo de CARGA no puede costarle tecleárselo otra vez`)
+
+    c.afirmar('(6) NO se reintenta a ciegas por detrás',
+      llamadas('hydrateSession').length - antes.hydrate <= 2 && llamadas('sendMagicLink').length === antes.enlace,
+      `salieron ${llamadas('hydrateSession').length - antes.hydrate} hydrateSession y ${llamadas('sendMagicLink').length - antes.enlace} sendMagicLink tras teclear el código: `
+      + '`gasCall` ya reintenta UNA vez por su cuenta (intento + reintento = 2 como mucho); un tercero es un reintento AÑADIDO ENCIMA, y pedir otro enlace ROTA el bueno')
+
+    // ── A.bis · el botón entra de verdad, con el MISMO enlace ────────────────────────
+    calls = []
+    scenario.estadoHttpEnVezDeRespuesta = null
+    await page.click('[data-testid="poscodigo-reintentar"]')
+    const entro = await page.waitForFunction(() => !!document.querySelector('.wizard-step'),
+      null, { timeout: LATENCY * 5 + 25000 }).then(() => true).catch(() => false)
+    const reintentos = llamadas('hydrateSession')
+    c.afirmar('(7) «Volver a intentarlo» ENTRA en la solicitud', entro,
+      'tras pulsar el botón el asistente no llegó a pintar los pasos')
+    c.afirmar('(8) y va con el MISMO enlace — ni otro enlace ni otro código',
+      reintentos.length >= 1
+      && reintentos.every(l => (l.payload || {}).resume_token === DATOS.resumeToken)
+      && llamadas('sendMagicLink').length === 0
+      && llamadas('sendVerificationCode').length === 0,
+      `hydrateSession=${reintentos.length}, sendMagicLink=${llamadas('sendMagicLink').length}, `
+      + `sendVerificationCode=${llamadas('sendVerificationCode').length}`)
+
+    // ══ FASE B · EL ENLACE NO VALE: ahí SÍ se le manda a pedir otro ═══════════════════
+    calls = []
+    const armadoB = await entrarYTeclear(() => { scenario.hidratacionRechazada = 'ENLACE_CADUCADO' })
+    const reboto = armadoB && await page.waitForFunction(
+      () => /resume_error=1/.test(window.location.hash + window.location.search),
+      null, { timeout: LATENCY * 5 + 25000 }).then(() => true).catch(() => false)
+    scenario.hidratacionRechazada = null
+    const hashB = await page.evaluate(() => window.location.hash + window.location.search)
+    c.afirmar('(9) un enlace que el servidor RECHAZA por su nombre sí lleva a pedir otro',
+      reboto,
+      armadoB
+        ? `el asistente no rebotó a la portada (hash "${hashB}"): el tutor se queda sin la única salida que tiene`
+        : 'no se pudo teclear el código en la fase B')
+    c.afirmar('(10) y el CÓDIGO viaja con él, para que la portada pinte SU causa',
+      /resume_code=ENLACE_CADUCADO/.test(hashB),
+      `el hash quedó en "${hashB}": sin el código la portada solo puede pintar un cartel para todas las causas`)
+    c.evidencia.elementos += 1
+
+    // ══ FASE C · ERROR NOMBRADO: se dice ÉSE, y se deja reintentar ════════════════════
+    calls = []
+    const armadoC = await entrarYTeclear(() => { scenario.hidratacionRechazada = 'KMS_NOT_CONFIGURED' })
+    const hayAviso = armadoC && await esperarDesenlace()
+    scenario.hidratacionRechazada = null
+    const cc = await pantalla()
+    c.afirmar('(11) un error NOMBRADO se dice, no se disfraza de «caducado» ni se calla',
+      hayAviso && cc.fallo && cc.motivo && !/caducad|expired/i.test(cc.cuerpo),
+      armadoC
+        ? `aviso=${cc.fallo} motivo=${cc.motivo} hash="${cc.hash}" cuerpo="${String(cc.cuerpo).slice(0, 160)}"`
+        : 'no se pudo teclear el código en la fase C')
+    c.afirmar('(12) y también deja reintentar con el mismo enlace', cc.boton,
+      'no se pintó el botón «Volver a intentarlo»')
+    c.afirmar('(13) tampoco aquí se le vuelve a pedir el código',
+      !cc.verja,
+      'la verja del código volvió a salir tras un error del servidor: la ventana de los diez minutos se ha tocado')
+    c.evidencia.elementos += (cc.fallo ? 1 : 0) + (cc.boton ? 1 : 0)
+
+    return c
+  } finally {
+    limpiar()
+  }
+}
+
+/**
  * ventana-por-inactividad — el contador de los 10 minutos se reinicia con la actividad
  * REAL de la familia, el aviso sale dos minutos antes, y una RECARGA vuelve a pedir código.
  *
@@ -12114,6 +12381,10 @@ const CAMINOS = [
   // `①86` (segunda cara) — un 404 del TRANSPORTE al verificar el código no se le cuenta a la
   // familia como «tu código está mal»: se pregunta si la ventana ya quedó abierta.
   { nombre: 'respuesta-perdida-no-es-un-fallo', fn: caminoRespuestaPerdida,
+    minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
+  // CLI 22 (2026-09-27) — cuando la carga de DESPUÉS del código falla, la pantalla lo DICE
+  // y deja reintentar con el mismo enlace; antes dejaba el cuestionario en blanco y callaba.
+  { nombre: 'post-codigo-no-se-traga-el-fallo', fn: caminoPostCodigoNoSeTragaElFallo,
     minLlamadas: REAL ? 0 : 1, minElementos: REAL ? 0 : 1 },
   // 2026-08-20 — la ventana de los 10 min es de INACTIVIDAD: la actividad la reinicia,
   // el aviso sale dos minutos antes y una RECARGA vuelve a pedir el código.
