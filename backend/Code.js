@@ -3903,7 +3903,38 @@ function _identidadDesdeElEspejo_(groupId, n, correo) {
     if (!raw) return null;
     var env = JSON.parse(raw);
     if (!env || env.v !== _versionDeClase_(groupId, 'hyd')) return null; // versión vieja ⇒ NO acierto
-    var data = env.data;
+    // El CRITERIO —qué fila de `persons[]` casa con el discriminador— vive en
+    // `_tutorDeLaCopia_`, y lo comparten los DOS que lo necesitan. Dos copias del mismo
+    // criterio divergen (§"Regla — refactors preservan el código probado").
+    return _tutorDeLaCopia_(env.data, n, correo);
+  } catch (e) {
+    return null; // cualquier duda ⇒ el llamante cae al KMS, el camino de siempre
+  }
+}
+
+/**
+ * DE QUIÉN es una copia caliente: busca dentro de `data.persons[]` la fila que casa con el
+ * discriminador recibido (por `email_id` si llegó `n`, por el valor del correo si llegó
+ * `correo`, dentro de `person.emails[]`).
+ *
+ * ⛔ **ES UN MOVIMIENTO DE CÓDIGO, NO UN CRITERIO NUEVO** (2026-09-27): este bucle vivía
+ * DENTRO de `_identidadDesdeElEspejo_` y ahora lo comparten sus DOS llamantes — ése, que
+ * sigue exigiendo antes que la copia esté VIGENTE (es su contrato), y el rehacer del aviso
+ * pelado (`_rehacerLaCopiaDeUnTutor_`), que lee una copia que el receptor ACABA de marcar
+ * vieja a propósito y por tanto no puede exigir versión. Mismo bucle, mismas comparaciones,
+ * mismo valor de salida.
+ *
+ * ⛔ **DEGRADA A `null` ANTE CUALQUIER DUDA** — sin `persons`, o sin una fila que case
+ * exactamente. Nunca se inventa una identidad.
+ *
+ * @param {Object} data     el payload de una hidratación (crudo del KMS).
+ * @param {string} n        el `email_id` del enlace, o `''`.
+ * @param {string} correo   el correo, o `''` — UNO de los dos, nunca los dos.
+ * @returns {?{correo:string, tutor:string, email_id:(string|null)}}
+ * @private
+ */
+function _tutorDeLaCopia_(data, n, correo) {
+  try {
     var personas = (data && data.persons) || [];
     if (!personas.length) return null;
 
@@ -3925,9 +3956,9 @@ function _identidadDesdeElEspejo_(groupId, n, correo) {
         }
       }
     }
-    return null; // no se encontró una fila que case ⇒ el llamante cae al KMS
+    return null; // no se encontró una fila que case
   } catch (e) {
-    return null; // cualquier duda ⇒ el llamante cae al KMS, el camino de siempre
+    return null;
   }
 }
 
@@ -11902,8 +11933,24 @@ function notifyLiveStateChange_(p) {
   // Un aviso SIN copias se comporta exactamente como ayer (solo bump).
   const arch = _espejoArchivarCopiasDelKms_(v.event.copias, [groupId]);
 
+  // ★ 2026-09-27 — Y SI EL AVISO VIENE PELADO, EL ASISTENTE REHACE LA COPIA ÉL.
+  //
+  // Hoy el KMS tiene que CALCULAR la copia entera para poder mandarla dentro del aviso.
+  // Cuando eso deje de poder hacerse, el aviso llegará sin `copias` — y hasta hoy eso
+  // significaba «solo bump»: el tutor pagaba el viaje entero al entrar. Ahora el asistente
+  // mira SU índice de parejas calientes y se pide las que le constan (§"EL ASISTENTE REHACE
+  // LA COPIA DE UNA SOLICITUD").
+  //
+  // ⛔ **CON `copias`, BYTE A BYTE COMO HOY**: ni se ejecuta, ni se añade un campo a la
+  // respuesta. Esto es ADITIVO y degrada solo — sin índice, sin copia vieja o sin KMS que
+  // conteste, se queda exactamente en el solo-bump de ayer.
+  const traeCopias = Array.isArray(v.event.copias) && v.event.copias.length > 0;
+  const reh = traeCopias ? null : _laSolicitudCambioEnElColegio_(groupId, v.event.reason);
+
   Logger.log(redact_('[notifyLiveStateChange_] bumped group=' + groupId + ' reason=' + (v.event.reason || '?') + ' clases=' + clases.join(',') + ' -> v' + version + ' copias=' + arch.archivadas + '/' + (arch.archivadas + arch.descartadas)));
-  return { ok: true, bumped: true, version: version, copias: arch.archivadas };
+  const salida = { ok: true, bumped: true, version: version, copias: arch.archivadas };
+  if (reh) { salida.parejas = reh.parejas; salida.rehechas = reh.rehechas; salida.omitidas = reh.omitidas; }
+  return salida;
 }
 
 /**
@@ -11975,7 +12022,12 @@ function _espejoGuardarCopia_(cache, groupId, n, payload, opciones) {
     const version = _versionDeClase_(groupId, 'hyd');
     const sobre = { v: version, data: payload };
     if (!isNaN(calculadaEn)) sobre.t = new Date(calculadaEn).toISOString();
-    return !!_wzCachePutChunked_(cache, key, JSON.stringify(sobre), ESPEJO_HYD_TTL_S_);
+    const guardada = !!_wzCachePutChunked_(cache, key, JSON.stringify(sobre), ESPEJO_HYD_TTL_S_);
+    // ★ 2026-09-27 — EL ÍNDICE DE PAREJAS se apunta AQUÍ, en el escritor ÚNICO, y solo si la
+    // escritura salió bien: apuntar una pareja que no se llegó a guardar mandaría al rehacer
+    // a por una copia que no existe. Best-effort — nunca cambia lo que devuelve esta función.
+    if (guardada) _apuntarParejaDeCopia_(groupId, key);
+    return guardada;
   } catch (e) {
     Logger.log('[_espejoGuardarCopia_] non-fatal — ' + (e && e.message));
     return false;
@@ -12029,6 +12081,240 @@ function _espejoArchivarCopiasDelKms_(copias, gruposPermitidos) {
     }
   }
   return res;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// EL ASISTENTE REHACE LA COPIA DE UNA SOLICITUD (2026-09-27)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// **QUÉ RESUELVE, en una frase:** hoy, cuando el colegio toca una solicitud, el KMS tiene que
+// CALCULAR la copia caliente entera y mandársela dentro del aviso (`copias`). Eso va a dejar
+// de poder hacerse, y entonces el aviso llegará **PELADO**. Esto es lo que hace que un aviso
+// pelado siga sirviendo de algo: el asistente rehace la copia ÉL, pidiéndosela al KMS por el
+// camino que ya usa el camino vivo.
+//
+// ⛔ **ES ADITIVO Y DEGRADA SOLO.** Mientras el aviso siga trayendo `copias`, no se toca nada:
+// se archiva lo que llega, igual que ayer, y esto ni se ejecuta. Un aviso sin `copias` hoy ya
+// funcionaba —quedaba en solo-bump—; lo que cambia es que ahora, además, se rehace.
+//
+// **EL MOLDE ES EL DEL CATÁLOGO DE PREGUNTAS** (`_combinacionesDelCatalogo_` +
+// `_catalogoCambioEnElColegio_`, 2026-09-23), y por el MISMO motivo: `CacheService` no sabe
+// listar sus claves, así que sin un ÍNDICE el aviso no tendría a qué copia aplicarse. La
+// diferencia es que una copia de solicitud SÍ tiene clave natural de partición —el
+// expediente—, así que el índice va **POR EXPEDIENTE** en vez de en una lista global: el
+// aviso lee UNA entrada y no puede desalojar las parejas de otra familia.
+//
+// ⛔⛔ **NADIE SE QUEDA SIN SU COPIA: NO SE BORRA NI UNA.** Se pide la nueva y **solo si
+// llega** sustituye a la vieja. Una copia vieja es peor que una nueva solo en velocidad;
+// NINGUNA copia es peor siempre — el tutor paga el viaje entero al entrar. Esta barandilla
+// manda sobre la velocidad y sobre todo lo demás de este bloque.
+//
+// ⛔ **CERO DATOS PERSONALES EN EL ÍNDICE.** Solo entra el `email_id` (identificador opaco de
+// una fila de `enrEmails`). El correo **NO entra, ni resumido**: por eso las copias cuya clave
+// se discriminó con la forma `e:<resumen del correo>` o con `-` (`_wzN_`) **no se apuntan**, y
+// se quedan exactamente con el comportamiento de hoy.
+//
+// ⛔ **ESTO SOLO GUARDA.** Quién puede LEER una copia no cambia ni un ápice: el código de un
+// solo uso (②27), KAL-4, el candado de datos personales y el recorte por tutor (DL-E49 §2)
+// siguen igual. **Cero exposición nueva**: el enlace con el que se pide la copia nueva sale de
+// la copia VIEJA, donde ya vivía.
+
+var COPIAS_INDICE_TTL_S_        = 21600;   // 6 h — el techo de `CacheService`, el de la copia
+var COPIAS_POR_EXPEDIENTE_TOPE_ = 8;       // tutores por expediente; acota sin poder estorbar
+var COPIAS_AVISO_PRESUPUESTO_MS_ = 20 * 1000;   // el mismo que el aviso del catálogo
+
+/** La clave del índice de parejas calientes de UN expediente. @private */
+function _claveIndiceDeCopias_(groupId) {
+  return 'wz_copias_' + String(groupId || '');
+}
+
+/**
+ * Las parejas `(expediente × tutor)` que este proceso tiene calientes de ese expediente,
+ * **más reciente primero**. `[]` si no consta — y «no consta» NO es «no hay»: el que
+ * pregunta solo puede concluir que no tiene a qué aplicar el aviso.
+ *
+ * ⛔ **UN SOLO LECTOR.** @private
+ */
+function _parejasDeLasCopias_(groupId) {
+  try {
+    var crudo = CacheService.getScriptCache().get(_claveIndiceDeCopias_(groupId));
+    if (!crudo) return [];
+    var v = JSON.parse(crudo);
+    if (!Array.isArray(v)) return [];
+    return v.filter(function (x) { return !!x && typeof x === 'string'; });
+  } catch (e) { return []; }   // índice ilegible ⇒ el comportamiento de hoy, nunca una avería
+}
+
+/**
+ * Apunta esta pareja como la más reciente. Lo llama **el escritor ÚNICO de la copia**
+ * (`_espejoGuardarCopia_`) y no hay un segundo sitio que lo toque.
+ *
+ * ⛔ **BEST-EFFORT ABSOLUTO**: si no se puede escribir, el aviso rehará una copia de menos y
+ * todo sigue como hoy. Un índice que se cae no puede romper nada.
+ *
+ * ⛔ **EL `n` SE SACA DE LA CLAVE YA CALCULADA**, no del argumento del llamante: el camino
+ * vivo archiva con `opciones.claveYa` y pasa `n = null`, así que leerlo del argumento dejaría
+ * fuera justo las copias que más se escriben. Y solo se apunta si es un `email_id` con forma
+ * de identificador — ver la cabecera de este bloque: el correo no entra ni resumido.
+ *
+ * @param {string} groupId
+ * @param {string} clave  la clave bajo la que ACABA de quedar archivada la copia.
+ * @returns {boolean}
+ * @private
+ */
+function _apuntarParejaDeCopia_(groupId, clave) {
+  try {
+    var prefijo = _wzCacheKey_('hyd', String(groupId || '') + '_');
+    var k = String(clave || '');
+    if (!groupId || k.indexOf(prefijo) !== 0) return false;
+    var n = k.slice(prefijo.length);
+    if (!n) return false;
+    try { assertValidUuid_(n, 'n'); } catch (eN) { return false; }   // `e:…` y `-` NO se apuntan
+
+    var lista = _parejasDeLasCopias_(groupId).filter(function (x) { return x !== n; });
+    lista.unshift(n);
+    if (lista.length > COPIAS_POR_EXPEDIENTE_TOPE_) lista = lista.slice(0, COPIAS_POR_EXPEDIENTE_TOPE_);
+    CacheService.getScriptCache().put(_claveIndiceDeCopias_(groupId), JSON.stringify(lista),
+      COPIAS_INDICE_TTL_S_);
+    return true;
+  } catch (e) { return false; }
+}
+
+/**
+ * Rehace la copia caliente de UN tutor de UN expediente. Devuelve el MOTIVO, siempre un
+ * código —nunca un dato—: `'REHECHA'` cuando quedó archivada.
+ *
+ * ⛔ **LA COPIA VIEJA SE LEE, JAMÁS SE BORRA.** De ella salen las DOS cosas que hacen falta
+ * para pedir la nueva: el ENLACE (que ya vivía ahí: `data.group.resume_token`, el mismo del
+ * que tira `_espejoCalentarLaPuerta_`) y DE QUIÉN es esta copia. Si cualquier paso falla, se
+ * sale **sin haber tocado nada** y el tutor sigue con su copia de antes.
+ *
+ * ⛔ **NO SE MIRA LA VERSIÓN DE LA COPIA VIEJA, Y ES A PROPÓSITO**: el receptor acaba de
+ * bumparla —ése es su trabajo—, así que exigir que case aquí haría que esto no corriera
+ * JAMÁS. De la copia vieja solo se toman el enlace y el tutor, y **las dos cosas se vuelven a
+ * comprobar contra lo que conteste el KMS**.
+ *
+ * ⛔ **QUE LO QUE VUELVE SEA DE ESTE TUTOR.** La hidratación se recorta al tutor que mira
+ * (DL-E49 §2): archivar bajo la clave de un tutor una copia recortada para OTRO sería
+ * servirle a un tutor los datos del otro — lo único que esta pieza podría romper de verdad.
+ * Por eso el tutor se resuelve con el criterio COMPARTIDO (`_tutorDeLaCopia_`) en la copia
+ * vieja Y en la nueva, y tienen que casar los dos.
+ *
+ * ⛔ **NINGÚN PLAZO DE SEGURIDAD SE TOCA**: ni la ventana de diez minutos, ni la copia de la
+ * puerta, ni el techo por copia. Esto SOLO GUARDA.
+ *
+ * @param {GoogleAppsScript.Cache.Cache} cache
+ * @param {string} groupId
+ * @param {string} n  el `email_id` que el índice apuntó.
+ * @returns {string} el motivo.
+ * @private
+ */
+function _rehacerLaCopiaDeUnTutor_(cache, groupId, n) {
+  try {
+    if (!cache || !groupId || !n) return 'SIN_PAREJA';
+    var clave = _wzCacheKey_('hyd', groupId + '_' + n);
+
+    var crudo = _wzCacheGetChunked_(cache, clave);
+    if (!crudo) return 'SIN_COPIA_VIEJA';   // no hay nada que sustituir ⇒ nada que hacer
+    var env = null;
+    try { env = JSON.parse(crudo); } catch (eP) { return 'COPIA_ILEGIBLE'; }
+    var vieja = env && env.data;
+    var ficha = vieja && vieja.group;
+    if (!ficha || typeof ficha !== 'object') return 'SIN_FICHA';
+
+    var token = ficha['resume_token'] ? String(ficha['resume_token']).trim() : '';
+    if (!token) return 'SIN_ENLACE';
+    try { assertValidUuid_(token, 'resume_token'); } catch (eT) { return 'ENLACE_CON_FORMA_MALA'; }
+
+    // KAL-4 en profundidad (molde de `_espejoCalentarLaPuerta_`): la ficha de la copia tiene
+    // que decir ESTE expediente. El expediente jamás se elige por el sobre.
+    if (String(ficha['enrollment_group_id'] || '') !== String(groupId)) return 'EXPEDIENTE_NO_CASA';
+
+    // EL JUEZ ÚNICO de los tres rechazos. Un enlace que la puerta rechazaría no se usa para
+    // pedir nada — y así no se gasta un viaje en algo que el KMS va a rechazar igual.
+    if (_rechazosDelEnlace_(ficha)) return 'ENLACE_RECHAZADO';
+
+    var quien = _tutorDeLaCopia_(vieja, n, '');
+    if (!quien || !quien.correo) return 'TUTOR_NO_RESUELTO';
+
+    var vAntes = _versionDeClase_(groupId, 'hyd');
+    var pedidaEn = new Date().toISOString();
+
+    // ⛔ NI UN CANAL NUEVO: la MISMA acción que usa el camino vivo cuando falla la copia.
+    var data = kmsProxy_('enr.hydrateApplication', {
+      resume_token:    token,
+      recovered_email: quien.correo,
+      language:        null,
+    });
+    if (!data || typeof data !== 'object') return 'SIN_COPIA_NUEVA';
+
+    var quienVuelve = _tutorDeLaCopia_(data, n, '');
+    if (!quienVuelve || quienVuelve.correo !== quien.correo || quienVuelve.tutor !== quien.tutor) {
+      return 'TUTOR_NO_CASA';
+    }
+    if (String((data.group && data.group.enrollment_group_id) || '') !== String(groupId)) {
+      return 'EXPEDIENTE_NUEVO_NO_CASA';
+    }
+
+    // Otra escritura se coló mientras pedíamos: lo que traemos ya no es lo último, y
+    // `_espejoGuardarCopia_` lo sellaría con la versión de AHORA. Misma guarda que
+    // `_wzCopiaAlDia_`.
+    if (_versionDeClase_(groupId, 'hyd') !== vAntes) return 'OTRA_ESCRITURA_POR_MEDIO';
+
+    if (!_espejoGuardarCopia_(cache, groupId, null, data,
+          { claveYa: clave, calculadaEn: pedidaEn })) return 'NO_ARCHIVADA';
+    return 'REHECHA';
+  } catch (e) {
+    try { Logger.log(redact_('[_rehacerLaCopiaDeUnTutor_] non-fatal — ' + ((e && e.message) || e))); } catch (_eL) {}
+    return 'ERROR';
+  }
+}
+
+/**
+ * Rehace las copias calientes de ESE expediente tras un aviso PELADO del KMS.
+ *
+ * ⛔ **SOLO LAS PAREJAS DE ESE EXPEDIENTE Y NINGUNA MÁS**: el índice va por expediente, así
+ * que no hay forma de alcanzar la copia de otra familia.
+ *
+ * ⛔ **PRESUPUESTO ACOTADO** (`COPIAS_AVISO_PRESUPUESTO_MS_`, el mismo que el aviso del
+ * catálogo) y **MÁS RECIENTE PRIMERO**: esto corre dentro del POST que hace el KMS, así que no
+ * puede durar lo que quiera. Lo que no quepa **se queda solo invalidado**, que es exactamente
+ * el comportamiento de hoy — nunca se alarga el turno y nunca se borra una copia.
+ *
+ * ⛔ **NUNCA PROPAGA**: un fallo aquí no puede convertir en fallido el trabajo de la cola del
+ * KMS. Todo dentro de `try`.
+ *
+ * @param {string} groupId
+ * @param {string} motivo  el `reason` del aviso, solo para el registro.
+ * @returns {{parejas:number, rehechas:number, omitidas:number, motivos:Object}}
+ * @private
+ */
+function _laSolicitudCambioEnElColegio_(groupId, motivo) {
+  var out = { parejas: 0, rehechas: 0, omitidas: 0, motivos: {} };
+  var t0 = Date.now();
+  try {
+    var parejas = _parejasDeLasCopias_(groupId);
+    out.parejas = parejas.length;
+    if (!parejas.length) return out;   // no consta ninguna ⇒ solo bump, el comportamiento de hoy
+
+    var cache = CacheService.getScriptCache();
+    for (var i = 0; i < parejas.length; i++) {
+      if (Date.now() - t0 > COPIAS_AVISO_PRESUPUESTO_MS_) { out.omitidas = parejas.length - i; break; }
+      var m = _rehacerLaCopiaDeUnTutor_(cache, groupId, parejas[i]);
+      out.motivos[m] = (out.motivos[m] || 0) + 1;
+      if (m === 'REHECHA') out.rehechas++;
+    }
+  } catch (e) {
+    try { Logger.log(redact_('[_laSolicitudCambioEnElColegio_] non-fatal — ' + ((e && e.message) || e))); } catch (_eL) {}
+  }
+  try {
+    // KAL-11: solo recuentos y códigos — ni un correo, ni un enlace, ni un expediente entero.
+    Logger.log('[_laSolicitudCambioEnElColegio_] grupo=' + String(groupId).slice(0, 8) + '…' +
+      ' motivo=' + String(motivo || '?') + ' parejas=' + out.parejas +
+      ' rehechas=' + out.rehechas + ' omitidas=' + out.omitidas +
+      ' ' + JSON.stringify(out.motivos) + ' ms=' + (Date.now() - t0));
+  } catch (_eL2) {}
+  return out;
 }
 
 // ⛔ AQUÍ VIVÍA `pushWarmHydrate_`, EL RECEPTOR DEL EMPUJE DEL KMS, Y NO VUELVE (①97 rumbo

@@ -617,6 +617,42 @@ disparador propio (`espejoRefrescarCopias`, cada 30 min → `enr.copiasDeLasSoli
   no se toca:** `verifySignedKmsNotice_` sigue vivo con **dos** receptores, `notifyLiveStateChange_`
   y `sembrarRecuperacion_`.
 
+**★ 2026-09-27 — UN AVISO PELADO DEL KMS TAMBIÉN DEJA LA COPIA AL DÍA.** Hoy el KMS tiene que
+CALCULAR la copia entera para poder mandarla dentro del aviso (`copias`); cuando eso deje de poder
+hacerse, el aviso llegará **pelado** y hasta ahora eso era «solo bump» —el tutor pagaba el viaje
+entero al entrar—. Ahora el asistente mira **su propio índice** de parejas calientes y se las pide
+por el camino que YA usa el camino vivo (`enr.hydrateApplication`).
+
+- **El índice va POR EXPEDIENTE** (`wz_copias_<expediente>`, 6 h): lo escribe **el escritor ÚNICO**
+  de la copia (`_espejoGuardarCopia_`, con `_apuntarParejaDeCopia_`) y lo lee **un solo lector**
+  (`_parejasDeLasCopias_`). Existe por lo mismo que el del catálogo: **`CacheService` no sabe listar
+  sus claves**. Que vaya por expediente —y no en una lista global— es lo que impide que el aviso de
+  una familia desaloje o alcance las parejas de otra.
+- ⛔ **CERO DATOS PERSONALES DENTRO**: solo el `email_id`, que es un identificador opaco de fila. El
+  correo **no entra ni resumido**, así que una copia cuya clave se discriminó con `e:<resumen>` o
+  con `-` (`_wzN_`) **no se apunta** y se queda con el comportamiento de hoy.
+- ⛔ **CERO EXPOSICIÓN NUEVA**: el enlace con el que se pide la copia nueva sale de la copia VIEJA
+  (`data.group.resume_token`), donde ya vivía — el mismo del que tira `_espejoCalentarLaPuerta_`.
+- ⛔⛔ **NADIE SE QUEDA SIN SU COPIA: no se borra ni una.** Se pide la nueva y **solo si llega**
+  sustituye a la vieja. Una copia vieja es peor que una nueva solo en velocidad; **ninguna es peor
+  siempre**. Esa barandilla manda sobre la velocidad y sobre todo lo demás.
+- ⛔ **Y ES ADITIVO**: con `copias` en el aviso no se rehace nada, no se viaja y **ni un campo cambia
+  en lo que se le contesta al KMS**. Sin índice, sin copia vieja, con el índice ilegible, con el
+  enlace rechazado por el juez único o con el KMS callado, el camino vuelve al solo-bump de ayer.
+- ⛔ **QUE LO QUE VUELVE SEA DE ESE TUTOR**: la hidratación se recorta al tutor que mira (DL-E49 §2),
+  así que el tutor se resuelve con el criterio COMPARTIDO (`_tutorDeLaCopia_`) en la copia vieja **y**
+  en la nueva, y si no casan **no se archiva**. Archivar bajo la clave de un tutor una copia
+  recortada para otro es lo único que esta pieza podría romper de verdad.
+- **Presupuesto acotado** (`COPIAS_AVISO_PRESUPUESTO_MS_`, 20 s, el mismo que el aviso del catálogo)
+  y **más reciente primero**: esto corre dentro del POST que hace el KMS. Lo que no quepa se queda
+  **solo invalidado**, que es el comportamiento de hoy.
+
+⚠️ **Y LA OTRA MITAD NO ES DE AQUÍ:** que el KMS mande el aviso pelado —que su cola avise sin
+calcular la copia— es trabajo del KMS y **no está hecho**. Mientras siga mandando `copias`, esto no
+se ejecuta: lo que se ha construido es **la capacidad**, no un cambio de comportamiento.
+
+**Red:** `node scripts/servidor/el-asistente-rehace-la-copia-de-una-solicitud.mjs`.
+
 **★ 2026-09-22 — EL REPASO CALIENTA TAMBIÉN LA PUERTA, LA IDENTIDAD Y EL CUESTIONARIO.** Todo lo que
 hace falta para ENTRAR lo preparaba el ENVÍO (`_dejarElClicSinLlamadas_`) y **vence a los 30 min**
 —la copia de la puerta, la memoria de identidad y el catálogo de preguntas—, y hasta hoy **nadie las
@@ -1197,6 +1233,7 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | Control | Qué protege |
 |---|---|
 | `cada-tutor-con-su-enlace.mjs` | **D213**: que lo que hace un tutor no eche al otro — ni su enlace ni su ventana de diez minutos; que un enlace sin `?n=` siga entrando; y que al KMS se le diga de QUÉ tutor es el enlace que renueva |
+| `el-asistente-rehace-la-copia-de-una-solicitud.mjs` | que un aviso del KMS que llega **PELADO** —sin la copia dentro— deje igualmente la copia caliente al día: que el escritor ÚNICO apunte la pareja `(expediente × tutor)`, que se rehagan las de ESE expediente y **ninguna de otro**, que con `copias` en el aviso todo siga **byte a byte como hoy**, que una copia recortada para OTRO tutor no se archive bajo la clave de éste, y ⛔⛔ que **nadie se quede sin su copia** —con el KMS caído, con el índice ilegible o con el presupuesto agotado, no se borra ni una— |
 | `el-catalogo-de-preguntas.mjs` | que un catálogo guardado **no se pueda quedar clavado para siempre**: el refresco sin viaje sigue ahorrando, el techo obliga a releer, un viaje fallido no se lleva la copia, y el camino público sigue sirviéndose de ella |
 | `el-catalogo-se-entera-cuando-el-colegio-lo-cambia.mjs` | que una pregunta editada en el KMS llegue a la copia del asistente y que **nadie se quede sin cuestionario**: la copia vieja no se borra hasta que llega la nueva |
 | `la-copia-se-actualiza-al-escribir.mjs` | la **regla 3** de Diego: que una escritura del tutor deje la copia caliente **rehecha con lo que el KMS confirma**, y que jamás se archive como buena una copia con un dato que el KMS no ha confirmado |
