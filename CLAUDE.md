@@ -728,12 +728,25 @@ pago (`applyPaymentModality_`) · pedir ayuda (`requestCorrection_`) · quitar a
 que cada copia rehecha se la lleva el bump del siguiente (N viajes, N-1 tirados) y todos dentro de
 la espera del tutor.
 
-⚠️ **Lo que queda de la regla 3 sin cubrir, dicho sin adornar:** para esos seis, la copia solo se
-rehace cuando el KMS avisa (regla 2) o cuando el repaso de 30 min pasa por ahí. Y **el aviso del KMS
-NO sale para casi ninguna escritura del asistente**: su despachador único de la cola
-(`enr_writeFromPersistJob_`, `kis-app kms-server/enr/wizard-gateway.gs`) **no llama** a
-`enr_avisarCambioDeDatosDeSolicitud_` — solo lo hacen, de rebote, los ayudantes de
-`enr/staging.gs` que escriben personas y vínculos. **Cerrar eso es trabajo del KMS, no de aquí.**
+⚠️ **Aquí se decía que «el aviso del KMS NO sale para casi ninguna escritura del asistente», porque
+`enr_writeFromPersistJob_` no llama a `enr_avisarCambioDeDatosDeSolicitud_`. MEDIDO FALSO el
+2026-09-27** (ejecutando las funciones reales con dobles): esa mitad de la frase era cierta y la
+conclusión no. **El aviso SÍ salía, por otro sitio que nadie había mirado** —
+`sys_avisarAlAsistenteDelGuardado_` (`kis-app kms-server/sys/job-queue.gs`), con `SAVE_OK` al marcar
+un trabajo HECHO y `SAVE_FAILED` al fallar, y su filtro cubre **los OCHO** tipos que son un paso del
+asistente. **Y salía CARO**: por trabajo y con el contenido dentro ⇒ en una pasada de 25,
+**50 hidrataciones, 150 idas y vueltas y 2.141.575 bytes encolados**.
+
+⇒ **para esos seis, la copia se rehace cuando el KMS avisa (regla 2) o cuando el repaso de 30 min
+pasa por ahí — y el aviso llega.** Lo que se le añadió a este lado el 2026-09-27 (asistente `@306`)
+es poder rehacerla **sin que el KMS le mande el contenido**: el índice de parejas
+(`_claveIndiceDeCopias_`) y `_laSolicitudCambioEnElColegio_`.
+
+⚠️ **Y del lado del KMS hay trabajo COMMITEADO Y SIN PUBLICAR** (`995cf56f0`): la pasada apunta los
+avisos y los vacía al cerrar, **PELADOS y agrupados por expediente** ⇒ las mismas 25 filas pasan de
+50 hidrataciones a **cero**, y de 2,1 MB a **158 bytes** cuando son del mismo expediente. **Hasta que
+eso se publique, el aviso sigue llegando con el contenido** y este lado lo archiva como siempre — la
+mitad de aquí es aditiva y no depende de ello.
 
 **Red:** `node scripts/servidor/la-copia-se-actualiza-al-escribir.mjs` — carga `backend/Code.js`
 REAL en un `vm` con dobles (sin red, sin navegador, sin datos reales) y ejecuta las funciones de
