@@ -647,9 +647,12 @@ por el camino que YA usa el camino vivo (`enr.hydrateApplication`).
   y **más reciente primero**: esto corre dentro del POST que hace el KMS. Lo que no quepa se queda
   **solo invalidado**, que es el comportamiento de hoy.
 
-⚠️ **Y LA OTRA MITAD NO ES DE AQUÍ:** que el KMS mande el aviso pelado —que su cola avise sin
-calcular la copia— es trabajo del KMS y **no está hecho**. Mientras siga mandando `copias`, esto no
-se ejecuta: lo que se ha construido es **la capacidad**, no un cambio de comportamiento.
+✅ **Y LA OTRA MITAD YA ESTÁ — publicada el 2026-09-28.** El KMS manda ahora el aviso PELADO al
+cerrar la pasada de la cola (`sys_vaciarLosAvisosDelAsistente_` + el cuarto argumento
+`{sinCopias:true}` de `enr_notifyWizardLiveState_`, `kis-app kms-server/sys/job-queue.gs`;
+confirmado VIVO contra la versión desplegada, KMS `@1953`, con `node scripts/ya-esta-vivo.mjs
+sys_vaciarLosAvisosDelAsistente_ --servidor`). Esta pieza **se ejecuta de verdad**: ya no hace
+falta que `copias` viaje dentro del aviso para que la copia se quede al día.
 
 **Red:** `node scripts/servidor/el-asistente-rehace-la-copia-de-una-solicitud.mjs`.
 
@@ -742,11 +745,12 @@ pasa por ahí — y el aviso llega.** Lo que se le añadió a este lado el 2026-
 es poder rehacerla **sin que el KMS le mande el contenido**: el índice de parejas
 (`_claveIndiceDeCopias_`) y `_laSolicitudCambioEnElColegio_`.
 
-⚠️ **Y del lado del KMS hay trabajo COMMITEADO Y SIN PUBLICAR** (`995cf56f0`): la pasada apunta los
-avisos y los vacía al cerrar, **PELADOS y agrupados por expediente** ⇒ las mismas 25 filas pasan de
-50 hidrataciones a **cero**, y de 2,1 MB a **158 bytes** cuando son del mismo expediente. **Hasta que
-eso se publique, el aviso sigue llegando con el contenido** y este lado lo archiva como siempre — la
-mitad de aquí es aditiva y no depende de ello.
+✅ **Y el lado del KMS YA ESTÁ PUBLICADO** (`995cf56f0`, KMS `@1953`, confirmado VIVO el 2026-09-28
+con `node scripts/ya-esta-vivo.mjs sys_vaciarLosAvisosDelAsistente_ --servidor`): la pasada apunta
+los avisos y los vacía al cerrar, **PELADOS y agrupados por expediente** ⇒ las mismas 25 filas pasan
+de 50 hidrataciones a **cero**, y de 2,1 MB a **158 bytes** cuando son del mismo expediente. **El
+aviso ya llega pelado para los seis escritores que encolan**, y este lado lo rehace con su propio
+índice — ya no es solo aditivo: es lo que hoy se ejecuta de verdad.
 
 **Red:** `node scripts/servidor/la-copia-se-actualiza-al-escribir.mjs` — carga `backend/Code.js`
 REAL en un `vm` con dobles (sin red, sin navegador, sin datos reales) y ejecuta las funciones de
