@@ -3073,3 +3073,71 @@ function manual_diagDisparadoresDelProyecto() {
   Logger.log(texto);
   return texto;
 }
+
+/**
+ * `2026-10 · parte (b) de recuperacion-enlace-reusado` — REINSTALA el disparador del espejo.
+ *
+ * MOTIVO: cambiar `ESPEJO_CADA_MIN_` (30 → 15) NO recrea el disparador vivo — `_asegurarDisparadorDelEspejo_`
+ * solo crea uno si NO hay ninguno. Un disparador ya instalado a 30 min sigue a 30 min. Esta sonda lo
+ * borra y lo vuelve a crear al intervalo de HOY, reutilizando la función de siempre.
+ *
+ * ⛔ SOLO toca los disparadores de `espejoRefrescarCopias` (`ESPEJO_DISPARADOR_FN_`). El absorbente
+ * `wizardWarmTrigger` y cualquier otro se QUEDAN. Devuelve la lista RE-LEÍDA después de recrear —el «ok»
+ * de la creación no acredita nada—. GAS no expone el intervalo (`everyMinutes`) de un disparador ya
+ * creado, así que lo que se acredita es: exactamente UNO de `espejoRefrescarCopias` y que es time-based.
+ * Solo estructura, cero datos de familia (KAL-11).
+ */
+function manual_reinstalarDisparadorDelEspejo() {
+  var L = [];
+  try {
+    // 1 · listar ANTES
+    var antes = ScriptApp.getProjectTriggers();
+    L.push('ANTES: total=' + antes.length);
+    antes.forEach(function(t) {
+      L.push('  antes: funcion=' + t.getHandlerFunction() + ' tipo=' + String(t.getEventType()));
+    });
+
+    // 2 · BORRAR únicamente los de `espejoRefrescarCopias` — nada más
+    var borrados = 0;
+    antes.forEach(function(t) {
+      if (t.getHandlerFunction() === ESPEJO_DISPARADOR_FN_) {
+        ScriptApp.deleteTrigger(t);
+        borrados++;
+      }
+    });
+    L.push('borrados (' + ESPEJO_DISPARADOR_FN_ + ')=' + borrados);
+
+    // 3 · limpiar la marca de caché para que `_asegurarDisparadorDelEspejo_` NO crea que ya hay uno bueno
+    try { CacheService.getScriptCache().remove(ESPEJO_GUARDA_KEY_); L.push('marca_cache_limpiada=' + ESPEJO_GUARDA_KEY_); }
+    catch (_eC) { L.push('marca_cache_limpiada=ERROR ' + String((_eC && _eC.message) || _eC).slice(0, 120)); }
+
+    // 4 · recrear REUTILIZANDO el código de siempre (crea a everyMinutes(ESPEJO_CADA_MIN_) = 15 hoy)
+    _asegurarDisparadorDelEspejo_();
+    // Red por si la marca u otra cosa lo impidiera: si sigue sin haber ninguno, se crea con el
+    // MISMO patrón que usa esa función (regla de refactor: se prefiere reusar, esto solo es red).
+    var hay = ScriptApp.getProjectTriggers().some(function(t) { return t.getHandlerFunction() === ESPEJO_DISPARADOR_FN_; });
+    if (!hay) {
+      ScriptApp.newTrigger(ESPEJO_DISPARADOR_FN_).timeBased().everyMinutes(ESPEJO_CADA_MIN_).create();
+      L.push('recreado_directo=SI (el ayudante no lo creó; red aplicada a everyMinutes=' + ESPEJO_CADA_MIN_ + ')');
+    } else {
+      L.push('recreado_por_ayudante=SI (_asegurarDisparadorDelEspejo_, everyMinutes=' + ESPEJO_CADA_MIN_ + ')');
+    }
+
+    // 5 · RE-LISTAR DESPUÉS y devolver esa lista — lo que acredita es volver a leer
+    var despues = ScriptApp.getProjectTriggers();
+    var delEspejo = despues.filter(function(t) { return t.getHandlerFunction() === ESPEJO_DISPARADOR_FN_; });
+    L.push('DESPUES: total=' + despues.length + '  del_espejo=' + delEspejo.length + '  (intervalo NO legible por la API de GAS)');
+    despues.forEach(function(t) {
+      L.push('  despues: funcion=' + t.getHandlerFunction() +
+             ' tipo=' + String(t.getEventType()) +
+             ' fuente=' + String(t.getTriggerSource()));
+    });
+    L.push('VEREDICTO: ' + (delEspejo.length === 1 ? 'OK — exactamente UN espejoRefrescarCopias, time-based' :
+                             'REVISAR — hay ' + delEspejo.length + ' de espejoRefrescarCopias (se esperaba 1)'));
+  } catch (e) {
+    L.push('ERROR=' + String((e && e.message) || e).slice(0, 300));
+  }
+  var texto = L.join('\n');
+  Logger.log(texto);
+  return texto;
+}
