@@ -11,6 +11,16 @@ const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favico
 // una espera a que conteste nadie.
 const REENVIO_ESPERA_S = 45;
 
+// Tope de espera VISIBLE: el envío del código tarda 15-25 s (el salto wizard→KMS, que
+// acuña un código y manda un correo — inherente, no se acelera desde el cliente). Pasados
+// estos segundos sin respuesta, «Enviando código…» pasa a un mensaje honesto —«tu código
+// puede tardar un poco»— SIN abortar la llamada de fondo (puede resolverse aún) y SIN
+// pedir el código otra vez: la casilla ya está habilitada (el envío es optimista), así que
+// la familia puede teclear el código que llegue. ⛔ NO acorta el tope de `api.js` (240 s),
+// que lo usan todas las llamadas: el desacople entre lo que se VE y lo que tarda el viaje
+// vive AQUÍ, en el gate.
+const TOPE_VISIBLE_MS = 11000;
+
 /**
  * StepUpGate — DL-E39 ENMIENDA (gate de ENTRADA, Diego 2026-06-06).
  *
@@ -112,6 +122,10 @@ export default function StepUpGate({
   const [code,      setCode]      = useState('');
   const [err,       setErr]       = useState(falloPrevio);
   const [info,      setInfo]      = useState(yaPedidoAt ? t('stepup.code_sent') : '');
+  // `enCamino` — el envío sigue en vuelo pasado el tope visible, O murió en el transporte:
+  // en los dos casos el código casi seguro ya salió y lo que se muestra es un mensaje suave,
+  // no «Enviando código…» ni un error alarmante. Cambia el icono del aviso (reloj, no tick).
+  const [enCamino,  setEnCamino]  = useState(false);
   // Segundos que faltan para poder volver a pedir el código. Cuenta atrás visible. Arranca
   // donde la dejó la instancia anterior: si no, el remontaje regalaba un botón libre y con él
   // el segundo código que pisa al primero.
@@ -119,9 +133,16 @@ export default function StepUpGate({
   // Evita doble envío en el StrictMode double-mount de dev y en re-renders.
   const autoSentRef = useRef(false);
   const esperaRef   = useRef(null);
+  // `enVueloRef` — ¿sigue la petición del código en vuelo? Lo lee el tope visible para no
+  // tocar nada si la respuesta ya volvió. `topeVisibleRef` guarda su temporizador.
+  const enVueloRef     = useRef(false);
+  const topeVisibleRef = useRef(null);
 
   const pararEspera = () => {
     if (esperaRef.current) { clearInterval(esperaRef.current); esperaRef.current = null; }
+  };
+  const pararTopeVisible = () => {
+    if (topeVisibleRef.current) { clearTimeout(topeVisibleRef.current); topeVisibleRef.current = null; }
   };
   // `segundos` permite REANUDAR la cuenta atrás donde la dejó la instancia anterior tras el
   // remontaje; sin argumento arranca entera, como siempre.
@@ -137,7 +158,7 @@ export default function StepUpGate({
     }, 1000);
   };
   // Al desmontar (la verja se cierra en cuanto se entra) no queda ningún temporizador vivo.
-  useEffect(() => pararEspera, []);
+  useEffect(() => () => { pararEspera(); pararTopeVisible(); }, []);
 
   // ── `0º.tricies.nonies` — UN FALLO QUE LLEGA TARDE TAMBIÉN SE PINTA ────────────────────
   // El caso que faltaba: el auto-envío lo dispara la instancia 1, la petición tarda, y para
@@ -181,6 +202,7 @@ export default function StepUpGate({
   const sendCode = ({ manual = false } = {}) => {
     if (manual) setCode('');
     setErr('');
+    setEnCamino(false);
     // ── EL CÓDIGO SE PIDE A DEMANDA, Y SE DICE «enviando…» MIENTRAS SALE ──────
     // Se desbloquea la casilla EN EL MISMO gesto (para que se pueda teclear cuando llegue)
     // y arranca la cuenta atrás de «reenviar» — pero el aviso dice la VERDAD: «enviando
@@ -194,11 +216,53 @@ export default function StepUpGate({
     // El hecho sale del componente ANTES del viaje, para que un remontaje a mitad de la
     // petición encuentre la verja con su cuenta atrás corriendo (no un botón libre).
     if (onEnvioPedido) onEnvioPedido();
+
+    // ── TOPE DE ESPERA VISIBLE: la familia no mira «Enviando código…» más de ~11 s ───────
+    // Pasado el tope, si el viaje SIGUE en vuelo, se deja de decir «Enviando…» y se pasa a un
+    // mensaje suave («puede tardar un poco»). NO se aborta la llamada (puede llegar aún) ni se
+    // pide otro código; la casilla sigue habilitada. El botón de reenviar lo gobierna la
+    // cuenta atrás normal, que sigue corriendo: nunca un reenvío inmediato.
+    enVueloRef.current = true;
+    pararTopeVisible();
+    topeVisibleRef.current = setTimeout(() => {
+      topeVisibleRef.current = null;
+      if (!enVueloRef.current) return;   // ya resolvió: no hay nada que suavizar
+      setEnviando(false);
+      setEnCamino(true);
+      setInfo(t('stepup.codigo_en_camino'));
+    }, TOPE_VISIBLE_MS);
+
     // NO mandamos email — el backend lo deriva del token (server-side, KAL-4).
     gasCall('sendVerificationCode', { stepup: true, ...tokenPayload })
-      .then(() => { log.info('StepUpGate: código de entrada solicitado'); setEnviando(false); setInfo(t('stepup.code_sent')); })
+      .then(() => {
+        enVueloRef.current = false; pararTopeVisible();
+        log.info('StepUpGate: código de entrada solicitado');
+        setEnviando(false); setEnCamino(false); setInfo(t('stepup.code_sent'));
+      })
       .catch(e => {
+        enVueloRef.current = false; pararTopeVisible();
         setEnviando(false);
+        // ── UN CORTE DE TRANSPORTE NO ES UN FALLO DURO (①86) ──────────────────────────
+        // Google perdió/colgó la RESPUESTA, pero el código casi seguro SÍ salió (el servidor
+        // lo acuña y manda el correo ANTES de que su respuesta viaje — por eso los correos
+        // llegan aunque el cliente crea que falló). Tratarlo como error hace DOS daños: pinta
+        // un aviso alarmante y —lo grave— LIBERA el botón de reenviar (`setEspera(0)`), y ese
+        // reenvío acuña un SEGUNDO código que PISA al primero en el buzón (§0º.tricies.nonies:
+        // `cache.put(codeKey, code, 600)`). Por eso: mensaje suave, casilla usable, y el
+        // reenvío SIGUE gobernado por la cuenta atrás normal (NO se toca `espera`). Y NO se
+        // registra como ERROR en `otpEnvioEntrada` —hoy eso pinta un error al remontar—: no se
+        // llama a `onEnvioFallido`. El `at` del envío ya lo apuntó `onEnvioPedido`, así que un
+        // remontaje reanuda la cuenta atrás en vez de ofrecer el botón libre.
+        if (e && e.transporte === true) {
+          log.warn('StepUpGate: sendVerificationCode murió en el transporte — el código puede ir en camino', { message: e.message });
+          setEnCamino(true);
+          setInfo(t('stepup.codigo_en_camino'));
+          setErr('');
+          return;
+        }
+        // Un error que NO es de transporte es el servidor CONTESTANDO (código incorrecto, cupo
+        // agotado…): comportamiento EXACTO de antes de este cambio.
+        setEnCamino(false);
         log.error('StepUpGate: sendVerificationCode failed', { message: e.message });
         // El aviso optimista era mentira: se retira y se pone el error real. Lo que NO
         // se toca es el camino de ENTRAR — ni se borra lo tecleado ni se vuelve a
@@ -396,7 +460,7 @@ export default function StepUpGate({
 
         {info && (
           <div className="mt-3" data-testid="stepup-enviado" style={{ color: 'var(--teal-dk)', fontSize: '0.84rem' }}>
-            <i className="bi bi-check-circle me-1" />{info}
+            <i className={`bi ${enCamino ? 'bi-clock-history' : 'bi-check-circle'} me-1`} />{info}
           </div>
         )}
         {err && (

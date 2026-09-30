@@ -280,6 +280,7 @@ const NO_CUBIERTAS_SOLO_REAL = {
     'un-solo-codigo-al-entrar':        'exige forzar la verja del código (dejar caducar la gracia del enlace) y contar los envíos a un buzón que este arnés no lee; en modo simulado sí se cubre, con `scenario.piiGated`',
     'la-pantalla-dice-que-ya-se-envio': 'misma razón',
     'el-fallo-del-autoenvio-llega':    'exige que el servidor RECHACE la petición del código; no se provoca contra datos reales. En modo simulado sí se cubre, con `scenario.codigoFalla`.',
+    'el-corte-de-transporte-al-enviar-no-atasca': 'el fallo de transporte se provoca matando el socket del servidor simulado; contra el sistema real no hay forma honesta de tumbar el envío del código a voluntad sin romperle la corrida a los caminos que vienen detrás. En modo simulado sí se cubre, con `scenario.envioCodigoCorto`.',
   },
 }
 if (REAL) {
@@ -432,7 +433,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, refrescoDemoraMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false, conjuntoVacio: false }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, refrescoDemoraMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false, conjuntoVacio: false, envioCodigoCorto: 0 }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -800,6 +801,20 @@ function startServer() {
         // cuenta al volver a primer plano: reintentar una escritura a ciegas la duplicaría.
         if (scenario.escrituraCorta > 0 && payload && payload.action === 'saveStep') {
           scenario.escrituraCorta -= 1
+          record({ action: payload.action, payload, cortada: true })
+          try { req.socket.destroy() } catch { /* ya cerrado */ }
+          return
+        }
+        // Corte de transporte durante el ENVÍO del código de un solo uso — el caso más
+        // dañino: Google pierde la RESPUESTA (el código SÍ salió), pero el navegador no se
+        // entera hasta que el tope de `api.js` (240 s) aborta, y entonces se pintaba un error
+        // que empujaba a reenviar ⇒ un SEGUNDO código que PISA al primero en el buzón
+        // (§0º.tricies.nonies). Igual que los de arriba: se MATA el socket (no un `{ok:false}`,
+        // que es el servidor CONTESTANDO y se clasifica por otra rama). Contador: al destruir
+        // el socket Chromium reintenta la petición por debajo, así que se usa 99 (matar TODOS)
+        // para garantizar que el `fetch` acaba rechazando con `transporte:true`.
+        if (scenario.envioCodigoCorto > 0 && payload && payload.action === 'sendVerificationCode') {
+          scenario.envioCodigoCorto -= 1
           record({ action: payload.action, payload, cortada: true })
           try { req.socket.destroy() } catch { /* ya cerrado */ }
           return
@@ -9413,6 +9428,7 @@ async function caminoCodigoAlEntrarPorEnlace(page, base) {
     c.noCubierta('un-solo-codigo-al-entrar', 'ver NO_CUBIERTAS_SOLO_REAL')
     c.noCubierta('la-pantalla-dice-que-ya-se-envio', 'ver NO_CUBIERTAS_SOLO_REAL')
     c.noCubierta('el-fallo-del-autoenvio-llega', 'ver NO_CUBIERTAS_SOLO_REAL')
+    c.noCubierta('el-corte-de-transporte-al-enviar-no-atasca', 'ver NO_CUBIERTAS_SOLO_REAL')
     return c
   }
 
@@ -9458,6 +9474,7 @@ async function caminoCodigoAlEntrarPorEnlace(page, base) {
     scenario.otpSuperado = false
     scenario.codigoFalla = null
     scenario.codigoDemoraMs = 0
+    scenario.envioCodigoCorto = 0
   }
 
   /** Lo que la familia VE en la verja y lo que puede hacer, en un solo tiro. */
@@ -9599,6 +9616,52 @@ async function caminoCodigoAlEntrarPorEnlace(page, base) {
     c.afirmar('(8) un envío fallido NO cierra el camino de entrar',
       trasFallo.casillaLista && !trasFallo.reenviarBloqueado && cuantas('sendVerificationCode') === antes + 1,
       `casilla ${trasFallo.casillaLista ? 'lista' : 'DESHABILITADA'}, «reenviar» ${trasFallo.reenviarBloqueado ? 'BLOQUEADO' : 'libre'}, peticiones ${cuantas('sendVerificationCode') - antes} (se esperaba 1): tras un fallo la familia tiene que poder pedir otro sin esperar`)
+
+    // ══ FASE C · un CORTE DE TRANSPORTE al enviar NO atasca ni empuja a reenviar ═══════
+    // El caso más dañino (`0º.tricies.nonies` + `①86`): Google pierde la RESPUESTA del envío
+    // (el código SÍ salió), pero el navegador no se entera. Hoy el `.catch` lo trata como un
+    // fallo duro: LIBERA el botón de reenviar ⇒ la familia pulsa, acuña un SEGUNDO código y
+    // PISA el primero que ya tiene en el buzón. Se MATA el socket (no un `{ok:false}`, que es
+    // el servidor contestando y se clasifica por otra rama).
+    c.esperarErrorConsola(/gasCall sendVerificationCode: network\/fetch error/,
+      'escenario deliberado: el socket del envío del código se destruye, como el «Load failed» del transporte de Google')
+
+    await page.evaluate(() => { try { sessionStorage.clear() } catch { /* sandbox */ } })
+    scenario.otpSuperado = false
+    scenario.codigoFalla = null        // NO es un rechazo del servidor: es el transporte
+    scenario.codigoDemoraMs = 0
+    scenario.envioCodigoCorto = 99     // se matan TODOS los intentos (Chromium reintenta por debajo)
+    if (!c.afirmar('la verja vuelve a abrirse para el corte de transporte',
+      await entrarYAsentar('c'), 'la casilla del código no volvió a aparecer')) return c
+    const pidioC = await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="stepup-reenviar"]')
+      if (!b || b.disabled) return false
+      b.click(); return true
+    })
+    // El `.catch` se asienta cuando `enviando` deja de ser true: el botón deja de decir
+    // «Enviando…» y pasa a la cuenta atrás (con el arreglo) o a «Reenviar» (con el código de
+    // hoy). Esperar por eso —y no por un tiempo fijo— vale para los DOS casos.
+    await page.waitForFunction(() => {
+      const b = document.querySelector('[data-testid="stepup-reenviar"]')
+      const txt = b ? (b.textContent || '') : ''
+      return !!txt && !/envi[aá]ndo|sending/i.test(txt)
+    }, null, { timeout: LATENCY * 3 + 15000 }).catch(() => {})
+    await page.waitForTimeout(300)
+    const trasCorte = await verja()
+
+    c.afirmar('(9) un CORTE DE TRANSPORTE al enviar NO libera el botón de reenviar (la trampa del segundo código)',
+      pidioC && trasCorte.reenviarBloqueado,
+      pidioC
+        ? `«reenviar» quedó ${trasCorte.reenviarBloqueado ? 'bloqueado' : 'LIBRE'} («${trasCorte.reenviarTexto}»): un corte de transporte que libera el botón empuja a la familia a acuñar un SEGUNDO código que PISA el que ya tiene en el buzón`
+        : 'el botón «Enviar código» estaba bloqueado: no se pudo provocar el corte')
+
+    c.afirmar('(10) y NO se atasca en «Enviando código…» ni se grita un error: la casilla sigue usable',
+      !trasCorte.error && trasCorte.casillaLista && !/envi[aá]ndo|sending/i.test(trasCorte.aviso || ''),
+      `error=${JSON.stringify(trasCorte.error)}, casilla ${trasCorte.casillaLista ? 'lista' : 'DESHABILITADA'}, aviso=${JSON.stringify(trasCorte.aviso)}: un corte de transporte no es un fallo duro (el código casi seguro salió) y no puede quedarse en «Enviando código…» ni pintar un error alarmante`)
+
+    // Ni un fetch a medias al salir: el camino siguiente no puede heredar un error de red que
+    // provocó el robot al irse de la página.
+    await drenar()
 
     return c
   } finally {

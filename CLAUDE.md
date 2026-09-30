@@ -430,6 +430,20 @@ mentira), **la cuenta atrás se REANUDA** en los segundos que quedaban, y **un f
 también se pinta** (lo dispara una instancia que ya está desmontada). **Un fallo nunca cierra el
 camino de entrar**: no se borra lo tecleado ni se deshabilita la casilla.
 
+⛔ **Y MIENTRAS EL ENVÍO ESTÁ EN VUELO, LA FAMILIA NO SE ATASCA NI SE LA EMPUJA A REENVIAR**
+(`StepUpGate.jsx`). El envío tarda 15-25 s (el salto wizard→KMS, inherente). Dos piezas: (1) un
+**tope de espera VISIBLE** de ~11 s (`TOPE_VISIBLE_MS`) tras el cual «Enviando código…» pasa a un
+mensaje suave (`stepup.codigo_en_camino`) —**sin abortar la llamada** (`api.js` tiene su propio tope
+de 240 s, que NO se toca) y **sin pedir otro código**, la casilla ya usable—; y (2) un **corte de
+TRANSPORTE** (`e.transporte`, ①86 — Google perdió la respuesta, el código casi seguro SÍ salió) se
+trata como el mensaje suave, **NO** como fallo duro: ⛔ el botón de reenviar lo sigue gobernando la
+cuenta atrás normal (jamás un reenvío inmediato, que es la trampa del segundo código que PISA al
+primero en el buzón, §②24/`cache.put(codeKey,…,600)`), y **NO** se registra como error en
+`otpEnvioEntrada` (no se llama a `onEnvioFallido`), así que un remontaje no pinta un error alarmante.
+Un error que **NO** es de transporte (cupo, código malo) es el servidor contestando y conserva el
+comportamiento de siempre. **Red**: `codigo-al-entrar-por-enlace` FASE C (`envioCodigoCorto` mata el
+socket del envío).
+
 ### ①86 · Una RESPUESTA PERDIDA no es un fallo del código
 
 El asistente **no puede emitir un 4xx/5xx**: su `doPost` contesta siempre HTTP 200 con `{ok:false}`
@@ -599,7 +613,9 @@ escritor), porque este proceso no escribe tablas (P1-A/P1-B).
 
 **La copia de la solicitud vive en la `ScriptCache` de ESTE proyecto**, bajo
 `wz_hydv2_<expediente>_<email_id>`, con **UN escritor único** (`_espejoGuardarCopia_`) y un
-disparador propio (`espejoRefrescarCopias`, cada 30 min → `enr.copiasDeLasSolicitudesVivas`).
+disparador propio (`espejoRefrescarCopias`, cada 15 min → `enr.copiasDeLasSolicitudesVivas` — a
+mitad de la vida de la copia de la puerta, `COPIA_PUERTA_TTL_S_` 30 min, para dejar 15 min de
+margen aunque una vuelta se salte; el plazo de 30 min **no se toca**).
 
 - ⛔ **Va por (expediente × TUTOR), no por expediente**: la hidratación se recorta al tutor que mira
   (DL-E49 §2), así que la copia de uno **nunca** contiene los datos del otro. El `n` que viaja es el
@@ -673,7 +689,7 @@ REALES: a los 35 min, 3 → 1 viaje** (el que queda es el correo del código, qu
   fila cruda, que lleva `magic_link_token`. Una clave distinta no la lee nadie; una forma distinta la
   lee mal `_cabeceraDeLaCopia_`.
 - ⛔ **NINGÚN plazo de seguridad se toca**: `COPIA_PUERTA_TTL_S_` tal cual, la gracia de 10 min tal
-  cual, la ventana de step-up tal cual. Lo que cambia es que la copia **se rehace cada 30 min**, no
+  cual, la ventana de step-up tal cual. Lo que cambia es que la copia **se rehace cada 15 min**, no
   que dure más. **CERO exposición nueva**: el `resume_token` ya viaja dentro de esa copia.
 - ⛔ **La identidad se siembra SOLO en `idlinkd_`** (la DECLARADA), nunca en `idlinkr_` (el respaldo
   «tutor 1», ②⑤.bis), y **la clave la calcula UN SOLO SITIO**, `_claveIdLinkMemo_`, que es el mismo
@@ -740,7 +756,7 @@ un trabajo HECHO y `SAVE_FAILED` al fallar, y su filtro cubre **los OCHO** tipos
 asistente. **Y salía CARO**: por trabajo y con el contenido dentro ⇒ en una pasada de 25,
 **50 hidrataciones, 150 idas y vueltas y 2.141.575 bytes encolados**.
 
-⇒ **para esos seis, la copia se rehace cuando el KMS avisa (regla 2) o cuando el repaso de 30 min
+⇒ **para esos seis, la copia se rehace cuando el KMS avisa (regla 2) o cuando el repaso de 15 min
 pasa por ahí — y el aviso llega.** Lo que se le añadió a este lado el 2026-09-27 (asistente `@306`)
 es poder rehacerla **sin que el KMS le mande el contenido**: el índice de parejas
 (`_claveIndiceDeCopias_`) y `_laSolicitudCambioEnElColegio_`.
@@ -1107,7 +1123,7 @@ pelado son **~200 bytes**, y **este lado sí sabe qué combinaciones tiene calie
 (`_combinacionesDelCatalogo_`, el índice que escribe el escritor ÚNICO del catálogo). ⇒ **rehace él**,
 con `_catalogoCambioEnElColegio_` → el rehacedor que YA existía (`_espejoCalentarElCuestionario_` con
 `{forzar:true}`), 20 s de presupuesto y **más reciente primero**; lo que no cabe **pierde su techo** y
-lo coge el repaso de 30 min.
+lo coge el repaso de 15 min.
 
 ⛔⛔ **Y NADIE SE QUEDA SIN CUESTIONARIO: aquí no se borra ni una copia.** Se pide la nueva y solo si
 llega sustituye a la vieja. **Una pantalla en blanco es peor que un catálogo viejo**, y esa barandilla

@@ -7841,8 +7841,8 @@ function _guardarCatalogoDePreguntas_(contextCode, lang, programId, valor) {
 //
 // **Por qué DOS HORAS y no seis** (el techo de `CacheService`): quien paga el viaje aquí es el
 // repaso de fondo, no una familia, así que un techo más corto sale gratis en espera y solo
-// cuesta llamadas de fondo. Con el repaso cada 30 min, dos horas dejan **tres refrescos sin
-// viaje de cada cuatro** —el ahorro que `@297` vino a dar— y **acotan en 2 h** lo que un
+// cuesta llamadas de fondo. Con el repaso cada 15 min, dos horas dejan **siete refrescos sin
+// viaje de cada ocho** —el ahorro que `@297` vino a dar— y **acotan en 2 h** lo que un
 // catálogo malo puede durar. En cupo público (②54, 300 por hora e idioma, COMPARTIDO por todo
 // el colegio) son **12 llamadas al día por (programa × idioma)**: el 0,17 % de una sola hora.
 var CATALOGO_PREGUNTAS_TECHO_S_ = 7200;
@@ -11834,8 +11834,8 @@ function verifySignedKmsNotice_(p, expectedAction) {
 // hace el trabajador de la cola del KMS, así que no puede durar lo que quiera: rehace las que
 // quepan en `CATALOGO_AVISO_PRESUPUESTO_MS_`, **por orden de más reciente** (las que de verdad
 // se están sirviendo), y a las que no le dio tiempo **les quita la marca del techo** para que
-// el repaso de fondo —que vuelve cada 30 min— las rehaga él. Peor caso: 30 min, en vez de las
-// 2 h 30 min de antes.
+// el repaso de fondo —que vuelve cada 15 min— las rehaga él. Peor caso: 15 min, en vez de las
+// 2 h 15 min de antes.
 //
 // ⛔ **Ningún plazo de seguridad se toca**: ni el código de un solo uso, ni KAL-4, ni la verja,
 // ni el cupo público ②54 (quien viaja aquí es el propio servidor, no una familia).
@@ -12894,7 +12894,15 @@ function _trazarArranqueEstadoReleido_(accion) {
 // peticiones pagan un `cache.get`.
 
 var ESPEJO_DISPARADOR_FN_ = 'espejoRefrescarCopias';
-var ESPEJO_CADA_MIN_      = 30;      // ScriptApp solo admite 1/5/10/15/30 minutos
+// 15, no 30: la copia de la PUERTA vive `COPIA_PUERTA_TTL_S_` (30 min) y con el repaso a 30
+// min el plazo era EXACTAMENTE igual al intervalo, MARGEN CERO ⇒ un disparador retrasado o
+// saltado, o una visita en los últimos segundos de la ventana, caía en FRÍO y pagaba el viaje
+// al KMS (lento). A 15 min la copia se re-calienta a mitad de su vida: quedan 15 min de margen
+// aunque una vuelta se salte. ⛔ NO se sube `COPIA_PUERTA_TTL_S_`: hacerlo alargaría el lag de
+// revocación por encima de los 30 min que Diego llamó razonables —esa sería una decisión
+// suya—; refrescar cada 15 min conserva ese lag de 30 min intacto y solo cierra el hueco en
+// frío. ScriptApp solo admite 1/5/10/15/30 minutos.
+var ESPEJO_CADA_MIN_      = 15;
 var ESPEJO_GUARDA_KEY_    = 'espejo_disparador_ok';
 var ESPEJO_GUARDA_S_      = 21600;   // 6 h — el techo de ScriptCache
 var ESPEJO_GRUPOS_POR_VUELTA_ = 25;  // páginas que pide al KMS por vuelta
@@ -12947,7 +12955,7 @@ function _asegurarDisparadorDelEspejo_() {
 //        cada una es un viaje con **suelo medido de 9,3-13,2 s** que no es la consulta
 //        (PostgreSQL contesta en 3-124 ms) ni la red.
 //
-// ⇒ **LA PALANCA ES NO HACER LA LLAMADA**, y el repaso YA CORRE cada 30 min y YA RECIBE todo
+// ⇒ **LA PALANCA ES NO HACER LA LLAMADA**, y el repaso YA CORRE cada 15 min y YA RECIBE todo
 //    lo necesario: `enr_wizardHydrate` devuelve `group: s.group` y `enr_resolveWizardSession_`
 //    devuelve **la fila ENTERA de `enrEnrollmentGroups`, sin proyección ninguna** ⇒ cada copia
 //    que el espejo ya archiva lleva dentro `resume_token`, `abandoned_at`, `created_at`,
@@ -12958,7 +12966,7 @@ function _asegurarDisparadorDelEspejo_() {
 //    escribe aquí es una PROYECCIÓN de ocho campos —la MISMA que devuelve
 //    `enr.expedienteDelToken`—, nunca la fila cruda con `magic_link_token`.
 // ⛔ **CERO PLAZO DE SEGURIDAD TOCADO**: ni `COPIA_PUERTA_TTL_S_`, ni la gracia de 10 min, ni
-//    la ventana de step-up. Lo que cambia es que la copia **se rehace cada 30 min**, no que
+//    la ventana de step-up. Lo que cambia es que la copia **se rehace cada 15 min**, no que
 //    dure más.
 
 /**
