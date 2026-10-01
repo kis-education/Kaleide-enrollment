@@ -613,9 +613,9 @@ escritor), porque este proceso no escribe tablas (P1-A/P1-B).
 
 **La copia de la solicitud vive en la `ScriptCache` de ESTE proyecto**, bajo
 `wz_hydv2_<expediente>_<email_id>`, con **UN escritor único** (`_espejoGuardarCopia_`) y un
-disparador propio (`espejoRefrescarCopias`, cada 15 min → `enr.copiasDeLasSolicitudesVivas` — a
-mitad de la vida de la copia de la puerta, `COPIA_PUERTA_TTL_S_` 30 min, para dejar 15 min de
-margen aunque una vuelta se salte; el plazo de 30 min **no se toca**).
+disparador propio (`espejoRefrescarCopias`, cada 15 min — a mitad de la vida de la copia de la
+puerta, `COPIA_PUERTA_TTL_S_` 30 min, para dejar 15 min de margen aunque una vuelta se salte; el
+plazo de 30 min **no se toca**).
 
 - ⛔ **Va por (expediente × TUTOR), no por expediente**: la hidratación se recorta al tutor que mira
   (DL-E49 §2), así que la copia de uno **nunca** contiene los datos del otro. El `n` que viaja es el
@@ -632,6 +632,43 @@ margen aunque una vuelta se salte; el plazo de 30 min **no se toca**).
   más caliente y sobrevivía a la invalidación) y el receptor `pushWarmHydrate_`. **El canal firmado
   no se toca:** `verifySignedKmsNotice_` sigue vivo con **dos** receptores, `notifyLiveStateChange_`
   y `sembrarRecuperacion_`.
+
+**★ 2026-10-01 — Y HAY DOS CLASES DE VUELTA: el repaso ya no se trae de fuera lo que ya tiene.**
+Lo que el viaje al KMS transporta es la **hidratación**, que dura **6 h** (`ESPEJO_HYD_TTL_S_`).
+Lo que de verdad caduca cada **30 min** es la **puerta** (`COPIA_PUERTA_TTL_S_`), la
+**identidad** (`IDENTIDAD_MEMO_TTL_S_`) y el **cuestionario** (`CATALOGO_PREGUNTAS_TTL_S_`)
+— **y las tres se construyen enteras con `payload.group`, que ya está guardado**. ⇒ eran los dos
+relojes descasados lo que hacía viajar.
+
+| La vuelta | Qué hace | Viajes al KMS |
+|---|---|---|
+| **la que NO pregunta** (tres de cada cuatro) | `_espejoRecalentarDesdeLaMemoria_` recorre el índice GLOBAL de solicitudes, lee cada copia guardada y le pasa cada `(expediente × tutor)` a `_espejoCalentarLaPuerta_` **TAL CUAL**; el cuestionario va por su propia función con la lista compuesta de la memoria (`_espejoCuestionariosDeLaMemoria_`) | **0** |
+| **la que PREGUNTA** (una por hora, `ESPEJO_PREGUNTA_CADA_VUELTAS_` = 4) | el bucle de siempre, sin tocar una línea: refresca la hidratación de 6 h, **descubre las solicitudes que el índice no puede nombrar** (una familia recién invitada) y hace de red por si un aviso del colegio se perdió | 1 |
+
+- **El índice GLOBAL es `wz_solicitudes`** (6 h, tope `ESPEJO_SOLICITUDES_TOPE_` 200, más reciente
+  primero), con **un solo escritor** —`_espejoGuardarCopia_`, en la misma línea en la que ya apunta
+  la pareja— y **un solo lector** (`_solicitudesDeLasCopias_`). Existe por lo mismo que los otros
+  dos índices: **`CacheService` no sabe listar sus claves**, así que hasta ahora la lista de qué
+  solicitudes hay **se la daba el viaje**. El de parejas (`wz_copias_<expediente>`) no sirve solo:
+  para leerlo hay que saber ya de qué expediente.
+- ⛔ **CERO DATOS PERSONALES**: solo el `enrollment_group_id`, validado con `assertValidUuid_`.
+- ⛔⛔ **LA BARANDILLA QUE CONSERVA EL PLAZO DE REVOCACIÓN DE 30 MIN: SE EXIGE QUE LA VERSIÓN
+  CASE** (`env.v === _versionDeClase_(gid, 'hyd')`). Cuando el colegio toca algo, su aviso bumpa la
+  versión y esa copia **deja de re-calentarse sola**: espera al viaje. Sin esa comprobación un
+  enlace que el colegio mató seguiría abriendo.
+- ⛔ **NI UN PLAZO DE SEGURIDAD SE TOCA**: `ESPEJO_CADA_MIN_` sigue en 15, y `COPIA_PUERTA_TTL_S_`,
+  `IDENTIDAD_MEMO_TTL_S_`, la gracia de 10 min y la ventana de step-up, igual. **Lo que cambia es
+  qué hace cada vuelta.**
+- ⛔ **DEGRADA SOLO**: sin índice, con el índice ilegible, con el contador vencido o con páginas
+  sin ver (`desde > 0`, el `corte_por_tiempo` de la vuelta anterior ya persistido en el cursor),
+  **se viaja y el comportamiento es byte a byte el de hoy**.
+- ⛔ **No se escribe un segundo juez**: `_rechazosDelEnlace_` y las cuatro barandillas siguen dentro
+  de `_espejoCalentarLaPuerta_`, donde estaban. Aquí solo se le arma el
+  `{enrollment_group_id, n, payload}` con la forma exacta con la que hoy le llega del KMS.
+- **Medido con el arnés sobre las funciones REALES (2026-10-01):** la vuelta con índice hace **0**
+  viajes y re-calienta sus parejas; la cuarta hace **1**. ⇒ de **4 viajes a la hora a 1**.
+
+**Red:** `node scripts/servidor/el-repaso-no-pregunta-lo-que-ya-sabe.mjs`.
 
 **★ 2026-09-27 — UN AVISO PELADO DEL KMS TAMBIÉN DEJA LA COPIA AL DÍA.** Hoy el KMS tiene que
 CALCULAR la copia entera para poder mandarla dentro del aviso (`copias`); cuando eso deje de poder
@@ -1270,6 +1307,7 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | `el-catalogo-de-preguntas.mjs` | que un catálogo guardado **no se pueda quedar clavado para siempre**: el refresco sin viaje sigue ahorrando, el techo obliga a releer, un viaje fallido no se lleva la copia, y el camino público sigue sirviéndose de ella |
 | `el-catalogo-se-entera-cuando-el-colegio-lo-cambia.mjs` | que una pregunta editada en el KMS llegue a la copia del asistente y que **nadie se quede sin cuestionario**: la copia vieja no se borra hasta que llega la nueva |
 | `la-copia-se-actualiza-al-escribir.mjs` | la **regla 3** de Diego: que una escritura del tutor deje la copia caliente **rehecha con lo que el KMS confirma**, y que jamás se archive como buena una copia con un dato que el KMS no ha confirmado |
+| `el-repaso-no-pregunta-lo-que-ya-sabe.mjs` | que el repaso de fondo **re-caliente la puerta y la identidad con lo que YA tiene guardado, sin viajar al KMS**, y que ahorrar ese viaje no afloje ni un plazo: una copia con la **versión vieja NO se re-calienta** (es lo que conserva el plazo de revocación de 30 min), una ficha que el juez único RECHAZA no deja nada escrito, el índice global **solo admite identificadores** (ni un correo ni su resumen), y ⛔ **sin índice, con el índice ilegible, con el contador vencido o con páginas sin ver se VIAJA** y el comportamiento es el de hoy |
 | `el-enlace-viejo-no-muere-hasta-que-salga-el-nuevo.mjs` | que **una familia nunca se quede sin enlace válido por un correo que no salió**: el envío que sale deja el enlace rotado, el que falla lo deja como estaba (las dos ramas, y los N de un correo multi), y el ack constante de la rama pública no cambia según si el correo salió |
 
 **Se corren solos desde el 2026-09-23**: el lanzador `node scripts/comprobar-el-servidor.mjs`

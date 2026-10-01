@@ -12026,7 +12026,11 @@ function _espejoGuardarCopia_(cache, groupId, n, payload, opciones) {
     // ★ 2026-09-27 — EL ÍNDICE DE PAREJAS se apunta AQUÍ, en el escritor ÚNICO, y solo si la
     // escritura salió bien: apuntar una pareja que no se llegó a guardar mandaría al rehacer
     // a por una copia que no existe. Best-effort — nunca cambia lo que devuelve esta función.
-    if (guardada) _apuntarParejaDeCopia_(groupId, key);
+    // ★ 2026-10-01 — y el ÍNDICE GLOBAL de solicitudes calientes, en la MISMA línea y por lo
+    // mismo: `CacheService` no sabe listar sus claves, y sin esa lista el repaso de fondo
+    // tiene que PEDIRLE al KMS qué solicitudes hay —el viaje que deja de hacer falta para
+    // re-calentar la puerta y la identidad—. Best-effort, igual que el otro.
+    if (guardada) { _apuntarParejaDeCopia_(groupId, key); _apuntarSolicitudDeCopia_(groupId); }
     return guardada;
   } catch (e) {
     Logger.log('[_espejoGuardarCopia_] non-fatal — ' + (e && e.message));
@@ -12175,6 +12179,91 @@ function _apuntarParejaDeCopia_(groupId, clave) {
     lista.unshift(n);
     if (lista.length > COPIAS_POR_EXPEDIENTE_TOPE_) lista = lista.slice(0, COPIAS_POR_EXPEDIENTE_TOPE_);
     CacheService.getScriptCache().put(_claveIndiceDeCopias_(groupId), JSON.stringify(lista),
+      COPIAS_INDICE_TTL_S_);
+    return true;
+  } catch (e) { return false; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2026-10-01 · EL ÍNDICE GLOBAL DE SOLICITUDES CALIENTES
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// **POR QUÉ EXISTE:** `CacheService` **no sabe listar sus claves**, así que hasta hoy la
+// lista de qué solicitudes tiene calientes este proceso **se la daba el viaje al KMS**
+// (`enr.copiasDeLasSolicitudesVivas`) — y ése es el viaje que el repaso quiere dejar de
+// pagar cada 15 min. El índice que ya existe (`wz_copias_<expediente>`, arriba) es **POR
+// EXPEDIENTE**: para leerlo hay que saber ya de qué expediente, así que no sirve solo.
+//
+// ⛔ Es el MISMO molde que el índice de combinaciones del catálogo
+// (`_apuntarCombinacionDelCatalogo_` / `_combinacionesDelCatalogo_`), copiado verbatim: un
+// solo escritor, un solo lector, tope declarado, más reciente primero y `[]` cuando no
+// consta. **No se inventa una forma nueva** (§"Regla — refactors preservan el código
+// probado").
+//
+// ⛔ **CERO DATOS PERSONALES.** Entra SOLO el `enrollment_group_id`, y solo si tiene forma de
+// identificador (`assertValidUuid_`). Nada más entra, ni resumido.
+//
+// ⛔ **«NO CONSTA» NO ES «NO HAY».** Índice ausente, vacío o ilegible ⇒ `[]`, y el llamante
+// cae al comportamiento de HOY: viajar. Nunca es una avería.
+//
+// ⛔ **ESTO SOLO GUARDA**: quién puede LEER una copia no cambia ni un ápice — el código de un
+// solo uso (②27), KAL-4, el candado de datos personales y el recorte por tutor (DL-E49 §2)
+// siguen exactamente igual.
+
+// Tope de solicitudes en el índice, más reciente primero. 200: el índice es una lista de
+// identificadores (36 bytes + comillas y coma ≈ 39) ⇒ ~7,8 KB, muy por debajo de los 100 KB
+// por entrada de `CacheService`, y muy por encima de las solicitudes vivas de un colegio
+// (1 medida el 2026-10-01). Acota sin poder estorbar: lo que no cabe se queda con el
+// comportamiento de hoy, que es pagar su viaje.
+var ESPEJO_SOLICITUDES_TOPE_ = 200;
+
+/** La clave del índice global de solicitudes calientes. Una sola. @private */
+function _claveIndiceDeSolicitudes_() {
+  return 'wz_solicitudes';
+}
+
+/**
+ * Las solicitudes que este proceso tiene calientes, **más reciente primero**. `[]` si no
+ * consta — y «no consta» NO es «no hay»: el que pregunta solo puede concluir que no tiene
+ * una lista, y entonces viaja como hoy.
+ *
+ * ⛔ **UN SOLO LECTOR.** @private
+ */
+function _solicitudesDeLasCopias_() {
+  try {
+    var crudo = CacheService.getScriptCache().get(_claveIndiceDeSolicitudes_());
+    if (!crudo) return [];
+    var v = JSON.parse(crudo);
+    if (!Array.isArray(v)) return [];
+    return v.filter(function (x) { return !!x && typeof x === 'string'; });
+  } catch (e) { return []; }   // índice ilegible ⇒ el comportamiento de hoy, nunca una avería
+}
+
+/**
+ * Apunta esta solicitud como la más reciente. Lo llama **el escritor ÚNICO de la copia**
+ * (`_espejoGuardarCopia_`), en la MISMA línea en la que ya apunta la pareja, y no hay un
+ * segundo sitio que lo toque.
+ *
+ * ⛔ **BEST-EFFORT ABSOLUTO**: si no se puede escribir, el repaso viajará como hoy. Un índice
+ * que se cae no puede romper nada.
+ *
+ * ⛔ **SOLO UN IDENTIFICADOR**: si el expediente no tiene forma de identificador, no se
+ * apunta — ver la cabecera de este bloque.
+ *
+ * @param {string} groupId
+ * @returns {boolean}
+ * @private
+ */
+function _apuntarSolicitudDeCopia_(groupId) {
+  try {
+    var gid = String(groupId || '').trim();
+    if (!gid) return false;
+    try { assertValidUuid_(gid, 'enrollment_group_id'); } catch (eG) { return false; }
+
+    var lista = _solicitudesDeLasCopias_().filter(function (x) { return x !== gid; });
+    lista.unshift(gid);
+    if (lista.length > ESPEJO_SOLICITUDES_TOPE_) lista = lista.slice(0, ESPEJO_SOLICITUDES_TOPE_);
+    CacheService.getScriptCache().put(_claveIndiceDeSolicitudes_(), JSON.stringify(lista),
       COPIAS_INDICE_TTL_S_);
     return true;
   } catch (e) { return false; }
@@ -13075,7 +13164,7 @@ function _espejoCalentarLaPuerta_(cache, copia) {
 
 // Tope de combinaciones (programa × idioma) por vuelta: un colegio con muchos programas no
 // puede comerse el presupuesto de la vuelta con el catálogo. Lo que sobre se prepara en la
-// siguiente — el repaso vuelve cada 30 min.
+// siguiente — el repaso vuelve cada `ESPEJO_CADA_MIN_` (15 min).
 var ESPEJO_CUESTIONARIOS_POR_VUELTA_ = 8;
 
 /**
@@ -13155,6 +13244,177 @@ function _espejoCalentarElCuestionario_(pendientes, seAcaboElTiempo, opciones) {
   return res;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2026-10-01 · LA VUELTA RE-CALIENTA DESDE SU PROPIA MEMORIA, SIN VIAJAR
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// **LA ASIMETRÍA QUE ESTO CORRIGE, medida el 2026-10-01:** lo que el viaje al KMS trae es la
+// HIDRATACIÓN, que dura **6 h** (`ESPEJO_HYD_TTL_S_`). Lo que de verdad caduca cada **30 min**
+// es la PUERTA (`COPIA_PUERTA_TTL_S_`), la IDENTIDAD (`IDENTIDAD_MEMO_TTL_S_`) y el
+// CUESTIONARIO (`CATALOGO_PREGUNTAS_TTL_S_`) — **y las tres se construyen ENTERAS con
+// `payload.group`, que ya está guardado**. ⇒ 96 veces al día el repaso se traía de fuera algo
+// que ya tenía, para reescribir tres cosas que salen gratis.
+//
+// **Qué cuesta ese viaje:** el salto asistente→KMS tiene suelo medido de **9,3-13,2 s** (el
+// trabajo del KMS son ≈2,5 s), y el repaso corre cada 15 min bajo la cuenta del DESARROLLADOR
+// (`executeAs: USER_DEPLOYING`) ⇒ 96 vueltas al día contra una cuota de 6 h.
+//
+// ⛔ **NINGÚN PLAZO DE SEGURIDAD SE TOCA**: ni `COPIA_PUERTA_TTL_S_`, ni
+// `IDENTIDAD_MEMO_TTL_S_`, ni `ESPEJO_CADA_MIN_`, ni la gracia de 10 min, ni la ventana de
+// step-up. El disparador sigue a 15 min: lo que cambia es QUÉ HACE cada vuelta.
+//
+// ⛔⛔ **Y LA BARANDILLA QUE CONSERVA EL PLAZO DE REVOCACIÓN DE 30 MIN: SE EXIGE QUE LA
+// VERSIÓN CASE.** Cuando el colegio toca algo, su aviso bumpa la versión de clase, y entonces
+// esa copia **deja de re-calentarse sola** y espera al viaje. Sin esa comprobación, un enlace
+// que el colegio mató seguiría abriendo.
+
+/**
+ * 2026-10-01 — re-calienta LA PUERTA y LA IDENTIDAD de todas las parejas que este proceso ya
+ * tiene en memoria, **sin una sola llamada de red**.
+ *
+ * CÓMO: lee el índice GLOBAL de solicitudes (`_solicitudesDeLasCopias_`), de cada una sus
+ * parejas con el lector que YA existe (`_parejasDeLasCopias_`), y de cada pareja la copia
+ * guardada **exactamente igual que `_identidadDesdeElEspejo_`** (`_wzCacheGetChunked_` sobre
+ * `_wzCacheKey_('hyd', gid + '_' + n)`).
+ *
+ * ⛔ **NO SE COPIA NI UNA LÍNEA DE LÓGICA NI SE ESCRIBE UN SEGUNDO JUEZ.** Quien decide qué
+ * se archiva sigue siendo `_espejoCalentarLaPuerta_` TAL CUAL —con `_rechazosDelEnlace_`
+ * dentro y sus cuatro barandillas—; aquí solo se le arma el `{enrollment_group_id, n, payload}`
+ * con la forma EXACTA con la que hoy le llega del KMS.
+ *
+ * ⛔ **LA VERSIÓN TIENE QUE CASAR** (`env.v === _versionDeClase_(gid, 'hyd')`): una copia
+ * tildada vieja NO se re-calienta. Es lo que conserva el plazo de revocación de 30 min, y es
+ * la MISMA comprobación que hace `_identidadDesdeElEspejo_` antes de contestar.
+ *
+ * ⛔ **BEST-EFFORT POR PAREJA**: un fallo salta a la siguiente, nunca propaga y **no toca el
+ * cursor** de la vuelta.
+ *
+ * @param {GoogleAppsScript.Cache.Cache} cache
+ * @param {function():boolean} [seAcaboElTiempo]  el reloj de la vuelta. Sin él se usa el de
+ *        siempre (`ESPEJO_PRESUPUESTO_MS_`) contado desde esta llamada.
+ * @returns {{solicitudes:number, parejas:number, recalentadas:number, puertas:number,
+ *            identidades:number, viejas:number, omitidas:number, motivos:Object}}
+ * @private
+ */
+function _espejoRecalentarDesdeLaMemoria_(cache, seAcaboElTiempo) {
+  var out = { solicitudes: 0, parejas: 0, recalentadas: 0, puertas: 0, identidades: 0,
+              viejas: 0, omitidas: 0, motivos: {} };
+  var t0 = Date.now();
+  var fuera = (typeof seAcaboElTiempo === 'function')
+    ? seAcaboElTiempo
+    : function () { return Date.now() - t0 > ESPEJO_PRESUPUESTO_MS_; };
+  try {
+    if (!cache) return out;
+    var gids = _solicitudesDeLasCopias_();
+    out.solicitudes = gids.length;
+    for (var i = 0; i < gids.length; i++) {
+      if (fuera()) { out.omitidas += (gids.length - i); break; }
+      var gid = gids[i];
+      var parejas = [];
+      try { parejas = _parejasDeLasCopias_(gid); } catch (_eI) { parejas = []; }
+      out.parejas += parejas.length;
+      var vigente = _versionDeClase_(gid, 'hyd');
+      for (var j = 0; j < parejas.length; j++) {
+        if (fuera()) { out.omitidas++; continue; }
+        try {
+          var n = parejas[j];
+          var crudo = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', gid + '_' + n));
+          if (!crudo) { out.motivos.SIN_COPIA = (out.motivos.SIN_COPIA || 0) + 1; continue; }
+          var env = null;
+          try { env = JSON.parse(crudo); } catch (eP) {
+            out.motivos.COPIA_ILEGIBLE = (out.motivos.COPIA_ILEGIBLE || 0) + 1; continue;
+          }
+          // ⛔⛔ LA BARANDILLA: versión vieja ⇒ NO se re-calienta. La misma comprobación de
+          // `_identidadDesdeElEspejo_`, y lo que conserva el plazo de revocación de 30 min.
+          if (!env || env.v !== vigente) { out.viejas++; continue; }
+          if (!env.data || typeof env.data !== 'object') {
+            out.motivos.SIN_PAYLOAD = (out.motivos.SIN_PAYLOAD || 0) + 1; continue;
+          }
+          // EL JUEZ Y LAS CUATRO BARANDILLAS VIVEN AHÍ DENTRO, donde están.
+          var cal = _espejoCalentarLaPuerta_(cache, {
+            enrollment_group_id: gid, n: n, payload: env.data,
+          });
+          if (cal.puerta) { out.puertas++; out.recalentadas++; }
+          if (cal.identidad) out.identidades++;
+          if (!cal.puerta && cal.motivo) {
+            out.motivos[cal.motivo] = (out.motivos[cal.motivo] || 0) + 1;
+          }
+        } catch (ePar) { out.motivos.ERROR = (out.motivos.ERROR || 0) + 1; }
+      }
+    }
+  } catch (e) {
+    try { Logger.log(redact_('[_espejoRecalentarDesdeLaMemoria_] non-fatal — ' + ((e && e.message) || e))); } catch (_eL) {}
+  }
+  return out;
+}
+
+/**
+ * 2026-10-01 — las combinaciones (programa × idioma) de las copias que este proceso tiene en
+ * memoria, deduplicadas, **sin viajar a ningún sitio**.
+ *
+ * ⛔ **ES EL MISMO CÁLCULO QUE HACE EL BUCLE DEL VIAJE, sobre la misma forma de copia** —
+ * `group.program_id` y `group.preferred_language || 'es'`, el idioma derivado EXACTAMENTE como
+ * en `sendMagicLink_`—: si aquí se derivara de otra forma se prepararía una clave que el clic
+ * no lee. Lo único que cambia es de dónde sale la copia: de la caché en vez del KMS.
+ *
+ * **POR QUÉ HACE FALTA, medido el 2026-10-01:** la copia del catálogo vive
+ * `CATALOGO_PREGUNTAS_TTL_S_` = **30 min**, y es su REFRESCO SIN VIAJE
+ * (`_espejoCalentarElCuestionario_`, que la re-escribe mientras le quede techo de 2 h) el que
+ * la mantiene viva. Si la vuelta solo compusiera esa lista cuando viaja —una vez por hora—, la
+ * copia moriría a los 30 min y el clic de la familia pagaría ese viaje. ⛔ Por eso esto NO toca
+ * `_espejoCalentarElCuestionario_`: le pasa la MISMA lista que ya recibe.
+ *
+ * @param {GoogleAppsScript.Cache.Cache} cache
+ * @returns {Object} mapa `clave → {program_id, lang}`, el mismo que arma el bucle del viaje.
+ * @private
+ */
+function _espejoCuestionariosDeLaMemoria_(cache) {
+  var pendientes = {};
+  try {
+    if (!cache) return pendientes;
+    var gids = _solicitudesDeLasCopias_();
+    for (var i = 0; i < gids.length; i++) {
+      try {
+        var gid = gids[i];
+        var parejas = _parejasDeLasCopias_(gid);
+        for (var j = 0; j < parejas.length; j++) {
+          var crudo = _wzCacheGetChunked_(cache, _wzCacheKey_('hyd', gid + '_' + parejas[j]));
+          if (!crudo) continue;
+          var env = null;
+          try { env = JSON.parse(crudo); } catch (eP) { continue; }
+          var g = env && env.data && env.data.group;
+          var prog = (g && g['program_id']) ? String(g['program_id']) : '';
+          if (!prog) continue;   // sin programa no se prepara nada: sería una clave que nadie lee
+          var lang = (g && g['preferred_language']) ? String(g['preferred_language']) : 'es';
+          pendientes[prog + '|' + lang] = { program_id: prog, lang: lang };
+          break;   // el catálogo es por (PROGRAMA × idioma), no por tutor: una copia basta
+        }
+      } catch (_eG) { /* best-effort por solicitud */ }
+    }
+  } catch (e) { /* best-effort: sin lista, el cuestionario se queda como hoy */ }
+  return pendientes;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2026-10-01 · AL COLEGIO SE LE PREGUNTA UNA VEZ POR HORA, NO CUATRO
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// **El viaje ya NO hace falta para re-calentar** —eso lo hace `_espejoRecalentarDesdeLaMemoria_`
+// con lo que ya está guardado—. Sigue haciendo falta para TRES cosas, y ninguna es cada 15 min:
+//
+//   1. **refrescar la hidratación**, que dura 6 h (`ESPEJO_HYD_TTL_S_`) ⇒ cuatro visitas por
+//      hora son 24 por vida de la copia; con una por hora siguen siendo 6, margen de sobra;
+//   2. **descubrir una solicitud que el asistente todavía no tiene** (una familia a la que el
+//      colegio acaba de invitar, o un expediente nuevo) — el índice no la puede nombrar porque
+//      nunca se archivó su copia;
+//   3. **de red, por si un aviso del colegio se perdió**: el aviso firmado es best-effort, así
+//      que una visita periódica es lo que garantiza que la copia converge igualmente.
+//
+// 15 min × 4 = 1 h. ⛔ El disparador NO se toca (`ESPEJO_CADA_MIN_` sigue en 15): lo que cambia
+// es que tres de cada cuatro vueltas se resuelven en memoria.
+var ESPEJO_PREGUNTA_CADA_VUELTAS_ = 4;
+var ESPEJO_VUELTAS_KEY_ = 'espejo_vueltas_sin_preguntar';   // al lado del cursor
+
 /**
  * ①97 — **EL DISPARADOR**. Pide al KMS las copias de recuperación de todas las solicitudes
  * vivas del colegio y las archiva en la `ScriptCache` de este proyecto.
@@ -13179,13 +13439,33 @@ function _espejoCalentarElCuestionario_(pendientes, seAcaboElTiempo, opciones) {
  * caducando a los 30 min sin que nadie las rehiciera, y cada una era un viaje al KMS con suelo
  * medido de 9,3-13,2 s en el clic de la familia. Ver el bloque de arriba.
  *
+ * ★ 2026-10-01 — **Y HAY DOS CLASES DE VUELTA, porque el viaje ya no hace falta para
+ * re-calentar.** Lo que el viaje trae es la HIDRATACIÓN (6 h); lo que caduca cada 30 min son la
+ * puerta, la identidad y el cuestionario, **y las tres se construyen con `payload.group`, que
+ * ya está guardado**:
+ *
+ *   · **LA VUELTA QUE NO VIAJA** (tres de cada cuatro) — `_espejoRecalentarDesdeLaMemoria_`
+ *     recorre el índice global de solicitudes y re-calienta puerta e identidad **con cero
+ *     llamadas de red**, exigiendo que la versión de cada copia CASE (ésa es la barandilla que
+ *     conserva el plazo de revocación de 30 min). El cuestionario sigue por su propia función,
+ *     con la lista compuesta de la memoria.
+ *   · **LA VUELTA QUE VIAJA** (una por hora, `ESPEJO_PREGUNTA_CADA_VUELTAS_`) — el bucle de
+ *     siempre, sin tocar ni una línea: refresca la hidratación, descubre las solicitudes que el
+ *     índice no puede nombrar y hace de red por si un aviso del colegio se perdió.
+ *
+ * ⛔ **SIN ÍNDICE —vacío o ilegible— O CON PÁGINAS SIN VER, SE VIAJA**: el comportamiento es
+ * byte a byte el de hoy. ⛔ Y **ningún plazo de seguridad cambia**: el disparador sigue a
+ * `ESPEJO_CADA_MIN_` (15 min).
+ *
  * @returns {{vueltas:number, copias:number, archivadas:number, grupos_totales:number,
- *            puertas:number, identidades:number, cuestionarios:number,
+ *            puertas:number, identidades:number, cuestionarios:number, viajo:boolean,
+ *            indice_solicitudes:number, recalentadas_sin_viaje:number,
  *            desde:number, siguiente_desde:?number, corte_por_tiempo:boolean, error:?string}}
  */
 function espejoRefrescarCopias() {
   var out = { vueltas: 0, copias: 0, archivadas: 0, grupos_totales: 0,
               puertas: 0, identidades: 0, cuestionarios: 0,
+              viajo: false, indice_solicitudes: 0, recalentadas_sin_viaje: 0,
               desde: 0, siguiente_desde: null, corte_por_tiempo: false, error: null };
   var t0 = Date.now();
   var cache = CacheService.getScriptCache();
@@ -13197,8 +13477,43 @@ function espejoRefrescarCopias() {
   // ★ 2026-09-22 — (programa × idioma) vistos en esta vuelta, deduplicados (D181).
   var cuestionariosPendientes = {};
 
+  // ★ 2026-10-01 — ¿SE LE PREGUNTA AL COLEGIO EN ESTA VUELTA?
+  // El índice global dice qué solicitudes tiene este proceso calientes; con él, la puerta y la
+  // identidad se re-calientan desde la memoria y el viaje no hace falta para eso.
+  // ⛔ **SIN ÍNDICE, EL COMPORTAMIENTO ES BYTE A BYTE EL DE HOY**: se viaja.
+  var indice = [];
+  try { indice = _solicitudesDeLasCopias_(); } catch (_eIx) { indice = []; }
+  out.indice_solicitudes = indice.length;
+  var vueltasSinPreguntar = 0;
+  try { vueltasSinPreguntar = Math.max(0, Number(cache.get(ESPEJO_VUELTAS_KEY_)) || 0); } catch (_eV) { vueltasSinPreguntar = 0; }
+  // `desde > 0` ES el `corte_por_tiempo` de la vuelta anterior, ya persistido: una vuelta
+  // completa deja el cursor en 0 y solo un corte por tiempo lo deja en una página. Si quedaron
+  // páginas sin ver, se viaja para no dejarlas colgando.
+  out.viajo = (vueltasSinPreguntar >= (ESPEJO_PREGUNTA_CADA_VUELTAS_ - 1)) ||
+              indice.length === 0 || desde > 0;
+
+  // ⛔ LA VUELTA QUE NO VIAJA: re-calienta con lo que ya tiene y no toca la red.
+  if (!out.viajo) {
+    try {
+      var rc = _espejoRecalentarDesdeLaMemoria_(cache, function () {
+        return Date.now() - t0 > ESPEJO_PRESUPUESTO_MS_;
+      });
+      out.recalentadas_sin_viaje = rc.recalentadas;
+      out.puertas = rc.puertas;
+      out.identidades = rc.identidades;
+      out.recalentar = rc;
+      // El CUESTIONARIO sigue gobernado por `_espejoCalentarElCuestionario_`, que no se toca:
+      // se le pasa la MISMA lista, compuesta de la memoria en vez de del viaje. Sin esto su
+      // copia (30 min) moriría entre vuelta y vuelta de las que SÍ viajan (1 h).
+      cuestionariosPendientes = _espejoCuestionariosDeLaMemoria_(cache);
+    } catch (eRC) {
+      out.error = String((eRC && eRC.message) || eRC).slice(0, 200);
+      Logger.log('[espejoRefrescarCopias] recalentar non-fatal — ' + redact_(out.error));
+    }
+  }
+
   try {
-    while (true) {
+    while (out.viajo) {
       if (Date.now() - t0 > ESPEJO_PRESUPUESTO_MS_) { out.corte_por_tiempo = true; break; }
       var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', {
         desde: desde, cuantas: ESPEJO_GRUPOS_POR_VUELTA_,
@@ -13244,6 +13559,13 @@ function espejoRefrescarCopias() {
 
   out.siguiente_desde = desde || null;
   try { cache.put(ESPEJO_CURSOR_KEY_, String(desde || 0), ESPEJO_GUARDA_S_); } catch (_eP) {}
+  // ★ 2026-10-01 — el contador de vueltas sin preguntar, al lado del cursor. Se pone a cero en
+  // la vuelta que viaja y sube en las que no. Best-effort: si no se puede escribir, la vuelta
+  // siguiente lo lee como 0 y lo peor que pasa es que se tarde una vuelta más en preguntar.
+  try {
+    cache.put(ESPEJO_VUELTAS_KEY_, String(out.viajo ? 0 : (vueltasSinPreguntar + 1)),
+      ESPEJO_GUARDA_S_);
+  } catch (_eVP) {}
 
   // ★ 2026-09-22 — EL CUESTIONARIO, UNA VEZ POR (PROGRAMA × IDIOMA) Y NO POR FAMILIA.
   // Va FUERA del bucle a propósito — es por programa, no por familia (D181) — y **después de

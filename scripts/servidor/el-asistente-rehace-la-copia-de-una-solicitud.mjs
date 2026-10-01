@@ -352,8 +352,12 @@ function afirmaciones (fuente) {
 
 // ── Las ROTURAS DEMOSTRADAS: cada una tiene que poner ROJA su afirmación ────────────────
 const ROTURAS = [
+  // ⚠️ El ancla cambió el 2026-10-01: el escritor único apunta AHORA dos índices en la misma
+  // línea (la pareja y la solicitud). Se retira SOLO la pareja, que es lo que este arnés mide.
   { nombre: 'el escritor único deja de APUNTAR la pareja',
-    romper: (f) => f.replace('    if (guardada) _apuntarParejaDeCopia_(groupId, key);', '') },
+    romper: (f) => f.replace(
+      '    if (guardada) { _apuntarParejaDeCopia_(groupId, key); _apuntarSolicitudDeCopia_(groupId); }',
+      '    if (guardada) { _apuntarSolicitudDeCopia_(groupId); }') },
   { nombre: 'el receptor deja de rehacer cuando el aviso viene PELADO',
     romper: (f) => f.replace(
       '  const reh = traeCopias ? null : _laSolicitudCambioEnElColegio_(groupId, v.event.reason);',
