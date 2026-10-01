@@ -643,7 +643,7 @@ relojes descasados lo que hacía viajar.
 | La vuelta | Qué hace | Viajes al KMS |
 |---|---|---|
 | **la que NO pregunta** (tres de cada cuatro) | `_espejoRecalentarDesdeLaMemoria_` recorre el índice GLOBAL de solicitudes, lee cada copia guardada y le pasa cada `(expediente × tutor)` a `_espejoCalentarLaPuerta_` **TAL CUAL**; el cuestionario va por su propia función con la lista compuesta de la memoria (`_espejoCuestionariosDeLaMemoria_`) | **0** |
-| **la que PREGUNTA** (una por hora, `ESPEJO_PREGUNTA_CADA_VUELTAS_` = 4) | el bucle de siempre, sin tocar una línea: refresca la hidratación de 6 h, **descubre las solicitudes que el índice no puede nombrar** (una familia recién invitada) y hace de red por si un aviso del colegio se perdió | 1 |
+| **la que PREGUNTA** (una por hora, `ESPEJO_PREGUNTA_CADA_VUELTAS_` = 4) | el bucle de siempre, sin tocar una línea: refresca la hidratación de 6 h, **descubre las solicitudes que el índice no puede nombrar** (una familia recién invitada) y hace de red por si un aviso del colegio se perdió | 1, **y de UN solo intento** |
 
 - **El índice GLOBAL es `wz_solicitudes`** (6 h, tope `ESPEJO_SOLICITUDES_TOPE_` 200, más reciente
   primero), con **un solo escritor** —`_espejoGuardarCopia_`, en la misma línea en la que ya apunta
@@ -667,6 +667,25 @@ relojes descasados lo que hacía viajar.
   `{enrollment_group_id, n, payload}` con la forma exacta con la que hoy le llega del KMS.
 - **Medido con el arnés sobre las funciones REALES (2026-10-01):** la vuelta con índice hace **0**
   viajes y re-calienta sus parejas; la cuarta hace **1**. ⇒ de **4 viajes a la hora a 1**.
+
+**⛔ Y EL REPASO DE FONDO NO REINTENTA — acreditado en producción el 2026-10-01.** En el registro de
+la ejecución de las 07:12:02 (152,01 s, «Completed») los tres intentos de
+`enr.copiasDeLasSolicitudesVivas` duraron **38.254 / 46.885 / 62.341 ms** y los tres salieron
+`KMS_BAD_RESPONSE` con una **página HTML de Google** en vez de la respuesta; la vuelta terminó con
+**todos sus contadores a cero** ⇒ **147 s de la cuota del DESARROLLADOR para no refrescar nada**, y en
+pantalla sale como terminada porque el `catch` de la vuelta la deja salir normal.
+
+- **La acotación es DEL LLAMANTE, no del transporte**: `kmsProxy_` admite un tercer argumento
+  opcional (`{intentos: 1}`) y **hoy lo pide UN SOLO SITIO**, la llamada de `espejoRefrescarCopias`.
+- ⛔ **`KMS_INTENTOS` (3) y el sueño de 1,2 s NO SE TOCAN**: los comparte el camino vivo de las
+  familias, donde **repetir la petición ES lo que recupera** (medido el 2026-08-04: 2 de 8 saltos
+  devolvieron una página de Google, y releer el `Location:` no recupera). Sin `opciones`, el
+  comportamiento es **byte-idéntico**.
+- ⛔ **Solo se puede pedir MENOS, nunca más**: se capa a `[1, 3]`.
+- **Lo que se pierde, dicho:** esas copias se quedan como estaban —lo que este mecanismo ya declara
+  tolerar— y se reintentan en la vuelta siguiente, o sea en una hora. **La puerta y la identidad se
+  siguen re-calentando desde la memoria cada 15 min**, así que un fallo de transporte ya no deja a
+  nadie en frío.
 
 **Red:** `node scripts/servidor/el-repaso-no-pregunta-lo-que-ya-sabe.mjs`.
 
@@ -1307,7 +1326,7 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | `el-catalogo-de-preguntas.mjs` | que un catálogo guardado **no se pueda quedar clavado para siempre**: el refresco sin viaje sigue ahorrando, el techo obliga a releer, un viaje fallido no se lleva la copia, y el camino público sigue sirviéndose de ella |
 | `el-catalogo-se-entera-cuando-el-colegio-lo-cambia.mjs` | que una pregunta editada en el KMS llegue a la copia del asistente y que **nadie se quede sin cuestionario**: la copia vieja no se borra hasta que llega la nueva |
 | `la-copia-se-actualiza-al-escribir.mjs` | la **regla 3** de Diego: que una escritura del tutor deje la copia caliente **rehecha con lo que el KMS confirma**, y que jamás se archive como buena una copia con un dato que el KMS no ha confirmado |
-| `el-repaso-no-pregunta-lo-que-ya-sabe.mjs` | que el repaso de fondo **re-caliente la puerta y la identidad con lo que YA tiene guardado, sin viajar al KMS**, y que ahorrar ese viaje no afloje ni un plazo: una copia con la **versión vieja NO se re-calienta** (es lo que conserva el plazo de revocación de 30 min), una ficha que el juez único RECHAZA no deja nada escrito, el índice global **solo admite identificadores** (ni un correo ni su resumen), y ⛔ **sin índice, con el índice ilegible, con el contador vencido o con páginas sin ver se VIAJA** y el comportamiento es el de hoy |
+| `el-repaso-no-pregunta-lo-que-ya-sabe.mjs` | que el repaso de fondo **re-caliente la puerta y la identidad con lo que YA tiene guardado, sin viajar al KMS**, y que ahorrar ese viaje no afloje ni un plazo: una copia con la **versión vieja NO se re-calienta** (es lo que conserva el plazo de revocación de 30 min), una ficha que el juez único RECHAZA no deja nada escrito, el índice global **solo admite identificadores** (ni un correo ni su resumen), y ⛔ **sin índice, con el índice ilegible, con el contador vencido o con páginas sin ver se VIAJA** y el comportamiento es el de hoy. **Y que el repaso NO REINTENTE**: con el transporte devolviendo basura hace **UN** intento y sin dormir, mientras el **camino vivo de una familia sigue haciendo TRES** (ahí repetir la petición es lo único que recupera) — se ejecuta el `kmsProxy_` REAL con el transporte doblado, así que tocar el valor por defecto sale ROJO, y un llamante que pida 9 sigue consiguiendo 3 |
 | `el-enlace-viejo-no-muere-hasta-que-salga-el-nuevo.mjs` | que **una familia nunca se quede sin enlace válido por un correo que no salió**: el envío que sale deja el enlace rotado, el que falla lo deja como estaba (las dos ramas, y los N de un correo multi), y el ack constante de la rama pública no cambia según si el correo salió |
 
 **Se corren solos desde el 2026-09-23**: el lanzador `node scripts/comprobar-el-servidor.mjs`

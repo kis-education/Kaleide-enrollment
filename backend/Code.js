@@ -10194,7 +10194,7 @@ function _dbgBlock_() {
   return { server_ms: Date.now() - DBGT_.t0, received_at: new Date(DBGT_.t0).toISOString(), events: DBGT_.ev };
 }
 
-function kmsProxy_(action, payload) {
+function kmsProxy_(action, payload, opciones) {
   const props        = PropertiesService.getScriptProperties();
   const kmsUrl       = props.getProperty('KMS_DEPLOYMENT_URL');
   const serviceToken = props.getProperty('QB_SERVICE_TOKEN');
@@ -10249,11 +10249,36 @@ function kmsProxy_(action, payload) {
   // Lo que la familia veía sin esto: «tu enlace no funciona» (rebote a la portada con
   // `resume_error=1`) cuando el que falló fue el transporte, no su expediente.
   const KMS_INTENTOS = 3;
+  // ★ 2026-10-01 — EL REPASO DE FONDO NO REINTENTA, Y LA ACOTACIÓN ES DEL LLAMANTE.
+  //
+  // ACREDITADO EN PRODUCCIÓN (registro de la ejecución de las 07:12:02 del 1-oct, 152,01 s,
+  // «Completed»): los tres intentos de `enr.copiasDeLasSolicitudesVivas` duraron
+  // 38.254 / 46.885 / 62.341 ms y los tres salieron `KMS_BAD_RESPONSE` con una página HTML de
+  // Google en vez de la respuesta. La vuelta terminó con TODOS sus contadores a cero ⇒
+  // **147 s de la cuota del DESARROLLADOR para no refrescar NADA**, y en pantalla sale como
+  // terminada porque el `catch` de la vuelta la deja salir normal.
+  //
+  // ⛔ **`KMS_INTENTOS` Y EL SUEÑO DE 1,2 s NO SE TOCAN**: los comparte el camino vivo de las
+  // familias, donde repetir la petición ES lo que recupera (lo de arriba está medido). Lo que
+  // se añade es que **EL LLAMANTE pueda pedir menos**, y hoy lo pide UNO SOLO:
+  // `espejoRefrescarCopias`, que corre de fondo cada 15 min y cuya copia **se queda como
+  // estaba** —lo que ese mecanismo ya declara tolerar— hasta la vuelta siguiente. La puerta y
+  // la identidad se siguen re-calentando desde la memoria cada 15 min, así que un fallo de
+  // transporte ya no deja a nadie en frío.
+  //
+  // ⛔ **SOLO PUEDE PEDIR MENOS, NUNCA MÁS**: se capa a `[1, KMS_INTENTOS]`, así que un
+  // llamante que pidiera 50 no inventa un comportamiento nuevo. Sin `opciones`, o con algo
+  // que no sea un número, el valor es **3 — byte-idéntico al de siempre**.
+  const KMS_INTENTOS_DE_ESTA_LLAMADA = (function () {
+    var pedidos = opciones && opciones.intentos;
+    if (typeof pedidos !== 'number' || !isFinite(pedidos)) return KMS_INTENTOS;
+    return Math.max(1, Math.min(KMS_INTENTOS, Math.floor(pedidos)));
+  })();
   let status = 0;
   let text   = '';
   let resp   = null;
   let ultimoFallo = null;   // {codigo, mensaje} del último intento ilegible
-  for (let intento = 1; intento <= KMS_INTENTOS; intento++) {
+  for (let intento = 1; intento <= KMS_INTENTOS_DE_ESTA_LLAMADA; intento++) {
     let httpResp;
     _dbgEv_('kms_call', action + (intento > 1 ? ' (reintento ' + intento + ')' : ''));
     const perfFetchT0 = Date.now(); // PERF-KMS2: aísla el hop HTTP wizard→KMS
@@ -10295,9 +10320,10 @@ function kmsProxy_(action, payload) {
         }
       }
     }
-    Logger.log('[kmsProxy_] transporte ilegible en el intento ' + intento + '/' + KMS_INTENTOS +
-               ' de ' + action + ' — ' + (ultimoFallo && ultimoFallo.codigo));
-    if (intento < KMS_INTENTOS) Utilities.sleep(1200);
+    Logger.log('[kmsProxy_] transporte ilegible en el intento ' + intento + '/' +
+               KMS_INTENTOS_DE_ESTA_LLAMADA + ' de ' + action + ' — ' +
+               (ultimoFallo && ultimoFallo.codigo));
+    if (intento < KMS_INTENTOS_DE_ESTA_LLAMADA) Utilities.sleep(1200);
   }
   if (ultimoFallo) {
     const err = new Error(ultimoFallo.mensaje);
@@ -13515,9 +13541,14 @@ function espejoRefrescarCopias() {
   try {
     while (out.viajo) {
       if (Date.now() - t0 > ESPEJO_PRESUPUESTO_MS_) { out.corte_por_tiempo = true; break; }
+      // ★ 2026-10-01 — UN SOLO INTENTO, y es el ÚNICO sitio que lo pide. Acreditado en
+      // producción: tres intentos ilegibles seguidos se comieron 147 s de la cuota del
+      // DESARROLLADOR para no refrescar nada. Aquí no hay nadie esperando y la copia se queda
+      // como estaba hasta la vuelta siguiente — lo que este mecanismo ya declara tolerar.
+      // ⛔ El defecto de `kmsProxy_` sigue siendo 3: el camino vivo de las familias no se toca.
       var r = kmsProxy_('enr.copiasDeLasSolicitudesVivas', {
         desde: desde, cuantas: ESPEJO_GRUPOS_POR_VUELTA_,
-      }) || {};
+      }, { intentos: 1 }) || {};
       out.vueltas++;
       out.grupos_totales = r.grupos_totales || 0;
       var copias = r.copias || [];

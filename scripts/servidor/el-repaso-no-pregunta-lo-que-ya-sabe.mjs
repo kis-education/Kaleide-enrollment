@@ -28,6 +28,13 @@
  * ⛔ **Y DEGRADA SOLO, afirmación (4):** sin índice, con el índice ilegible o con páginas sin
  * ver, la vuelta VIAJA y hace exactamente lo de hoy.
  *
+ * ⛔ **Y LA AFIRMACIÓN (7) VIGILA LAS DOS MITADES DE UNA MISMA LÍNEA:** el repaso de fondo hace
+ * **UN** intento cuando el transporte devuelve basura —acreditado en producción el 2026-10-01:
+ * tres intentos ilegibles seguidos, 147 s de la cuota del DESARROLLADOR, todos los contadores a
+ * cero— y **el camino vivo de una familia sigue haciendo TRES**, porque ahí repetir la petición
+ * ES lo que recupera. Para eso se ejecuta el `kmsProxy_` REAL con el TRANSPORTE doblado, y no
+ * con `kmsProxy_` doblado: si se tocara el valor por defecto, la segunda mitad sale ROJA.
+ *
  * CÓMO MIDE. Carga `backend/Code.js` REAL entero en un `vm` con dobles en memoria y ejecuta
  * `espejoRefrescarCopias` de verdad, contando las llamadas que salen por `kmsProxy_`. No copia
  * ni una línea de lógica: si la función cambia, este control mide la nueva. Los datos son
@@ -164,6 +171,67 @@ function cargar (fuente) {
   }
 }
 
+// ── El SEGUNDO banco: aquí `kmsProxy_` NO se dobla. Lo que se dobla es el TRANSPORTE,
+//    devolviendo lo que devolvió de verdad en producción el 1-oct: HTTP 200 con una página
+//    HTML de Google en vez de la respuesta. Así se cuentan los INTENTOS de verdad.
+function cargarConTransporteRoto (fuente) {
+  const cache = new Map()
+  const fetches = []
+  let suenos = 0
+  const ctx = {
+    console: { log () {}, error () {} },
+    Logger: { log () {} },
+    CacheService: {
+      getScriptCache: () => ({
+        get: (k) => (cache.has(k) ? cache.get(k) : null),
+        put: (k, v) => { cache.set(k, String(v)) },
+        putAll: (o) => { Object.keys(o).forEach((k) => cache.set(k, String(o[k]))) },
+        getAll: (ks) => { const o = {}; ks.forEach((k) => { if (cache.has(k)) o[k] = cache.get(k) }); return o },
+        remove: (k) => { cache.delete(k) },
+      }),
+    },
+    PropertiesService: {
+      getScriptProperties: () => ({
+        // Las DOS que `kmsProxy_` exige, o saldría por `KMS_NOT_CONFIGURED` sin intentar nada.
+        getProperty: (k) => (k === 'KMS_DEPLOYMENT_URL' ? 'https://kms.invalid/exec'
+          : k === 'QB_SERVICE_TOKEN' ? 'token-sintetico' : null),
+        setProperty () {},
+      }),
+    },
+    // EL TRANSPORTE ROTO: 200 con HTML ⇒ `KMS_BAD_RESPONSE`, el caso REAL de producción.
+    UrlFetchApp: {
+      fetch: (url, opt) => {
+        let accion = '?'
+        try { accion = String(JSON.parse(opt.payload).action || '?') } catch (_) {}
+        fetches.push(accion)
+        return { getResponseCode: () => 200,
+                 getContentText: () => '<!DOCTYPE html><html><head><title>Google</title></head></html>' }
+      },
+      fetchAll () { throw new Error('el arnés no usa fetchAll') },
+    },
+    ScriptApp: { getOAuthToken: () => 'x', getService: () => ({ getUrl: () => 'https://x/exec' }),
+                 getProjectTriggers: () => [] },
+    Utilities: {
+      getUuid: () => '55555555-5555-4555-8555-555555555555',
+      base64EncodeWebSafe: (s) => Buffer.from(String(s)).toString('base64url'),
+      computeDigest: (a, s) => Array.from(Buffer.from(String(s))),
+      DigestAlgorithm: { SHA_256: 1 }, Charset: { UTF_8: 1 },
+      // ⛔ No se duerme de verdad (el arnés tarda ~1 s), pero se CUENTA: el sueño de 1,2 s es
+      //    la otra mitad del coste que esto viene a quitar.
+      sleep: () => { suenos++ }, formatDate: () => '2026-01-01',
+      newBlob: (s) => ({ getBytes: () => Array.from(Buffer.from(String(s))) }),
+    },
+    Session: { getActiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'UTC' },
+  }
+  vm.createContext(ctx)
+  vm.runInContext(fuente, ctx, { filename: 'backend/Code.js' })
+  return {
+    ctx, cache, fetches,
+    suenos: () => suenos,
+    deLaAccion: (a) => fetches.filter((x) => x === a).length,
+  }
+}
+
 // Lo que este arnés CONDUCE. Si falta uno, no se mide nada: MEDICIÓN CIEGA.
 const NOMBRES_QUE_CONDUCE = [
   'espejoRefrescarCopias', '_espejoRecalentarDesdeLaMemoria_',
@@ -172,6 +240,7 @@ const NOMBRES_QUE_CONDUCE = [
   '_espejoGuardarCopia_', '_espejoCalentarLaPuerta_', '_parejasDeLasCopias_',
   '_claveCopiaPuerta_', '_claveIdLinkMemo_', '_versionDeClase_', '_wzCacheKey_', '_wzN_',
   '_rechazosDelEnlace_', '_guardarCatalogoDePreguntas_', '_marcarViajeDelCatalogo_',
+  'kmsProxy_',
 ]
 const CONSTANTES_QUE_CONDUCE = ['ESPEJO_PREGUNTA_CADA_VUELTAS_', 'ESPEJO_VUELTAS_KEY_',
                                 'ESPEJO_SOLICITUDES_TOPE_', 'ESPEJO_CURSOR_KEY_']
@@ -400,6 +469,69 @@ function afirmaciones (fuente) {
       m6.cursor() + '): el cursor es de las páginas del KMS, y aquí no se ha pedido ninguna')
   }
 
+  // ── (7) ⛔ EL REPASO DE FONDO NO REINTENTA — y el camino vivo SÍ ─────────────────────
+  //     ACREDITADO en producción el 2026-10-01: tres intentos ilegibles seguidos
+  //     (38.254 / 46.885 / 62.341 ms) se comieron 147 s de la cuota del DESARROLLADOR para
+  //     terminar con TODOS los contadores a cero. Aquí se ejecuta el `kmsProxy_` REAL con el
+  //     transporte devolviendo lo que devolvió aquel día: 200 con una página HTML.
+  const m7 = cargarConTransporteRoto(fuente)
+  if (typeof m7.ctx.espejoRefrescarCopias !== 'function' || typeof m7.ctx.kmsProxy_ !== 'function') {
+    return { ciego: true, fallos: ['MEDICIÓN CIEGA — el segundo banco no carga `espejoRefrescarCopias`/`kmsProxy_`'] }
+  }
+  // Sin índice ⇒ la vuelta VIAJA, y ahí es donde se cuentan sus intentos.
+  const out7 = m7.ctx.espejoRefrescarCopias()
+  total++
+  if (m7.deLaAccion('enr.copiasDeLasSolicitudesVivas') !== 1) {
+    fallos.push('(7.a) el repaso de fondo hizo ' + m7.deLaAccion('enr.copiasDeLasSolicitudesVivas') +
+      ' intentos en vez de UNO: medido en producción, tres intentos ilegibles seguidos son 147 s de ' +
+      'la cuota del DESARROLLADOR para no refrescar nada')
+  }
+  total++
+  if (!out7 || out7.viajo !== true || !out7.error) {
+    fallos.push('(7.b) la vuelta no salió DICIENDO que el transporte falló (' + JSON.stringify(out7) +
+      '): un fallo que no se nombra es el que nadie arregla')
+  }
+  total++
+  if (m7.suenos() !== 0) {
+    fallos.push('(7.c) el repaso durmió ' + m7.suenos() + ' vez/veces entre intentos: con un solo ' +
+      'intento no hay nada que esperar, y el sueño de 1,2 s es la otra mitad del coste')
+  }
+  // ⛔ Y LA OTRA MITAD, que es la que impide que esto se arregle por el sitio equivocado:
+  //    EL CAMINO VIVO DE UNA FAMILIA SIGUE REINTENTANDO TRES VECES. Ahí repetir la petición ES
+  //    lo que recupera (medido el 2026-08-04: 2 de 8 saltos devolvieron una página de Google).
+  const m7b = cargarConTransporteRoto(fuente)
+  let lanzo = null
+  try { m7b.ctx.kmsProxy_('enr.hydrateApplication', { resume_token: TOKEN_A }) }
+  catch (e) { lanzo = e }
+  total++
+  if (m7b.deLaAccion('enr.hydrateApplication') !== 3) {
+    fallos.push('(7.d) el camino VIVO hizo ' + m7b.deLaAccion('enr.hydrateApplication') + ' intentos en ' +
+      'vez de TRES: el defecto de `kmsProxy_` NO se toca — repetir la petición es lo único que ' +
+      'recupera un salto ilegible, y sin eso la familia ve «tu enlace no funciona»')
+  }
+  total++
+  if (!lanzo || lanzo.code !== 'KMS_BAD_RESPONSE') {
+    fallos.push('(7.e) un transporte ilegible dejó de lanzar `KMS_BAD_RESPONSE` (' +
+      (lanzo && lanzo.code) + '): un error de transporte que no se nombra se disfraza de otra cosa')
+  }
+  // ⛔ Y EL LLAMANTE SOLO PUEDE PEDIR MENOS, NUNCA MÁS: sin el tope, uno que pidiera 9 se
+  //    inventaría un comportamiento que nadie ha medido —y nueve saltos ilegibles son minutos
+  //    de cuota—. Se ejercita de verdad, porque una guarda que nadie prueba no es una guarda.
+  const m7c = cargarConTransporteRoto(fuente)
+  try { m7c.ctx.kmsProxy_('enr.hydrateApplication', { resume_token: TOKEN_A }, { intentos: 9 }) }
+  catch (_e) { /* tiene que lanzar: el transporte está roto */ }
+  total++
+  if (m7c.deLaAccion('enr.hydrateApplication') !== 3) {
+    fallos.push('(7.g) un llamante que pide 9 intentos consiguió ' +
+      m7c.deLaAccion('enr.hydrateApplication') + ': el parámetro solo puede pedir MENOS que el ' +
+      'techo de 3, nunca más')
+  }
+  total++
+  if (m7b.suenos() !== 2) {
+    fallos.push('(7.f) el camino vivo durmió ' + m7b.suenos() + ' veces en vez de 2 (una entre cada ' +
+      'par de intentos): el sueño del camino vivo tampoco se toca')
+  }
+
   return { ciego: false, fallos, total }
 }
 
@@ -444,6 +576,18 @@ const ROTURAS = [
       '          env = JSON.parse(crudo);').replace(
       '        } catch (ePar) { out.motivos.ERROR = (out.motivos.ERROR || 0) + 1; }',
       '        } catch (ePar) { throw ePar; }') },
+  { nombre: '⛔ el repaso de fondo vuelve a REINTENTAR tres veces (147 s de cuota para nada)',
+    romper: (f) => f.replace('      }, { intentos: 1 }) || {};', '      }) || {};') },
+  { nombre: 'el llamante pide menos intentos y `kmsProxy_` lo IGNORA',
+    romper: (f) => f.replace(
+      "    if (typeof pedidos !== 'number' || !isFinite(pedidos)) return KMS_INTENTOS;",
+      '    return KMS_INTENTOS;') },
+  { nombre: '⛔ se toca el DEFECTO y el camino vivo de las familias deja de reintentar',
+    romper: (f) => f.replace('  const KMS_INTENTOS = 3;', '  const KMS_INTENTOS = 1;') },
+  { nombre: 'el llamante puede pedir MÁS intentos que el techo',
+    romper: (f) => f.replace(
+      '    return Math.max(1, Math.min(KMS_INTENTOS, Math.floor(pedidos)));',
+      '    return Math.max(1, Math.floor(pedidos));') },
   { nombre: 'la vuelta sin viaje escribe el cursor del paginado',
     romper: (f) => f.replace(
       '  out.siguiente_desde = desde || null;',
@@ -493,6 +637,7 @@ try {
       console.log('  ✓ ⛔ sin índice, con índice ilegible, con el contador vencido o con páginas sin ver, SE VIAJA')
       console.log('  ✓ el índice global solo admite identificadores: ni un correo ni su resumen (KAL-11)')
       console.log('  ✓ un fallo de una pareja no tumba la vuelta ni mueve el cursor del paginado')
+      console.log('  ✓ ⛔ con el transporte devolviendo basura, el repaso hace UN intento y el camino vivo TRES')
       console.log('  ✓ ejecutado sobre `backend/Code.js` REAL, en un vm con dobles: sin red, sin navegador, sin datos reales')
     }
   }
