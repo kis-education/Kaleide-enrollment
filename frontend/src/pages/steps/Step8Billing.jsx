@@ -10,6 +10,8 @@ import CalendarioDePagos from '../../shared/CalendarioDePagos';
 import SelectorDeFormaDePago from '../../shared/SelectorDeFormaDePago';
 import { signingIdentity_, isStepUpRequiredError } from './signingCommon';
 import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
+// DL-E70 — cuántos tutores tiene la solicitud, con la señal que SOBREVIVE al recorte de DL-E49 §2.
+import { hayMasDeUnTutor } from '../../lib/tutoresDeLaSolicitud';
 import * as log from '../../logger';
 
 /**
@@ -455,8 +457,11 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
         error={err}
       >
         {/* ── DL-E70 · el reparto ya consta: se VALIDA y, si hay dos tutores, cambiarlo es un acto
-            consciente (desbloquear) que avisa al otro. Con un solo tutor no se pinta nada. ───── */}
-        {locked && onUnlock && guardians.length > 1 && (
+            consciente (desbloquear) que avisa al otro. Con un solo tutor no se pinta nada.
+            ⛔ CUÁNTOS tutores hay NO se cuenta aquí: `guardians` viene recortado a «yo» por
+            DL-E49 §2, así que su longitud es 1 SIEMPRE y esta frase no se pintaría nunca. El
+            criterio vive en `lib/tutoresDeLaSolicitud.js`. ─────────────────────────────────── */}
+        {locked && onUnlock && hayMasDeUnTutor(stepData, persons) && (
           <p data-testid="reparto-ya-elegido" style={{ color: 'var(--muted)', fontSize: '0.84rem', marginTop: 8 }}>
             {t('signing.billing.reparto_ya_elegido')}
           </p>

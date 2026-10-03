@@ -12288,6 +12288,194 @@ async function caminoRepartoNoSeSiembraDeVacio(page, base) {
   }
 }
 
+/**
+ * DL-E70 (CLI 75) — CAMBIAR EL REPARTO DE PAGOS QUE YA CONSTA ES UN ACTO CONSCIENTE.
+ *
+ * Diego, 2026-10-03: *«Lo que se le presenta al segundo tutor que llega es lo que ya el anterior
+ * ha elegido y solo pues, tendría que validarlo. Si quiere modificarlo, tiene que ser con un acto
+ * consciente desbloqueando que la otra persona había elegido otra cosa»*.
+ *
+ * ⛔ LO QUE AQUÍ SE MIDE, y no lo medía nada: la mitad de PANTALLA. El servidor ya tiene su arnés
+ * (`kis-app scripts/servidor/el-reparto-lo-cambia-un-acto-consciente.mjs`), que afirma que cambiar
+ * el reparto completa el hito del que cuelga el correo. Pero el candado y la pregunta viven en el
+ * navegador, y el `data-testid` que este recorrido lee **no tenía ningún consumidor**: si la
+ * pregunta dejara de salir, el reparto del primer tutor se volvería a reescribir de un solo clic
+ * y nada lo diría.
+ *
+ * ⛔ Y LA MITAD QUE PROTEGE A QUIEN NO TIENE DOS TUTORES: con un solo tutor no cambia NADA — ni se
+ * pinta la frase, ni desbloquear pregunta—. Una familia de un solo tutor no puede pagar un clic
+ * más por un aviso que no va a ninguna parte.
+ *
+ * El candado NO es una marca del navegador: sale de la rehidratación (`billing_confirmed`, el hito
+ * `BILLING_STEP_COMPLETED` del grupo), así que una recarga no se lo lleva. Por eso este recorrido
+ * lo provoca con `aterrizarEnGdpr` —el doble sirve el hito ya completado— y vuelve al paso 8 desde
+ * el 9, que es exactamente lo que hace el segundo tutor.
+ */
+async function caminoRepartoSeDesbloqueaAdrede(page, base) {
+  const c = new Camino('reparto-se-desbloquea-adrede')
+  scenario.stage = 'firma'
+  scenario.repartoGuardado60_40 = true   // hay un 60/40 acordado por el primer tutor
+  scenario.aterrizarEnGdpr = true        // …y su hito de facturación YA consta ⇒ el paso 8 con candado
+
+  // La pregunta es DEL ASISTENTE, no del navegador: si vuelve a salir un `window.confirm`, se
+  // cuenta y se falla nombrándolo (y se descarta, que es lo que hace el navegador cuando nadie
+  // contesta — con lo que el resto del recorrido también cae, y eso es lo correcto).
+  let nativos = 0
+  const vigilarNativo = async (dlg) => { nativos++; try { await dlg.dismiss() } catch { /* ya cerrado */ } }
+  page.on('dialog', vigilarNativo)
+
+  // ⛔ TRAMPA DE MEDICIÓN, ya pagada: el candado del asistente deshabilita un `<fieldset>`
+  // (`StepShell`), y `input.disabled` refleja SOLO el atributo del propio control — devuelve
+  // `false` dentro de un `fieldset` deshabilitado. Medirlo así daba un ROJO FALSO sobre un
+  // candado que funcionaba. Lo que se pregunta es `:disabled`, que SÍ casa el deshabilitado
+  // heredado del `fieldset`.
+  /** Contesta a la pregunta del asistente. `true` = confirmar, `false` = cancelar. */
+  const responder = async (confirmar) => {
+    const cuadro = await page.waitForSelector('[data-testid="confirm-dialog"]', { timeout: 4000 }).catch(() => null)
+    if (!cuadro) return false
+    const boton = await page.$(`[data-testid="confirm-dialog-${confirmar ? 'accept' : 'cancel'}"]`)
+    if (!boton) return false
+    await boton.click()
+    await page.waitForTimeout(200)
+    return true
+  }
+
+  /**
+   * Vuelve del paso 9 al 8 pulsando «Atrás» — el camino del segundo tutor. Espera a que el
+   * reparto llegue a PINTARSE: el paso 8 se remonta y vuelve a pedir su presupuesto, y medir
+   * antes de eso mediría la prisa del robot, no el producto.
+   */
+  const volverAlPaso8 = async () => {
+    const atras = await page.$('button.btn-secondary-kis:not(:has(i.bi-pencil))')
+    if (!atras) return false
+    await atras.click()
+    await page.waitForSelector('input[type="range"], [data-testid="paso8-desglose"]',
+      { timeout: 15000 }).catch(() => null)
+    await page.waitForTimeout(400)
+    return (await dondeEstoy(page)) === 7
+  }
+
+  try {
+    // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────────
+    const FUENTES = [
+      ['frontend/src/pages/steps/Step8Billing.jsx', /data-testid="reparto-ya-elegido"/],
+      ['frontend/src/pages/steps/Step8Billing.jsx', /hayMasDeUnTutor\(/],
+      ['frontend/src/pages/WizardPage.jsx',         /signing\.billing\.unlock_confirm/],
+      ['frontend/src/pages/WizardPage.jsx',         /'s_billing'/],
+      ['frontend/src/pages/WizardPage.jsx',         /hayMasDeUnTutor\(/],
+      // ⛔ La señal que SOBREVIVE al recorte de DL-E49 §2, y el porqué, en un solo sitio: si
+      // alguien vuelve a contar los tutores de `persons`, el aviso deja de pintarse (lo midió
+      // este mismo recorrido la primera vez que se corrió).
+      ['frontend/src/lib/tutoresDeLaSolicitud.js',  /guardians_total_count/],
+    ]
+    const ausentes = []
+    for (const [rel, re] of FUENTES) {
+      let txt = ''
+      try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+      if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+    }
+    if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+      ausentes.length === 0,
+      `no se encontró en el fuente: ${ausentes.join(' · ')} — el recorrido NO puede medir lo que ` +
+      'dice medir, así que NO puede salir verde')) return c
+
+    // ── FASE A · DOS tutores: el caso de Diego ────────────────────────────────────────
+    if (!await entrarPorElEnlace(c, page, base, { nOverride: FIXTURE.emailId2 })) return c
+    await page.waitForTimeout(LATENCY + 1200)
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos + pantalla.tarjetas
+    if (!c.afirmar('ANCLA · con el reparto ya confirmado, el segundo tutor aterriza en el paso 9',
+      pantalla.pasoActivo === 8,
+      `aterrizó en el índice ${pantalla.pasoActivo} (se esperaba 8): lo que sigue mediría el aire`)) return c
+    if (!c.afirmar('ANCLA · y desde ahí vuelve al paso 8 con «Atrás»', await volverAlPaso8(),
+      `tras pulsar «Atrás» el stepper marca el índice ${await dondeEstoy(page)} (se esperaba 7): ` +
+      'lo que sigue mediría el aire')) return c
+
+    // ── (1) EL CAMPO NO SE EDITA HASTA DESBLOQUEAR ⇒ nadie lo reescribe sin querer ────
+    const editar = await page.$(BTN_EDITAR)
+    const bloqueado = await page.$eval('input[type="range"]', n => n.matches(':disabled')).catch(() => null)
+    c.afirmar('(1) el paso 8 llega con el candado puesto y el reparto NO se puede tocar',
+      !!editar && bloqueado === true,
+      `botón «Editar»=${!!editar} deslizador deshabilitado=${bloqueado}: si el campo se edita de ` +
+      'entrada, el segundo tutor reescribe en silencio lo que acordó el primero')
+
+    // ── (2) Y LA PANTALLA LO DICE, en vez de un candado mudo ─────────────────────────
+    const frase = await page.$('[data-testid="reparto-ya-elegido"]')
+    c.afirmar('(2) la pantalla DICE que el reparto ya está elegido y que solo hay que revisarlo',
+      !!frase,
+      'no se pintó [data-testid="reparto-ya-elegido"]: un candado sin explicación deja al tutor ' +
+      'sin saber que lo que ve lo eligió el otro')
+
+    // ── (3) DESBLOQUEAR PREGUNTA ANTES, y CANCELAR no desbloquea nada ───────────────
+    if (editar) await editar.click()
+    const salioLaPregunta = await responder(false)
+    c.afirmar('(3) desbloquear PREGUNTA antes de abrir el campo',
+      salioLaPregunta,
+      'pulsar «Editar» abrió el reparto sin preguntar: entonces no es un acto consciente, es un clic')
+    await page.waitForTimeout(300)
+    const sigueBloqueado = await page.$eval('input[type="range"]', n => n.matches(':disabled')).catch(() => null)
+    c.afirmar('(3.bis) y al CANCELAR el paso sigue bloqueado',
+      !!(await page.$(BTN_EDITAR)) && sigueBloqueado === true,
+      `tras cancelar, «Editar»=${!!(await page.$(BTN_EDITAR))} deshabilitado=${sigueBloqueado}: ` +
+      'cancelar tiene que dejar las cosas como estaban')
+
+    // ── (4) CONFIRMANDO SÍ se abre — validar no cuesta un clic de más, cambiar sí ────
+    const editar2 = await page.$(BTN_EDITAR)
+    if (editar2) await editar2.click()
+    await responder(true)
+    await page.waitForTimeout(500)
+    const tocable = await page.$eval('input[type="range"]', n => !n.matches(':disabled')).catch(() => null)
+    c.afirmar('(4) confirmando, el reparto se puede cambiar',
+      tocable === true && !(await page.$('[data-testid="reparto-ya-elegido"]')),
+      `tras confirmar, deslizador tocable=${tocable}: si ni confirmando se abre, el tutor no puede ` +
+      'corregir un reparto equivocado')
+
+    // ── (5) La pregunta la pinta el COLEGIO, no el navegador ────────────────────────
+    c.afirmar('(5) la pregunta la pinta el asistente, no el navegador',
+      nativos === 0,
+      `salieron ${nativos} avisos del navegador: una familia no debe ver «admissions.kaleide.org dice»`)
+
+    // ── FASE B · UN SOLO tutor: byte a byte como antes ──────────────────────────────
+    await esperarSilencioDeRed(15000, 1200)
+    scenario.tutorUnico = true
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 1200)
+    if (!c.afirmar('ANCLA · con un solo tutor también se aterriza en el paso 9',
+      (await dondeEstoy(page)) === 8,
+      `aterrizó en el índice ${await dondeEstoy(page)} (se esperaba 8)`)) return c
+    if (!c.afirmar('ANCLA · y también se vuelve al paso 8', await volverAlPaso8(),
+      `tras «Atrás» el stepper marca el índice ${await dondeEstoy(page)} (se esperaba 7)`)) return c
+
+    c.afirmar('(6) con UN SOLO tutor la frase NO se pinta',
+      !(await page.$('[data-testid="reparto-ya-elegido"]')),
+      'se pintó la frase del reparto ajeno con un solo tutor: no hay otro tutor que lo eligiera')
+
+    const editarUno = await page.$(BTN_EDITAR)
+    if (!editarUno) {
+      c.afirmar('(7) con UN SOLO tutor desbloquear NO pregunta', false,
+        'con un solo tutor el paso 8 no llegó con candado, así que no se pudo medir si desbloquear ' +
+        'pregunta: el doble o el candado han cambiado')
+    } else {
+      await editarUno.click()
+      await page.waitForTimeout(700)
+      const cuadro = await page.$('[data-testid="confirm-dialog"]')
+      const abierto = await page.$eval('input[type="range"]', n => !n.matches(':disabled')).catch(() => null)
+      c.afirmar('(7) con UN SOLO tutor desbloquear NO pregunta y abre el campo de una vez',
+        !cuadro && !(await page.$(BTN_EDITAR)),
+        `salió la pregunta=${!!cuadro} sigue bloqueado=${!!(await page.$(BTN_EDITAR))} ` +
+        `campo abierto=${abierto}: una familia de un solo tutor no puede pagar un clic más por un ` +
+        'aviso que no va a ninguna parte')
+    }
+  } finally {
+    page.off('dialog', vigilarNativo)
+    scenario.repartoGuardado60_40 = false
+    scenario.aterrizarEnGdpr = false
+    scenario.tutorUnico = false
+  }
+  return c
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -12338,6 +12526,10 @@ const CAMINOS = [
   { nombre: 'gdpr-por-hijo',       fn: caminoGdprPorHijo,        minLlamadas: 1, minElementos: 5 },
   { nombre: 'paso8-al-dia',        fn: caminoPaso8AlDia,         minLlamadas: 1, minElementos: 5 },
   { nombre: 'reparto-no-se-siembra-de-vacio', fn: caminoRepartoNoSeSiembraDeVacio,
+    minLlamadas: 1, minElementos: 5 },
+  // DL-E70 (CLI 75) — el reparto que ya consta se VALIDA; cambiarlo pide desbloquear a propósito
+  // y avisa al otro tutor. Con un solo tutor no cambia nada.
+  { nombre: 'reparto-se-desbloquea-adrede', fn: caminoRepartoSeDesbloqueaAdrede,
     minLlamadas: 1, minElementos: 5 },
   { nombre: 'paso8-sin-nada-que-elegir', fn: caminoPaso8SinNadaQueElegir, minLlamadas: 1, minElementos: 5 },
   { nombre: 'paso8-presupuesto-no-calculable', fn: caminoPaso8PresupuestoNoCalculable,

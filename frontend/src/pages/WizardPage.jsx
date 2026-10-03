@@ -17,6 +17,7 @@ import AvisoDeVentana from '../components/AvisoDeVentana';
 import AvisoGuardadosQueNoLlegaron from '../components/AvisoGuardadosQueNoLlegaron';
 import { Toast, useToast } from '../components/Toast';
 import { pedirConfirmacion } from '../components/ConfirmDialog';
+import { hayMasDeUnTutor } from '../lib/tutoresDeLaSolicitud';
 
 // STEP-FRAMEWORK (Diego 2026-06-11) — el wizard consume el CATÁLOGO DECLARATIVO de
 // pasos (steps/catalog.js). Los 11 pasos canónicos del programa ADMISIONES KIS son la
@@ -794,11 +795,13 @@ const handleNext = async (stepKey, data, extra = null) => {
   // DL-E70 — con DOS o más tutores, el reparto de pagos que ya consta lo eligió uno de ellos, y
   // cambiarlo avisa al otro: desbloquearlo es un acto CONSCIENTE (se pregunta antes de abrir el
   // campo), no un botón que se pulsa sin querer. Con un solo tutor no cambia nada. El criterio
-  // sale de las personas ya hidratadas, nunca de una marca nueva en el navegador.
+  // sale de lo ya hidratado, nunca de una marca nueva en el navegador.
+  // ⛔ Y CUÁNTOS TUTORES HAY NO SE CUENTA AQUÍ: `stepData.persons` viene recortado a «yo + los
+  // menores» (DL-E49 §2), así que contar los tutores ahí da 1 SIEMPRE y esta pregunta no saldría
+  // jamás. La señal que sobrevive al recorte vive en `lib/tutoresDeLaSolicitud.js`.
   const handleUnlock = async () => {
-    const tutoresDeLaSolicitud = ((stepData && stepData.persons) || [])
-      .filter(p => p && p.person_type_id === 'guardian').length;
-    if (STEP_CATALOG[currentStep] && STEP_CATALOG[currentStep].id === 's_billing' && tutoresDeLaSolicitud > 1) {
+    const dosOMasTutores = hayMasDeUnTutor(stepData, (stepData && stepData.persons) || []);
+    if (STEP_CATALOG[currentStep] && STEP_CATALOG[currentStep].id === 's_billing' && dosOMasTutores) {
       const confirmado = await pedirConfirmacion({
         mensaje:        t('signing.billing.unlock_confirm'),
         textoConfirmar: t('signing.billing.unlock_confirm_boton'),

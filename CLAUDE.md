@@ -1010,6 +1010,20 @@ necesita el identificador que estampa el paso de personas).
 
 ### Lo que se RECOGE — invariantes de datos
 
+- ⛔⛔ **`persons.length` NO CONTESTA «cuántos tutores tiene la solicitud», y creerlo deja código
+  MUERTO que no falla.** DL-E49 §2 recorta la hidratación a **«yo + los menores»** —del otro tutor no
+  baja nada—, así que contar los tutores de `stepData.persons` da **1 SIEMPRE**, también cuando hay
+  dos. **La señal que sobrevive al recorte la manda el servidor**: `guardians_total_count`, contado
+  ANTES de recortar y sin ninguna identidad dentro. ⇒ **el criterio vive en UN solo sitio**,
+  `frontend/src/lib/tutoresDeLaSolicitud.js`, y lo piden sus **tres** consumidores (el paso 2, el
+  paso 8 y el desbloqueo de `WizardPage`). ⛔ **El respaldo a la cuenta local no se retira**: en un
+  alta nueva, aún sin hidratar, el número no ha llegado y la cuenta local sí es fiable.
+  *(Lo pagó DL-E70: la pantalla del reparto de pagos nació preguntando `guardians.length > 1` ⇒ el
+  aviso no se pintaba nunca y desbloquear no preguntaba nunca. El aviso estaba escrito en un
+  COMENTARIO de `Step2Persons.jsx`, en otro fichero, y quien vino después no lo leyó — por eso ahora
+  es una función y no un comentario. Lo cazó el recorrido `reparto-se-desbloquea-adrede` de la
+  batería.)*
+
 - **El paso 6 deja ELEGIR qué es el documento.** Se pregunta **a partir del SEGUNDO tipo**: con 0 el
   servidor rechaza nombrando qué configurar; con 1 lo asigna él (*«un desplegable de una opción no es
   elección»*, DL-R16); con 2 o más elige la familia y su respuesta es **obligatoria**. ⛔ **Ni un

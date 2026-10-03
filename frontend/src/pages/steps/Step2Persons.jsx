@@ -11,6 +11,7 @@ import { generateUuid } from '../../utils/uuid';
 import { validatePhone } from '../../utils/phone';
 import { parseBool, preparePersonForUI, preparePersonsForUI, deriveSameAddressFlags, addressIsEmpty_, ADDRESS_FIELDS } from './personShape';
 import { confirmarYQuitar } from '../../lib/quitar';
+import { cuantosTutores } from '../../lib/tutoresDeLaSolicitud';
 import StepUpReverify from '../../components/StepUpReverify';
 import { identidadDelEnlace, avisarATutor, fetchLookups } from '../../api';
 import { translateGender, translateIdType, translatePhoneType, translateEmailType } from '../../utils/enumLabels';
@@ -1392,15 +1393,12 @@ export default function Step2Persons({ onNext, onBack, locked, onUnlock, savePen
   const applicants = persons.filter(p => p.person_type_id === 'applicant');
   const firstPerson = persons[0] || null;
 
-  // DL-E49 §2/§3 — `guardians` solo trae AL PROPIO tutor (el servidor recorta al
-  // otro). `guardians.length` deja de servir para "¿es una familia monoparental?":
-  // sería 1 tanto si de verdad hay 1 tutor como si hay 2 y el servidor ocultó al
-  // otro. El conteo REAL (sin identidades) viaja aparte; antes de que exista
-  // (creación nueva, aún sin hidratar) se cae al conteo local, que en ese momento
-  // sí es fiable (todavía no hay recorte que aplicar).
-  const totalGuardians = stepData.guardians_total_count != null
-    ? stepData.guardians_total_count
-    : guardians.length;
+  // DL-E49 §2/§3 — `guardians` solo trae AL PROPIO tutor (el servidor recorta al otro), así que
+  // su longitud NO contesta "¿es una familia monoparental?". El criterio —y el porqué— viven en
+  // UN solo sitio desde DL-E70: `lib/tutoresDeLaSolicitud.js`. Antes estaba escrito aquí, en un
+  // comentario, y quien construyó la pantalla del reparto de pagos no lo leyó: preguntó por la
+  // longitud y su aviso no se pintaba nunca.
+  const totalGuardians = cuantosTutores(stepData, persons);
   const firstPersonId = firstPerson ? (firstPerson.person_id || firstPerson._uid) : null;
 
   const updatePerson = (i, val) => {
