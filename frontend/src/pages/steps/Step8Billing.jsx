@@ -454,6 +454,14 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
         onUnlock={onUnlock}
         error={err}
       >
+        {/* ── DL-E70 · el reparto ya consta: se VALIDA y, si hay dos tutores, cambiarlo es un acto
+            consciente (desbloquear) que avisa al otro. Con un solo tutor no se pinta nada. ───── */}
+        {locked && onUnlock && guardians.length > 1 && (
+          <p data-testid="reparto-ya-elegido" style={{ color: 'var(--muted)', fontSize: '0.84rem', marginTop: 8 }}>
+            {t('signing.billing.reparto_ya_elegido')}
+          </p>
+        )}
+
         {/* ── DL-080-A · Presupuesto del borrador + elección de modalidad ────── */}
         {budget === null && (
           <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginTop: 8 }}>

@@ -791,7 +791,20 @@ const handleNext = async (stepKey, data, extra = null) => {
     window.scrollTo(0, 0);
   };
 
-  const handleUnlock = () => {
+  // DL-E70 — con DOS o más tutores, el reparto de pagos que ya consta lo eligió uno de ellos, y
+  // cambiarlo avisa al otro: desbloquearlo es un acto CONSCIENTE (se pregunta antes de abrir el
+  // campo), no un botón que se pulsa sin querer. Con un solo tutor no cambia nada. El criterio
+  // sale de las personas ya hidratadas, nunca de una marca nueva en el navegador.
+  const handleUnlock = async () => {
+    const tutoresDeLaSolicitud = ((stepData && stepData.persons) || [])
+      .filter(p => p && p.person_type_id === 'guardian').length;
+    if (STEP_CATALOG[currentStep] && STEP_CATALOG[currentStep].id === 's_billing' && tutoresDeLaSolicitud > 1) {
+      const confirmado = await pedirConfirmacion({
+        mensaje:        t('signing.billing.unlock_confirm'),
+        textoConfirmar: t('signing.billing.unlock_confirm_boton'),
+      });
+      if (!confirmado) return;
+    }
     removeCompletedStep(currentStep);
   };
 
