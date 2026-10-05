@@ -5,6 +5,7 @@ import { formaDeDocumentosDelPaso_ } from '../pages/steps/documentShape';  // 0�
 import i18n from '../i18n';                                   // DL-C-B (g): locale UI para sembrar el catálogo de preguntas del hydrate
 import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache, alConfirmarEscritura, estadoDelGuardado, refrescarVentana } from '../api';  // 18.bis.84: preguntar cómo acabaron los guardados que el KMS dejó apuntados; WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
 import { seReintentaTrasFallo, codigoDelDescarte } from '../lib/rechazos';       // 18.bis.85: el ÚNICO sitio que decide si un rechazo se vuelve a intentar (lo consulta también el aviso) · 18.bis.84: y el que traduce lo que el trabajo apuntado descartó
+import { saludNoCargo } from '../lib/cargaDegradada';                    // 2026-09-16-la-salud-no-se-recupera: qué tabla cayó, no solo la sección
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -1576,7 +1577,9 @@ export function WizardProvider({ children }) {
       // donde se lee — en NINGÚN otro sitio, para que no haya dos criterios sobre el
       // mismo dato. Step4Health la usa para (a) avisar y (b) no dejar que un guardado
       // sobre una categoría vacía-y-no-tocada borre lo que el colegio sí tiene.
-      healthLoadFailed: Array.isArray(data.degraded_sections) && data.degraded_sections.includes('person_subreads'),
+      // El nombre FINO (`person_subreads:<tabla>`) lo lee `lib/cargaDegradada.js`: una tabla caída
+      // que no es de salud (nacionalidad…) ya no hace hablar de «salud».
+      healthLoadFailed: saludNoCargo(data.degraded_sections),
       questions: responsesDict,
       // ⭐ `0º.tricies.quindecies` (Diego, 2026-08-22) — LA FORMA DE LOS DOCUMENTOS SE
       // NORMALIZA AQUÍ, en el MISMO sitio y por el MISMO motivo que `persons`, `relations`,
