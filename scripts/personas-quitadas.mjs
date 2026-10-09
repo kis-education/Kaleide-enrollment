@@ -23,6 +23,12 @@
  * Una lectura construida por `eval()` o a través de un alias de `appsheetRequest_`
  * seguiría siendo invisible — igual que en `escrituras-directas.mjs`.
  *
+ * LO QUE ESTE CONTROL NO AFIRMA (lecturas en lote): para `{ table: T.X, … }` acepta la
+ * lectura si `wizardSoloVivas_` aparece en las 30 líneas siguientes. Eso prueba que el
+ * colador está CERCA, no que el resultado del lote PASE por él. Hoy ninguna lectura en
+ * lote lo ejerce (medido contra `origin/main`), así que es inerte; el día que una entre,
+ * hay que atar la comprobación al consumo del resultado y no fiarse de este verde.
+ *
  * Sin dependencias: solo texto. No necesita `npm ci`, ni red, ni navegador (~1 s).
  */
 
