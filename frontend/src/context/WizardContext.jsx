@@ -6,6 +6,8 @@ import i18n from '../i18n';                                   // DL-C-B (g): loc
 import { purgeQuestionsCache, primeLookups, primeQuestions, getDocumentBytes, purgeDocumentBytesCache, alConfirmarEscritura, estadoDelGuardado, refrescarVentana } from '../api';  // 18.bis.84: preguntar cómo acabaron los guardados que el KMS dejó apuntados; WIZARD-PERF-CACHE-SKELETON: purgar cache de preguntas al limpiar sesión; DL-B: sembrar lookups del hydrate consolidado; DL-C-B: sembrar questions del hydrate; STEP10-VIEWER: bytes del paquete contractual → cache de object URLs del contexto
 import { laSaludNoCargo } from '../lib/cargaDegradada';       // `2026-09-16-la-salud-no-se-recupera`: el aviso de salud solo salta si cayó una tabla de SALUD/NEAE (o el lote entero)
 import { seReintentaTrasFallo, codigoDelDescarte } from '../lib/rechazos';       // 18.bis.85: el ÚNICO sitio que decide si un rechazo se vuelve a intentar (lo consulta también el aviso) · 18.bis.84: y el que traduce lo que el trabajo apuntado descartó
+import { hermanosConSituacion } from '../lib/hermanos';                           // ★ CLI 403: los hijos admitidos con su estado por hijo
+import { primerSubpasoPendiente } from '../lib/pantallaDeFirma';                  // ★ CLI 403: aterrizar en la primera pantalla con algún hijo pendiente
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -698,6 +700,11 @@ export function WizardProvider({ children }) {
   // discriminator the frontend re-sends so the backend re-resolves the guardian
   // server-side on each call. Only the email is stored; never the token.
   const [admissionState, setAdmissionState] = useState(null);
+  // ★ CLI 403 — EL HIJO SELECCIONADO en el tramo 8-11. El selector lo mueve; el pulso y la
+  // hidratación lo mandan al servidor como `selected_enrollment_id` para que `signingContext`
+  // sea el del hijo elegido (no el del primer `.find()`). `null` ⇒ el servidor elige el primero
+  // (comportamiento de siempre). NO es un secreto ni identidad: es un id del grupo del token.
+  const [selectedEnrollmentId, setSelectedEnrollmentId] = useState(null);
   // 0º.tricies.octies (B) — los pasos cuyo ULTIMO guardado murio en la cola del KMS.
   // `enr.wizardSaveStep` y sus hermanas NO escriben: APUNTAN el trabajo y contestan que si,
   // asi que la pantalla dice «guardada y bloqueada» y la familia avanza. Si el trabajo muere
@@ -1796,6 +1803,13 @@ export function WizardProvider({ children }) {
         else if (!st.gdpr_completed)    sub = 1;
         else if (!st.review_completed)  sub = 2;
         else if (!st.signed)            sub = 3;
+        // ★ CLI 403 — con VARIOS hijos admitidos, se aterriza en la primera PANTALLA con ALGÚN
+        // hijo pendiente (no en el sub-paso del único contexto resuelto), para que el avance por
+        // pantalla empiece donde toca. Sin estado por hijo (p.ej. un solo hijo, o KMS viejo) la
+        // función devuelve `null` y se conserva el aterrizaje de siempre.
+        const subMulti = primerSubpasoPendiente(
+          hermanosConSituacion(adm.por_alumno, persons, (k) => k).filter((h) => h.admitido), {});
+        if (subMulti !== null) sub = subMulti;
         const target = STEP_FIRST_SIGNING + sub;
         for (let i = 0; i < target; i++) completed.add(i); // pasos previos completados → stepper coherente
         setCompletedStepsRaw(new Set(completed));
@@ -1945,6 +1959,7 @@ export function WizardProvider({ children }) {
       hydrateFromResume, refreshAdmissionState, clearSession,
       isSubmitted, setIsSubmitted,
       admissionState, signingContext,           // P216 (DL-E38)
+      selectedEnrollmentId, setSelectedEnrollmentId, // ★ CLI 403: el hijo elegido en el tramo 8-11
       guardadosSinAterrizar,                    // 0º.tricies.octies (B) — guardados que no llegaron
       reviewConfirmedLocal, setReviewConfirmedLocal, // lock en vivo post-confirm (Diego 2026-06-12)
       reviewConfirmed,                            // input del mapeo central (catalog.stepEditMode)

@@ -1095,19 +1095,38 @@ hermano DESBLOQUEARA la firma y ponerlo en lista de espera la BLOQUEARA**.
 **El asistente habla POR HIJO**: `por_alumno` + `firma_desbloqueada` viajan en las **CINCO**
 proyecciones (la del hydrate, las tres del pulso —acierto de caché, escritura y retorno en vivo— y el
 camino ligero de `WizardContext`). Una lista blanca de campos que tire uno de los dos devuelve el
-rótulo grande a decir una sola situación. ⛔ **El `signing_status` por hijo que manda el KMS se
-descarta a propósito**: el pulso no sabe producirlo hoy ⇒ **que lo produzcan los dos, o ninguno**.
-`state_code`/`state_label` siguen sirviendo para el rótulo y para `editable`; lo que dejan de hacer es
-abrir la firma.
+rótulo grande a decir una sola situación. **Y desde CLI 403, `por_alumno[].pasos` viaja por las MISMAS
+cinco** —el estado de las pantallas 8/9/10 (`billing_confirmed`/`gdpr_completed`/`review_completed`/
+`signed`, con `nada_que_hacer`) POR HIJO para el tutor que opera, con UN solo lector reusado en el KMS
+(`enr_pasosDeFirmaPorExpediente_`, que PIDE `enr_resolveSigningTokenInternal_`): o en las cinco, o en
+ninguna—. ⛔ **El `signing_status` por hijo que manda el KMS se descarta a propósito** (el pulso no lo
+produce ⇒ los dos o ninguno); el selector usa `pasos`, no él. `state_code`/`state_label` siguen
+sirviendo para el rótulo y para `editable`; lo que dejan de hacer es abrir la firma.
 
 ⛔ **`signing_url` se recorta AQUÍ, en el consumidor**, aunque el KMS lo devuelva —esa ruta la usa
 también el panel del KMS—: CLI 81 / S5 / KAL-NEW-1 cerró que la resolución previa a la firma no revele
 la URL del proveedor con solo el bearer.
 
-⚠️ **Lo que NO está hecho (§4 y §5 de `0º.tricies.novemtricies`)**: que la firma se abra para **todos**
-los admitidos en el mismo recorrido (los enlaces por sesión, el firmante por hijo, y la trampa del
-veredicto `COMPLETED` de grupo, que **cierra el paso a la segunda matrícula**), y que los pasos 9 y 10
-pasen a ser por hijo.
+#### El tramo 8-11 va POR PANTALLA, no por hijo (CLI 403, Diego 2026-10-25)
+
+> *«Sería la A, pero es necesario que no permita pasar a siguientes pasos hasta que no se resuelvan
+> todos los hijos de cada pantalla.»*
+
+Dentro de una pantalla (8 datos/forma de pago · 9 consentimientos · 10 lectura) el tutor atiende a
+TODOS los hijos admitidos, eligiéndolos en el **selector** (`SigningChildrenSelector`), y la pantalla
+se alimenta de la sesión/token del hijo SELECCIONADO —no del primer `.find()`—: el
+`selected_enrollment_id` viaja en `getAdmissionState` y el servidor elige esa sesión
+(`_elegirSesionDeFirma_`; KAL-4: solo entre las del grupo del token). ⛔ **No se pasa a la pantalla
+siguiente hasta que la actual esté RESUELTA para TODOS los hijos admitidos**; el candado vive en UN
+criterio (`lib/pantallaDeFirma.js`, aplicado en `advanceSigningStep`) y ⛔ **jamás queda imposible de
+satisfacer** —un hijo con `nada_que_hacer`, o sin estado por hijo, cuenta como resuelto y degrada al
+modo de siempre (banner, sin candado)—. El 10→11 es «todos con la lectura confirmada»; **el acto de
+firmar sigue APAGADO** (interruptor de costes Click & Sign) ⇒ el paso 11 queda informativo.
+
+⚠️ **Lo YA corregido (antes figuraba como pendiente):** la trampa del veredicto `COMPLETED` de grupo
+—`resolveSigningStatus_` usa `every(...)`, así que firmar al primero NO cierra el paso al segundo— y
+que los pasos 9 y 10 se anclan POR HIJO y POR TUTOR en el KMS (DL-E44 ★ENMIENDA). **Lo que queda fuera
+es solo el acto de firma**, apagado por costes.
 
 ### Estados editables — y el edit-lock post-envío
 
@@ -1343,6 +1362,7 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | `el-repaso-no-pregunta-lo-que-ya-sabe.mjs` | que el repaso de fondo **re-caliente la puerta y la identidad con lo que YA tiene guardado, sin viajar al KMS**, y que ahorrar ese viaje no afloje ni un plazo: una copia con la **versión vieja NO se re-calienta** (es lo que conserva el plazo de revocación de 30 min), una ficha que el juez único RECHAZA no deja nada escrito, el índice global **solo admite identificadores** (ni un correo ni su resumen), y ⛔ **sin índice, con el índice ilegible, con el contador vencido o con páginas sin ver se VIAJA** y el comportamiento es el de hoy. **Y que el repaso NO REINTENTE**: con el transporte devolviendo basura hace **UN** intento y sin dormir, mientras el **camino vivo de una familia sigue haciendo TRES** (ahí repetir la petición es lo único que recupera) — se ejecuta el `kmsProxy_` REAL con el transporte doblado, así que tocar el valor por defecto sale ROJO, y un llamante que pida 9 sigue consiguiendo 3 |
 | `el-enlace-viejo-no-muere-hasta-que-salga-el-nuevo.mjs` | que **una familia nunca se quede sin enlace válido por un correo que no salió**: el envío que sale deja el enlace rotado, el que falla lo deja como estaba (las dos ramas, y los N de un correo multi), y el ack constante de la rama pública no cambia según si el correo salió |
 | `el-aviso-de-salud-sabe-que-tabla-cayo.mjs` | `2026-09-16-la-salud-no-se-recupera`: que el paso de Salud avise de «no se pudo cargar» **solo** si cayó una tabla de salud/NEAE o el lote entero (`person_subreads` a secas), y no si cayó nacionalidad, documentos, idiomas, direcciones o colegios previos; un nombre fino desconocido **avisa** (falla hacia avisar). Importa `frontend/src/lib/cargaDegradada.js` REAL; tres roturas demostradas |
+| `el-tramo-final-resuelve-todos-los-hijos.mjs` | **CLI 403**: que el estado 8/9/10 POR HIJO llegue al selector del tramo 8-11 y que la pantalla se alimente del hijo ELEGIDO (no del primer `.find()`): `_pasosEnPorAlumno_` adjunta los pasos por `enrollment_id` y con el mapa vacío deja `por_alumno` byte-idéntico; `_elegirSesionDeFirma_` elige la sesión del hijo seleccionado (sin selección la primera; KAL-4: una selección que no casa degrada a la primera); `resolveGuardianSigningContext_` devuelve el token de ese hijo; `_datosDeFirmaDelExpediente_` manda `guardian_person_id` al KMS. Ejecuta `backend/Code.js` REAL; 13 afirmaciones, 3 roturas, 2 guardas de MEDICIÓN CIEGA |
 
 **Se corren solos desde el 2026-09-23**: el lanzador `node scripts/comprobar-el-servidor.mjs`
 descubre **todos** los `*.mjs` de esa carpeta, los ejecuta y junta sus veredictos; es el **noveno

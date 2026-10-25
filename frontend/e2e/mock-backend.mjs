@@ -692,7 +692,7 @@ function recortarPorTutorE2E_(data, viewerN) {
  *   (que es lo que hace aterrizar en Documentos); con lista, el paso queda por visitado y
  *   el aterrizaje se va a Revisión, igual que en el sistema real.
  */
-export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision, dosHermanosAdmitidos, sesionFirmaActivaHijo, aterrizarEnGdpr, conjuntoVacio) {
+export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tutorUnico, documentos, unSoloAlumno, hermanosDesiguales, sinHitoAdmision, dosHermanosAdmitidos, sesionFirmaActivaHijo, aterrizarEnGdpr, conjuntoVacio, pasosPorHijo) {
   const group = {
     enrollment_group_id: FIXTURE.groupId,
     resume_token:        FIXTURE.resumeToken,
@@ -872,7 +872,7 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
       // siempre al respaldo genérico y una comprobación de nombre pasaría EN VACÍO.
       state_code:        hermanosDesiguales ? 'WL' : 'AD',
       state_label:       hermanosDesiguales ? 'En lista de espera' : 'Admitida',
-      por_alumno:        hermanosDesiguales ? [
+      por_alumno:        (hermanosDesiguales ? [
         { enrollment_id: 'enr-e2e-1', applicant_person_id: FIXTURE.applicantId,
           state_code: 'AD', state_label: 'Admitida' },
         { enrollment_id: 'enr-e2e-2', applicant_person_id: FIXTURE.applicant2Id,
@@ -885,7 +885,12 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
       ] : [
         { enrollment_id: 'enr-e2e-1', applicant_person_id: FIXTURE.applicantId,
           state_code: 'AD', state_label: 'Admitida' },
-      ],
+      ])
+      // ★ CLI 403 — el estado 8/9/10 POR HIJO, como lo manda el servidor real (`pasos_por_expediente`
+      // reflejado en `por_alumno[].pasos`). `scenario.pasosPorHijo` es un mapa por enrollment_id;
+      // sin él, por_alumno queda byte-idéntico (el selector degrada al banner de siempre).
+      .map(a => (pasosPorHijo && pasosPorHijo[a.enrollment_id]
+        ? Object.assign({}, a, { pasos: pasosPorHijo[a.enrollment_id] }) : a)),
       // El hito «admisión resuelta»: lo completa la configuración cuando NINGÚN hermano queda a
       // medias. `scenario.sinHitoAdmision` sirve el caso contrario — hay un hijo admitido y su
       // firma preparada, y aun así NO se debe poder entrar a firmar.
@@ -1072,7 +1077,7 @@ export function createDispatcher(scenario, record) {
       }
       const h = buildHydrate(scenario.stage, scenario.preguntasMode, scenario.respuestasMode, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
         scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos,
-        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr, scenario.conjuntoVacio);
+        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr, scenario.conjuntoVacio, scenario.pasosPorHijo);
       // ⚠️ EL DOBLE NO PUEDE CONTRADECIRSE A SÍ MISMO (medido el 2026-08-27): la hidratación
       // decía SIEMPRE «sin reparto guardado» mientras `getSavedBillingSplits` devolvía 60/40.
       // En el servidor real las dos salen de la MISMA fuente (`billing_splits` de la
@@ -1174,7 +1179,14 @@ export function createDispatcher(scenario, record) {
     getAdmissionState: (p) => {
       const h = buildHydrate(scenario.stage, undefined, undefined, p && p.n, scenario.tutorUnico, scenario.documentos, scenario.unSoloAlumno,
         scenario.hermanosDesiguales, scenario.sinHitoAdmision, scenario.dosHermanosAdmitidos,
-        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr, scenario.conjuntoVacio);
+        scenario.sesionFirmaActivaHijo, scenario.aterrizarEnGdpr, scenario.conjuntoVacio, scenario.pasosPorHijo);
+      // ★ CLI 403 — el selector del tramo 8-11 pide el contexto del hijo ELEGIDO con
+      // `selected_enrollment_id`; el servidor real ancla entonces `signing_context` a ESE hijo.
+      // El doble refleja ese contrato: con la selección, `entity_id` pasa a ser el hijo elegido.
+      if (p && p.selected_enrollment_id && h.admission && h.admission.signing_context) {
+        h.admission.signing_context = Object.assign({}, h.admission.signing_context,
+          { entity_id: p.selected_enrollment_id });
+      }
       const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
       // 0º.tricies.octies (B) — los pasos cuyo ÚLTIMO guardado murió en la cola del KMS.
       // Copia declarada del contrato real (`enr_guardadosQueNoLlegaron_`): CÓDIGOS de paso,

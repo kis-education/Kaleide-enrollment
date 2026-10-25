@@ -653,5 +653,8 @@
       "title": "Situación de cada hijo:",
       "sin_nombre": "Alumno {{n}}"
     }
-  }
+  },
+  "signing.selector.title": "Tienes {{n}} matrículas que resolver. Elige a cuál atender:",
+  "signing.selector.falta": "Aún falta por completar esta pantalla: {{name}}.",
+  "signing.selector.todos_listos": "Todos los hijos están resueltos en esta pantalla."
 }

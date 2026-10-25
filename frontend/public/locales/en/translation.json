@@ -653,5 +653,8 @@
       "title": "Status of each child:",
       "sin_nombre": "Applicant {{n}}"
     }
-  }
+  },
+  "signing.selector.title": "You have {{n}} enrolments to complete. Choose which one to attend to:",
+  "signing.selector.falta": "Still to complete on this screen: {{name}}.",
+  "signing.selector.todos_listos": "All children are done on this screen."
 }

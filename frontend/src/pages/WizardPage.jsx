@@ -29,7 +29,9 @@ import { hermanosConSituacion as hermanosConSituacionPura } from '../lib/hermano
 // ★ CLI 22 — UN SOLO SITIO decide de qué CLASE es un fallo de entrada. Este fichero NO
 // escribe un segundo criterio y NO adivina por el texto del mensaje: pide el veredicto.
 import { clasificarFalloDeEntrada } from '../lib/fallosDeEntrada';
-import SigningChildrenBanner from '../components/SigningChildrenBanner';
+import SigningChildrenSelector from '../components/SigningChildrenSelector';
+// ★ CLI 403 — el estado de las pantallas 8/9/10 POR HIJO (lector único del tramo final).
+import { hijosPendientesEnPantalla, hayEstadoPorHijo, primerPendienteEnPantalla } from '../lib/pantallaDeFirma';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
@@ -51,6 +53,7 @@ export default function WizardPage() {
     markUserTookControl, resetUserTookControl, userTookControlRef, // WPERF-1 criterio 4
     isSubmitted,
     admissionState, signingContext,
+    selectedEnrollmentId, setSelectedEnrollmentId, // ★ CLI 403: el hijo elegido en el tramo 8-11
     loadDocument,                               // STEP10-VIEWER: cache de docs del contexto
     billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2
     markStepUpFresh, revokeStepUpFresh, // #30: espejo local revocable (lock proactivo)
@@ -103,6 +106,12 @@ export default function WizardPage() {
   // SignSign detecte el estado terminal. NO persistido (vive en React state; el
   // signing_token bearer no se guarda en sessionStorage — KAL-7).
   const [signerCtx,         setSignerCtx]         = useState(null);
+  // ★ CLI 403 — lo que el tutor ACABA de resolver en ESTA sesión, por pantalla y por hijo:
+  // `{ s_billing: { <enrollment_id>: true }, ... }`. El servidor escribe el hito en diferido, así
+  // que su `pasos` tarda en reflejar lo recién hecho; esto evita que el candado del avance
+  // «olvide» lo que el tutor acaba de completar entre pulso y pulso. Vive en React state (muere con
+  // la pestaña): no es un dato que deba persistir — el servidor es la fuente durable.
+  const [resueltosLocales,  setResueltosLocales]  = useState({});
   // P215 opción (b) ELIMINADA (CLI AD-SPLIT): el selector in-app de firmante
   // ('selectSigner' + signing_candidates) queda descartado por razón legal — la
   // identidad de firma se deriva SOLO server-side (recovery link per-guardian,
@@ -317,11 +326,11 @@ export default function WizardPage() {
   // que `preguntar` (18.bis.84): el efecto de abajo se monta UNA sola vez (deps `[]`), así que
   // cualquier función capturada en el cierre se quedaría con la versión del primer render y
   // escribiría sobre un estado viejo.
-  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, recoveryNonce, hasPendingSave, liveVersion, preguntar: preguntarPorLosGuardados, hidratar: hydrateFromResume, avisar: setAvisoDelColegio, idioma: i18n.language, programa: programaDeLaSolicitud, revisarCatalogo: setCatalogoRevision };
+  pulseRef.current = { resumeToken, enrollmentGroupId, effectiveRecoveredEmail, recoveryNonce, hasPendingSave, liveVersion, preguntar: preguntarPorLosGuardados, hidratar: hydrateFromResume, avisar: setAvisoDelColegio, idioma: i18n.language, programa: programaDeLaSolicitud, revisarCatalogo: setCatalogoRevision, selectedEnrollmentId };
   const pulseInFlightRef = useRef(false);
   useEffect(() => {
     const tick = () => {
-      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer, preguntar, hidratar, avisar, idioma, programa, revisarCatalogo } = pulseRef.current;
+      const { resumeToken: rt, enrollmentGroupId: gid, effectiveRecoveredEmail: re, recoveryNonce: rn, hasPendingSave: pending, liveVersion: knownVer, preguntar, hidratar, avisar, idioma, programa, revisarCatalogo, selectedEnrollmentId: selEnr } = pulseRef.current;
       if (!rt || !gid) return;                            // sin sesión → nada que sincronizar
       if (pending) return;                                // save en vuelo → saltar este tick
       // 0º.quindecies (segunda pieza, 2026-08-21) — subir un documento es OTRO canal (directo
@@ -383,7 +392,9 @@ export default function WizardPage() {
           if (v <= (Number(knownVer) || 0)) return; // sin cambios → NO leer detalle
           // ── Etapa 2 — la versión subió → fetch de DETALLE del liveState.
           log.info('[DBG cheap-poll] version subió', { from: knownVer, to: v });
-          return gasCall('getAdmissionState', { resume_token: rt, recovered_email: re || undefined, n: rn || undefined })
+          // ★ CLI 403: el hijo elegido en el selector viaja para que `signing_context` sea el SUYO
+          // (no el del primer `.find()`). Sin selección, el servidor elige el primero (como siempre).
+          return gasCall('getAdmissionState', { resume_token: rt, recovered_email: re || undefined, n: rn || undefined, selected_enrollment_id: selEnr || undefined })
             .then(data => {
               log.info('[DBG pulse] getAdmissionState', { state_code: data && data.state_code, signing_ready: data && data.signing_ready, signing_status: data && data.signing_status, has_ctx: !!(data && data.signing_context) });
               refreshAdmissionState(data);     // SOLO slice admisión/firma — nunca datos/nav
@@ -752,6 +763,40 @@ const handleNext = async (stepKey, data, extra = null) => {
 
   const advanceSigningStep = () => {
     markUserTookControl(); // WPERF-1 criterio 4: avanzar la firma a mano invalida un JUMP pendiente
+    // ★ CLI 403 — AVANCE POR PANTALLA, no por hijo: no se pasa a la pantalla siguiente hasta que la
+    // actual esté RESUELTA para TODOS los hijos admitidos. Al completar la actual para el hijo
+    // elegido, se salta al siguiente hijo pendiente de ESTA pantalla; solo cuando no queda ninguno
+    // se avanza a la siguiente. El candado jamás queda imposible: un hijo «nada que hacer» o sin
+    // datos por hijo cuenta como resuelto (`lib/pantallaDeFirma.js`), y con un solo hijo o sin
+    // estado por hijo (`candadoPorHijo` falso) se avanza como siempre.
+    if (candadoPorHijo && screenIdActual) {
+      const enr = selectedEnrollmentId;
+      const nuevos = {
+        ...resueltosLocales,
+        [screenIdActual]: { ...(resueltosLocales[screenIdActual] || {}), ...(enr ? { [enr]: true } : {}) },
+      };
+      setResueltosLocales(nuevos);
+      const pendientes = hijosPendientesEnPantalla(hijosFirma, screenIdActual, nuevos);
+      if (pendientes.length) {
+        // Quedan hijos por resolver en ESTA pantalla → al siguiente pendiente, SIN avanzar.
+        log.info(`WizardPage: pantalla ${screenIdActual} — quedan ${pendientes.length} hijo(s); salto al siguiente`);
+        setSelectedEnrollmentId(pendientes[0].enrollment_id);
+        window.scrollTo(0, 0);
+        return;
+      }
+      // Todos resueltos en esta pantalla → avanzar, y preparar el primer pendiente de la siguiente.
+      addCompletedStep(currentStep);
+      const nextStep = Math.min(currentStep + 1, STEP_COMPONENTS.length - 1);
+      const nextScreenId = STEP_CATALOG[nextStep]?.id || null;
+      const primeroSiguiente = (nextStep >= FIRST_SIGNING_INDEX && nextScreenId)
+        ? primerPendienteEnPantalla(hijosFirma, nextScreenId, nuevos) : null;
+      setSelectedEnrollmentId(primeroSiguiente ? primeroSiguiente.enrollment_id
+        : (hijosFirma[0] ? hijosFirma[0].enrollment_id : null));
+      log.info(`WizardPage: pantalla ${screenIdActual} resuelta para todos → avanza ${currentStep} → ${nextStep}`);
+      setCurrentStep(nextStep);
+      window.scrollTo(0, 0);
+      return;
+    }
     addCompletedStep(currentStep);
     const nextStep = Math.min(currentStep + 1, STEP_COMPONENTS.length - 1);
     log.info(`WizardPage: advancing signing step ${currentStep} → ${nextStep}`);
@@ -909,6 +954,50 @@ const handleNext = async (stepKey, data, extra = null) => {
     () => hermanosConSituacionPura(admissionState?.por_alumno, stepData?.persons, t),
     [admissionState, stepData, t]
   );
+
+  // ★ CLI 403 — EL TRAMO FINAL POR PANTALLA. `screenIdActual` = la pantalla de firma en curso
+  // (s_billing/s_gdpr/s_review/s_sign) o null fuera del tramo. `hijosFirma` = los hijos admitidos
+  // (con su estado por hijo). `candadoPorHijo` = hay varios hijos admitidos CON estado del servidor
+  // ⇒ el avance se gobierna por pantalla; si no, degrada al comportamiento de siempre.
+  const screenIdActual = useMemo(
+    () => (currentStep >= FIRST_SIGNING_INDEX ? (STEP_CATALOG[currentStep]?.id || null) : null),
+    [currentStep]
+  );
+  const hijosFirma = useMemo(
+    () => hermanosConSituacion.filter((h) => h.admitido),
+    [hermanosConSituacion]
+  );
+  const candadoPorHijo = hijosFirma.length > 1 && hayEstadoPorHijo(hijosFirma);
+
+  // ★ CLI 403 — DEFECTO de selección al entrar al tramo (o al cambiar de pantalla): el primer hijo
+  // pendiente de la pantalla actual. Fuera del tramo se limpia, para que el pulso no fije un hijo
+  // viejo. Si el hijo elegido sigue siendo válido, no se toca.
+  useEffect(() => {
+    if (!candadoPorHijo || !screenIdActual) {
+      if (currentStep < FIRST_SIGNING_INDEX && selectedEnrollmentId) setSelectedEnrollmentId(null);
+      return;
+    }
+    if (selectedEnrollmentId && hijosFirma.some((h) => h.enrollment_id === selectedEnrollmentId)) return;
+    const primero = primerPendienteEnPantalla(hijosFirma, screenIdActual, resueltosLocales) || hijosFirma[0];
+    if (primero && primero.enrollment_id) setSelectedEnrollmentId(primero.enrollment_id);
+  }, [candadoPorHijo, screenIdActual, hijosFirma, selectedEnrollmentId, currentStep]); // eslint-disable-line
+
+  // ★ CLI 403 — al ELEGIR un hijo, se trae SU contexto (signing_token + pasos) por el MISMO camino
+  // del pulso (`getAdmissionState` con `selected_enrollment_id`). Es una acción del tutor (no el
+  // pulso automático): un viaje, solo en el tramo. `refreshAdmissionState` deja `signingContext`
+  // apuntando al hijo elegido, y de ahí sale el `signing_token` que alimenta los pasos 8-11.
+  useEffect(() => {
+    if (!candadoPorHijo || !selectedEnrollmentId || !resumeToken || currentStep < FIRST_SIGNING_INDEX) return;
+    gasCall('getAdmissionState', {
+      resume_token: resumeToken,
+      recovered_email: recoveredEmail || undefined,
+      n: recoveryNonce || undefined,
+      selected_enrollment_id: selectedEnrollmentId,
+    }).then((data) => {
+      refreshAdmissionState(data);
+      sincronizarVentanaStepUp(data && data.step_up_restante_s, data && data.step_up_cierre);
+    }).catch((e) => log.warn('WizardPage: no se pudo traer el contexto del hijo elegido', { message: e && e.message }));
+  }, [selectedEnrollmentId]); // eslint-disable-line
 
   const _hitoAdmision = admissionState?.firma_desbloqueada;
   const _puertaAbierta = (_hitoAdmision === undefined || _hitoAdmision === null)
@@ -1377,9 +1466,18 @@ const handleNext = async (stepKey, data, extra = null) => {
         {/* `0º.tricies.novemtricies` §UX (2026-09-06) — durante la firma (Steps 8-11), quién es
             el hijo cuya matrícula se firma. Solo `por_alumno` (fiable); ver la cabecera del
             componente para lo que NO intenta resolver y por qué. */}
-        {currentStep >= FIRST_SIGNING_INDEX && <SigningChildrenBanner />}
+        {/* ★ CLI 403 — el SELECTOR de hijos del tramo 8-11 (con 2+ admitidos y estado por hijo);
+            con uno solo o sin estado por hijo cae al banner de siempre, como antes. */}
+        {currentStep >= FIRST_SIGNING_INDEX && (
+          <SigningChildrenSelector
+            screenId={screenIdActual}
+            selectedEnrollmentId={selectedEnrollmentId}
+            onSelect={setSelectedEnrollmentId}
+            resueltosLocales={resueltosLocales}
+          />
+        )}
         <StepComponent
-          key={`paso-${currentStep}-${hidratacionSeq}`}
+          key={`paso-${currentStep}-${selectedEnrollmentId || ''}-${hidratacionSeq}`}
           onNext={handleNext}
           onBack={handleBack}
           /* MAPEO CENTRAL de modos (Diego 2026-06-12): EDITABLE | PROTECTED | LOCKED.

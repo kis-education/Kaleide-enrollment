@@ -56,6 +56,9 @@ export function hermanosConSituacion(porAlumno, stepDataPersons, t) {
       situacion: a.state_label || a.state_code || '',
       // `AD` = admitida — el único estado desde el que hay algo que firmar.
       admitido: a.state_code === 'AD',
+      // ★ CLI 403: el estado de las pantallas 8/9/10 por hijo (del tutor que opera), si el
+      // servidor lo mandó. El selector del tramo 8-11 lo lee por `lib/pantallaDeFirma.js`.
+      pasos: a.pasos || null,
     };
   });
 }

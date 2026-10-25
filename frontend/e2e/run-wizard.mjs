@@ -433,7 +433,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, refrescoDemoraMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false, conjuntoVacio: false, envioCodigoCorto: 0 }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, refrescoDemoraMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false, conjuntoVacio: false, envioCodigoCorto: 0, pasosPorHijo: null }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -3712,6 +3712,65 @@ async function caminoTramoFirma(page, base) {
       !soloUnoConDos, 'con dos hijos admitidos se pintó el banner de un solo hijo: es ambiguo')
   } finally {
     scenario.dosHermanosAdmitidos = false
+  }
+
+  // ── ★ CLI 403 · FASE con el SELECTOR DE HIJOS (opción A) y el candado por pantalla ──────────
+  // Dos hijos admitidos CON estado por hijo del servidor (`pasos`): uno ya resuelto en la pantalla
+  // actual («nada que hacer» — p.ej. el otro tutor confirmó su facturación) y el otro pendiente. El
+  // selector tiene que (a) pintarse (no el banner), (b) marcar a cada hijo resuelto/pendiente, (c)
+  // NO atascar por el que ya está resuelto, y (d) dejar elegir a cuál atender.
+  try {
+    await esperarSilencioDeRed(15000, 1200)
+    scenario.dosHermanosAdmitidos = true
+    scenario.pasosPorHijo = {
+      // el PRIMER hijo: nada que hacer en ninguna pantalla (resuelto) ⇒ no debe atascar
+      'enr-e2e-1': { billing_confirmed: true, gdpr_completed: true, review_completed: true, signed: true, nada_que_hacer: true },
+      // el SEGUNDO: pendiente en la pantalla 8 (facturación)
+      'enr-e2e-2': { billing_confirmed: false, gdpr_completed: false, review_completed: false, signed: false },
+    }
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 1200)
+
+    const selector = await page.$('[data-testid="selector-firma-hijos"]')
+    c.afirmar('con DOS hijos admitidos y estado por hijo, se pinta el SELECTOR (no el banner)',
+      !!selector, 'no apareció [data-testid="selector-firma-hijos"]: sin selector el tutor no puede llevar a cada hijo por la pantalla')
+    const bannerLista = await page.$('[data-testid="firma-hermanos-lista"]')
+    const bannerUnico = await page.$('[data-testid="firma-hermano-unico"]')
+    c.afirmar('con el selector puesto, NO se pinta el banner informativo de siempre',
+      !bannerLista && !bannerUnico, 'se pintó el banner además del selector: son dos piezas para lo mismo')
+
+    const chips = await page.$$eval('[data-testid="selector-firma-hijo"]', ns => ns.map(n => ({
+      enr: n.getAttribute('data-enrollment'), resuelto: n.getAttribute('data-resuelto'),
+      selected: n.getAttribute('data-selected'), txt: (n.innerText || '').trim(),
+    })))
+    c.afirmar('el selector ofrece UN chip por hijo admitido (dos)',
+      chips.length === 2, `se leyeron ${chips.length} chips (se esperaban 2)`)
+    const resueltos  = chips.filter(x => x.resuelto === 'true')
+    const pendientes = chips.filter(x => x.resuelto === 'false')
+    c.afirmar('cada hijo lleva su estado en la pantalla actual: el «nada que hacer» sale resuelto y el otro pendiente',
+      resueltos.length === 1 && resueltos[0].enr === 'enr-e2e-1'
+      && pendientes.length === 1 && pendientes[0].enr === 'enr-e2e-2',
+      `resueltos=${JSON.stringify(resueltos.map(x=>x.enr))} pendientes=${JSON.stringify(pendientes.map(x=>x.enr))}: el selector no refleja los pasos por hijo`)
+    const faltaTxt = await page.$eval('[data-testid="selector-firma-pendientes"]', n => (n.innerText || '').trim()).catch(() => '')
+    c.afirmar('el candado NOMBRA al hijo que queda pendiente (no un botón mudo), y NO al que ya está resuelto',
+      /RobotHijoDosE2E/i.test(faltaTxt) && !/RobotHijoE2E(?!Dos)/.test(faltaTxt.replace(/RobotHijoDosE2E/g, '')),
+      `la línea de pendientes decía ${JSON.stringify(faltaTxt)}: tiene que decir qué hijo falta por resolver`)
+
+    // (d) el tutor elige a cuál atender: por defecto va el PRIMER pendiente (el segundo hijo);
+    // al pulsar el chip del primero (ya resuelto), la selección cambia a él.
+    const seleccionadoAntes = chips.find(x => x.selected === 'true')
+    c.afirmar('por defecto el selector apunta al primer hijo PENDIENTE de la pantalla',
+      seleccionadoAntes && seleccionadoAntes.enr === 'enr-e2e-2',
+      `el chip seleccionado era ${JSON.stringify(seleccionadoAntes && seleccionadoAntes.enr)}: debería arrancar en el pendiente`)
+    await page.click('[data-testid="selector-firma-hijo"][data-enrollment="enr-e2e-1"]')
+    await page.waitForTimeout(LATENCY + 600)
+    const seleccionadoDespues = await page.$eval('[data-testid="selector-firma-hijo"][data-enrollment="enr-e2e-1"]',
+      n => n.getAttribute('data-selected')).catch(() => null)
+    c.afirmar('al pulsar el chip de un hijo, la selección cambia a él (la pantalla se alimenta de SU sesión)',
+      seleccionadoDespues === 'true', 'pulsar el chip del hijo no cambió la selección: el tutor no puede elegir a cuál atender')
+  } finally {
+    scenario.dosHermanosAdmitidos = false
+    scenario.pasosPorHijo = null
   }
 
   // Declarado y justificado en NO_CUBIERTAS_PERMITIDAS.

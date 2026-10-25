@@ -2906,11 +2906,17 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
             // no sabe producirlo hoy (`resolveSigningStatus_` es de grupo y no acepta acotar a un
             // expediente), y un campo que existe por un camino y no por el otro es una trampa
             // para quien lo lea después. Que lo produzcan los dos, o no lo produzca ninguno.
+            // ★ CLI 403: la lista blanca CONSERVA los `pasos` por hijo que el KMS hydrate ya computó
+            // (`data.admission.por_alumno[].pasos`), sin los cuales el selector del tramo 8-11 no
+            // sabría qué pantalla le falta a cada hijo. Si no vienen (tutor sin resolver, KMS viejo),
+            // el campo queda ausente — byte-idéntico a antes.
             por_alumno:        Array.isArray(admSrc.por_alumno) ? admSrc.por_alumno.map(function(a) {
-                                 return { enrollment_id: a.enrollment_id || null,
-                                          applicant_person_id: a.applicant_person_id || null,
-                                          state_code: a.state_code || null,
-                                          state_label: a.state_label || null };
+                                 var o = { enrollment_id: a.enrollment_id || null,
+                                           applicant_person_id: a.applicant_person_id || null,
+                                           state_code: a.state_code || null,
+                                           state_label: a.state_label || null };
+                                 if (a.pasos) o.pasos = a.pasos;
+                                 return o;
                                }) : [],
             firma_desbloqueada: admSrc.firma_desbloqueada === true,
             signing_status:    admSrc.signing_status || null,
@@ -5184,17 +5190,27 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
   // una llamada al KMS en el caso «enviada pero aún sin resolver»; la amortiguan la memoria de
   // ejecución (`_FIRMA_MEMO_`) y la caché del pulso (`wz_adm_`, 1800 s), que ya existen.
   if (!Array.isArray(admHints.sessions) && admHints.resumeToken) {
-    var firmaKms = _datosDeFirmaDelExpediente_(admHints.resumeToken);
+    // ★ CLI 403: se pasa el tutor para que el KMS devuelva ADEMÁS los pasos 8/9/10 POR HIJO.
+    var firmaKms = _datosDeFirmaDelExpediente_(admHints.resumeToken, guardianPersonId);
     if (firmaKms) {
       admHints = {
-        situaciones:       admHints.situaciones,
-        resumeToken:       admHints.resumeToken,
-        sessions:          firmaKms.sessions,
-        signersBySession:  firmaKms.signersBySession,
-        admisionResuelta:  firmaKms.admisionResuelta,
+        situaciones:        admHints.situaciones,
+        resumeToken:        admHints.resumeToken,
+        selectedEnrollmentId: admHints.selectedEnrollmentId || null,  // ★ CLI 403: el hijo del selector
+        sessions:           firmaKms.sessions,
+        signersBySession:   firmaKms.signersBySession,
+        pasosPorExpediente: firmaKms.pasosPorExpediente || {},        // ★ CLI 403
+        admisionResuelta:   firmaKms.admisionResuelta,
       };
     }
   }
+  // ★ CLI 403 — LOS PASOS POR HIJO EN `por_alumno` (la pieza que el selector del tramo 8-11 lee).
+  // Es el espejo del `pasos_por_expediente` que sirve el KMS (`enr.datosDeFirma`). Va aquí, en el
+  // builder, para que lo lleven las proyecciones que salen de él (el retorno vivo y la copia del
+  // pulso); las otras —la copia caliente del warm y el hydrate— lo adjuntan con el MISMO helper.
+  // Con el mapa vacío (sin tutor, o KMS viejo) `out.por_alumno` queda BYTE-IDÉNTICO.
+  out.por_alumno = _pasosEnPorAlumno_(out.por_alumno, admHints.pasosPorExpediente);
+
   // ⛔ FALLA CERRADO: un hito que no consta NO es un hito cumplido. Y una lista de sesiones
   // ausente tampoco desbloquea nada — «todavía no se sabe» nunca es «todos resueltos».
   out.firma_desbloqueada = (admHints.admisionResuelta === true) &&
@@ -5205,7 +5221,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
     if (guardianPersonId) {
       var perfP1 = Date.now(); // PERF-KMS2
       out.signing_context = resolveGuardianSigningContext_(groupId, guardianPersonId,
-        admHints.sessions, admHints.signersBySession);
+        admHints.sessions, admHints.signersBySession, admHints.selectedEnrollmentId);
       if (PERF2_.adm) PERF2_.adm.ctx_path1_ms = Date.now() - perfP1;
     }
     // Path 2 (DL-E38 cross-device fix) — the magic link carries NO guardian
@@ -5223,7 +5239,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
     if (!out.signing_context) {
       var perfP2 = Date.now(); // PERF-KMS2
       out.signing_context = resolveSigningContextFromSession_(groupId, persons,
-        admHints.sessions, admHints.signersBySession);
+        admHints.sessions, admHints.signersBySession, admHints.selectedEnrollmentId);
       if (PERF2_.adm) PERF2_.adm.ctx_path2_ms = Date.now() - perfP2;
     }
     // ⚠️ `derivarPantallaAdmision_` NO MIRA el Estado que recibe: `signing_available` es
@@ -5311,21 +5327,31 @@ var _FIRMA_MEMO_ = {};
  * KAL-4: el expediente lo deriva el KMS del token; aquí NO se manda ningún id de grupo,
  * sesión ni firmante. KAL-11: log redactado, nunca el token entero.
  *
+ * ★ CLI 403: `guardianPersonId` OPCIONAL. Con él, el KMS devuelve ADEMÁS `pasos_por_expediente`
+ * —el estado de las pantallas 8/9/10 POR HIJO para ESE tutor— que alimenta el selector del tramo
+ * 8-11 (`out.por_alumno[].pasos`). Sin él es byte-idéntico a antes (la clave llega vacía). La
+ * memoria lleva el tutor en la clave: dos tutores ven pasos distintos del MISMO expediente.
+ *
  * @param {string} resumeToken
- * @returns {{sessions:Object[], signersBySession:Object<string,Object[]>}|null}
+ * @param {string=} guardianPersonId  el tutor que opera (ya resuelto del enlace, KAL-4)
+ * @returns {{sessions:Object[], signersBySession:Object<string,Object[]>, pasosPorExpediente:Object}|null}
  *          `null` si no hay token, si el KMS falla o si la respuesta no trae sesiones —
  *          quien llama degrada como si la lectura hubiera fallado (que es lo que pasó).
  * @private
  */
-function _datosDeFirmaDelExpediente_(resumeToken) {
+function _datosDeFirmaDelExpediente_(resumeToken, guardianPersonId) {
   var token = resumeToken ? String(resumeToken).trim() : '';
   if (!token) return null;
   try { assertValidUuid_(token, 'resume_token'); } catch (e) { return null; }
-  if (Object.prototype.hasOwnProperty.call(_FIRMA_MEMO_, token)) return _FIRMA_MEMO_[token];
+  var gid = guardianPersonId ? String(guardianPersonId).trim() : '';
+  var memoKey = token + '|' + gid;   // ★ CLI 403: los pasos son del tutor ⇒ la clave lo lleva
+  if (Object.prototype.hasOwnProperty.call(_FIRMA_MEMO_, memoKey)) return _FIRMA_MEMO_[memoKey];
 
   var out = null;
   try {
-    var r = kmsProxy_('enr.datosDeFirma', { resume_token: token }) || {};
+    var cuerpo = { resume_token: token };
+    if (gid) cuerpo.guardian_person_id = gid;   // ★ CLI 403: de QUÉ tutor son los pasos por hijo
+    var r = kmsProxy_('enr.datosDeFirma', cuerpo) || {};
     if (Array.isArray(r.sessions)) {
       var porSesion = (r.signers_by_session && typeof r.signers_by_session === 'object')
         ? r.signers_by_session : {};
@@ -5333,6 +5359,9 @@ function _datosDeFirmaDelExpediente_(resumeToken) {
       // normaliza a booleano ESTRICTO — un KMS que aún no lo mande deja `false`, que es fallar
       // cerrado: un hito que no consta no es un hito cumplido.
       out = { sessions: r.sessions, signersBySession: porSesion,
+              // ★ CLI 403: pasos 8/9/10 por hijo para este tutor; `{}` si el KMS no los manda.
+              pasosPorExpediente: (r.pasos_por_expediente && typeof r.pasos_por_expediente === 'object')
+                ? r.pasos_por_expediente : {},
               admisionResuelta: r.admision_resuelta === true };
     } else {
       Logger.log('[_datosDeFirmaDelExpediente_] respuesta sin sesiones — se degrada');
@@ -5340,8 +5369,28 @@ function _datosDeFirmaDelExpediente_(resumeToken) {
   } catch (e) {
     Logger.log(redact_('[_datosDeFirmaDelExpediente_] lectura KMS fallida — ' + (e && e.message)));
   }
-  _FIRMA_MEMO_[token] = out;
+  _FIRMA_MEMO_[memoKey] = out;
   return out;
+}
+
+/**
+ * ★ CLI 403 — ADJUNTA los pasos 8/9/10 por hijo (del tutor que opera) a cada línea de `por_alumno`,
+ * sin tocar el resto. Lo usan las CINCO proyecciones del estado de admisión («o en todas, o en
+ * ninguna»): el builder (de donde salen el retorno vivo y la copia del pulso), la copia caliente del
+ * warm y el hydrate. Así el selector del tramo 8-11 sabe, POR HIJO, qué pantallas le faltan.
+ *
+ * ⛔ Con `pasosPorExpediente` vacío —sin tutor resuelto, o un KMS que aún no manda la clave— devuelve
+ * `por_alumno` BYTE-IDÉNTICO (ni añade `pasos`): es lo que hace que esto degrade al comportamiento
+ * viejo sin pintar un selector a medias.
+ * @private
+ */
+function _pasosEnPorAlumno_(porAlumno, pasosPorExpediente) {
+  if (!Array.isArray(porAlumno)) return porAlumno;
+  var mapa = (pasosPorExpediente && typeof pasosPorExpediente === 'object') ? pasosPorExpediente : {};
+  return porAlumno.map(function(a) {
+    var pasos = mapa[String((a && a.enrollment_id) || '')] || null;
+    return pasos ? Object.assign({}, a, { pasos: pasos }) : a;
+  });
 }
 
 /**
@@ -6331,7 +6380,29 @@ function resolveSigningStatus_(groupId, sessionsHint, signersBySessionHint) {
  * @param {Array}  persons  enrPersons rows of the group (to count guardians)
  * @returns {{signer_id, session_id, guardian_person_id, signing_token}|null}
  */
-function resolveSigningContextFromSession_(groupId, persons, sessionsHint, signersBySessionHint) {
+/**
+ * ★ CLI 403 — ELIGE la sesión de firma que alimenta la pantalla. UN solo criterio para los dos
+ * resolvedores: si el selector del tramo 8-11 pidió un hijo concreto (`selectedEnrollmentId`), se
+ * elige la sesión de ESE hijo (`entity_id === selectedEnrollmentId`), viva y no terminal; si no la
+ * hay (o no se pidió ninguno), la PRIMERA no terminal, como siempre.
+ *
+ * ⛔ KAL-4: `selectedEnrollmentId` SOLO sirve para elegir entre las sesiones que ya vienen acotadas
+ * al grupo del token (`sessionsHint`). Un id que no case ninguna sesión degrada a la primera — nunca
+ * alcanza nada ajeno ni rompe el flujo de quien no manda selección.
+ * @private
+ */
+function _elegirSesionDeFirma_(sessions, selectedEnrollmentId) {
+  var TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
+  var viva = function(s) { return s && !s.deleted_at && !TERMINAL[s.current_state_code || '']; };
+  var sel = selectedEnrollmentId ? String(selectedEnrollmentId).trim() : '';
+  if (sel) {
+    var elegida = sessions.find(function(s) { return viva(s) && String(s.entity_id || '') === sel; });
+    if (elegida) return elegida;
+  }
+  return sessions.find(viva) || null;
+}
+
+function resolveSigningContextFromSession_(groupId, persons, sessionsHint, signersBySessionHint, selectedEnrollmentId) {
   try {
     assertValidUuid_(groupId, 'enrollment_group_id');
   } catch (e) { return null; }
@@ -6343,10 +6414,8 @@ function resolveSigningContextFromSession_(groupId, persons, sessionsHint, signe
     return null;
   }
   var sessions = sessionsHint;
-  var TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
-  var session = sessions.find(function(s) {
-    return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
-  });
+  // ★ CLI 403: la sesión del hijo SELECCIONADO (selector del tramo 8-11), o la primera no terminal.
+  var session = _elegirSesionDeFirma_(sessions, selectedEnrollmentId);
   if (!session) return null;
   try {
     assertValidUuid_(session.session_id, 'session_id');
@@ -6422,7 +6491,7 @@ function resolveSigningContextFromSession_(groupId, persons, sessionsHint, signe
  * @param {string} guardianPersonId
  * @returns {{signer_id, session_id, guardian_person_id, signing_token}|null}
  */
-function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint, signersBySessionHint) {
+function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint, signersBySessionHint, selectedEnrollmentId) {
   try {
     assertValidUuid_(groupId, 'enrollment_group_id');
     assertValidUuid_(guardianPersonId, 'guardian_person_id');
@@ -6435,10 +6504,8 @@ function resolveGuardianSigningContext_(groupId, guardianPersonId, sessionsHint,
     return null;
   }
   var sessions = sessionsHint;
-  var TERMINAL = { COMPLETED: 1, CANCELLED: 1, EXPIRED: 1 };
-  var session = sessions.find(function(s) {
-    return s && !s.deleted_at && !TERMINAL[s.current_state_code || ''];
-  });
+  // ★ CLI 403: la sesión del hijo SELECCIONADO (selector del tramo 8-11), o la primera no terminal.
+  var session = _elegirSesionDeFirma_(sessions, selectedEnrollmentId);
   if (!session) return null;
   try {
     assertValidUuid_(session.session_id, 'session_id');
@@ -6651,8 +6718,13 @@ function getAdmissionState_(p) {
   PERF2_.adm = {}; // recoge segmentos internos de buildAdmissionContext_
   // ②17: las filas de firma ya no viajan desde el batch de AppSheet — se piden al KMS
   // con este token, y solo si el expediente está admitido.
+  // ★ CLI 403 — el selector del tramo 8-11 pide un hijo concreto con `selected_enrollment_id`. Se
+  // valida la FORMA (KAL-5 capa 1); el expediente sigue saliendo del token (KAL-4) y una selección
+  // que no case ninguna sesión del grupo degrada a la primera, sin alcanzar nada ajeno.
+  let selEnr = (p && p.selected_enrollment_id) ? String(p.selected_enrollment_id).trim() : null;
+  try { if (selEnr) assertValidUuid_(selEnr, 'selected_enrollment_id'); } catch (eSel) { selEnr = null; }
   const admission = buildAdmissionContext_(id, enrollments, guardianId, persons,
-    { situaciones: statesHint, resumeToken: (p && p.resume_token) || null });
+    { situaciones: statesHint, resumeToken: (p && p.resume_token) || null, selectedEnrollmentId: selEnr });
   const perfAdmMs = Date.now() - perfA0;
   Logger.log('[PERF] getAdmissionState t_gate=' + perfGateMs + ' t_batch=' + perfBatchMs +
              ' t_guardian=' + perfGuardianMs + ' t_admission=' + perfAdmMs +
