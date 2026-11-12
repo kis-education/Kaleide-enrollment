@@ -161,6 +161,7 @@
   "wizard.save_error.neae_vaciado_no_declarado": "Los datos de necesidades educativas especiales que ya estaban guardados NO se han borrado, porque no quedaba claro que quisieras quitarlos. Si de verdad quieres eliminarlos, vuelve a esa pantalla y márcalo explícitamente.",
   "wizard.save_error.sin_contexto_de_tenant": "No se ha podido guardar el cuestionario: falta una configuración del colegio necesaria para procesarlo. No es algo que puedas arreglar tú — escribe a admisiones.",
   "wizard.save_error.sin_iniciador_resoluble": "No se ha podido guardar el cuestionario: no se ha podido identificar quién de tu solicitud lo inició. No es algo que puedas arreglar tú — escribe a admisiones.",
+  "wizard.save_error.firma_ya_aceptada": "Este cambio NO se ha guardado: ya diste por buena la documentación de este alumno y se envió a firma, así que sus datos de pago y sus consentimientos ya no se pueden cambiar. Si hay que corregir algo, escribe a admisiones.",
   "wizard.dismiss_save_error": "Ocultar este aviso",
   "wizard.retry_save": "Reintentar",
   "wizard.saving": "Guardando…",

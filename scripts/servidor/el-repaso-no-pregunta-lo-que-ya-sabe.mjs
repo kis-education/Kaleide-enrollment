@@ -68,10 +68,18 @@ const N1      = '33333333-3333-4333-8333-333333333333'   // el `email_id` del tu
 const N2      = '44444444-4444-4444-8444-444444444444'   // el `email_id` del tutor 2
 const C1      = 'tutor1@example.invalid'
 const C2      = 'tutor2@example.invalid'
-// ⛔ FIJO a propósito: la afirmación (1.d) compara la ficha que deja el camino del viaje con la
-// que deja el camino de la memoria. Con `new Date()` la diferencia sería el RELOJ y no el
-// producto — un arnés que mide su suerte, no lo que protege.
-const CREADA   = '2026-09-30T08:00:00.000Z'
+// ⛔ FIJO DENTRO DE LA CORRIDA a propósito: la afirmación (1.d) compara la ficha que deja el
+// camino del viaje con la que deja el camino de la memoria, así que las dos tienen que ver el
+// MISMO valor — con un `new Date()` por uso, la diferencia sería el RELOJ y no el producto.
+// Se evalúa UNA vez al cargar el módulo, así que eso se conserva entero.
+// ⛔⛔ Y RELATIVO A HOY, no una fecha escrita a mano (arreglado el 2026-11-12, CLI 458). Era
+// `'2026-09-30T08:00:00.000Z'` y el enlace caduca a los 7 DÍAS (`RESUME_TOKEN_TTL_MS_`,
+// `backend/Code.js`) ⇒ desde el 2026-10-08 este arnés salía ROJO SIEMPRE, con sus seis
+// afirmaciones cayendo por `RECHAZADO:ENLACE_CADUCADO`, y con él la integración continua del
+// asistente entera (`build` depende de `arneses-del-servidor`). No medía el producto: medía el
+// calendario. **Quien ponga una fecha en un arnés que pasa por la puerta del enlace, que la
+// ponga relativa.**
+const CREADA   = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 
 /** Una copia caliente sintética de UN tutor de UN expediente. */
 function copia (gid, token, n, correo, extra) {

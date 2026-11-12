@@ -161,6 +161,7 @@
   "wizard.save_error.neae_vaciado_no_declarado": "The special educational needs details already on file were NOT cleared, because it wasn't clear you meant to remove them. If you do want to remove them, go back to that screen and mark it explicitly.",
   "wizard.save_error.sin_contexto_de_tenant": "We couldn't save the questionnaire: the school is missing a setting needed to process it. This isn't something you can fix — please email admissions.",
   "wizard.save_error.sin_iniciador_resoluble": "We couldn't save the questionnaire: we couldn't identify who in your application started it. This isn't something you can fix — please email admissions.",
+  "wizard.save_error.firma_ya_aceptada": "This change was NOT saved: you already confirmed this child's paperwork and it was sent for signature, so their payment details and consents can no longer be changed. If something needs fixing, please email admissions.",
   "wizard.dismiss_save_error": "Hide this notice",
   "wizard.retry_save": "Retry",
   "wizard.saving": "Saving…",

@@ -65,6 +65,16 @@ export const RECHAZOS_DEFINITIVOS = {
   NEAE_VACIADO_NO_DECLARADO: 'wizard.save_error.neae_vaciado_no_declarado',
   RESPUESTAS_SIN_CONTEXTO_DE_TENANT: 'wizard.save_error.sin_contexto_de_tenant',
   RESPUESTAS_SIN_INICIADOR_RESOLUBLE: 'wizard.save_error.sin_iniciador_resoluble',
+  // ⛔ `2026-11-12-el-candado-de-la-firma-echa-al-otro-tutor` (CLI 458) — EL CANDADO DE LA FIRMA.
+  // El KMS cierra los pasos 8 (datos de pago) y 9 (consentimientos) de un hijo en cuanto ESE
+  // tutor ha confirmado su documentación y se ha enviado a firma (decisión de Diego 2026-06-12,
+  // `enr_assertSigningNotLocked_`). Es DEFINITIVO para ese tutor y ese hijo: reintentarlo lo
+  // rechaza igual, porque el motivo no es el canal sino que el paquete ya se aceptó — y además
+  // reintentar le repetiría el susto, porque el aviso reaparece como episodio nuevo.
+  // ⚠️ Desde CLI 458 el candado es por hijo **Y POR TUTOR** (DL-E44 ★ENMIENDA 2026-08-27), así
+  // que esto YA NO le puede salir a un tutor que no ha confirmado nada: cuando salta, salta de
+  // verdad. Antes se lo comía el aviso genérico y se reintentaba para siempre.
+  SIGNING_LOCKED: 'wizard.save_error.firma_ya_aceptada',
 };
 
 /**
