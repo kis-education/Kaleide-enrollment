@@ -1116,7 +1116,10 @@ Dentro de una pantalla (8 datos/forma de pago · 9 consentimientos · 10 lectura
 TODOS los hijos admitidos, eligiéndolos en el **selector** (`SigningChildrenSelector`), y la pantalla
 se alimenta de la sesión/token del hijo SELECCIONADO —no del primer `.find()`—: el
 `selected_enrollment_id` viaja en `getAdmissionState` y el servidor elige esa sesión
-(`_elegirSesionDeFirma_`; KAL-4: solo entre las del grupo del token). ⛔ **No se pasa a la pantalla
+(`_elegirSesionDeFirma_`; KAL-4: solo entre las del grupo del token). **Y las escrituras de los pasos 8-10
+también**: `signingIdentity_` añade `selected_enrollment_id` y los tres proxies lo reenvían
+(`_conElHijoElegido_`), así que el KMS escribe —y mira el candado— sobre el hijo elegido y no
+sobre el primero (red: `kis-app scripts/servidor/el-candado-de-la-firma-es-de-un-tutor.mjs`, (I)/(J)). ⛔ **No se pasa a la pantalla
 siguiente hasta que la actual esté RESUELTA para TODOS los hijos admitidos**; el candado vive en UN
 criterio (`lib/pantallaDeFirma.js`, aplicado en `advanceSigningStep`) y ⛔ **jamás queda imposible de
 satisfacer** —un hijo con `nada_que_hacer`, o sin estado por hijo, cuenta como resuelto y degrada al

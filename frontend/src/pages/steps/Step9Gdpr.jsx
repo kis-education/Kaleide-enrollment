@@ -30,7 +30,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   const { t, i18n } = useTranslation();
   const {
     enqueueSave, stepData, recoveredEmail, recoveryNonce,
-    signingForms, updateSigningForm, admissionState,
+    signingForms, updateSigningForm, admissionState, selectedEnrollmentId,
   } = useWizard();
   // MAPEO CENTRAL (Diego 2026-06-12): el candado viene de getStepEditMode via
   // props locked/onUnlock — este paso no computa su propio lock.
@@ -152,7 +152,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
     // server-side) se convierte en rechazo de la promesa → misma vía de surfacing
     // (nube 'error' + Reintentar). El payload se construye ANTES de encolar
     // (cierra sobre las marcas actuales, re-ejecutable). KAL-4/KAL-7 intactos.
-    const payload = { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }), consents };
+    const payload = { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail, selectedEnrollmentId }), consents };
     enqueueSave(() => gasCall('submitGdprConsents', payload)
       .then(res => {
         if (res && res.blocked) {

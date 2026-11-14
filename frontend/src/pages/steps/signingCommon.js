@@ -46,11 +46,15 @@ export const isStepUpRequiredError = (e) =>
  *   - si no hay resume_token, caemos al signing_token legacy.
  * NUNCA mandamos un guardian/grupo del cliente — el backend deriva la identidad del token+n.
  */
-export function signingIdentity_({ resumeToken, signingToken, n, recoveredEmail }) {
+export function signingIdentity_({ resumeToken, signingToken, n, recoveredEmail, selectedEnrollmentId }) {
   if (resumeToken) {
     const out = { resume_token: resumeToken };
     if (n) out.n = n;                                  // identidad del enlace (email_id)
     if (recoveredEmail) out.recovered_email = recoveredEmail; // compat secundario
+    // ★ 2026-11-14 — el hijo elegido en el tramo 8-11 (CLI 403). Lo piden SOLO las escrituras de
+    // los pasos 8-10: sin él, el KMS resolvía siempre el PRIMER hijo y el paso dado sobre otro
+    // se escribía —y miraba el candado— sobre el primero. No autoriza nada (KAL-4 en el KMS).
+    if (selectedEnrollmentId) out.selected_enrollment_id = selectedEnrollmentId;
     return out;
   }
   if (signingToken) return { signing_token: signingToken };

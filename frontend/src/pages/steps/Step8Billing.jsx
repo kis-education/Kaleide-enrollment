@@ -61,7 +61,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   const lang = i18n.language?.startsWith('en') ? 'en' : 'es';
   const {
     stepData, enqueueSave, recoveredEmail, recoveryNonce,
-    signingForms, updateSigningForm,
+    signingForms, updateSigningForm, selectedEnrollmentId,
   } = useWizard();
   // MAPEO CENTRAL (Diego 2026-06-12): el modo de edición viene del contexto
   // (getStepEditMode, via props locked/onUnlock) — este paso NO computa su candado.
@@ -419,7 +419,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
     setErr('');
     // IDENTITY-FROM-LINK: identidad canónica = resume_token + `n` (email_id del enlace);
     // el backend resuelve el firmante server-side. signing_token solo back-compat.
-    const body = { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail }) };
+    const body = { ...signingIdentity_({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail, selectedEnrollmentId }) };
     if (perChild && applicants.length) body.per_participant = buildPerParticipantPayload();
     else body.payers = buildGroupPayload();
     log.info('[DBG billing] submit', {

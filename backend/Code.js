@@ -10698,6 +10698,24 @@ function _kmsRenderResumeLinksBlock_(resumeTokens, nEmailIds, lang) {
  * @param {Object} p
  * @returns {Object} `data` del KMS (`{ billing_id, confirmed_at, already_confirmed? }`).
  */
+/**
+ * ★ 2026-11-14 (ficha `2026-11-12-el-candado-de-la-firma-echa-al-otro-tutor`) — añade al cuerpo
+ * que va al KMS el hijo que el tutor tiene elegido en el tramo 8-11 (`selected_enrollment_id`,
+ * CLI 403), para que el paso 8/9/10 se escriba —y mire el candado— sobre ESE hijo y no sobre el
+ * primero. Solo por la vía del enlace (con `signing_token` la sesión ya es la del token).
+ * ⛔ No autoriza nada: el KMS solo ESCOGE entre las sesiones de la solicitud del token (KAL-4).
+ * Forma inválida (KAL-5 capa 1) ⇒ no se manda, y el KMS resuelve la primaria de siempre.
+ * @private
+ */
+function _conElHijoElegido_(body, p) {
+  if (!body || !body.resume_token) return body;
+  var sel = (p && p.selected_enrollment_id) ? String(p.selected_enrollment_id).trim() : '';
+  if (!sel) return body;
+  try { assertValidUuid_(sel, 'selected_enrollment_id'); } catch (e) { return body; }
+  body.selected_enrollment_id = sel;
+  return body;
+}
+
 function saveBillingInfo_(p) {
   // DL-A.3 — identidad unificada (★ CANÓNICA: colapso del signing_token). Acepta
   // (resume_token+recovered_email) [canónico] o signing_token [back-compat].
@@ -10718,7 +10736,7 @@ function saveBillingInfo_(p) {
   // lento, pero honesto (§`_wzCopiaAlDia_`).
   _wzCacheInvalidate_(p && p.resume_token, 'FACTURACION'); // WIZARD-CACHE: nunca stale tras un write — y `0º.quinquagies` B dice QUÉ escribió
 
-  return kmsProxy_('enr.saveBillingInfoQueued', Object.assign({}, sctx.identity, {
+  return kmsProxy_('enr.saveBillingInfoQueued', _conElHijoElegido_(Object.assign({}, sctx.identity, {
     // Canonical multi-payer reparto entre tutores (GUARDIAN only — sin facturación
     // a terceros). Se reenvía cuando el frontend lo manda; el KMS deriva grupo+signer
     // del token (KAL-4). Los campos single-payer top-level se mantienen por
@@ -10739,7 +10757,7 @@ function saveBillingInfo_(p) {
     fiscal_postal_code:   p.fiscal_postal_code   || null,
     fiscal_country:       p.fiscal_country       || 'ES',
     billing_email:        p.billing_email        || null,
-  }));
+  }), p));
 }
 
 /**
@@ -11115,10 +11133,10 @@ function submitGdprConsents_(p) {
   // GATE-B modo conservador: pasamos el array consents[] tal cual sin
   // estructura per-guardian adicional. El handler KMS lo persiste como un
   // set para el signer del iniciador.
-  return kmsProxy_('enr.submitGdprConsentsQueued', Object.assign({}, sctx.identity, {
+  return kmsProxy_('enr.submitGdprConsentsQueued', _conElHijoElegido_(Object.assign({}, sctx.identity, {
     signer_ip:     p.signer_ip || null,
     consents:      p.consents,
-  }));
+  }), p));
 }
 
 /**
@@ -11156,7 +11174,7 @@ function confirmReview_(p) {
   // file_id contra los documentos de la sesión del token (KAL-4) antes de persistir.
   const reviewBody = Object.assign({}, sctx.identity);
   if (Array.isArray(p && p.accepted)) reviewBody.accepted = p.accepted;
-  return kmsProxy_('enr.confirmReviewQueued', reviewBody);
+  return kmsProxy_('enr.confirmReviewQueued', _conElHijoElegido_(reviewBody, p));
 }
 
 /**
