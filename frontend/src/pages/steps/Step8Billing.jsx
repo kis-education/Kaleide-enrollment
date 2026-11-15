@@ -408,7 +408,7 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
   // (4) avance inmediato (onAdvance). Baseline al contexto tras save OK.
   // KAL-4/KAL-7 intactos: el KMS deriva grupo/signer del token; el payload solo lleva %.
   const submit = () => {
-    if (locked) { onAdvance(); return; } // solo lectura: avanza sin guardar
+    if (locked) { onAdvance({ sinEscribir: true }); return; } // solo lectura: avanza SIN guardar ⇒ no resuelve al hijo (★ CLI 467)
     // ★ D66 — con el presupuesto sin calcular NO se avanza. El colegio ya está avisado
     // (`enr_avisarPresupuestoNoCalculable_`, best-effort, KMS); aquí solo se bloquea el paso
     // hasta que la configuración se arregle — ⛔ SIN botón de reintentar (PASO 1: los fallos no

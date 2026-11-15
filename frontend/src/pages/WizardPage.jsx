@@ -31,7 +31,7 @@ import { hermanosConSituacion as hermanosConSituacionPura } from '../lib/hermano
 import { clasificarFalloDeEntrada } from '../lib/fallosDeEntrada';
 import SigningChildrenSelector from '../components/SigningChildrenSelector';
 // ★ CLI 403 — el estado de las pantallas 8/9/10 POR HIJO (lector único del tramo final).
-import { hijosPendientesEnPantalla, hayEstadoPorHijo, primerPendienteEnPantalla } from '../lib/pantallaDeFirma';
+import { hijosPendientesEnPantalla, hayEstadoPorHijo, primerPendienteEnPantalla, hijoResueltoEnPantalla } from '../lib/pantallaDeFirma';
 
 const LOGO = 'https://raw.githubusercontent.com/kaleideschool/public/main/favicon.png';
 
@@ -761,7 +761,12 @@ const handleNext = async (stepKey, data, extra = null) => {
   // STEP-FRAMEWORK: derivado del catálogo (primer paso savePolicy:'act'), no 7 mágico.
   const STEP_FIRST_SIGNING = FIRST_SIGNING_INDEX;
 
-  const advanceSigningStep = () => {
+  /**
+   * @param {{sinEscribir?:boolean}=} opts  `sinEscribir` lo manda el atajo de SOLO LECTURA de los
+   *   pasos 8/9/10 (`if (locked) { onAdvance({sinEscribir:true}); return; }`): esa pasada NO
+   *   persiste nada, así que NO puede contar como «este hijo ya está resuelto» (★ CLI 467).
+   */
+  const advanceSigningStep = (opts) => {
     markUserTookControl(); // WPERF-1 criterio 4: avanzar la firma a mano invalida un JUMP pendiente
     // ★ CLI 403 — AVANCE POR PANTALLA, no por hijo: no se pasa a la pantalla siguiente hasta que la
     // actual esté RESUELTA para TODOS los hijos admitidos. Al completar la actual para el hijo
@@ -771,9 +776,24 @@ const handleNext = async (stepKey, data, extra = null) => {
     // estado por hijo (`candadoPorHijo` falso) se avanza como siempre.
     if (candadoPorHijo && screenIdActual) {
       const enr = selectedEnrollmentId;
+      // ★ CLI 467 — UNA PASADA EN SOLO LECTURA YA NO RESUELVE A NADIE. El atajo
+      // `if (locked) { onAdvance({sinEscribir:true}); return; }` de los pasos 8/9/10 avanza SIN
+      // persistir: marcar al hijo ahí satisfacía el candado en vacío y su `REVIEW_CONFIRMED` no se
+      // escribía jamás. Solo se le marca si de verdad escribió, o si YA estaba resuelto —y
+      // «su lectura está confirmada» cuenta como resuelto en las tres pantallas, porque entonces su
+      // documentación entera salió a firma y no queda nada que escribirle (así el tutor tampoco se
+      // queda atascado ante un paso cerrado sin nada que hacer).
+      const hijoQueAvanza = enr ? (hijosFirma.find((h) => h.enrollment_id === enr) || null) : null;
+      const resuelve = (opts && opts.sinEscribir === true)
+        ? (hijoResueltoEnPantalla(hijoQueAvanza, screenIdActual, resueltosLocales)
+           || hijoResueltoEnPantalla(hijoQueAvanza, 's_review', resueltosLocales))
+        : true;
+      if (opts && opts.sinEscribir === true && !resuelve) {
+        log.info(`WizardPage: pantalla ${screenIdActual} — pasada en solo lectura; el hijo elegido NO se marca resuelto`);
+      }
       const nuevos = {
         ...resueltosLocales,
-        [screenIdActual]: { ...(resueltosLocales[screenIdActual] || {}), ...(enr ? { [enr]: true } : {}) },
+        [screenIdActual]: { ...(resueltosLocales[screenIdActual] || {}), ...((enr && resuelve) ? { [enr]: true } : {}) },
       };
       setResueltosLocales(nuevos);
       const pendientes = hijosPendientesEnPantalla(hijosFirma, screenIdActual, nuevos);
@@ -968,6 +988,27 @@ const handleNext = async (stepKey, data, extra = null) => {
     [hermanosConSituacion]
   );
   const candadoPorHijo = hijosFirma.length > 1 && hayEstadoPorHijo(hijosFirma);
+
+  // ★ CLI 467 — LA LECTURA CONFIRMADA QUE CIERRA LOS PASOS 8/9/10 ES LA DEL HIJO EN PANTALLA.
+  // Los tres pasos de firma declaran `closedBy:['REVIEW_CONFIRMED']` (`steps/catalog.js`), y esa
+  // condición era UN SOLO BOOLEANO DE GRUPO (`WizardContext.reviewConfirmed`): confirmada la
+  // lectura del PRIMER hermano, los pasos del SEGUNDO quedaban `LOCKED`, avanzaban sin escribir y
+  // su `REVIEW_CONFIRMED` no se escribía nunca ⇒ la regla anclada a `REVIEW_CONFIRMED_AT` no le
+  // mandaba el sobre jamás, y sobrevivía a recargar (la marca se persiste en `sessionStorage`).
+  //
+  // ⛔ EL CRITERIO NO SE INVENTA: es el lector ÚNICO `hijoResueltoEnPantalla`
+  // (`lib/pantallaDeFirma.js`), el mismo que gobiernan el selector y el candado del avance. Dos
+  // lectores del mismo criterio divergen.
+  // ⛔ SOLO EN EL TRAMO DE FIRMA (`screenIdActual` no nulo). Los pasos 1-7 también declaran
+  // `REVIEW_CONFIRMED` entre sus `closedBy`, y ahí la pregunta no es por hijo: se quedan con el
+  // booleano de grupo, byte a byte como hoy.
+  // ⛔ Y SIN CANDADO POR HIJO (un solo hijo admitido, o servidor que todavía no manda
+  // `por_alumno[].pasos`), tampoco cambia nada: `reviewConfirmed` tal cual.
+  const hijoEnPantalla = (candadoPorHijo && selectedEnrollmentId)
+    ? (hijosFirma.find((h) => h.enrollment_id === selectedEnrollmentId) || null) : null;
+  const reviewConfirmedDelPaso = (candadoPorHijo && screenIdActual && hijoEnPantalla)
+    ? hijoResueltoEnPantalla(hijoEnPantalla, 's_review', resueltosLocales)
+    : reviewConfirmed;
 
   // ★ CLI 403 — DEFECTO de selección al entrar al tramo (o al cambiar de pantalla): el primer hijo
   // pendiente de la pantalla actual. Fuera del tramo se limpia, para que el pulso no fije un hijo
@@ -1483,8 +1524,8 @@ const handleNext = async (stepKey, data, extra = null) => {
           /* MAPEO CENTRAL de modos (Diego 2026-06-12): EDITABLE | PROTECTED | LOCKED.
              UN solo componente de candado (LockedBanner, via StepShell) para TODOS
              los pasos — los pasos no computan su propio lock. */
-          locked={stepEditMode(currentStep, { isSubmitted, reviewConfirmed, completedSteps }) !== 'EDITABLE'}
-          onUnlock={stepEditMode(currentStep, { isSubmitted, reviewConfirmed, completedSteps }) === 'PROTECTED' ? handleUnlock : null}
+          locked={stepEditMode(currentStep, { isSubmitted, reviewConfirmed: reviewConfirmedDelPaso, completedSteps }) !== 'EDITABLE'}
+          onUnlock={stepEditMode(currentStep, { isSubmitted, reviewConfirmed: reviewConfirmedDelPaso, completedSteps }) === 'PROTECTED' ? handleUnlock : null}
           savePending={hasPendingSave}
           /* DL-E38 merge + REBUILD-8-11: props para los Steps 8-11 de firma inline.
              onAdvance mueve currentStep SIN saveStep (cada step de firma persiste vía

@@ -1087,10 +1087,29 @@ firma_desbloqueada  ⟺  el hito «admisión resuelta» de ESTA solicitud está 
                     Y  hay al menos UNA sesión de firma para este tutor
 ```
 
-El segundo requisito **no es una segunda regla: es un HECHO** —las sesiones se crean solo para los
-admitidos—. ⛔ **`AD`, `TD` y `WL` ya no aparecen como criterio** en `backend/Code.js` ni en
-`frontend/src/`. Mirar `state_code` (el Estado del hijo **menos avanzado**) hacía que **rechazar a un
-hermano DESBLOQUEARA la firma y ponerlo en lista de espera la BLOQUEARA**.
+Mirar `state_code` (el Estado del hijo **menos avanzado**) hacía que **rechazar a un hermano
+DESBLOQUEARA la firma y ponerlo en lista de espera la BLOQUEARA**. Por eso el criterio es el hito.
+
+⚠️ **DOS PREMISAS QUE ESTE APARTADO AFIRMABA Y SON FALSAS — medidas el 2026-11-15 contra
+`origin/main` y `origin/master`:**
+
+1. *«`AD`, `TD` y `WL` ya no aparecen como criterio en `backend/Code.js` ni en `frontend/src/`»*.
+   **En el backend SÍ es verdad** (`'AD'` sale una vez, y es un COMENTARIO en `backend/Code.js:5219`;
+   `'TD'`/`'WL'` no salen). **En el frontal NO**: `'AD'` decide en **cuatro** sitios —
+   `frontend/src/lib/hermanos.js:58` (`admitido: a.state_code === 'AD'`, del que cuelgan el selector
+   de hijos y el candado por pantalla) y el **respaldo DECLARADO de la ventana de publicación**
+   (`WizardPage.jsx:191` y `:1370`, `WizardContext.jsx:1847`, los tres acotados a
+   `firma_desbloqueada` ausente o nula). `'TD'`/`'WL'` tampoco salen del frontal. ⇒ el que hay que
+   mirar el día que esto se limpie es **`hermanos.js:58`**, que no es un respaldo.
+2. *«las sesiones se crean solo para los admitidos»* — **falso, y por eso el segundo requisito NO es
+   un hecho derivado**: `enr_enrollmentsOfGroup_` (`kis-app kms-server/enr/wizard-firma.gs:1412`)
+   filtra por `deleted_at` y por solicitud, **y por nada más**, así que a un hermano NO admitido se
+   le crea igual su sesión de firma. Hoy no muerde porque la puerta la decide el hito; el día que
+   alguien derive «admitido» de «tiene sesión», mentirá.
+
+⛔ **Las dos se CORRIGEN aquí y no en el código**: ninguna está autorizada como cambio, y las dos
+tienen su ficha (`kis-app docs/kms/loop-backlog.md`,
+`2026-11-15-el-segundo-hermano-no-puede-firmar` → «queda fuera»).
 
 **El asistente habla POR HIJO**: `por_alumno` + `firma_desbloqueada` viajan en las **CINCO**
 proyecciones (la del hydrate, las tres del pulso —acierto de caché, escritura y retorno en vivo— y el
@@ -1127,9 +1146,31 @@ modo de siempre (banner, sin candado)—. El 10→11 es «todos con la lectura c
 firmar sigue APAGADO** (interruptor de costes Click & Sign) ⇒ el paso 11 queda informativo.
 
 ⚠️ **Lo YA corregido (antes figuraba como pendiente):** la trampa del veredicto `COMPLETED` de grupo
-—`resolveSigningStatus_` usa `every(...)`, así que firmar al primero NO cierra el paso al segundo— y
-que los pasos 9 y 10 se anclan POR HIJO y POR TUTOR en el KMS (DL-E44 ★ENMIENDA). **Lo que queda fuera
-es solo el acto de firma**, apagado por costes.
+—`resolveSigningStatus_` usa `every(...)`, así que firmar al primero NO cierra el paso al segundo—,
+que los pasos 9 y 10 se anclan POR HIJO y POR TUTOR en el KMS (DL-E44 ★ENMIENDA, **vivo en el KMS
+`@2086`**), y —`CLI 467`, 2026-11-15, **en `main` SIN PUBLICAR**— que **el candado de PANTALLA también
+es por hijo**: la marca de «he leído la carta y el contrato» era un BOOLEANO de grupo
+(`reviewConfirmedLocal`, persistido en `sessionStorage` y nunca apagado) y los tres pasos declaran
+`closedBy:['REVIEW_CONFIRMED']` ⇒ confirmada la del primer hermano, los pasos 8-10 del segundo
+quedaban `LOCKED`, **avanzaban sin escribir** y su `REVIEW_CONFIRMED` no se escribía jamás. Hoy es un
+CONJUNTO por expediente (`marcarLecturaConfirmada`), lo que `stepEditMode` recibe sale del lector
+ÚNICO `hijoResueltoEnPantalla`, y **una pasada en solo lectura ya no cuenta como «hijo resuelto»**
+(`onAdvance({sinEscribir:true})`). En el mismo cambio, **el hijo elegido entra en la clave de la copia
+del pulso** (`_sufijoCopiaDelPulso_`, con la validación ÚNICA `_hijoElegidoDelPayload_`) — sin
+selección la clave es **byte a byte** la de hoy— y el paso 9 pasa a tener **un solo** criterio de «qué
+hijo». Red: `scripts/servidor/el-segundo-hermano-tambien-firma.mjs` + el recorrido
+`los-dos-hermanos-firman` del muro. ⚠️ **Y lo que esa red NO cubre, medido rompiéndolo:** la marca
+del servidor por `entity_id` y que `Step10Review` marque el hijo elegido **dejan el recorrido en
+VERDE** al romperlas, porque **el candado por hijo no lee ese conjunto** (lo decide
+`hijoResueltoEnPantalla` sobre `resueltosLocales` y los `pasos`); se hacen para que lo guardado no
+mienta, no porque cierren el defecto.
+
+⛔ **LO QUE QUEDA FUERA, y no es el acto de firma solo:** (1) **publicar el servidor del asistente** —
+sigue en `@309` (1 de octubre), así que `por_alumno[].pasos` no llega, el selector **no se pinta** y
+todo lo de arriba es INERTE; (2) el **precalentado del paquete** (`_warmMembersDocsPhase_`) y el
+**servicio de BYTES** (`getDocument_`, memo por `groupId|guardianId`) resuelven la sesión PRIMARIA ⇒
+con dos hijos sirven el paquete del PRIMERO (ficha de `signerUrls` por sesión); (3) el paso 11 sigue
+guardando UNA sola sesión; (4) el acto de firmar, apagado por costes.
 
 ### Estados editables — y el edit-lock post-envío
 
@@ -1364,6 +1405,7 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | `la-copia-se-actualiza-al-escribir.mjs` | la **regla 3** de Diego: que una escritura del tutor deje la copia caliente **rehecha con lo que el KMS confirma**, y que jamás se archive como buena una copia con un dato que el KMS no ha confirmado |
 | `el-repaso-no-pregunta-lo-que-ya-sabe.mjs` | que el repaso de fondo **re-caliente la puerta y la identidad con lo que YA tiene guardado, sin viajar al KMS**, y que ahorrar ese viaje no afloje ni un plazo: una copia con la **versión vieja NO se re-calienta** (es lo que conserva el plazo de revocación de 30 min), una ficha que el juez único RECHAZA no deja nada escrito, el índice global **solo admite identificadores** (ni un correo ni su resumen), y ⛔ **sin índice, con el índice ilegible, con el contador vencido o con páginas sin ver se VIAJA** y el comportamiento es el de hoy. **Y que el repaso NO REINTENTE**: con el transporte devolviendo basura hace **UN** intento y sin dormir, mientras el **camino vivo de una familia sigue haciendo TRES** (ahí repetir la petición es lo único que recupera) — se ejecuta el `kmsProxy_` REAL con el transporte doblado, así que tocar el valor por defecto sale ROJO, y un llamante que pida 9 sigue consiguiendo 3 |
 | `el-enlace-viejo-no-muere-hasta-que-salga-el-nuevo.mjs` | que **una familia nunca se quede sin enlace válido por un correo que no salió**: el envío que sale deja el enlace rotado, el que falla lo deja como estaba (las dos ramas, y los N de un correo multi), y el ack constante de la rama pública no cambia según si el correo salió |
+| `el-segundo-hermano-tambien-firma.mjs` | `CLI 467`: que **la copia rápida del pulso no sea CIEGA al hijo elegido** — esa entrada guarda `signing_context`, que es de UN hijo, y servírsela a otro hermano le enseña al tutor los permisos de uno y los registra a nombre del otro. Afirma, ejecutando `getAdmissionState_` REAL con una caché en memoria: sin selección la clave es **byte a byte** la de hoy (el calentamiento del enlace sigue sirviendo), con selección dos hijos **no comparten entrada**, una forma mala NO entra en la clave (KAL-5 capa 1) y el buzón sigue dentro (②24); un acierto **nunca** devuelve el contexto de otro hijo |
 | `el-aviso-de-salud-sabe-que-tabla-cayo.mjs` | `2026-09-16-la-salud-no-se-recupera`: que el paso de Salud avise de «no se pudo cargar» **solo** si cayó una tabla de salud/NEAE o el lote entero (`person_subreads` a secas), y no si cayó nacionalidad, documentos, idiomas, direcciones o colegios previos; un nombre fino desconocido **avisa** (falla hacia avisar). Importa `frontend/src/lib/cargaDegradada.js` REAL; tres roturas demostradas |
 | `el-tramo-final-resuelve-todos-los-hijos.mjs` | **CLI 403**: que el estado 8/9/10 POR HIJO llegue al selector del tramo 8-11 y que la pantalla se alimente del hijo ELEGIDO (no del primer `.find()`): `_pasosEnPorAlumno_` adjunta los pasos por `enrollment_id` y con el mapa vacío deja `por_alumno` byte-idéntico; `_elegirSesionDeFirma_` elige la sesión del hijo seleccionado (sin selección la primera; KAL-4: una selección que no casa degrada a la primera); `resolveGuardianSigningContext_` devuelve el token de ese hijo; `_datosDeFirmaDelExpediente_` manda `guardian_person_id` al KMS. Ejecuta `backend/Code.js` REAL; 13 afirmaciones, 3 roturas, 2 guardas de MEDICIÓN CIEGA |
 

@@ -136,6 +136,30 @@ function saveSession(patch) {
   } catch { /* ignore */ }
 }
 
+// ★ CLI 467 — la marca de «he leído la carta y el contrato» de ESTA sesión, por expediente.
+// `'*'` = la marca DE GRUPO: la que escribía el booleano de antes, y la que se sigue escribiendo
+// cuando la sesión de firma no dice de qué hijo es (`signing_context.entity_id` ausente).
+const MARCA_DE_GRUPO_ = '*';
+
+/**
+ * ⛔ QUÉ SE HACE CON EL VALOR VIEJO, DECLARADO (encargo CLI 467): hasta este cambio en
+ * `sessionStorage` vivía `reviewConfirmedLocal: true`, un BOOLEANO sin hijo dentro. Un tutor a
+ * media sesión cuando se publique esto NO puede perder su marca ni ganarla para otro hijo, así
+ * que el booleano viejo se lee como la marca DE GRUPO (`'*'`), que es justo lo que significaba:
+ *   · camino SIN estado por hijo (un solo hijo admitido, o servidor sin publicar) → la marca
+ *     sigue cerrando los pasos 8-10 exactamente igual que ayer;
+ *   · camino POR HIJO → `hijoResueltoEnPantalla` NO mira este conjunto (mira `resueltosLocales`
+ *     de `WizardPage` y los `pasos` del servidor), así que la marca vieja no puede cerrarle el
+ *     paso a NINGÚN hermano. No se intenta adivinar de qué hijo era: adivinarlo es el defecto.
+ * La verdad DURABLE de qué hijo tiene la lectura confirmada la sigue mandando el servidor en
+ * `por_alumno[].pasos.review_completed`; esto es solo el eco inmediato de esta sesión.
+ */
+function marcasDeLecturaIniciales_(session) {
+  const guardado = session && session.reviewConfirmadosLocales;
+  if (guardado && typeof guardado === 'object') return { ...guardado };
+  return (session && session.reviewConfirmedLocal) ? { [MARCA_DE_GRUPO_]: true } : {};
+}
+
 export function WizardProvider({ children }) {
   const session = loadSession();
   // Post-DL-E15: identity is `enrollmentGroupId` (cabecera enrEnrollmentGroups).
@@ -714,11 +738,35 @@ export function WizardProvider({ children }) {
   // Decisión Diego 2026-06-12 (lock EN VIVO): los flags de hitos del hydrate son de
   // la ENTRADA — si el usuario confirma la lectura en ESTA sesión, el bloqueo debe
   // engancharse al instante, sin esperar al re-hydrate ni al drenado del job.
-  const [reviewConfirmedLocal, setReviewConfirmedLocalRaw] = useState(!!session.reviewConfirmedLocal);
-  const setReviewConfirmedLocal = useCallback((v) => {
-    setReviewConfirmedLocalRaw(!!v);
-    saveSession({ reviewConfirmedLocal: !!v }); // sobrevive a F5 / navegación
+  //
+  // ★ CLI 467 — Y ESA MARCA ES DE UN HIJO, NO DE LA SOLICITUD. Era un BOOLEANO de grupo:
+  // confirmada la lectura del PRIMER hermano, los pasos 8-10 del SEGUNDO quedaban en solo
+  // lectura (`catalog.js` los declara `closedBy:['REVIEW_CONFIRMED']`), avanzaban SIN escribir
+  // y su `REVIEW_CONFIRMED` no se escribía jamás ⇒ la regla anclada a `REVIEW_CONFIRMED_AT`
+  // nunca le mandaba el sobre al segundo hijo. Ahora es un CONJUNTO por expediente.
+  // ⛔ El criterio por hijo NO vive aquí: lo decide `lib/pantallaDeFirma.js`
+  // (`hijoResueltoEnPantalla`), el lector ÚNICO del estado 8/9/10 por hijo. Esto solo GUARDA
+  // lo que el tutor acaba de confirmar en ESTA sesión.
+  const [reviewConfirmadosLocales, setReviewConfirmadosLocalesRaw] =
+    useState(() => marcasDeLecturaIniciales_(session));
+  /**
+   * Marca la lectura confirmada EN ESTA SESIÓN. `enrollmentId` = el hijo cuya documentación
+   * se acaba de confirmar; sin él (sesión de firma legada, anclada al grupo) se guarda la
+   * marca DE GRUPO, que es exactamente lo que hacía el booleano de antes.
+   */
+  const marcarLecturaConfirmada = useCallback((enrollmentId) => {
+    const k = enrollmentId ? String(enrollmentId) : MARCA_DE_GRUPO_;
+    setReviewConfirmadosLocalesRaw((prev) => {
+      if (prev && prev[k]) return prev;
+      const next = { ...(prev || {}), [k]: true };
+      saveSession({ reviewConfirmadosLocales: next }); // sobrevive a F5 / navegación
+      return next;
+    });
   }, []);
+  // Compat de LECTURA para el camino SIN estado por hijo (un solo hijo admitido, o servidor que
+  // todavía no manda `por_alumno[].pasos`): «¿se confirmó ALGO en esta sesión?», que es lo que
+  // el booleano de antes significaba. El camino POR HIJO no lo mira.
+  const reviewConfirmedLocal = Object.keys(reviewConfirmadosLocales || {}).length > 0;
   const [signingContext, setSigningContext] = useState(null);
 
   // ── STEP10-VIEWER (Diego 2026-06-11) — cache EN MEMORIA del paquete contractual ──
@@ -1711,9 +1759,21 @@ export function WizardProvider({ children }) {
     // Lock por hito durable (Diego 2026-06-12): si el server reporta REVIEW_CONFIRMED,
     // sincroniza el flag local (y su copia en sessionStorage) — el candado no depende
     // de la vida del componente ni de la navegación 7↔8.
+    // ★ CLI 467 — y la marca que llega del servidor es DEL HIJO de ESA sesión de firma
+    // (`signing_context.entity_id` = el `enrollment_id`, DL-S105 §10), nunca de todos. Sin
+    // `entity_id` (sesión legada anclada al grupo) se guarda la marca de grupo, como ayer.
+    //
+    // ⚠️ MEDIDO, Y SE DICE EN VEZ DE CALLARLO: esta línea HOY NO CAMBIA NINGÚN COMPORTAMIENTO
+    // OBSERVABLE, y romperla a propósito (volver a encender la marca de grupo) deja el recorrido
+    // `los-dos-hermanos-firman` en VERDE. El motivo es que el camino POR HIJO no lee este conjunto
+    // —lo decide `hijoResueltoEnPantalla` sobre `resueltosLocales` y los `pasos` del servidor— y el
+    // camino SIN estado por hijo quiere exactamente la marca de grupo. Se cambia igual porque un
+    // conjunto cuyas claves MIENTEN sobre de qué hijo es cada marca es una trampa para el siguiente
+    // que lo lea por hijo; pero NO se le atribuye una red que no tiene.
     try {
-      const stRD = data.admission && data.admission.signing_context && data.admission.signing_context.steps;
-      if (stRD && stRD.review_completed) setReviewConfirmedLocal(true);
+      const scRD = data.admission && data.admission.signing_context;
+      const stRD = scRD && scRD.steps;
+      if (stRD && stRD.review_completed) marcarLecturaConfirmada((scRD && scRD.entity_id) || null);
     } catch (eRD) { /* best-effort */ }
     // DL-E44 §2: las aceptaciones por documento del Step 10 rehidratan desde la
     // evidencia DURABLE del hito REVIEW_CONFIRMED (per-guardian, accepted[] del
@@ -1961,7 +2021,10 @@ export function WizardProvider({ children }) {
       admissionState, signingContext,           // P216 (DL-E38)
       selectedEnrollmentId, setSelectedEnrollmentId, // ★ CLI 403: el hijo elegido en el tramo 8-11
       guardadosSinAterrizar,                    // 0º.tricies.octies (B) — guardados que no llegaron
-      reviewConfirmedLocal, setReviewConfirmedLocal, // lock en vivo post-confirm (Diego 2026-06-12)
+      // ★ CLI 467 — `marcarLecturaConfirmada(enrollmentId)` sustituye al viejo
+      // `setReviewConfirmedLocal(true)`: la marca es DE UN HIJO. `reviewConfirmadosLocales` es el
+      // conjunto por expediente; `reviewConfirmedLocal` el booleano DERIVADO de compat.
+      reviewConfirmedLocal, reviewConfirmadosLocales, marcarLecturaConfirmada, // lock en vivo post-confirm (Diego 2026-06-12)
       reviewConfirmed,                            // input del mapeo central (catalog.stepEditMode)
       docCache, loadDocument, signingMembers, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual
       signingSession, setSigningSession,          // WIZARD-UX TASK-1: memo en memoria del estado de la sesión de firma (Step 11 idempotente)

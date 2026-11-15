@@ -433,7 +433,7 @@ record.unmocked = (a) => { unmockedActions.add(String(a)) }
 // `codigoDemoraMs`/`codigoFalla`: la petición del código de un solo uso, LENTA y/o
 // RECHAZADA — las dos palancas de `codigo-sin-congelar`. La demora la aplica el servidor
 // de esta batería (abajo, en `startServer`), porque lo que se mide es CUÁNDO, no QUÉ.
-const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, refrescoDemoraMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false, conjuntoVacio: false, envioCodigoCorto: 0, pasosPorHijo: null }
+const scenario = { stage: 'hasta_preguntas', magicLinkMode: 'constant', saveStepFails: false, preguntasMode: 'ok', correccionMode: 'ok', respuestasMode: 'ok', respuestasRechazadas: false, trabajoResultado: null, partes: 'unica', formatoFechasPrograma: 'iso', piiGated: false, otpSuperado: false, documentos: null, subidaNoRegistrada: false, warmFalla: false, simulacionFalla: false, codigoDemoraMs: 0, codigoFalla: null, ventanaViva: false, ventanaMs: 0, refrescoDemoraMs: 0, subidaDemoraMs: 0, variosProgramas: false, subidaPideCodigoUnaVez: false, vinculoHermanosInvertido: false, dosSolicitantes: false, unSoloAlumno: false, hidratacionCorta: 0, hidratacionRechazada: null, simulacionCorta: 0, saveStepDemoraMs: 0, repartoDegradaEnLaHidratacion: false, escrituraCorta: 0, descarteTipo: null, saludEnVezDeRespuesta: null, statusEnRespuestaLegitima: false, estadoHttpEnVezDeRespuesta: null, saludDegradaEnLaHidratacion: false, conjuntoVacio: false, envioCodigoCorto: 0, pasosPorHijo: null, contextoPegadoAlPrimerHijo: false, paqueteContractual: false }
 const dispatch = createDispatcher(scenario, record)
 
 // ── LA COSTURA: reenvío al backend REAL, con el doble salto de GAS ────────────
@@ -12535,6 +12535,244 @@ async function caminoRepartoSeDesbloqueaAdrede(page, base) {
   return c
 }
 
+/**
+ * ⭐ CLI 467 · LOS DOS HERMANOS FIRMAN (Diego, 2026-11-15: «esto hay que resolverlo») — con dos
+ * hijos admitidos, el SEGUNDO se quedaba sin poder firmar.
+ *
+ * ⛔ **POR QUÉ NO BASTABA EL RECORRIDO QUE YA EXISTÍA** (el del selector, arriba en `tramo-firma`):
+ * pone al primer hijo en `nada_que_hacer:true`, que es el caso CÓMODO — ahí no hay ninguna marca de
+ * lectura confirmada, así que **pasaba en verde con este defecto entero**. Lo que lo destapa es el
+ * caso de Diego: **un hermano con su lectura YA confirmada y el otro pendiente.**
+ *
+ * El defecto, en una frase: la marca de «he leído la carta y el contrato» era **un booleano de
+ * GRUPO**, y los tres pasos de firma declaran `closedBy:['REVIEW_CONFIRMED']` ⇒ confirmada la del
+ * primer hermano, los pasos 8-10 del segundo quedaban en SOLO LECTURA, **avanzaban sin escribir** y
+ * su `REVIEW_CONFIRMED` no se escribía jamás ⇒ la regla anclada a `REVIEW_CONFIRMED_AT` no le
+ * mandaba el sobre nunca.
+ *
+ * FASE A · el segundo hermano llega a su paso 8 EDITABLE y su guardado SALE DE VERDAD.
+ * FASE B · el paso 9 tiene UN SOLO criterio de «qué hijo»: con el contexto del servidor pegado al
+ *          primer hermano (que es lo que hacía la copia rápida, hasta 1800 s), la pantalla sigue
+ *          enseñando al hijo ELEGIDO — el mismo que firma la escritura.
+ */
+async function caminoLosDosHermanosFirman(page, base) {
+  const c = new Camino('los-dos-hermanos-firman')
+  scenario.stage = 'firma'
+  scenario.dosHermanosAdmitidos = true
+  // El PRIMER hermano, con su tramo entero resuelto (lectura confirmada incluida); el SEGUNDO,
+  // pendiente de todo. Es el caso de Diego, no el cómodo.
+  const RESUELTO  = { billing_confirmed: true,  gdpr_completed: true,  review_completed: true,  signed: false }
+  const PENDIENTE = { billing_confirmed: false, gdpr_completed: false, review_completed: false, signed: false }
+  scenario.pasosPorHijo = { 'enr-e2e-1': RESUELTO, 'enr-e2e-2': PENDIENTE }
+  scenario.sesionFirmaActivaHijo = 1   // la sesión que trae la hidratación es la del PRIMERO
+
+  try {
+    // ── ⛔ ¿ESTOY MIDIENDO LO QUE DIGO MEDIR? ─────────────────────────────────────────
+    const FUENTES = [
+      ['frontend/src/context/WizardContext.jsx',    /marcarLecturaConfirmada/],
+      ['frontend/src/context/WizardContext.jsx',    /reviewConfirmadosLocales/],
+      ['frontend/src/pages/WizardPage.jsx',         /reviewConfirmedDelPaso/],
+      ['frontend/src/pages/WizardPage.jsx',         /sinEscribir/],
+      ['frontend/src/pages/steps/Step9Gdpr.jsx',    /hijoDeLaPantalla/],
+      ['frontend/src/pages/steps/Step10Review.jsx', /marcarLecturaConfirmada\(/],
+    ]
+    const ausentes = []
+    for (const [rel, re] of FUENTES) {
+      let txt = ''
+      try { txt = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8') } catch { txt = '' }
+      if (!re.test(txt)) ausentes.push(`${rel} :: ${re.source}`)
+    }
+    if (!c.afirmar('MEDICIÓN CIEGA · el mecanismo que este recorrido mide EXISTE con su nombre',
+      ausentes.length === 0,
+      `no se encontró en el fuente: ${ausentes.join(' · ')} — el recorrido NO puede medir lo que ` +
+      'dice medir, así que NO puede salir verde')) return c
+
+    // ── FASE A · el segundo hermano NO se queda en solo lectura ──────────────────────
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 1400)
+
+    const pantalla = await page.evaluate(sondaPantalla)
+    c.evidencia.elementos = pantalla.pasos + pantalla.campos + pantalla.tarjetas
+    if (!c.afirmar('ANCLA · con un hermano resuelto y el otro pendiente, se aterriza en el paso 8',
+      pantalla.pasoActivo === 7,
+      `aterrizó en el índice ${pantalla.pasoActivo} (se esperaba 7): lo que sigue mediría el aire`)) return c
+
+    const chips = await page.$$eval('[data-testid="selector-firma-hijo"]', ns => ns.map(n => ({
+      enr: n.getAttribute('data-enrollment'), resuelto: n.getAttribute('data-resuelto'),
+      selected: n.getAttribute('data-selected'),
+    })))
+    if (!c.afirmar('ANCLA · el selector pinta los DOS hermanos y arranca en el PENDIENTE',
+      chips.length === 2 && (chips.find(x => x.selected === 'true') || {}).enr === 'enr-e2e-2',
+      `chips=${JSON.stringify(chips)}: sin el selector apuntando al hermano pendiente, lo que sigue ` +
+      'mediría la pantalla del primero')) return c
+
+    // (1) EL CANDADO ES DE UN HIJO, NO DE LA SOLICITUD. Con el booleano de grupo, el paso 8 del
+    //     segundo hermano llegaba con «Editar» y el reparto deshabilitado.
+    const editarA = await page.$(BTN_EDITAR)
+    const bloqueadoA = await page.$eval('input[type="range"]', n => n.matches(':disabled')).catch(() => null)
+    c.afirmar('(1) el paso 8 del hermano PENDIENTE llega EDITABLE, aunque el otro ya confirmara su lectura',
+      !editarA && bloqueadoA !== true,
+      `botón «Editar»=${!!editarA} deslizador deshabilitado=${bloqueadoA}: la lectura confirmada del ` +
+      'primer hermano estaba cerrando los pasos 8-10 del segundo, que entonces avanzaba sin guardar nada')
+
+    // (2) Y SU GUARDADO SALE DE VERDAD, con SU identificador.
+    const antesBilling = llamadas('saveBillingInfo').length
+    const seguir = await page.$(BTN_SIGUIENTE)
+    if (!c.afirmar('ANCLA · el paso 8 ofrece botón para continuar', !!seguir,
+      'el paso 8 no ofrece botón: lo que sigue mediría el aire')) return c
+    await seguir.click()
+    const t0 = Date.now()
+    while (llamadas('saveBillingInfo').length === antesBilling && Date.now() - t0 < 20000) await page.waitForTimeout(200)
+    const billing = llamadas('saveBillingInfo')
+    c.afirmar('(2) el paso 8 del SEGUNDO hermano ESCRIBE de verdad (no es una pasada en vacío)',
+      billing.length > antesBilling,
+      `ningún saveBillingInfo salió en ${Date.now() - t0} ms: con el candado de grupo, el paso avanzaba ` +
+      'en solo lectura y el hito del segundo hermano no se escribía nunca')
+    const ultimo = billing[billing.length - 1]
+    c.afirmar('(3) y lo escribe sobre EL HERMANO QUE SE ESTÁ ATENDIENDO',
+      !!ultimo && ultimo.payload && ultimo.payload.selected_enrollment_id === 'enr-e2e-2',
+      `el guardado llevaba selected_enrollment_id=${JSON.stringify(ultimo && ultimo.payload && ultimo.payload.selected_enrollment_id)}: ` +
+      'escribirlo sobre el primero deja al segundo sin su paso dado')
+
+    // (4) Resuelto el pendiente, la pantalla AVANZA (el otro hermano ya estaba resuelto).
+    await page.waitForTimeout(LATENCY + 1200)
+    c.afirmar('(4) resuelto el hermano que faltaba, el tramo avanza al paso 9',
+      (await dondeEstoy(page)) === 8,
+      `el stepper marca el índice ${await dondeEstoy(page)} (se esperaba 8): el candado por pantalla ` +
+      'tiene que dejar pasar cuando TODOS los hijos admitidos están resueltos')
+
+    // ── FASE B · el paso 9 tiene UN SOLO criterio de «qué hijo» ──────────────────────
+    // El servidor contesta el contexto del PRIMER hermano aunque se le pida el del segundo — que es
+    // exactamente lo que hacía la copia rápida del pulso, ciega al hijo elegido, hasta 1800 s.
+    await esperarSilencioDeRed(15000, 1200)
+    scenario.contextoPegadoAlPrimerHijo = true
+    // El segundo hermano ya tiene su paso 8 dado (acaba de darlo en la FASE A) ⇒ el tramo
+    // aterriza en el 9, que es donde queremos medir. El PRIMERO sigue con su lectura confirmada:
+    // es esa marca la que cerraba el paso del segundo.
+    scenario.pasosPorHijo = {
+      'enr-e2e-1': RESUELTO,
+      'enr-e2e-2': { billing_confirmed: true, gdpr_completed: false, review_completed: false, signed: false },
+    }
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 1400)
+
+    const dondeB = await dondeEstoy(page)
+    if (!c.afirmar('ANCLA · con el paso 8 ya dado, se aterriza en el paso 9', dondeB === 8,
+      `aterrizó en el índice ${dondeB} (se esperaba 8): lo que sigue mediría el aire`)) return c
+    const chipsB = await page.$$eval('[data-testid="selector-firma-hijo"]', ns => ns.map(n => ({
+      enr: n.getAttribute('data-enrollment'), selected: n.getAttribute('data-selected'),
+    })))
+    if (!c.afirmar('ANCLA · y el selector apunta al hermano PENDIENTE',
+      (chipsB.find(x => x.selected === 'true') || {}).enr === 'enr-e2e-2',
+      `chips=${JSON.stringify(chipsB)}`)) return c
+
+    const bloques = await page.$$eval('[data-testid="gdpr-image-subject"]', els => els.map(e => (e.innerText || '').trim()))
+    c.afirmar('(5) con el contexto del servidor pegado al PRIMER hermano, el paso 9 sigue enseñando al ELEGIDO',
+      bloques.some(t => /RobotHijoDosE2E/i.test(t))
+      && !bloques.some(t => /RobotHijoE2E/i.test(t) && !/RobotHijoDosE2E/i.test(t)),
+      `los bloques leídos fueron ${JSON.stringify(bloques)}: la pantalla se acotaba por el contexto del ` +
+      'servidor y la escritura iba con el hijo elegido ⇒ se le enseñaban los permisos de un hijo y se ' +
+      'registraban a nombre del otro, que es un registro legal falso')
+
+    const generales = await page.$$('input[type="checkbox"][id^="consent_"]')
+    const imagen    = await page.$$('input[type="checkbox"][id^="img_"]')
+    // ⛔ TRAMPA DEL ROBOT, pagada en este mismo encargo: `check()` espera a que el control sea
+    // accionable con el plazo POR DEFECTO de Playwright (30 s). Con el paso 9 bloqueado —que es
+    // justo lo que pasa cuando se rompe el arreglo a propósito— el `<fieldset>` está deshabilitado
+    // y las diez casillas se comen 300 s cada corrida, así que la rotura parecía un CUELGUE. Con
+    // plazo corto, un paso bloqueado se nota en segundos y la afirmación que importa (que el acto
+    // SALE) sigue diciendo la verdad.
+    for (const ch of [...generales, ...imagen]) { try { await ch.check({ timeout: 2000 }) } catch { /* bloqueado */ } }
+    const antesGdpr = llamadas('submitGdprConsents').length
+    const seguirB = await page.$(BTN_SIGUIENTE)
+    if (seguirB) await seguirB.click()
+    const t1 = Date.now()
+    while (llamadas('submitGdprConsents').length === antesGdpr && Date.now() - t1 < 20000) await page.waitForTimeout(200)
+    const gdpr = llamadas('submitGdprConsents')
+    const ultimoG = gdpr[gdpr.length - 1]
+    c.afirmar('(6) y lo que se ESCRIBE es de ese mismo hermano — un solo criterio, no dos',
+      gdpr.length > antesGdpr && !!ultimoG && ultimoG.payload
+      && ultimoG.payload.selected_enrollment_id === 'enr-e2e-2',
+      `salieron ${gdpr.length - antesGdpr} consentimientos, el último con ` +
+      `selected_enrollment_id=${JSON.stringify(ultimoG && ultimoG.payload && ultimoG.payload.selected_enrollment_id)}`)
+
+    // ── FASE C · CONFIRMAR LA LECTURA DE UN HERMANO NO CIERRA LA DEL OTRO ────────────
+    // Aquí es donde NACE la marca: `Step10Review` la escribe al confirmar. Si la escribe para la
+    // SOLICITUD en vez de para el hijo elegido, el paso 10 del otro hermano queda en solo lectura
+    // y su `confirmReview` no sale nunca — que es el defecto entero de esta ficha.
+    await esperarSilencioDeRed(15000, 1200)
+    scenario.contextoPegadoAlPrimerHijo = false
+    scenario.paqueteContractual = true          // el paso 10 necesita su Carta y su Contrato
+    // Los DOS hermanos pendientes SOLO de la lectura: así se aterriza en el paso 10 y los dos
+    // tienen algo que confirmar. Es el caso que el recorrido del selector nunca monta.
+    const SOLO_FALTA_LEER = { billing_confirmed: true, gdpr_completed: true, review_completed: false, signed: false }
+    scenario.pasosPorHijo = { 'enr-e2e-1': SOLO_FALTA_LEER, 'enr-e2e-2': SOLO_FALTA_LEER }
+    if (!await entrarPorElEnlace(c, page, base)) return c
+    await page.waitForTimeout(LATENCY + 1400)
+
+    const dondeC = await dondeEstoy(page)
+    if (!c.afirmar('ANCLA · con los dos hermanos pendientes solo de la lectura, se aterriza en el paso 10',
+      dondeC === 9, `aterrizó en el índice ${dondeC} (se esperaba 9): lo que sigue mediría el aire`)) return c
+
+    let confirmados = llamadas('confirmReview').length
+    /** Acepta los documentos del hijo en pantalla y confirma la lectura. */
+    const confirmarLectura = async () => {
+      for (let i = 0; i < 8; i++) {
+        const b = await page.$(BTN_SIGUIENTE)
+        if (!b) break
+        await b.click().catch(() => {})
+        await page.waitForTimeout(500)
+        if (llamadas('confirmReview').length > confirmados) break
+      }
+    }
+    const chipsC = await page.$$eval('[data-testid="selector-firma-hijo"]', ns => ns.map(n => ({
+      enr: n.getAttribute('data-enrollment'), selected: n.getAttribute('data-selected'),
+    })))
+    const primero = (chipsC.find(x => x.selected === 'true') || {}).enr
+    if (!c.afirmar('ANCLA · el paso 10 arranca en uno de los dos hermanos', !!primero,
+      `chips=${JSON.stringify(chipsC)}`)) return c
+
+    await confirmarLectura()
+    const trasPrimero = llamadas('confirmReview')
+    if (!c.afirmar('ANCLA · la lectura del PRIMER hermano se confirma de verdad',
+      trasPrimero.length > confirmados
+      && trasPrimero[trasPrimero.length - 1].payload.selected_enrollment_id === primero,
+      `salieron ${trasPrimero.length - confirmados} confirmaciones, la última sobre ` +
+      `${JSON.stringify(trasPrimero.length ? trasPrimero[trasPrimero.length - 1].payload.selected_enrollment_id : null)} ` +
+      `(se esperaba ${primero}): sin esto no se puede medir si cierra al otro`)) return c
+
+    // (7) EL OTRO HERMANO SIGUE PUDIENDO CONFIRMAR LA SUYA.
+    await page.waitForTimeout(LATENCY + 900)
+    const segundo = chipsC.map(x => x.enr).find(x => x !== primero)
+    const chipSegundo = await page.$(`[data-testid="selector-firma-hijo"][data-enrollment="${segundo}"]`)
+    if (chipSegundo) { await chipSegundo.click(); await page.waitForTimeout(LATENCY + 900) }
+    const editarC = await page.$(BTN_EDITAR)
+    c.afirmar('(7) confirmada la lectura de un hermano, el paso 10 del OTRO sigue EDITABLE',
+      !editarC,
+      'el paso 10 del segundo hermano llegó con candado: la marca de lectura confirmada se está ' +
+      'guardando para la SOLICITUD y no para el hijo, que es lo que deja al segundo sin su sobre')
+
+    confirmados = llamadas('confirmReview').length
+    await confirmarLectura()
+    const trasSegundo = llamadas('confirmReview')
+    const ultimoC = trasSegundo[trasSegundo.length - 1]
+    c.afirmar('(8) y su confirmación SALE, sobre ÉL — la segunda pasada escribe de verdad',
+      trasSegundo.length > confirmados && !!ultimoC
+      && ultimoC.payload.selected_enrollment_id === segundo,
+      `salieron ${trasSegundo.length - confirmados} confirmaciones para el segundo hermano, la última ` +
+      `sobre ${JSON.stringify(ultimoC && ultimoC.payload && ultimoC.payload.selected_enrollment_id)} ` +
+      `(se esperaba ${segundo}): sin ese REVIEW_CONFIRMED, la regla anclada a REVIEW_CONFIRMED_AT ` +
+      'no le manda el sobre a esa matrícula JAMÁS')
+  } finally {
+    scenario.dosHermanosAdmitidos = false
+    scenario.pasosPorHijo = null
+    scenario.sesionFirmaActivaHijo = null
+    scenario.contextoPegadoAlPrimerHijo = false
+    scenario.paqueteContractual = false
+  }
+  return c
+}
+
 const CAMINOS = [
   { nombre: 'alta-nueva',          fn: caminoAltaNueva,          minLlamadas: 1, minElementos: 1 },
   { nombre: 'ack-indistinguible',  fn: caminoAckIndistinguible,  minLlamadas: 1, minElementos: 2 },
@@ -12583,6 +12821,7 @@ const CAMINOS = [
   ...(REAL ? [{ nombre: 'expediente-completo', fn: caminoExpedienteCompleto, minLlamadas: 8, minElementos: 11 }] : []),
   { nombre: 'tramo-firma',         fn: caminoTramoFirma,         minLlamadas: 1, minElementos: 11 },
   { nombre: 'gdpr-por-hijo',       fn: caminoGdprPorHijo,        minLlamadas: 1, minElementos: 5 },
+  { nombre: 'los-dos-hermanos-firman', fn: caminoLosDosHermanosFirman, minLlamadas: 1, minElementos: 5 },
   { nombre: 'paso8-al-dia',        fn: caminoPaso8AlDia,         minLlamadas: 1, minElementos: 5 },
   { nombre: 'reparto-no-se-siembra-de-vacio', fn: caminoRepartoNoSeSiembraDeVacio,
     minLlamadas: 1, minElementos: 5 },

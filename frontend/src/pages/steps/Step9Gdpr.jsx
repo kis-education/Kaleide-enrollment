@@ -49,9 +49,20 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   // ESTA sesión. Sin resolver (sesión legada anclada al grupo, o dato ausente) se degrada al
   // comportamiento de siempre — TODOS los solicitantes — para no ocultarle nunca a un tutor un
   // consentimiento que de verdad tiene que dar.
+  //
+  // ★ CLI 467 — Y ESE «QUÉ HIJO» ES UNO SOLO, EL MISMO QUE FIRMA LA ESCRITURA. Había DOS fuentes:
+  // la pantalla se acotaba por `signerCtx.entity_id` y el acto se escribía con
+  // `selectedEnrollmentId` (abajo, en el payload de `submitGdprConsents`). Mientras la copia rápida
+  // del pulso fue ciega al hijo elegido, `signerCtx` podía seguir siendo el del PRIMER hermano
+  // hasta 1800 s ⇒ al tutor se le enseñaban los permisos de un hijo y se registraban a nombre del
+  // otro. Eso es un registro legal falso, y `decisions/enr.md:1586` lo prohíbe con esas palabras:
+  // «el MISMO criterio … para que lo que se escribe sea lo que se ve».
+  // El hijo elegido manda; sin selector (un solo hijo admitido, o servidor sin estado por hijo)
+  // `selectedEnrollmentId` es `null` y se cae a `signerCtx.entity_id`, byte a byte como hoy.
   const porAlumno = Array.isArray(admissionState?.por_alumno) ? admissionState.por_alumno : [];
-  const sesionActivaHijo = signerCtx?.entity_id
-    ? porAlumno.find(a => a && a.enrollment_id === signerCtx.entity_id) || null
+  const hijoDeLaPantalla = selectedEnrollmentId || (signerCtx && signerCtx.entity_id) || null;
+  const sesionActivaHijo = hijoDeLaPantalla
+    ? porAlumno.find(a => a && a.enrollment_id === hijoDeLaPantalla) || null
     : null;
   const applicants = (sesionActivaHijo && sesionActivaHijo.applicant_person_id)
     ? applicantsAll.filter(a => (a.person_id || a._uid) === sesionActivaHijo.applicant_person_id)
@@ -107,7 +118,7 @@ export default function Step9Gdpr({ onAdvance, onBack, signingToken, resumeToken
   // (consentimiento bloqueante); (2) payload VERBATIM construido ANTES de encolar;
   // (3) enqueueSave SIN await previo → nube global; (4) avance inmediato.
   const submit = () => {
-    if (locked) { onAdvance(); return; } // solo lectura: avanza sin guardar
+    if (locked) { onAdvance({ sinEscribir: true }); return; } // solo lectura: avanza SIN guardar ⇒ no resuelve al hijo (★ CLI 467)
     const gdprSchool = generalConsents.find(c => c.blocking);
     if (gdprSchool && genState[gdprSchool.id] !== true) {
       setErr(t('signing.gdpr.must_accept_blocking'));

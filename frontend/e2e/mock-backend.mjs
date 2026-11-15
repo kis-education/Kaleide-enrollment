@@ -914,7 +914,15 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
         guardian_person_id: viewerIdE2E_(viewerN) || FIXTURE.guardian1Id,
         entity_id:  sesionFirmaActivaHijo === 2 ? 'enr-e2e-2'
           : sesionFirmaActivaHijo === 1 ? 'enr-e2e-1' : undefined,
-        steps: { billing_confirmed: !!aterrizarEnGdpr, gdpr_completed: false, review_completed: false, signed: false },
+        // ★ CLI 467 — los `steps` de `signing_context` son LOS DE SU HIJO, no los del grupo: la
+        // sesión de firma ancla al expediente (DL-S105 §10) y el servidor resuelve sus pasos para
+        // ESE expediente. Sin `pasosPorHijo` (la inmensa mayoría de recorridos) queda byte-idéntico.
+        steps: (function () {
+          const anclaE = sesionFirmaActivaHijo === 2 ? 'enr-e2e-2'
+            : sesionFirmaActivaHijo === 1 ? 'enr-e2e-1' : null;
+          if (pasosPorHijo && anclaE && pasosPorHijo[anclaE]) return pasosPorHijo[anclaE];
+          return { billing_confirmed: !!aterrizarEnGdpr, gdpr_completed: false, review_completed: false, signed: false };
+        })(),
       },
     },
   }, viewerN);
@@ -1183,9 +1191,17 @@ export function createDispatcher(scenario, record) {
       // ★ CLI 403 — el selector del tramo 8-11 pide el contexto del hijo ELEGIDO con
       // `selected_enrollment_id`; el servidor real ancla entonces `signing_context` a ESE hijo.
       // El doble refleja ese contrato: con la selección, `entity_id` pasa a ser el hijo elegido.
-      if (p && p.selected_enrollment_id && h.admission && h.admission.signing_context) {
+      // ★ CLI 467 — `contextoPegadoAlPrimerHijo` modela el defecto REAL que este cambio cierra: la
+      // copia rápida del pulso era CIEGA al hijo elegido, así que el servidor contestaba el contexto
+      // del PRIMER hermano aunque se le pidiera el del segundo (hasta 1800 s). Es la única forma de
+      // que la pantalla y la escritura puedan discrepar, que es lo que el paso 9 ya no permite.
+      if (p && p.selected_enrollment_id && h.admission && h.admission.signing_context
+          && !scenario.contextoPegadoAlPrimerHijo) {
+        const selE = p.selected_enrollment_id;
         h.admission.signing_context = Object.assign({}, h.admission.signing_context,
-          { entity_id: p.selected_enrollment_id });
+          { entity_id: selE },
+          // ★ CLI 467 — y sus `steps` son los de ESE hijo (ver `buildHydrate`).
+          (scenario.pasosPorHijo && scenario.pasosPorHijo[selE]) ? { steps: scenario.pasosPorHijo[selE] } : {});
       }
       const conVentana = scenario.ventanaViva ? leerMarca(p) : null;
       // 0º.tricies.octies (B) — los pasos cuyo ÚLTIMO guardado murió en la cola del KMS.
@@ -1642,7 +1658,15 @@ export function createDispatcher(scenario, record) {
     applyPaymentModality:    () => ({ ok: true, applied: true }),
     submitGdprConsents:      () => ({ ok: true, saved: true }),
     confirmReview:           () => ({ ok: true, confirmed: true }),
-    initiateSigningSession:  () => ({ ok: true, members: [], steps: {} }),
+    // ★ CLI 467 — `scenario.paqueteContractual` sirve el paquete de verdad (la Carta y el
+    // Contrato) para poder RECORRER el paso 10 desde el navegador. Sin la palanca devuelve la
+    // lista vacía, byte a byte como siempre, y el paso 10 se queda en su espera activa.
+    initiateSigningSession:  () => (scenario.paqueteContractual
+      ? { ok: true, steps: {}, members: [
+          { file_id: 'file-e2e-carta',    purpose_code: 'ADMISSION_LETTER' },
+          { file_id: 'file-e2e-contrato', purpose_code: 'SCHOOL_CONTRACT' },
+        ] }
+      : { ok: true, members: [], steps: {} }),
   };
 
   return function dispatch(payload) {

@@ -2319,6 +2319,48 @@ function _wzN_(n, email) {
     Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, e, Utilities.Charset.UTF_8)).slice(0, 16);
 }
 
+/**
+ * ★ CLI 467 — EL HIJO QUE EL TUTOR TIENE ELEGIDO EN EL TRAMO 8-11, validado. UN SOLO SITIO lo
+ * saca del payload, y lo PIDEN los tres consumidores: la clave de la copia del pulso (lectura y
+ * escritura), `getAdmissionState_` para elegir la sesión de firma, y `_conElHijoElegido_` (el
+ * cuerpo que viaja al KMS en los actos 8/9/10). Tres copias de esta validación divergirían.
+ *
+ * ⛔ KAL-5 capa 1: se valida la FORMA antes de que el valor toque una clave de caché o un filtro.
+ * Una forma mala se trata como AUSENTE — exactamente lo que hacía el `try/catch` que esto
+ * sustituye—, nunca como un error que le cierre el paso a la familia.
+ * ⛔ KAL-4: NO AUTORIZA NADA. El expediente lo sigue derivando el enlace; esto solo ESCOGE entre
+ * las sesiones que ya vienen acotadas a ese expediente, y una selección que no case ninguna
+ * degrada a la primaria (`_elegirSesionDeFirma_`, que no se toca).
+ * @private
+ */
+function _hijoElegidoDelPayload_(p) {
+  var sel = (p && p.selected_enrollment_id) ? String(p.selected_enrollment_id).trim() : '';
+  if (!sel) return null;
+  try { assertValidUuid_(sel, 'selected_enrollment_id'); } catch (e) { return null; }
+  return sel;
+}
+
+/**
+ * ★ CLI 467 — EL SUFIJO DE LA CLAVE DE LA COPIA DEL PULSO (`wz_admv2_…`), con el HIJO ELEGIDO
+ * dentro. La clave llevaba solicitud y buzón pero NO el hijo, y la entrada guarda
+ * `signing_context`, que es DE UN HIJO: elegir un hermano no escribe nada ⇒ la versión de clase
+ * no sube ⇒ acierto ⇒ la llamada cuyo único propósito era traer el contexto del hijo elegido
+ * devolvía el del PRIMERO, hasta 1800 s. Y entonces el paso 9 enseñaba los permisos de un hijo y
+ * los registraba a nombre del otro: un registro legal falso.
+ *
+ * ⛔ SIN SELECCIÓN, LA CLAVE ES BYTE A BYTE LA DE HOY. Es lo que mantiene vivo el calentamiento
+ * del enlace (`warmSession_`, que no manda selección y escribe `gidW + '_' + nW`): si el sufijo
+ * cambiara también sin selección, el clic dejaría de encontrar su copia y se perdería la entrada
+ * rápida que ya funciona.
+ * ⛔ El buzón sigue dentro, y eso NO se afloja (②24): es una frontera de privacidad entre tutores.
+ * @private
+ */
+function _sufijoCopiaDelPulso_(id, p) {
+  var base = id + '_' + _wzN_(p && p.n, p && p.recovered_email);
+  var sel = _hijoElegidoDelPayload_(p);
+  return sel ? (base + '_s:' + sel) : base;
+}
+
 // URL /exec PROPIA para las auto-invocaciones del warm. El deployment es FIJO
 // (CLAUDE.md: nunca se crea deployment nuevo — cambiaría la URL pública); fallback
 // dinámico por si algún día rota.
@@ -2660,6 +2702,13 @@ function _warmMembersDocsPhase_(it) {
     // ②17: las filas de firma las sirve el KMS (acotadas al expediente del token), no
     // AppSheet. Sin ellas el resolvedor devuelve null — mismo comportamiento de antes
     // ante una lectura fallida: pre-AD o sin sesión, nada que calentar.
+    // ★ CLI 467 — AQUÍ SE COCINA LA SESIÓN PRIMARIA A PROPÓSITO, y es lo honesto: el
+    // calentamiento corre ANTES de que el tutor abra la pantalla, así que todavía no hay hijo
+    // elegido que pasarle. El `signing_token` que saca de aquí solo sirve para cebar el memo que
+    // sirve BYTES de documento; el contexto que alimenta la pantalla lo compone el pulso
+    // (`getAdmissionState_`), y ÉSE sí lleva el hijo elegido, en su clave y en su resolución.
+    // ⚠️ LO QUE ESTO DEJA ABIERTO, dicho: con dos hijos, el paquete de documentos que se precalienta
+    // es el del PRIMERO. No es de este tramo — es la ficha de `signerUrls` por sesión.
     var firmaKms = _datosDeFirmaDelExpediente_(token);
     var sctx = (guardianId && firmaKms)
       ? resolveGuardianSigningContext_(groupId, guardianId, firmaKms.sessions, firmaKms.signersBySession)
@@ -2927,6 +2976,12 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
           };
         })(),
       };
+      // ★ CLI 467 — EL CALENTAMIENTO SIGUE COCINANDO LA SESIÓN PRIMARIA, Y ES LO HONESTO: aquí
+      // todavía NO se sabe qué hijo va a elegir el tutor (ni siquiera ha abierto la pantalla), así
+      // que inventarse uno sería peor. Esta clave (`gidW + '_' + nW`, SIN selección) es byte a byte
+      // la que compone `_sufijoCopiaDelPulso_` cuando no hay selección ⇒ el clic sin seleccionar
+      // sigue encontrando su copia, y en cuanto el tutor elige un hermano la clave YA NO CASA y el
+      // pulso va al camino vivo en vez de servirle el contexto del primero.
       out.admission = _wzCachePutChunked_(cache, _wzCacheKey_('adm', gidW + '_' + nW), JSON.stringify(admEntry), 1800);
     }
     try { cache.remove('wzck_hyd_' + gidW + '_' + nW); } catch (eM2) {}
@@ -6633,7 +6688,9 @@ function getAdmissionState_(p) {
   // NO de la identidad resuelta ⇒ construir esta clave no cuesta ni un viaje al KMS. Por eso el
   // reorden perezoso de arriba es posible sin tocar el alcance de la clave.
   try {
-    const wzAdmKey = _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n, p && p.recovered_email));
+    // ★ CLI 467 — el HIJO ELEGIDO entra en la clave (un solo sitio la compone, `_sufijoCopiaDelPulso_`):
+    // la entrada guarda `signing_context`, que es de UN hijo. Sin selección, byte a byte la de hoy.
+    const wzAdmKey = _wzCacheKey_('adm', _sufijoCopiaDelPulso_(id, p));
     const wzAdmRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzAdmKey);
     if (wzAdmRaw) {
       const wzEntry = JSON.parse(wzAdmRaw);
@@ -6721,8 +6778,10 @@ function getAdmissionState_(p) {
   // ★ CLI 403 — el selector del tramo 8-11 pide un hijo concreto con `selected_enrollment_id`. Se
   // valida la FORMA (KAL-5 capa 1); el expediente sigue saliendo del token (KAL-4) y una selección
   // que no case ninguna sesión del grupo degrada a la primera, sin alcanzar nada ajeno.
-  let selEnr = (p && p.selected_enrollment_id) ? String(p.selected_enrollment_id).trim() : null;
-  try { if (selEnr) assertValidUuid_(selEnr, 'selected_enrollment_id'); } catch (eSel) { selEnr = null; }
+  // ★ CLI 467 — la MISMA lectura validada que compone la clave de la copia (`_hijoElegidoDelPayload_`):
+  // dos validaciones del mismo campo divergen, y aquí divergir significa servir una copia de un hijo
+  // bajo la clave de otro.
+  const selEnr = _hijoElegidoDelPayload_(p);
   const admission = buildAdmissionContext_(id, enrollments, guardianId, persons,
     { situaciones: statesHint, resumeToken: (p && p.resume_token) || null, selectedEnrollmentId: selEnr });
   const perfAdmMs = Date.now() - perfA0;
@@ -6738,7 +6797,7 @@ function getAdmissionState_(p) {
   // de cache hasta que live_version suba (notify del KMS) o un write lo invalide.
   try {
     _wzCachePutChunked_(CacheService.getScriptCache(),
-      _wzCacheKey_('adm', id + '_' + _wzN_(p && p.n, p && p.recovered_email)),
+      _wzCacheKey_('adm', _sufijoCopiaDelPulso_(id, p)),   // ★ CLI 467: la MISMA clave que la lectura
       JSON.stringify({ v: _versionDeClase_(id, 'adm'), admission: {
         state_code:        admission.state_code,
         state_label:       admission.state_label,
@@ -9148,6 +9207,11 @@ function getDocument_(p) {
         // ②17: las filas de firma las sirve el KMS, acotadas al expediente del token.
         // Sin ellas → null, y el llamante degrada igual que antes (no hay PDF de firma
         // que servir por esta vía).
+        // ★ CLI 467 — este camino sirve BYTES de documento y resuelve la sesión PRIMARIA a
+        // propósito: su memo va por `groupId|guardianId`, no por hijo. ⚠️ Con dos hijos admitidos
+        // eso significa que el paquete que se sirve es el del PRIMERO. Se deja ENTERO y se dice:
+        // es la ficha de `signerUrls` por sesión, no este tramo, y tocarlo a medias (meter el hijo
+        // en la resolución pero no en el memo) daría justo la mezcla que este cambio viene a cerrar.
         const firmaDoc = _datosDeFirmaDelExpediente_(p && p.resume_token);
         const sctxSign = firmaDoc
           ? resolveGuardianSigningContext_(groupId, guardianId, firmaDoc.sessions, firmaDoc.signersBySession)
@@ -10709,10 +10773,8 @@ function _kmsRenderResumeLinksBlock_(resumeTokens, nEmailIds, lang) {
  */
 function _conElHijoElegido_(body, p) {
   if (!body || !body.resume_token) return body;
-  var sel = (p && p.selected_enrollment_id) ? String(p.selected_enrollment_id).trim() : '';
-  if (!sel) return body;
-  try { assertValidUuid_(sel, 'selected_enrollment_id'); } catch (e) { return body; }
-  body.selected_enrollment_id = sel;
+  var sel = _hijoElegidoDelPayload_(p);   // ★ CLI 467: criterio ÚNICO (misma validación que la clave)
+  if (sel) body.selected_enrollment_id = sel;
   return body;
 }
 

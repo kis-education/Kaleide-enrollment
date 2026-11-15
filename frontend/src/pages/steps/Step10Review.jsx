@@ -37,7 +37,7 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
     // STEP10-VIEWER: el cache de documentos vive en el CONTEXTO (object URLs + sha256
     // keyed por file_id) — navegar 10→11→10 NO refetchea.
     docCache, loadDocument, signingMembers, setSigningMembers,
-    signingForms, updateSigningForm, admissionState , reviewConfirmedLocal, setReviewConfirmedLocal, selectedEnrollmentId } = useWizard();
+    signingForms, updateSigningForm, admissionState , marcarLecturaConfirmada, selectedEnrollmentId } = useWizard();
   // MAPEO CENTRAL (Diego 2026-06-12): el candado viene de getStepEditMode via props.
   // members sembrados del cache del contexto → re-entrada al Step 10 pinta al
   // instante; el efecto de abajo los refresca igualmente en background.
@@ -168,7 +168,7 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
   // (awaitPendingSave) antes del acto de firma — único await legítimo.
   const confirm = () => {
     log.info('[DBG review] confirm CLICK', { accepted_n: acceptedCount, total: docs.length, locked });
-    if (locked) { onAdvance(); return; } // ya confirmado y enviado: solo lectura
+    if (locked) { onAdvance({ sinEscribir: true }); return; } // solo lectura: avanza SIN guardar ⇒ no resuelve al hijo (★ CLI 467)
     if (!allAccepted) { setErr(t('signing.review.must_accept_all')); return; }
     setErr('');
     log.info('[DBG review] confirm — avanzando (confirmReview encolado)');
@@ -185,7 +185,16 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
     // Lock EN VIVO (Diego 2026-06-12): desde el momento de confirmar, los pasos
     // 8-10 quedan en solo lectura (el backend además rechazará con SIGNING_LOCKED
     // cuando el hito durable aterrice).
-    setReviewConfirmedLocal(true);
+    // ★ CLI 467 — se marca EL HIJO ELEGIDO, no la solicitud. Sin hijo elegido (un solo hijo
+    // admitido, o servidor sin estado por hijo) se guarda la marca de grupo, igual que ayer.
+    //
+    // ⚠️ MEDIDO, Y SE DICE: romper esta línea (volver a marcar la solicitud entera) deja el
+    // recorrido `los-dos-hermanos-firman` en VERDE — porque lo que de verdad cierra el paso del
+    // otro hermano NO es esta marca, es lo que `stepEditMode` recibe como `reviewConfirmed`
+    // (`WizardPage.reviewConfirmedDelPaso`), y ÉSE ya pregunta por hijo al lector único. Se cambia
+    // igual para que el conjunto guardado no MIENTA sobre de qué hijo es cada marca —el día que
+    // alguien lo lea por hijo, la mentira muerde—, pero no se le atribuye una red que no tiene.
+    marcarLecturaConfirmada(selectedEnrollmentId || null);
     enqueueSave(() => gasCall('confirmReview', payload)
       .then(res => {
         // Baseline tras save OK (espejo de markStepSaved).
