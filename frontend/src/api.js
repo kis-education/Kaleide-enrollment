@@ -263,14 +263,24 @@ export function initiateSigningRead(identity) {
   const signingToken  = id.signingToken || null;
   const n             = id.n || null;
   const recoveredEmail = id.recoveredEmail || null;
+  // ★ CLI 468 — EL HIJO ELEGIDO EN EL TRAMO 8-11. Esta lectura trae la LISTA de documentos del
+  // paquete (la Carta y el Contrato), y el paquete es de UN hijo: sin mandarlo, el servidor
+  // resolvía la sesión primaria y el segundo hermano revisaba los documentos del primero.
+  const selectedEnrollmentId = id.selectedEnrollmentId || null;
   if (!resumeToken && !signingToken) {
     return Promise.reject(new Error('initiateSigningRead: resume_token or signing_token required'));
   }
   // Single-flight key: el resume_token de sesión (preferente) o el signing_token.
-  const key = resumeToken ? ('r:' + resumeToken) : ('s:' + signingToken);
+  // ⛔ CLI 468 — Y EL HIJO ELEGIDO VA DENTRO DE LA CLAVE. Sin él, el precalentado (que pide SIN
+  // selección) y el paso 10 del segundo hermano compartían promesa: el que llegara segundo se
+  // llevaba la respuesta del primero, que es el mismo defecto por otra puerta. Sin selección la
+  // clave es byte a byte la de hoy.
+  const key = (resumeToken ? ('r:' + resumeToken) : ('s:' + signingToken))
+    + (resumeToken && selectedEnrollmentId ? ('|s:' + selectedEnrollmentId) : '');
   if (_signingReadFlight[key]) return _signingReadFlight[key];
   const tokenPayload = resumeToken
-    ? { resume_token: resumeToken, n: n || undefined, recovered_email: recoveredEmail || undefined }
+    ? { resume_token: resumeToken, n: n || undefined, recovered_email: recoveredEmail || undefined,
+        selected_enrollment_id: selectedEnrollmentId || undefined }
     : { signing_token: signingToken };
   const flight = gasCall('initiateSigningSession', { ...tokenPayload, create_only: true })
     .finally(() => { delete _signingReadFlight[key]; });
@@ -295,12 +305,18 @@ export function initiateSigningRead(identity) {
 // emite ese campo (DOC-BYTES) y el visor usa SIEMPRE object URLs de PDF.
 const _docBytesCache = {};   // { [file_id]: Promise<{base64,mimeType,filename,sha256?}> }
 
-export function getDocumentBytes({ file_id, resume_token, signing_token, n, recovered_email }) {
+export function getDocumentBytes({ file_id, resume_token, signing_token, n, recovered_email, selected_enrollment_id }) {
   if (!file_id) return Promise.reject(new Error('getDocumentBytes: file_id required'));
+  // ⚠️ CLI 468 — LA CLAVE SIGUE SIENDO EL `file_id` A SOLAS, y es correcto: los bytes de un
+  // fichero son los mismos lo pida quien lo pida (el servidor re-valida la pertenencia en cada
+  // llamada), y la Carta y el Contrato de cada hermano son FICHEROS DISTINTOS ⇒ dos hijos nunca
+  // comparten entrada. Lo que sí hacía falta mandar es el hijo elegido: sin él, `getDocument_`
+  // resolvía el `signing_token` de la sesión PRIMARIA y pedía al KMS los PDF del primer hermano.
   if (_docBytesCache[file_id]) return _docBytesCache[file_id];
   // IDENTITY-COMPLETION (#30): `n` (email_id del enlace) + recovered_email para que
   // getDocument_ resuelva el signing_token server-side bajo resume_token (PDF de firma).
-  const flight = gasCall('getDocument', { file_id, resume_token, signing_token, n, recovered_email })
+  const flight = gasCall('getDocument', { file_id, resume_token, signing_token, n, recovered_email,
+    selected_enrollment_id: selected_enrollment_id || undefined })
     .catch(err => { delete _docBytesCache[file_id]; throw err; });   // NO cachear fallos
   _docBytesCache[file_id] = flight;
   return flight;

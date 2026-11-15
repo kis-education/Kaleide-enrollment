@@ -36,12 +36,27 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
     recoveredEmail, recoveryNonce,
     // STEP10-VIEWER: el cache de documentos vive en el CONTEXTO (object URLs + sha256
     // keyed por file_id) — navegar 10→11→10 NO refetchea.
-    docCache, loadDocument, signingMembers, setSigningMembers,
+    docCache, loadDocument, signingMembers, signingMembersDe, setSigningMembers,
     signingForms, updateSigningForm, admissionState , marcarLecturaConfirmada, selectedEnrollmentId } = useWizard();
   // MAPEO CENTRAL (Diego 2026-06-12): el candado viene de getStepEditMode via props.
   // members sembrados del cache del contexto → re-entrada al Step 10 pinta al
   // instante; el efecto de abajo los refresca igualmente en background.
-  const [members, setMembers] = useState(signingMembers); // null=loading/preparando
+  // ★ CLI 468 — UN SOLO CRITERIO de «¿este paquete es del hermano que estoy atendiendo?». El memo
+  // del contexto sobrevive al remontaje del paso, así que sin esto el segundo hermano se sembraba
+  // con la carta y el contrato del primero. ⛔ Sin hijo elegido los dos lados son `null` ⇒ casan,
+  // y la siembra instantánea de siempre (la queja de Diego de 2026-06-11) se conserva entera.
+  // ⚠️ LO QUE SU RED CUBRE Y LO QUE NO, medido el 2026-11-15 rompiéndolo a propósito: el
+  // recorrido `los-dos-hermanos-firman` sale VERDE con esta línea revertida, así que **no la
+  // cubre**. El motivo es que los documentos del primer hermano ya están en `docCache` ⇒ no sale
+  // ni una petición que delate la siembra equivocada. Lo que SÍ rompe en el producto, y por eso
+  // se hace igual: el visor pinta el PDF del hermano, y como las aceptaciones van por `file_id`
+  // y el conjunto es de la SOLICITUD, `allAccepted` llega en `true` ⇒ **«Confirmar y proceder a
+  // la firma» sale HABILITADO sobre los documentos del otro hijo**. Afirmarlo desde el navegador
+  // exigiría medir una ventana de 800 ms, que es justo la clase de afirmación intermitente que
+  // esta batería prohíbe. Se declara en vez de callarse.
+  const paqueteDeEsteHijo = ((signingMembersDe || null) === (selectedEnrollmentId || null))
+    ? signingMembers : null;
+  const [members, setMembers] = useState(paqueteDeEsteHijo); // null=loading/preparando
   const [loadErr, setLoadErr] = useState('');
   const [err, setErr] = useState('');
   // DL-E39: la revisión del paquete contractual carga documentos sensibles vía
@@ -70,7 +85,11 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
     const _t0 = Date.now();
     log.info('[DBG review] initiateSigningRead start', { attempt });
     // IDENTITY-COMPLETION (#30): identidad de SESIÓN (resume_token + `n` del enlace).
-    initiateSigningRead({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail })
+    // ★ CLI 468 — con el hijo elegido: el paquete que se revisa es de UN hijo, y sin mandarlo el
+    // servidor resolvía la sesión primaria ⇒ el segundo hermano revisaba la carta y el contrato
+    // del primero. Sale de donde ya está (`selectedEnrollmentId` del contexto), nunca de una
+    // segunda fuente de «qué hijo».
+    initiateSigningRead({ resumeToken, signingToken, n: recoveryNonce, recoveredEmail, selectedEnrollmentId })
       .then(res => {
         const ms = Date.now() - _t0;
         const mem = Array.isArray(res.members) ? res.members : [];
@@ -87,7 +106,7 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
           return;
         }
         setMembers(mem);
-        setSigningMembers(mem); // cache del contexto (re-entrada instantánea)
+        setSigningMembers(mem, selectedEnrollmentId || null); // cache del contexto (re-entrada instantánea), con el hijo del que es
       })
       .catch(e => {
         if (isStepUpRequiredError(e)) {
@@ -125,7 +144,11 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
       loadDocument({
         file_id: m.file_id,
         ...(resumeToken
-          ? { resume_token: resumeToken, n: recoveryNonce || undefined, recovered_email: recoveredEmail || undefined }
+          ? { resume_token: resumeToken, n: recoveryNonce || undefined, recovered_email: recoveredEmail || undefined,
+              // ★ CLI 468 — el MISMO hijo con el que se pidieron los members, para que los bytes
+              // salgan de su sesión. Por la vía del `signing_token` no hace falta: la sesión ya
+              // es la del token.
+              selected_enrollment_id: selectedEnrollmentId || undefined }
           : { signing_token: signingToken }),
       })
         .then((entry) => {
@@ -138,7 +161,7 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
         });
     });
     return () => { alive = false; };
-  }, [members, signingToken, resumeToken]); // eslint-disable-line
+  }, [members, signingToken, resumeToken, selectedEnrollmentId]); // eslint-disable-line
 
   // ── Derivados del visor (UN doc a la vez + aceptación por doc) ────────────────
   // N es DINÁMICO: los members que el paquete declara (cero hardcode de documentos).
@@ -249,7 +272,7 @@ export default function Step10Review({ onAdvance, onBack, signingToken, resumeTo
             markStepUpFresh();
             // NO se purga el cache de docs del contexto — lo que falló por
             // STEPUP_REQUIRED nunca se cacheó (cache-miss limpio).
-            setMembers(signingMembers);
+            setMembers(paqueteDeEsteHijo);
             setNeedStepUp(false);
             setReloadKey(k => k + 1);
           }}

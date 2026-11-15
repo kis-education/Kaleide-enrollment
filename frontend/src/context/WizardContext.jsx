@@ -782,8 +782,18 @@ export function WizardProvider({ children }) {
   const [docCache, setDocCache] = useState({});   // { [file_id]: { url, sha256, filename, mimeType } }
   const docCacheRef = useRef({});                 // espejo síncrono (race guard + revocación)
   const [signingMembers, setSigningMembersRaw] = useState(null); // null = nunca cargados
-  const setSigningMembers = useCallback((members) => {
-    setSigningMembersRaw(Array.isArray(members) && members.length ? members : null);
+  // ★ CLI 468 — Y RECUERDA DE QUÉ HIJO ES. Este memo sobrevive al remontaje del paso (es del
+  // CONTEXTO), así que al cambiar de hermano el paso 10 se sembraba con la lista del ANTERIOR: la
+  // carta y el contrato del otro, pintados mientras llega la respuesta — y, si esa respuesta
+  // llegaba vacía de forma transitoria, se QUEDABAN (el paso conserva a propósito los members ya
+  // sembrados para que un refresco fallido no le vacíe la pantalla a nadie).
+  // ⛔ Sin hijo elegido (un solo hermano admitido, o servidor sin publicar) esto es `null` a los
+  // dos lados ⇒ byte a byte el comportamiento de hoy.
+  const [signingMembersDe, setSigningMembersDe] = useState(null); // enrollment_id dueño de la lista
+  const setSigningMembers = useCallback((members, enrollmentId) => {
+    const hay = Array.isArray(members) && members.length;
+    setSigningMembersRaw(hay ? members : null);
+    setSigningMembersDe(hay ? (enrollmentId || null) : null);
   }, []);
 
   // ── WIZARD-UX TASK-1 (Diego 2026-06-13) — memo EN MEMORIA del ESTADO de la sesión ──
@@ -861,6 +871,7 @@ export function WizardProvider({ children }) {
     docCacheRef.current = {};
     setDocCache({});
     setSigningMembersRaw(null);
+    setSigningMembersDe(null);  // ★ CLI 468: el dueño muere con su lista
     setSigningSessionRaw(null); // WIZARD-UX TASK-1: el memo de estado de firma muere con la sesión
     purgeDocumentBytesCache();
   }, []);
@@ -2026,7 +2037,7 @@ export function WizardProvider({ children }) {
       // conjunto por expediente; `reviewConfirmedLocal` el booleano DERIVADO de compat.
       reviewConfirmedLocal, reviewConfirmadosLocales, marcarLecturaConfirmada, // lock en vivo post-confirm (Diego 2026-06-12)
       reviewConfirmed,                            // input del mapeo central (catalog.stepEditMode)
-      docCache, loadDocument, signingMembers, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual
+      docCache, loadDocument, signingMembers, signingMembersDe, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual (★ CLI 468: con el hijo del que es)
       signingSession, setSigningSession,          // WIZARD-UX TASK-1: memo en memoria del estado de la sesión de firma (Step 11 idempotente)
       billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
       signingForms, updateSigningForm,            // REBUILD-8-11: formularios de firma en memoria

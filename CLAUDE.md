@@ -1158,19 +1158,32 @@ CONJUNTO por expediente (`marcarLecturaConfirmada`), lo que `stepEditMode` recib
 (`onAdvance({sinEscribir:true})`). En el mismo cambio, **el hijo elegido entra en la clave de la copia
 del pulso** (`_sufijoCopiaDelPulso_`, con la validación ÚNICA `_hijoElegidoDelPayload_`) — sin
 selección la clave es **byte a byte** la de hoy— y el paso 9 pasa a tener **un solo** criterio de «qué
-hijo». Red: `scripts/servidor/el-segundo-hermano-tambien-firma.mjs` + el recorrido
+hijo». **Y —`CLI 468`, 2026-11-15, también en `main` SIN PUBLICAR— el PAQUETE que se revisa en el
+paso 10 es el del hijo elegido**: el cliente lo manda en las dos llamadas (la LISTA de documentos y
+los BYTES de cada uno), `getDocument_` resuelve con él **y lo mete en la clave de su memo**
+(`_claveMemoTokenDeFirma_` — las dos cosas, o sale la mezcla), la copia de la lista va por
+(solicitud × hijo) (`_sufijoCopiaDelPaquete_`) y el memo del navegador recuerda **de qué hijo es**
+(`signingMembersDe`). ⛔ **Sin hijo elegido, byte a byte el comportamiento de hoy** en las cuatro, que
+es lo que mantiene vivo el cebado del calentamiento. El **calentamiento sigue cocinando la PRIMARIA a
+propósito** —cuando corre no hay hijo elegido— y su clave lo dice, así que ya no se le sirve a otro.
+Red: `scripts/servidor/el-segundo-hermano-tambien-firma.mjs` + el recorrido
 `los-dos-hermanos-firman` del muro. ⚠️ **Y lo que esa red NO cubre, medido rompiéndolo:** la marca
-del servidor por `entity_id` y que `Step10Review` marque el hijo elegido **dejan el recorrido en
-VERDE** al romperlas, porque **el candado por hijo no lee ese conjunto** (lo decide
-`hijoResueltoEnPantalla` sobre `resueltosLocales` y los `pasos`); se hacen para que lo guardado no
-mienta, no porque cierren el defecto.
+del servidor por `entity_id`, que `Step10Review` marque el hijo elegido y que el memo del navegador
+lleve su dueño **dejan el recorrido en VERDE** al romperlas — el candado por hijo no lee ese conjunto
+(lo decide `hijoResueltoEnPantalla` sobre `resueltosLocales` y los `pasos`), y los documentos del
+primer hermano ya están en `docCache`, así que la siembra equivocada no saca ni una petición que la
+delate. Se hacen para que lo guardado no mienta —y, en el caso del memo, porque en el producto sí
+pinta el PDF del hermano con «Confirmar» ya habilitado—, no porque el recorrido las acredite.
 
 ⛔ **LO QUE QUEDA FUERA, y no es el acto de firma solo:** (1) **publicar el servidor del asistente** —
 sigue en `@309` (1 de octubre), así que `por_alumno[].pasos` no llega, el selector **no se pinta** y
-todo lo de arriba es INERTE; (2) el **precalentado del paquete** (`_warmMembersDocsPhase_`) y el
-**servicio de BYTES** (`getDocument_`, memo por `groupId|guardianId`) resuelven la sesión PRIMARIA ⇒
-con dos hijos sirven el paquete del PRIMERO (ficha de `signerUrls` por sesión); (3) el paso 11 sigue
-guardando UNA sola sesión; (4) el acto de firmar, apagado por costes.
+todo lo de arriba es INERTE; (2) el **precalentado del paquete** (`_warmMembersDocsPhase_`) sigue
+cocinando la PRIMARIA **a propósito y declarado**, y el **precalentado del NAVEGADOR**
+(`prefetchDocuments` desde `WizardPage.warmDocuments`) pide SIN selección ⇒ calienta los documentos
+del primero; no mezcla (cada hijo tiene sus `file_id`), solo no ahorra para el segundo; (3) el paso
+11 (`Step11Sign`) pide la lectura **sin selección y con el `signing_token` que `initiateSigningRead`
+DESCARTA cuando hay `resume_token`** ⇒ sigue siendo de UNA sola sesión (ficha de `signerUrls` por
+sesión); (4) el acto de firmar, apagado por costes.
 
 ### Estados editables — y el edit-lock post-envío
 

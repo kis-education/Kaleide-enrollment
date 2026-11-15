@@ -2361,6 +2361,48 @@ function _sufijoCopiaDelPulso_(id, p) {
   return sel ? (base + '_s:' + sel) : base;
 }
 
+/**
+ * ★ CLI 468 — LA CLAVE DEL MEMO QUE GUARDA EL `signing_token` CON EL QUE SE SIRVEN LOS BYTES
+ * DEL PAQUETE (`docsigntok_…`), CON EL HIJO ELEGIDO DENTRO. Ese memo iba por
+ * `grupo|tutor` y la resolución que lo llena caía a la sesión PRIMARIA ⇒ con dos hermanos
+ * admitidos, **la Carta y el Contrato que revisaba el segundo eran los del primero**.
+ *
+ * ⛔ SIN SELECCIÓN, LA CLAVE ES BYTE A BYTE LA DE HOY (`grupo|tutor`). Es lo que mantiene vivo
+ * el cebado del calentamiento (`_warmMembersDocsPhase_`, que no manda selección): si el sufijo
+ * cambiara también sin selección, servir el primer documento volvería a pagar la cadena de
+ * identidad entera (20-40 s medidos en su día).
+ * ⛔ El TUTOR sigue dentro (②24): el `signing_token` es de UN firmante, y compartir memo entre
+ * tutores le daría a uno el token del otro.
+ * ⛔ UN SOLO SITIO la compone — lo piden `getDocument_` (con el hijo elegido) y el
+ * calentamiento (sin él). Dos formas de componerla divergirían, y divergir aquí ES el defecto.
+ * @private
+ */
+function _claveMemoTokenDeFirma_(groupId, guardianId, sel) {
+  var raw = groupId + '|' + guardianId + (sel ? '|s:' + sel : '');
+  return 'docsigntok_' + sha256Hex_(Utilities.newBlob(raw).getBytes()).slice(0, 40);
+}
+
+/**
+ * ★ CLI 468 — EL SUFIJO DE LA CLAVE DE LA COPIA DEL **PAQUETE** (`wz_mem_…`: la lista de
+ * documentos y el estado de la sesión que lee el paso 10), CON EL HIJO ELEGIDO DENTRO.
+ *
+ * Esa entrada guarda la respuesta `create_only` de UNA sesión de firma —o sea, de UN hijo— y
+ * su clave era **solo la solicitud** ⇒ el tutor que elegía al segundo hermano recibía, desde la
+ * copia, la lista de documentos del PRIMERO: la carta y el contrato de su hermano. Y el KMS no
+ * podía evitarlo, porque el acierto de copia ocurre ANTES de preguntarle.
+ *
+ * ⛔ SIN SELECCIÓN, EL SUFIJO ES BYTE A BYTE EL DE HOY (la solicitud a secas), que es la clave
+ * que escriben los dos calentamientos (`_warmMembersDocsPhase_` y `warmSession_`).
+ * ⚠️ Y lo que esta clave NO hace, dicho: **no es por tutor**, igual que hoy — la entrada lleva
+ * dentro `signerUrls`, que sí es por firmante. Eso es de la ficha de `signerUrls` por sesión,
+ * no de este tramo; esto solo ESTRECHA la clave, nunca la ensancha.
+ * @private
+ */
+function _sufijoCopiaDelPaquete_(groupId, p) {
+  var sel = _hijoElegidoDelPayload_(p);
+  return sel ? (groupId + '_s:' + sel) : groupId;
+}
+
 // URL /exec PROPIA para las auto-invocaciones del warm. El deployment es FIJO
 // (CLAUDE.md: nunca se crea deployment nuevo — cambiaría la URL pública); fallback
 // dinámico por si algún día rota.
@@ -2695,20 +2737,26 @@ function _warmMembersDocsPhase_(it) {
   try {
     try { assertValidUuid_(token, 'resume_token'); } catch (eV) { return out; }
     var groupId = requireResumeTokenMemo_({ resume_token: token });
-    if (cache.get(_wzCacheKey_('mem', groupId) + '_meta')) { out.ok = true; return out; }
+    if (cache.get(_wzCacheKey_('mem', _sufijoCopiaDelPaquete_(groupId, null)) + '_meta')) { out.ok = true; return out; }
     try { cache.put('wzck_mem_' + groupId, '1', 240); } catch (eM) {}
     var effEmail = effectiveRecoveredEmail_(token, it.e || null, it.n || null);
     var guardianId = effEmail ? resolveGuardianForRecovery_(token, effEmail) : null;
     // ②17: las filas de firma las sirve el KMS (acotadas al expediente del token), no
     // AppSheet. Sin ellas el resolvedor devuelve null — mismo comportamiento de antes
     // ante una lectura fallida: pre-AD o sin sesión, nada que calentar.
-    // ★ CLI 467 — AQUÍ SE COCINA LA SESIÓN PRIMARIA A PROPÓSITO, y es lo honesto: el
-    // calentamiento corre ANTES de que el tutor abra la pantalla, así que todavía no hay hijo
-    // elegido que pasarle. El `signing_token` que saca de aquí solo sirve para cebar el memo que
-    // sirve BYTES de documento; el contexto que alimenta la pantalla lo compone el pulso
-    // (`getAdmissionState_`), y ÉSE sí lleva el hijo elegido, en su clave y en su resolución.
-    // ⚠️ LO QUE ESTO DEJA ABIERTO, dicho: con dos hijos, el paquete de documentos que se precalienta
-    // es el del PRIMERO. No es de este tramo — es la ficha de `signerUrls` por sesión.
+    // ★ CLI 468 — AQUÍ SE SIGUE COCINANDO LA SESIÓN PRIMARIA A PROPÓSITO, y es lo honesto: el
+    // calentamiento corre ANTES de que el tutor abra la pantalla, así que **todavía no hay hijo
+    // elegido** que pasarle; inventarse uno sería peor que no adivinar.
+    // ⛔ LO QUE CAMBIA NO ES LO QUE COCINA, SINO QUE SU CLAVE LO DIGA: lo que deja cebado va bajo
+    // la clave SIN selección (`_claveMemoTokenDeFirma_(…, null)` y `_sufijoCopiaDelPaquete_` sin
+    // payload), que es **exactamente** la que leen los caminos sin selección ⇒ el clic de siempre
+    // sigue encontrando su copia; y en cuanto el tutor elige un hermano la clave YA NO CASA y
+    // `getDocument_` / `initiateSigningSession_` van al camino vivo en vez de servirle el paquete
+    // del primero. **Resuelve con uno y memoiza con ESE mismo**, que es lo único que no vale
+    // romper aquí.
+    // ⚠️ Lo que esto cuesta, dicho: una familia con DOS hermanos admitidos paga la resolución en
+    // vivo también para el primero (su clave lleva selección y el cebado no). Es el precio de que
+    // nadie reciba el paquete de su hermano, y se paga una vez por hijo (TTL 300 s).
     var firmaKms = _datosDeFirmaDelExpediente_(token);
     var sctx = (guardianId && firmaKms)
       ? resolveGuardianSigningContext_(groupId, guardianId, firmaKms.sessions, firmaKms.signersBySession)
@@ -2719,14 +2767,13 @@ function _warmMembersDocsPhase_(it) {
       // token de firma (docsigntok_) — la MISMA clave que el resolver lazy de
       // getDocument_ — para que servir bytes no re-pague la cadena de identidad.
       try {
-        cache.put('docsigntok_' + sha256Hex_(
-          Utilities.newBlob(groupId + '|' + guardianId).getBytes()).slice(0, 40), signingToken, 300);
+        cache.put(_claveMemoTokenDeFirma_(groupId, guardianId, null), signingToken, 300);
       } catch (eTk) { /* best-effort */ }
       var prep = kmsProxy_('enr.initiateSigningSession', { signing_token: signingToken, create_only: true }) || {};
       var members = prep.members || [];
       out.members = members.length;
       if (members.length) {
-        _wzCachePutChunked_(cache, _wzCacheKey_('mem', groupId),
+        _wzCachePutChunked_(cache, _wzCacheKey_('mem', _sufijoCopiaDelPaquete_(groupId, null)),
           JSON.stringify({ v: _versionDeClase_(groupId, 'mem'), data: prep }), 1800);
         var pendientes = members.map(function(m) { return m && m.file_id; }).filter(Boolean)
           .filter(function(fid) { return !cache.get(_wzCacheKey_('doc', fid) + '_meta'); });
@@ -2990,7 +3037,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
     // (d)+(e) members+docs: movidos a _warmMembersDocsPhase_ (fase hija propia,
     // V2.3 — el paso 10 no debe esperar al hydrate). Aquí solo si este caller
     // llegó con signingToken ya resuelto y la fase mem no corrió aún.
-    if (signingToken && !cache.get(_wzCacheKey_('mem', gidW) + '_meta')) {
+    if (signingToken && !cache.get(_wzCacheKey_('mem', _sufijoCopiaDelPaquete_(gidW, null)) + '_meta')) {
       var members = [];
       try {
         var prep = kmsProxy_('enr.initiateSigningSession', { signing_token: signingToken, create_only: true }) || {};
@@ -3000,7 +3047,7 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
         // sirve de aqui post-gates. SOLO la lectura create_only; el ACTO (initiate)
         // jamas toca cache (P222).
         if (prep && members.length && groupId) {
-          _wzCachePutChunked_(cache, _wzCacheKey_('mem', gidW),
+          _wzCachePutChunked_(cache, _wzCacheKey_('mem', _sufijoCopiaDelPaquete_(gidW, null)),
             JSON.stringify({ v: _versionDeClase_(gidW, 'mem'), data: prep }), 1800);
         }
       } catch (eM) {
@@ -9186,6 +9233,11 @@ function getDocument_(p) {
     // y proxyamos al KMS igual que el flujo signing_token. KMS INTACTO: sigue recibiendo un
     // signing_token válido. Resolución LAZY: solo si el read local falla (es un PDF de firma,
     // no un documento subido por la familia) — sin coste en el path común de previews /apply.
+    // ★ CLI 468 — EL HIJO QUE EL TUTOR TIENE ELEGIDO EN EL TRAMO 8-11, por el criterio ÚNICO
+    // (`_hijoElegidoDelPayload_`: KAL-5 capa 1, forma mala ⇒ AUSENTE). Decide las DOS cosas de
+    // abajo —qué sesión se resuelve y bajo qué clave se memoiza— y las decide JUNTAS: meterlo
+    // en una sola daría justo la mezcla que este cambio viene a cerrar.
+    const selDoc = _hijoElegidoDelPayload_(p);
     resolveKmsSigningToken = function () {
       try {
         // IDENTITY-FROM-LINK: la identidad sale del `n` (email_id) del enlace, resuelto
@@ -9200,21 +9252,23 @@ function getDocument_(p) {
         // LECTURA (servir bytes); el KMS re-valida el token + IDOR en vivo por
         // llamada (KAL-4) y el ACTO de firma no pasa por aquí (P222 intacta).
         const cache = CacheService.getScriptCache();
-        const memoKey = 'docsigntok_' + sha256Hex_(
-          Utilities.newBlob(groupId + '|' + guardianId).getBytes()).slice(0, 40);
+        const memoKey = _claveMemoTokenDeFirma_(groupId, guardianId, selDoc);
         const hit = cache.get(memoKey);
         if (hit) return hit;
         // ②17: las filas de firma las sirve el KMS, acotadas al expediente del token.
         // Sin ellas → null, y el llamante degrada igual que antes (no hay PDF de firma
         // que servir por esta vía).
-        // ★ CLI 467 — este camino sirve BYTES de documento y resuelve la sesión PRIMARIA a
-        // propósito: su memo va por `groupId|guardianId`, no por hijo. ⚠️ Con dos hijos admitidos
-        // eso significa que el paquete que se sirve es el del PRIMERO. Se deja ENTERO y se dice:
-        // es la ficha de `signerUrls` por sesión, no este tramo, y tocarlo a medias (meter el hijo
-        // en la resolución pero no en el memo) daría justo la mezcla que este cambio viene a cerrar.
+        // ★ CLI 468 — LA SESIÓN QUE SE RESUELVE ES LA DEL HIJO ELEGIDO, no la primaria. Hasta
+        // aquí este camino llamaba al resolvedor SIN el quinto argumento ⇒ `_elegirSesionDeFirma_`
+        // caía a la PRIMERA sesión viva y, con dos hermanos admitidos, el paquete cuyos bytes se
+        // servían era el del PRIMERO: el segundo revisaba la carta y el contrato de su hermano.
+        // ⛔ KAL-4 intacta: el expediente lo sigue derivando el enlace (`requireResumeTokenMemo_`,
+        // arriba) y la selección SOLO escoge entre las sesiones de ESA solicitud; una que no case
+        // ninguna viva degrada a la primaria, que es el criterio de `_elegirSesionDeFirma_` y no
+        // se toca.
         const firmaDoc = _datosDeFirmaDelExpediente_(p && p.resume_token);
         const sctxSign = firmaDoc
-          ? resolveGuardianSigningContext_(groupId, guardianId, firmaDoc.sessions, firmaDoc.signersBySession)
+          ? resolveGuardianSigningContext_(groupId, guardianId, firmaDoc.sessions, firmaDoc.signersBySession, selDoc)
           : null;
         const tok = (sctxSign && sctxSign.signing_token) || null;
         if (tok) cache.put(memoKey, tok, 300);
@@ -11303,7 +11357,13 @@ function initiateSigningSession_(p) {
   // aquí; la pasamos al KMS, que registra el acto en sysLegalActsLog).
   const clientIp = (p && typeof p.client_ip === 'string') ? p.client_ip.trim() : null;
 
-  const proxyPayload = Object.assign({}, sctx.identity);
+  // ★ CLI 468 — EL HIJO ELEGIDO VIAJA AL KMS, por el MISMO sitio que ya lo mandan los actos
+  // 8/9/10 (`_conElHijoElegido_` → `_hijoElegidoDelPayload_`). Sin él, `enr_resolveSignerContext_`
+  // resolvía SIEMPRE la sesión primaria (medido en el KMS: `enr_expedienteElegidoDelPayload_` ya
+  // lo honra, y su memo `sigmemo_` ya lo lleva en la clave) ⇒ la LISTA de documentos que el paso
+  // 10 le enseñaba al segundo hermano era la del primero. Solo por la vía del enlace: con
+  // `signing_token` la sesión ya es la del token.
+  const proxyPayload = _conElHijoElegido_(Object.assign({}, sctx.identity), p);
   if (createOnly) proxyPayload.create_only = true; // P-REVIEW-READONLY: NO despacha envelope
   if (clientIp) proxyPayload.client_ip = clientIp; // evidencia forense, NUNCA gate
 
@@ -11319,7 +11379,12 @@ function initiateSigningSession_(p) {
   // o guardian distinto → vivo). El ACTO real (sin create_only) JAMAS toca cache (P222).
   if (createOnly && p && p.resume_token) {
     try {
-      const wzMemKey = _wzCacheKey_('mem', sctx.enrollment_group_id);
+      // ★ CLI 468 — LA COPIA DEL PAQUETE VA POR (SOLICITUD × HIJO ELEGIDO). Guarda la respuesta
+      // `create_only` de UNA sesión —o sea, de UN hijo— y su clave era solo la solicitud ⇒ el
+      // acierto ocurría ANTES de preguntarle al KMS y le servía al segundo hermano la lista de
+      // documentos del primero, hasta 1800 s. ⛔ Sin selección, la clave es byte a byte la de hoy.
+      const selPaquete = _hijoElegidoDelPayload_(p);
+      const wzMemKey = _wzCacheKey_('mem', _sufijoCopiaDelPaquete_(sctx.enrollment_group_id, p));
       const wzMemRaw = _wzCacheGetChunked_(CacheService.getScriptCache(), wzMemKey);
       if (wzMemRaw) {
         const memEntry = JSON.parse(wzMemRaw);
@@ -11338,7 +11403,11 @@ function initiateSigningSession_(p) {
       // V2.2 single-flight: si el warm está cocinando los members (log Diego 15:07 —
       // 2-3 lecturas create_only VIVAS de 37-49s compitiendo con el warm), esperar
       // su resultado (≤40s) antes de duplicar la lectura.
-      if (!wzMemRaw) {
+      // ⛔ CLI 468 — EL SINGLE-FLIGHT SOLO APLICA SIN SELECCIÓN, y no es una excepción cómoda:
+      // el calentamiento cocina ÚNICAMENTE la clave sin selección, así que esperar bajo una clave
+      // con hijo sería esperar por algo que NUNCA va a llegar a esa clave — segundos regalados
+      // dentro de la espera del tutor, y al final el mismo camino vivo.
+      if (!wzMemRaw && !selPaquete) {
         _dbgEv_('wait', 'single-flight mem');
         const awaitedMem = _wzAwaitWarm_('wzck_mem_' + sctx.enrollment_group_id, wzMemKey, 40000);
         if (awaitedMem) {
@@ -11364,7 +11433,7 @@ function initiateSigningSession_(p) {
   if (createOnly && p && p.resume_token && data && data.members && data.members.length) {
     try {
       _wzCachePutChunked_(CacheService.getScriptCache(),
-        _wzCacheKey_('mem', sctx.enrollment_group_id),
+        _wzCacheKey_('mem', _sufijoCopiaDelPaquete_(sctx.enrollment_group_id, p)),
         JSON.stringify({ v: _versionDeClase_(sctx.enrollment_group_id, 'mem'), data: data }), 1800);
     } catch (eWzWtM) { /* best-effort */ }
   }

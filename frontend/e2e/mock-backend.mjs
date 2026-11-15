@@ -215,6 +215,18 @@ function lookupsSegunEscenario_(scenario) {
   };
 }
 
+// ★ CLI 468 — EL PAQUETE DE FIRMA ES DE UN HIJO, no de la solicitud. La Carta y el Contrato
+// los genera el KMS POR EXPEDIENTE, así que dos hermanos admitidos tienen ficheros DISTINTOS;
+// servir los mismos para los dos dejaba al recorrido incapaz de notar que el segundo estaba
+// revisando los documentos del primero. ⛔ Sin hijo elegido devuelve los de siempre.
+const paqueteDelHijo_ = (sel) => {
+  const suf = sel ? `-${sel}` : '';
+  return [
+    { file_id: `file-e2e-carta${suf}`,    purpose_code: 'ADMISSION_LETTER' },
+    { file_id: `file-e2e-contrato${suf}`, purpose_code: 'SCHOOL_CONTRACT' },
+  ];
+};
+
 // `0º.tricies.quinquies` — marca de idempotencia → fichero ya guardado, como en `recFiles`.
 const FICHEROS_POR_MARCA = new Map();
 let _ficheroSeq = 0;
@@ -1661,11 +1673,11 @@ export function createDispatcher(scenario, record) {
     // ★ CLI 467 — `scenario.paqueteContractual` sirve el paquete de verdad (la Carta y el
     // Contrato) para poder RECORRER el paso 10 desde el navegador. Sin la palanca devuelve la
     // lista vacía, byte a byte como siempre, y el paso 10 se queda en su espera activa.
-    initiateSigningSession:  () => (scenario.paqueteContractual
-      ? { ok: true, steps: {}, members: [
-          { file_id: 'file-e2e-carta',    purpose_code: 'ADMISSION_LETTER' },
-          { file_id: 'file-e2e-contrato', purpose_code: 'SCHOOL_CONTRACT' },
-        ] }
+    // ★ CLI 468 — EL PAQUETE ES DE UN HIJO. El simulacro lo sirve por el hijo elegido para que
+    // el recorrido pueda afirmar que el SEGUNDO hermano revisa SU carta y SU contrato, no los de
+    // su hermano. ⛔ Sin selección devuelve los ficheros de siempre, byte a byte.
+    initiateSigningSession:  (p) => (scenario.paqueteContractual
+      ? { ok: true, steps: {}, members: paqueteDelHijo_(p && p.selected_enrollment_id) }
       : { ok: true, members: [], steps: {} }),
   };
 

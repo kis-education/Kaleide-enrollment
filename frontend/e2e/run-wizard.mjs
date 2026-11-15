@@ -12575,6 +12575,12 @@ async function caminoLosDosHermanosFirman(page, base) {
       ['frontend/src/pages/WizardPage.jsx',         /sinEscribir/],
       ['frontend/src/pages/steps/Step9Gdpr.jsx',    /hijoDeLaPantalla/],
       ['frontend/src/pages/steps/Step10Review.jsx', /marcarLecturaConfirmada\(/],
+      // ★ CLI 468 — el paquete de firma por hijo (lista, bytes y el memo del contexto)
+      ['frontend/src/api.js',                       /selectedEnrollmentId/],
+      ['frontend/src/pages/steps/Step10Review.jsx',  /paqueteDeEsteHijo/],
+      ['frontend/src/context/WizardContext.jsx',     /signingMembersDe/],
+      ['backend/Code.js',                            /_claveMemoTokenDeFirma_/],
+      ['backend/Code.js',                            /_sufijoCopiaDelPaquete_/],
     ]
     const ausentes = []
     for (const [rel, re] of FUENTES) {
@@ -12751,6 +12757,26 @@ async function caminoLosDosHermanosFirman(page, base) {
       !editarC,
       'el paso 10 del segundo hermano llegó con candado: la marca de lectura confirmada se está ' +
       'guardando para la SOLICITUD y no para el hijo, que es lo que deja al segundo sin su sobre')
+
+    // (9)+(10) ★ CLI 468 — Y LO QUE REVISA ES SU CARTA Y SU CONTRATO, no los de su hermano.
+    //   El paquete lo genera el KMS POR EXPEDIENTE; sin mandarle el hijo elegido, el servidor
+    //   resolvía la sesión PRIMARIA ⇒ el segundo hermano revisaba —y aceptaba, y confirmaba
+    //   haber leído— los documentos del primero.
+    const lectura = llamadas('initiateSigningSession').filter(x => x.payload
+      && x.payload.selected_enrollment_id === segundo)
+    c.afirmar('(9) al atender al SEGUNDO hermano, la LISTA de documentos se pide por ÉL',
+      lectura.length > 0,
+      `ninguna de las ${llamadas('initiateSigningSession').length} lecturas del paquete llevaba ` +
+      `selected_enrollment_id=${JSON.stringify(segundo)}: sin eso el servidor resuelve la sesión ` +
+      'primaria y le enseña la carta y el contrato de su hermano')
+    const bytesDelSegundo = llamadas('getDocument').filter(x => x.payload
+      && x.payload.selected_enrollment_id === segundo)
+    c.afirmar('(10) y los BYTES que se piden son los de SU paquete, con su hijo declarado',
+      bytesDelSegundo.length > 0
+      && bytesDelSegundo.every(x => String(x.payload.file_id || '').endsWith(segundo)),
+      `se pidieron ${bytesDelSegundo.length} documentos con su hijo declarado, con file_id=` +
+      `${JSON.stringify(bytesDelSegundo.map(x => x.payload.file_id))}: un fichero del primer ` +
+      'hermano aquí es la carta y el contrato equivocados delante de la familia')
 
     confirmados = llamadas('confirmReview').length
     await confirmarLectura()
