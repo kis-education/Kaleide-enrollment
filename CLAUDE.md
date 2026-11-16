@@ -1219,15 +1219,17 @@ primer hermano ya están en `docCache`, así que la siembra equivocada no saca n
 delate. Se hacen para que lo guardado no mienta —y, en el caso del memo, porque en el producto sí
 pinta el PDF del hermano con «Confirmar» ya habilitado—, no porque el recorrido las acredite.
 
-⛔ **LO QUE QUEDA FUERA, y no es el acto de firma solo:** (1) **publicar el servidor del asistente** —
-sigue en `@309` (1 de octubre), así que `por_alumno[].pasos` no llega, el selector **no se pinta** y
-todo lo de arriba es INERTE; (2) el **precalentado del paquete** (`_warmMembersDocsPhase_`) sigue
+⛔ **LO QUE QUEDA FUERA, y no es el acto de firma solo:** (1) ~~publicar el servidor del asistente~~
+— **hecho: `@310` (`CLI 469`, 2026-11-16)**, el selector se pinta; (2) el **precalentado del paquete** (`_warmMembersDocsPhase_`) sigue
 cocinando la PRIMARIA **a propósito y declarado**, y el **precalentado del NAVEGADOR**
 (`prefetchDocuments` desde `WizardPage.warmDocuments`) pide SIN selección ⇒ calienta los documentos
 del primero; no mezcla (cada hijo tiene sus `file_id`), solo no ahorra para el segundo; (3) el paso
-11 (`Step11Sign`) pide la lectura **sin selección y con el `signing_token` que `initiateSigningRead`
-DESCARTA cuando hay `resume_token`** ⇒ sigue siendo de UNA sola sesión (ficha de `signerUrls` por
-sesión); (4) el acto de firmar, apagado por costes.
+11 (`Step11Sign`) **ya lee y enseña la sesión del hijo ELEGIDO** (drenaje `:08` v1017, en `main` SIN
+PUBLICAR): la lectura lleva `selectedEnrollmentId` y el memo del contexto recuerda de qué hijo es
+(`signingSessionDe`, criterio en `lib/sesionDeFirma.js`), así que al segundo hermano ya no se le
+siembra el estado del primero; lo que **no** hace es pintar la lista de enlaces de TODAS las sesiones
+(`sessions[]` del KMS) —con el acto apagado no hay enlaces que pintar—; (4) el acto de firmar,
+apagado por costes.
 
 ### Estados editables — y el edit-lock post-envío
 
@@ -1465,6 +1467,7 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | `el-segundo-hermano-tambien-firma.mjs` | `CLI 467`: que **la copia rápida del pulso no sea CIEGA al hijo elegido** — esa entrada guarda `signing_context`, que es de UN hijo, y servírsela a otro hermano le enseña al tutor los permisos de uno y los registra a nombre del otro. Afirma, ejecutando `getAdmissionState_` REAL con una caché en memoria: sin selección la clave es **byte a byte** la de hoy (el calentamiento del enlace sigue sirviendo), con selección dos hijos **no comparten entrada**, una forma mala NO entra en la clave (KAL-5 capa 1) y el buzón sigue dentro (②24); un acierto **nunca** devuelve el contexto de otro hijo |
 | `el-aviso-de-salud-sabe-que-tabla-cayo.mjs` | `2026-09-16-la-salud-no-se-recupera`: que el paso de Salud avise de «no se pudo cargar» **solo** si cayó una tabla de salud/NEAE o el lote entero (`person_subreads` a secas), y no si cayó nacionalidad, documentos, idiomas, direcciones o colegios previos; un nombre fino desconocido **avisa** (falla hacia avisar). Importa `frontend/src/lib/cargaDegradada.js` REAL; tres roturas demostradas |
 | `el-asistente-no-toca-drive.mjs` | `CLI 470`: que **ni un camino vivo escriba ni lea Drive, y que el manifiesto se quede SIN ningún permiso de Drive** —ni `drive`, ni `drive.file`—. Instala un `DriveApp` que **MUERDE** (un `Proxy` que lanza y apunta ante cualquier propiedad) y EJECUTA `uploadDocument_` y `getDocument_`, así que «no toca Drive» se MIDE en vez de buscarse con un `grep`; afirma además que los BYTES viajan al KMS en el MISMO viaje que la ficha, que la ficha NO declara dónde aterrizan, que una subida sin contenido se NOMBRA (`DOCUMENTO_SIN_CONTENIDO`) en vez de confirmarse, que los bytes se PIDEN con `con_bytes` sin un viaje más, que lo servido conserva los seis campos de DOC-BYTES, que el nombre que sale no es un UUID, y que unos bytes que el KMS no pudo traer caen en la cadena de siempre hasta `DOC_UNAVAILABLE` — **nunca** en un «no es tuyo» ni de vuelta a Drive. 28 afirmaciones, 10 roturas demostradas (incluido el manifiesto con `drive` **y** con `drive.file`) y un CANARIO que sale MEDICIÓN CIEGA si el detector dejara de morder |
+| `el-paso-11-ensena-la-firma-del-hijo-elegido.mjs` | drenaje `:08` v1017: que con dos hermanos el paso 11 enseñe el estado de la firma del hijo ELEGIDO —ni sembrado del memo del otro hermano ni leído sin selección— y que dentro de un mismo hijo la sesión siga sin volver a DRAFT. Ejecuta `frontend/src/lib/sesionDeFirma.js` REAL (`sesionDelHijo`, `fundirSesionDeFirma`); que el paso 11 y el contexto lo pidan, por líneas; 19 afirmaciones, 3 roturas |
 | `el-tramo-final-resuelve-todos-los-hijos.mjs` | **CLI 403**: que el estado 8/9/10 POR HIJO llegue al selector del tramo 8-11 y que la pantalla se alimente del hijo ELEGIDO (no del primer `.find()`): `_pasosEnPorAlumno_` adjunta los pasos por `enrollment_id` y con el mapa vacío deja `por_alumno` byte-idéntico; `_elegirSesionDeFirma_` elige la sesión del hijo seleccionado (sin selección la primera; KAL-4: una selección que no casa degrada a la primera); `resolveGuardianSigningContext_` devuelve el token de ese hijo; `_datosDeFirmaDelExpediente_` manda `guardian_person_id` al KMS. Ejecuta `backend/Code.js` REAL; 13 afirmaciones, 3 roturas, 2 guardas de MEDICIÓN CIEGA |
 
 **Se corren solos desde el 2026-09-23**: el lanzador `node scripts/comprobar-el-servidor.mjs`

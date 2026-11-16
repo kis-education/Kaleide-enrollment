@@ -8,6 +8,7 @@ import { laSaludNoCargo } from '../lib/cargaDegradada';       // `2026-09-16-la-
 import { seReintentaTrasFallo, codigoDelDescarte } from '../lib/rechazos';       // 18.bis.85: el ÚNICO sitio que decide si un rechazo se vuelve a intentar (lo consulta también el aviso) · 18.bis.84: y el que traduce lo que el trabajo apuntado descartó
 import { hermanosConSituacion } from '../lib/hermanos';                           // ★ CLI 403: los hijos admitidos con su estado por hijo
 import { primerSubpasoPendiente } from '../lib/pantallaDeFirma';                  // ★ CLI 403: aterrizar en la primera pantalla con algún hijo pendiente
+import { fundirSesionDeFirma } from '../lib/sesionDeFirma';                       // drenaje :08 v1017: el memo del paso 11 recuerda de qué hijo es
 
 // P89 — Normalize AppSheet Y/N boolean strings to native booleans.
 // Step2's preparePersonForUI and Step3's buildInitialRelations apply parseBool()
@@ -807,23 +808,15 @@ export function WizardProvider({ children }) {
   // hacia un estado iniciado (INITIATED/IN_PROGRESS/COMPLETED) NUNCA retrocede a DRAFT.
   // NO se persiste (KAL-7: vive solo en memoria; un F5 re-lee del servidor, que es la
   // verdad). Se purga en clearSession (junto al resto del estado de firma).
-  const [signingSession, setSigningSessionRaw] = useState(null); // null = nunca leído
-  const setSigningSession = useCallback((next) => {
-    setSigningSessionRaw(prev => {
-      if (!next) return prev;   // no pisar con null/undefined
-      // Monotonía: una vez iniciada (envelope despachado server-side), no volver a DRAFT.
-      const initiated = (s) => {
-        if (!s) return false;
-        const u = String(s).toUpperCase();
-        return u !== 'DRAFT' && u !== 'NOT_INITIATED';
-      };
-      if (prev && initiated(prev.state) && !initiated(next.state)) {
-        // refresco transitorio "menos iniciado" → conserva el state ya iniciado
-        // (la sesión no des-despacha) pero acepta members/urls nuevos.
-        return { ...next, state: prev.state };
-      }
-      return next;
-    });
+  // ★ drenaje :08 v1017 — Y RECUERDA DE QUÉ HIJO ES (`lib/sesionDeFirma.js`), igual que
+  // `signingMembersDe`: una sesión de firma es de UN hijo, y este memo sobrevive al remontaje del
+  // paso ⇒ sin dueño, el segundo hermano se sembraba con el estado del primero. Monotonía y dueño
+  // los decide `fundirSesionDeFirma`; sin hijo elegido, byte a byte lo de siempre.
+  const [signingSessionMemo, setSigningSessionMemo] = useState({ sesion: null, de: null }); // null = nunca leído
+  const signingSession = signingSessionMemo.sesion;
+  const signingSessionDe = signingSessionMemo.de;
+  const setSigningSession = useCallback((next, enrollmentId) => {
+    setSigningSessionMemo(prev => fundirSesionDeFirma(prev, next, enrollmentId));
   }, []);
 
   /**
@@ -872,7 +865,7 @@ export function WizardProvider({ children }) {
     setDocCache({});
     setSigningMembersRaw(null);
     setSigningMembersDe(null);  // ★ CLI 468: el dueño muere con su lista
-    setSigningSessionRaw(null); // WIZARD-UX TASK-1: el memo de estado de firma muere con la sesión
+    setSigningSessionMemo({ sesion: null, de: null }); // WIZARD-UX TASK-1: el memo de estado de firma muere con la sesión (y su dueño)
     purgeDocumentBytesCache();
   }, []);
 
@@ -2038,7 +2031,7 @@ export function WizardProvider({ children }) {
       reviewConfirmedLocal, reviewConfirmadosLocales, marcarLecturaConfirmada, // lock en vivo post-confirm (Diego 2026-06-12)
       reviewConfirmed,                            // input del mapeo central (catalog.stepEditMode)
       docCache, loadDocument, signingMembers, signingMembersDe, setSigningMembers, // STEP10-VIEWER: cache en memoria del paquete contractual (★ CLI 468: con el hijo del que es)
-      signingSession, setSigningSession,          // WIZARD-UX TASK-1: memo en memoria del estado de la sesión de firma (Step 11 idempotente)
+      signingSession, signingSessionDe, setSigningSession, // WIZARD-UX TASK-1 (+ v1017: de qué hijo es): memo en memoria del estado de la sesión de firma (Step 11 idempotente)
       billingSplits, liveVersion, setLiveVersion, // DL-B §1/§2 (hydrate consolidado + cheap-poll)
       signingForms, updateSigningForm,            // REBUILD-8-11: formularios de firma en memoria
       recoveredEmail, setRecoveredEmail,         // a1 discriminator (DL-E38)

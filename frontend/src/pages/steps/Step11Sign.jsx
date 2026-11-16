@@ -5,6 +5,7 @@ import { useWizard } from '../../context/WizardContext';
 import { signingIdentity_, fetchClientIp } from './signingCommon';
 import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del catálogo
 import * as log from '../../logger';
+import { sesionDelHijo } from '../../lib/sesionDeFirma'; // drenaje :08 v1017: el memo es del hijo elegido
 
 /**
  * Step 11 — S-SIGN (estado de la firma electrónica Click & Sign + polling).
@@ -45,7 +46,14 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
   // re-avanzar, sembramos el estado desde memoria al instante (sin spinner "Guardando…",
   // que parecía "reenviando documentos") y solo refrescamos en background. El despacho
   // del envelope es y sigue siendo SERVER-SIDE (kis-rule-0018) — aquí nunca se envía nada.
-  const { recoveredEmail, recoveryNonce, signingSession, setSigningSession } = useWizard();
+  const { recoveredEmail, recoveryNonce, signingSession: memoDeFirma, signingSessionDe, setSigningSession,
+    selectedEnrollmentId } = useWizard();
+  // ★ drenaje :08 v1017 (`2026-11-15-el-segundo-hermano-no-puede-firmar`) — EL ESTADO ES EL DEL HIJO
+  // ELEGIDO. El memo del contexto sobrevive al remontaje y una sesión de firma es de UN hijo: sin
+  // esto, al pasar al segundo hermano en el selector el paso se sembraba con el estado del primero
+  // —«firma completada» si ése ya había firmado— y la lectura iba SIN selección (la del primario).
+  // Solo se siembra con el memo si es de ESTE hijo; sin hijo elegido, byte a byte lo de siempre.
+  const signingSession = sesionDelHijo(memoDeFirma, signingSessionDe, selectedEnrollmentId);
   const signerCtx = signerCtxProp || {};
   const finish = onDone || (() => { /* terminal — permanece en la pantalla de éxito */ });
   // Back-only nav (top + bottom). El "avance" de este paso es el acto de firma
@@ -84,12 +92,13 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
     try {
       // Data-layer pieza 5: lectura de estado vía single-flight (de-dupe la tormenta
       // de create_only concurrentes). IDENTITY-COMPLETION (#30): identidad de SESIÓN.
-      const res = await initiateSigningRead({ resumeToken, signingToken });
+      // ★ v1017: con el hijo elegido (el servidor ya lo honra en `create_only`, CLI 468).
+      const res = await initiateSigningRead({ resumeToken, signingToken, selectedEnrollmentId });
       log.info('[DBG sign] readState', { initial, state: res && res.state, n_urls: ((res && res.signerUrls) || []).length });
       setSession(res);
       // WIZARD-UX TASK-1: persiste el estado en el memo del contexto (monótono: no
       // des-despacha) → la próxima re-entrada al Step 11 pinta al instante sin re-leer.
-      setSigningSession(res);
+      setSigningSession(res, selectedEnrollmentId || null); // ★ v1017: con el hijo del que es
       const urls = (res && res.signerUrls) || [];
       if (isInitiatedState(res && res.state) || urls.length > 0) setInitiated(true);
       if (res && res.state === 'COMPLETED' && pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -149,7 +158,7 @@ export default function Step11Sign({ onBack, signingToken, resumeToken, signerCt
       if (finalState !== 'COMPLETED') startPolling();
     });
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [signingToken, resumeToken]); // eslint-disable-line
+  }, [signingToken, resumeToken, selectedEnrollmentId]); // eslint-disable-line
 
   if (err) {
     return (
