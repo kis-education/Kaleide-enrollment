@@ -10,6 +10,16 @@
 # Lo que vale, sin adornar: entre 0,3 y 0,7 s por llamada (proporcional a lo que se quita,
 # por el precedente MEDIDO del KMS: sacar su 21 % bajo el tiempo un 19,4 %).
 #
+# ** Y DESDE CLI 470 (2026-11-16) ESTO ADEMAS SOSTIENE UN PERMISO DE GOOGLE.**
+# La sonda del umbral de bytes (`sondaUmbral*`) vive aqui y usa `DriveApp` (`searchFiles`,
+# `createFile`, `getFileById`) mas dos llamadas REST a `drive/v3`. Es lo ULTIMO que toca Drive en
+# todo el proyecto: `backend/Code.js` tiene CERO. Por eso el manifiesto ya no declara
+# `https://www.googleapis.com/auth/drive`, que es RESTRINGIDO y obliga a verificar la aplicacion
+# ante Google y a pasar una auditoria de seguridad ANUAL por cada colegio nuevo.
+# => si `_manual.gs` se queda ARRIBA, el proyecto vuelve a necesitar ese permiso **sin que nada
+# falle**, que es justo lo que lo hace invisible. El paso (3) del ciclo no es opcional.
+# Lo afirma `scripts/servidor/el-asistente-no-toca-drive.mjs`, afirmaciones (14) y (15).
+#
 # COMO VUELVEN cuando hay que diagnosticar — el ciclo de TRES ordenes:
 #   1) comentar la linea `_manual.gs` de aqui abajo
 #      cd backend && NODE_USE_ENV_PROXY=1 clasp push --force

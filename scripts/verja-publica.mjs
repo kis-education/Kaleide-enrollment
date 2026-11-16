@@ -1503,18 +1503,30 @@ function comprobarElRacimoDeFirma(fuenteLimpia) {
 }
 
 /**
- * 0º.undevicies — DÓNDE aterriza un documento que sube una familia lo DICE el KMS, no
- * este proceso.
+ * 0º.undevicies + ★★ `CLI 470` — DÓNDE aterriza un documento que sube una familia lo DICE
+ * el KMS, y desde el 2026-11-16 **también lo ESCRIBE él**.
  *
  * Antes `uploadDocument_` creaba (o encontraba) el fichero en una carpeta suelta de su
  * propio Drive (`getOrCreateDriveFolder_('KIS Admissions Documents')`), fuera del árbol
- * único del archivo de registros que ya usa TODO lo que genera el KMS. Ahora le pregunta
- * al KMS la carpeta del día (`enr.carpetaDelArchivo`) y crea el fichero AHÍ.
+ * único del archivo de registros que ya usa TODO lo que genera el KMS. Después le preguntaba
+ * al KMS la carpeta del día (`enr.carpetaDelArchivo`) y creaba el fichero AHÍ — con su propio
+ * `DriveApp`, bajo `executeAs: USER_DEPLOYING`, así que el escaneo de una familia acababa en
+ * el Drive de la cuenta que publicó el asistente.
  *
- * Lo que se afirma: `uploadDocument_` no vuelve a llamar a `getOrCreateDriveFolder_` (ni
- * la función sigue existiendo — es vestigial, sin más llamantes), SÍ le pregunta al KMS
- * dónde va el fichero, y sigue derivando el expediente del `resume_token` (KAL-4) antes
- * de tocar Drive.
+ * ⛔ **LA AFIRMACIÓN DE LA CARPETA SE RETIRA PORQUE ESTE CAMBIO LA VUELVE FALSA, y se
+ * SUSTITUYE por una más fuerte, no por nada:** `uploadDocument_` ya no pregunta por la
+ * carpeta —preguntar dónde va un fichero que ya no puede guardar sería un viaje al KMS para
+ * tirar la respuesta— y en su lugar **manda los BYTES**. Lo que esta función afirma hoy:
+ *   · `getOrCreateDriveFolder_` no ha vuelto, ni como llamada ni como definición;
+ *   · `uploadDocument_` manda el contenido al KMS (`base64` dentro de
+ *     `enr.persistUploadedDocument`), que es lo que sustituye a escribirlo él;
+ *   · sigue derivando el expediente del `resume_token` (KAL-4) y sigue pidiendo a la puerta
+ *     la comprobación previa, con su respaldo.
+ *
+ * ⚠️ **Lo que esta función NO afirma, y vive en su propio control:** que no quede NINGUNA
+ * llamada a `DriveApp` en el camino vivo, y que el manifiesto se haya quedado sin permiso de
+ * Drive. Eso lo mide `scripts/servidor/el-asistente-no-toca-drive.mjs`, que EJECUTA el
+ * manejador en vez de leer sus líneas. Dos controles, un criterio cada uno.
  */
 function comprobarLaCarpetaDelArchivo(fuenteLimpia) {
   const fallos = []
@@ -1529,9 +1541,17 @@ function comprobarLaCarpetaDelArchivo(fuenteLimpia) {
     fallos.push('`uploadDocument_` vuelve a llamar a `getOrCreateDriveFolder_` — eso es la carpeta ' +
       'suelta fuera del árbol único del archivo que 0º.undevicies quitó')
   }
-  if (!/kmsProxy_\s*\(\s*'enr\.carpetaDelArchivo'/.test(cuerpo)) {
-    fallos.push('`uploadDocument_` ya no le pregunta al KMS dónde va el fichero (`enr.carpetaDelArchivo`) — ' +
-      'o se quitó la pregunta, o volvió a decidir la carpeta por su cuenta')
+  // ★ `CLI 470` — el byte lo guarda el KMS, y eso se ve en que los bytes VIAJAN. Sin esto, un
+  // cambio que dejara de mandarlos pasaría: la ficha se escribiría igual y el documento de la
+  // familia se quedaría SIN CONTENIDO (el KMS lo diría con `bytes_recibidos:false`, pero este
+  // control no estaría midiendo nada).
+  if (!/kmsProxy_\s*\(\s*'enr\.persistUploadedDocument'/.test(cuerpo)) {
+    fallos.push('`uploadDocument_` ya no manda la subida al KMS (`enr.persistUploadedDocument`) — ' +
+      'o escribe por su cuenta, o el documento de la familia no llega a ninguna parte')
+  }
+  if (!/base64\s*:/.test(cuerpo)) {
+    fallos.push('`uploadDocument_` ya no manda los BYTES al KMS (`base64`) — este proceso no tiene ' +
+      'permiso de Drive desde `CLI 470`, así que sin eso el documento se queda SIN CONTENIDO')
   }
   if (/function\s+getOrCreateDriveFolder_\s*\(/.test(fuenteLimpia)) {
     fallos.push('`getOrCreateDriveFolder_` sigue definida sin llamantes — es vestigial y debe retirarse ' +

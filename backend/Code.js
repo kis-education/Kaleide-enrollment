@@ -5588,13 +5588,24 @@ function _pulsoDeLaAdmision_(resumeToken) {
  * lectura de AppSheet). Colapsarlas haría que un fallo pasajero le dijera «no es tuyo» a
  * la familia dueña del documento.
  *
+ * ★★ CLI 470 (2026-11-16) — **Y PUEDE TRAER LOS BYTES** (`conBytes`). Este proceso los leía
+ * con su propio `DriveApp`, y para eso el manifiesto declaraba el permiso `drive` COMPLETO,
+ * que es RESTRINGIDO. Hoy no tiene ninguno, así que el único que puede leer el fichero es el
+ * KMS, con la cuenta licenciada del COLEGIO — la misma con la que lo escribió. Los bytes
+ * llegan dentro de la MISMA respuesta, sin un viaje más que el que ya se pagaba.
+ *
+ * ⛔ **Y la fila SIGUE llegando aunque los bytes no puedan traerse** (`fila.bytes_error`
+ * nombra el código del KMS): eso deja que quien llama aplique su cadena de respaldo en vez de
+ * leer un fallo de Drive como «este documento no es tuyo».
+ *
  * @param {string} resumeToken
  * @param {string} fileId
+ * @param {boolean} [conBytes] pedir además el contenido. Omitido ⇒ solo la ficha, como siempre.
  * @returns {{ok:boolean, fila:Object|null}} `ok:false` ⇒ no se pudo preguntar ·
  *          `ok:true, fila:null` ⇒ no está en este expediente.
  * @private
  */
-function _ficheroDelExpediente_(resumeToken, fileId) {
+function _ficheroDelExpediente_(resumeToken, fileId, conBytes) {
   var token = resumeToken ? String(resumeToken).trim() : '';
   if (!token) return { ok: true, fila: null };
   try { assertValidUuid_(token, 'resume_token'); } catch (e) { return { ok: true, fila: null }; }
@@ -5603,6 +5614,7 @@ function _ficheroDelExpediente_(resumeToken, fileId) {
     var r = kmsProxy_('enr.ficheroDelExpediente', {
       resume_token: token,
       file_id:      fileId,
+      con_bytes:    !!conBytes,
     }) || {};
     return { ok: true, fila: r.fichero || null };
   } catch (e2) {
@@ -8790,6 +8802,20 @@ function saveResponses_(p) {
  */
 function _veredictoDeLaSubida_(respuestaKms) {
   var r = respuestaKms || {};
+  // ★ CLI 470 — EL PRIMER CASO ES QUE NO HAYA BYTE, y va primero porque es el peor: sin
+  // contenido no hay documento, aunque su ficha esté escrita. Este proceso ya NO tiene cómo
+  // guardarlo (se quedó sin permiso de Drive a propósito), así que lo único honesto es
+  // NOMBRARLO. ⛔ Se exige el `true` EXPLÍCITO: un KMS que todavía no conozca el campo
+  // devuelve `undefined` y eso NO es «sí» — ése es exactamente el caso en que el byte se
+  // perdería sin que nadie lo dijera. El texto pide reintentar porque reintentar es seguro:
+  // la subida es idempotente por `upload_idempotency_token`.
+  if (r.bytes_recibidos !== true) {
+    return {
+      code: 'DOCUMENTO_SIN_CONTENIDO',
+      message: 'El colegio no ha podido guardar el archivo: vuelve a intentarlo. Si sigue sin ' +
+               'funcionar, avisa al colegio.',
+    };
+  }
   if (r.file_persisted !== true) {
     return {
       code: 'DOCUMENTO_NO_REGISTRADO',
@@ -9057,27 +9083,35 @@ function uploadDocument_(p) {
     throw err;
   }
 
-  // ── Drive upload ───────────────────────────────────────────────────────────
-  // CLI 82 / KAL-NEW-5: el fichero NO se comparte públicamente. El default de
-  // Drive es privado al dueño del deployment (executeAs: USER_DEPLOYING). El
-  // read-back se sirve vía getDocument_ (proxy de bytes gateado por token +
-  // guard de propiedad).
+  // ── EL BYTE NO LO GUARDA ESTE PROCESO (★★ CLI 470, 2026-11-16) ─────────────
+  // Aquí vivía la ÚNICA escritura a Drive del asistente: le preguntaba al KMS la carpeta
+  // del día (`enr.carpetaDelArchivo`, 0º.undevicies) y creaba el fichero AHÍ con su propio
+  // `DriveApp`. Como el proyecto corre `executeAs: USER_DEPLOYING`, el escaneo de una
+  // familia acababa en el Drive de **la cuenta que publicó el asistente** — y para poder
+  // hacerlo el manifiesto declaraba `https://www.googleapis.com/auth/drive` COMPLETO.
   //
-  // 0º.undevicies (2026-08-21) — la carpeta la DICE el KMS, no este proceso.
-  // Antes: getOrCreateDriveFolder_(DRIVE_FOLDER_NAME) creaba (o encontraba) una
-  // carpeta suelta en el Drive de la cuenta que publicó el asistente, fuera del
-  // árbol único del archivo de registros (`rec_carpetaDelDia_`) que ya usa TODO
-  // lo que genera el KMS. Quién ESCRIBE no cambia (el asistente sigue creando
-  // el fichero, con su propia credencial de Drive); quién DECIDE, sí.
-  // Si el KMS no puede decir la carpeta (REC_ARCHIVE_ROOT_NOT_CONFIGURED), NO
-  // SE SUBE: el error se propaga tal cual — guardar en un sitio inventado es
-  // peor que no guardar (`rec/archivo.gs`, kis-app).
-  const carpeta = kmsProxy_('enr.carpetaDelArchivo', { resume_token: p.resume_token });
-  const blob   = Utilities.newBlob(decoded, mimeType, filename);
-  const folder = DriveApp.getFolderById(carpeta.folder_id);
-  const file   = folder.createFile(blob);
-
-  const driveFileId   = file.getId();
+  // ⛔ Ese permiso es RESTRINGIDO (Diego, 2026-08-11: *«Los únicos scopes que podemos
+  // autorizar son sensibles, no restringidos»*), y su coste no es teórico: un restringido
+  // obliga a verificar la aplicación ante Google y a pasar una **auditoría de seguridad
+  // ANUAL**, por cada colegio nuevo ⇒ el alta del segundo colegio, que debe ser un botón,
+  // se convierte en semanas y un trámite que no depende de nosotros
+  // (`kis-app CLAUDE.md` §"RESTRICCIÓN DE DISEÑO — solo scopes SENSIBLES").
+  //
+  // ⛔ Y ESTRECHARLO A `drive.file` NO SERVÍA, medido: la carpeta la DICE el KMS y pertenece
+  // al árbol de SU archivo, así que el asistente **no la creó** y con `drive.file` no podría
+  // ni abrirla — habría roto TODA subida. La salida no era un permiso más pequeño: era no
+  // tener ninguno.
+  //
+  // ⇒ hoy los BYTES VIAJAN AL KMS (abajo, en el mismo viaje que ya se pagaba para la ficha)
+  // y el fichero lo crea la cuenta licenciada del COLEGIO, por el escritor que ya existía
+  // (`rec_uploadWizardDocument_` → `rec_servicioSubirBytes_`, DL-R06/DL-S110). Este proceso
+  // se queda con lo que es suyo por ser la cara pública: comprobar el tipo MIME, el número
+  // mágico y el tope de tamaño (arriba) antes de gastar un viaje con basura.
+  //
+  // ⛔ La pregunta por la carpeta se RETIRA, no se conserva: pedir dónde va un fichero que
+  // ya no se puede guardar es un viaje al KMS (~15 s en el camino de una familia) para tirar
+  // la respuesta. Quién DECIDE el destino no cambia — sigue siendo el KMS, solo que ahora
+  // también lo EJECUTA.
   const fileId        = generateUuid_();
   const now           = new Date().toISOString();
 
@@ -9094,12 +9128,16 @@ function uploadDocument_(p) {
     // hoy. Lo que NO puede pasar es que el asistente elija por su cuenta o invente un código
     // de respaldo — eso es lo que el servidor rechazaba con [INVALID_REC_TYPE].
     ...(tipoDeDocumento ? { rec_type_code: tipoDeDocumento } : {}),
-    drive_file_id:            driveFileId,
-    drive_folder_id:          folder.getId(),
+    // ★ CLI 470 — `drive_file_id`/`drive_folder_id` YA NO VIAJAN, y no es que se hayan
+    // quedado vacíos: es que este proceso **no sabe** dónde aterriza el byte ni debe saberlo.
+    // Los pone el KMS al crear el fichero (y los ignora si un llamante los manda: dejar que
+    // una entrada pública eligiera la carpeta sería elegir dónde acaba el papel de otro).
     file_name:                filename,
     original_filename:        filename,
     mime_type:                mimeType,
-    file_size_bytes:          blob.getBytes().length,
+    // Los bytes EXACTOS que ya pasaron el tope y el número mágico. Antes se medía
+    // `blob.getBytes().length` sobre el blob que se subía; es el mismo número, sin el blob.
+    file_size_bytes:          decoded.length,
     // `file_hash_sha256` es REQUERIDA en recFiles: mandarla en `null` (o no mandarla)
     // hace que AppSheet rechace la fila ENTERA con HTTP 400 y `db_insert` lance
     // DB_ERROR — es decir, TODA subida de documento de una familia fallaba. Medido el
@@ -9148,8 +9186,18 @@ function uploadDocument_(p) {
   // expediente (KAL-4) y escribe una fila de `recScopes` por cada una.
   const duenos = _duenosDelDocumento_(p, enrollmentGroupId);
 
+  // ★ CLI 470 — LOS BYTES VAN EN ESTE MISMO VIAJE. No es un viaje nuevo: es el que ya se
+  // pagaba para la ficha, con `base64` dentro. El KMS crea el fichero con la cuenta del
+  // COLEGIO antes de escribir la ficha, así que o están las dos cosas o no está ninguna.
+  //
+  // Lo que eso pesa, medido sobre los topes que este mismo manejador ya aplica: `MAX_BYTES`
+  // son 10 MB y base64 los infla ×4/3 ⇒ como mucho ~13,4 MB de cuerpo, muy por debajo del
+  // tope de `UrlFetchApp` (50 MB por petición). Es el MISMO contenido que ya viajaba del
+  // navegador a este proceso, ahora un salto más — y es el salto que convierte el fichero en
+  // uno del COLEGIO.
   const persistencia = kmsProxy_('enr.persistUploadedDocument', {
     resume_token:        p.resume_token,
+    base64:              base64,
     rec_file:            recFileRow,
     rec_scope:           recScopeRow,
     rec_scope_personas:  duenos,
@@ -9170,9 +9218,14 @@ function uploadDocument_(p) {
     throw errSubida;
   }
 
+  // ★ CLI 470 — el identificador que vuelve es el que CONSTA escrito. Es el mismo que se
+  // acuñó arriba salvo en un caso: la rama idempotente del escritor del KMS devuelve la ficha
+  // que YA existía con este mismo token de envío, y la fila del paso 6 tiene que apuntar a
+  // ésa. Sin `file_id` en la respuesta (un KMS viejo) se usa el propio, como siempre.
+  const fileIdEscrito = (persistencia && persistencia.file_id) || fileId;
   return {
-    file_id:     fileId,
-    document_id: fileId, // legacy alias for frontends still reading document_id
+    file_id:     fileIdEscrito,
+    document_id: fileIdEscrito, // legacy alias for frontends still reading document_id
   };
 }
 
@@ -9334,11 +9387,13 @@ function getDocument_(p) {
     } catch (eWzDoc) { /* best-effort → camino vivo intacto */ }
   }
 
-  // P-DOCS: los PDF del paquete de firma (Carta/Contrato) los genera el KMS y viven
-  // en el Drive del KMS → DriveApp local del wizard NO los lee. En el flujo /sign
-  // (signing_token) proxyamos la lectura de bytes al KMS (dueño de los ficheros),
-  // que re-valida el signing_token + IDOR server-side (KAL-4). Los docs subidos por
-  // la familia en /apply (resume_token) viven en el Drive del wizard → lectura local.
+  // P-DOCS: los PDF del paquete de firma (Carta/Contrato) los genera el KMS y viven en SU
+  // Drive. En el flujo /sign (signing_token) proxyamos la lectura de bytes al KMS (dueño de
+  // los ficheros), que re-valida el signing_token + IDOR server-side (KAL-4).
+  // ★ CLI 470 — y los documentos que sube la familia en /apply (resume_token) **también los
+  // sirve el KMS** desde hoy: este proceso se quedó SIN permiso de Drive, así que ya no hay
+  // «lectura local» que valga. Lo único que distingue las dos ramas es por qué puerta entra
+  // cada una, no quién tiene los bytes.
   // Flujo signing_token (compat): proxy directo al KMS con el token del payload.
   if (usedSigningToken) {
     const d = kmsProxy_('enr.serveSigningDocument', { signing_token: kmsSigningToken, file_id: fileId });
@@ -9364,7 +9419,8 @@ function getDocument_(p) {
   // camino del paquete de firma (que es lo que hacía antes), mientras que «no se pudo
   // preguntar» LANZA — como lanzaba la lectura de AppSheet si se caía. Degradar un fallo a
   // «no está» le contestaría «no es tuyo» a una familia que sí es la dueña del documento.
-  const consulta = _ficheroDelExpediente_(p && p.resume_token, fileId);
+  // ★ CLI 470 — Y LOS BYTES VIENEN EN LA MISMA RESPUESTA: este proceso ya no puede leer Drive.
+  const consulta = _ficheroDelExpediente_(p && p.resume_token, fileId, true);
   if (!consulta.ok) {
     const errLect = new Error('No se pudo leer el documento del expediente.');
     errLect.code = 'INTERNAL_ERROR';
@@ -9409,30 +9465,56 @@ function getDocument_(p) {
     throw err;
   }
 
-  // DOC-FALLBACK (2026-06-11): el Drive local del wizard NO es fiable — verificado en
-  // producción que esta rama moría con "getFileById on object DriveApp" para los PDF
-  // del paquete de firma (fila recFiles matcheó por grupo pero el fichero vive en el
-  // Drive del KMS), dejando el visor del Step 10 en "Cargando…" eterno. Doctrina
-  // thin-client (decisión Diego, blob KMS→wizard): si la lectura local falla, el
-  // fallback es SIEMPRE el proxy al KMS (dueño de los ficheros), que re-valida el
-  // signing_token + IDOR server-side (KAL-4). Solo si tampoco hay token de firma
-  // resolvible se devuelve error estructurado (P72: ok:false, nunca HTTP 4xx).
-  try {
-    const blob  = DriveApp.getFileById(row.drive_file_id).getBlob();
-    const bytes = blob.getBytes();
-    return {
+  // ★★ CLI 470 (2026-11-16) — LOS BYTES LOS SIRVE EL KMS, Y YA VIENEN EN LA MANO.
+  //
+  // Aquí vivía `DriveApp.getFileById(row.drive_file_id).getBlob()`: la ÚNICA lectura de Drive
+  // de este proceso, y la segunda razón por la que su manifiesto declaraba el permiso `drive`
+  // COMPLETO —RESTRINGIDO— con el coste de auditoría ANUAL por colegio nuevo que eso arrastra
+  // (`kis-app CLAUDE.md` §"RESTRICCIÓN DE DISEÑO — solo scopes SENSIBLES").
+  //
+  // Y el camino bueno ya estaba escrito en el `catch` de esta misma rama desde el 2026-06-11:
+  // *«Doctrina thin-client (decisión Diego, blob KMS→wizard): … el fallback es SIEMPRE el
+  // proxy al KMS (dueño de los ficheros)»*. Lo que faltaba no era la doctrina: era que el KMS
+  // pudiera servir **un documento que sube una familia** bajo `resume_token` —su único
+  // servidor de bytes, `enr.serveSigningDocument`, exige un `signing_token` que una familia
+  // que aún no ha enviado NO TIENE—. Desde hoy lo sirve `enr.ficheroDelExpediente` con
+  // `con_bytes`, por la MISMA puerta y el MISMO filtro que ya traía esta fila (KAL-4).
+  //
+  // ⛔ CERO VIAJES NUEVOS: los bytes llegaron dentro de la respuesta que ya se pedía arriba.
+  if (row.base64) {
+    const resultado = {
       filename:   row.file_name,
       mimeType:   row.mime_type,
       mime_type:  row.mime_type,
-      base64:     Utilities.base64Encode(bytes),
-      // DOC-BYTES: sha256 sobre los bytes EXACTOS servidos (paridad de contrato con
-      // el camino KMS — permite verificación de integridad en cualquier consumidor).
-      sha256:     sha256Hex_(bytes),
-      size_bytes: bytes.length,
+      base64:     row.base64,
+      // DOC-BYTES: la huella la calcula el KMS sobre los bytes EXACTOS que sirve, con el
+      // MISMO criterio que `enr.serveSigningDocument` (`_enr_computeSha256Hex_`) ⇒ paridad de
+      // contrato con el otro camino, y verificable por cualquier consumidor.
+      sha256:     row.sha256 || null,
+      size_bytes: (typeof row.size_bytes === 'number') ? row.size_bytes : null,
     };
-  } catch (eDrive) {
-    Logger.log(redact_('[getDocument_] Drive local FALLÓ file=' + fileId +
-      ' — fallback proxy KMS. err=' + (eDrive && eDrive.message)));
+    // WIZARD-CACHE write-through (best-effort), igual que las dos ramas del paquete de firma:
+    // el visor del paso 6 vuelve a pedir el mismo documento al navegar, y sin esto cada vista
+    // repetiría el viaje al KMS más la lectura de Drive. Es POST-GATE (el token y el código de
+    // un solo uso ya corrieron arriba) y lleva el grupo dentro, así que no acorta ninguna
+    // autorización: una entrada de otro grupo es un fallo de caché, no un acierto.
+    try {
+      if (p && p.resume_token && resultado.base64) {
+        _wzCachePutChunked_(CacheService.getScriptCache(),
+          _wzCacheKey_('doc', fileId),
+          JSON.stringify(Object.assign({ g: groupId }, resultado)), 21600);
+      }
+    } catch (eWzWt0) { /* best-effort */ }
+    return resultado;
+  }
+
+  // Los bytes NO llegaron (el KMS no los pudo traer: `row.bytes_error` nombra su código, y el
+  // más probable es que la cuenta licenciada del centro no esté autorizada — DL-S110). Se
+  // aplica la cadena de respaldo de SIEMPRE, sin cambiar ni un desenlace: el paquete de firma
+  // si hay token resoluble, y si no el error ESTRUCTURADO (P72: ok:false, nunca HTTP 4xx).
+  {
+    Logger.log(redact_('[getDocument_] el KMS no entregó los bytes file=' + fileId +
+      ' code=' + String(row.bytes_error || 'SIN_CODIGO') + ' — fallback proxy KMS.'));
     const fbToken = kmsSigningToken || resolveKmsSigningToken();
     if (fbToken) {
       const d = kmsProxy_('enr.serveSigningDocument', { signing_token: fbToken, file_id: fileId });
@@ -13833,110 +13915,15 @@ function espejoRefrescarCopias() {
   return out;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ①27 punto 3 — el umbral de bytes con un fichero REAL de Drive
-// ═══════════════════════════════════════════════════════════════════════
-// Lo medido hasta ahora (①27 pieza 9 / DL-R19) cubre fabricar, codificar y
-// devolver un blob sintético en memoria. NO cubre la lectura DESDE Drive ni
-// el viaje al navegador, que es exactamente el camino de `getDocument_`
-// (Code.js, más arriba): `DriveApp.getFileById(id).getBlob().getBytes()`
-// seguido de `Utilities.base64Encode(bytes)`. Esta sonda mide ESE camino,
-// literal, con ficheros reales subidos y leídos de Drive — no simulados.
-
-var SONDA_UMBRAL_PREFIJO_ = 'ZZ_SONDA_umbral_';
-
-/**
- * Construye un blob sintético de tamaño EXACTO en bytes (ASCII puro, 1 byte
- * por carácter, para que el tamaño no dependa de la codificación UTF-8).
- */
-function sondaUmbralConstruirBlob_(bytesObjetivo) {
-  var trozo = 'ZZSONDAUMBRAL0123456789ABCDEFabcdef';
-  var sb = trozo;
-  while (sb.length < bytesObjetivo) { sb += sb; }
-  sb = sb.substring(0, bytesObjetivo);
-  var bytes = Utilities.newBlob(sb).getBytes();
-  return Utilities.newBlob(bytes, 'application/octet-stream',
-                            SONDA_UMBRAL_PREFIJO_ + Date.now() + '_' + bytesObjetivo + '.bin');
-}
-
-/** Borrado FÍSICO vía Drive REST API v3 — DriveApp no tiene borrado permanente. */
-function sondaUmbralBorrarFisico_(fileId) {
-  return UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId, {
-    method: 'delete',
-    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-    muteHttpExceptions: true
-  });
-}
-
-/** Comprueba por LECTURA, desde el mismo transporte REST, que el fichero ya no existe (404). */
-function sondaUmbralVerificarBorrado_(fileId) {
-  var resp = UrlFetchApp.fetch(
-    'https://www.googleapis.com/drive/v3/files/' + fileId + '?fields=id',
-    { method: 'get', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }
-  );
-  return resp.getResponseCode() === 404;
-}
-
-/**
- * Barrido de ENTRADA: elimina restos de una corrida anterior que muriera a
- * medias (§"Lo que un agente crea para PROBAR se ELIMINA FÍSICAMENTE").
- * Devuelve cuántos ficheros de sonda encontró y borró.
- */
-function sondaUmbralBarrerEntrada_() {
-  var borrados = 0;
-  var it = DriveApp.searchFiles('title contains "' + SONDA_UMBRAL_PREFIJO_ + '" and trashed = false');
-  while (it.hasNext()) {
-    var f = it.next();
-    sondaUmbralBorrarFisico_(f.getId());
-    borrados++;
-  }
-  return borrados;
-}
-
-/**
- * Mide, para UNA talla en bytes: subir a Drive, leer de vuelta EXACTAMENTE
- * como `getDocument_` (getFileById → getBlob → getBytes → base64Encode), y
- * borra el fichero físicamente al terminar (éxito o fallo).
- */
-function sondaUmbralMedirTalla_(bytesObjetivo) {
-  var medida = { bytes_objetivo: bytesObjetivo, error: null };
-  var file = null;
-  try {
-    var blob = sondaUmbralConstruirBlob_(bytesObjetivo);
-
-    var t0 = Date.now();
-    file = DriveApp.createFile(blob);
-    medida.subida_ms = Date.now() - t0;
-
-    var fileId = file.getId();
-
-    // El camino REAL de getDocument_: getFileById().getBlob().getBytes()
-    var t1 = Date.now();
-    var blobLeido = DriveApp.getFileById(fileId).getBlob();
-    var bytesLeidos = blobLeido.getBytes();
-    medida.lectura_drive_ms = Date.now() - t1;
-    medida.bytes_leidos = bytesLeidos.length;
-
-    var t2 = Date.now();
-    var base64 = Utilities.base64Encode(bytesLeidos);
-    medida.codificacion_base64_ms = Date.now() - t2;
-    medida.bytes_base64 = base64.length;
-    medida.factor_inflacion = bytesLeidos.length > 0
-      ? Math.round((base64.length / bytesLeidos.length) * 1000) / 1000
-      : null;
-
-    medida.total_ms = medida.subida_ms + medida.lectura_drive_ms + medida.codificacion_base64_ms;
-  } catch (e) {
-    medida.error = String((e && e.message) || e).slice(0, 300);
-  } finally {
-    if (file) {
-      try {
-        sondaUmbralBorrarFisico_(file.getId());
-        medida.borrado_verificado = sondaUmbralVerificarBorrado_(file.getId());
-      } catch (eDel) {
-        medida.error_borrado = String((eDel && eDel.message) || eDel).slice(0, 200);
-      }
-    }
-  }
-  return medida;
-}
+// ★★ CLI 470 (2026-11-16) — AQUÍ VIVÍA LA SONDA DEL UMBRAL DE BYTES, y se fue a
+// `backend/_manual.gs`, que NO VIAJA al proyecto (`backend/.claspignore`).
+// Era lo ÚLTIMO que usaba `DriveApp` en este fichero: `searchFiles`, `createFile` y
+// `getFileById` (más dos llamadas REST a `drive/v3`), todo para medir cuánto tarda subir y
+// leer un fichero real. Nada de eso lo invoca ninguna familia, y mientras estuviera en el
+// proyecto el manifiesto habría seguido necesitando el permiso `drive`, que es RESTRINGIDO.
+// Medido antes de moverla: sus seis piezas (`SONDA_UMBRAL_PREFIJO_`,
+// `sondaUmbralConstruirBlob_`, `sondaUmbralBorrarFisico_`, `sondaUmbralVerificarBorrado_`,
+// `sondaUmbralBarrerEntrada_`, `sondaUmbralMedirTalla_`) las nombra UN solo sitio —
+// `manual_medirUmbralDeBytesConFicheroReal`, que ya vivía en `_manual.gs` — y CERO
+// disparadores y CERO guiones las invocan por su nombre.
+// ⇒ para medir otra vez, el ciclo de TRES órdenes de la cabecera de `.claspignore`.

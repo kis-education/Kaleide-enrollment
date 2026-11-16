@@ -2562,6 +2562,140 @@ function manual_diagElEspejo() {
   return out;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// ①27 punto 3 — el umbral de bytes con un fichero REAL de Drive
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// ★★ CLI 470 (2026-11-16) — ESTAS SEIS PIEZAS VIVÍAN EN `Code.js` Y SE HAN MUDADO AQUÍ, al
+// lado de su único llamante (`manual_medirUmbralDeBytesConFicheroReal`, justo debajo).
+//
+// POR QUÉ. Eran lo último que usaba `DriveApp` en el fichero que SÍ viaja al proyecto, y
+// mientras estuvieran ahí el manifiesto habría seguido necesitando
+// `https://www.googleapis.com/auth/drive` — un permiso RESTRINGIDO, que obliga a verificar la
+// aplicación ante Google y a pasar una auditoría de seguridad ANUAL por cada colegio nuevo
+// (`kis-app CLAUDE.md` §"RESTRICCIÓN DE DISEÑO — solo scopes SENSIBLES"). Ninguna familia las
+// invoca jamás: medido contra `origin/main` antes de moverlas, sus nombres los nombra UN solo
+// sitio (el `manual_*` de abajo) y CERO disparadores y CERO guiones los usan.
+//
+// ⛔ Y POR ESO SOLO SE PUEDEN EJECUTAR CON EL CICLO DE TRES ÓRDENES de la cabecera de
+// `backend/.claspignore`: subir este fichero, correr la sonda, y VOLVER A BAJARLO. Si se queda
+// arriba, el proyecto vuelve a necesitar el permiso de Drive y el ahorro se pierde sin que
+// nada falle — que es justo lo que lo hace invisible.
+//
+// ⛔ Lo que esta sonda ESCRIBE en Drive lo borra ella: prefijo propio
+// (`SONDA_UMBRAL_PREFIJO_`), barrido de ENTRADA, borrado FÍSICO en un `finally` y
+// comprobación por LECTURA de que no queda (§"Lo que un agente crea para PROBAR se ELIMINA
+// FÍSICAMENTE"). ⛔ Y escribe con la cuenta de quien ejecuta, nunca con la del colegio: no
+// toca el archivo del centro ni un solo fichero real.
+
+// ═══════════════════════════════════════════════════════════════════════
+// ①27 punto 3 — el umbral de bytes con un fichero REAL de Drive
+// ═══════════════════════════════════════════════════════════════════════
+// Lo medido hasta ahora (①27 pieza 9 / DL-R19) cubre fabricar, codificar y
+// devolver un blob sintético en memoria. NO cubre la lectura DESDE Drive ni
+// el viaje al navegador, que es exactamente el camino de `getDocument_`
+// (Code.js, más arriba): `DriveApp.getFileById(id).getBlob().getBytes()`
+// seguido de `Utilities.base64Encode(bytes)`. Esta sonda mide ESE camino,
+// literal, con ficheros reales subidos y leídos de Drive — no simulados.
+
+var SONDA_UMBRAL_PREFIJO_ = 'ZZ_SONDA_umbral_';
+
+/**
+ * Construye un blob sintético de tamaño EXACTO en bytes (ASCII puro, 1 byte
+ * por carácter, para que el tamaño no dependa de la codificación UTF-8).
+ */
+function sondaUmbralConstruirBlob_(bytesObjetivo) {
+  var trozo = 'ZZSONDAUMBRAL0123456789ABCDEFabcdef';
+  var sb = trozo;
+  while (sb.length < bytesObjetivo) { sb += sb; }
+  sb = sb.substring(0, bytesObjetivo);
+  var bytes = Utilities.newBlob(sb).getBytes();
+  return Utilities.newBlob(bytes, 'application/octet-stream',
+                            SONDA_UMBRAL_PREFIJO_ + Date.now() + '_' + bytesObjetivo + '.bin');
+}
+
+/** Borrado FÍSICO vía Drive REST API v3 — DriveApp no tiene borrado permanente. */
+function sondaUmbralBorrarFisico_(fileId) {
+  return UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId, {
+    method: 'delete',
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+}
+
+/** Comprueba por LECTURA, desde el mismo transporte REST, que el fichero ya no existe (404). */
+function sondaUmbralVerificarBorrado_(fileId) {
+  var resp = UrlFetchApp.fetch(
+    'https://www.googleapis.com/drive/v3/files/' + fileId + '?fields=id',
+    { method: 'get', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }
+  );
+  return resp.getResponseCode() === 404;
+}
+
+/**
+ * Barrido de ENTRADA: elimina restos de una corrida anterior que muriera a
+ * medias (§"Lo que un agente crea para PROBAR se ELIMINA FÍSICAMENTE").
+ * Devuelve cuántos ficheros de sonda encontró y borró.
+ */
+function sondaUmbralBarrerEntrada_() {
+  var borrados = 0;
+  var it = DriveApp.searchFiles('title contains "' + SONDA_UMBRAL_PREFIJO_ + '" and trashed = false');
+  while (it.hasNext()) {
+    var f = it.next();
+    sondaUmbralBorrarFisico_(f.getId());
+    borrados++;
+  }
+  return borrados;
+}
+
+/**
+ * Mide, para UNA talla en bytes: subir a Drive, leer de vuelta EXACTAMENTE
+ * como `getDocument_` (getFileById → getBlob → getBytes → base64Encode), y
+ * borra el fichero físicamente al terminar (éxito o fallo).
+ */
+function sondaUmbralMedirTalla_(bytesObjetivo) {
+  var medida = { bytes_objetivo: bytesObjetivo, error: null };
+  var file = null;
+  try {
+    var blob = sondaUmbralConstruirBlob_(bytesObjetivo);
+
+    var t0 = Date.now();
+    file = DriveApp.createFile(blob);
+    medida.subida_ms = Date.now() - t0;
+
+    var fileId = file.getId();
+
+    // El camino REAL de getDocument_: getFileById().getBlob().getBytes()
+    var t1 = Date.now();
+    var blobLeido = DriveApp.getFileById(fileId).getBlob();
+    var bytesLeidos = blobLeido.getBytes();
+    medida.lectura_drive_ms = Date.now() - t1;
+    medida.bytes_leidos = bytesLeidos.length;
+
+    var t2 = Date.now();
+    var base64 = Utilities.base64Encode(bytesLeidos);
+    medida.codificacion_base64_ms = Date.now() - t2;
+    medida.bytes_base64 = base64.length;
+    medida.factor_inflacion = bytesLeidos.length > 0
+      ? Math.round((base64.length / bytesLeidos.length) * 1000) / 1000
+      : null;
+
+    medida.total_ms = medida.subida_ms + medida.lectura_drive_ms + medida.codificacion_base64_ms;
+  } catch (e) {
+    medida.error = String((e && e.message) || e).slice(0, 300);
+  } finally {
+    if (file) {
+      try {
+        sondaUmbralBorrarFisico_(file.getId());
+        medida.borrado_verificado = sondaUmbralVerificarBorrado_(file.getId());
+      } catch (eDel) {
+        medida.error_borrado = String((eDel && eDel.message) || eDel).slice(0, 200);
+      }
+    }
+  }
+  return medida;
+}
+
 /**
  * Diagnóstico de solo lectura de datos (el contenido es un blob SINTÉTICO,
  * no hay datos personales en ningún punto). Mide, contra Drive real, el

@@ -103,6 +103,22 @@ sondas. No es un agujero nuevo (lo mudado no es alcanzable desde internet **y ah
 arriba**), pero **se dice en vez de callarlo**: el día que una sonda vuelva a `Code.js`, vuelve a
 vigilarse; mientras esté en `_manual.gs`, no.
 
+### ★★ El asistente NO TOCA DRIVE (`CLI 470`, 2026-11-16)
+
+**Ni escribe ni lee.** Los documentos que sube una familia los crea y los sirve el KMS con la cuenta
+licenciada del COLEGIO; este proceso solo **transporta bytes** en los dos sentidos. El detalle —qué
+camino hace qué, qué pasa si los bytes no llegan y por qué `drive.file` no era la salida— vive en
+§"Los permisos que declara el asistente", junto a la tabla que ya no tiene ninguno.
+
+**Por qué va aquí y no solo en la tabla de permisos:** es la misma regla que P1-A/P1-B
+—*«no se debe escribir nunca en tablas desde el wizard»*— aplicada al ALMACENAMIENTO. Un fichero que
+este proceso crea es de **la cuenta que publicó el asistente**, no del colegio, porque corre
+`executeAs: USER_DEPLOYING`; y el permiso que hacía falta para crearlo era RESTRINGIDO, con auditoría
+ANUAL por colegio nuevo. ⇒ **toda capacidad nueva que necesite un fichero se construye en el KMS y se
+le PIDE**, igual que una escritura.
+
+**Red:** `node scripts/servidor/el-asistente-no-toca-drive.mjs`.
+
 ### ②17 — CERRADA: ninguna lectura directa a AppSheet es alcanzable desde internet
 
 **Medido el 2026-09-12: quedaban 43 lecturas directas (`appsheetRequest_`) y CERO en el camino vivo**
@@ -489,7 +505,7 @@ cupo anti-fuerza-bruta. Un fallo que **no** es de transporte es el servidor cont
   identificador** —ahí el id llega como argumento, así que un lector por id sería una puerta trasera
   a KAL-4.
 
-### Los permisos que declara el asistente — tres, y ninguno restringido
+### Los permisos que declara el asistente — DOS, y ninguno sensible siquiera
 
 `executeAs: USER_DEPLOYING` ⇒ **cada permiso lo consiente solo quien publica** (Diego), y pesa sobre
 todo el proyecto. Ninguna familia ve esa pantalla. Eso es lo contrario del KMS (`USER_ACCESSING`),
@@ -497,8 +513,7 @@ donde lo consiente cada usuario que entra.
 
 | Permiso | Nivel | Para qué |
 |---|---|---|
-| `script.external_request` | no sensible | `UrlFetchApp`: AppSheet y el proxy al KMS |
-| `drive` (COMPLETO) | restringido | los documentos que sube la familia: carpeta por nombre + `getFileById` |
+| `script.external_request` | no sensible | `UrlFetchApp`: el proxy al KMS |
 | `script.scriptapp` | sensible | URL del servicio, `getOAuthToken()` y los disparadores |
 
 ⛔ **Nunca se añade un permiso «por si acaso», y NUNCA uno RESTRINGIDO que la cuenta no pueda
@@ -506,13 +521,42 @@ conceder**: deja la autorización a medias y `UrlFetchApp` empieza a fallar en t
 `script.send_mail` y el servicio avanzado `Gmail` salieron el 2026-09-05 (D123) y no vuelven**: este
 proyecto ya no manda ningún correo. Si uno tiene que salir del buzón del colegio, el sitio es el KMS.
 
-⚠️ **El de Drive es el ancho a propósito y bajarlo a `drive.file` NO se acredita leyendo código**: la
-carpeta se busca **por nombre en todo el Drive** y los ficheros se abren **por identificador**,
-algunos creados antes bajo el permiso ancho. Equivocarse rompe TODA subida. Para bajarlo hay que
-**medirlo en ejecución**. Compruébalo contra `origin/main`, nunca contra el árbol:
+★★ **Y `drive` SALIÓ el 2026-11-16 (`CLI 470`) — ENTERO, no bajado a `drive.file`.** Era el único
+RESTRINGIDO que quedaba, y su coste no es teórico: un restringido obliga a verificar la aplicación
+ante Google y a pasar una **auditoría de seguridad ANUAL**, por cada colegio nuevo ⇒ el alta del
+segundo colegio, que debe ser un botón, se convierte en semanas y un trámite que no depende de
+nosotros (`kis-app/CLAUDE.md` §"RESTRICCIÓN DE DISEÑO — solo scopes SENSIBLES"). Lo autorizó Diego ese
+día: *«El asistente todavía no se está usando, así que se puede hacer directamente.»*
+
+⛔ **Y aquí decía que bajarlo a `drive.file` «NO se acredita leyendo código» y que había que medirlo en
+ejecución. Se midió, y la respuesta era que `drive.file` NO SERVÍA:** la carpeta de destino la DICE el
+KMS y pertenece al árbol de SU archivo ⇒ el asistente **no la creó** y con `drive.file` no podría ni
+abrirla; estrecharlo a secas habría roto TODA subida. **La salida no era un permiso más pequeño: era
+no tener ninguno** — que es lo que §"EL ASISTENTE NO DECIDE NADA" ya mandaba. Hoy:
+
+- **SUBIR**: `uploadDocument_` manda los **BYTES** al KMS (`enr.persistUploadedDocument` con
+  `base64`, dentro del viaje que ya se pagaba para la ficha) y el fichero lo crea la cuenta licenciada
+  del COLEGIO, por el escritor que ya existía (`rec_uploadWizardDocument_` → `rec_servicioSubirBytes_`,
+  DL-R06/DL-S110). La pregunta por la carpeta (`enr.carpetaDelArchivo`) **se retiró**: pedir un destino
+  que no se puede usar era un salto al KMS para tirar la respuesta.
+- **LEER**: `getDocument_` **PIDE los bytes** al KMS (`enr.ficheroDelExpediente` con `con_bytes`, en la
+  misma respuesta que ya traía la fila) y los sirve. ⛔ Si no llegan, la cadena de respaldo de siempre
+  —el paquete de firma si hay token resoluble, y si no `DOC_UNAVAILABLE`—: **nunca un «no es tuyo»**.
+- ⛔ **UNA SUBIDA SIN CONTENIDO SE NOMBRA, no se confirma**: `_veredictoDeLaSubida_` exige
+  `bytes_recibidos === true` —el `true` EXPLÍCITO, porque un KMS que aún no conozca el campo devuelve
+  `undefined` y eso NO es «sí»— y si no, `DOCUMENTO_SIN_CONTENIDO`. Este proceso ya no tiene cómo
+  guardar el byte, así que lo único honesto es decirlo.
+- **La SONDA del umbral de bytes** (`sondaUmbral*`, la única que usaba `DriveApp` fuera de esos dos
+  caminos) vive en `backend/_manual.gs`, **que no viaja** ⇒ si ese fichero volviera al proyecto, el
+  proyecto volvería a necesitar el permiso **sin que nada falle**. Lo afirma la red.
+
+**Red:** `node scripts/servidor/el-asistente-no-toca-drive.mjs` — instala un `DriveApp` que **MUERDE**
+y EJECUTA los dos manejadores, así que «no toca Drive» es una medición, no un `grep`. Compruébalo
+contra `origin/main`, nunca contra el árbol:
 
 ```bash
 git show origin/main:backend/appsscript.json
+git show origin/main:backend/Code.js | grep -cE "^[^/*]*DriveApp"                        # 0
 git show origin/main:backend/Code.js | grep -cE "Gmail\.Users|MailApp\.|GmailApp\."   # 0
 ```
 
@@ -1420,6 +1464,7 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | `el-enlace-viejo-no-muere-hasta-que-salga-el-nuevo.mjs` | que **una familia nunca se quede sin enlace válido por un correo que no salió**: el envío que sale deja el enlace rotado, el que falla lo deja como estaba (las dos ramas, y los N de un correo multi), y el ack constante de la rama pública no cambia según si el correo salió |
 | `el-segundo-hermano-tambien-firma.mjs` | `CLI 467`: que **la copia rápida del pulso no sea CIEGA al hijo elegido** — esa entrada guarda `signing_context`, que es de UN hijo, y servírsela a otro hermano le enseña al tutor los permisos de uno y los registra a nombre del otro. Afirma, ejecutando `getAdmissionState_` REAL con una caché en memoria: sin selección la clave es **byte a byte** la de hoy (el calentamiento del enlace sigue sirviendo), con selección dos hijos **no comparten entrada**, una forma mala NO entra en la clave (KAL-5 capa 1) y el buzón sigue dentro (②24); un acierto **nunca** devuelve el contexto de otro hijo |
 | `el-aviso-de-salud-sabe-que-tabla-cayo.mjs` | `2026-09-16-la-salud-no-se-recupera`: que el paso de Salud avise de «no se pudo cargar» **solo** si cayó una tabla de salud/NEAE o el lote entero (`person_subreads` a secas), y no si cayó nacionalidad, documentos, idiomas, direcciones o colegios previos; un nombre fino desconocido **avisa** (falla hacia avisar). Importa `frontend/src/lib/cargaDegradada.js` REAL; tres roturas demostradas |
+| `el-asistente-no-toca-drive.mjs` | `CLI 470`: que **ni un camino vivo escriba ni lea Drive, y que el manifiesto se quede SIN ningún permiso de Drive** —ni `drive`, ni `drive.file`—. Instala un `DriveApp` que **MUERDE** (un `Proxy` que lanza y apunta ante cualquier propiedad) y EJECUTA `uploadDocument_` y `getDocument_`, así que «no toca Drive» se MIDE en vez de buscarse con un `grep`; afirma además que los BYTES viajan al KMS en el MISMO viaje que la ficha, que la ficha NO declara dónde aterrizan, que una subida sin contenido se NOMBRA (`DOCUMENTO_SIN_CONTENIDO`) en vez de confirmarse, que los bytes se PIDEN con `con_bytes` sin un viaje más, que lo servido conserva los seis campos de DOC-BYTES, que el nombre que sale no es un UUID, y que unos bytes que el KMS no pudo traer caen en la cadena de siempre hasta `DOC_UNAVAILABLE` — **nunca** en un «no es tuyo» ni de vuelta a Drive. 28 afirmaciones, 10 roturas demostradas (incluido el manifiesto con `drive` **y** con `drive.file`) y un CANARIO que sale MEDICIÓN CIEGA si el detector dejara de morder |
 | `el-tramo-final-resuelve-todos-los-hijos.mjs` | **CLI 403**: que el estado 8/9/10 POR HIJO llegue al selector del tramo 8-11 y que la pantalla se alimente del hijo ELEGIDO (no del primer `.find()`): `_pasosEnPorAlumno_` adjunta los pasos por `enrollment_id` y con el mapa vacío deja `por_alumno` byte-idéntico; `_elegirSesionDeFirma_` elige la sesión del hijo seleccionado (sin selección la primera; KAL-4: una selección que no casa degrada a la primera); `resolveGuardianSigningContext_` devuelve el token de ese hijo; `_datosDeFirmaDelExpediente_` manda `guardian_person_id` al KMS. Ejecuta `backend/Code.js` REAL; 13 afirmaciones, 3 roturas, 2 guardas de MEDICIÓN CIEGA |
 
 **Se corren solos desde el 2026-09-23**: el lanzador `node scripts/comprobar-el-servidor.mjs`
