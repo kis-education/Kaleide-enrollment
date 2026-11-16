@@ -15,6 +15,11 @@
  *       hijo elegido, no el del primero.
  *   (D) `_datosDeFirmaDelExpediente_(token, guardian)` manda `guardian_person_id` al KMS y devuelve el
  *       `pasosPorExpediente` que el KMS contesta; sin tutor, no lo manda y el mapa va vacío.
+ *   (E) ★ drenaje `:08` v1019 — «este hijo tiene algo que firmar» sale de la etiqueta DECLARADA
+ *       `SIGNING_OPEN` que responde el KMS, no del literal `'AD'`: `_datosDeFirmaDelExpediente_`
+ *       guarda `firma_abierta_por_expediente`, `_firmaAbiertaEnPorAlumno_` solo adjunta BOOLEANOS
+ *       (mapa vacío ⇒ byte-idéntico), la lista blanca del hydrate lo conserva, y `admitidoParaFirmar`
+ *       (`frontend/src/lib/hermanos.js`, EJECUTADO) lo obedece y solo sin él cae a `'AD'`.
  *
  * ⛔ **NO ES UN DETECTOR POR LÍNEAS: EJECUTA EL CÓDIGO REAL** en un `vm` con dobles en memoria (ni
  * red, ni navegador, ni `npm ci`, ni un dato real; dominio reservado `.invalid`, RFC 2606).
@@ -71,6 +76,7 @@ function cargar(retoques) {
   };
   vm.createContext(ctx);
   vm.runInContext(fuente, ctx, { filename: 'backend/Code.js' });
+  ctx.__fuente = fuente;
   // El KMS doblado: apunta lo que se le manda y contesta las filas de firma + los pasos por hijo.
   ctx.kmsProxy_ = (accion, cuerpo) => {
     cuerposAlKms.push({ accion, cuerpo });
@@ -88,6 +94,8 @@ function cargar(retoques) {
           [SES2]: [{ signer_person_id: GUARD, signing_token: 'tok-h2', deleted_at: null }],
         },
         pasos_por_expediente: pasos,
+        // ★ v1019: H1 en una situación con `SIGNING_OPEN` aunque su código no sea 'AD'; H2 al revés.
+        firma_abierta_por_expediente: { [H1]: true, [H2]: false },
         admision_resuelta: true,
       };
     }
@@ -105,7 +113,7 @@ const signers = () => ({
   [SES2]: [{ signer_id: 'sg-2', session_id: SES2, signer_person_id: GUARD, signing_token: 'tok-h2', deleted_at: null }],
 });
 
-function correr(retoques) {
+function correr(retoques, hermanos) {
   const { ctx, cuerposAlKms } = cargar(retoques);
 
   // (A) `_pasosEnPorAlumno_`
@@ -163,10 +171,54 @@ function correr(retoques) {
       && JSON.stringify(sinTutor.pasosPorExpediente) === '{}',
       '(D) sin tutor, NO se manda el discriminador y el mapa de pasos va VACÍO');
   }
+
+  // (E) ★ v1019 — la firma abierta por hijo la dice la etiqueta, no el literal
+  {
+    const r = ctx._datosDeFirmaDelExpediente_('66666666-6666-4666-8666-666666666666', GUARD);
+    afirmar(r && r.firmaAbiertaPorExpediente && r.firmaAbiertaPorExpediente[H1] === true
+      && r.firmaAbiertaPorExpediente[H2] === false,
+      '(E) `_datosDeFirmaDelExpediente_` guarda el `firma_abierta_por_expediente` que contesta el KMS');
+    const base = [{ enrollment_id: H1, state_code: 'XX' }, { enrollment_id: H2, state_code: 'AD' }];
+    const con = ctx._firmaAbiertaEnPorAlumno_(base, { [H1]: true, [H2]: false });
+    afirmar(con[0].firma_abierta === true && con[1].firma_abierta === false,
+      '(E) `_firmaAbiertaEnPorAlumno_` adjunta la firma abierta por hijo, casada por enrollment_id');
+    const vacio = ctx._firmaAbiertaEnPorAlumno_(base, {});
+    afirmar(JSON.stringify(vacio) === JSON.stringify(base),
+      '(E) con el mapa VACÍO, por_alumno queda BYTE-IDÉNTICO');
+    const raro = ctx._firmaAbiertaEnPorAlumno_(base, { [H1]: 'true', [H2]: 1 });
+    afirmar(!('firma_abierta' in raro[0]) && !('firma_abierta' in raro[1]),
+      '(E) solo un BOOLEANO entra: un texto o un número no se adjuntan');
+    afirmar(/if \(typeof a\.firma_abierta === 'boolean'\) o\.firma_abierta = a\.firma_abierta;/.test(ctx.__fuente),
+      '(E) la lista blanca del hydrate conserva `firma_abierta` (lector de líneas)');
+    const { admitidoParaFirmar, hermanosConSituacion } = hermanos;
+    afirmar(admitidoParaFirmar({ state_code: 'XX', firma_abierta: true }) === true
+      && admitidoParaFirmar({ state_code: 'AD', firma_abierta: false }) === false,
+      '(E) `admitidoParaFirmar` obedece a la etiqueta por encima del código de situación');
+    afirmar(admitidoParaFirmar({ state_code: 'AD' }) === true && admitidoParaFirmar({ state_code: 'WL' }) === false
+      && admitidoParaFirmar({ state_code: 'AD', firma_abierta: 'false' }) === true,
+      '(E) sin booleano, degrada al literal de antes byte a byte');
+    const hs = hermanosConSituacion(con, [], (k) => k);
+    afirmar(hs[0].admitido === true && hs[1].admitido === false,
+      '(E) `hermanosConSituacion` marca `admitido` por la etiqueta');
+  }
 }
 
-function main() {
-  try { correr([]); } catch (e) {
+async function cargarHermanos(retoques) {
+  let fuente = readFileSync(join(RAIZ, 'frontend/src/lib/hermanos.js'), 'utf8');
+  (retoques || []).forEach(([de, a]) => {
+    const n = fuente.split(de).length - 1;
+    if (n !== 1) throw new Ciega(`rotura de hermanos.js sin ancla única (${n}×): ${de.slice(0, 60)}`);
+    fuente = fuente.replace(de, a);
+  });
+  return import('data:text/javascript;base64,' + Buffer.from(fuente).toString('base64'));
+}
+
+async function main() {
+  const HERMANOS = await cargarHermanos([]);
+  if (typeof HERMANOS.admitidoParaFirmar !== 'function') {
+    console.log('MEDICIÓN CIEGA · `admitidoParaFirmar` no existe en hermanos.js'); console.log('VEREDICTO: ROJO — MEDICIÓN CIEGA'); process.exit(1);
+  }
+  try { correr([], HERMANOS); } catch (e) {
     if (e instanceof Ciega) { console.log(`MEDICIÓN CIEGA · ${e.message}`); console.log('VEREDICTO: ROJO — MEDICIÓN CIEGA'); process.exit(1); }
     console.log(`VEREDICTO: ROJO — el control reventó: ${e.stack}`); process.exit(1);
   }
@@ -183,6 +235,23 @@ function main() {
     ['no manda el tutor', [[
       'if (gid) cuerpo.guardian_person_id = gid;   // ★ CLI 403: de QUÉ tutor son los pasos por hijo',
       '']], '(D)'],
+    // (E) la lista blanca del hydrate tira `firma_abierta` ⇒ el hydrate vuelve a decidir por 'AD'
+    ['la lista blanca tira la firma abierta', [[
+      "if (typeof a.firma_abierta === 'boolean') o.firma_abierta = a.firma_abierta;", '']], '(E)'],
+    // (E) adjunta cualquier valor, no solo booleanos
+    ['adjunta lo que no es booleano', [[
+      "return (typeof v === 'boolean') ? Object.assign({}, a, { firma_abierta: v }) : a;",
+      "return (v !== undefined) ? Object.assign({}, a, { firma_abierta: v }) : a;"]], '(E)'],
+    // (E) no guarda lo que contesta el KMS
+    ['no guarda la firma abierta del KMS', [[
+      "? r.firma_abierta_por_expediente : {},", "? {} : {},"]], '(E)'],
+  ];
+  // roturas del NAVEGADOR (hermanos.js): se re-ejecuta (E) con el módulo mutilado
+  const roturasNav = [
+    ['la pantalla vuelve a mirar solo el literal', [[
+      "if (typeof a.firma_abierta === 'boolean') return a.firma_abierta;", '']]],
+    ['hermanosConSituacion no pide el criterio', [[
+      'admitido: admitidoParaFirmar(a),', "admitido: a.state_code === 'AD',"]]],
   ];
   let ok = 0;
   console.log('\n  ── roturas demostradas ──');
@@ -190,9 +259,21 @@ function main() {
     const antes = fallos.length, v = verdes;
     callado = true;
     let detectada = false, ciega = null;
-    try { correr(retoques); } catch (e) { if (e instanceof Ciega) ciega = `rotura «${n}»: ${e.message}`; else detectada = true; }
+    try { correr(retoques, HERMANOS); } catch (e) { if (e instanceof Ciega) ciega = `rotura «${n}»: ${e.message}`; else detectada = true; }
     callado = false;
     detectada = detectada || fallos.slice(antes).some((t) => t.includes(esp));
+    fallos.length = antes; verdes = v;
+    if (ciega) { fallos.push(ciega); detectada = false; }
+    console.log(`  ${detectada ? '✓' : '✗'} ROTURA ${n}`);
+    if (detectada) ok++; else if (!ciega) fallos.push(`rotura no detectada: ${n}`);
+  }
+  for (const [n, retoquesNav] of roturasNav) {
+    const antes = fallos.length, v = verdes;
+    callado = true;
+    let detectada = false, ciega = null;
+    try { correr([], await cargarHermanos(retoquesNav)); } catch (e) { if (e instanceof Ciega) ciega = `rotura «${n}»: ${e.message}`; else detectada = true; }
+    callado = false;
+    detectada = detectada || fallos.slice(antes).some((t) => t.includes('(E)'));
     fallos.length = antes; verdes = v;
     if (ciega) { fallos.push(ciega); detectada = false; }
     console.log(`  ${detectada ? '✓' : '✗'} ROTURA ${n}`);
@@ -203,13 +284,14 @@ function main() {
   for (const [n, de, a] of [
     ['la pieza de pasos', 'function _pasosEnPorAlumno_(', 'function _otraPieza_('],
     ['la elección de sesión', 'function _elegirSesionDeFirma_(', 'function _otraEleccion_('],
+    ['la firma abierta por hijo', 'function _firmaAbiertaEnPorAlumno_(', 'function _otraFirma_('],
   ]) {
     let ciego = false;
-    try { correr([[de, a]]); } catch (e) { ciego = e instanceof Ciega || /is not a function/.test(e.message); }
+    try { correr([[de, a]], HERMANOS); } catch (e) { ciego = e instanceof Ciega || /is not a function/.test(e.message); }
     console.log(`  ${ciego ? '✓' : '✗'} ROTURA renombrar ${n} → ${ciego ? 'MEDICIÓN CIEGA' : 'NO se detectó'}`);
     if (ciego) ciegas++; else fallos.push(`renombrar ${n} no da MEDICIÓN CIEGA`);
   }
   if (fallos.length) { fallos.forEach((x) => console.log(`  ✗ ${x}`)); console.log(`VEREDICTO: ROJO — ${fallos.length} fallo(s)`); process.exit(1); }
   console.log(`VEREDICTO: VERDE — ${verdes} afirmaciones, ${ok} roturas demostradas y ${ciegas} guardas de MEDICIÓN CIEGA`);
 }
-main();
+main().catch((e) => { console.log(`VEREDICTO: ROJO — el control reventó: ${e && e.stack}`); process.exit(1); });

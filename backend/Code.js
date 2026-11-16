@@ -3012,6 +3012,8 @@ function warmEntryBundle_(resumeToken, recoveredEmail, lang, nParam, groupIdPara
                                            state_code: a.state_code || null,
                                            state_label: a.state_label || null };
                                  if (a.pasos) o.pasos = a.pasos;
+                                 // ★ v1019: la lista blanca conserva `firma_abierta` (booleano del KMS).
+                                 if (typeof a.firma_abierta === 'boolean') o.firma_abierta = a.firma_abierta;
                                  return o;
                                }) : [],
             firma_desbloqueada: admSrc.firma_desbloqueada === true,
@@ -5302,6 +5304,7 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
         sessions:           firmaKms.sessions,
         signersBySession:   firmaKms.signersBySession,
         pasosPorExpediente: firmaKms.pasosPorExpediente || {},        // ★ CLI 403
+        firmaAbiertaPorExpediente: firmaKms.firmaAbiertaPorExpediente || {},  // ★ v1019
         admisionResuelta:   firmaKms.admisionResuelta,
       };
     }
@@ -5312,6 +5315,10 @@ function buildAdmissionContext_(groupId, enrollments, guardianPersonId, persons,
   // pulso); las otras —la copia caliente del warm y el hydrate— lo adjuntan con el MISMO helper.
   // Con el mapa vacío (sin tutor, o KMS viejo) `out.por_alumno` queda BYTE-IDÉNTICO.
   out.por_alumno = _pasosEnPorAlumno_(out.por_alumno, admHints.pasosPorExpediente);
+  // ★ drenaje `:08` v1019 — y «este hijo tiene algo que firmar» por la etiqueta DECLARADA
+  // `SIGNING_OPEN` que responde el KMS (el criterio que monta los sobres), para que la pantalla
+  // deje de compararlo con `'AD'`. Mapa vacío ⇒ byte-idéntico.
+  out.por_alumno = _firmaAbiertaEnPorAlumno_(out.por_alumno, admHints.firmaAbiertaPorExpediente);
 
   // ⛔ FALLA CERRADO: un hito que no consta NO es un hito cumplido. Y una lista de sesiones
   // ausente tampoco desbloquea nada — «todavía no se sabe» nunca es «todos resueltos».
@@ -5464,6 +5471,9 @@ function _datosDeFirmaDelExpediente_(resumeToken, guardianPersonId) {
               // ★ CLI 403: pasos 8/9/10 por hijo para este tutor; `{}` si el KMS no los manda.
               pasosPorExpediente: (r.pasos_por_expediente && typeof r.pasos_por_expediente === 'object')
                 ? r.pasos_por_expediente : {},
+              // ★ v1019: ¿la situación de cada expediente lleva `SIGNING_OPEN`? `{}` si el KMS no lo manda.
+              firmaAbiertaPorExpediente: (r.firma_abierta_por_expediente && typeof r.firma_abierta_por_expediente === 'object')
+                ? r.firma_abierta_por_expediente : {},
               admisionResuelta: r.admision_resuelta === true };
     } else {
       Logger.log('[_datosDeFirmaDelExpediente_] respuesta sin sesiones — se degrada');
@@ -5492,6 +5502,25 @@ function _pasosEnPorAlumno_(porAlumno, pasosPorExpediente) {
   return porAlumno.map(function(a) {
     var pasos = mapa[String((a && a.enrollment_id) || '')] || null;
     return pasos ? Object.assign({}, a, { pasos: pasos }) : a;
+  });
+}
+
+/**
+ * ★ drenaje `:08` v1019 (`2026-11-15-el-segundo-hermano-no-puede-firmar`) — ADJUNTA a cada línea de
+ * `por_alumno` si su situación lleva la etiqueta declarada `SIGNING_OPEN` (`firma_abierta`), tal como
+ * la responde el KMS (`enr.datosDeFirma` → `firma_abierta_por_expediente`, el MISMO criterio con el
+ * que monta los sobres). Es lo que lee `frontend/src/lib/hermanos.js` en vez de `state_code === 'AD'`.
+ *
+ * ⛔ Este proceso NO decide: solo transporta. Solo se adjunta un BOOLEANO; un mapa vacío —KMS viejo o
+ * etiquetas ilegibles— devuelve `por_alumno` BYTE-IDÉNTICO y la pantalla degrada a lo de antes.
+ * @private
+ */
+function _firmaAbiertaEnPorAlumno_(porAlumno, firmaAbiertaPorExpediente) {
+  if (!Array.isArray(porAlumno)) return porAlumno;
+  var mapa = (firmaAbiertaPorExpediente && typeof firmaAbiertaPorExpediente === 'object') ? firmaAbiertaPorExpediente : {};
+  return porAlumno.map(function(a) {
+    var v = mapa[String((a && a.enrollment_id) || '')];
+    return (typeof v === 'boolean') ? Object.assign({}, a, { firma_abierta: v }) : a;
   });
 }
 
