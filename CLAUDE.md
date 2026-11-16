@@ -1145,14 +1145,14 @@ DESBLOQUEARA la firma y ponerlo en lista de espera la BLOQUEARA**. Por eso el cr
    (`WizardPage.jsx:191` y `:1370`, `WizardContext.jsx:1847`, los tres acotados a
    `firma_desbloqueada` ausente o nula). `'TD'`/`'WL'` tampoco salen del frontal. ⇒ el que hay que
    mirar el día que esto se limpie es **`hermanos.js:58`**, que no es un respaldo.
-2. *«las sesiones se crean solo para los admitidos»* — **falso, y por eso el segundo requisito NO es
-   un hecho derivado**: `enr_enrollmentsOfGroup_` (`kis-app kms-server/enr/wizard-firma.gs:1412`)
-   filtra por `deleted_at` y por solicitud, **y por nada más**, así que a un hermano NO admitido se
-   le crea igual su sesión de firma. Hoy no muerde porque la puerta la decide el hito; el día que
-   alguien derive «admitido» de «tiene sesión», mentirá.
+2. *«las sesiones se crean solo para los admitidos»* — **CORREGIDO en el KMS (drenaje `:08` v1015,
+   2026-11-16, LISTO PARA PUBLICAR)**: `enr_initiateSigningSession` solo crea e inicia sesión para
+   los expedientes cuya situación lleva la etiqueta declarada `SIGNING_OPEN`
+   (`enr_expedientesConLaFirmaAbierta_`). ⚠️ **Sigue sin ser un hecho derivado del que fiarse**: las
+   sesiones creadas ANTES para un hermano no admitido siguen existiendo (ya no se inician), así que
+   «tiene sesión» todavía no es «está admitido». La puerta la decide el hito.
 
-⛔ **Las dos se CORRIGEN aquí y no en el código**: ninguna está autorizada como cambio, y las dos
-tienen su ficha (`kis-app docs/kms/loop-backlog.md`,
+⛔ **La 1 se CORRIGE aquí y no en el código** (no está autorizada como cambio) y tiene su ficha (`kis-app docs/kms/loop-backlog.md`,
 `2026-11-15-el-segundo-hermano-no-puede-firmar` → «queda fuera»).
 
 **El asistente habla POR HIJO**: `por_alumno` + `firma_desbloqueada` viajan en las **CINCO**
