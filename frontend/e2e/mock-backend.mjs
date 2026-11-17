@@ -898,6 +898,11 @@ export function buildHydrate(stage, preguntasMode, respuestasMode, viewerN, tuto
         { enrollment_id: 'enr-e2e-1', applicant_person_id: FIXTURE.applicantId,
           state_code: 'AD', state_label: 'Admitida' },
       ])
+      // ★ drenaje :08 v1045 — `firma_abierta` por hijo, como lo adjunta el servidor real
+      // (`_firmaAbiertaEnPorAlumno_` con el `firma_abierta_por_expediente` del KMS: la etiqueta
+      // declarada `SIGNING_OPEN`). En el doble, la situación de admitida la lleva y la de lista de
+      // espera no. Hace falta porque la pantalla ya NO cae al literal `'AD'` sin él.
+      .map(a => Object.assign({}, a, { firma_abierta: a.state_code === 'AD' }))
       // ★ CLI 403 — el estado 8/9/10 POR HIJO, como lo manda el servidor real (`pasos_por_expediente`
       // reflejado en `por_alumno[].pasos`). `scenario.pasosPorHijo` es un mapa por enrollment_id;
       // sin él, por_alumno queda byte-idéntico (el selector degrada al banner de siempre).

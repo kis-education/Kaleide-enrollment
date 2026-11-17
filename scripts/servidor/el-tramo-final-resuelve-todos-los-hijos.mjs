@@ -19,7 +19,8 @@
  *       `SIGNING_OPEN` que responde el KMS, no del literal `'AD'`: `_datosDeFirmaDelExpediente_`
  *       guarda `firma_abierta_por_expediente`, `_firmaAbiertaEnPorAlumno_` solo adjunta BOOLEANOS
  *       (mapa vacío ⇒ byte-idéntico), la lista blanca del hydrate lo conserva, y `admitidoParaFirmar`
- *       (`frontend/src/lib/hermanos.js`, EJECUTADO) lo obedece y solo sin él cae a `'AD'`.
+ *       (`frontend/src/lib/hermanos.js`, EJECUTADO) lo obedece. ★ v1045: sin el booleano `true`
+ *       el hijo NO se marca — el respaldo al literal `'AD'` se retiró con las dos mitades vivas.
  *
  * ⛔ **NO ES UN DETECTOR POR LÍNEAS: EJECUTA EL CÓDIGO REAL** en un `vm` con dobles en memoria (ni
  * red, ni navegador, ni `npm ci`, ni un dato real; dominio reservado `.invalid`, RFC 2606).
@@ -194,9 +195,13 @@ function correr(retoques, hermanos) {
     afirmar(admitidoParaFirmar({ state_code: 'XX', firma_abierta: true }) === true
       && admitidoParaFirmar({ state_code: 'AD', firma_abierta: false }) === false,
       '(E) `admitidoParaFirmar` obedece a la etiqueta por encima del código de situación');
-    afirmar(admitidoParaFirmar({ state_code: 'AD' }) === true && admitidoParaFirmar({ state_code: 'WL' }) === false
-      && admitidoParaFirmar({ state_code: 'AD', firma_abierta: 'false' }) === true,
-      '(E) sin booleano, degrada al literal de antes byte a byte');
+    // ★ v1045 — el respaldo `'AD'` se RETIRÓ: sin el booleano `true` (el KMS no pudo leer las
+    // etiquetas, o no lo manda) el hijo no se marca, como no se le monta sobre. Un texto no abre.
+    afirmar(admitidoParaFirmar({ state_code: 'AD' }) === false && admitidoParaFirmar({ state_code: 'WL' }) === false
+      && admitidoParaFirmar({ state_code: 'AD', firma_abierta: 'true' }) === false
+      && admitidoParaFirmar({ state_code: 'AD', firma_abierta: null }) === false
+      && admitidoParaFirmar(null) === false,
+      '(E) sin el booleano `true` NO se marca: el literal `\'AD\'` ya no abre');
     const hs = hermanosConSituacion(con, [], (k) => k);
     afirmar(hs[0].admitido === true && hs[1].admitido === false,
       '(E) `hermanosConSituacion` marca `admitido` por la etiqueta');
@@ -249,7 +254,11 @@ async function main() {
   // roturas del NAVEGADOR (hermanos.js): se re-ejecuta (E) con el módulo mutilado
   const roturasNav = [
     ['la pantalla vuelve a mirar solo el literal', [[
-      "if (typeof a.firma_abierta === 'boolean') return a.firma_abierta;", '']]],
+      'return !!a && a.firma_abierta === true;', "return !!a && a.state_code === 'AD';"]]],
+    // ★ v1045 — y el respaldo retirado vuelve: sin booleano, cae otra vez a `'AD'`
+    ['vuelve el respaldo al literal', [[
+      'return !!a && a.firma_abierta === true;',
+      "if (!a) return false; if (typeof a.firma_abierta === 'boolean') return a.firma_abierta; return a.state_code === 'AD';"]]],
     ['hermanosConSituacion no pide el criterio', [[
       'admitido: admitidoParaFirmar(a),', "admitido: a.state_code === 'AD',"]]],
   ];

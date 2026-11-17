@@ -1851,11 +1851,9 @@ export function WizardProvider({ children }) {
       // y el hydrate puede traer el contexto SIN token (se resuelve server-side en
       // cada acto via resume_token+n). Exigirlo aqui re-aterrizaba en el paso 7 con
       // gdpr/review ya completados. Basta contexto presente + estado + hitos.
-      // 2026-08-27: la MISMA puerta que el avance (el hito «admisión resuelta»), con el mismo
-      // respaldo declarado para la ventana de publicación entre backend y frontal.
-      const _puerta = adm && ((adm.firma_desbloqueada === true)
-        || ((adm.firma_desbloqueada === undefined || adm.firma_desbloqueada === null)
-            && adm.state_code === 'AD'));
+      // 2026-08-27: la MISMA puerta que el avance (el hito «admisión resuelta»). drenaje :08 v1045:
+      // sin el respaldo `'AD'` de la ventana de publicación — ausente es «no» (falla cerrado).
+      const _puerta = !!adm && adm.firma_desbloqueada === true;
       const signingInProgress =
         _puerta && adm.signing_ready
         && adm.signing_status !== 'COMPLETED'

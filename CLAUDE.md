@@ -1138,31 +1138,27 @@ DESBLOQUEARA la firma y ponerlo en lista de espera la BLOQUEARA**. Por eso el cr
 `origin/main` y `origin/master`:**
 
 1. *«`AD`, `TD` y `WL` ya no aparecen como criterio en `backend/Code.js` ni en `frontend/src/`»*.
-   **En el backend SÍ es verdad** (`'AD'` sale una vez, y es un COMENTARIO en `backend/Code.js:5219`;
-   `'TD'`/`'WL'` no salen). **En el frontal NO**: `'AD'` decide en **cuatro** sitios —
-   `frontend/src/lib/hermanos.js:58` (`admitido: a.state_code === 'AD'`, del que cuelgan el selector
-   de hijos y el candado por pantalla) y el **respaldo DECLARADO de la ventana de publicación**
-   (`WizardPage.jsx:191` y `:1370`, `WizardContext.jsx:1847`, los tres acotados a
-   `firma_desbloqueada` ausente o nula). `'TD'`/`'WL'` tampoco salen del frontal.
-   ★ **`hermanos.js` YA NO DECIDE POR EL LITERAL (drenaje `:08` v1019, 2026-11-16, LISTO PARA
-   PUBLICAR):** `admitido` sale de `admitidoParaFirmar`, que obedece a `firma_abierta` —la etiqueta
-   declarada `SIGNING_OPEN` de CADA expediente, respondida por el KMS con el MISMO criterio con el
-   que monta los sobres (`enr_firmaAbiertaPorExpediente_` → `enr_expedientesConLaFirmaAbierta_`)—.
-   Viaja por `enr.datosDeFirma` (`firma_abierta_por_expediente`, que `_firmaAbiertaEnPorAlumno_`
-   adjunta en el pulso) y por el `por_alumno` del hydrate (la lista blanca lo conserva). ⛔ Solo un
-   BOOLEANO cuenta; sin él —servidor sin publicar, etiquetas ilegibles— degrada a `'AD'` byte a
-   byte, y ése es el respaldo DECLARADO que se retira cuando las dos mitades estén vivas. Red:
-   `scripts/servidor/el-tramo-final-resuelve-todos-los-hijos.mjs` (E).
+   ★ **HOY ES VERDAD EN LOS DOS LADOS (drenaje `:08` v1045, 2026-11-17; el frontal sale solo al
+   empujar a `main`).** En el backend `'AD'` solo sale en un COMENTARIO. En el frontal ya no decide
+   nada: `admitido` sale de `admitidoParaFirmar` (`frontend/src/lib/hermanos.js`), que obedece SOLO
+   a `firma_abierta === true` —la etiqueta declarada `SIGNING_OPEN` de CADA expediente, respondida
+   por el KMS con el MISMO criterio con el que monta los sobres (`enr_firmaAbiertaPorExpediente_` →
+   `enr_expedientesConLaFirmaAbierta_`), que viaja por `enr.datosDeFirma` y por el `por_alumno` del
+   hydrate—, y las tres puertas de la antigua ventana de publicación (`WizardPage.jsx` ×3,
+   `WizardContext.jsx`) abren SOLO con `firma_desbloqueada === true`. ⛔ **Los respaldos a `'AD'` se
+   RETIRARON** con las dos mitades medidas VIVAS con `ya-esta-vivo.mjs` (KMS versión 2094, asistente
+   versión 312, que manda `firma_desbloqueada` siempre como booleano) ⇒ **ausente es «no» y falla
+   cerrado**: con las etiquetas ilegibles el KMS no monta sobres y la pantalla no ofrece el selector;
+   el tramo vuelve al modo de siempre (banner, sin candado por hijo), que nunca queda imposible. Red:
+   `scripts/servidor/el-tramo-final-resuelve-todos-los-hijos.mjs` (E), con la rotura «vuelve el
+   respaldo al literal», y los recorridos `tramo-firma`/`los-dos-hermanos-firman` del muro, que salen
+   ROJOS si el doble deja de mandar `firma_abierta`.
 2. *«las sesiones se crean solo para los admitidos»* — **CORREGIDO en el KMS (drenaje `:08` v1015,
    2026-11-16, LISTO PARA PUBLICAR)**: `enr_initiateSigningSession` solo crea e inicia sesión para
    los expedientes cuya situación lleva la etiqueta declarada `SIGNING_OPEN`
    (`enr_expedientesConLaFirmaAbierta_`). ⚠️ **Sigue sin ser un hecho derivado del que fiarse**: las
    sesiones creadas ANTES para un hermano no admitido siguen existiendo (ya no se inician), así que
    «tiene sesión» todavía no es «está admitido». La puerta la decide el hito.
-
-⛔ **Lo que queda de la 1 son los tres respaldos de la ventana de publicación**, que solo deciden con
-`firma_desbloqueada` ausente; su ficha es `kis-app docs/kms/loop-backlog.md`
-`2026-11-15-el-segundo-hermano-no-puede-firmar`.
 
 **El asistente habla POR HIJO**: `por_alumno` + `firma_desbloqueada` viajan en las **CINCO**
 proyecciones (la del hydrate, las tres del pulso —acierto de caché, escritura y retorno en vivo— y el
@@ -1477,7 +1473,7 @@ con un instrumento que se tiraba, y el cambio siguiente lo rompía sin que nadie
 | `el-aviso-de-salud-sabe-que-tabla-cayo.mjs` | `2026-09-16-la-salud-no-se-recupera`: que el paso de Salud avise de «no se pudo cargar» **solo** si cayó una tabla de salud/NEAE o el lote entero (`person_subreads` a secas), y no si cayó nacionalidad, documentos, idiomas, direcciones o colegios previos; un nombre fino desconocido **avisa** (falla hacia avisar). Importa `frontend/src/lib/cargaDegradada.js` REAL; tres roturas demostradas |
 | `el-asistente-no-toca-drive.mjs` | `CLI 470`: que **ni un camino vivo escriba ni lea Drive, y que el manifiesto se quede SIN ningún permiso de Drive** —ni `drive`, ni `drive.file`—. Instala un `DriveApp` que **MUERDE** (un `Proxy` que lanza y apunta ante cualquier propiedad) y EJECUTA `uploadDocument_` y `getDocument_`, así que «no toca Drive» se MIDE en vez de buscarse con un `grep`; afirma además que los BYTES viajan al KMS en el MISMO viaje que la ficha, que la ficha NO declara dónde aterrizan, que una subida sin contenido se NOMBRA (`DOCUMENTO_SIN_CONTENIDO`) en vez de confirmarse, que los bytes se PIDEN con `con_bytes` sin un viaje más, que lo servido conserva los seis campos de DOC-BYTES, que el nombre que sale no es un UUID, y que unos bytes que el KMS no pudo traer caen en la cadena de siempre hasta `DOC_UNAVAILABLE` — **nunca** en un «no es tuyo» ni de vuelta a Drive. 28 afirmaciones, 10 roturas demostradas (incluido el manifiesto con `drive` **y** con `drive.file`) y un CANARIO que sale MEDICIÓN CIEGA si el detector dejara de morder |
 | `el-paso-11-ensena-la-firma-del-hijo-elegido.mjs` | drenaje `:08` v1017: que con dos hermanos el paso 11 enseñe el estado de la firma del hijo ELEGIDO —ni sembrado del memo del otro hermano ni leído sin selección— y que dentro de un mismo hijo la sesión siga sin volver a DRAFT. Ejecuta `frontend/src/lib/sesionDeFirma.js` REAL (`sesionDelHijo`, `fundirSesionDeFirma`); que el paso 11 y el contexto lo pidan, por líneas; 19 afirmaciones, 3 roturas |
-| `el-tramo-final-resuelve-todos-los-hijos.mjs` | **CLI 403**: que el estado 8/9/10 POR HIJO llegue al selector del tramo 8-11 y que la pantalla se alimente del hijo ELEGIDO (no del primer `.find()`): `_pasosEnPorAlumno_` adjunta los pasos por `enrollment_id` y con el mapa vacío deja `por_alumno` byte-idéntico; `_elegirSesionDeFirma_` elige la sesión del hijo seleccionado (sin selección la primera; KAL-4: una selección que no casa degrada a la primera); `resolveGuardianSigningContext_` devuelve el token de ese hijo; `_datosDeFirmaDelExpediente_` manda `guardian_person_id` al KMS; ★ v1019 (E): «este hijo tiene algo que firmar» sale de `firma_abierta` (la etiqueta `SIGNING_OPEN` que responde el KMS) y no de `'AD'`, por `_firmaAbiertaEnPorAlumno_`, la lista blanca del hydrate y `admitidoParaFirmar` de `frontend/src/lib/hermanos.js` (EJECUTADO). Ejecuta `backend/Code.js` REAL; 33 afirmaciones, 8 roturas, 3 guardas de MEDICIÓN CIEGA |
+| `el-tramo-final-resuelve-todos-los-hijos.mjs` | **CLI 403**: que el estado 8/9/10 POR HIJO llegue al selector del tramo 8-11 y que la pantalla se alimente del hijo ELEGIDO (no del primer `.find()`): `_pasosEnPorAlumno_` adjunta los pasos por `enrollment_id` y con el mapa vacío deja `por_alumno` byte-idéntico; `_elegirSesionDeFirma_` elige la sesión del hijo seleccionado (sin selección la primera; KAL-4: una selección que no casa degrada a la primera); `resolveGuardianSigningContext_` devuelve el token de ese hijo; `_datosDeFirmaDelExpediente_` manda `guardian_person_id` al KMS; ★ v1019 (E): «este hijo tiene algo que firmar» sale de `firma_abierta` (la etiqueta `SIGNING_OPEN` que responde el KMS) y no de `'AD'`, por `_firmaAbiertaEnPorAlumno_`, la lista blanca del hydrate y `admitidoParaFirmar` de `frontend/src/lib/hermanos.js` (EJECUTADO); ★ v1045: sin el booleano `true` NO se marca —el respaldo al literal se retiró—. Ejecuta `backend/Code.js` REAL; 33 afirmaciones, 9 roturas, 3 guardas de MEDICIÓN CIEGA |
 
 **Se corren solos desde el 2026-09-23**: el lanzador `node scripts/comprobar-el-servidor.mjs`
 descubre **todos** los `*.mjs` de esa carpeta, los ejecuta y junta sus veredictos; es el **noveno

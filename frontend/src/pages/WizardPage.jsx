@@ -185,10 +185,9 @@ export default function WizardPage() {
   useEffect(() => {
     // 2026-08-27: la misma puerta que el avance (el hito), no una comparación aparte — con dos
     // criterios, el precalentado y el puente se desincronizarían.
-    if ((admissionState?.firma_desbloqueada === true
-         || ((admissionState?.firma_desbloqueada === undefined
-              || admissionState?.firma_desbloqueada === null)
-             && admissionState?.state_code === 'AD'))
+    // drenaje :08 v1045: sin el respaldo `'AD'` de la ventana de publicación — el servidor del
+    // asistente manda `firma_desbloqueada` SIEMPRE como booleano (`@312`), y ausente es «no».
+    if (admissionState?.firma_desbloqueada === true
         && admissionState?.signing_ready
         && admissionState?.signing_status !== 'COMPLETED'
         && (resumeToken || signingContext?.signing_token)) {
@@ -959,10 +958,9 @@ const handleNext = async (stepKey, data, extra = null) => {
   // `display_order`. Hoy el servidor dice si el hito «admisión resuelta» está completo, y quién
   // lo completa es CONFIGURACIÓN (efecto + guard en la arista), no código.
   //
-  // ⛔ SEGURO DE PUBLICACIÓN, y es deliberado: los dos proyectos se publican por separado. Si el
-  // campo NO VIENE (servidor del asistente aún sin publicar, o caché de antes de este cambio) se
-  // cae al criterio de ayer, para no cerrarle la puerta a NINGUNA familia durante esa ventana.
-  // Un `false` EXPLÍCITO sí manda: eso es el servidor diciendo «todavía no».
+  // ⛔ El SEGURO DE PUBLICACIÓN que caía a `state_code === 'AD'` con el campo ausente se RETIRÓ
+  // (drenaje :08 v1045): el servidor del asistente lo manda SIEMPRE como booleano desde hace meses
+  // (`@312`), así que ausente ya solo puede ser un fallo, y un hito que no consta no abre (falla cerrado).
   // ⭐ 2026-08-27 — de quién habla cada situación. UN SOLO SITIO lo compone, porque lo miran el
   // rótulo del paso 7 y el banner de la firma (`SigningChildrenBanner`).
   // ⛔ NO decide de quién es nada: casa el identificador que manda el servidor con las personas
@@ -1040,10 +1038,9 @@ const handleNext = async (stepKey, data, extra = null) => {
     }).catch((e) => log.warn('WizardPage: no se pudo traer el contexto del hijo elegido', { message: e && e.message }));
   }, [selectedEnrollmentId]); // eslint-disable-line
 
-  const _hitoAdmision = admissionState?.firma_desbloqueada;
-  const _puertaAbierta = (_hitoAdmision === undefined || _hitoAdmision === null)
-    ? (_gateState === 'AD')          // ventana de publicación — se retira cuando el backend esté vivo
-    : _hitoAdmision === true;
+  // drenaje :08 v1045: la puerta es el HITO y nada más — el respaldo `'AD'` de la ventana de
+  // publicación se retiró con el servidor del asistente vivo (`@312`): ausente es «no» (falla cerrado).
+  const _puertaAbierta = admissionState?.firma_desbloqueada === true;
   const canAdvance =
     currentStep === 6
     && _puertaAbierta
@@ -1364,10 +1361,7 @@ const handleNext = async (stepKey, data, extra = null) => {
                 mostramos un estado terminal de ÉXITO en lugar del banner mudo. NO
                 toca el modelo de autorización (KAL-4). */}
             {currentStep === 6
-              && (admissionState?.firma_desbloqueada === true
-                  || ((admissionState?.firma_desbloqueada === undefined
-                       || admissionState?.firma_desbloqueada === null)
-                      && admissionState?.state_code === 'AD'))
+              && admissionState?.firma_desbloqueada === true
               && admissionState?.signing_status === 'COMPLETED' && (
               <div
                 style={{

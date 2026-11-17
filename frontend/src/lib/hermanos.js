@@ -41,17 +41,19 @@ function personasAplicantes_(stepDataPersons) {
  * `enr_expedientesConLaFirmaAbierta_`). Así la pantalla no puede ofrecer firmar a un hijo para el que
  * no hay sobre, ni esconder a uno que lo tiene porque el colegio llame de otra forma a «admitido».
  *
- * ⛔ SOLO un booleano cuenta. Sin él (un servidor que aún no lo manda, o etiquetas ilegibles) se
- * degrada al literal de antes, `state_code === 'AD'`, byte a byte — es el respaldo DECLARADO, y se
- * retira cuando las dos mitades estén publicadas.
+ * ⛔ SOLO un booleano `true` abre. Sin él —el KMS no pudo leer las etiquetas y contestó `null`— el
+ * hijo NO se ofrece en el selector, que es lo mismo que hace el KMS ese día: sin etiquetas legibles
+ * no monta ningún sobre. ⛔ Y NO cae a `state_code === 'AD'`: ese respaldo DECLARADO se retiró en el
+ * drenaje `:08` v1045, con las dos mitades medidas VIVAS (KMS `@2094`, asistente `@312`). Lo que
+ * deja de verse es el SELECTOR, nunca el camino: sin ningún hijo marcado, el tramo 8-11 vuelve al
+ * modo de siempre (banner, sin candado por hijo — `lib/pantallaDeFirma.js`), que jamás queda
+ * imposible de recorrer.
  *
  * @param {Object} a una línea de `admissionState.por_alumno`
  * @returns {boolean}
  */
 export function admitidoParaFirmar(a) {
-  if (!a) return false;
-  if (typeof a.firma_abierta === 'boolean') return a.firma_abierta;
-  return a.state_code === 'AD';
+  return !!a && a.firma_abierta === true;
 }
 
 /**
@@ -74,8 +76,8 @@ export function hermanosConSituacion(porAlumno, stepDataPersons, t) {
       applicant_person_id: a.applicant_person_id || null,
       nombre: nombre || t('submitted.por_hijo.sin_nombre', { n: i + 1 }),
       situacion: a.state_label || a.state_code || '',
-      // ¿Este hijo tiene algo que firmar? Lo decide `admitidoParaFirmar` (abajo): la etiqueta
-      // declarada `SIGNING_OPEN` que responde el KMS, y solo sin ella el literal de antes.
+      // ¿Este hijo tiene algo que firmar? Lo decide `admitidoParaFirmar` (arriba): la etiqueta
+      // declarada `SIGNING_OPEN` que responde el KMS, y nada más.
       admitido: admitidoParaFirmar(a),
       // ★ CLI 403: el estado de las pantallas 8/9/10 por hijo (del tutor que opera), si el
       // servidor lo mandó. El selector del tramo 8-11 lo lee por `lib/pantallaDeFirma.js`.
