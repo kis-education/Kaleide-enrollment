@@ -13,6 +13,7 @@ import { stepLabelKey } from './catalog'; // #11: el nombre del paso sale del ca
 // DL-E70 — cuántos tutores tiene la solicitud, con la señal que SOBREVIVE al recorte de DL-E49 §2.
 import { hayMasDeUnTutor } from '../../lib/tutoresDeLaSolicitud';
 import * as log from '../../logger';
+import { importeLegible } from '../../utils/dinero'; // v1177: EL único formateador de importes
 
 /**
  * Step 8 — S-BILLING (Reparto del pago entre tutores).
@@ -228,12 +229,9 @@ export default function Step8Billing({ onAdvance, onBack, signingToken, resumeTo
       .finally(() => setApplying(null));
   };
 
-  const money = (cents, currency) => {
-    const n = Number(cents || 0) / 100;
-    try {
-      return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'EUR' }).format(n);
-    } catch (e) { return n.toFixed(2) + ' ' + (currency || 'EUR'); }
-  };
+  // El ÚNICO formateador de importes del asistente (`utils/dinero.js`): aquí vivía una copia
+  // byte a byte igual a la del otro paso de dinero (drenaje :08 v1177).
+  const money = importeLegible;
   // ⚠️ Aquí vivía `dateFmt`, un SEGUNDO formateador de fechas. Se retira (2026-08-27): las
   // fechas del calendario las escribe ahora `fechaLegible` (`utils/fechas.js`), el ÚNICO
   // formateador declarado desde `0º.vicies.sexies` y el que usa el paso 7 — o sea que las

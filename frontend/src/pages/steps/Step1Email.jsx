@@ -5,6 +5,7 @@ import { fetchLookups } from '../../api';
 import LockedBanner from '../../components/LockedBanner';
 import StepNav from '../../components/StepNav';
 import * as log from '../../logger';
+import { fechaLegible } from '../../utils/fechas'; // 0º.vicies.sexies: EL único formateador
 
 /**
  * Un valor de fecha NORMALIZADO a `YYYY-MM-DD`, o '' si no hay nada que se pueda leer.
@@ -188,12 +189,12 @@ export default function Step1Email({ onNext, savePending, locked, onUnlock }) {
   const afterMax   = !!(typedDate && programEndsOn   && typedDate > programEndsOn);
   const dateOutOfRange = beforeMin || afterMax;
 
-  // Fecha para leer, en el idioma de la familia; si no se puede formatear, se enseña tal cual.
-  const humanDate = (iso) => {
-    if (!iso) return '';
-    const d = new Date(iso + 'T00:00:00');
-    return isNaN(d.getTime()) ? iso : d.toLocaleDateString(i18n.language);
-  };
+  // Fecha para leer, en el idioma de la familia, por EL ÚNICO formateador del asistente
+  // (`utils/fechas.js`, el mismo del paso 7). Aquí vivía un segundo formateador que escribía la
+  // fecha en NÚMEROS con el orden del idioma ⇒ en inglés «9/1/2026», que se lee como 9 de enero
+  // (drenaje :08 v1177). Si no se puede formatear, `fechaLegible` la enseña tal cual.
+  const lang = i18n.language?.startsWith('en') ? 'en' : 'es';
+  const humanDate = (iso) => fechaLegible(iso, lang);
   const rangeMessage = !dateOutOfRange ? ''
     : (programStartsOn && programEndsOn)
       ? t('start.date_out_of_range', { from: humanDate(programStartsOn), to: humanDate(programEndsOn) })

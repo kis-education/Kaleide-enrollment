@@ -16,6 +16,7 @@ import { translateRelationLabel, translateGender, translateIdType, translatePhon
 import { fechaLegible } from '../../utils/fechas'; // 0º.vicies.sexies: EL único formateador
 import { CONSENT_TEXTS } from '../../consentTexts';
 import * as log from '../../logger';
+import { importeLegible } from '../../utils/dinero'; // v1177: EL único formateador de importes
 
 const RECAPTCHA_SITE_KEY = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
@@ -253,12 +254,9 @@ function SimulacionDeCuotas({ resumeToken, applicants, t, lang, soloLectura }) {
 
   useEffect(() => { pedirSimulacion(false); }, [pedirSimulacion]);
 
-  const money = (cents, currency) => {
-    const n = Number(cents || 0) / 100;
-    try {
-      return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'EUR' }).format(n);
-    } catch (e) { return n.toFixed(2) + ' ' + (currency || 'EUR'); }
-  };
+  // El ÚNICO formateador de importes del asistente (`utils/dinero.js`): aquí vivía una copia
+  // byte a byte igual a la del otro paso de dinero (drenaje :08 v1177).
+  const money = importeLegible;
 
   // Marcar es INSTANTÁNEO y no viaja a ningún sitio: esto compara opciones, no deja
   // constancia de nada. Antes costaba DOS viajes al KMS (42 s de reloj medidos el
